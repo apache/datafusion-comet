@@ -64,6 +64,78 @@ macro_rules! downcast_array {
     };
 }
 
+/// Macro to implement is_null for typed array enums.
+/// Generates a complete match expression for all variants that have an array as first field.
+macro_rules! impl_is_null {
+    ($self:expr, $row_idx:expr, [$($variant:ident),+ $(,)?]) => {
+        match $self {
+            $(Self::$variant(arr, ..) => arr.is_null($row_idx),)+
+        }
+    };
+    // Version with special handling for Null variant
+    ($self:expr, $row_idx:expr, null_always_true, [$($variant:ident),+ $(,)?]) => {
+        match $self {
+            Self::Null => true,
+            $(Self::$variant(arr, ..) => arr.is_null($row_idx),)+
+        }
+    };
+}
+
+/// Macro to generate TypedElements::from_array match arms for primitive types.
+macro_rules! typed_elements_from_primitive {
+    ($array:expr, $element_type:expr, $(($dt:pat, $variant:ident, $arr_type:ty)),+ $(,)?) => {
+        match $element_type {
+            $(
+                $dt => {
+                    if let Some(arr) = $array.as_any().downcast_ref::<$arr_type>() {
+                        return TypedElements::$variant(arr);
+                    }
+                }
+            )+
+            _ => {}
+        }
+    };
+}
+
+/// Macro for write_column_fixed_width arms - handles downcast + loop pattern.
+macro_rules! write_fixed_column_primitive {
+    ($self:expr, $array:expr, $row_size:expr, $field_offset:expr, $num_rows:expr,
+     $arr_type:ty, $to_i64:expr) => {{
+        let arr = downcast_array!($array, $arr_type)?;
+        for row_idx in 0..$num_rows {
+            if !arr.is_null(row_idx) {
+                let offset = row_idx * $row_size + $field_offset;
+                let value: i64 = $to_i64(arr.value(row_idx));
+                $self.buffer[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+            }
+        }
+        Ok(())
+    }};
+}
+
+/// Macro for get_field_value arms - handles downcast + value extraction.
+macro_rules! get_field_value_primitive {
+    ($array:expr, $row_idx:expr, $arr_type:ty, $to_i64:expr) => {{
+        let arr = downcast_array!($array, $arr_type)?;
+        Ok($to_i64(arr.value($row_idx)))
+    }};
+}
+
+/// Macro for write_struct_to_buffer fixed-width field extraction.
+macro_rules! extract_fixed_value {
+    ($column:expr, $row_idx:expr, $(($dt:pat, $arr_type:ty, $to_i64:expr)),+ $(,)?) => {
+        match $column.data_type() {
+            $(
+                $dt => {
+                    let arr = downcast_array!($column, $arr_type)?;
+                    Some($to_i64(arr.value($row_idx)))
+                }
+            )+
+            _ => None,
+        }
+    };
+}
+
 /// Writes bytes to buffer with 8-byte alignment padding.
 /// Returns the unpadded length.
 #[inline]
@@ -181,29 +253,33 @@ impl<'a> TypedArray<'a> {
     /// Check if the value at the given index is null.
     #[inline]
     fn is_null(&self, row_idx: usize) -> bool {
-        match self {
-            TypedArray::Null => true, // Null type is always null
-            TypedArray::Boolean(arr) => arr.is_null(row_idx),
-            TypedArray::Int8(arr) => arr.is_null(row_idx),
-            TypedArray::Int16(arr) => arr.is_null(row_idx),
-            TypedArray::Int32(arr) => arr.is_null(row_idx),
-            TypedArray::Int64(arr) => arr.is_null(row_idx),
-            TypedArray::Float32(arr) => arr.is_null(row_idx),
-            TypedArray::Float64(arr) => arr.is_null(row_idx),
-            TypedArray::Date32(arr) => arr.is_null(row_idx),
-            TypedArray::TimestampMicro(arr) => arr.is_null(row_idx),
-            TypedArray::Decimal128(arr, _) => arr.is_null(row_idx),
-            TypedArray::String(arr) => arr.is_null(row_idx),
-            TypedArray::LargeString(arr) => arr.is_null(row_idx),
-            TypedArray::Binary(arr) => arr.is_null(row_idx),
-            TypedArray::LargeBinary(arr) => arr.is_null(row_idx),
-            TypedArray::FixedSizeBinary(arr) => arr.is_null(row_idx),
-            TypedArray::Struct(arr, _, _) => arr.is_null(row_idx),
-            TypedArray::List(arr, _) => arr.is_null(row_idx),
-            TypedArray::LargeList(arr, _) => arr.is_null(row_idx),
-            TypedArray::Map(arr, _) => arr.is_null(row_idx),
-            TypedArray::Dictionary(arr, _) => arr.is_null(row_idx),
-        }
+        impl_is_null!(
+            self,
+            row_idx,
+            null_always_true,
+            [
+                Boolean,
+                Int8,
+                Int16,
+                Int32,
+                Int64,
+                Float32,
+                Float64,
+                Date32,
+                TimestampMicro,
+                Decimal128,
+                String,
+                LargeString,
+                Binary,
+                LargeBinary,
+                FixedSizeBinary,
+                Struct,
+                List,
+                LargeList,
+                Map,
+                Dictionary
+            ]
+        )
     }
 
     /// Get the fixed-width value as i64 (for types that fit in 8 bytes).
@@ -326,47 +402,26 @@ enum TypedElements<'a> {
 impl<'a> TypedElements<'a> {
     /// Create from an ArrayRef and element type.
     fn from_array(array: &'a ArrayRef, element_type: &DataType) -> Self {
+        // Try primitive types first using macro
+        typed_elements_from_primitive!(
+            array,
+            element_type,
+            (DataType::Boolean, Boolean, BooleanArray),
+            (DataType::Int8, Int8, Int8Array),
+            (DataType::Int16, Int16, Int16Array),
+            (DataType::Int32, Int32, Int32Array),
+            (DataType::Int64, Int64, Int64Array),
+            (DataType::Float32, Float32, Float32Array),
+            (DataType::Float64, Float64, Float64Array),
+            (DataType::Date32, Date32, Date32Array),
+            (DataType::Utf8, String, StringArray),
+            (DataType::LargeUtf8, LargeString, LargeStringArray),
+            (DataType::Binary, Binary, BinaryArray),
+            (DataType::LargeBinary, LargeBinary, LargeBinaryArray),
+        );
+
+        // Handle special cases that need extra processing
         match element_type {
-            DataType::Boolean => {
-                if let Some(arr) = array.as_any().downcast_ref::<BooleanArray>() {
-                    return TypedElements::Boolean(arr);
-                }
-            }
-            DataType::Int8 => {
-                if let Some(arr) = array.as_any().downcast_ref::<Int8Array>() {
-                    return TypedElements::Int8(arr);
-                }
-            }
-            DataType::Int16 => {
-                if let Some(arr) = array.as_any().downcast_ref::<Int16Array>() {
-                    return TypedElements::Int16(arr);
-                }
-            }
-            DataType::Int32 => {
-                if let Some(arr) = array.as_any().downcast_ref::<Int32Array>() {
-                    return TypedElements::Int32(arr);
-                }
-            }
-            DataType::Int64 => {
-                if let Some(arr) = array.as_any().downcast_ref::<Int64Array>() {
-                    return TypedElements::Int64(arr);
-                }
-            }
-            DataType::Float32 => {
-                if let Some(arr) = array.as_any().downcast_ref::<Float32Array>() {
-                    return TypedElements::Float32(arr);
-                }
-            }
-            DataType::Float64 => {
-                if let Some(arr) = array.as_any().downcast_ref::<Float64Array>() {
-                    return TypedElements::Float64(arr);
-                }
-            }
-            DataType::Date32 => {
-                if let Some(arr) = array.as_any().downcast_ref::<Date32Array>() {
-                    return TypedElements::Date32(arr);
-                }
-            }
             DataType::Timestamp(TimeUnit::Microsecond, _) => {
                 if let Some(arr) = array.as_any().downcast_ref::<TimestampMicrosecondArray>() {
                     return TypedElements::TimestampMicro(arr);
@@ -375,26 +430,6 @@ impl<'a> TypedElements<'a> {
             DataType::Decimal128(p, _) => {
                 if let Some(arr) = array.as_any().downcast_ref::<Decimal128Array>() {
                     return TypedElements::Decimal128(arr, *p);
-                }
-            }
-            DataType::Utf8 => {
-                if let Some(arr) = array.as_any().downcast_ref::<StringArray>() {
-                    return TypedElements::String(arr);
-                }
-            }
-            DataType::LargeUtf8 => {
-                if let Some(arr) = array.as_any().downcast_ref::<LargeStringArray>() {
-                    return TypedElements::LargeString(arr);
-                }
-            }
-            DataType::Binary => {
-                if let Some(arr) = array.as_any().downcast_ref::<BinaryArray>() {
-                    return TypedElements::Binary(arr);
-                }
-            }
-            DataType::LargeBinary => {
-                if let Some(arr) = array.as_any().downcast_ref::<LargeBinaryArray>() {
-                    return TypedElements::LargeBinary(arr);
                 }
             }
             DataType::FixedSizeBinary(_) => {
@@ -440,24 +475,28 @@ impl<'a> TypedElements<'a> {
     /// Check if value at given index is null.
     #[inline]
     fn is_null_at(&self, idx: usize) -> bool {
-        match self {
-            TypedElements::Boolean(arr) => arr.is_null(idx),
-            TypedElements::Int8(arr) => arr.is_null(idx),
-            TypedElements::Int16(arr) => arr.is_null(idx),
-            TypedElements::Int32(arr) => arr.is_null(idx),
-            TypedElements::Int64(arr) => arr.is_null(idx),
-            TypedElements::Float32(arr) => arr.is_null(idx),
-            TypedElements::Float64(arr) => arr.is_null(idx),
-            TypedElements::Date32(arr) => arr.is_null(idx),
-            TypedElements::TimestampMicro(arr) => arr.is_null(idx),
-            TypedElements::Decimal128(arr, _) => arr.is_null(idx),
-            TypedElements::String(arr) => arr.is_null(idx),
-            TypedElements::LargeString(arr) => arr.is_null(idx),
-            TypedElements::Binary(arr) => arr.is_null(idx),
-            TypedElements::LargeBinary(arr) => arr.is_null(idx),
-            TypedElements::FixedSizeBinary(arr) => arr.is_null(idx),
-            TypedElements::Other(arr, _) => arr.is_null(idx),
-        }
+        impl_is_null!(
+            self,
+            idx,
+            [
+                Boolean,
+                Int8,
+                Int16,
+                Int32,
+                Int64,
+                Float32,
+                Float64,
+                Date32,
+                TimestampMicro,
+                Decimal128,
+                String,
+                LargeString,
+                Binary,
+                LargeBinary,
+                FixedSizeBinary,
+                Other
+            ]
+        )
     }
 
     /// Check if this is a fixed-width type (value fits in 8-byte slot).
@@ -1107,181 +1146,104 @@ impl ColumnarToRowContext {
         // Write non-null values using type-specific fast paths
         match data_type {
             DataType::Boolean => {
-                let arr = array
-                    .as_any()
-                    .downcast_ref::<BooleanArray>()
-                    .ok_or_else(|| {
-                        CometError::Internal(format!(
-                            "Failed to downcast to BooleanArray, actual type: {:?}",
-                            array.data_type()
-                        ))
-                    })?;
+                // Boolean is special: writes single byte, not 8-byte i64
+                let arr = downcast_array!(array, BooleanArray)?;
                 for row_idx in 0..num_rows {
                     if !arr.is_null(row_idx) {
                         let offset = row_idx * row_size + field_offset_in_row;
                         self.buffer[offset] = if arr.value(row_idx) { 1 } else { 0 };
                     }
                 }
+                Ok(())
             }
-            DataType::Int8 => {
-                let arr = array.as_any().downcast_ref::<Int8Array>().ok_or_else(|| {
-                    CometError::Internal(format!(
-                        "Failed to downcast to Int8Array, actual type: {:?}",
-                        array.data_type()
-                    ))
-                })?;
-                for row_idx in 0..num_rows {
-                    if !arr.is_null(row_idx) {
-                        let offset = row_idx * row_size + field_offset_in_row;
-                        self.buffer[offset..offset + 8]
-                            .copy_from_slice(&(arr.value(row_idx) as i64).to_le_bytes());
-                    }
-                }
-            }
-            DataType::Int16 => {
-                let arr = array.as_any().downcast_ref::<Int16Array>().ok_or_else(|| {
-                    CometError::Internal(format!(
-                        "Failed to downcast to Int16Array, actual type: {:?}",
-                        array.data_type()
-                    ))
-                })?;
-                for row_idx in 0..num_rows {
-                    if !arr.is_null(row_idx) {
-                        let offset = row_idx * row_size + field_offset_in_row;
-                        self.buffer[offset..offset + 8]
-                            .copy_from_slice(&(arr.value(row_idx) as i64).to_le_bytes());
-                    }
-                }
-            }
-            DataType::Int32 => {
-                let arr = array.as_any().downcast_ref::<Int32Array>().ok_or_else(|| {
-                    CometError::Internal(format!(
-                        "Failed to downcast to Int32Array, actual type: {:?}",
-                        array.data_type()
-                    ))
-                })?;
-                for row_idx in 0..num_rows {
-                    if !arr.is_null(row_idx) {
-                        let offset = row_idx * row_size + field_offset_in_row;
-                        self.buffer[offset..offset + 8]
-                            .copy_from_slice(&(arr.value(row_idx) as i64).to_le_bytes());
-                    }
-                }
-            }
-            DataType::Int64 => {
-                let arr = array.as_any().downcast_ref::<Int64Array>().ok_or_else(|| {
-                    CometError::Internal(format!(
-                        "Failed to downcast to Int64Array, actual type: {:?}",
-                        array.data_type()
-                    ))
-                })?;
-                for row_idx in 0..num_rows {
-                    if !arr.is_null(row_idx) {
-                        let offset = row_idx * row_size + field_offset_in_row;
-                        self.buffer[offset..offset + 8]
-                            .copy_from_slice(&arr.value(row_idx).to_le_bytes());
-                    }
-                }
-            }
-            DataType::Float32 => {
-                let arr = array
-                    .as_any()
-                    .downcast_ref::<Float32Array>()
-                    .ok_or_else(|| {
-                        CometError::Internal(format!(
-                            "Failed to downcast to Float32Array, actual type: {:?}",
-                            array.data_type()
-                        ))
-                    })?;
-                for row_idx in 0..num_rows {
-                    if !arr.is_null(row_idx) {
-                        let offset = row_idx * row_size + field_offset_in_row;
-                        self.buffer[offset..offset + 8]
-                            .copy_from_slice(&(arr.value(row_idx).to_bits() as i64).to_le_bytes());
-                    }
-                }
-            }
-            DataType::Float64 => {
-                let arr = array
-                    .as_any()
-                    .downcast_ref::<Float64Array>()
-                    .ok_or_else(|| {
-                        CometError::Internal(format!(
-                            "Failed to downcast to Float64Array, actual type: {:?}",
-                            array.data_type()
-                        ))
-                    })?;
-                for row_idx in 0..num_rows {
-                    if !arr.is_null(row_idx) {
-                        let offset = row_idx * row_size + field_offset_in_row;
-                        self.buffer[offset..offset + 8]
-                            .copy_from_slice(&(arr.value(row_idx).to_bits() as i64).to_le_bytes());
-                    }
-                }
-            }
-            DataType::Date32 => {
-                let arr = array
-                    .as_any()
-                    .downcast_ref::<Date32Array>()
-                    .ok_or_else(|| {
-                        CometError::Internal(format!(
-                            "Failed to downcast to Date32Array, actual type: {:?}",
-                            array.data_type()
-                        ))
-                    })?;
-                for row_idx in 0..num_rows {
-                    if !arr.is_null(row_idx) {
-                        let offset = row_idx * row_size + field_offset_in_row;
-                        self.buffer[offset..offset + 8]
-                            .copy_from_slice(&(arr.value(row_idx) as i64).to_le_bytes());
-                    }
-                }
-            }
-            DataType::Timestamp(TimeUnit::Microsecond, _) => {
-                let arr = array
-                    .as_any()
-                    .downcast_ref::<TimestampMicrosecondArray>()
-                    .ok_or_else(|| {
-                        CometError::Internal(format!(
-                            "Failed to downcast to TimestampMicrosecondArray, actual type: {:?}",
-                            array.data_type()
-                        ))
-                    })?;
-                for row_idx in 0..num_rows {
-                    if !arr.is_null(row_idx) {
-                        let offset = row_idx * row_size + field_offset_in_row;
-                        self.buffer[offset..offset + 8]
-                            .copy_from_slice(&arr.value(row_idx).to_le_bytes());
-                    }
-                }
-            }
+            DataType::Int8 => write_fixed_column_primitive!(
+                self,
+                array,
+                row_size,
+                field_offset_in_row,
+                num_rows,
+                Int8Array,
+                |v: i8| v as i64
+            ),
+            DataType::Int16 => write_fixed_column_primitive!(
+                self,
+                array,
+                row_size,
+                field_offset_in_row,
+                num_rows,
+                Int16Array,
+                |v: i16| v as i64
+            ),
+            DataType::Int32 => write_fixed_column_primitive!(
+                self,
+                array,
+                row_size,
+                field_offset_in_row,
+                num_rows,
+                Int32Array,
+                |v: i32| v as i64
+            ),
+            DataType::Int64 => write_fixed_column_primitive!(
+                self,
+                array,
+                row_size,
+                field_offset_in_row,
+                num_rows,
+                Int64Array,
+                |v: i64| v
+            ),
+            DataType::Float32 => write_fixed_column_primitive!(
+                self,
+                array,
+                row_size,
+                field_offset_in_row,
+                num_rows,
+                Float32Array,
+                |v: f32| v.to_bits() as i64
+            ),
+            DataType::Float64 => write_fixed_column_primitive!(
+                self,
+                array,
+                row_size,
+                field_offset_in_row,
+                num_rows,
+                Float64Array,
+                |v: f64| v.to_bits() as i64
+            ),
+            DataType::Date32 => write_fixed_column_primitive!(
+                self,
+                array,
+                row_size,
+                field_offset_in_row,
+                num_rows,
+                Date32Array,
+                |v: i32| v as i64
+            ),
+            DataType::Timestamp(TimeUnit::Microsecond, _) => write_fixed_column_primitive!(
+                self,
+                array,
+                row_size,
+                field_offset_in_row,
+                num_rows,
+                TimestampMicrosecondArray,
+                |v: i64| v
+            ),
             DataType::Decimal128(precision, _) if *precision <= MAX_LONG_DIGITS => {
-                let arr = array
-                    .as_any()
-                    .downcast_ref::<Decimal128Array>()
-                    .ok_or_else(|| {
-                        CometError::Internal(format!(
-                            "Failed to downcast to Decimal128Array, actual type: {:?}",
-                            array.data_type()
-                        ))
-                    })?;
-                for row_idx in 0..num_rows {
-                    if !arr.is_null(row_idx) {
-                        let offset = row_idx * row_size + field_offset_in_row;
-                        self.buffer[offset..offset + 8]
-                            .copy_from_slice(&(arr.value(row_idx) as i64).to_le_bytes());
-                    }
-                }
+                write_fixed_column_primitive!(
+                    self,
+                    array,
+                    row_size,
+                    field_offset_in_row,
+                    num_rows,
+                    Decimal128Array,
+                    |v: i128| v as i64
+                )
             }
-            _ => {
-                return Err(CometError::Internal(format!(
-                    "Unexpected non-fixed-width type in fast path: {:?}",
-                    data_type
-                )));
-            }
+            _ => Err(CometError::Internal(format!(
+                "Unexpected non-fixed-width type in fast path: {:?}",
+                data_type
+            ))),
         }
-
-        Ok(())
     }
 
     /// Writes a complete row using pre-downcast TypedArrays.
@@ -1368,112 +1330,31 @@ fn get_field_value(data_type: &DataType, array: &ArrayRef, row_idx: usize) -> Co
 
     match actual_type {
         DataType::Boolean => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<BooleanArray>()
-                .ok_or_else(|| {
-                    CometError::Internal(format!(
-                        "Failed to downcast to BooleanArray for type {:?}",
-                        actual_type
-                    ))
-                })?;
+            let arr = downcast_array!(array, BooleanArray)?;
             Ok(if arr.value(row_idx) { 1i64 } else { 0i64 })
         }
-        DataType::Int8 => {
-            let arr = array.as_any().downcast_ref::<Int8Array>().ok_or_else(|| {
-                CometError::Internal(format!(
-                    "Failed to downcast to Int8Array for type {:?}",
-                    actual_type
-                ))
-            })?;
-            Ok(arr.value(row_idx) as i64)
-        }
+        DataType::Int8 => get_field_value_primitive!(array, row_idx, Int8Array, |v: i8| v as i64),
         DataType::Int16 => {
-            let arr = array.as_any().downcast_ref::<Int16Array>().ok_or_else(|| {
-                CometError::Internal(format!(
-                    "Failed to downcast to Int16Array for type {:?}",
-                    actual_type
-                ))
-            })?;
-            Ok(arr.value(row_idx) as i64)
+            get_field_value_primitive!(array, row_idx, Int16Array, |v: i16| v as i64)
         }
         DataType::Int32 => {
-            let arr = array.as_any().downcast_ref::<Int32Array>().ok_or_else(|| {
-                CometError::Internal(format!(
-                    "Failed to downcast to Int32Array for type {:?}",
-                    actual_type
-                ))
-            })?;
-            Ok(arr.value(row_idx) as i64)
+            get_field_value_primitive!(array, row_idx, Int32Array, |v: i32| v as i64)
         }
-        DataType::Int64 => {
-            let arr = array.as_any().downcast_ref::<Int64Array>().ok_or_else(|| {
-                CometError::Internal(format!(
-                    "Failed to downcast to Int64Array for type {:?}",
-                    actual_type
-                ))
-            })?;
-            Ok(arr.value(row_idx))
-        }
+        DataType::Int64 => get_field_value_primitive!(array, row_idx, Int64Array, |v: i64| v),
         DataType::Float32 => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<Float32Array>()
-                .ok_or_else(|| {
-                    CometError::Internal(format!(
-                        "Failed to downcast to Float32Array for type {:?}",
-                        actual_type
-                    ))
-                })?;
-            Ok(arr.value(row_idx).to_bits() as i64)
+            get_field_value_primitive!(array, row_idx, Float32Array, |v: f32| v.to_bits() as i64)
         }
         DataType::Float64 => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<Float64Array>()
-                .ok_or_else(|| {
-                    CometError::Internal(format!(
-                        "Failed to downcast to Float64Array for type {:?}",
-                        actual_type
-                    ))
-                })?;
-            Ok(arr.value(row_idx).to_bits() as i64)
+            get_field_value_primitive!(array, row_idx, Float64Array, |v: f64| v.to_bits() as i64)
         }
         DataType::Date32 => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<Date32Array>()
-                .ok_or_else(|| {
-                    CometError::Internal(format!(
-                        "Failed to downcast to Date32Array for type {:?}",
-                        actual_type
-                    ))
-                })?;
-            Ok(arr.value(row_idx) as i64)
+            get_field_value_primitive!(array, row_idx, Date32Array, |v: i32| v as i64)
         }
         DataType::Timestamp(TimeUnit::Microsecond, _) => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<TimestampMicrosecondArray>()
-                .ok_or_else(|| {
-                    CometError::Internal(format!(
-                        "Failed to downcast to TimestampMicrosecondArray for type {:?}",
-                        actual_type
-                    ))
-                })?;
-            Ok(arr.value(row_idx))
+            get_field_value_primitive!(array, row_idx, TimestampMicrosecondArray, |v: i64| v)
         }
         DataType::Decimal128(precision, _) if *precision <= MAX_LONG_DIGITS => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<Decimal128Array>()
-                .ok_or_else(|| {
-                    CometError::Internal(format!(
-                        "Failed to downcast to Decimal128Array for type {:?}",
-                        actual_type
-                    ))
-                })?;
-            Ok(arr.value(row_idx) as i64)
+            get_field_value_primitive!(array, row_idx, Decimal128Array, |v: i128| v as i64)
         }
         // Variable-length types use placeholder (will be overwritten by get_variable_length_data)
         DataType::Utf8
@@ -1765,48 +1646,35 @@ fn write_struct_to_buffer(
             let field_offset = struct_start + nested_bitset_width + field_idx * 8;
 
             // Inline type dispatch for fixed-width types (most common case)
-            let value: Option<i64> = match data_type {
-                DataType::Boolean => {
-                    let arr = downcast_array!(column, BooleanArray)?;
-                    Some(if arr.value(row_idx) { 1i64 } else { 0i64 })
-                }
-                DataType::Int8 => {
-                    let arr = downcast_array!(column, Int8Array)?;
-                    Some(arr.value(row_idx) as i64)
-                }
-                DataType::Int16 => {
-                    let arr = downcast_array!(column, Int16Array)?;
-                    Some(arr.value(row_idx) as i64)
-                }
-                DataType::Int32 => {
-                    let arr = downcast_array!(column, Int32Array)?;
-                    Some(arr.value(row_idx) as i64)
-                }
-                DataType::Int64 => {
-                    let arr = downcast_array!(column, Int64Array)?;
-                    Some(arr.value(row_idx))
-                }
-                DataType::Float32 => {
-                    let arr = downcast_array!(column, Float32Array)?;
-                    Some(arr.value(row_idx).to_bits() as i64)
-                }
-                DataType::Float64 => {
-                    let arr = downcast_array!(column, Float64Array)?;
-                    Some(arr.value(row_idx).to_bits() as i64)
-                }
-                DataType::Date32 => {
-                    let arr = downcast_array!(column, Date32Array)?;
-                    Some(arr.value(row_idx) as i64)
-                }
-                DataType::Timestamp(TimeUnit::Microsecond, _) => {
-                    let arr = downcast_array!(column, TimestampMicrosecondArray)?;
-                    Some(arr.value(row_idx))
-                }
-                DataType::Decimal128(p, _) if *p <= MAX_LONG_DIGITS => {
+            let value: Option<i64> = extract_fixed_value!(
+                column,
+                row_idx,
+                (DataType::Boolean, BooleanArray, |v: bool| if v {
+                    1i64
+                } else {
+                    0i64
+                }),
+                (DataType::Int8, Int8Array, |v: i8| v as i64),
+                (DataType::Int16, Int16Array, |v: i16| v as i64),
+                (DataType::Int32, Int32Array, |v: i32| v as i64),
+                (DataType::Int64, Int64Array, |v: i64| v),
+                (DataType::Float32, Float32Array, |v: f32| v.to_bits() as i64),
+                (DataType::Float64, Float64Array, |v: f64| v.to_bits() as i64),
+                (DataType::Date32, Date32Array, |v: i32| v as i64),
+                (
+                    DataType::Timestamp(TimeUnit::Microsecond, _),
+                    TimestampMicrosecondArray,
+                    |v: i64| v
+                ),
+            );
+            // Handle Decimal128 with precision guard separately
+            let value: Option<i64> = match (value, data_type) {
+                (Some(v), _) => Some(v),
+                (None, DataType::Decimal128(p, _)) if *p <= MAX_LONG_DIGITS => {
                     let arr = downcast_array!(column, Decimal128Array)?;
                     Some(arr.value(row_idx) as i64)
                 }
-                _ => None, // Variable-length type
+                _ => None,
             };
 
             if let Some(v) = value {
