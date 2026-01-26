@@ -472,8 +472,8 @@ more Spark SQL tests and fully implementing ANSI support (<a class="reference ex
 </section>
 <section id="removing-the-native-comet-scan-implementation">
 <h3>Removing the native_comet scan implementation<a class="headerlink" href="#removing-the-native-comet-scan-implementation" title="Link to this heading">#</a></h3>
-<p>We are working towards deprecating (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2186">#2186</a>) and removing (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2177">#2177</a>) the <code class="docutils literal notranslate"><span class="pre">native_comet</span></code> scan implementation, which
-is the original scan implementation that uses mutable buffers (which is incompatible with best practices around
+<p>The <code class="docutils literal notranslate"><span class="pre">native_comet</span></code> scan implementation is now deprecated and will be removed in a future release (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2186">#2186</a>, <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2177">#2177</a>).
+This is the original scan implementation that uses mutable buffers (which is incompatible with best practices around
 Arrow FFI) and does not support complex types.</p>
 <p>Now that the default <code class="docutils literal notranslate"><span class="pre">auto</span></code> scan mode uses <code class="docutils literal notranslate"><span class="pre">native_iceberg_compat</span></code> (which is based on DataFusion’s <code class="docutils literal notranslate"><span class="pre">DataSourceExec</span></code>),
 we can proceed with removing the <code class="docutils literal notranslate"><span class="pre">native_comet</span></code> scan implementation, and then improve the efficiency of our use of

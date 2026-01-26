@@ -474,7 +474,7 @@ overhead that JVM shuffle incurs.</p>
 <section id="when-native-shuffle-is-used">
 <h2>When Native Shuffle is Used<a class="headerlink" href="#when-native-shuffle-is-used" title="Link to this heading">#</a></h2>
 <p>Native shuffle (<code class="docutils literal notranslate"><span class="pre">CometExchange</span></code>) is selected when all of the following conditions are met:</p>
-<ol class="arabic">
+<ol class="arabic simple">
 <li><p><strong>Shuffle mode allows native</strong>: <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.shuffle.mode</span></code> is <code class="docutils literal notranslate"><span class="pre">native</span></code> or <code class="docutils literal notranslate"><span class="pre">auto</span></code>.</p></li>
 <li><p><strong>Child plan is a Comet native operator</strong>: The child must be a <code class="docutils literal notranslate"><span class="pre">CometPlan</span></code> that produces
 columnar output. Row-based Spark operators require JVM shuffle.</p></li>
@@ -483,8 +483,8 @@ columnar output. Row-based Spark operators require JVM shuffle.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">HashPartitioning</span></code></p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">RangePartitioning</span></code></p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">SinglePartition</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">RoundRobinPartitioning</span></code></p></li>
 </ul>
-<p><code class="docutils literal notranslate"><span class="pre">RoundRobinPartitioning</span></code> requires JVM shuffle.</p>
 </li>
 <li><p><strong>Supported partition key types</strong>: For <code class="docutils literal notranslate"><span class="pre">HashPartitioning</span></code> and <code class="docutils literal notranslate"><span class="pre">RangePartitioning</span></code>, partition
 keys must be primitive types. Complex types (struct, array, map) as partition keys require
@@ -609,7 +609,7 @@ JVM shuffle. Note that complex types are fully supported as data columns in nati
 <li><p><strong>Native execution</strong>: <code class="docutils literal notranslate"><span class="pre">CometExec.getCometIterator()</span></code> executes the plan in Rust.</p></li>
 <li><p><strong>Partitioning</strong>: <code class="docutils literal notranslate"><span class="pre">ShuffleWriterExec</span></code> receives batches and routes to the appropriate partitioner:</p>
 <ul class="simple">
-<li><p><code class="docutils literal notranslate"><span class="pre">MultiPartitionShuffleRepartitioner</span></code>: For hash/range partitioning</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">MultiPartitionShuffleRepartitioner</span></code>: For hash/range/round-robin partitioning</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">SinglePartitionShufflePartitioner</span></code>: For single partition (simpler path)</p></li>
 </ul>
 </li>
@@ -674,6 +674,19 @@ lengths and commits via Spark’s <code class="docutils literal notranslate"><sp
 <h3>Single Partition<a class="headerlink" href="#single-partition" title="Link to this heading">#</a></h3>
 <p>The simplest case: all rows go to partition 0. Uses <code class="docutils literal notranslate"><span class="pre">SinglePartitionShufflePartitioner</span></code> which
 simply concatenates batches to reach the configured batch size.</p>
+</section>
+<section id="round-robin-partitioning">
+<h3>Round Robin Partitioning<a class="headerlink" href="#round-robin-partitioning" title="Link to this heading">#</a></h3>
+<p>Comet implements round robin partitioning using hash-based assignment for determinism:</p>
+<ol class="arabic simple">
+<li><p>Computes a Murmur3 hash of columns (using seed 42)</p></li>
+<li><p>Assigns partitions directly using the hash: <code class="docutils literal notranslate"><span class="pre">partition_id</span> <span class="pre">=</span> <span class="pre">hash</span> <span class="pre">%</span> <span class="pre">num_partitions</span></code></p></li>
+</ol>
+<p>This approach guarantees determinism across retries, which is critical for fault tolerance.
+However, unlike true round robin which cycles through partitions row-by-row, hash-based
+assignment only provides even distribution when the data has sufficient variation in the
+hashed columns. Data with low cardinality or identical values may result in skewed partition
+sizes.</p>
 </section>
 </section>
 <section id="memory-management">
@@ -779,11 +792,11 @@ independently compressed, allowing parallel decompression during reads.</p>
 <td><p>Spark’s partitioner</p></td>
 </tr>
 <tr class="row-even"><td><p>Supported schemes</p></td>
-<td><p>Hash, Range, Single</p></td>
+<td><p>Hash, Range, Single, RoundRobin</p></td>
 <td><p>Hash, Range, Single, RoundRobin</p></td>
 </tr>
 <tr class="row-odd"><td><p>Partition key types</p></td>
-<td><p>Primitives only</p></td>
+<td><p>Primitives only (Hash, Range)</p></td>
 <td><p>Any type</p></td>
 </tr>
 <tr class="row-even"><td><p>Performance</p></td>

@@ -370,8 +370,6 @@ under the License.
 <li class="toctree-l2"><a class="reference internal" href="../0.12/index.html">0.12.x</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../0.11/index.html">0.11.x</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../0.10/index.html">0.10.x</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../0.9/index.html">0.9.x</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../0.8/index.html">0.8.x</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../../contributor-guide/index.html">Contributor Guide</a></li>
@@ -464,7 +462,6 @@ under the License.
 <p>Comet provides the following configuration settings.</p>
 <section id="scan-configuration-settings">
 <h2>Scan Configuration Settings<a class="headerlink" href="#scan-configuration-settings" title="Link to this heading">#</a></h2>
-<!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
 <!--BEGIN:CONFIG_TABLE[scan]-->
 <!-- prettier-ignore-start -->
 <div class="pst-scrollable-table-container"><table class="table">
@@ -475,25 +472,25 @@ under the License.
 </tr>
 </thead>
 <tbody>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.scan.allowIncompatible</span></code></p></td>
-<td><p>Some Comet scan implementations are not currently fully compatible with Spark for all datatypes. Set this config to true to allow them anyway. For more information, refer to the <a class="reference external" href="https://datafusion.apache.org/comet/user-guide/compatibility.html">Comet Compatibility Guide</a>.</p></td>
-<td><p>false</p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.scan.enabled</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.scan.enabled</span></code></p></td>
 <td><p>Whether to enable native scans. When this is turned on, Spark will use Comet to read supported data sources (currently only Parquet is supported natively). Note that to enable native vectorized execution, both this config and <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.enabled</span></code> need to be enabled.</p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.scan.icebergNative.enabled</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.scan.icebergNative.enabled</span></code></p></td>
 <td><p>Whether to enable native Iceberg table scan using iceberg-rust. When enabled, Iceberg tables are read directly through native execution, bypassing Spark’s DataSource V2 API for better performance.</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.scan.preFetch.enabled</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.scan.preFetch.enabled</span></code></p></td>
 <td><p>Whether to enable pre-fetching feature of CometScan.</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.scan.preFetch.threadNum</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.scan.preFetch.threadNum</span></code></p></td>
 <td><p>The number of threads running pre-fetching for CometScan. Effective if spark.comet.scan.preFetch.enabled is enabled. Note that more pre-fetching threads means more memory requirement to store pre-fetched row groups.</p></td>
 <td><p>2</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.scan.unsignedSmallIntSafetyCheck</span></code></p></td>
+<td><p>Parquet files may contain unsigned 8-bit integers (UINT_8) which Spark maps to ShortType. When this config is true (default), Comet falls back to Spark for ShortType columns because we cannot distinguish signed INT16 (safe) from unsigned UINT_8 (may produce different results). Set to false to allow native execution of ShortType columns if you know your data does not contain unsigned UINT_8 columns from improperly encoded Parquet files. For more information, refer to the <a class="reference external" href="https://datafusion.apache.org/comet/user-guide/compatibility.html">Comet Compatibility Guide</a>.</p></td>
+<td><p>true</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.hadoop.fs.comet.libhdfs.schemes</span></code></p></td>
 <td><p>Defines filesystem schemes (e.g., hdfs, webhdfs) that the native side accesses via libhdfs, separated by commas. Valid only when built with hdfs feature enabled.</p></td>
@@ -507,7 +504,6 @@ under the License.
 </section>
 <section id="parquet-reader-configuration-settings">
 <h2>Parquet Reader Configuration Settings<a class="headerlink" href="#parquet-reader-configuration-settings" title="Link to this heading">#</a></h2>
-<!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
 <!--BEGIN:CONFIG_TABLE[parquet]-->
 <!-- prettier-ignore-start -->
 <div class="pst-scrollable-table-container"><table class="table">
@@ -554,7 +550,6 @@ under the License.
 </section>
 <section id="query-execution-settings">
 <h2>Query Execution Settings<a class="headerlink" href="#query-execution-settings" title="Link to this heading">#</a></h2>
-<!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
 <!--BEGIN:CONFIG_TABLE[exec]-->
 <!-- prettier-ignore-start -->
 <div class="pst-scrollable-table-container"><table class="table">
@@ -585,31 +580,35 @@ under the License.
 <td><p>Whether to throw exception when seeing dates/timestamps from the legacy hybrid (Julian + Gregorian) calendar. Since Spark 3, dates/timestamps were written according to the Proleptic Gregorian calendar. When this is true, Comet will throw exceptions when seeing these dates/timestamps that were written by Spark version before 3.0. If this is false, these dates/timestamps will be read as if they were written to the Proleptic Gregorian calendar and will not be rebased.</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.enabled</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.columnarToRow.native.enabled</span></code></p></td>
+<td><p>Whether to enable native columnar to row conversion. When enabled, Comet will use native Rust code to convert Arrow columnar data to Spark UnsafeRow format instead of the JVM implementation. This can improve performance for queries that need to convert between columnar and row formats. This is an experimental feature.</p></td>
+<td><p>false</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.enabled</span></code></p></td>
 <td><p>Whether to enable Comet native vectorized execution for Spark. This controls whether Spark should convert operators into their Comet counterparts and execute them in native space. Note: each operator is associated with a separate config in the format of <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.&lt;operator_name&gt;.enabled</span></code> at the moment, and both the config and this need to be turned on, in order for the operator to be executed in native.</p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.replaceSortMergeJoin</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.replaceSortMergeJoin</span></code></p></td>
 <td><p>Experimental feature to force Spark to replace SortMergeJoin with ShuffledHashJoin for improved performance. This feature is not stable yet. For more information, refer to the <a class="reference external" href="https://datafusion.apache.org/comet/user-guide/tuning.html">Comet Tuning Guide</a>.</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.strictFloatingPoint</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.strictFloatingPoint</span></code></p></td>
 <td><p>When enabled, fall back to Spark for floating-point operations that may differ from Spark, such as when comparing or sorting -0.0 and 0.0. For more information, refer to the <a class="reference external" href="https://datafusion.apache.org/comet/user-guide/compatibility.html">Comet Compatibility Guide</a>.</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.maxTempDirectorySize</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.maxTempDirectorySize</span></code></p></td>
 <td><p>The maximum amount of data (in bytes) stored inside the temporary directories.</p></td>
 <td><p>107374182400b</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.metrics.updateInterval</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.metrics.updateInterval</span></code></p></td>
 <td><p>The interval in milliseconds to update metrics. If interval is negative, metrics will be updated upon task completion.</p></td>
 <td><p>3000</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.nativeLoadRequired</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.nativeLoadRequired</span></code></p></td>
 <td><p>Whether to require Comet native library to load successfully when Comet is enabled. If not, Comet will silently fallback to Spark when it fails to load the native lib. Otherwise, an error will be thrown and the Spark job will be aborted.</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.regexp.allowIncompatible</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.regexp.allowIncompatible</span></code></p></td>
 <td><p>Comet is not currently fully compatible with Spark for all regular expressions. Set this config to true to allow them anyway. For more information, refer to the <a class="reference external" href="https://datafusion.apache.org/comet/user-guide/compatibility.html">Comet Compatibility Guide</a>.</p></td>
 <td><p>false</p></td>
 </tr>
@@ -622,7 +621,6 @@ under the License.
 <section id="viewing-explain-plan-fallback-reasons">
 <h2>Viewing Explain Plan &amp; Fallback Reasons<a class="headerlink" href="#viewing-explain-plan-fallback-reasons" title="Link to this heading">#</a></h2>
 <p>These settings can be used to determine which parts of the plan are accelerated by Comet and to see why some parts of the plan could not be supported by Comet.</p>
-<!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
 <!--BEGIN:CONFIG_TABLE[exec_explain]-->
 <!-- prettier-ignore-start -->
 <div class="pst-scrollable-table-container"><table class="table">
@@ -661,7 +659,6 @@ under the License.
 </section>
 <section id="shuffle-configuration-settings">
 <h2>Shuffle Configuration Settings<a class="headerlink" href="#shuffle-configuration-settings" title="Link to this heading">#</a></h2>
-<!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
 <!--BEGIN:CONFIG_TABLE[shuffle]-->
 <!-- prettier-ignore-start -->
 <div class="pst-scrollable-table-container"><table class="table">
@@ -712,6 +709,14 @@ under the License.
 <td><p>Whether to enable range partitioning for Comet native shuffle.</p></td>
 <td><p>true</p></td>
 </tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.native.shuffle.partitioning.roundrobin.enabled</span></code></p></td>
+<td><p>Whether to enable round robin partitioning for Comet native shuffle. This is disabled by default because Comet’s round-robin produces different partition assignments than Spark. Spark sorts rows by their binary UnsafeRow representation before assigning partitions, but Comet uses Arrow format which has a different binary layout. Instead, Comet implements round-robin as hash partitioning on all columns, which achieves the same goals: even distribution, deterministic output (for fault tolerance), and no semantic grouping. Sorted output will be identical to Spark, but unsorted row ordering may differ.</p></td>
+<td><p>false</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.native.shuffle.partitioning.roundrobin.maxHashColumns</span></code></p></td>
+<td><p>The maximum number of columns to hash for round robin partitioning. When set to 0 (the default), all columns are hashed. When set to a positive value, only the first N columns are used for hashing, which can improve performance for wide tables while still providing reasonable distribution.</p></td>
+<td><p>0</p></td>
+</tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.preferDictionary.ratio</span></code></p></td>
 <td><p>The ratio of total values to distinct values in a string column to decide whether to prefer dictionary encoding when shuffling the column. If the ratio is higher than this config, dictionary encoding will be used on shuffling string column. This config is effective if it is higher than 1.0. Note that this config is only used when <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.shuffle.mode</span></code> is <code class="docutils literal notranslate"><span class="pre">jvm</span></code>.</p></td>
 <td><p>10.0</p></td>
@@ -728,7 +733,6 @@ under the License.
 </section>
 <section id="memory-tuning-configuration-settings">
 <h2>Memory &amp; Tuning Configuration Settings<a class="headerlink" href="#memory-tuning-configuration-settings" title="Link to this heading">#</a></h2>
-<!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
 <!--BEGIN:CONFIG_TABLE[tuning]-->
 <!-- prettier-ignore-start -->
 <div class="pst-scrollable-table-container"><table class="table">
@@ -763,7 +767,6 @@ under the License.
 </section>
 <section id="development-testing-settings">
 <h2>Development &amp; Testing Settings<a class="headerlink" href="#development-testing-settings" title="Link to this heading">#</a></h2>
-<!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
 <!--BEGIN:CONFIG_TABLE[testing]-->
 <!-- prettier-ignore-start -->
 <div class="pst-scrollable-table-container"><table class="table">
@@ -830,7 +833,6 @@ under the License.
 </section>
 <section id="enabling-or-disabling-individual-operators">
 <h2>Enabling or Disabling Individual Operators<a class="headerlink" href="#enabling-or-disabling-individual-operators" title="Link to this heading">#</a></h2>
-<!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
 <!--BEGIN:CONFIG_TABLE[enable_exec]-->
 <!-- prettier-ignore-start -->
 <div class="pst-scrollable-table-container"><table class="table">
@@ -925,7 +927,6 @@ under the License.
 </section>
 <section id="enabling-or-disabling-individual-scalar-expressions">
 <h2>Enabling or Disabling Individual Scalar Expressions<a class="headerlink" href="#enabling-or-disabling-individual-scalar-expressions" title="Link to this heading">#</a></h2>
-<!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
 <!--BEGIN:CONFIG_TABLE[enable_expr]-->
 <!-- prettier-ignore-start -->
 <div class="pst-scrollable-table-container"><table class="table">
@@ -1580,7 +1581,6 @@ under the License.
 </section>
 <section id="enabling-or-disabling-individual-aggregate-expressions">
 <h2>Enabling or Disabling Individual Aggregate Expressions<a class="headerlink" href="#enabling-or-disabling-individual-aggregate-expressions" title="Link to this heading">#</a></h2>
-<!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
 <!--BEGIN:CONFIG_TABLE[enable_agg_expr]-->
 <!-- prettier-ignore-start -->
 <div class="pst-scrollable-table-container"><table class="table">

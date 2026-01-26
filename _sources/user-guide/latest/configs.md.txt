@@ -23,23 +23,21 @@ Comet provides the following configuration settings.
 
 ## Scan Configuration Settings
 
-<!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
 <!--BEGIN:CONFIG_TABLE[scan]-->
 <!-- prettier-ignore-start -->
 | Config | Description | Default Value |
 |--------|-------------|---------------|
-| `spark.comet.scan.allowIncompatible` | Some Comet scan implementations are not currently fully compatible with Spark for all datatypes. Set this config to true to allow them anyway. For more information, refer to the [Comet Compatibility Guide](https://datafusion.apache.org/comet/user-guide/compatibility.html). | false |
 | `spark.comet.scan.enabled` | Whether to enable native scans. When this is turned on, Spark will use Comet to read supported data sources (currently only Parquet is supported natively). Note that to enable native vectorized execution, both this config and `spark.comet.exec.enabled` need to be enabled. | true |
 | `spark.comet.scan.icebergNative.enabled` | Whether to enable native Iceberg table scan using iceberg-rust. When enabled, Iceberg tables are read directly through native execution, bypassing Spark's DataSource V2 API for better performance. | false |
 | `spark.comet.scan.preFetch.enabled` | Whether to enable pre-fetching feature of CometScan. | false |
 | `spark.comet.scan.preFetch.threadNum` | The number of threads running pre-fetching for CometScan. Effective if spark.comet.scan.preFetch.enabled is enabled. Note that more pre-fetching threads means more memory requirement to store pre-fetched row groups. | 2 |
+| `spark.comet.scan.unsignedSmallIntSafetyCheck` | Parquet files may contain unsigned 8-bit integers (UINT_8) which Spark maps to ShortType. When this config is true (default), Comet falls back to Spark for ShortType columns because we cannot distinguish signed INT16 (safe) from unsigned UINT_8 (may produce different results). Set to false to allow native execution of ShortType columns if you know your data does not contain unsigned UINT_8 columns from improperly encoded Parquet files. For more information, refer to the [Comet Compatibility Guide](https://datafusion.apache.org/comet/user-guide/compatibility.html). | true |
 | `spark.hadoop.fs.comet.libhdfs.schemes` | Defines filesystem schemes (e.g., hdfs, webhdfs) that the native side accesses via libhdfs, separated by commas. Valid only when built with hdfs feature enabled. | |
 <!-- prettier-ignore-end -->
 <!--END:CONFIG_TABLE-->
 
 ## Parquet Reader Configuration Settings
 
-<!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
 <!--BEGIN:CONFIG_TABLE[parquet]-->
 <!-- prettier-ignore-start -->
 | Config | Description | Default Value |
@@ -56,7 +54,6 @@ Comet provides the following configuration settings.
 
 ## Query Execution Settings
 
-<!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
 <!--BEGIN:CONFIG_TABLE[exec]-->
 <!-- prettier-ignore-start -->
 | Config | Description | Default Value |
@@ -66,6 +63,7 @@ Comet provides the following configuration settings.
 | `spark.comet.dppFallback.enabled` | Whether to fall back to Spark for queries that use DPP. | true |
 | `spark.comet.enabled` | Whether to enable Comet extension for Spark. When this is turned on, Spark will use Comet to read Parquet data source. Note that to enable native vectorized execution, both this config and `spark.comet.exec.enabled` need to be enabled. It can be overridden by the environment variable `ENABLE_COMET`. | true |
 | `spark.comet.exceptionOnDatetimeRebase` | Whether to throw exception when seeing dates/timestamps from the legacy hybrid (Julian + Gregorian) calendar. Since Spark 3, dates/timestamps were written according to the Proleptic Gregorian calendar. When this is true, Comet will throw exceptions when seeing these dates/timestamps that were written by Spark version before 3.0. If this is false, these dates/timestamps will be read as if they were written to the Proleptic Gregorian calendar and will not be rebased. | false |
+| `spark.comet.exec.columnarToRow.native.enabled` | Whether to enable native columnar to row conversion. When enabled, Comet will use native Rust code to convert Arrow columnar data to Spark UnsafeRow format instead of the JVM implementation. This can improve performance for queries that need to convert between columnar and row formats. This is an experimental feature. | false |
 | `spark.comet.exec.enabled` | Whether to enable Comet native vectorized execution for Spark. This controls whether Spark should convert operators into their Comet counterparts and execute them in native space. Note: each operator is associated with a separate config in the format of `spark.comet.exec.<operator_name>.enabled` at the moment, and both the config and this need to be turned on, in order for the operator to be executed in native. | true |
 | `spark.comet.exec.replaceSortMergeJoin` | Experimental feature to force Spark to replace SortMergeJoin with ShuffledHashJoin for improved performance. This feature is not stable yet. For more information, refer to the [Comet Tuning Guide](https://datafusion.apache.org/comet/user-guide/tuning.html). | false |
 | `spark.comet.exec.strictFloatingPoint` | When enabled, fall back to Spark for floating-point operations that may differ from Spark, such as when comparing or sorting -0.0 and 0.0. For more information, refer to the [Comet Compatibility Guide](https://datafusion.apache.org/comet/user-guide/compatibility.html). | false |
@@ -80,7 +78,6 @@ Comet provides the following configuration settings.
 
 These settings can be used to determine which parts of the plan are accelerated by Comet and to see why some parts of the plan could not be supported by Comet.
 
-<!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
 <!--BEGIN:CONFIG_TABLE[exec_explain]-->
 <!-- prettier-ignore-start -->
 | Config | Description | Default Value |
@@ -95,7 +92,6 @@ These settings can be used to determine which parts of the plan are accelerated 
 
 ## Shuffle Configuration Settings
 
-<!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
 <!--BEGIN:CONFIG_TABLE[shuffle]-->
 <!-- prettier-ignore-start -->
 | Config | Description | Default Value |
@@ -110,6 +106,8 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.exec.shuffle.writeBufferSize` | Size of the write buffer in bytes used by the native shuffle writer when writing shuffle data to disk. Larger values may improve write performance by reducing the number of system calls, but will use more memory. The default is 1MB which provides a good balance between performance and memory usage. | 1048576b |
 | `spark.comet.native.shuffle.partitioning.hash.enabled` | Whether to enable hash partitioning for Comet native shuffle. | true |
 | `spark.comet.native.shuffle.partitioning.range.enabled` | Whether to enable range partitioning for Comet native shuffle. | true |
+| `spark.comet.native.shuffle.partitioning.roundrobin.enabled` | Whether to enable round robin partitioning for Comet native shuffle. This is disabled by default because Comet's round-robin produces different partition assignments than Spark. Spark sorts rows by their binary UnsafeRow representation before assigning partitions, but Comet uses Arrow format which has a different binary layout. Instead, Comet implements round-robin as hash partitioning on all columns, which achieves the same goals: even distribution, deterministic output (for fault tolerance), and no semantic grouping. Sorted output will be identical to Spark, but unsorted row ordering may differ. | false |
+| `spark.comet.native.shuffle.partitioning.roundrobin.maxHashColumns` | The maximum number of columns to hash for round robin partitioning. When set to 0 (the default), all columns are hashed. When set to a positive value, only the first N columns are used for hashing, which can improve performance for wide tables while still providing reasonable distribution. | 0 |
 | `spark.comet.shuffle.preferDictionary.ratio` | The ratio of total values to distinct values in a string column to decide whether to prefer dictionary encoding when shuffling the column. If the ratio is higher than this config, dictionary encoding will be used on shuffling string column. This config is effective if it is higher than 1.0. Note that this config is only used when `spark.comet.exec.shuffle.mode` is `jvm`. | 10.0 |
 | `spark.comet.shuffle.sizeInBytesMultiplier` | Comet reports smaller sizes for shuffle due to using Arrow's columnar memory format and this can result in Spark choosing a different join strategy due to the estimated size of the exchange being smaller. Comet will multiple sizeInBytes by this amount to avoid regressions in join strategy. | 1.0 |
 <!-- prettier-ignore-end -->
@@ -117,7 +115,6 @@ These settings can be used to determine which parts of the plan are accelerated 
 
 ## Memory & Tuning Configuration Settings
 
-<!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
 <!--BEGIN:CONFIG_TABLE[tuning]-->
 <!-- prettier-ignore-start -->
 | Config | Description | Default Value |
@@ -131,7 +128,6 @@ These settings can be used to determine which parts of the plan are accelerated 
 
 ## Development & Testing Settings
 
-<!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
 <!--BEGIN:CONFIG_TABLE[testing]-->
 <!-- prettier-ignore-start -->
 | Config | Description | Default Value |
@@ -153,7 +149,6 @@ These settings can be used to determine which parts of the plan are accelerated 
 
 ## Enabling or Disabling Individual Operators
 
-<!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
 <!--BEGIN:CONFIG_TABLE[enable_exec]-->
 <!-- prettier-ignore-start -->
 | Config | Description | Default Value |
@@ -182,7 +177,6 @@ These settings can be used to determine which parts of the plan are accelerated 
 
 ## Enabling or Disabling Individual Scalar Expressions
 
-<!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
 <!--BEGIN:CONFIG_TABLE[enable_expr]-->
 <!-- prettier-ignore-start -->
 | Config | Description | Default Value |
@@ -351,7 +345,6 @@ These settings can be used to determine which parts of the plan are accelerated 
 
 ## Enabling or Disabling Individual Aggregate Expressions
 
-<!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
 <!--BEGIN:CONFIG_TABLE[enable_agg_expr]-->
 <!-- prettier-ignore-start -->
 | Config | Description | Default Value |
