@@ -15,8 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Benchmarks for SparkUnsafeArray to Arrow array conversion.
-//! This specifically tests the append_to_builder function used in shuffle read path.
+//! Micro-benchmarks for SparkUnsafeArray element iteration.
+//!
+//! This tests the low-level `append_to_builder` function which converts
+//! SparkUnsafeArray elements to Arrow array builders. This is the inner loop
+//! used when processing List/Array columns in JVM shuffle.
 
 use arrow::array::builder::{
     Date32Builder, Float64Builder, Int32Builder, Int64Builder, TimestampMicrosecondBuilder,

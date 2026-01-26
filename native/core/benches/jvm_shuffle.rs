@@ -15,11 +15,17 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Benchmarks for complex type processing in JVM shuffle row-to-columnar conversion.
+//! Benchmarks for JVM shuffle row-to-columnar conversion.
 //!
 //! This benchmark measures the performance of converting Spark UnsafeRow
-//! with complex type columns (struct, list, map) to Arrow arrays via
-//! `process_sorted_row_partition()`.
+//! to Arrow arrays via `process_sorted_row_partition()`, which is called
+//! by JVM shuffle (CometColumnarShuffle) when writing shuffle data.
+//!
+//! Covers:
+//! - Primitive types (Int64)
+//! - Struct (flat, nested, deeply nested)
+//! - List
+//! - Map
 
 use arrow::datatypes::{DataType, Field, Fields};
 use comet::execution::shuffle::row::{
@@ -750,6 +756,79 @@ fn benchmark_map_conversion(c: &mut Criterion) {
     group.finish();
 }
 
+/// Benchmark for primitive type columns (many Int64 columns).
+/// This tests the baseline performance without complex type overhead.
+fn benchmark_primitive_columns(c: &mut Criterion) {
+    let mut group = c.benchmark_group("primitive_columns");
+
+    const NUM_COLS: usize = 100;
+    let row_size: usize = SparkUnsafeRow::get_row_bitset_width(NUM_COLS) + NUM_COLS * 8;
+
+    for num_rows in [1000, 10000] {
+        let schema = vec![DataType::Int64; NUM_COLS];
+
+        // Create row data
+        let row_data: Vec<Vec<u8>> = (0..num_rows)
+            .map(|_| {
+                let mut data = vec![0u8; row_size];
+                // Fill with some data after the bitset
+                for i in SparkUnsafeRow::get_row_bitset_width(NUM_COLS)..row_size {
+                    data[i] = i as u8;
+                }
+                data
+            })
+            .collect();
+
+        let spark_rows: Vec<SparkUnsafeRow> = row_data
+            .iter()
+            .map(|data| {
+                let mut spark_row = SparkUnsafeRow::new_with_num_fields(NUM_COLS);
+                spark_row.point_to_slice(data);
+                for i in 0..NUM_COLS {
+                    spark_row.set_not_null_at(i);
+                }
+                spark_row
+            })
+            .collect();
+
+        let mut row_addresses: Vec<i64> =
+            spark_rows.iter().map(|row| row.get_row_addr()).collect();
+        let mut row_sizes: Vec<i32> = spark_rows.iter().map(|row| row.get_row_size()).collect();
+
+        let row_address_ptr = row_addresses.as_mut_ptr();
+        let row_size_ptr = row_sizes.as_mut_ptr();
+
+        group.bench_with_input(
+            BenchmarkId::new("cols_100", format!("rows_{}", num_rows)),
+            &(num_rows, &schema),
+            |b, (num_rows, schema)| {
+                b.iter(|| {
+                    let tempfile = Builder::new().tempfile().unwrap();
+
+                    process_sorted_row_partition(
+                        *num_rows,
+                        BATCH_SIZE,
+                        row_address_ptr,
+                        row_size_ptr,
+                        schema,
+                        tempfile.path().to_str().unwrap().to_string(),
+                        1.0,
+                        false,
+                        0,
+                        None,
+                        &CompressionCodec::Zstd(1),
+                    )
+                    .unwrap();
+                });
+            },
+        );
+
+        std::mem::drop(spark_rows);
+    }
+
+    group.finish();
+}
+
 fn config() -> Criterion {
     Criterion::default()
 }
@@ -757,6 +836,6 @@ fn config() -> Criterion {
 criterion_group! {
     name = benches;
     config = config();
-    targets = benchmark_struct_conversion, benchmark_nested_struct_conversion, benchmark_deeply_nested_struct_conversion, benchmark_list_conversion, benchmark_map_conversion
+    targets = benchmark_primitive_columns, benchmark_struct_conversion, benchmark_nested_struct_conversion, benchmark_deeply_nested_struct_conversion, benchmark_list_conversion, benchmark_map_conversion
 }
 criterion_main!(benches);

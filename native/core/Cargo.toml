@@ -121,10 +121,6 @@ name = "bit_util"
 harness = false
 
 [[bench]]
-name = "row_columnar"
-harness = false
-
-[[bench]]
 name = "shuffle_writer"
 harness = false
 
@@ -133,9 +129,9 @@ name = "parquet_decode"
 harness = false
 
 [[bench]]
-name = "complex_type_conversion"
+name = "jvm_shuffle"
 harness = false
 
 [[bench]]
-name = "array_conversion"
+name = "array_element_append"
 harness = false
