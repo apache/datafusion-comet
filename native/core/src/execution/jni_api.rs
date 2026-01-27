@@ -946,3 +946,39 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_columnarToRowClose(
         Ok(())
     })
 }
+
+#[no_mangle]
+/// Get Iceberg partition tasks for the current partition via JNI callback.
+///
+/// Called by native planner to retrieve partition-specific FileScanTask bytes from
+/// the thread-local storage on the JVM side. This enables on-demand task retrieval
+/// instead of broadcasting all partition tasks to all executors.
+///
+/// # Safety
+/// This function is inherently unsafe since it deals with raw pointers passed from JNI.
+pub unsafe extern "system" fn Java_org_apache_comet_Native_getIcebergPartitionTasks<'local>(
+    mut e: JNIEnv<'local>,
+    _class: JClass,
+) -> jni::sys::jobject {
+    use jni::signature::ReturnType;
+
+    let jvm_classes = JVMClasses::get();
+
+    // Call Native.getIcebergPartitionTasksInternal() static method
+    let result = e.call_static_method_unchecked(
+        &jvm_classes.native.class,
+        jvm_classes
+            .native
+            .method_get_iceberg_partition_tasks_internal,
+        ReturnType::Array,
+        &[],
+    );
+
+    match result {
+        Ok(value) => match value.l() {
+            Ok(obj) => obj.as_raw(),
+            Err(_) => std::ptr::null_mut(),
+        },
+        Err(_) => std::ptr::null_mut(),
+    }
+}

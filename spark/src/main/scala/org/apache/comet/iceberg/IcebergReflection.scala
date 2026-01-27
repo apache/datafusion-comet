@@ -739,7 +739,8 @@ case class CometIcebergNativeScanMetadata(
     tableSchema: Any,
     globalFieldIdMapping: Map[String, Int],
     catalogProperties: Map[String, String],
-    fileFormat: String)
+    fileFormat: String,
+    partitionTasks: Map[Int, Array[Byte]] = Map.empty)
 
 object CometIcebergNativeScanMetadata extends Logging {
 

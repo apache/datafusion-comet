@@ -21,12 +21,15 @@ package org.apache.spark.sql.comet
 
 import scala.jdk.CollectionConverters._
 
+import org.apache.spark.{SparkContext, TaskContext}
+import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{Attribute, SortOrder}
 import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.plans.physical.{KeyGroupedPartitioning, Partitioning, UnknownPartitioning}
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
+import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.AccumulatorV2
 
 import com.google.common.base.Objects
@@ -49,7 +52,8 @@ case class CometIcebergNativeScanExec(
     override val serializedPlanOpt: SerializedPlan,
     metadataLocation: String,
     numPartitions: Int,
-    @transient nativeIcebergScanMetadata: CometIcebergNativeScanMetadata)
+    @transient nativeIcebergScanMetadata: CometIcebergNativeScanMetadata,
+    @transient partitionTasks: Map[Int, Array[Byte]] = Map.empty)
     extends CometLeafExec {
 
   override val supportsColumnar: Boolean = true
@@ -146,6 +150,66 @@ case class CometIcebergNativeScanExec(
     baseMetrics ++ icebergMetrics + ("num_splits" -> numSplitsMetric)
   }
 
+  override def doExecuteColumnar(): RDD[ColumnarBatch] = {
+    // Check if we should use JNI-based task retrieval (flag set in protobuf during planning)
+    // Note: partitionTasks field is @transient so it's empty after serialization
+    val useJniTaskRetrieval = nativeOp.getIcebergScan.getUseJniTaskRetrieval
+
+    // If JNI task retrieval is enabled, use optimized approach with custom RDD
+    if (useJniTaskRetrieval) {
+      import org.apache.comet.{CometExecIterator, Native}
+
+      // Extract serialized plan bytes
+      val serializedPlan = serializedPlanOpt.plan.getOrElse {
+        throw new IllegalStateException(
+          "CometIcebergNativeScanExec must have serialized plan for execution")
+      }
+
+      val serializedPlanCopy = serializedPlan
+      val nativeMetrics = CometMetricNode.fromCometPlan(this)
+      val outputLength = output.length
+
+      def createIterator(partitionIndex: Int, taskBytes: Array[Byte]): CometExecIterator = {
+        // Set partition tasks in thread-local before creating native plan
+        Native.setIcebergPartitionTasks(taskBytes)
+
+        try {
+          val it = new CometExecIterator(
+            CometExec.newIterId,
+            Seq.empty, // No input iterators for leaf scan
+            outputLength,
+            serializedPlanCopy,
+            nativeMetrics,
+            numPartitions,
+            partitionIndex,
+            None, // No encryption for Iceberg
+            Seq.empty
+          ) // No encrypted files
+
+          Option(TaskContext.get()).foreach { context =>
+            context.addTaskCompletionListener[Unit] { _ =>
+              it.close()
+              // Clear thread-local to prevent memory leaks
+              Native.clearIcebergPartitionTasks()
+            }
+          }
+
+          it
+        } catch {
+          case e: Throwable =>
+            // Ensure cleanup on error
+            Native.clearIcebergPartitionTasks()
+            throw e
+        }
+      }
+
+      new IcebergScanRDD(sparkContext, numPartitions, partitionTasks, createIterator)
+    } else {
+      // Fall back to default implementation (tasks embedded in protobuf)
+      super.doExecuteColumnar()
+    }
+  }
+
   override protected def doCanonicalize(): CometIcebergNativeScanExec = {
     CometIcebergNativeScanExec(
       nativeOp,
@@ -154,7 +218,9 @@ case class CometIcebergNativeScanExec(
       SerializedPlan(None),
       metadataLocation,
       numPartitions,
-      nativeIcebergScanMetadata)
+      nativeIcebergScanMetadata,
+      Map.empty
+    ) // partitionTasks is transient, cleared during canonicalization
   }
 
   override def stringArgs: Iterator[Any] =
@@ -178,6 +244,32 @@ case class CometIcebergNativeScanExec(
       output.asJava,
       serializedPlanOpt,
       numPartitions: java.lang.Integer)
+
+  /**
+   * Override convertBlock to preserve partitionTasks when creating the serialized copy.
+   *
+   * The parent CometNativeExec.convertBlock() uses makeCopy() which loses @transient fields. We
+   * need to explicitly pass partitionTasks to the copy constructor.
+   */
+  override def convertBlock(): CometNativeExec = {
+    if (serializedPlanOpt.isDefined) {
+      // Already serialized, just return this
+      this
+    } else {
+      // Serialize the plan
+      val size = nativeOp.getSerializedSize
+      val bytes = new Array[Byte](size)
+      val codedOutput = com.google.protobuf.CodedOutputStream.newInstance(bytes)
+      nativeOp.writeTo(codedOutput)
+      codedOutput.checkNoSpaceLeft()
+
+      // Create copy with serialized plan AND preserved partitionTasks
+      copy(
+        serializedPlanOpt = SerializedPlan(Some(bytes)),
+        partitionTasks = partitionTasks // Explicitly preserve transient field
+      )
+    }
+  }
 }
 
 object CometIcebergNativeScanExec {
@@ -199,6 +291,8 @@ object CometIcebergNativeScanExec {
    *   Path to table metadata file
    * @param nativeIcebergScanMetadata
    *   Pre-extracted Iceberg metadata from planning phase
+   * @param partitionTasks
+   *   Map of partition index to serialized task bytes (for optimized execution)
    * @return
    *   A new CometIcebergNativeScanExec
    */
@@ -207,7 +301,8 @@ object CometIcebergNativeScanExec {
       scanExec: BatchScanExec,
       session: SparkSession,
       metadataLocation: String,
-      nativeIcebergScanMetadata: CometIcebergNativeScanMetadata): CometIcebergNativeScanExec = {
+      nativeIcebergScanMetadata: CometIcebergNativeScanMetadata,
+      partitionTasks: Map[Int, Array[Byte]]): CometIcebergNativeScanExec = {
 
     // Determine number of partitions from Iceberg's output partitioning
     val numParts = scanExec.outputPartitioning match {
@@ -224,7 +319,8 @@ object CometIcebergNativeScanExec {
       SerializedPlan(None),
       metadataLocation,
       numParts,
-      nativeIcebergScanMetadata)
+      nativeIcebergScanMetadata,
+      partitionTasks)
 
     scanExec.logicalLink.foreach(exec.setLogicalLink)
     exec

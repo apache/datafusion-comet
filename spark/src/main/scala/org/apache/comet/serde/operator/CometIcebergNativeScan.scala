@@ -42,6 +42,16 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
   override def enabledConfig: Option[ConfigEntry[Boolean]] = None
 
   /**
+   * Temporary storage for partition tasks extracted during serialization.
+   *
+   * Maps plan ID to partition tasks map. Used to pass partition-specific task bytes from
+   * convert() to createExec() without embedding them in protobuf. Cleared after createExec()
+   * completes to prevent memory leaks.
+   */
+  private val partitionTasksCache =
+    new java.util.concurrent.ConcurrentHashMap[Long, Map[Int, Array[Byte]]]()
+
+  /**
    * Constants specific to Iceberg expression conversion (not in shared IcebergReflection).
    */
   private object Constants {
@@ -696,6 +706,9 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
 
     var totalTasks = 0
 
+    // Map to store serialized task bytes per partition (for optimized execution)
+    val partitionTasksMap = mutable.HashMap[Int, Array[Byte]]()
+
     // Get pre-extracted metadata from planning phase
     // If metadata is None, this is a programming error - metadata should have been extracted
     // in CometScanRule before creating CometBatchScanExec
@@ -728,7 +741,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       scan.wrapped.inputRDD match {
         case rdd: org.apache.spark.sql.execution.datasources.v2.DataSourceRDD =>
           val partitions = rdd.partitions
-          partitions.foreach { partition =>
+          partitions.zipWithIndex.foreach { case (partition, partitionIndex) =>
             val partitionBuilder = OperatorOuterClass.IcebergFilePartition.newBuilder()
 
             val inputPartitions = partition
@@ -972,7 +985,12 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
               }
             }
 
+            // Serialize this partition's tasks to bytes and store in map
             val builtPartition = partitionBuilder.build()
+            val partitionBytes = builtPartition.toByteArray
+            partitionTasksMap.put(partitionIndex, partitionBytes)
+
+            // Add to protobuf for standard execution path
             icebergScanBuilder.addFilePartitions(builtPartition)
           }
         case _ =>
@@ -1022,6 +1040,19 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
           s"$partitionDataPoolBytes bytes (protobuf)")
     }
 
+    // Store partition tasks in cache for retrieval in createExec()
+    // Using plan ID as key since it's unique per operator
+    // IMPORTANT: Normalize to Long to avoid Integer/Long mismatch in cache lookups
+    val planId = builder.getPlanId.toLong
+
+    if (partitionTasksMap.nonEmpty) {
+      partitionTasksCache.put(planId, partitionTasksMap.toMap)
+      val avgBytes = partitionTasksMap.values.map(_.length).sum / partitionTasksMap.size
+      logInfo(
+        s"IcebergScan: Cached ${partitionTasksMap.size} partitions " +
+          s"(avg $avgBytes bytes/partition)")
+    }
+
     builder.clearChildren()
     Some(builder.setIcebergScan(icebergScanBuilder).build())
   }
@@ -1039,7 +1070,20 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     // Extract metadataLocation from the native operator
     val metadataLocation = nativeOp.getIcebergScan.getMetadataLocation
 
+    // Retrieve partition tasks from cache (if available)
+    // IMPORTANT: Normalize to Long to match storage side (avoid Integer/Long mismatch)
+    val planId = nativeOp.getPlanId.toLong
+
+    val partitionTasks =
+      Option(partitionTasksCache.remove(planId)).getOrElse(Map.empty[Int, Array[Byte]])
+
     // Create the CometIcebergNativeScanExec using the companion object's apply method
-    CometIcebergNativeScanExec(nativeOp, op.wrapped, op.session, metadataLocation, metadata)
+    CometIcebergNativeScanExec(
+      nativeOp,
+      op.wrapped,
+      op.session,
+      metadataLocation,
+      metadata,
+      partitionTasks)
   }
 }

@@ -248,4 +248,62 @@ class Native extends NativeBase {
    */
   @native def columnarToRowClose(c2rHandle: Long): Unit
 
+  /**
+   * Get Iceberg partition tasks for the current partition.
+   *
+   * Used by native Iceberg scan to retrieve partition-specific FileScanTask bytes that were set
+   * via setIcebergPartitionTasks. This enables on-demand task retrieval instead of broadcasting
+   * all partition tasks to all executors.
+   *
+   * @return
+   *   Serialized protobuf bytes containing IcebergFileScanTask messages for the current
+   *   partition, or null if no tasks are set
+   */
+  @native def getIcebergPartitionTasks(): Array[Byte]
+
+}
+
+object Native {
+
+  /**
+   * Thread-local storage for Iceberg partition tasks.
+   *
+   * Stores serialized FileScanTask bytes for the current partition. Set by
+   * CometIcebergNativeScanExec before executing native plan, retrieved by native code via JNI
+   * during execution.
+   *
+   * Using thread-local ensures task isolation between concurrent tasks on the same executor.
+   */
+  private val icebergPartitionTasks = new ThreadLocal[Array[Byte]]()
+
+  /**
+   * Sets Iceberg partition tasks for the current thread.
+   *
+   * @param taskBytes
+   *   Serialized protobuf bytes containing IcebergFileScanTask messages for this partition
+   */
+  def setIcebergPartitionTasks(taskBytes: Array[Byte]): Unit = {
+    icebergPartitionTasks.set(taskBytes)
+  }
+
+  /**
+   * Gets Iceberg partition tasks for the current thread.
+   *
+   * Called from JNI by native code during Iceberg scan execution.
+   *
+   * @return
+   *   Serialized protobuf bytes, or null if not set
+   */
+  def getIcebergPartitionTasksInternal(): Array[Byte] = {
+    icebergPartitionTasks.get()
+  }
+
+  /**
+   * Clears Iceberg partition tasks for the current thread.
+   *
+   * Should be called after native execution completes to prevent memory leaks.
+   */
+  def clearIcebergPartitionTasks(): Unit = {
+    icebergPartitionTasks.remove()
+  }
 }

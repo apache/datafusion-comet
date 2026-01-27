@@ -174,11 +174,13 @@ pub use comet_exec::*;
 mod batch_iterator;
 mod comet_metric_node;
 mod comet_task_memory_manager;
+mod native;
 
 use crate::{errors::CometError, JAVA_VM};
 use batch_iterator::CometBatchIterator;
 pub use comet_metric_node::*;
 pub use comet_task_memory_manager::*;
+pub use native::*;
 
 /// The JVM classes that are used in the JNI calls.
 #[allow(dead_code)] // we need to keep references to Java items to prevent GC
@@ -207,6 +209,8 @@ pub struct JVMClasses<'a> {
     /// The CometTaskMemoryManager used for interacting with JVM side to
     /// acquire & release native memory.
     pub comet_task_memory_manager: CometTaskMemoryManager<'a>,
+    /// The Native object. Used for Iceberg partition task retrieval.
+    pub native: Native<'a>,
 }
 
 unsafe impl Send for JVMClasses<'_> {}
@@ -254,10 +258,71 @@ impl JVMClasses<'_> {
                 class_get_name_method,
                 throwable_get_message_method,
                 throwable_get_cause_method,
-                comet_metric_node: CometMetricNode::new(env).unwrap(),
-                comet_exec: CometExec::new(env).unwrap(),
-                comet_batch_iterator: CometBatchIterator::new(env).unwrap(),
-                comet_task_memory_manager: CometTaskMemoryManager::new(env).unwrap(),
+                comet_metric_node: {
+                    eprintln!(">> Initializing CometMetricNode...");
+                    match CometMetricNode::new(env) {
+                        Ok(node) => {
+                            eprintln!("   OK: CometMetricNode initialized");
+                            node
+                        }
+                        Err(e) => {
+                            eprintln!("   ERROR: CometMetricNode failed: {:?}", e);
+                            panic!("CometMetricNode initialization failed: {:?}", e);
+                        }
+                    }
+                },
+                comet_exec: {
+                    eprintln!(">> Initializing CometExec...");
+                    match CometExec::new(env) {
+                        Ok(exec) => {
+                            eprintln!("   OK: CometExec initialized");
+                            exec
+                        }
+                        Err(e) => {
+                            eprintln!("   ERROR: CometExec failed: {:?}", e);
+                            panic!("CometExec initialization failed: {:?}", e);
+                        }
+                    }
+                },
+                comet_batch_iterator: {
+                    eprintln!(">> Initializing CometBatchIterator...");
+                    match CometBatchIterator::new(env) {
+                        Ok(iter) => {
+                            eprintln!("   OK: CometBatchIterator initialized");
+                            iter
+                        }
+                        Err(e) => {
+                            eprintln!("   ERROR: CometBatchIterator failed: {:?}", e);
+                            panic!("CometBatchIterator initialization failed: {:?}", e);
+                        }
+                    }
+                },
+                comet_task_memory_manager: {
+                    eprintln!(">> Initializing CometTaskMemoryManager...");
+                    match CometTaskMemoryManager::new(env) {
+                        Ok(mgr) => {
+                            eprintln!("   OK: CometTaskMemoryManager initialized");
+                            mgr
+                        }
+                        Err(e) => {
+                            eprintln!("   ERROR: CometTaskMemoryManager failed: {:?}", e);
+                            panic!("CometTaskMemoryManager initialization failed: {:?}", e);
+                        }
+                    }
+                },
+                native: match Native::new(env) {
+                    Ok(native) => {
+                        eprintln!("✓ Successfully initialized Native JNI class");
+                        native
+                    }
+                    Err(e) => {
+                        eprintln!("✗ PANIC: Failed to initialize Native JNI class: {:?}", e);
+                        eprintln!("  Class name: org/apache/comet/NativeJNIBridge");
+                        eprintln!("  Method: getIcebergPartitionTasksInternal");
+                        eprintln!("  Signature: ()[B");
+                        panic!("Native JNI initialization failed: {:?}", e);
+                    }
+                },
             }
         });
     }
