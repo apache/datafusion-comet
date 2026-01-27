@@ -293,7 +293,7 @@ object CometElt extends CometScalarFunction[Elt]("elt") {
 
   override def getSupportLevel(expr: Elt): SupportLevel = {
     if (expr.failOnError) {
-      return Unsupported(Some("failOnError=true is not supported"))
+      return Unsupported(Some("ANSI mode not supported"))
     }
     Compatible(None)
   }

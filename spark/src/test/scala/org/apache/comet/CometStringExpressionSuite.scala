@@ -31,6 +31,9 @@ import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 class CometStringExpressionSuite extends CometTestBase {
 
+  private val WRONG_NUM_ARGS_WITHOUT_SUGGESTION_EXCEPTION_MSG =
+    "[WRONG_NUM_ARGS.WITHOUT_SUGGESTION] The `elt` requires > 1 parameters but the actual number is 1."
+
   test("lpad string") {
     testStringPadding("lpad")
   }
@@ -417,8 +420,8 @@ class CometStringExpressionSuite extends CometTestBase {
         sql(s"SELECT elt(cast(null as int), ${schema.fieldNames.mkString(",")}) FROM t1"))
       checkSparkAnswerMaybeThrows(sql("SELECT elt(1) FROM t1")) match {
         case (Some(spark), Some(comet)) =>
-          assert(spark.getMessage.contains("WRONG_NUM_ARGS.WITHOUT_SUGGESTION"))
-          assert(comet.getMessage.contains("WRONG_NUM_ARGS.WITHOUT_SUGGESTION"))
+          assert(spark.getMessage.contains(WRONG_NUM_ARGS_WITHOUT_SUGGESTION_EXCEPTION_MSG))
+          assert(comet.getMessage.contains(WRONG_NUM_ARGS_WITHOUT_SUGGESTION_EXCEPTION_MSG))
         case (spark, comet) =>
           fail(
             s"Expected Spark and Comet to throw exception, but got\nSpark: $spark\nComet: $comet")
