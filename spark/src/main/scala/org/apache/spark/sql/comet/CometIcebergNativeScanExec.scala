@@ -198,54 +198,6 @@ case class CometIcebergNativeScanExec(
 
 object CometIcebergNativeScanExec {
 
-  /**
-   * Creates a CometIcebergNativeScanExec from a Spark BatchScanExec.
-   *
-   * Determines the number of partitions from Iceberg's output partitioning:
-   *   - KeyGroupedPartitioning: Use Iceberg's partition count
-   *   - Other cases: Use the number of InputPartitions from Iceberg's planning
-   *
-   * @param nativeOp
-   *   The serialized native operator
-   * @param scanExec
-   *   The original Spark BatchScanExec
-   * @param session
-   *   The SparkSession
-   * @param metadataLocation
-   *   Path to table metadata file
-   * @param nativeIcebergScanMetadata
-   *   Pre-extracted Iceberg metadata from planning phase
-   * @return
-   *   A new CometIcebergNativeScanExec
-   */
-  def apply(
-      nativeOp: Operator,
-      scanExec: BatchScanExec,
-      session: SparkSession,
-      metadataLocation: String,
-      nativeIcebergScanMetadata: CometIcebergNativeScanMetadata): CometIcebergNativeScanExec = {
-
-    // Determine number of partitions from Iceberg's output partitioning
-    val numParts = scanExec.outputPartitioning match {
-      case p: KeyGroupedPartitioning =>
-        p.numPartitions
-      case _ =>
-        scanExec.inputRDD.getNumPartitions
-    }
-
-    val exec = CometIcebergNativeScanExec(
-      nativeOp,
-      scanExec.output,
-      scanExec,
-      SerializedPlan(None),
-      metadataLocation,
-      numParts,
-      nativeIcebergScanMetadata)
-
-    scanExec.logicalLink.foreach(exec.setLogicalLink)
-    exec
-  }
-
   /** Creates a CometIcebergNativeScanExec with split serialization data. */
   def apply(
       nativeOp: Operator,
