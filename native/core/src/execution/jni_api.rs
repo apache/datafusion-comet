@@ -503,12 +503,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                 let task_ctx = exec_context.session_ctx.task_ctx();
                 // Each Comet native execution corresponds to a single Spark partition,
                 // so we should always execute partition 0.
-                let stream = exec_context
-                    .root_op
-                    .as_ref()
-                    .unwrap()
-                    .native_plan
-                    .execute(0, task_ctx)?;
+                let stream = root_op.native_plan.execute(0, task_ctx)?;
                 exec_context.stream = Some(stream);
             } else {
                 // Pull input batches
@@ -619,8 +614,7 @@ pub extern "system" fn Java_org_apache_comet_Native_releasePlan(
 
 /// Updates the metrics of the query plan.
 fn update_metrics(env: &mut JNIEnv, exec_context: &mut ExecutionContext) -> CometResult<()> {
-    if exec_context.root_op.is_some() {
-        let native_query = exec_context.root_op.as_ref().unwrap();
+    if let Some(native_query) = &exec_context.root_op {
         let metrics = exec_context.metrics.as_obj();
         update_comet_metric(env, metrics, native_query)
     } else {
@@ -831,6 +825,124 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_logMemoryUsage(
     try_unwrap_or_throw(&e, |mut env| {
         let name: String = env.get_string(&name).unwrap().into();
         log_memory_usage(&name, value as u64);
+        Ok(())
+    })
+}
+
+// ============================================================================
+// Native Columnar to Row Conversion
+// ============================================================================
+
+use crate::execution::columnar_to_row::ColumnarToRowContext;
+use arrow::ffi::{from_ffi, FFI_ArrowArray, FFI_ArrowSchema};
+
+/// Initialize a native columnar to row converter.
+///
+/// # Safety
+/// This function is inherently unsafe since it deals with raw pointers passed from JNI.
+#[no_mangle]
+pub unsafe extern "system" fn Java_org_apache_comet_Native_columnarToRowInit(
+    e: JNIEnv,
+    _class: JClass,
+    serialized_schema: JObjectArray,
+    batch_size: jint,
+) -> jlong {
+    try_unwrap_or_throw(&e, |mut env| {
+        // Deserialize the schema
+        let schema = convert_datatype_arrays(&mut env, serialized_schema)?;
+
+        // Create the context
+        let ctx = Box::new(ColumnarToRowContext::new(schema, batch_size as usize));
+
+        Ok(Box::into_raw(ctx) as jlong)
+    })
+}
+
+/// Convert Arrow columnar data to Spark UnsafeRow format.
+///
+/// # Safety
+/// This function is inherently unsafe since it deals with raw pointers passed from JNI.
+#[no_mangle]
+pub unsafe extern "system" fn Java_org_apache_comet_Native_columnarToRowConvert(
+    e: JNIEnv,
+    _class: JClass,
+    c2r_handle: jlong,
+    array_addrs: JLongArray,
+    schema_addrs: JLongArray,
+    num_rows: jint,
+) -> jni::sys::jobject {
+    try_unwrap_or_throw(&e, |mut env| {
+        // Get the context
+        let ctx = (c2r_handle as *mut ColumnarToRowContext)
+            .as_mut()
+            .ok_or_else(|| CometError::Internal("Null columnar to row context".to_string()))?;
+
+        let num_cols = env.get_array_length(&array_addrs)? as usize;
+
+        // Get array and schema addresses
+        let array_addrs_elements = env.get_array_elements(&array_addrs, ReleaseMode::NoCopyBack)?;
+        let schema_addrs_elements =
+            env.get_array_elements(&schema_addrs, ReleaseMode::NoCopyBack)?;
+
+        // Import Arrow arrays from FFI
+        let mut arrays = Vec::with_capacity(num_cols);
+        for i in 0..num_cols {
+            let array_ptr = array_addrs_elements[i] as *mut FFI_ArrowArray;
+            let schema_ptr = schema_addrs_elements[i] as *mut FFI_ArrowSchema;
+
+            // Take ownership of the FFI structures
+            let ffi_array = std::ptr::read(array_ptr);
+            let ffi_schema = std::ptr::read(schema_ptr);
+
+            // Convert to Arrow ArrayData
+            let array_data = from_ffi(ffi_array, &ffi_schema)
+                .map_err(|e| CometError::Internal(format!("Failed to import array: {}", e)))?;
+
+            arrays.push(arrow::array::make_array(array_data));
+        }
+
+        // Convert columnar to row
+        let (buffer_ptr, offsets, lengths) = ctx.convert(&arrays, num_rows as usize)?;
+
+        // Create Java int arrays for offsets and lengths
+        let offsets_array = env.new_int_array(offsets.len() as i32)?;
+        env.set_int_array_region(&offsets_array, 0, offsets)?;
+
+        let lengths_array = env.new_int_array(lengths.len() as i32)?;
+        env.set_int_array_region(&lengths_array, 0, lengths)?;
+
+        // Create the NativeColumnarToRowInfo object
+        let info_class = env.find_class("org/apache/comet/NativeColumnarToRowInfo")?;
+        let info_obj = env.new_object(
+            info_class,
+            "(J[I[I)V",
+            &[
+                jni::objects::JValue::Long(buffer_ptr as jlong),
+                jni::objects::JValue::Object(&offsets_array),
+                jni::objects::JValue::Object(&lengths_array),
+            ],
+        )?;
+
+        Ok(info_obj.into_raw())
+    })
+}
+
+/// Close and release the native columnar to row converter.
+///
+/// # Safety
+/// This function is inherently unsafe since it deals with raw pointers passed from JNI.
+#[no_mangle]
+pub unsafe extern "system" fn Java_org_apache_comet_Native_columnarToRowClose(
+    e: JNIEnv,
+    _class: JClass,
+    c2r_handle: jlong,
+) {
+    try_unwrap_or_throw(&e, |_env| {
+        if c2r_handle != 0 {
+            let _ctx: Box<ColumnarToRowContext> =
+                Box::from_raw(c2r_handle as *mut ColumnarToRowContext);
+            // ctx is dropped here, freeing the buffer
+        }
         Ok(())
     })
 }

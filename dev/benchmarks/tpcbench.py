@@ -19,7 +19,7 @@
 TPC-H / TPC-DS benchmark runner.
 
 Supports two data sources:
-  - Parquet files: use --data to specify the path
+  - Files: use --data with --format (parquet, csv, json) and optional --options
   - Iceberg tables: use --catalog and --database to specify the catalog location
 """
 
@@ -28,6 +28,7 @@ from datetime import datetime
 import json
 from pyspark.sql import SparkSession
 import time
+from typing import Dict
 
 
 def dedup_columns(df):
@@ -53,9 +54,14 @@ def main(
     iterations: int,
     output: str,
     name: str,
+    format: str,
     query_num: int = None,
-    write_path: str = None
+    write_path: str = None,
+    options: Dict[str, str] = None
 ):
+    if options is None:
+        options = {}
+
     spark = SparkSession.builder \
         .appName(f"{name} benchmark derived from {benchmark}") \
         .getOrCreate()
@@ -80,7 +86,7 @@ def main(
     else:
         raise ValueError(f"Invalid benchmark: {benchmark}")
 
-    # Register tables from either Parquet files or Iceberg catalog
+    # Register tables from either files or Iceberg catalog
     using_iceberg = catalog is not None
     for table in table_names:
         if using_iceberg:
@@ -88,9 +94,9 @@ def main(
             print(f"Registering table {table} from {source}")
             df = spark.table(source)
         else:
-            source = f"{data_path}/{table}.parquet"
+            source = f"{data_path}/{table}.{format}"
             print(f"Registering table {table} from {source}")
-            df = spark.read.parquet(source)
+            df = spark.read.format(format).options(**options).load(source)
         df.createOrReplaceTempView(table)
 
     conf_dict = {k: v for k, v in spark.sparkContext.getConf().getAll()}
@@ -175,23 +181,35 @@ def main(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="TPC-H/TPC-DS benchmark runner for Parquet or Iceberg tables"
+        description="TPC-H/TPC-DS benchmark runner for files or Iceberg tables"
     )
     parser.add_argument(
         "--benchmark", required=True,
         help="Benchmark to run (tpch or tpcds)"
     )
 
-    # Data source - mutually exclusive: either Parquet path or Iceberg catalog
+    # Data source - mutually exclusive: either file path or Iceberg catalog
     source_group = parser.add_mutually_exclusive_group(required=True)
     source_group.add_argument(
         "--data",
-        help="Path to Parquet data files"
+        help="Path to data files"
     )
     source_group.add_argument(
         "--catalog",
         help="Iceberg catalog name"
     )
+
+    # Options for file-based reading
+    parser.add_argument(
+        "--format", default="parquet",
+        help="Input file format: parquet, csv, json (only used with --data)"
+    )
+    parser.add_argument(
+        "--options", type=json.loads, default={},
+        help='Spark reader options as JSON string, e.g., \'{"header": "true"}\' (only used with --data)'
+    )
+
+    # Options for Iceberg
     parser.add_argument(
         "--database", default="tpch",
         help="Database containing TPC tables (only used with --catalog)"
@@ -232,6 +250,8 @@ if __name__ == "__main__":
         args.iterations,
         args.output,
         args.name,
+        args.format,
         args.query,
-        args.write
+        args.write,
+        args.options
     )
