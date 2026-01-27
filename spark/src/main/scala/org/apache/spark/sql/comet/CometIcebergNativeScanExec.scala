@@ -162,6 +162,32 @@ case class CometIcebergNativeScanExec(
     CometIcebergSplitRDD(sparkContext, commonData, perPartitionData, output.length, nativeMetrics)
   }
 
+  /**
+   * Override convertBlock to preserve @transient fields (commonData, perPartitionData). The
+   * parent implementation uses makeCopy() which loses transient fields.
+   */
+  override def convertBlock(): CometIcebergNativeScanExec = {
+    // Serialize the native plan if not already done
+    val newSerializedPlan = if (serializedPlanOpt.isEmpty) {
+      val bytes = CometExec.serializeNativePlan(nativeOp)
+      SerializedPlan(Some(bytes))
+    } else {
+      serializedPlanOpt
+    }
+
+    // Create new instance preserving transient fields
+    CometIcebergNativeScanExec(
+      nativeOp,
+      output,
+      originalPlan,
+      newSerializedPlan,
+      metadataLocation,
+      numPartitions,
+      nativeIcebergScanMetadata,
+      commonData,
+      perPartitionData)
+  }
+
   override protected def doCanonicalize(): CometIcebergNativeScanExec = {
     CometIcebergNativeScanExec(
       nativeOp,
