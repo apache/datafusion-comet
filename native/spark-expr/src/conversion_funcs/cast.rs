@@ -2348,12 +2348,7 @@ fn parse_string_to_decimal(input_str: &str, precision: u8, scale: i8) -> SparkRe
     }
 
     // validate and parse mantissa and exponent or bubble up the error
-    let (mantissa, exponent) = parse_decimal_str(
-        trimmed,
-        input_str,
-        "STRING",
-        &format!("DECIMAL({},{})", precision, scale),
-    )?;
+    let (mantissa, exponent) = parse_decimal_str(trimmed, input_str, precision, scale)?;
 
     // Early return mantissa 0, Spark checks if it fits digits and throw error in ansi
     if mantissa == 0 {
@@ -2429,16 +2424,20 @@ fn parse_string_to_decimal(input_str: &str, precision: u8, scale: i8) -> SparkRe
     }
 }
 
+fn invalid_decimal_cast(value: &str, precision: u8, scale: i8) -> SparkError {
+    invalid_value(value,"STRING", &format!("DECIMAL({},{})", precision, scale))
+}
+
 /// Parse a decimal string into mantissa and scale
 /// e.g., "123.45" -> (12345, 2), "-0.001" -> (-1, 3) , 0e50 -> (0,50) etc
 fn parse_decimal_str(
     s: &str,
     original_str: &str,
-    from_type: &str,
-    to_type: &str,
+    precision: u8,
+    scale: i8,
 ) -> SparkResult<(i128, i32)> {
     if s.is_empty() {
-        return Err(invalid_value(original_str, from_type, to_type));
+        return Err(invalid_decimal_cast(original_str, precision, scale));
     }
 
     let (mantissa_str, exponent) = if let Some(e_pos) = s.find(|c| ['e', 'E'].contains(&c)) {
@@ -2447,7 +2446,7 @@ fn parse_decimal_str(
         // Parse exponent
         let exp: i32 = exponent_part
             .parse()
-            .map_err(|_| invalid_value(original_str, from_type, to_type))?;
+            .map_err(|_| invalid_decimal_cast(original_str, precision, scale))?;
 
         (mantissa_part, exp)
     } else {
@@ -2462,13 +2461,13 @@ fn parse_decimal_str(
     };
 
     if mantissa_str.starts_with('+') || mantissa_str.starts_with('-') {
-        return Err(invalid_value(original_str, from_type, to_type));
+        return Err(invalid_decimal_cast(original_str, precision, scale));
     }
 
     let (integral_part, fractional_part) = match mantissa_str.find('.') {
         Some(dot_pos) => {
             if mantissa_str[dot_pos + 1..].contains('.') {
-                return Err(invalid_value(original_str, from_type, to_type));
+                return Err(invalid_decimal_cast(original_str, precision, scale));
             }
             (&mantissa_str[..dot_pos], &mantissa_str[dot_pos + 1..])
         }
@@ -2476,15 +2475,15 @@ fn parse_decimal_str(
     };
 
     if integral_part.is_empty() && fractional_part.is_empty() {
-        return Err(invalid_value(original_str, from_type, to_type));
+        return Err(invalid_decimal_cast(original_str, precision, scale));
     }
 
     if !integral_part.is_empty() && !integral_part.bytes().all(|b| b.is_ascii_digit()) {
-        return Err(invalid_value(original_str, from_type, to_type));
+        return Err(invalid_decimal_cast(original_str, precision, scale));
     }
 
     if !fractional_part.is_empty() && !fractional_part.bytes().all(|b| b.is_ascii_digit()) {
-        return Err(invalid_value(original_str, from_type, to_type));
+        return Err(invalid_decimal_cast(original_str, precision, scale));
     }
 
     // Parse integral part
@@ -2494,7 +2493,7 @@ fn parse_decimal_str(
     } else {
         integral_part
             .parse()
-            .map_err(|_| invalid_value(original_str, from_type, to_type))?
+            .map_err(|_| invalid_decimal_cast(original_str, precision, scale))?
     };
 
     // Parse fractional part
@@ -2504,14 +2503,14 @@ fn parse_decimal_str(
     } else {
         fractional_part
             .parse()
-            .map_err(|_| invalid_value(original_str, from_type, to_type))?
+            .map_err(|_| invalid_decimal_cast(original_str, precision, scale))?
     };
 
     // Combine: value = integral * 10^fractional_scale + fractional
     let mantissa = integral_value
         .checked_mul(10_i128.pow(fractional_scale as u32))
         .and_then(|v| v.checked_add(fractional_value))
-        .ok_or_else(|| invalid_value(original_str, from_type, to_type))?;
+        .ok_or_else(|| invalid_decimal_cast(original_str, precision, scale))?;
 
     let final_mantissa = if negative { -mantissa } else { mantissa };
     // final scale = fractional_scale - exponent

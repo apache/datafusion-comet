@@ -68,6 +68,27 @@ fn criterion_benchmark(c: &mut Criterion) {
         b.iter(|| cast_to_i64.evaluate(&decimal_batch).unwrap());
     });
     group.finish();
+
+     // str -> decimal benchmark
+    let decimal_string_batch = create_decimal_cast_string_batch();
+    for (mode, mode_name) in [
+        (EvalMode::Legacy, "legacy"),
+        (EvalMode::Ansi, "ansi"),
+        (EvalMode::Try, "try"),
+    ] {
+        let spark_cast_options = SparkCastOptions::new(mode, "", false);
+        let cast_to_decimal_38_10 = Cast::new(
+            expr.clone(),
+            DataType::Decimal128(38, 10),
+            spark_cast_options,
+        );
+
+        let mut group = c.benchmark_group(format!("cast_string_to_decimal/{}", mode_name));
+        group.bench_function("decimal_38_10", |b| {
+            b.iter(|| cast_to_decimal_38_10.evaluate(&decimal_string_batch).unwrap());
+        });
+        group.finish();
+    }
 }
 
 /// Create batch with small integer strings that fit in i8 range (for i8/i16 benchmarks)
@@ -112,6 +133,51 @@ fn create_decimal_string_batch() -> RecordBatch {
             let int_part: i32 = rand::random();
             let dec_part: u32 = rand::random::<u32>() % 1000;
             b.append_value(format!("{}.{}", int_part, dec_part));
+        }
+    }
+    let array = b.finish();
+    RecordBatch::try_new(schema, vec![Arc::new(array)]).unwrap()
+}
+
+/// Create batch with decimal strings for string-to-decimal cast perf evaluation
+fn create_decimal_cast_string_batch() -> RecordBatch {
+    let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Utf8, true)]));
+    let mut b = StringBuilder::new();
+    for i in 0..1000 {
+        if i % 10 == 0 {
+            b.append_null();
+        } else {
+            // Generate various decimal formats
+            match i % 5 {
+                0 => {
+                    // gen simple decimals (ex :  "123.45"
+                    let int_part: u32 = rand::random::<u32>() % 1000000;
+                    let dec_part: u32 = rand::random::<u32>() % 100000;
+                    b.append_value(format!("{}.{}", int_part, dec_part));
+                }
+                1 => {
+                    // gen scientific notation like "123e5"
+                    let mantissa: u32 = rand::random::<u32>() % 1000;
+                    let exp: i8 = (rand::random::<i8>() % 10).abs();
+                    b.append_value(format!("{}.{}E{}", mantissa / 100, mantissa % 100, exp));
+                }
+                2 => {
+                    // Negative numbers
+                    let int_part: u32 = rand::random::<u32>() % 1000000;
+                    let dec_part: u32 = rand::random::<u32>() % 100000;
+                    b.append_value(format!("-{}.{}", int_part, dec_part));
+                }
+                3 => {
+                    // Ints only
+                    let val: i32 = rand::random::<i32>() % 1000000;
+                    b.append_value(format!("{}", val));
+                }
+                _ => {
+                    // Small decimals (ex : 0.001)
+                    let dec_part: u32 = rand::random::<u32>() % 100000;
+                    b.append_value(format!("0.{:05}", dec_part));
+                }
+            }
         }
     }
     let array = b.finish();
