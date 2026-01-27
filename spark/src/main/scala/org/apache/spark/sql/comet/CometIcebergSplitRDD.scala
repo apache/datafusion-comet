@@ -114,7 +114,6 @@ object CometIcebergSplitRDD {
     val partition = IcebergFilePartition.parseFrom(partitionBytes)
 
     val scanBuilder = OperatorOuterClass.IcebergScan.newBuilder()
-    scanBuilder.setSplitMode(true)
     scanBuilder.setCommon(common)
     scanBuilder.setPartition(partition)
 

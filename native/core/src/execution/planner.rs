@@ -1132,16 +1132,8 @@ impl PhysicalPlanner {
                 ))
             }
             OpStruct::IcebergScan(scan) => {
-                // Split mode: extract from embedded common + single partition
+                // Extract common data and single partition's file tasks
                 // Per-partition injection happens in Scala before sending to native
-                if !scan.split_mode.unwrap_or(false) {
-                    return Err(GeneralError(
-                        "IcebergScan requires split_mode=true (partition data injected at \
-                         execution time)"
-                            .into(),
-                    ));
-                }
-
                 let common = scan
                     .common
                     .as_ref()

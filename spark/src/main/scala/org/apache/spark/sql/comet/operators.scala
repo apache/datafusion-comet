@@ -78,10 +78,10 @@ private[comet] object IcebergPartitionInjector {
   def injectPartitionData(op: Operator, partitionBytes: Array[Byte]): Operator = {
     val builder = op.toBuilder
 
-    // If this is an IcebergScan with split_mode=true and no partition, inject it
+    // If this is an IcebergScan without partition data, inject it
     if (op.hasIcebergScan) {
       val scan = op.getIcebergScan
-      if (scan.getSplitMode && !scan.hasPartition) {
+      if (!scan.hasPartition) {
         val partition = IcebergFilePartition.parseFrom(partitionBytes)
         val scanBuilder = scan.toBuilder
         scanBuilder.setPartition(partition)
