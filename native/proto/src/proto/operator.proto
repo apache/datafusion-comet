@@ -201,15 +201,10 @@ message IcebergScan {
   repeated DeleteFileList delete_files_pool = 11;
   repeated spark.spark_expression.Expr residual_pool = 12;
 
-  // Split mode: when true, common data and single partition are embedded
-  // instead of all partitions in file_partitions
-  optional bool split_mode = 20;
-
-  // Embedded common data for split mode (pools, metadata, catalog props)
-  optional IcebergScanCommon common = 21;
-
-  // Single partition's file tasks for split mode
-  optional IcebergFilePartition partition = 22;
+  // Split mode: common data and single partition embedded for per-task serialization
+  // When set, pools are read from common instead of the above fields
+  optional IcebergScanCommon common = 20;
+  optional IcebergFilePartition partition = 21;
 }
 
 // Helper message for deduplicating field ID lists

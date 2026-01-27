@@ -1132,17 +1132,12 @@ impl PhysicalPlanner {
                 ))
             }
             OpStruct::IcebergScan(scan) => {
-                // Determine if we're in split mode or legacy mode
+                // Determine if we're in split mode (common + partition present) or legacy mode
                 let (required_schema, catalog_properties, metadata_location, tasks) =
-                    if scan.split_mode.unwrap_or(false) {
-                        // Split mode: extract from embedded common + single partition
-                        let common = scan.common.as_ref().ok_or_else(|| {
-                            GeneralError("split_mode=true but common data missing".into())
-                        })?;
-                        let partition = scan.partition.as_ref().ok_or_else(|| {
-                            GeneralError("split_mode=true but partition data missing".into())
-                        })?;
-
+                    if let (Some(common), Some(partition)) =
+                        (scan.common.as_ref(), scan.partition.as_ref())
+                    {
+                        // Split mode: read from embedded common + single partition
                         let schema =
                             convert_spark_types_to_arrow_schema(common.required_schema.as_slice());
                         let catalog_props: HashMap<String, String> = common
@@ -1151,12 +1146,11 @@ impl PhysicalPlanner {
                             .map(|(k, v)| (k.clone(), v.clone()))
                             .collect();
                         let metadata_loc = common.metadata_location.clone();
-                        let tasks =
-                            parse_file_scan_tasks_from_common(common, &partition.file_scan_tasks)?;
+                        let tasks = parse_file_scan_tasks(common, &partition.file_scan_tasks)?;
 
                         (schema, catalog_props, metadata_loc, tasks)
                     } else {
-                        // Legacy mode: all data in single message
+                        // Legacy mode: all data in top-level IcebergScan fields
                         let schema =
                             convert_spark_types_to_arrow_schema(scan.required_schema.as_slice());
                         let catalog_props: HashMap<String, String> = scan
@@ -1171,7 +1165,7 @@ impl PhysicalPlanner {
                             "IcebergScan must have at least one file partition."
                         );
 
-                        let tasks = parse_file_scan_tasks(
+                        let tasks = parse_file_scan_tasks_legacy(
                             scan,
                             &scan.file_partitions[self.partition as usize].file_scan_tasks,
                         )?;
@@ -2767,210 +2761,14 @@ fn partition_data_to_struct(
 
 /// Converts protobuf FileScanTasks from Scala into iceberg-rust FileScanTask objects.
 ///
+/// Parses Iceberg FileScanTasks from protobuf messages into iceberg-rust's FileScanTask format.
+///
 /// Each task contains a residual predicate that is used for row-group level filtering
 /// during Parquet scanning.
 ///
-/// This function uses deduplication pools from the IcebergScan to avoid redundant parsing
+/// This function uses deduplication pools from IcebergScanCommon to avoid redundant parsing
 /// of schemas, partition specs, partition types, name mappings, and other repeated data.
 fn parse_file_scan_tasks(
-    proto_scan: &spark_operator::IcebergScan,
-    proto_tasks: &[spark_operator::IcebergFileScanTask],
-) -> Result<Vec<iceberg::scan::FileScanTask>, ExecutionError> {
-    // Build caches upfront: for 10K tasks with 1 schema, this parses the schema
-    // once instead of 10K times, eliminating redundant JSON deserialization
-    let schema_cache: Vec<Arc<iceberg::spec::Schema>> = proto_scan
-        .schema_pool
-        .iter()
-        .map(|json| {
-            serde_json::from_str(json).map(Arc::new).map_err(|e| {
-                ExecutionError::GeneralError(format!(
-                    "Failed to parse schema JSON from pool: {}",
-                    e
-                ))
-            })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-
-    let partition_spec_cache: Vec<Option<Arc<iceberg::spec::PartitionSpec>>> = proto_scan
-        .partition_spec_pool
-        .iter()
-        .map(|json| {
-            serde_json::from_str::<iceberg::spec::PartitionSpec>(json)
-                .ok()
-                .map(Arc::new)
-        })
-        .collect();
-
-    let name_mapping_cache: Vec<Option<Arc<iceberg::spec::NameMapping>>> = proto_scan
-        .name_mapping_pool
-        .iter()
-        .map(|json| {
-            serde_json::from_str::<iceberg::spec::NameMapping>(json)
-                .ok()
-                .map(Arc::new)
-        })
-        .collect();
-
-    let delete_files_cache: Vec<Vec<iceberg::scan::FileScanTaskDeleteFile>> = proto_scan
-        .delete_files_pool
-        .iter()
-        .map(|list| {
-            list.delete_files
-                .iter()
-                .map(|del| {
-                    let file_type = match del.content_type.as_str() {
-                        "POSITION_DELETES" => iceberg::spec::DataContentType::PositionDeletes,
-                        "EQUALITY_DELETES" => iceberg::spec::DataContentType::EqualityDeletes,
-                        other => {
-                            return Err(GeneralError(format!(
-                                "Invalid delete content type '{}'. This indicates a bug in Scala serialization.",
-                                other
-                            )))
-                        }
-                    };
-
-                    Ok(iceberg::scan::FileScanTaskDeleteFile {
-                        file_path: del.file_path.clone(),
-                        file_type,
-                        partition_spec_id: del.partition_spec_id,
-                        equality_ids: if del.equality_ids.is_empty() {
-                            None
-                        } else {
-                            Some(del.equality_ids.clone())
-                        },
-                    })
-                })
-                .collect::<Result<Vec<_>, ExecutionError>>()
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-
-    // Partition data pool is in protobuf messages
-    let results: Result<Vec<_>, _> = proto_tasks
-        .iter()
-        .map(|proto_task| {
-            let schema_ref = Arc::clone(
-                schema_cache
-                    .get(proto_task.schema_idx as usize)
-                    .ok_or_else(|| {
-                        ExecutionError::GeneralError(format!(
-                            "Invalid schema_idx: {} (pool size: {})",
-                            proto_task.schema_idx,
-                            schema_cache.len()
-                        ))
-                    })?,
-            );
-
-            let data_file_format = iceberg::spec::DataFileFormat::Parquet;
-
-            let deletes = if let Some(idx) = proto_task.delete_files_idx {
-                delete_files_cache
-                    .get(idx as usize)
-                    .ok_or_else(|| {
-                        ExecutionError::GeneralError(format!(
-                            "Invalid delete_files_idx: {} (pool size: {})",
-                            idx,
-                            delete_files_cache.len()
-                        ))
-                    })?
-                    .clone()
-            } else {
-                vec![]
-            };
-
-            let bound_predicate = if let Some(idx) = proto_task.residual_idx {
-                proto_scan
-                    .residual_pool
-                    .get(idx as usize)
-                    .and_then(convert_spark_expr_to_predicate)
-                    .map(
-                        |pred| -> Result<iceberg::expr::BoundPredicate, ExecutionError> {
-                            pred.bind(Arc::clone(&schema_ref), true).map_err(|e| {
-                                ExecutionError::GeneralError(format!(
-                                    "Failed to bind predicate to schema: {}",
-                                    e
-                                ))
-                            })
-                        },
-                    )
-                    .transpose()?
-            } else {
-                None
-            };
-
-            let partition = if let Some(partition_data_idx) = proto_task.partition_data_idx {
-                // Get partition data from protobuf pool
-                let partition_data_proto = proto_scan
-                    .partition_data_pool
-                    .get(partition_data_idx as usize)
-                    .ok_or_else(|| {
-                        ExecutionError::GeneralError(format!(
-                            "Invalid partition_data_idx: {} (pool size: {})",
-                            partition_data_idx,
-                            proto_scan.partition_data_pool.len()
-                        ))
-                    })?;
-
-                // Convert protobuf PartitionData to iceberg Struct
-                match partition_data_to_struct(partition_data_proto) {
-                    Ok(s) => Some(s),
-                    Err(e) => {
-                        return Err(ExecutionError::GeneralError(format!(
-                            "Failed to deserialize partition data from protobuf: {}",
-                            e
-                        )))
-                    }
-                }
-            } else {
-                None
-            };
-
-            let partition_spec = proto_task
-                .partition_spec_idx
-                .and_then(|idx| partition_spec_cache.get(idx as usize))
-                .and_then(|opt| opt.clone());
-
-            let name_mapping = proto_task
-                .name_mapping_idx
-                .and_then(|idx| name_mapping_cache.get(idx as usize))
-                .and_then(|opt| opt.clone());
-
-            let project_field_ids = proto_scan
-                .project_field_ids_pool
-                .get(proto_task.project_field_ids_idx as usize)
-                .ok_or_else(|| {
-                    ExecutionError::GeneralError(format!(
-                        "Invalid project_field_ids_idx: {} (pool size: {})",
-                        proto_task.project_field_ids_idx,
-                        proto_scan.project_field_ids_pool.len()
-                    ))
-                })?
-                .field_ids
-                .clone();
-
-            Ok(iceberg::scan::FileScanTask {
-                data_file_path: proto_task.data_file_path.clone(),
-                start: proto_task.start,
-                length: proto_task.length,
-                record_count: proto_task.record_count,
-                data_file_format,
-                schema: schema_ref,
-                project_field_ids,
-                predicate: bound_predicate,
-                deletes,
-                partition,
-                partition_spec,
-                name_mapping,
-                case_sensitive: false,
-            })
-        })
-        .collect();
-
-    results
-}
-
-/// Parse FileScanTasks from IcebergScanCommon (split mode).
-/// Similar to parse_file_scan_tasks but reads pools from IcebergScanCommon.
-fn parse_file_scan_tasks_from_common(
     proto_common: &spark_operator::IcebergScanCommon,
     proto_tasks: &[spark_operator::IcebergFileScanTask],
 ) -> Result<Vec<iceberg::scan::FileScanTask>, ExecutionError> {
@@ -3136,6 +2934,199 @@ fn parse_file_scan_tasks_from_common(
                         "Invalid project_field_ids_idx: {} (pool size: {})",
                         proto_task.project_field_ids_idx,
                         proto_common.project_field_ids_pool.len()
+                    ))
+                })?
+                .field_ids
+                .clone();
+
+            Ok(iceberg::scan::FileScanTask {
+                data_file_path: proto_task.data_file_path.clone(),
+                start: proto_task.start,
+                length: proto_task.length,
+                record_count: proto_task.record_count,
+                data_file_format,
+                schema: schema_ref,
+                project_field_ids,
+                predicate: bound_predicate,
+                deletes,
+                partition,
+                partition_spec,
+                name_mapping,
+                case_sensitive: false,
+            })
+        })
+        .collect();
+
+    results
+}
+
+/// Parse FileScanTasks from IcebergScan (legacy mode - pools in top-level fields).
+fn parse_file_scan_tasks_legacy(
+    proto_scan: &spark_operator::IcebergScan,
+    proto_tasks: &[spark_operator::IcebergFileScanTask],
+) -> Result<Vec<iceberg::scan::FileScanTask>, ExecutionError> {
+    // Build caches upfront from top-level IcebergScan fields
+    let schema_cache: Vec<Arc<iceberg::spec::Schema>> = proto_scan
+        .schema_pool
+        .iter()
+        .map(|json| {
+            serde_json::from_str(json).map(Arc::new).map_err(|e| {
+                ExecutionError::GeneralError(format!(
+                    "Failed to parse schema JSON from pool: {}",
+                    e
+                ))
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let partition_spec_cache: Vec<Option<Arc<iceberg::spec::PartitionSpec>>> = proto_scan
+        .partition_spec_pool
+        .iter()
+        .map(|json| {
+            serde_json::from_str::<iceberg::spec::PartitionSpec>(json)
+                .ok()
+                .map(Arc::new)
+        })
+        .collect();
+
+    let name_mapping_cache: Vec<Option<Arc<iceberg::spec::NameMapping>>> = proto_scan
+        .name_mapping_pool
+        .iter()
+        .map(|json| {
+            serde_json::from_str::<iceberg::spec::NameMapping>(json)
+                .ok()
+                .map(Arc::new)
+        })
+        .collect();
+
+    let delete_files_cache: Vec<Vec<iceberg::scan::FileScanTaskDeleteFile>> = proto_scan
+        .delete_files_pool
+        .iter()
+        .map(|list| {
+            list.delete_files
+                .iter()
+                .map(|del| {
+                    let file_type = match del.content_type.as_str() {
+                        "POSITION_DELETES" => iceberg::spec::DataContentType::PositionDeletes,
+                        "EQUALITY_DELETES" => iceberg::spec::DataContentType::EqualityDeletes,
+                        other => {
+                            return Err(GeneralError(format!(
+                                "Invalid delete content type '{}'",
+                                other
+                            )))
+                        }
+                    };
+
+                    Ok(iceberg::scan::FileScanTaskDeleteFile {
+                        file_path: del.file_path.clone(),
+                        file_type,
+                        partition_spec_id: del.partition_spec_id,
+                        equality_ids: if del.equality_ids.is_empty() {
+                            None
+                        } else {
+                            Some(del.equality_ids.clone())
+                        },
+                    })
+                })
+                .collect::<Result<Vec<_>, ExecutionError>>()
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let results: Result<Vec<_>, _> = proto_tasks
+        .iter()
+        .map(|proto_task| {
+            let schema_ref = Arc::clone(
+                schema_cache
+                    .get(proto_task.schema_idx as usize)
+                    .ok_or_else(|| {
+                        ExecutionError::GeneralError(format!(
+                            "Invalid schema_idx: {} (pool size: {})",
+                            proto_task.schema_idx,
+                            schema_cache.len()
+                        ))
+                    })?,
+            );
+
+            let data_file_format = iceberg::spec::DataFileFormat::Parquet;
+
+            let deletes = if let Some(idx) = proto_task.delete_files_idx {
+                delete_files_cache
+                    .get(idx as usize)
+                    .ok_or_else(|| {
+                        ExecutionError::GeneralError(format!(
+                            "Invalid delete_files_idx: {} (pool size: {})",
+                            idx,
+                            delete_files_cache.len()
+                        ))
+                    })?
+                    .clone()
+            } else {
+                vec![]
+            };
+
+            let bound_predicate = if let Some(idx) = proto_task.residual_idx {
+                proto_scan
+                    .residual_pool
+                    .get(idx as usize)
+                    .and_then(convert_spark_expr_to_predicate)
+                    .map(
+                        |pred| -> Result<iceberg::expr::BoundPredicate, ExecutionError> {
+                            pred.bind(Arc::clone(&schema_ref), true).map_err(|e| {
+                                ExecutionError::GeneralError(format!(
+                                    "Failed to bind predicate to schema: {}",
+                                    e
+                                ))
+                            })
+                        },
+                    )
+                    .transpose()?
+            } else {
+                None
+            };
+
+            let partition = if let Some(partition_data_idx) = proto_task.partition_data_idx {
+                let partition_data_proto = proto_scan
+                    .partition_data_pool
+                    .get(partition_data_idx as usize)
+                    .ok_or_else(|| {
+                        ExecutionError::GeneralError(format!(
+                            "Invalid partition_data_idx: {} (pool size: {})",
+                            partition_data_idx,
+                            proto_scan.partition_data_pool.len()
+                        ))
+                    })?;
+
+                match partition_data_to_struct(partition_data_proto) {
+                    Ok(s) => Some(s),
+                    Err(e) => {
+                        return Err(ExecutionError::GeneralError(format!(
+                            "Failed to deserialize partition data: {}",
+                            e
+                        )))
+                    }
+                }
+            } else {
+                None
+            };
+
+            let partition_spec = proto_task
+                .partition_spec_idx
+                .and_then(|idx| partition_spec_cache.get(idx as usize))
+                .and_then(|opt| opt.clone());
+
+            let name_mapping = proto_task
+                .name_mapping_idx
+                .and_then(|idx| name_mapping_cache.get(idx as usize))
+                .and_then(|opt| opt.clone());
+
+            let project_field_ids = proto_scan
+                .project_field_ids_pool
+                .get(proto_task.project_field_ids_idx as usize)
+                .ok_or_else(|| {
+                    ExecutionError::GeneralError(format!(
+                        "Invalid project_field_ids_idx: {} (pool size: {})",
+                        proto_task.project_field_ids_idx,
+                        proto_scan.project_field_ids_pool.len()
                     ))
                 })?
                 .field_ids

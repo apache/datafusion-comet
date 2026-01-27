@@ -52,10 +52,10 @@ case class CometIcebergNativeScanExec(
     metadataLocation: String,
     numPartitions: Int,
     @transient nativeIcebergScanMetadata: CometIcebergNativeScanMetadata,
-    // Split mode: serialized IcebergScanCommon (captured in closure, sent with task)
-    commonData: Array[Byte] = Array.empty,
-    // Split mode: serialized IcebergFilePartition per partition (transient)
-    @transient perPartitionData: Array[Array[Byte]] = Array.empty)
+    // Serialized IcebergScanCommon (captured in closure, sent with task)
+    commonData: Array[Byte],
+    // Serialized IcebergFilePartition per partition (transient, goes into Partition objects)
+    @transient perPartitionData: Array[Array[Byte]])
     extends CometLeafExec {
 
   override val supportsColumnar: Boolean = true
@@ -152,19 +152,9 @@ case class CometIcebergNativeScanExec(
     baseMetrics ++ icebergMetrics + ("num_splits" -> numSplitsMetric)
   }
 
-  /** Uses split mode RDD when split data is available, otherwise falls back to legacy mode. */
   override def doExecuteColumnar(): RDD[ColumnarBatch] = {
-    if (commonData.nonEmpty && perPartitionData.nonEmpty) {
-      val nativeMetrics = CometMetricNode.fromCometPlan(this)
-      CometIcebergSplitRDD(
-        sparkContext,
-        commonData,
-        perPartitionData,
-        output.length,
-        nativeMetrics)
-    } else {
-      super.doExecuteColumnar()
-    }
+    val nativeMetrics = CometMetricNode.fromCometPlan(this)
+    CometIcebergSplitRDD(sparkContext, commonData, perPartitionData, output.length, nativeMetrics)
   }
 
   override protected def doCanonicalize(): CometIcebergNativeScanExec = {
@@ -175,7 +165,9 @@ case class CometIcebergNativeScanExec(
       SerializedPlan(None),
       metadataLocation,
       numPartitions,
-      nativeIcebergScanMetadata)
+      nativeIcebergScanMetadata,
+      commonData,
+      perPartitionData)
   }
 
   override def stringArgs: Iterator[Any] =
@@ -220,38 +212,13 @@ object CometIcebergNativeScanExec {
    *   Path to table metadata file
    * @param nativeIcebergScanMetadata
    *   Pre-extracted Iceberg metadata from planning phase
+   * @param commonData
+   *   Serialized IcebergScanCommon (pools, metadata, catalog props)
+   * @param perPartitionData
+   *   Serialized IcebergFilePartition per partition
    * @return
    *   A new CometIcebergNativeScanExec
    */
-  def apply(
-      nativeOp: Operator,
-      scanExec: BatchScanExec,
-      session: SparkSession,
-      metadataLocation: String,
-      nativeIcebergScanMetadata: CometIcebergNativeScanMetadata): CometIcebergNativeScanExec = {
-
-    // Determine number of partitions from Iceberg's output partitioning
-    val numParts = scanExec.outputPartitioning match {
-      case p: KeyGroupedPartitioning =>
-        p.numPartitions
-      case _ =>
-        scanExec.inputRDD.getNumPartitions
-    }
-
-    val exec = CometIcebergNativeScanExec(
-      nativeOp,
-      scanExec.output,
-      scanExec,
-      SerializedPlan(None),
-      metadataLocation,
-      numParts,
-      nativeIcebergScanMetadata)
-
-    scanExec.logicalLink.foreach(exec.setLogicalLink)
-    exec
-  }
-
-  /** Creates a CometIcebergNativeScanExec with split serialization data. */
   def apply(
       nativeOp: Operator,
       scanExec: BatchScanExec,

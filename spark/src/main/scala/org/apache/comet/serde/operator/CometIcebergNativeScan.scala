@@ -687,6 +687,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       scan: CometBatchScanExec,
       builder: Operator.Builder,
       childOp: Operator*): Option[OperatorOuterClass.Operator] = {
+    // Build IcebergScan for serialized plan (native shuffle uses this)
     val icebergScanBuilder = OperatorOuterClass.IcebergScan.newBuilder()
 
     // Deduplication structures - map unique values to pool indices
@@ -1028,18 +1029,21 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
           s"$partitionDataPoolBytes bytes (protobuf)")
     }
 
-    // Build split serialization data for efficient per-partition transfer
+    // Build the IcebergScan (used for serialized plan in native shuffle)
     val builtScan = icebergScanBuilder.build()
+
+    // Build split serialization data for efficient per-partition transfer via CometIcebergSplitRDD
     buildAndStoreSplitData(builtScan)
 
     builder.clearChildren()
     Some(builder.setIcebergScan(icebergScanBuilder).build())
   }
 
-  /** Builds split data (IcebergScanCommon + per-partition bytes) and stores in thread-local. */
+  /** Builds IcebergScanCommon from IcebergScan and stores split data in thread-local. */
   private def buildAndStoreSplitData(builtScan: OperatorOuterClass.IcebergScan): Unit = {
     val commonBuilder = OperatorOuterClass.IcebergScanCommon.newBuilder()
 
+    // Copy pools and metadata from IcebergScan to IcebergScanCommon
     commonBuilder.setMetadataLocation(builtScan.getMetadataLocation)
     commonBuilder.putAllCatalogProperties(builtScan.getCatalogPropertiesMap)
     builtScan.getRequiredSchemaList.forEach(f => commonBuilder.addRequiredSchema(f))
@@ -1072,21 +1076,20 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     val metadataLocation = nativeOp.getIcebergScan.getMetadataLocation
 
     // Retrieve split data from thread-local (set during convert())
-    val splitData = splitDataThreadLocal.get()
+    val splitData = splitDataThreadLocal.get().getOrElse {
+      throw new IllegalStateException(
+        "Programming error: Split data not found in thread-local. " +
+          "buildAndStoreSplitData should have been called during convert().")
+    }
     splitDataThreadLocal.remove()
 
-    splitData match {
-      case Some(data) =>
-        CometIcebergNativeScanExec(
-          nativeOp,
-          op.wrapped,
-          op.session,
-          metadataLocation,
-          metadata,
-          data.commonBytes,
-          data.perPartitionBytes)
-      case None =>
-        CometIcebergNativeScanExec(nativeOp, op.wrapped, op.session, metadataLocation, metadata)
-    }
+    CometIcebergNativeScanExec(
+      nativeOp,
+      op.wrapped,
+      op.session,
+      metadataLocation,
+      metadata,
+      splitData.commonBytes,
+      splitData.perPartitionBytes)
   }
 }
