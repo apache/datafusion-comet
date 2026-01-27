@@ -73,3 +73,70 @@ Generating charts:
 ```shell
 python3 generate-comparison.py --benchmark tpch --labels "Spark 3.5.3" "Comet 0.9.0" "Gluten 1.4.0" --title "TPC-H @ 100 GB (single executor, 8 cores, local Parquet files)" spark-tpch-1752338506381.json comet-tpch-1752337818039.json gluten-tpch-1752337474344.json
 ```
+
+## Iceberg Benchmarking
+
+Comet includes native Iceberg support via iceberg-rust integration. This enables benchmarking TPC-H queries
+against Iceberg tables with native scan acceleration.
+
+### Prerequisites
+
+Download the Iceberg Spark runtime JAR:
+
+```shell
+wget https://repo1.maven.org/maven2/org/apache/iceberg/iceberg-spark-runtime-3.5_2.12/1.8.1/iceberg-spark-runtime-3.5_2.12-1.8.1.jar
+export ICEBERG_JAR=/path/to/iceberg-spark-runtime-3.5_2.12-1.8.1.jar
+```
+
+### Create Iceberg TPC-H tables
+
+Convert existing Parquet TPC-H data to Iceberg format:
+
+```shell
+export ICEBERG_WAREHOUSE=/mnt/bigdata/iceberg-warehouse
+
+$SPARK_HOME/bin/spark-submit \
+    --jars $ICEBERG_JAR \
+    --conf spark.sql.catalog.local=org.apache.iceberg.spark.SparkCatalog \
+    --conf spark.sql.catalog.local.type=hadoop \
+    --conf spark.sql.catalog.local.warehouse=$ICEBERG_WAREHOUSE \
+    create-iceberg-tpch.py \
+    --parquet-path $TPCH_DATA \
+    --catalog local \
+    --database tpch
+```
+
+### Run Iceberg benchmark
+
+```shell
+export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+export COMET_JAR=/opt/comet/comet-spark-spark3.5_2.12-0.10.0.jar
+export ICEBERG_JAR=/path/to/iceberg-spark-runtime-3.5_2.12-1.8.1.jar
+export ICEBERG_WAREHOUSE=/mnt/bigdata/iceberg-warehouse
+export TPCH_QUERIES=/mnt/bigdata/tpch/queries/
+sudo ./drop-caches.sh
+./comet-tpch-iceberg.sh
+```
+
+The benchmark uses `spark.comet.scan.icebergNative.enabled=true` to enable Comet's native iceberg-rust
+integration. Verify native scanning is active by checking for `CometIcebergNativeScanExec` in the
+physical plan output.
+
+### Iceberg-specific options
+
+| Environment Variable | Default | Description |
+|---------------------|---------|-------------|
+| `ICEBERG_CATALOG` | `local` | Iceberg catalog name |
+| `ICEBERG_DATABASE` | `tpch` | Database containing TPC-H tables |
+| `ICEBERG_WAREHOUSE` | (required) | Path to Iceberg warehouse directory |
+
+### Comparing Parquet vs Iceberg performance
+
+Run both benchmarks and compare:
+
+```shell
+python3 generate-comparison.py --benchmark tpch \
+    --labels "Comet (Parquet)" "Comet (Iceberg)" \
+    --title "TPC-H @ 100 GB: Parquet vs Iceberg" \
+    comet-tpch-*.json comet-iceberg-tpch-*.json
+```
