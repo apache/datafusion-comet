@@ -153,6 +153,51 @@ struct ExecutionContext {
     pub tracing_enabled: bool,
 }
 
+/// Deserializes per-partition IcebergScan data from protobuf.
+/// Returns a map of plan_id to IcebergFilePartitionData containing only the
+/// per-partition FileScanTasks and deduplication pools.
+fn deserialize_iceberg_replacements(
+    bytes: &[u8],
+) -> CometResult<HashMap<u32, datafusion_comet_proto::spark_operator::IcebergFilePartitionData>> {
+    use datafusion_comet_proto::spark_operator::IcebergScanReplacements;
+    use prost::Message;
+
+    let replacements = IcebergScanReplacements::decode(bytes).map_err(|e| {
+        CometError::Internal(format!("Failed to decode IcebergScanReplacements: {}", e))
+    })?;
+    Ok(replacements.replacements)
+}
+
+/// Merges per-partition IcebergScan data into placeholder IcebergScans by plan_id.
+/// The placeholder IcebergScan already contains common metadata (required_schema,
+/// catalog_properties, metadata_location). We just merge in the per-partition data.
+fn merge_iceberg_partition_data(
+    op: &mut Operator,
+    replacements: &HashMap<u32, datafusion_comet_proto::spark_operator::IcebergFilePartitionData>,
+) {
+    use datafusion_comet_proto::spark_operator::operator::OpStruct;
+
+    if let Some(OpStruct::IcebergScan(scan)) = &mut op.op_struct {
+        if let Some(partition_data) = replacements.get(&op.plan_id) {
+            // Merge per-partition data into the existing IcebergScan
+            scan.file_partition = partition_data.file_partition.clone();
+            scan.schema_pool = partition_data.schema_pool.clone();
+            scan.partition_type_pool = partition_data.partition_type_pool.clone();
+            scan.partition_spec_pool = partition_data.partition_spec_pool.clone();
+            scan.name_mapping_pool = partition_data.name_mapping_pool.clone();
+            scan.project_field_ids_pool = partition_data.project_field_ids_pool.clone();
+            scan.partition_data_pool = partition_data.partition_data_pool.clone();
+            scan.delete_files_pool = partition_data.delete_files_pool.clone();
+            scan.residual_pool = partition_data.residual_pool.clone();
+        }
+    }
+
+    // Continue traversing to handle multiple IcebergScans
+    for child in op.children.iter_mut() {
+        merge_iceberg_partition_data(child, replacements);
+    }
+}
+
 /// Accept serialized query plan and return the address of the native query plan.
 /// # Safety
 /// This function is inherently unsafe since it deals with raw pointers passed from JNI.
@@ -177,6 +222,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     task_attempt_id: jlong,
     task_cpus: jlong,
     key_unwrapper_obj: JObject,
+    iceberg_task_bytes: JByteArray,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| {
         // Deserialize Spark configs
@@ -199,7 +245,15 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
 
             // Deserialize query plan
             let bytes = env.convert_byte_array(serialized_query)?;
-            let spark_plan = serde::deserialize_op(bytes.as_slice())?;
+            let mut spark_plan = serde::deserialize_op(bytes.as_slice())?;
+
+            // Merge per-partition IcebergScan data into placeholders to avoid sending
+            // all tasks to all executors. Each executor receives only its partition's tasks.
+            if !iceberg_task_bytes.is_null() {
+                let iceberg_bytes = env.convert_byte_array(iceberg_task_bytes)?;
+                let replacements = deserialize_iceberg_replacements(&iceberg_bytes)?;
+                merge_iceberg_partition_data(&mut spark_plan, &replacements);
+            }
 
             let metrics = Arc::new(jni_new_global_ref!(env, metrics_node)?);
 

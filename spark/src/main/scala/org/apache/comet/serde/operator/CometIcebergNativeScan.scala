@@ -31,7 +31,7 @@ import org.apache.spark.sql.comet.{CometBatchScanExec, CometNativeExec}
 import org.apache.spark.sql.types._
 
 import org.apache.comet.ConfigEntry
-import org.apache.comet.iceberg.IcebergReflection
+import org.apache.comet.iceberg.{CometIcebergNativeScanMetadata, IcebergReflection}
 import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass}
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.OperatorOuterClass.{Operator, SparkStructField}
@@ -70,9 +70,14 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
   }
 
   /**
-   * Converts an Iceberg partition value to protobuf format. Protobuf is less verbose than JSON.
-   * The following types are also serialized as integer values instead of as strings - Timestamps,
-   * Dates, Decimals, FieldIDs
+   * Converts an Iceberg partition value to JSON format expected by iceberg-rust.
+   *
+   * iceberg-rust's Literal::try_from_json() expects specific formats for certain types:
+   *   - Timestamps: ISO string format "yyyy-MM-dd'T'HH:mm:ss.SSSSSS"
+   *   - Dates: ISO string format "YYYY-MM-DD"
+   *   - Decimals: String representation
+   *
+   * See: iceberg-rust/crates/iceberg/src/spec/values/literal.rs
    */
   private def partitionValueToProto(
       fieldId: Int,
@@ -215,6 +220,216 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     } catch {
       case _: Exception => None
     }
+  }
+
+  /**
+   * Serializes a single FileScanTask to protobuf. Reusable helper for both convert() and
+   * serializePartitionInputs().
+   */
+  // scalastyle:off parameter.number argcount
+  private def serializeFileScanTask(
+      task: Any,
+      output: Seq[Attribute],
+      metadata: CometIcebergNativeScanMetadata,
+      icebergScanBuilder: OperatorOuterClass.IcebergScan.Builder,
+      schemaToPoolIndex: mutable.HashMap[AnyRef, Int],
+      partitionTypeToPoolIndex: mutable.HashMap[String, Int],
+      partitionSpecToPoolIndex: mutable.HashMap[String, Int],
+      nameMappingToPoolIndex: mutable.HashMap[String, Int],
+      projectFieldIdsToPoolIndex: mutable.HashMap[Seq[Int], Int],
+      partitionDataToPoolIndex: mutable.HashMap[String, Int],
+      deleteFilesToPoolIndex: mutable.HashMap[Seq[OperatorOuterClass.IcebergDeleteFile], Int],
+      residualToPoolIndex: mutable.HashMap[Option[Expr], Int])
+      : OperatorOuterClass.IcebergFileScanTask = {
+    // scalastyle:on parameter.number argcount
+
+    val taskBuilder = OperatorOuterClass.IcebergFileScanTask.newBuilder()
+
+    // scalastyle:off classforname
+    val contentScanTaskClass =
+      Class.forName(IcebergReflection.ClassNames.CONTENT_SCAN_TASK)
+    val fileScanTaskClass =
+      Class.forName(IcebergReflection.ClassNames.FILE_SCAN_TASK)
+    val contentFileClass =
+      Class.forName(IcebergReflection.ClassNames.CONTENT_FILE)
+    // scalastyle:on classforname
+
+    val fileMethod = contentScanTaskClass.getMethod("file")
+    val dataFile = fileMethod.invoke(task)
+
+    val filePathOpt =
+      IcebergReflection.extractFileLocation(contentFileClass, dataFile)
+
+    filePathOpt match {
+      case Some(filePath) =>
+        taskBuilder.setDataFilePath(filePath)
+      case None =>
+        val msg =
+          "Iceberg reflection failure: Cannot extract file path from data file"
+        logError(msg)
+        throw new RuntimeException(msg)
+    }
+
+    val startMethod = contentScanTaskClass.getMethod("start")
+    val start = startMethod.invoke(task).asInstanceOf[Long]
+    taskBuilder.setStart(start)
+
+    val lengthMethod = contentScanTaskClass.getMethod("length")
+    val length = lengthMethod.invoke(task).asInstanceOf[Long]
+    taskBuilder.setLength(length)
+
+    try {
+      // scalastyle:off classforname
+      val schemaParserClass =
+        Class.forName(IcebergReflection.ClassNames.SCHEMA_PARSER)
+      val schemaClass = Class.forName(IcebergReflection.ClassNames.SCHEMA)
+      // scalastyle:on classforname
+
+      val taskSchemaMethod = fileScanTaskClass.getMethod("schema")
+      val taskSchema = taskSchemaMethod.invoke(task)
+
+      val deletes =
+        IcebergReflection.getDeleteFilesFromTask(task, fileScanTaskClass)
+      val hasDeletes = !deletes.isEmpty
+
+      // Use taskSchema for deletes (MOR requires exact schema matching),
+      // scanSchema for historical queries (VERSION AS OF with dropped columns),
+      // or tableSchema for regular queries (provides partition column lookups).
+      val schema: AnyRef =
+        if (hasDeletes) {
+          taskSchema
+        } else {
+          val scanSchemaFieldIds = IcebergReflection
+            .buildFieldIdMapping(metadata.scanSchema)
+            .values
+            .toSet
+          val tableSchemaFieldIds = IcebergReflection
+            .buildFieldIdMapping(metadata.tableSchema)
+            .values
+            .toSet
+          val hasHistoricalColumns =
+            scanSchemaFieldIds.exists(id => !tableSchemaFieldIds.contains(id))
+
+          if (hasHistoricalColumns) {
+            metadata.scanSchema.asInstanceOf[AnyRef]
+          } else {
+            metadata.tableSchema.asInstanceOf[AnyRef]
+          }
+        }
+
+      val toJsonMethod = schemaParserClass.getMethod("toJson", schemaClass)
+      toJsonMethod.setAccessible(true)
+
+      val schemaIdx = schemaToPoolIndex.getOrElseUpdate(
+        schema, {
+          val idx = schemaToPoolIndex.size
+          val schemaJson = toJsonMethod.invoke(null, schema).asInstanceOf[String]
+          icebergScanBuilder.addSchemaPool(schemaJson)
+          idx
+        })
+      taskBuilder.setSchemaIdx(schemaIdx)
+
+      // Build field ID mapping
+      val nameToFieldId = IcebergReflection.buildFieldIdMapping(schema)
+
+      val projectFieldIds = output.flatMap { attr =>
+        nameToFieldId
+          .get(attr.name)
+          .orElse(metadata.globalFieldIdMapping.get(attr.name))
+          .orElse {
+            logWarning(
+              s"Column '${attr.name}' not found in task or scan schema," +
+                "skipping projection")
+            None
+          }
+      }
+
+      val projectFieldIdsIdx = projectFieldIdsToPoolIndex.getOrElseUpdate(
+        projectFieldIds, {
+          val idx = projectFieldIdsToPoolIndex.size
+          val listBuilder = OperatorOuterClass.ProjectFieldIdList.newBuilder()
+          projectFieldIds.foreach(id => listBuilder.addFieldIds(id))
+          icebergScanBuilder.addProjectFieldIdsPool(listBuilder.build())
+          idx
+        })
+      taskBuilder.setProjectFieldIdsIdx(projectFieldIdsIdx)
+    } catch {
+      case e: Exception =>
+        val msg =
+          "Iceberg reflection failure: " +
+            "Failed to extract schema from FileScanTask: " +
+            s"${e.getMessage}"
+        logError(msg)
+        throw new RuntimeException(msg, e)
+    }
+
+    // Deduplicate delete files
+    val deleteFilesList =
+      extractDeleteFilesList(task, contentFileClass, fileScanTaskClass)
+    if (deleteFilesList.nonEmpty) {
+      val deleteFilesIdx = deleteFilesToPoolIndex.getOrElseUpdate(
+        deleteFilesList, {
+          val idx = deleteFilesToPoolIndex.size
+          val listBuilder = OperatorOuterClass.DeleteFileList.newBuilder()
+          deleteFilesList.foreach(df => listBuilder.addDeleteFiles(df))
+          icebergScanBuilder.addDeleteFilesPool(listBuilder.build())
+          idx
+        })
+      taskBuilder.setDeleteFilesIdx(deleteFilesIdx)
+    }
+
+    // Extract and deduplicate residual expression
+    val residualExprOpt =
+      try {
+        val residualMethod = contentScanTaskClass.getMethod("residual")
+        val residualExpr = residualMethod.invoke(task)
+
+        val catalystExpr = convertIcebergExpression(residualExpr, output)
+
+        catalystExpr.flatMap { expr =>
+          exprToProto(expr, output, binding = false)
+        }
+      } catch {
+        case e: Exception =>
+          logWarning(
+            "Failed to extract residual expression from FileScanTask: " +
+              s"${e.getMessage}")
+          None
+      }
+
+    residualExprOpt.foreach { residualExpr =>
+      val residualIdx = residualToPoolIndex.getOrElseUpdate(
+        Some(residualExpr), {
+          val idx = residualToPoolIndex.size
+          icebergScanBuilder.addResidualPool(residualExpr)
+          idx
+        })
+      taskBuilder.setResidualIdx(residualIdx)
+    }
+
+    // Serialize partition spec and data
+    serializePartitionData(
+      task,
+      contentScanTaskClass,
+      fileScanTaskClass,
+      taskBuilder,
+      icebergScanBuilder,
+      partitionTypeToPoolIndex,
+      partitionSpecToPoolIndex,
+      partitionDataToPoolIndex)
+
+    // Deduplicate name mapping
+    metadata.nameMapping.foreach { nm =>
+      val nmIdx = nameMappingToPoolIndex.getOrElseUpdate(
+        nm, {
+          val idx = nameMappingToPoolIndex.size
+          icebergScanBuilder.addNameMappingPool(nm)
+          idx
+        })
+      taskBuilder.setNameMappingIdx(nmIdx)
+    }
+
+    taskBuilder.build()
   }
 
   /**
@@ -426,14 +641,12 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
             }
           }
 
-          // Serialize partition data to protobuf for native execution.
-          // The native execution engine uses partition_data protobuf messages to
-          // build a constants_map, which provides partition values to identity-
-          // transformed partition columns. Non-identity transforms (bucket, truncate,
-          // days, etc.) read values from data files.
-          //
-          // IMPORTANT: Use partition field IDs (not source field IDs) to match
-          // the schema.
+          // Serialize partition data as protobuf for iceberg-rust's constants_map.
+          // The native execution engine uses partition_data +
+          // partition_type to build a constants_map, which is the primary
+          // mechanism for providing partition values to identity-transformed
+          // partition columns. Non-identity transforms (bucket, truncate, days,
+          // etc.) read values from data files.
 
           // Filter out fields with unknown type (same as partition type filtering)
           val partitionValues: Seq[OperatorOuterClass.PartitionValue] =
@@ -444,7 +657,6 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
               if (fieldTypeStr == IcebergReflection.TypeNames.UNKNOWN) {
                 None
               } else {
-                // Use the partition type's field ID (same as in partition_type_json)
                 val fieldIdMethod = field.getClass.getMethod("fieldId")
                 val fieldId = fieldIdMethod.invoke(field).asInstanceOf[Int]
 
@@ -683,19 +895,6 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       childOp: Operator*): Option[OperatorOuterClass.Operator] = {
     val icebergScanBuilder = OperatorOuterClass.IcebergScan.newBuilder()
 
-    // Deduplication structures - map unique values to pool indices
-    val schemaToPoolIndex = mutable.HashMap[AnyRef, Int]()
-    val partitionTypeToPoolIndex = mutable.HashMap[String, Int]()
-    val partitionSpecToPoolIndex = mutable.HashMap[String, Int]()
-    val nameMappingToPoolIndex = mutable.HashMap[String, Int]()
-    val projectFieldIdsToPoolIndex = mutable.HashMap[Seq[Int], Int]()
-    val partitionDataToPoolIndex = mutable.HashMap[String, Int]() // Base64 bytes -> pool index
-    val deleteFilesToPoolIndex =
-      mutable.HashMap[Seq[OperatorOuterClass.IcebergDeleteFile], Int]()
-    val residualToPoolIndex = mutable.HashMap[Option[Expr], Int]()
-
-    var totalTasks = 0
-
     // Get pre-extracted metadata from planning phase
     // If metadata is None, this is a programming error - metadata should have been extracted
     // in CometScanRule before creating CometBatchScanExec
@@ -723,304 +922,12 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       icebergScanBuilder.addRequiredSchema(field.build())
     }
 
-    // Extract FileScanTasks from the InputPartitions in the RDD
-    try {
-      scan.wrapped.inputRDD match {
-        case rdd: org.apache.spark.sql.execution.datasources.v2.DataSourceRDD =>
-          val partitions = rdd.partitions
-          partitions.foreach { partition =>
-            val partitionBuilder = OperatorOuterClass.IcebergFilePartition.newBuilder()
-
-            val inputPartitions = partition
-              .asInstanceOf[org.apache.spark.sql.execution.datasources.v2.DataSourceRDDPartition]
-              .inputPartitions
-
-            inputPartitions.foreach { inputPartition =>
-              val inputPartClass = inputPartition.getClass
-
-              try {
-                val taskGroupMethod = inputPartClass.getDeclaredMethod("taskGroup")
-                taskGroupMethod.setAccessible(true)
-                val taskGroup = taskGroupMethod.invoke(inputPartition)
-
-                val taskGroupClass = taskGroup.getClass
-                val tasksMethod = taskGroupClass.getMethod("tasks")
-                val tasksCollection =
-                  tasksMethod.invoke(taskGroup).asInstanceOf[java.util.Collection[_]]
-
-                tasksCollection.asScala.foreach { task =>
-                  totalTasks += 1
-
-                  try {
-                    val taskBuilder = OperatorOuterClass.IcebergFileScanTask.newBuilder()
-
-                    // scalastyle:off classforname
-                    val contentScanTaskClass =
-                      Class.forName(IcebergReflection.ClassNames.CONTENT_SCAN_TASK)
-                    val fileScanTaskClass =
-                      Class.forName(IcebergReflection.ClassNames.FILE_SCAN_TASK)
-                    val contentFileClass =
-                      Class.forName(IcebergReflection.ClassNames.CONTENT_FILE)
-                    // scalastyle:on classforname
-
-                    val fileMethod = contentScanTaskClass.getMethod("file")
-                    val dataFile = fileMethod.invoke(task)
-
-                    val filePathOpt =
-                      IcebergReflection.extractFileLocation(contentFileClass, dataFile)
-
-                    filePathOpt match {
-                      case Some(filePath) =>
-                        taskBuilder.setDataFilePath(filePath)
-                      case None =>
-                        val msg =
-                          "Iceberg reflection failure: Cannot extract file path from data file"
-                        logError(msg)
-                        throw new RuntimeException(msg)
-                    }
-
-                    val startMethod = contentScanTaskClass.getMethod("start")
-                    val start = startMethod.invoke(task).asInstanceOf[Long]
-                    taskBuilder.setStart(start)
-
-                    val lengthMethod = contentScanTaskClass.getMethod("length")
-                    val length = lengthMethod.invoke(task).asInstanceOf[Long]
-                    taskBuilder.setLength(length)
-
-                    try {
-                      // Equality deletes require the full table schema to resolve field IDs,
-                      // even for columns not in the projection. Schema evolution requires
-                      // using the snapshot's schema to correctly read old data files.
-                      // These requirements conflict, so we choose based on delete presence.
-
-                      val taskSchemaMethod = fileScanTaskClass.getMethod("schema")
-                      val taskSchema = taskSchemaMethod.invoke(task)
-
-                      val deletes =
-                        IcebergReflection.getDeleteFilesFromTask(task, fileScanTaskClass)
-                      val hasDeletes = !deletes.isEmpty
-
-                      // Schema to pass to iceberg-rust's FileScanTask.
-                      // This is used by RecordBatchTransformer for field type lookups (e.g., in
-                      // constants_map) and default value generation. The actual projection is
-                      // controlled by project_field_ids.
-                      //
-                      // Schema selection logic:
-                      // 1. If hasDeletes=true: Use taskSchema (file-specific schema) because
-                      // delete files reference specific schema versions and we need exact schema
-                      // matching for MOR.
-                      // 2. Else if scanSchema contains columns not in tableSchema: Use scanSchema
-                      // because this is a VERSION AS OF query reading a historical snapshot with
-                      // different schema (e.g., after column drop, scanSchema has old columns
-                      // that tableSchema doesn't)
-                      // 3. Else: Use tableSchema because scanSchema is the query OUTPUT schema
-                      // (e.g., for aggregates like "SELECT count(*)", scanSchema only has
-                      // aggregate fields and doesn't contain partition columns needed by
-                      // constants_map)
-                      val schema: AnyRef =
-                        if (hasDeletes) {
-                          taskSchema
-                        } else {
-                          // Check if scanSchema has columns that tableSchema doesn't have
-                          // (VERSION AS OF case)
-                          val scanSchemaFieldIds = IcebergReflection
-                            .buildFieldIdMapping(metadata.scanSchema)
-                            .values
-                            .toSet
-                          val tableSchemaFieldIds = IcebergReflection
-                            .buildFieldIdMapping(metadata.tableSchema)
-                            .values
-                            .toSet
-                          val hasHistoricalColumns =
-                            scanSchemaFieldIds.exists(id => !tableSchemaFieldIds.contains(id))
-
-                          if (hasHistoricalColumns) {
-                            // VERSION AS OF: scanSchema has columns that current table doesn't have
-                            metadata.scanSchema.asInstanceOf[AnyRef]
-                          } else {
-                            // Regular query: use tableSchema for partition field lookups
-                            metadata.tableSchema.asInstanceOf[AnyRef]
-                          }
-                        }
-
-                      // scalastyle:off classforname
-                      val schemaParserClass =
-                        Class.forName(IcebergReflection.ClassNames.SCHEMA_PARSER)
-                      val schemaClass = Class.forName(IcebergReflection.ClassNames.SCHEMA)
-                      // scalastyle:on classforname
-                      val toJsonMethod = schemaParserClass.getMethod("toJson", schemaClass)
-                      toJsonMethod.setAccessible(true)
-
-                      // Use object identity for deduplication: Iceberg Schema objects are immutable
-                      // and reused across tasks, making identity-based deduplication safe
-                      val schemaIdx = schemaToPoolIndex.getOrElseUpdate(
-                        schema, {
-                          val idx = schemaToPoolIndex.size
-                          val schemaJson = toJsonMethod.invoke(null, schema).asInstanceOf[String]
-                          icebergScanBuilder.addSchemaPool(schemaJson)
-                          idx
-                        })
-                      taskBuilder.setSchemaIdx(schemaIdx)
-
-                      // Build field ID mapping from the schema we're using
-                      val nameToFieldId = IcebergReflection.buildFieldIdMapping(schema)
-
-                      // Extract project_field_ids for scan.output columns.
-                      // For schema evolution: try task schema first, then fall back to
-                      // global scan schema (pre-extracted in metadata).
-                      val projectFieldIds = scan.output.flatMap { attr =>
-                        nameToFieldId
-                          .get(attr.name)
-                          .orElse(metadata.globalFieldIdMapping.get(attr.name))
-                          .orElse {
-                            logWarning(
-                              s"Column '${attr.name}' not found in task or scan schema," +
-                                "skipping projection")
-                            None
-                          }
-                      }
-
-                      // Deduplicate project field IDs
-                      val projectFieldIdsIdx = projectFieldIdsToPoolIndex.getOrElseUpdate(
-                        projectFieldIds, {
-                          val idx = projectFieldIdsToPoolIndex.size
-                          val listBuilder = OperatorOuterClass.ProjectFieldIdList.newBuilder()
-                          projectFieldIds.foreach(id => listBuilder.addFieldIds(id))
-                          icebergScanBuilder.addProjectFieldIdsPool(listBuilder.build())
-                          idx
-                        })
-                      taskBuilder.setProjectFieldIdsIdx(projectFieldIdsIdx)
-                    } catch {
-                      case e: Exception =>
-                        val msg =
-                          "Iceberg reflection failure: " +
-                            "Failed to extract schema from FileScanTask: " +
-                            s"${e.getMessage}"
-                        logError(msg)
-                        throw new RuntimeException(msg, e)
-                    }
-
-                    // Deduplicate delete files
-                    val deleteFilesList =
-                      extractDeleteFilesList(task, contentFileClass, fileScanTaskClass)
-                    if (deleteFilesList.nonEmpty) {
-                      val deleteFilesIdx = deleteFilesToPoolIndex.getOrElseUpdate(
-                        deleteFilesList, {
-                          val idx = deleteFilesToPoolIndex.size
-                          val listBuilder = OperatorOuterClass.DeleteFileList.newBuilder()
-                          deleteFilesList.foreach(df => listBuilder.addDeleteFiles(df))
-                          icebergScanBuilder.addDeleteFilesPool(listBuilder.build())
-                          idx
-                        })
-                      taskBuilder.setDeleteFilesIdx(deleteFilesIdx)
-                    }
-
-                    // Extract and deduplicate residual expression
-                    val residualExprOpt =
-                      try {
-                        val residualMethod = contentScanTaskClass.getMethod("residual")
-                        val residualExpr = residualMethod.invoke(task)
-
-                        val catalystExpr = convertIcebergExpression(residualExpr, scan.output)
-
-                        catalystExpr.flatMap { expr =>
-                          exprToProto(expr, scan.output, binding = false)
-                        }
-                      } catch {
-                        case e: Exception =>
-                          logWarning(
-                            "Failed to extract residual expression from FileScanTask: " +
-                              s"${e.getMessage}")
-                          None
-                      }
-
-                    residualExprOpt.foreach { residualExpr =>
-                      val residualIdx = residualToPoolIndex.getOrElseUpdate(
-                        Some(residualExpr), {
-                          val idx = residualToPoolIndex.size
-                          icebergScanBuilder.addResidualPool(residualExpr)
-                          idx
-                        })
-                      taskBuilder.setResidualIdx(residualIdx)
-                    }
-
-                    // Serialize partition spec and data (field definitions, transforms, values)
-                    serializePartitionData(
-                      task,
-                      contentScanTaskClass,
-                      fileScanTaskClass,
-                      taskBuilder,
-                      icebergScanBuilder,
-                      partitionTypeToPoolIndex,
-                      partitionSpecToPoolIndex,
-                      partitionDataToPoolIndex)
-
-                    // Deduplicate name mapping
-                    metadata.nameMapping.foreach { nm =>
-                      val nmIdx = nameMappingToPoolIndex.getOrElseUpdate(
-                        nm, {
-                          val idx = nameMappingToPoolIndex.size
-                          icebergScanBuilder.addNameMappingPool(nm)
-                          idx
-                        })
-                      taskBuilder.setNameMappingIdx(nmIdx)
-                    }
-
-                    partitionBuilder.addFileScanTasks(taskBuilder.build())
-                  }
-                }
-              }
-            }
-
-            val builtPartition = partitionBuilder.build()
-            icebergScanBuilder.addFilePartitions(builtPartition)
-          }
-        case _ =>
-      }
-    } catch {
-      case e: Exception =>
-        val msg =
-          "Iceberg reflection failure: Failed to extract FileScanTasks from Iceberg scan RDD: " +
-            s"${e.getMessage}"
-        logError(msg, e)
-        return None
-    }
-
-    // Log deduplication summary
-    val allPoolSizes = Seq(
-      schemaToPoolIndex.size,
-      partitionTypeToPoolIndex.size,
-      partitionSpecToPoolIndex.size,
-      nameMappingToPoolIndex.size,
-      projectFieldIdsToPoolIndex.size,
-      partitionDataToPoolIndex.size,
-      deleteFilesToPoolIndex.size,
-      residualToPoolIndex.size)
-
-    val avgDedup = if (totalTasks == 0) {
-      "0.0"
-    } else {
-      // Filter out empty pools - they shouldn't count as 100% dedup
-      val nonEmptyPools = allPoolSizes.filter(_ > 0)
-      if (nonEmptyPools.isEmpty) {
-        "0.0"
-      } else {
-        val avgUnique = nonEmptyPools.sum.toDouble / nonEmptyPools.length
-        f"${(1.0 - avgUnique / totalTasks) * 100}%.1f"
-      }
-    }
-
-    // Calculate partition data pool size in bytes (protobuf format)
-    val partitionDataPoolBytes = icebergScanBuilder.getPartitionDataPoolList.asScala
-      .map(_.getSerializedSize)
-      .sum
-
-    logInfo(s"IcebergScan: $totalTasks tasks, ${allPoolSizes.size} pools ($avgDedup% avg dedup)")
-    if (partitionDataToPoolIndex.nonEmpty) {
-      logInfo(
-        s"  Partition data pool: ${partitionDataToPoolIndex.size} unique values, " +
-          s"$partitionDataPoolBytes bytes (protobuf)")
-    }
+    // Create a minimal placeholder IcebergScan.
+    // The actual FileScanTasks will be serialized per-partition at execution time
+    // in buildPerPartitionIcebergBytes() and passed via icebergTaskBytes.
+    // This placeholder is only used for Rust to identify the IcebergScan node to replace.
+    logInfo(
+      "IcebergScan: Creating placeholder (tasks will be provided per-partition at execution)")
 
     builder.clearChildren()
     Some(builder.setIcebergScan(icebergScanBuilder).build())
@@ -1041,5 +948,164 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
 
     // Create the CometIcebergNativeScanExec using the companion object's apply method
     CometIcebergNativeScanExec(nativeOp, op.wrapped, op.session, metadataLocation, metadata)
+  }
+
+  /**
+   * Extracts InputPartitions for each partition separately to avoid serializing all tasks to all
+   * executors. Each executor receives only its partition's tasks instead of all N x M tasks (N
+   * partitions x M tasks/partition).
+   */
+  def buildPerPartitionBytes(
+      icebergScan: org.apache.spark.sql.comet.CometIcebergNativeScanExec,
+      numPartitions: Int): Array[Array[Byte]] = {
+
+    // Get the original BatchScanExec
+    val batchScan = icebergScan.originalPlan
+    val inputRDD = batchScan.inputRDD
+      .asInstanceOf[org.apache.spark.sql.execution.datasources.v2.DataSourceRDD]
+    val allPartitions = inputRDD.partitions
+
+    if (allPartitions.length != numPartitions) {
+      throw new org.apache.comet.CometRuntimeException(
+        s"Partition count mismatch: expected $numPartitions, got ${allPartitions.length}")
+    }
+
+    allPartitions.zipWithIndex.map { case (partition, idx) =>
+      try {
+        // Extract just this partition's InputPartitions
+        val inputPartitions = partition
+          .asInstanceOf[org.apache.spark.sql.execution.datasources.v2.DataSourceRDDPartition]
+          .inputPartitions
+
+        // Serialize using the same logic as convert(), but only for this partition
+        val bytes = serializePartitionInputs(
+          icebergScan.output,
+          icebergScan.nativeIcebergScanMetadata,
+          inputPartitions,
+          idx)
+
+        bytes
+      } catch {
+        case e: Exception =>
+          throw new org.apache.comet.CometRuntimeException(
+            s"Failed to serialize partition $idx: ${e.getMessage}",
+            e)
+      }
+    }.toArray
+  }
+
+  /**
+   * Serializes per-partition IcebergScan data for multiple scans using protobuf. Each entry maps
+   * plan_id to just the per-partition data (FileScanTasks and pools), avoiding duplication of
+   * common metadata across partitions.
+   */
+  def buildMultiScanBytesForPartition(
+      perScanBytes: Map[Int, Array[Array[Byte]]],
+      partitionIdx: Int): Array[Byte] = {
+
+    val replacementsBuilder = OperatorOuterClass.IcebergScanReplacements.newBuilder()
+
+    perScanBytes.foreach { case (planId, allPartitionBytes) =>
+      val partitionBytes = allPartitionBytes(partitionIdx)
+      val partitionData = OperatorOuterClass.IcebergFilePartitionData.parseFrom(partitionBytes)
+      replacementsBuilder.putReplacements(planId, partitionData)
+    }
+
+    val replacements = replacementsBuilder.build()
+    replacements.toByteArray
+  }
+
+  /**
+   * Serializes a single partition's InputPartitions to IcebergFilePartitionData protobuf.
+   * Contains only per-partition data (file_partitions and deduplication pools), not common
+   * metadata which stays in the placeholder IcebergScan.
+   */
+  def serializePartitionInputs(
+      output: Seq[Attribute],
+      metadata: CometIcebergNativeScanMetadata,
+      inputPartitions: Seq[org.apache.spark.sql.connector.read.InputPartition],
+      partitionIndex: Int): Array[Byte] = {
+
+    val icebergScanBuilder = OperatorOuterClass.IcebergScan.newBuilder()
+
+    // Per-partition deduplication structures
+    val schemaToPoolIndex = mutable.HashMap[AnyRef, Int]()
+    val partitionTypeToPoolIndex = mutable.HashMap[String, Int]()
+    val partitionSpecToPoolIndex = mutable.HashMap[String, Int]()
+    val nameMappingToPoolIndex = mutable.HashMap[String, Int]()
+    val projectFieldIdsToPoolIndex = mutable.HashMap[Seq[Int], Int]()
+    val partitionDataToPoolIndex = mutable.HashMap[String, Int]()
+    val deleteFilesToPoolIndex =
+      mutable.HashMap[Seq[OperatorOuterClass.IcebergDeleteFile], Int]()
+    val residualToPoolIndex = mutable.HashMap[Option[Expr], Int]()
+
+    // Process this partition's InputPartitions
+    val partitionBuilder = OperatorOuterClass.IcebergFilePartition.newBuilder()
+
+    inputPartitions.foreach { inputPartition =>
+      val inputPartClass = inputPartition.getClass
+
+      try {
+        val taskGroupMethod = inputPartClass.getDeclaredMethod("taskGroup")
+        taskGroupMethod.setAccessible(true)
+        val taskGroup = taskGroupMethod.invoke(inputPartition)
+
+        val taskGroupClass = taskGroup.getClass
+        val tasksMethod = taskGroupClass.getMethod("tasks")
+        val tasksCollection =
+          tasksMethod.invoke(taskGroup).asInstanceOf[java.util.Collection[_]]
+
+        tasksCollection.asScala.foreach { task =>
+          try {
+            val fileScanTask = serializeFileScanTask(
+              task,
+              output,
+              metadata,
+              icebergScanBuilder,
+              schemaToPoolIndex,
+              partitionTypeToPoolIndex,
+              partitionSpecToPoolIndex,
+              nameMappingToPoolIndex,
+              projectFieldIdsToPoolIndex,
+              partitionDataToPoolIndex,
+              deleteFilesToPoolIndex,
+              residualToPoolIndex)
+
+            partitionBuilder.addFileScanTasks(fileScanTask)
+          } catch {
+            case e: Exception =>
+              logWarning(
+                s"Failed to serialize task in partition $partitionIndex: ${e.getMessage}")
+          }
+        }
+      } catch {
+        case e: Exception =>
+          logWarning(
+            "Failed to extract tasks from InputPartition in partition " +
+              s"$partitionIndex: ${e.getMessage}")
+      }
+    }
+
+    // Build IcebergFilePartitionData with only per-partition data
+    val partitionData = OperatorOuterClass.IcebergFilePartitionData
+      .newBuilder()
+      .setFilePartition(partitionBuilder.build())
+      .addAllSchemaPool(icebergScanBuilder.getSchemaPoolList)
+      .addAllPartitionTypePool(icebergScanBuilder.getPartitionTypePoolList)
+      .addAllPartitionSpecPool(icebergScanBuilder.getPartitionSpecPoolList)
+      .addAllNameMappingPool(icebergScanBuilder.getNameMappingPoolList)
+      .addAllProjectFieldIdsPool(icebergScanBuilder.getProjectFieldIdsPoolList)
+      .addAllPartitionDataPool(icebergScanBuilder.getPartitionDataPoolList)
+      .addAllDeleteFilesPool(icebergScanBuilder.getDeleteFilesPoolList)
+      .addAllResidualPool(icebergScanBuilder.getResidualPoolList)
+      .build()
+
+    // Serialize IcebergFilePartitionData to bytes
+    val size = partitionData.getSerializedSize
+    val bytes = new Array[Byte](size)
+    val codedOutput = com.google.protobuf.CodedOutputStream.newInstance(bytes)
+    partitionData.writeTo(codedOutput)
+    codedOutput.checkNoSpaceLeft()
+    bytes
   }
 }

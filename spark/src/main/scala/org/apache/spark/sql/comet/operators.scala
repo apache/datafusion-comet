@@ -293,7 +293,8 @@ abstract class CometNativeExec extends CometExec {
         def createCometExecIter(
             inputs: Seq[Iterator[ColumnarBatch]],
             numParts: Int,
-            partitionIndex: Int): CometExecIterator = {
+            partitionIndex: Int,
+            taskBytes: Option[Array[Byte]] = None): CometExecIterator = {
           val it = new CometExecIterator(
             CometExec.newIterId,
             inputs,
@@ -303,7 +304,8 @@ abstract class CometNativeExec extends CometExec {
             numParts,
             partitionIndex,
             broadcastedHadoopConfForEncryption,
-            encryptedFilePaths)
+            encryptedFilePaths,
+            taskBytes)
 
           setSubqueries(it.id, this)
 
@@ -395,11 +397,60 @@ abstract class CometNativeExec extends CometExec {
           throw new CometRuntimeException(s"No input for CometNativeExec:\n $this")
         }
 
-        if (inputs.nonEmpty) {
-          ZippedPartitionsRDD(sparkContext, inputs.toSeq)(createCometExecIter)
-        } else {
+        // Check if this plan has IcebergScan children - if so, use per-partition serialization
+        // Only collect IcebergScans at this boundary level, not nested inside other CometNativeExec
+        // operators with their own serializedPlanOpt (those handle their own extraction)
+        def collectIcebergScansAtBoundary(plan: SparkPlan): Seq[CometIcebergNativeScanExec] = {
+          plan match {
+            case icebergScan: CometIcebergNativeScanExec =>
+              Seq(icebergScan)
+            case nativeExec: CometNativeExec
+                if nativeExec != this && nativeExec.serializedPlanOpt.isDefined =>
+              // Stop at nested boundary nodes - they handle their own IcebergScans
+              Seq.empty
+            case other =>
+              other.children.flatMap(collectIcebergScansAtBoundary)
+          }
+        }
+
+        val icebergScans = collectIcebergScansAtBoundary(this)
+
+        if (icebergScans.nonEmpty) {
           val partitionNum = firstNonBroadcastPlanNumPartitions
-          CometExecRDD(sparkContext, partitionNum)(createCometExecIter)
+
+          // Build per-partition bytes for ALL IcebergScans
+          val perScanBytes: Map[Int, Array[Array[Byte]]] = icebergScans.map { scan =>
+            scan.nativeOp.getPlanId -> org.apache.comet.serde.operator.CometIcebergNativeScan
+              .buildPerPartitionBytes(scan, partitionNum)
+          }.toMap
+
+          // For each partition, build map of all scans' bytes
+          val perPartitionMultiScanBytes = Array.tabulate(partitionNum) { partitionIdx =>
+            org.apache.comet.serde.operator.CometIcebergNativeScan
+              .buildMultiScanBytesForPartition(perScanBytes, partitionIdx)
+          }
+
+          if (inputs.nonEmpty) {
+            // Mixed-input: IcebergScan(s) + broadcast/shuffle
+            ZippedPartitionsWithIcebergRDD(
+              sparkContext,
+              inputs.toSeq,
+              perPartitionMultiScanBytes)(createCometExecIter)
+          } else {
+            // Pure IcebergScan(s) - single or multiple
+            CometExecRDD(sparkContext, partitionNum, perPartitionMultiScanBytes)(
+              createCometExecIter)
+          }
+        } else {
+          // No IcebergScans - regular execution
+          if (inputs.nonEmpty) {
+            ZippedPartitionsRDD(sparkContext, inputs.toSeq)((inputs, numParts, idx) =>
+              createCometExecIter(inputs, numParts, idx))
+          } else {
+            val partitionNum = firstNonBroadcastPlanNumPartitions
+            CometExecRDD(sparkContext, partitionNum)((inputs, numParts, idx) =>
+              createCometExecIter(inputs, numParts, idx))
+          }
         }
     }
   }

@@ -69,7 +69,8 @@ class CometExecIterator(
     numParts: Int,
     partitionIndex: Int,
     broadcastedHadoopConfForEncryption: Option[Broadcast[SerializableConfiguration]] = None,
-    encryptedFilePaths: Seq[String] = Seq.empty)
+    encryptedFilePaths: Seq[String] = Seq.empty,
+    icebergTaskBytes: Option[Array[Byte]] = None)
     extends Iterator[ColumnarBatch]
     with Logging {
 
@@ -123,7 +124,8 @@ class CometExecIterator(
       memoryConfig.memoryLimitPerTask,
       taskAttemptId,
       taskCPUs,
-      keyUnwrapper)
+      keyUnwrapper,
+      icebergTaskBytes = icebergTaskBytes.orNull)
   }
 
   private var nextBatch: Option[ColumnarBatch] = None

@@ -1144,13 +1144,13 @@ impl PhysicalPlanner {
                 let metadata_location = scan.metadata_location.clone();
 
                 debug_assert!(
-                    !scan.file_partitions.is_empty(),
-                    "IcebergScan must have at least one file partition. This indicates a bug in Scala serialization."
+                    scan.file_partition.is_some(),
+                    "IcebergScan must have file_partition populated. This indicates a bug in per-partition merge logic."
                 );
 
                 let tasks = parse_file_scan_tasks(
                     scan,
-                    &scan.file_partitions[self.partition as usize].file_scan_tasks,
+                    &scan.file_partition.as_ref().unwrap().file_scan_tasks,
                 )?;
                 let file_task_groups = vec![tasks];
 

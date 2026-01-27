@@ -163,8 +163,8 @@ message IcebergScan {
   // Catalog-specific configuration for FileIO (credentials, S3/GCS config, etc.)
   map<string, string> catalog_properties = 2;
 
-  // Pre-planned file scan tasks grouped by Spark partition
-  repeated IcebergFilePartition file_partitions = 3;
+  // File scan tasks for this partition (exactly one partition per IcebergScan after merging)
+  IcebergFilePartition file_partition = 3;
 
   // Table metadata file path for FileIO initialization
   string metadata_location = 4;
@@ -405,4 +405,25 @@ message Window {
   repeated spark.spark_expression.Expr order_by_list = 2;
   repeated spark.spark_expression.Expr partition_by_list = 3;
   Operator child = 4;
+}
+
+// Per-partition file scan tasks and deduplication pools for IcebergScan.
+// Contains only the data that varies per partition, while common metadata
+// (required_schema, catalog_properties, metadata_location) stays in the placeholder.
+message IcebergFilePartitionData {
+  IcebergFilePartition file_partition = 1;
+  repeated string schema_pool = 2;
+  repeated string partition_type_pool = 3;
+  repeated string partition_spec_pool = 4;
+  repeated string name_mapping_pool = 5;
+  repeated ProjectFieldIdList project_field_ids_pool = 6;
+  repeated PartitionData partition_data_pool = 7;
+  repeated DeleteFileList delete_files_pool = 8;
+  repeated spark.spark_expression.Expr residual_pool = 9;
+}
+
+// Per-partition IcebergScan replacements for multiple tables in joins/unions.
+// Maps plan_id to just the per-partition data, avoiding duplicate common metadata.
+message IcebergScanReplacements {
+  map<uint32, IcebergFilePartitionData> replacements = 1;
 }
