@@ -1137,14 +1137,10 @@ impl PhysicalPlanner {
                     if scan.split_mode.unwrap_or(false) {
                         // Split mode: extract from embedded common + single partition
                         let common = scan.common.as_ref().ok_or_else(|| {
-                            GeneralError(
-                                "split_mode=true but common data missing".into(),
-                            )
+                            GeneralError("split_mode=true but common data missing".into())
                         })?;
                         let partition = scan.partition.as_ref().ok_or_else(|| {
-                            GeneralError(
-                                "split_mode=true but partition data missing".into(),
-                            )
+                            GeneralError("split_mode=true but partition data missing".into())
                         })?;
 
                         let schema =
@@ -1155,10 +1151,8 @@ impl PhysicalPlanner {
                             .map(|(k, v)| (k.clone(), v.clone()))
                             .collect();
                         let metadata_loc = common.metadata_location.clone();
-                        let tasks = parse_file_scan_tasks_from_common(
-                            common,
-                            &partition.file_scan_tasks,
-                        )?;
+                        let tasks =
+                            parse_file_scan_tasks_from_common(common, &partition.file_scan_tasks)?;
 
                         (schema, catalog_props, metadata_loc, tasks)
                     } else {
