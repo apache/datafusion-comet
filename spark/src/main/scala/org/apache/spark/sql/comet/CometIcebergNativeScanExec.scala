@@ -152,19 +152,14 @@ case class CometIcebergNativeScanExec(
     baseMetrics ++ icebergMetrics + ("num_splits" -> numSplitsMetric)
   }
 
-  /** Uses split mode RDD when split data is available, otherwise falls back to legacy mode. */
+  /** Executes using split mode RDD - split data must be available. */
   override def doExecuteColumnar(): RDD[ColumnarBatch] = {
-    if (commonData.nonEmpty && perPartitionData.nonEmpty) {
-      val nativeMetrics = CometMetricNode.fromCometPlan(this)
-      CometIcebergSplitRDD(
-        sparkContext,
-        commonData,
-        perPartitionData,
-        output.length,
-        nativeMetrics)
-    } else {
-      super.doExecuteColumnar()
-    }
+    require(
+      commonData.nonEmpty && perPartitionData.nonEmpty,
+      "IcebergScan requires split serialization data (commonData and perPartitionData)")
+
+    val nativeMetrics = CometMetricNode.fromCometPlan(this)
+    CometIcebergSplitRDD(sparkContext, commonData, perPartitionData, output.length, nativeMetrics)
   }
 
   override protected def doCanonicalize(): CometIcebergNativeScanExec = {

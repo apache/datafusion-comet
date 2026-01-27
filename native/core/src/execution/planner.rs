@@ -1133,67 +1133,59 @@ impl PhysicalPlanner {
             }
             OpStruct::IcebergScan(scan) => {
                 // Determine if we're in split mode or legacy mode
-                let (required_schema, catalog_properties, metadata_location, tasks) = if scan
-                    .split_mode
-                    .unwrap_or(false)
-                {
-                    // Split mode: extract from embedded common + single partition
-                    let common = scan.common.as_ref().ok_or_else(|| {
-                        GeneralError("split_mode=true but common data missing".into())
-                    })?;
-                    let partition = scan.partition.as_ref().ok_or_else(|| {
-                        GeneralError("split_mode=true but partition data missing".into())
-                    })?;
+                let (required_schema, catalog_properties, metadata_location, tasks) =
+                    if scan.split_mode.unwrap_or(false) {
+                        // Split mode: extract from embedded common + single partition
+                        let common = scan.common.as_ref().ok_or_else(|| {
+                            GeneralError("split_mode=true but common data missing".into())
+                        })?;
+                        let partition = scan.partition.as_ref().ok_or_else(|| {
+                            GeneralError("split_mode=true but partition data missing".into())
+                        })?;
 
-                    let schema =
-                        convert_spark_types_to_arrow_schema(common.required_schema.as_slice());
-                    let catalog_props: HashMap<String, String> = common
-                        .catalog_properties
-                        .iter()
-                        .map(|(k, v)| (k.clone(), v.clone()))
-                        .collect();
-                    let metadata_loc = common.metadata_location.clone();
-                    let tasks =
-                        parse_file_scan_tasks_from_common(common, &partition.file_scan_tasks)?;
+                        let schema =
+                            convert_spark_types_to_arrow_schema(common.required_schema.as_slice());
+                        let catalog_props: HashMap<String, String> = common
+                            .catalog_properties
+                            .iter()
+                            .map(|(k, v)| (k.clone(), v.clone()))
+                            .collect();
+                        let metadata_loc = common.metadata_location.clone();
+                        let tasks =
+                            parse_file_scan_tasks_from_common(common, &partition.file_scan_tasks)?;
 
-                    (schema, catalog_props, metadata_loc, tasks)
-                } else {
-                    // Legacy mode: all data in single message
-                    let schema =
-                        convert_spark_types_to_arrow_schema(scan.required_schema.as_slice());
-                    let catalog_props: HashMap<String, String> = scan
-                        .catalog_properties
-                        .iter()
-                        .map(|(k, v)| (k.clone(), v.clone()))
-                        .collect();
-                    let metadata_loc = scan.metadata_location.clone();
+                        (schema, catalog_props, metadata_loc, tasks)
+                    } else {
+                        // Legacy mode: all data in single message (used when IcebergScan is child of another operator)
+                        let schema =
+                            convert_spark_types_to_arrow_schema(scan.required_schema.as_slice());
+                        let catalog_props: HashMap<String, String> = scan
+                            .catalog_properties
+                            .iter()
+                            .map(|(k, v)| (k.clone(), v.clone()))
+                            .collect();
+                        let metadata_loc = scan.metadata_location.clone();
 
-                    // Check file_partitions before accessing
-                    if scan.file_partitions.is_empty() {
-                        return Err(GeneralError(format!(
-                                "IcebergScan in legacy mode (split_mode={:?}) but file_partitions is empty. \
-                                 Partition index: {}, has_common: {}, has_partition: {}",
-                                scan.split_mode,
-                                self.partition,
-                                scan.common.is_some(),
-                                scan.partition.is_some()
-                            )));
-                    }
-                    if self.partition as usize >= scan.file_partitions.len() {
-                        return Err(GeneralError(format!(
+                        if scan.file_partitions.is_empty() {
+                            return Err(GeneralError(
+                                "IcebergScan in legacy mode but file_partitions is empty".into(),
+                            ));
+                        }
+                        if self.partition as usize >= scan.file_partitions.len() {
+                            return Err(GeneralError(format!(
                             "IcebergScan partition index {} out of range (file_partitions.len={})",
                             self.partition,
                             scan.file_partitions.len()
                         )));
-                    }
+                        }
 
-                    let tasks = parse_file_scan_tasks(
-                        scan,
-                        &scan.file_partitions[self.partition as usize].file_scan_tasks,
-                    )?;
+                        let tasks = parse_file_scan_tasks(
+                            scan,
+                            &scan.file_partitions[self.partition as usize].file_scan_tasks,
+                        )?;
 
-                    (schema, catalog_props, metadata_loc, tasks)
-                };
+                        (schema, catalog_props, metadata_loc, tasks)
+                    };
 
                 let file_task_groups = vec![tasks];
 
@@ -2781,19 +2773,15 @@ fn partition_data_to_struct(
     Ok(iceberg::spec::Struct::from_iter(literals))
 }
 
-/// Converts protobuf FileScanTasks from Scala into iceberg-rust FileScanTask objects.
+/// Converts protobuf FileScanTasks from Scala into iceberg-rust FileScanTask objects (legacy mode).
 ///
-/// Each task contains a residual predicate that is used for row-group level filtering
-/// during Parquet scanning.
-///
-/// This function uses deduplication pools from the IcebergScan to avoid redundant parsing
-/// of schemas, partition specs, partition types, name mappings, and other repeated data.
+/// This function is used when IcebergScan is a child of another operator and the full
+/// IcebergScan message (with file_partitions) is serialized as part of the parent's plan.
 fn parse_file_scan_tasks(
     proto_scan: &spark_operator::IcebergScan,
     proto_tasks: &[spark_operator::IcebergFileScanTask],
 ) -> Result<Vec<iceberg::scan::FileScanTask>, ExecutionError> {
-    // Build caches upfront: for 10K tasks with 1 schema, this parses the schema
-    // once instead of 10K times, eliminating redundant JSON deserialization
+    // Build caches upfront from IcebergScan pools
     let schema_cache: Vec<Arc<iceberg::spec::Schema>> = proto_scan
         .schema_pool
         .iter()
@@ -2839,7 +2827,7 @@ fn parse_file_scan_tasks(
                         "EQUALITY_DELETES" => iceberg::spec::DataContentType::EqualityDeletes,
                         other => {
                             return Err(GeneralError(format!(
-                                "Invalid delete content type '{}'. This indicates a bug in Scala serialization.",
+                                "Invalid delete content type '{}'",
                                 other
                             )))
                         }
@@ -2860,7 +2848,6 @@ fn parse_file_scan_tasks(
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    // Partition data pool is in protobuf messages
     let results: Result<Vec<_>, _> = proto_tasks
         .iter()
         .map(|proto_task| {
@@ -2914,7 +2901,6 @@ fn parse_file_scan_tasks(
             };
 
             let partition = if let Some(partition_data_idx) = proto_task.partition_data_idx {
-                // Get partition data from protobuf pool
                 let partition_data_proto = proto_scan
                     .partition_data_pool
                     .get(partition_data_idx as usize)
@@ -2926,12 +2912,11 @@ fn parse_file_scan_tasks(
                         ))
                     })?;
 
-                // Convert protobuf PartitionData to iceberg Struct
                 match partition_data_to_struct(partition_data_proto) {
                     Ok(s) => Some(s),
                     Err(e) => {
                         return Err(ExecutionError::GeneralError(format!(
-                            "Failed to deserialize partition data from protobuf: {}",
+                            "Failed to deserialize partition data: {}",
                             e
                         )))
                     }
@@ -2984,8 +2969,13 @@ fn parse_file_scan_tasks(
     results
 }
 
-/// Parse FileScanTasks from IcebergScanCommon (split mode).
-/// Similar to parse_file_scan_tasks but reads pools from IcebergScanCommon.
+/// Converts protobuf FileScanTasks from Scala into iceberg-rust FileScanTask objects (split mode).
+///
+/// Each task contains a residual predicate that is used for row-group level filtering
+/// during Parquet scanning.
+///
+/// This function uses deduplication pools from the IcebergScanCommon to avoid redundant
+/// parsing of schemas, partition specs, partition types, name mappings, and other repeated data.
 fn parse_file_scan_tasks_from_common(
     proto_common: &spark_operator::IcebergScanCommon,
     proto_tasks: &[spark_operator::IcebergFileScanTask],

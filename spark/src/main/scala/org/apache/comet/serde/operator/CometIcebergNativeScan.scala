@@ -1072,21 +1072,20 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     val metadataLocation = nativeOp.getIcebergScan.getMetadataLocation
 
     // Retrieve split data from thread-local (set during convert())
-    val splitData = splitDataThreadLocal.get()
+    val splitData = splitDataThreadLocal.get().getOrElse {
+      throw new IllegalStateException(
+        "Programming error: split data not available. " +
+          "buildAndStoreSplitData() should have been called during convert().")
+    }
     splitDataThreadLocal.remove()
 
-    splitData match {
-      case Some(data) =>
-        CometIcebergNativeScanExec(
-          nativeOp,
-          op.wrapped,
-          op.session,
-          metadataLocation,
-          metadata,
-          data.commonBytes,
-          data.perPartitionBytes)
-      case None =>
-        CometIcebergNativeScanExec(nativeOp, op.wrapped, op.session, metadataLocation, metadata)
-    }
+    CometIcebergNativeScanExec(
+      nativeOp,
+      op.wrapped,
+      op.session,
+      metadataLocation,
+      metadata,
+      splitData.commonBytes,
+      splitData.perPartitionBytes)
   }
 }
