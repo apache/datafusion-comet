@@ -355,9 +355,16 @@ abstract class CometNativeExec extends CometExec {
             case Some(perPartitionData) =>
               // Parse the base plan, inject partition data, and re-serialize
               val basePlan = OperatorOuterClass.Operator.parseFrom(serializedPlanCopy)
-              val injected = IcebergPartitionInjector.injectPartitionData(
-                basePlan,
-                perPartitionData(partitionIndex))
+              // For joins/unions, partition indices may exceed perPartitionData bounds.
+              // In that case, inject an empty partition (no file tasks to read).
+              val partitionBytes = if (partitionIndex < perPartitionData.length) {
+                perPartitionData(partitionIndex)
+              } else {
+                // Create empty IcebergFilePartition
+                OperatorOuterClass.IcebergFilePartition.newBuilder().build().toByteArray
+              }
+              val injected =
+                IcebergPartitionInjector.injectPartitionData(basePlan, partitionBytes)
               IcebergPartitionInjector.serializeOperator(injected)
             case None =>
               serializedPlanCopy
