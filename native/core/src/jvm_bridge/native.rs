@@ -18,7 +18,6 @@
 use jni::{
     errors::Result as JniResult,
     objects::{JClass, JStaticMethodID},
-    signature::ReturnType,
     JNIEnv,
 };
 
@@ -26,49 +25,19 @@ use jni::{
 pub struct Native<'a> {
     pub class: JClass<'a>,
     pub method_get_iceberg_partition_tasks_internal: JStaticMethodID,
-    pub method_get_iceberg_partition_tasks_internal_ret: ReturnType,
 }
 
 impl<'a> Native<'a> {
     pub const JVM_CLASS: &'static str = "org/apache/comet/NativeJNIBridge";
 
     pub fn new(env: &mut JNIEnv<'a>) -> JniResult<Native<'a>> {
-        eprintln!("→ Initializing Native JNI class...");
-        eprintln!("  Looking up class: {}", Self::JVM_CLASS);
+        let class = env.find_class(Self::JVM_CLASS)?;
 
-        let class = match env.find_class(Self::JVM_CLASS) {
-            Ok(c) => {
-                eprintln!("  ✓ Found class: {}", Self::JVM_CLASS);
-                c
-            }
-            Err(e) => {
-                eprintln!("  ✗ Failed to find class: {}", Self::JVM_CLASS);
-                eprintln!("  Error: {:?}", e);
-                return Err(e);
-            }
-        };
+        let method =
+            env.get_static_method_id(Self::JVM_CLASS, "getIcebergPartitionTasksInternal", "()[B")?;
 
-        eprintln!("  Looking up method: getIcebergPartitionTasksInternal with signature ()[B");
-        let method = match env.get_static_method_id(
-            Self::JVM_CLASS,
-            "getIcebergPartitionTasksInternal",
-            "()[B",
-        ) {
-            Ok(m) => {
-                eprintln!("  ✓ Found method: getIcebergPartitionTasksInternal");
-                m
-            }
-            Err(e) => {
-                eprintln!("  ✗ Failed to find method: getIcebergPartitionTasksInternal");
-                eprintln!("  Error: {:?}", e);
-                return Err(e);
-            }
-        };
-
-        eprintln!("✓ Native JNI class initialized successfully");
         Ok(Native {
             method_get_iceberg_partition_tasks_internal: method,
-            method_get_iceberg_partition_tasks_internal_ret: ReturnType::Array,
             class,
         })
     }

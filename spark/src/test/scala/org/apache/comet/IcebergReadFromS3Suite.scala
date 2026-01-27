@@ -184,7 +184,7 @@ class IcebergReadFromS3Suite extends CometS3TestBase {
           id,
           CONCAT('data_', CAST(id AS STRING)) as data,
           (id % 100) as partition_id
-        FROM range(500000)
+        FROM range(5000000)
       """)
 
       checkIcebergNativeScan(

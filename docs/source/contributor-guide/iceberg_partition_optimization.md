@@ -26,6 +26,7 @@ This document explains how the Iceberg native scan optimization ensures that **e
 ## The Problem: Broadcasting Waste
 
 ### Old Approach (Before Optimization)
+
 In a traditional distributed query execution:
 
 1. **Driver serializes ALL partition tasks** into a protobuf message
@@ -35,12 +36,14 @@ In a traditional distributed query execution:
 5. **Result: 99% waste for large N**
 
 ### Example
+
 - Table with **1000 partitions**
 - Each partition has **100KB of task data** (file paths, partition values, schemas, etc.)
 - Total task data: **100MB**
 - **Problem**: EVERY executor receives all 100MB, but only uses ~100KB
 
 For a cluster with 100 executors:
+
 - **Total network transfer**: 100 executors × 100MB = **10GB**
 - **Useful data**: 100 executors × 100KB = **10MB**
 - **Waste**: 99% of transferred data is discarded!
@@ -82,6 +85,7 @@ scan.wrapped.inputRDD match {
 ```
 
 **What happens here:**
+
 1. During query planning on the **driver**, the code iterates through each Spark partition
 2. For each partition `i`, it extracts **only the FileScanTasks that belong to that partition**
 3. These tasks are serialized to protobuf bytes: `IcebergFilePartition` → `Array[Byte]`
@@ -120,6 +124,7 @@ class IcebergScanRDD(
 ```
 
 **What happens here:**
+
 1. **Custom Partition class**: `IcebergScanPartition` carries its own `taskBytes: Array[Byte]`
 2. **getPartitions()**: Creates N partition objects, each with only its own task data
 3. **Spark's RDD serialization**: When Spark schedules tasks, it serializes the `Partition` object and sends it to the executor
@@ -130,6 +135,7 @@ class IcebergScanRDD(
 #### Why This Works: Spark's Task Serialization
 
 Spark's task scheduling works as follows:
+
 1. **Driver** calls `getPartitions()` → creates array of Partition objects
 2. **Scheduler** assigns tasks to executors: "Executor A: compute partition 5", "Executor B: compute partition 8", etc.
 3. **Task serialization**: When sending the task to an executor, Spark serializes:
@@ -176,6 +182,7 @@ if (useJniTaskRetrieval) {
 **What happens here:**
 
 #### On the Executor (JVM side):
+
 1. **Receive**: Executor receives `IcebergScanPartition(5, taskBytes)` from Spark
 2. **Thread-local storage**: Task bytes stored in `ThreadLocal[Array[Byte]]` via `Native.setIcebergPartitionTasks(taskBytes)`
 3. **Create iterator**: Native execution plan is initialized
@@ -203,6 +210,7 @@ object Native {
 ```
 
 **Why Thread-local?**
+
 - Multiple tasks may run concurrently on the same executor JVM
 - Each task runs in its own thread
 - Thread-local storage ensures each task only accesses **its own partition data**
@@ -234,6 +242,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_getIcebergPartitionTa
 ```
 
 **What happens here:**
+
 1. Native Iceberg planner calls `getIcebergPartitionTasks()` via JNI
 2. This calls back to `Native.getIcebergPartitionTasksInternal()` on JVM side
 3. Retrieves the `Array[Byte]` from thread-local storage
@@ -277,12 +286,14 @@ override def convertBlock(): CometNativeExec = {
 ```
 
 The `serializedPlanOpt` contains the **operator DAG structure**:
+
 - Scan → Filter → Project, etc.
 - Schema definitions
 - Filter predicates
 - Projection columns
 
 But it does **NOT** contain partition-specific FileScanTasks because:
+
 1. It's created **once** on the driver
 2. It's **shared** by all executors
 3. It's the same for partition 0, partition 5, partition 1000, etc.
@@ -360,9 +371,9 @@ You might ask: **"Why not include partition-specific data in the protobuf?"**
 
 If we embedded partition-specific data in protobuf, we'd need:
 
-| Approach | Implications |
-|----------|--------------|
-| **Current: JNI Callback** | ✓ One shared plan protobuf<br>✓ Leverages existing Comet architecture<br>✓ Partition data via RDD (our optimization)<br>⚠ Extra JNI roundtrip (minimal overhead) |
+| Approach                           | Implications                                                                                                                                                                                     |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Current: JNI Callback**          | ✓ One shared plan protobuf<br>✓ Leverages existing Comet architecture<br>✓ Partition data via RDD (our optimization)<br>⚠ Extra JNI roundtrip (minimal overhead)                                 |
 | **Alternative: Embed in Protobuf** | ✗ Would need N different protobuf plans (one per partition)<br>✗ Each executor receives different protobuf<br>✗ Breaks Comet's shared plan model<br>✗ Major architectural restructuring required |
 
 ### The JNI Callback as a Bridge
@@ -414,6 +425,7 @@ The JNI callback overhead is **minimal** compared to the optimization benefits:
 - **Memory savings**: 100-200× reduction in executor memory (ongoing)
 
 For a table with 10,000 partitions:
+
 - JNI overhead: 10,000 partitions × 10μs = **0.1 seconds total**
 - Network savings: 100GB → 500MB = **99.5 GB saved**
 - Memory savings: 100GB → 500MB executor memory = **199.5 GB saved**
@@ -499,14 +511,17 @@ Without the JNI callback, we would have to fundamentally restructure how Comet s
 ### Network Transfer Savings
 
 **Before optimization:**
+
 - Total data per executor = N × avg_task_size
 - Total cluster network = num_executors × N × avg_task_size
 
 **After optimization:**
+
 - Total data per executor = avg_tasks_per_executor × avg_task_size
 - Total cluster network = num_executors × avg_tasks_per_executor × avg_task_size
 
 **Savings ratio:**
+
 ```
 savings = 1 - (avg_tasks_per_executor / N)
 ```
@@ -516,18 +531,21 @@ For evenly distributed data: `avg_tasks_per_executor ≈ N / num_executors`
 ### Example: Large Table Scan
 
 **Scenario:**
+
 - Table with 10,000 partitions
 - 200 executors
 - 50KB average task data per partition
 - Total task metadata: 10,000 × 50KB = **500MB**
 
 **Before optimization:**
+
 - Each executor receives: **500MB** (all partition data)
 - Total network transfer: 200 × 500MB = **100GB**
 - Each executor uses: ~50 partitions × 50KB = **2.5MB** (0.5%)
 - Wasted transfer: **99.5%**
 
 **After optimization:**
+
 - Each executor receives: ~50 × 50KB = **2.5MB** (only its partitions)
 - Total network transfer: 200 × 2.5MB = **500MB**
 - Each executor uses: **2.5MB** (100%)
@@ -536,11 +554,13 @@ For evenly distributed data: `avg_tasks_per_executor ≈ N / num_executors`
 ### Memory Pressure Reduction
 
 **Before:**
+
 - Driver memory: 500MB (serialize all tasks)
 - Executor memory: 500MB × 200 = **100GB** across cluster
 - GC pressure: High (500MB objects per executor)
 
 **After:**
+
 - Driver memory: 500MB (same, but partitioned)
 - Executor memory: 2.5MB × 200 = **500MB** across cluster
 - GC pressure: Low (2.5MB objects per executor)
@@ -559,6 +579,7 @@ Spark's broadcast variables would still send all data to all executors. The opti
 **Problem**: Need to pass partition-specific data from JVM to native code during execution.
 
 **Options considered:**
+
 1. **Pass as function parameter**: Would require modifying the entire call chain
 2. **Global state**: Unsafe with concurrent tasks
 3. **Thread-local**: ✓ Safe, simple, minimal API changes
@@ -572,12 +593,14 @@ Spark's broadcast variables would still send all data to all executors. The opti
 ### 4. What About Protobuf Deduplication?
 
 The code still uses deduplication pools (CometIcebergNativeScan.scala:696-705) to reduce redundancy **within each partition's task data**:
+
 - Schema pool
 - Partition spec pool
 - Delete files pool
 - etc.
 
 This is **orthogonal** to the partition distribution optimization. Both work together:
+
 - **Deduplication**: Reduces task data size within each partition
 - **Partition-specific distribution**: Ensures executors only receive their partition data
 
@@ -586,6 +609,7 @@ This is **orthogonal** to the partition distribution optimization. Both work tog
 ## Code Flow Summary
 
 ### Query Planning (Driver)
+
 1. `CometScanRule` → creates `CometBatchScanExec` with Iceberg metadata
 2. `CometIcebergNativeScan.convert()` → serializes plan to protobuf
    - Extracts FileScanTasks per partition
@@ -600,6 +624,7 @@ This is **orthogonal** to the partition distribution optimization. Both work tog
    - Passes `partitionTasks` map to RDD constructor
 
 ### Task Execution (Executors)
+
 1. Spark schedules task for partition `i` on executor
 2. Spark serializes and sends `IcebergScanPartition(i, taskBytes_i)` to executor
 3. `IcebergScanRDD.compute()` called with partition object
@@ -620,6 +645,7 @@ This is **orthogonal** to the partition distribution optimization. Both work tog
 To verify the optimization is working:
 
 1. **Check logs for partition data distribution:**
+
    ```
    INFO CometIcebergNativeScan: Cached N partitions (avg X bytes/partition)
    ```
