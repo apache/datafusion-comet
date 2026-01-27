@@ -55,9 +55,61 @@ import org.apache.comet.{CometConf, CometExecIterator, CometRuntimeException, Co
 import org.apache.comet.CometSparkSessionExtensions.{isCometShuffleEnabled, withInfo}
 import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.serde.{CometOperatorSerde, Compatible, Incompatible, OperatorOuterClass, SupportLevel, Unsupported}
-import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, Operator}
+import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, IcebergFilePartition, Operator}
 import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, supportedSortType}
 import org.apache.comet.serde.operator.CometSink
+
+/**
+ * Helper object for building per-partition native plans with injected IcebergScan partition data.
+ */
+private[comet] object IcebergPartitionInjector {
+
+  /**
+   * Injects partition data into an Operator tree by finding IcebergScan nodes with
+   * split_mode=true and empty partition, then setting the partition field.
+   *
+   * @param op
+   *   The operator tree to modify
+   * @param partitionBytes
+   *   Serialized IcebergFilePartition bytes to inject
+   * @return
+   *   New operator tree with partition data injected
+   */
+  def injectPartitionData(op: Operator, partitionBytes: Array[Byte]): Operator = {
+    val builder = op.toBuilder
+
+    // If this is an IcebergScan with split_mode=true and no partition, inject it
+    if (op.hasIcebergScan) {
+      val scan = op.getIcebergScan
+      if (scan.getSplitMode && !scan.hasPartition) {
+        val partition = IcebergFilePartition.parseFrom(partitionBytes)
+        val scanBuilder = scan.toBuilder
+        scanBuilder.setPartition(partition)
+        builder.setIcebergScan(scanBuilder)
+      }
+    }
+
+    // Recursively process children
+    builder.clearChildren()
+    op.getChildrenList.asScala.foreach { child =>
+      builder.addChildren(injectPartitionData(child, partitionBytes))
+    }
+
+    builder.build()
+  }
+
+  /**
+   * Serializes an operator to bytes.
+   */
+  def serializeOperator(op: Operator): Array[Byte] = {
+    val size = op.getSerializedSize
+    val bytes = new Array[Byte](size)
+    val codedOutput = CodedOutputStream.newInstance(bytes)
+    op.writeTo(codedOutput)
+    codedOutput.checkNoSpaceLeft()
+    bytes
+  }
+}
 
 /**
  * A Comet physical operator
@@ -250,6 +302,10 @@ abstract class CometNativeExec extends CometExec {
         // TODO: support native metrics for all operators.
         val nativeMetrics = CometMetricNode.fromCometPlan(this)
 
+        // Check for IcebergScan with split mode data that needs per-partition injection
+        val icebergSplitData: Option[Array[Array[Byte]]] =
+          findIcebergSplitData(this)
+
         // Go over all the native scans, in order to see if they need encryption options.
         // For each relation in a CometNativeScan generate a hadoopConf,
         // for each file path in a relation associate with hadoopConf
@@ -294,11 +350,24 @@ abstract class CometNativeExec extends CometExec {
             inputs: Seq[Iterator[ColumnarBatch]],
             numParts: Int,
             partitionIndex: Int): CometExecIterator = {
+          // Get the actual serialized plan - either shared or per-partition
+          val actualPlan = icebergSplitData match {
+            case Some(perPartitionData) =>
+              // Parse the base plan, inject partition data, and re-serialize
+              val basePlan = OperatorOuterClass.Operator.parseFrom(serializedPlanCopy)
+              val injected = IcebergPartitionInjector.injectPartitionData(
+                basePlan,
+                perPartitionData(partitionIndex))
+              IcebergPartitionInjector.serializeOperator(injected)
+            case None =>
+              serializedPlanCopy
+          }
+
           val it = new CometExecIterator(
             CometExec.newIterId,
             inputs,
             output.length,
-            serializedPlanCopy,
+            actualPlan,
             nativeMetrics,
             numParts,
             partitionIndex,
@@ -437,6 +506,20 @@ abstract class CometNativeExec extends CometExec {
         plan.children.foreach(foreachUntilCometInput(_)(func))
       case _ =>
       // no op
+    }
+  }
+
+  /**
+   * Find CometIcebergNativeScanExec with split mode data in the plan tree. Returns the
+   * per-partition data array if found, None otherwise.
+   */
+  private def findIcebergSplitData(plan: SparkPlan): Option[Array[Array[Byte]]] = {
+    plan match {
+      case iceberg: CometIcebergNativeScanExec
+          if iceberg.commonData.nonEmpty && iceberg.perPartitionData.nonEmpty =>
+        Some(iceberg.perPartitionData)
+      case _ =>
+        plan.children.flatMap(findIcebergSplitData).headOption
     }
   }
 

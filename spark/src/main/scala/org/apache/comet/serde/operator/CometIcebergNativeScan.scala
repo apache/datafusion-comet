@@ -700,6 +700,9 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       mutable.HashMap[Seq[OperatorOuterClass.IcebergDeleteFile], Int]()
     val residualToPoolIndex = mutable.HashMap[Option[Expr], Int]()
 
+    // Per-partition file tasks (for split serialization - injected at execution time)
+    val perPartitionBuilders = mutable.ArrayBuffer[OperatorOuterClass.IcebergFilePartition]()
+
     var totalTasks = 0
 
     // Get pre-extracted metadata from planning phase
@@ -978,8 +981,10 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
               }
             }
 
+            // Collect partition data for later per-partition injection
+            // Do NOT add to file_partitions (legacy format)
             val builtPartition = partitionBuilder.build()
-            icebergScanBuilder.addFilePartitions(builtPartition)
+            perPartitionBuilders += builtPartition
           }
         case _ =>
       }
@@ -1028,34 +1033,37 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
           s"$partitionDataPoolBytes bytes (protobuf)")
     }
 
-    // Build split serialization data for efficient per-partition transfer
-    val builtScan = icebergScanBuilder.build()
-    buildAndStoreSplitData(builtScan)
+    // Build common data (pools, metadata) for split mode
+    val commonBuilder = OperatorOuterClass.IcebergScanCommon.newBuilder()
+    commonBuilder.setMetadataLocation(icebergScanBuilder.getMetadataLocation)
+    commonBuilder.putAllCatalogProperties(icebergScanBuilder.getCatalogPropertiesMap)
+    icebergScanBuilder.getRequiredSchemaList.forEach(f => commonBuilder.addRequiredSchema(f))
+    icebergScanBuilder.getSchemaPoolList.forEach(s => commonBuilder.addSchemaPool(s))
+    icebergScanBuilder.getPartitionTypePoolList.forEach(s =>
+      commonBuilder.addPartitionTypePool(s))
+    icebergScanBuilder.getPartitionSpecPoolList.forEach(s =>
+      commonBuilder.addPartitionSpecPool(s))
+    icebergScanBuilder.getNameMappingPoolList.forEach(s => commonBuilder.addNameMappingPool(s))
+    icebergScanBuilder.getProjectFieldIdsPoolList.forEach { p =>
+      commonBuilder.addProjectFieldIdsPool(p)
+    }
+    icebergScanBuilder.getPartitionDataPoolList.forEach(p =>
+      commonBuilder.addPartitionDataPool(p))
+    icebergScanBuilder.getDeleteFilesPoolList.forEach(d => commonBuilder.addDeleteFilesPool(d))
+    icebergScanBuilder.getResidualPoolList.forEach(r => commonBuilder.addResidualPool(r))
+
+    // Set split mode and embed common data (partition injected at execution time)
+    icebergScanBuilder.setSplitMode(true)
+    icebergScanBuilder.setCommon(commonBuilder.build())
+    // Note: partition is NOT set here - it will be injected at execution time
+
+    // Store per-partition data for injection at execution time
+    val commonBytes = commonBuilder.build().toByteArray
+    val perPartitionBytes = perPartitionBuilders.map(_.toByteArray).toArray
+    splitDataThreadLocal.set(Some(SplitData(commonBytes, perPartitionBytes)))
 
     builder.clearChildren()
     Some(builder.setIcebergScan(icebergScanBuilder).build())
-  }
-
-  /** Builds split data (IcebergScanCommon + per-partition bytes) and stores in thread-local. */
-  private def buildAndStoreSplitData(builtScan: OperatorOuterClass.IcebergScan): Unit = {
-    val commonBuilder = OperatorOuterClass.IcebergScanCommon.newBuilder()
-
-    commonBuilder.setMetadataLocation(builtScan.getMetadataLocation)
-    commonBuilder.putAllCatalogProperties(builtScan.getCatalogPropertiesMap)
-    builtScan.getRequiredSchemaList.forEach(f => commonBuilder.addRequiredSchema(f))
-    builtScan.getSchemaPoolList.forEach(s => commonBuilder.addSchemaPool(s))
-    builtScan.getPartitionTypePoolList.forEach(s => commonBuilder.addPartitionTypePool(s))
-    builtScan.getPartitionSpecPoolList.forEach(s => commonBuilder.addPartitionSpecPool(s))
-    builtScan.getNameMappingPoolList.forEach(s => commonBuilder.addNameMappingPool(s))
-    builtScan.getProjectFieldIdsPoolList.forEach(p => commonBuilder.addProjectFieldIdsPool(p))
-    builtScan.getPartitionDataPoolList.forEach(p => commonBuilder.addPartitionDataPool(p))
-    builtScan.getDeleteFilesPoolList.forEach(d => commonBuilder.addDeleteFilesPool(d))
-    builtScan.getResidualPoolList.forEach(r => commonBuilder.addResidualPool(r))
-
-    val commonBytes = commonBuilder.build().toByteArray
-    val perPartitionBytes = builtScan.getFilePartitionsList.asScala.map(_.toByteArray).toArray
-
-    splitDataThreadLocal.set(Some(SplitData(commonBytes, perPartitionBytes)))
   }
 
   override def createExec(nativeOp: Operator, op: CometBatchScanExec): CometNativeExec = {
