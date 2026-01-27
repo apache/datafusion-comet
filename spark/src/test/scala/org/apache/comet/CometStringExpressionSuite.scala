@@ -22,7 +22,7 @@ package org.apache.comet
 import scala.util.Random
 
 import org.apache.parquet.hadoop.ParquetOutputFormat
-import org.apache.spark.sql.{functions, CometTestBase, DataFrame}
+import org.apache.spark.sql.{CometTestBase, DataFrame}
 import org.apache.spark.sql.functions.lit
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, StringType, StructField, StructType}
@@ -415,7 +415,7 @@ class CometStringExpressionSuite extends CometTestBase {
         sql(s"SELECT elt(idx, ${schema.fieldNames.mkString(",")}) FROM t1"))
       checkSparkAnswerAndOperator(
         sql(s"SELECT elt(cast(null as int), ${schema.fieldNames.mkString(",")}) FROM t1"))
-      checkSparkAnswerMaybeThrows(sql(s"SELECT elt(1) FROM t1")) match {
+      checkSparkAnswerMaybeThrows(sql("SELECT elt(1) FROM t1")) match {
         case (Some(spark), Some(comet)) =>
           assert(spark.getMessage.contains("WRONG_NUM_ARGS.WITHOUT_SUGGESTION"))
           assert(comet.getMessage.contains("WRONG_NUM_ARGS.WITHOUT_SUGGESTION"))
