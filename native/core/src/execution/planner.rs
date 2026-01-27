@@ -1133,51 +1133,67 @@ impl PhysicalPlanner {
             }
             OpStruct::IcebergScan(scan) => {
                 // Determine if we're in split mode or legacy mode
-                let (required_schema, catalog_properties, metadata_location, tasks) =
-                    if scan.split_mode.unwrap_or(false) {
-                        // Split mode: extract from embedded common + single partition
-                        let common = scan.common.as_ref().ok_or_else(|| {
-                            GeneralError("split_mode=true but common data missing".into())
-                        })?;
-                        let partition = scan.partition.as_ref().ok_or_else(|| {
-                            GeneralError("split_mode=true but partition data missing".into())
-                        })?;
+                let (required_schema, catalog_properties, metadata_location, tasks) = if scan
+                    .split_mode
+                    .unwrap_or(false)
+                {
+                    // Split mode: extract from embedded common + single partition
+                    let common = scan.common.as_ref().ok_or_else(|| {
+                        GeneralError("split_mode=true but common data missing".into())
+                    })?;
+                    let partition = scan.partition.as_ref().ok_or_else(|| {
+                        GeneralError("split_mode=true but partition data missing".into())
+                    })?;
 
-                        let schema =
-                            convert_spark_types_to_arrow_schema(common.required_schema.as_slice());
-                        let catalog_props: HashMap<String, String> = common
-                            .catalog_properties
-                            .iter()
-                            .map(|(k, v)| (k.clone(), v.clone()))
-                            .collect();
-                        let metadata_loc = common.metadata_location.clone();
-                        let tasks =
-                            parse_file_scan_tasks_from_common(common, &partition.file_scan_tasks)?;
+                    let schema =
+                        convert_spark_types_to_arrow_schema(common.required_schema.as_slice());
+                    let catalog_props: HashMap<String, String> = common
+                        .catalog_properties
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect();
+                    let metadata_loc = common.metadata_location.clone();
+                    let tasks =
+                        parse_file_scan_tasks_from_common(common, &partition.file_scan_tasks)?;
 
-                        (schema, catalog_props, metadata_loc, tasks)
-                    } else {
-                        // Legacy mode: all data in single message
-                        let schema =
-                            convert_spark_types_to_arrow_schema(scan.required_schema.as_slice());
-                        let catalog_props: HashMap<String, String> = scan
-                            .catalog_properties
-                            .iter()
-                            .map(|(k, v)| (k.clone(), v.clone()))
-                            .collect();
-                        let metadata_loc = scan.metadata_location.clone();
+                    (schema, catalog_props, metadata_loc, tasks)
+                } else {
+                    // Legacy mode: all data in single message
+                    let schema =
+                        convert_spark_types_to_arrow_schema(scan.required_schema.as_slice());
+                    let catalog_props: HashMap<String, String> = scan
+                        .catalog_properties
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect();
+                    let metadata_loc = scan.metadata_location.clone();
 
-                        debug_assert!(
-                            !scan.file_partitions.is_empty(),
-                            "IcebergScan must have at least one file partition."
-                        );
+                    // Check file_partitions before accessing
+                    if scan.file_partitions.is_empty() {
+                        return Err(GeneralError(format!(
+                                "IcebergScan in legacy mode (split_mode={:?}) but file_partitions is empty. \
+                                 Partition index: {}, has_common: {}, has_partition: {}",
+                                scan.split_mode,
+                                self.partition,
+                                scan.common.is_some(),
+                                scan.partition.is_some()
+                            )));
+                    }
+                    if self.partition as usize >= scan.file_partitions.len() {
+                        return Err(GeneralError(format!(
+                            "IcebergScan partition index {} out of range (file_partitions.len={})",
+                            self.partition,
+                            scan.file_partitions.len()
+                        )));
+                    }
 
-                        let tasks = parse_file_scan_tasks(
-                            scan,
-                            &scan.file_partitions[self.partition as usize].file_scan_tasks,
-                        )?;
+                    let tasks = parse_file_scan_tasks(
+                        scan,
+                        &scan.file_partitions[self.partition as usize].file_scan_tasks,
+                    )?;
 
-                        (schema, catalog_props, metadata_loc, tasks)
-                    };
+                    (schema, catalog_props, metadata_loc, tasks)
+                };
 
                 let file_task_groups = vec![tasks];
 

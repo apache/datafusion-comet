@@ -130,8 +130,18 @@ impl ExecutionPlan for IcebergScanExec {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> DFResult<SendableRecordBatchStream> {
-        if partition < self.file_task_groups.len() {
-            let tasks = &self.file_task_groups[partition];
+        // In split mode (single task group), always use index 0 regardless of requested partition.
+        // This is because in Comet's per-partition execution model, each task builds its own plan
+        // with only its partition's data. The parent operator may request partition N, but this
+        // IcebergScanExec already contains the correct data for partition N in task_groups[0].
+        let effective_partition = if self.file_task_groups.len() == 1 {
+            0
+        } else {
+            partition
+        };
+
+        if effective_partition < self.file_task_groups.len() {
+            let tasks = &self.file_task_groups[effective_partition];
             self.execute_with_tasks(tasks.clone(), partition, context)
         } else {
             Err(DataFusionError::Execution(format!(
