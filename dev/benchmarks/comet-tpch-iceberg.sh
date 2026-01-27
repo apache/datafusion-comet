@@ -81,7 +81,7 @@ $SPARK_HOME/sbin/start-worker.sh $SPARK_MASTER
 $SPARK_HOME/bin/spark-submit \
     --master $SPARK_MASTER \
     --jars $COMET_JAR,$ICEBERG_JAR \
-    --driver-class-path $COMET_JAR \
+    --driver-class-path $COMET_JAR:$ICEBERG_JAR \
     --conf spark.driver.memory=8G \
     --conf spark.executor.instances=1 \
     --conf spark.executor.cores=8 \
@@ -90,8 +90,8 @@ $SPARK_HOME/bin/spark-submit \
     --conf spark.memory.offHeap.enabled=true \
     --conf spark.memory.offHeap.size=16g \
     --conf spark.eventLog.enabled=true \
-    --conf spark.driver.extraClassPath=$COMET_JAR \
-    --conf spark.executor.extraClassPath=$COMET_JAR \
+    --conf spark.driver.extraClassPath=$COMET_JAR:$ICEBERG_JAR \
+    --conf spark.executor.extraClassPath=$COMET_JAR:$ICEBERG_JAR \
     --conf spark.plugins=org.apache.spark.CometPlugin \
     --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
     --conf spark.comet.exec.replaceSortMergeJoin=true \
