@@ -156,6 +156,28 @@ message PartitionData {
   repeated PartitionValue values = 1;
 }
 
+// Common data shared by all partitions in split mode (sent once, captured in closure)
+message IcebergScanCommon {
+  // Catalog-specific configuration for FileIO (credentials, S3/GCS config, etc.)
+  map<string, string> catalog_properties = 1;
+
+  // Table metadata file path for FileIO initialization
+  string metadata_location = 2;
+
+  // Schema to read
+  repeated SparkStructField required_schema = 3;
+
+  // Deduplication pools (must contain ALL entries for cross-partition deduplication)
+  repeated string schema_pool = 4;
+  repeated string partition_type_pool = 5;
+  repeated string partition_spec_pool = 6;
+  repeated string name_mapping_pool = 7;
+  repeated ProjectFieldIdList project_field_ids_pool = 8;
+  repeated PartitionData partition_data_pool = 9;
+  repeated DeleteFileList delete_files_pool = 10;
+  repeated spark.spark_expression.Expr residual_pool = 11;
+}
+
 message IcebergScan {
   // Schema to read
   repeated SparkStructField required_schema = 1;
@@ -178,6 +200,16 @@ message IcebergScan {
   repeated PartitionData partition_data_pool = 10;
   repeated DeleteFileList delete_files_pool = 11;
   repeated spark.spark_expression.Expr residual_pool = 12;
+
+  // Split mode: when true, common data and single partition are embedded
+  // instead of all partitions in file_partitions
+  optional bool split_mode = 20;
+
+  // Embedded common data for split mode (pools, metadata, catalog props)
+  optional IcebergScanCommon common = 21;
+
+  // Single partition's file tasks for split mode
+  optional IcebergFilePartition partition = 22;
 }
 
 // Helper message for deduplicating field ID lists

@@ -31,7 +31,7 @@ import org.apache.spark.sql.comet.{CometBatchScanExec, CometNativeExec}
 import org.apache.spark.sql.types._
 
 import org.apache.comet.ConfigEntry
-import org.apache.comet.iceberg.IcebergReflection
+import org.apache.comet.iceberg.{CometIcebergNativeScanMetadata, IcebergReflection}
 import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass}
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.OperatorOuterClass.{Operator, SparkStructField}
@@ -40,6 +40,12 @@ import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType}
 object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] with Logging {
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] = None
+
+  /** Thread-local storage for split serialization data. */
+  private case class SplitData(commonBytes: Array[Byte], perPartitionBytes: Array[Array[Byte]])
+  private val splitDataThreadLocal = new java.lang.ThreadLocal[Option[SplitData]] {
+    override def initialValue(): Option[SplitData] = None
+  }
 
   /**
    * Constants specific to Iceberg expression conversion (not in shared IcebergReflection).
@@ -1022,8 +1028,34 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
           s"$partitionDataPoolBytes bytes (protobuf)")
     }
 
+    // Build split serialization data for efficient per-partition transfer
+    val builtScan = icebergScanBuilder.build()
+    buildAndStoreSplitData(builtScan)
+
     builder.clearChildren()
     Some(builder.setIcebergScan(icebergScanBuilder).build())
+  }
+
+  /** Builds split data (IcebergScanCommon + per-partition bytes) and stores in thread-local. */
+  private def buildAndStoreSplitData(builtScan: OperatorOuterClass.IcebergScan): Unit = {
+    val commonBuilder = OperatorOuterClass.IcebergScanCommon.newBuilder()
+
+    commonBuilder.setMetadataLocation(builtScan.getMetadataLocation)
+    commonBuilder.putAllCatalogProperties(builtScan.getCatalogPropertiesMap)
+    builtScan.getRequiredSchemaList.forEach(f => commonBuilder.addRequiredSchema(f))
+    builtScan.getSchemaPoolList.forEach(s => commonBuilder.addSchemaPool(s))
+    builtScan.getPartitionTypePoolList.forEach(s => commonBuilder.addPartitionTypePool(s))
+    builtScan.getPartitionSpecPoolList.forEach(s => commonBuilder.addPartitionSpecPool(s))
+    builtScan.getNameMappingPoolList.forEach(s => commonBuilder.addNameMappingPool(s))
+    builtScan.getProjectFieldIdsPoolList.forEach(p => commonBuilder.addProjectFieldIdsPool(p))
+    builtScan.getPartitionDataPoolList.forEach(p => commonBuilder.addPartitionDataPool(p))
+    builtScan.getDeleteFilesPoolList.forEach(d => commonBuilder.addDeleteFilesPool(d))
+    builtScan.getResidualPoolList.forEach(r => commonBuilder.addResidualPool(r))
+
+    val commonBytes = commonBuilder.build().toByteArray
+    val perPartitionBytes = builtScan.getFilePartitionsList.asScala.map(_.toByteArray).toArray
+
+    splitDataThreadLocal.set(Some(SplitData(commonBytes, perPartitionBytes)))
   }
 
   override def createExec(nativeOp: Operator, op: CometBatchScanExec): CometNativeExec = {
@@ -1039,7 +1071,22 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     // Extract metadataLocation from the native operator
     val metadataLocation = nativeOp.getIcebergScan.getMetadataLocation
 
-    // Create the CometIcebergNativeScanExec using the companion object's apply method
-    CometIcebergNativeScanExec(nativeOp, op.wrapped, op.session, metadataLocation, metadata)
+    // Retrieve split data from thread-local (set during convert())
+    val splitData = splitDataThreadLocal.get()
+    splitDataThreadLocal.remove()
+
+    splitData match {
+      case Some(data) =>
+        CometIcebergNativeScanExec(
+          nativeOp,
+          op.wrapped,
+          op.session,
+          metadataLocation,
+          metadata,
+          data.commonBytes,
+          data.perPartitionBytes)
+      case None =>
+        CometIcebergNativeScanExec(nativeOp, op.wrapped, op.session, metadataLocation, metadata)
+    }
   }
 }

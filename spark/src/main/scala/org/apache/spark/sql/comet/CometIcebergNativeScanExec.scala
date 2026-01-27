@@ -21,12 +21,14 @@ package org.apache.spark.sql.comet
 
 import scala.jdk.CollectionConverters._
 
+import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{Attribute, SortOrder}
 import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.plans.physical.{KeyGroupedPartitioning, Partitioning, UnknownPartitioning}
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
+import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.AccumulatorV2
 
 import com.google.common.base.Objects
@@ -49,7 +51,11 @@ case class CometIcebergNativeScanExec(
     override val serializedPlanOpt: SerializedPlan,
     metadataLocation: String,
     numPartitions: Int,
-    @transient nativeIcebergScanMetadata: CometIcebergNativeScanMetadata)
+    @transient nativeIcebergScanMetadata: CometIcebergNativeScanMetadata,
+    // Split mode: serialized IcebergScanCommon (captured in closure, sent with task)
+    commonData: Array[Byte] = Array.empty,
+    // Split mode: serialized IcebergFilePartition per partition (transient)
+    @transient perPartitionData: Array[Array[Byte]] = Array.empty)
     extends CometLeafExec {
 
   override val supportsColumnar: Boolean = true
@@ -146,6 +152,21 @@ case class CometIcebergNativeScanExec(
     baseMetrics ++ icebergMetrics + ("num_splits" -> numSplitsMetric)
   }
 
+  /** Uses split mode RDD when split data is available, otherwise falls back to legacy mode. */
+  override def doExecuteColumnar(): RDD[ColumnarBatch] = {
+    if (commonData.nonEmpty && perPartitionData.nonEmpty) {
+      val nativeMetrics = CometMetricNode.fromCometPlan(this)
+      CometIcebergSplitRDD(
+        sparkContext,
+        commonData,
+        perPartitionData,
+        output.length,
+        nativeMetrics)
+    } else {
+      super.doExecuteColumnar()
+    }
+  }
+
   override protected def doCanonicalize(): CometIcebergNativeScanExec = {
     CometIcebergNativeScanExec(
       nativeOp,
@@ -225,6 +246,36 @@ object CometIcebergNativeScanExec {
       metadataLocation,
       numParts,
       nativeIcebergScanMetadata)
+
+    scanExec.logicalLink.foreach(exec.setLogicalLink)
+    exec
+  }
+
+  /** Creates a CometIcebergNativeScanExec with split serialization data. */
+  def apply(
+      nativeOp: Operator,
+      scanExec: BatchScanExec,
+      session: SparkSession,
+      metadataLocation: String,
+      nativeIcebergScanMetadata: CometIcebergNativeScanMetadata,
+      commonData: Array[Byte],
+      perPartitionData: Array[Array[Byte]]): CometIcebergNativeScanExec = {
+
+    val numParts = scanExec.outputPartitioning match {
+      case p: KeyGroupedPartitioning => p.numPartitions
+      case _ => scanExec.inputRDD.getNumPartitions
+    }
+
+    val exec = CometIcebergNativeScanExec(
+      nativeOp,
+      scanExec.output,
+      scanExec,
+      SerializedPlan(None),
+      metadataLocation,
+      numParts,
+      nativeIcebergScanMetadata,
+      commonData,
+      perPartitionData)
 
     scanExec.logicalLink.foreach(exec.setLogicalLink)
     exec
