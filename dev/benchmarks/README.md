@@ -96,7 +96,13 @@ Convert existing Parquet TPC-H data to Iceberg format:
 export ICEBERG_WAREHOUSE=/mnt/bigdata/iceberg-warehouse
 
 $SPARK_HOME/bin/spark-submit \
+    --master $SPARK_MASTER \
     --jars $ICEBERG_JAR \
+    --conf spark.driver.memory=8G \
+    --conf spark.executor.instances=1 \
+    --conf spark.executor.cores=8 \
+    --conf spark.cores.max=8 \
+    --conf spark.executor.memory=16g \
     --conf spark.sql.catalog.local=org.apache.iceberg.spark.SparkCatalog \
     --conf spark.sql.catalog.local.type=hadoop \
     --conf spark.sql.catalog.local.warehouse=$ICEBERG_WAREHOUSE \
@@ -124,11 +130,11 @@ physical plan output.
 
 ### Iceberg-specific options
 
-| Environment Variable | Default | Description |
-|---------------------|---------|-------------|
-| `ICEBERG_CATALOG` | `local` | Iceberg catalog name |
-| `ICEBERG_DATABASE` | `tpch` | Database containing TPC-H tables |
-| `ICEBERG_WAREHOUSE` | (required) | Path to Iceberg warehouse directory |
+| Environment Variable | Default    | Description                         |
+| -------------------- | ---------- | ----------------------------------- |
+| `ICEBERG_CATALOG`    | `local`    | Iceberg catalog name                |
+| `ICEBERG_DATABASE`   | `tpch`     | Database containing TPC-H tables    |
+| `ICEBERG_WAREHOUSE`  | (required) | Path to Iceberg warehouse directory |
 
 ### Comparing Parquet vs Iceberg performance
 
