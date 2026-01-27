@@ -2425,7 +2425,11 @@ fn parse_string_to_decimal(input_str: &str, precision: u8, scale: i8) -> SparkRe
 }
 
 fn invalid_decimal_cast(value: &str, precision: u8, scale: i8) -> SparkError {
-    invalid_value(value,"STRING", &format!("DECIMAL({},{})", precision, scale))
+    invalid_value(
+        value,
+        "STRING",
+        &format!("DECIMAL({},{})", precision, scale),
+    )
 }
 
 /// Parse a decimal string into mantissa and scale

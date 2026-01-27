@@ -69,7 +69,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     });
     group.finish();
 
-     // str -> decimal benchmark
+    // str -> decimal benchmark
     let decimal_string_batch = create_decimal_cast_string_batch();
     for (mode, mode_name) in [
         (EvalMode::Legacy, "legacy"),
@@ -85,7 +85,11 @@ fn criterion_benchmark(c: &mut Criterion) {
 
         let mut group = c.benchmark_group(format!("cast_string_to_decimal/{}", mode_name));
         group.bench_function("decimal_38_10", |b| {
-            b.iter(|| cast_to_decimal_38_10.evaluate(&decimal_string_batch).unwrap());
+            b.iter(|| {
+                cast_to_decimal_38_10
+                    .evaluate(&decimal_string_batch)
+                    .unwrap()
+            });
         });
         group.finish();
     }
