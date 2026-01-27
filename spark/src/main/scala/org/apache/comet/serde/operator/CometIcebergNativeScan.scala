@@ -70,115 +70,6 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
   }
 
   /**
-   * Cache for reflection classes and methods to avoid repeated lookups. All Iceberg reflection
-   * operations are expensive, so we cache them once and reuse.
-   */
-  private case class ReflectionCache(
-      // Iceberg classes
-      contentScanTaskClass: Class[_],
-      fileScanTaskClass: Class[_],
-      contentFileClass: Class[_],
-      deleteFileClass: Class[_],
-      schemaParserClass: Class[_],
-      schemaClass: Class[_],
-      partitionSpecParserClass: Class[_],
-      partitionSpecClass: Class[_],
-      // ContentScanTask methods
-      fileMethod: java.lang.reflect.Method,
-      startMethod: java.lang.reflect.Method,
-      lengthMethod: java.lang.reflect.Method,
-      partitionMethod: java.lang.reflect.Method,
-      residualMethod: java.lang.reflect.Method,
-      // FileScanTask methods
-      taskSchemaMethod: java.lang.reflect.Method,
-      deletesMethod: java.lang.reflect.Method,
-      specMethod: java.lang.reflect.Method,
-      // ContentFile methods
-      fileLocationMethod: java.lang.reflect.Method,
-      // DeleteFile methods
-      deleteContentMethod: java.lang.reflect.Method,
-      deleteSpecIdMethod: java.lang.reflect.Method,
-      deleteEqualityIdsMethod: java.lang.reflect.Method,
-      // Schema methods
-      schemaToJsonMethod: java.lang.reflect.Method,
-      // PartitionSpec methods
-      partitionSpecToJsonMethod: java.lang.reflect.Method)
-
-  /**
-   * Creates a ReflectionCache by loading all classes and methods once.
-   */
-  private def createReflectionCache(): ReflectionCache = {
-    // scalastyle:off classforname
-    val contentScanTaskClass = Class.forName(IcebergReflection.ClassNames.CONTENT_SCAN_TASK)
-    val fileScanTaskClass = Class.forName(IcebergReflection.ClassNames.FILE_SCAN_TASK)
-    val contentFileClass = Class.forName(IcebergReflection.ClassNames.CONTENT_FILE)
-    val deleteFileClass = Class.forName(IcebergReflection.ClassNames.DELETE_FILE)
-    val schemaParserClass = Class.forName(IcebergReflection.ClassNames.SCHEMA_PARSER)
-    val schemaClass = Class.forName(IcebergReflection.ClassNames.SCHEMA)
-    val partitionSpecParserClass =
-      Class.forName(IcebergReflection.ClassNames.PARTITION_SPEC_PARSER)
-    val partitionSpecClass = Class.forName(IcebergReflection.ClassNames.PARTITION_SPEC)
-    // scalastyle:on classforname
-
-    // ContentScanTask methods
-    val fileMethod = contentScanTaskClass.getMethod("file")
-    val startMethod = contentScanTaskClass.getMethod("start")
-    val lengthMethod = contentScanTaskClass.getMethod("length")
-    val partitionMethod = contentScanTaskClass.getMethod("partition")
-    val residualMethod = contentScanTaskClass.getMethod("residual")
-
-    // FileScanTask methods
-    val taskSchemaMethod = fileScanTaskClass.getMethod("schema")
-    val deletesMethod = fileScanTaskClass.getMethod("deletes")
-    val specMethod = fileScanTaskClass.getMethod("spec")
-
-    // ContentFile methods - try location() first, fall back to path()
-    val fileLocationMethod =
-      try {
-        contentFileClass.getMethod("location")
-      } catch {
-        case _: NoSuchMethodException => contentFileClass.getMethod("path")
-      }
-
-    // DeleteFile methods
-    val deleteContentMethod = deleteFileClass.getMethod("content")
-    val deleteSpecIdMethod = deleteFileClass.getMethod("specId")
-    val deleteEqualityIdsMethod = deleteFileClass.getMethod("equalityFieldIds")
-
-    // Schema serialization
-    val schemaToJsonMethod = schemaParserClass.getMethod("toJson", schemaClass)
-    schemaToJsonMethod.setAccessible(true)
-
-    // PartitionSpec serialization
-    val partitionSpecToJsonMethod =
-      partitionSpecParserClass.getMethod("toJson", partitionSpecClass)
-
-    ReflectionCache(
-      contentScanTaskClass = contentScanTaskClass,
-      fileScanTaskClass = fileScanTaskClass,
-      contentFileClass = contentFileClass,
-      deleteFileClass = deleteFileClass,
-      schemaParserClass = schemaParserClass,
-      schemaClass = schemaClass,
-      partitionSpecParserClass = partitionSpecParserClass,
-      partitionSpecClass = partitionSpecClass,
-      fileMethod = fileMethod,
-      startMethod = startMethod,
-      lengthMethod = lengthMethod,
-      partitionMethod = partitionMethod,
-      residualMethod = residualMethod,
-      taskSchemaMethod = taskSchemaMethod,
-      deletesMethod = deletesMethod,
-      specMethod = specMethod,
-      fileLocationMethod = fileLocationMethod,
-      deleteContentMethod = deleteContentMethod,
-      deleteSpecIdMethod = deleteSpecIdMethod,
-      deleteEqualityIdsMethod = deleteEqualityIdsMethod,
-      schemaToJsonMethod = schemaToJsonMethod,
-      partitionSpecToJsonMethod = partitionSpecToJsonMethod)
-  }
-
-  /**
    * Converts an Iceberg partition value to protobuf format. Protobuf is less verbose than JSON.
    * The following types are also serialized as integer values instead of as strings - Timestamps,
    * Dates, Decimals, FieldIDs
@@ -332,7 +223,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
    */
   private def extractDeleteFilesList(
       deletes: java.util.List[_],
-      cache: ReflectionCache): Seq[OperatorOuterClass.IcebergDeleteFile] = {
+      cache: IcebergReflection.ReflectionCache): Seq[OperatorOuterClass.IcebergDeleteFile] = {
     try {
       deletes.asScala.flatMap { deleteFile =>
         try {
@@ -409,7 +300,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
    */
   private def serializePartitionData(
       task: Any,
-      cache: ReflectionCache,
+      cache: IcebergReflection.ReflectionCache,
       taskBuilder: OperatorOuterClass.IcebergFileScanTask.Builder,
       icebergScanBuilder: OperatorOuterClass.IcebergScan.Builder,
       partitionTypeToPoolIndex: mutable.HashMap[AnyRef, Int],
@@ -824,7 +715,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     // Extract FileScanTasks from the InputPartitions in the RDD
     try {
       // Create reflection cache once for all tasks
-      val cache = createReflectionCache()
+      val cache = IcebergReflection.createReflectionCache()
 
       scan.wrapped.inputRDD match {
         case rdd: org.apache.spark.sql.execution.datasources.v2.DataSourceRDD =>
