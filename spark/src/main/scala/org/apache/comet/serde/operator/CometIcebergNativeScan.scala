@@ -331,20 +331,17 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
         val partitionData = cache.partitionMethod.invoke(task)
 
         if (partitionData != null) {
-          // Get the partition type/schema from the spec
-          val partitionTypeMethod = spec.getClass.getMethod("partitionType")
-          val partitionType = partitionTypeMethod.invoke(spec)
+          // Get the partition type/schema from the spec (using cached method)
+          val partitionType = cache.partitionTypeMethod.invoke(spec)
 
-          // Check if partition type has any fields before serializing
-          val fieldsMethod = partitionType.getClass.getMethod("fields")
-          val fields = fieldsMethod
+          // Check if partition type has any fields before serializing (using cached method)
+          val fields = cache.structTypeFieldsMethod
             .invoke(partitionType)
             .asInstanceOf[java.util.List[_]]
 
           // Helper to get field type string (shared by both type and data serialization)
           def getFieldType(field: Any): String = {
-            val typeMethod = field.getClass.getMethod("type")
-            typeMethod.invoke(field).toString
+            cache.nestedFieldTypeMethod.invoke(field).toString
           }
 
           // Only serialize partition type if there are actual partition fields
@@ -373,15 +370,10 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                   if (fieldTypeStr == IcebergReflection.TypeNames.UNKNOWN) {
                     None
                   } else {
-                    val fieldIdMethod = field.getClass.getMethod("fieldId")
-                    val fieldId = fieldIdMethod.invoke(field).asInstanceOf[Int]
-
-                    val nameMethod = field.getClass.getMethod("name")
-                    val fieldName = nameMethod.invoke(field).asInstanceOf[String]
-
-                    val isOptionalMethod = field.getClass.getMethod("isOptional")
+                    val fieldId = cache.nestedFieldIdMethod.invoke(field).asInstanceOf[Int]
+                    val fieldName = cache.nestedFieldNameMethod.invoke(field).asInstanceOf[String]
                     val isOptional =
-                      isOptionalMethod.invoke(field).asInstanceOf[Boolean]
+                      cache.nestedFieldIsOptionalMethod.invoke(field).asInstanceOf[Boolean]
                     val required = !isOptional
 
                     Some(
@@ -433,12 +425,10 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                 None
               } else {
                 // Use the partition type's field ID (same as in partition_type_json)
-                val fieldIdMethod = field.getClass.getMethod("fieldId")
-                val fieldId = fieldIdMethod.invoke(field).asInstanceOf[Int]
+                val fieldId = cache.nestedFieldIdMethod.invoke(field).asInstanceOf[Int]
 
-                val getMethod =
-                  partitionData.getClass.getMethod("get", classOf[Int], classOf[Class[_]])
-                val value = getMethod.invoke(partitionData, Integer.valueOf(idx), classOf[Object])
+                val value = cache.structLikeGetMethod
+                  .invoke(partitionData, Integer.valueOf(idx), classOf[Object])
 
                 Some(partitionValueToProto(fieldId, fieldTypeStr, value))
               }

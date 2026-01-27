@@ -43,6 +43,8 @@ object IcebergReflection extends Logging {
       schemaClass: Class[_],
       partitionSpecParserClass: Class[_],
       partitionSpecClass: Class[_],
+      structLikeClass: Class[_],
+      nestedFieldClass: Class[_],
       // ContentScanTask methods
       fileMethod: java.lang.reflect.Method,
       startMethod: java.lang.reflect.Method,
@@ -62,7 +64,17 @@ object IcebergReflection extends Logging {
       // Schema methods
       schemaToJsonMethod: java.lang.reflect.Method,
       // PartitionSpec methods
-      partitionSpecToJsonMethod: java.lang.reflect.Method)
+      partitionSpecToJsonMethod: java.lang.reflect.Method,
+      partitionTypeMethod: java.lang.reflect.Method,
+      // StructType methods
+      structTypeFieldsMethod: java.lang.reflect.Method,
+      // NestedField methods
+      nestedFieldTypeMethod: java.lang.reflect.Method,
+      nestedFieldIdMethod: java.lang.reflect.Method,
+      nestedFieldNameMethod: java.lang.reflect.Method,
+      nestedFieldIsOptionalMethod: java.lang.reflect.Method,
+      // StructLike methods
+      structLikeGetMethod: java.lang.reflect.Method)
 
   /**
    * Creates a ReflectionCache by loading all classes and methods once.
@@ -77,6 +89,9 @@ object IcebergReflection extends Logging {
     val schemaClass = Class.forName(ClassNames.SCHEMA)
     val partitionSpecParserClass = Class.forName(ClassNames.PARTITION_SPEC_PARSER)
     val partitionSpecClass = Class.forName(ClassNames.PARTITION_SPEC)
+    val structTypeClass = Class.forName(ClassNames.STRUCT_TYPE)
+    val nestedFieldClass = Class.forName(ClassNames.NESTED_FIELD)
+    val structLikeClass = Class.forName(ClassNames.STRUCT_LIKE)
     // scalastyle:on classforname
 
     // ContentScanTask methods
@@ -108,9 +123,22 @@ object IcebergReflection extends Logging {
     val schemaToJsonMethod = schemaParserClass.getMethod("toJson", schemaClass)
     schemaToJsonMethod.setAccessible(true)
 
-    // PartitionSpec serialization
+    // PartitionSpec methods
     val partitionSpecToJsonMethod =
       partitionSpecParserClass.getMethod("toJson", partitionSpecClass)
+    val partitionTypeMethod = partitionSpecClass.getMethod("partitionType")
+
+    // StructType methods
+    val structTypeFieldsMethod = structTypeClass.getMethod("fields")
+
+    // NestedField methods
+    val nestedFieldTypeMethod = nestedFieldClass.getMethod("type")
+    val nestedFieldIdMethod = nestedFieldClass.getMethod("fieldId")
+    val nestedFieldNameMethod = nestedFieldClass.getMethod("name")
+    val nestedFieldIsOptionalMethod = nestedFieldClass.getMethod("isOptional")
+
+    // StructLike methods
+    val structLikeGetMethod = structLikeClass.getMethod("get", classOf[Int], classOf[Class[_]])
 
     ReflectionCache(
       contentScanTaskClass = contentScanTaskClass,
@@ -121,6 +149,8 @@ object IcebergReflection extends Logging {
       schemaClass = schemaClass,
       partitionSpecParserClass = partitionSpecParserClass,
       partitionSpecClass = partitionSpecClass,
+      structLikeClass = structLikeClass,
+      nestedFieldClass = nestedFieldClass,
       fileMethod = fileMethod,
       startMethod = startMethod,
       lengthMethod = lengthMethod,
@@ -134,7 +164,14 @@ object IcebergReflection extends Logging {
       deleteSpecIdMethod = deleteSpecIdMethod,
       deleteEqualityIdsMethod = deleteEqualityIdsMethod,
       schemaToJsonMethod = schemaToJsonMethod,
-      partitionSpecToJsonMethod = partitionSpecToJsonMethod)
+      partitionSpecToJsonMethod = partitionSpecToJsonMethod,
+      partitionTypeMethod = partitionTypeMethod,
+      structTypeFieldsMethod = structTypeFieldsMethod,
+      nestedFieldTypeMethod = nestedFieldTypeMethod,
+      nestedFieldIdMethod = nestedFieldIdMethod,
+      nestedFieldNameMethod = nestedFieldNameMethod,
+      nestedFieldIsOptionalMethod = nestedFieldIsOptionalMethod,
+      structLikeGetMethod = structLikeGetMethod)
   }
 
   /**
@@ -154,6 +191,8 @@ object IcebergReflection extends Logging {
     val PARTITION_SPEC = "org.apache.iceberg.PartitionSpec"
     val PARTITION_FIELD = "org.apache.iceberg.PartitionField"
     val UNBOUND_PREDICATE = "org.apache.iceberg.expressions.UnboundPredicate"
+    val STRUCT_TYPE = "org.apache.iceberg.types.Types$StructType"
+    val NESTED_FIELD = "org.apache.iceberg.types.Types$NestedField"
   }
 
   /**
