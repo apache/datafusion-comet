@@ -1842,17 +1842,30 @@ index aed11badb71..1a365b5aacf 100644
            spark.range(1).foreach { _ =>
              columnarToRowExec.canonicalized
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/WholeStageCodegenSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/WholeStageCodegenSuite.scala
-index a3cfdc5a240..1b08a1f42ee 100644
+index a3cfdc5a240..3793b6191bf 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/WholeStageCodegenSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/WholeStageCodegenSuite.scala
-@@ -22,6 +22,7 @@ import org.apache.spark.rdd.MapPartitionsWithEvaluatorRDD
- import org.apache.spark.sql.{Dataset, QueryTest, Row, SaveMode}
+@@ -19,9 +19,10 @@ package org.apache.spark.sql.execution
+ 
+ import org.apache.spark.SparkException
+ import org.apache.spark.rdd.MapPartitionsWithEvaluatorRDD
+-import org.apache.spark.sql.{Dataset, QueryTest, Row, SaveMode}
++import org.apache.spark.sql.{Dataset, IgnoreCometSuite, QueryTest, Row, SaveMode}
  import org.apache.spark.sql.catalyst.expressions.CodegenObjectFactoryMode
  import org.apache.spark.sql.catalyst.expressions.codegen.{ByteCodeStats, CodeAndComment, CodeGenerator}
 +import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometHashJoinExec, CometSortExec, CometSortMergeJoinExec}
  import org.apache.spark.sql.execution.adaptive.DisableAdaptiveExecutionSuite
  import org.apache.spark.sql.execution.aggregate.{HashAggregateExec, SortAggregateExec}
  import org.apache.spark.sql.execution.columnar.InMemoryTableScanExec
+@@ -33,7 +34,7 @@ import org.apache.spark.sql.types.{IntegerType, StringType, StructType}
+ 
+ // Disable AQE because the WholeStageCodegenExec is added when running QueryStageExec
+ class WholeStageCodegenSuite extends QueryTest with SharedSparkSession
+-  with DisableAdaptiveExecutionSuite {
++  with DisableAdaptiveExecutionSuite with IgnoreCometSuite {
+ 
+   import testImplicits._
+ 
 @@ -172,6 +173,7 @@ class WholeStageCodegenSuite extends QueryTest with SharedSparkSession
      val oneJoinDF = df1.join(df2.hint("SHUFFLE_HASH"), $"k1" === $"k2")
      assert(oneJoinDF.queryExecution.executedPlan.collect {
