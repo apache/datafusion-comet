@@ -104,7 +104,7 @@ $SPARK_HOME/bin/spark-submit \
     --conf spark.sql.catalog.${ICEBERG_CATALOG}.type=hadoop \
     --conf spark.sql.catalog.${ICEBERG_CATALOG}.warehouse=$ICEBERG_WAREHOUSE \
     --conf spark.sql.defaultCatalog=${ICEBERG_CATALOG} \
-    tpcbench-iceberg.py \
+    tpcbench.py \
     --name comet-iceberg \
     --benchmark tpch \
     --catalog $ICEBERG_CATALOG \
