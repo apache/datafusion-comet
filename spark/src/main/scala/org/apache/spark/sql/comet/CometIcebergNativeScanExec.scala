@@ -208,10 +208,12 @@ object CometIcebergNativeScanExec {
       commonData: Array[Byte],
       perPartitionData: Array[Array[Byte]]): CometIcebergNativeScanExec = {
 
-    val numParts = scanExec.outputPartitioning match {
-      case p: KeyGroupedPartitioning => p.numPartitions
-      case _ => scanExec.inputRDD.getNumPartitions
-    }
+    // Use perPartitionData.length as the source of truth for partition count.
+    // This ensures consistency between the serialized per-partition data and
+    // the number of partitions reported by this operator.
+    // Note: scanExec.outputPartitioning (KeyGroupedPartitioning) may report
+    // a different count due to Iceberg's logical partitioning scheme.
+    val numParts = perPartitionData.length
 
     val exec = CometIcebergNativeScanExec(
       nativeOp,
