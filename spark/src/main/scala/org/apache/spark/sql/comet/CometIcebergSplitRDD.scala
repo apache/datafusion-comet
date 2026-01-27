@@ -44,7 +44,7 @@ private[spark] class CometIcebergSplitPartition(
  *   - perPartitionData: Array of serialized IcebergFilePartition - populates Partition objects
  *
  * Each task receives commonData (via closure) + partitionBytes (via Partition), combines them
- * into an IcebergScan, and passes to native execution.
+ * into an IcebergScan with split_mode=true, and passes to native execution.
  */
 private[spark] class CometIcebergSplitRDD(
     sc: SparkContext,
@@ -114,6 +114,7 @@ object CometIcebergSplitRDD {
     val partition = IcebergFilePartition.parseFrom(partitionBytes)
 
     val scanBuilder = OperatorOuterClass.IcebergScan.newBuilder()
+    scanBuilder.setSplitMode(true)
     scanBuilder.setCommon(common)
     scanBuilder.setPartition(partition)
 
