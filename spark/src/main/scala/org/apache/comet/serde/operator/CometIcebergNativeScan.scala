@@ -31,7 +31,7 @@ import org.apache.spark.sql.comet.{CometBatchScanExec, CometNativeExec}
 import org.apache.spark.sql.types._
 
 import org.apache.comet.ConfigEntry
-import org.apache.comet.iceberg.{CometIcebergNativeScanMetadata, IcebergReflection}
+import org.apache.comet.iceberg.IcebergReflection
 import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass}
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.OperatorOuterClass.{Operator, SparkStructField}
