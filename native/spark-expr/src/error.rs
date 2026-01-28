@@ -39,6 +39,9 @@ pub enum SparkError {
         scale: i8,
     },
 
+    #[error("[NUMERIC_OUT_OF_SUPPORTED_RANGE] The value {value} cannot be interpreted as a numeric since it has more than 38 digits.")]
+    NumericOutOfRange { value: String },
+
     #[error("[CAST_OVERFLOW] The value {value} of the type \"{from_type}\" cannot be cast to \"{to_type}\" \
         due to an overflow. Use `try_cast` to tolerate overflow and return NULL instead. If necessary \
         set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error.")]
