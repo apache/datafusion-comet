@@ -23,12 +23,16 @@ import scala.util.Random
 
 import org.apache.parquet.hadoop.ParquetOutputFormat
 import org.apache.spark.sql.{CometTestBase, DataFrame}
+import org.apache.spark.sql.functions.lit
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
+import org.apache.spark.sql.types.{DataTypes, StringType, StructField, StructType}
 
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 class CometStringExpressionSuite extends CometTestBase {
+
+  private val WRONG_NUM_ARGS_WITHOUT_SUGGESTION_EXCEPTION_MSG =
+    "[WRONG_NUM_ARGS.WITHOUT_SUGGESTION] The `elt` requires > 1 parameters but the actual number is 1."
 
   test("lpad string") {
     testStringPadding("lpad")
@@ -387,6 +391,40 @@ class CometStringExpressionSuite extends CometTestBase {
     withSQLConf("parquet.enable.dictionary" -> "true") {
       withParquetTable(data, "tbl") {
         checkSparkAnswerAndOperator("SELECT space(_1) FROM tbl")
+      }
+    }
+  }
+
+  test("elt") {
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "false") {
+      val r = new Random(42)
+      val fieldsCount = 10
+      val indexes = Seq.range(1, fieldsCount)
+      val edgeCasesIndexes = Seq(-1, 0, -100, fieldsCount + 100)
+      val schema = indexes
+        .foldLeft(new StructType())((schema, idx) =>
+          schema.add(s"c$idx", StringType, nullable = true))
+      val df = FuzzDataGenerator.generateDataFrame(
+        r,
+        spark,
+        schema,
+        100,
+        DataGenOptions(maxStringLength = 6))
+      df.withColumn(
+        "idx",
+        lit(Random.shuffle(indexes ++ edgeCasesIndexes).headOption.getOrElse(-1)))
+        .createOrReplaceTempView("t1")
+      checkSparkAnswerAndOperator(
+        sql(s"SELECT elt(idx, ${schema.fieldNames.mkString(",")}) FROM t1"))
+      checkSparkAnswerAndOperator(
+        sql(s"SELECT elt(cast(null as int), ${schema.fieldNames.mkString(",")}) FROM t1"))
+      checkSparkAnswerMaybeThrows(sql("SELECT elt(1) FROM t1")) match {
+        case (Some(spark), Some(comet)) =>
+          assert(spark.getMessage.contains(WRONG_NUM_ARGS_WITHOUT_SUGGESTION_EXCEPTION_MSG))
+          assert(comet.getMessage.contains(WRONG_NUM_ARGS_WITHOUT_SUGGESTION_EXCEPTION_MSG))
+        case (spark, comet) =>
+          fail(
+            s"Expected Spark and Comet to throw exception, but got\nSpark: $spark\nComet: $comet")
       }
     }
   }
