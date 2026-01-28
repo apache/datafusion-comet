@@ -20,6 +20,7 @@
 package org.apache.spark.sql.comet
 
 import org.apache.spark.{Partition, SparkContext, TaskContext}
+import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
@@ -52,16 +53,26 @@ private[spark] class CometIcebergSplitRDD(
     @transient perPartitionData: Array[Array[Byte]],
     numParts: Int,
     var computeFunc: (Array[Byte], CometMetricNode, Int, Int) => Iterator[ColumnarBatch])
-    extends RDD[ColumnarBatch](sc, Nil) {
+    extends RDD[ColumnarBatch](sc, Nil)
+    with Logging {
 
   override protected def getPartitions: Array[Partition] = {
+    logInfo(
+      s"[ICEBERG-DEBUG] getPartitions called: numParts=$numParts, " +
+        s"perPartitionData.length=${perPartitionData.length}")
     perPartitionData.zipWithIndex.map { case (bytes, idx) =>
+      val partition = IcebergFilePartition.parseFrom(bytes)
+      logInfo(s"[ICEBERG-DEBUG] Partition $idx has ${partition.getFileScanTasksCount} file tasks")
       new CometIcebergSplitPartition(idx, bytes)
     }
   }
 
   override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
     val partition = split.asInstanceOf[CometIcebergSplitPartition]
+
+    logInfo(
+      s"[ICEBERG-DEBUG] compute called for partition ${partition.index}, " +
+        s"numParts=$numParts, partitionBytes.length=${partition.partitionBytes.length}")
 
     val combinedPlan =
       CometIcebergSplitRDD.buildCombinedPlan(commonData, partition.partitionBytes)
@@ -79,7 +90,7 @@ private[spark] class CometIcebergSplitRDD(
   }
 }
 
-object CometIcebergSplitRDD {
+object CometIcebergSplitRDD extends Logging {
 
   def apply(
       sc: SparkContext,
@@ -87,6 +98,19 @@ object CometIcebergSplitRDD {
       perPartitionData: Array[Array[Byte]],
       numOutputCols: Int,
       nativeMetrics: CometMetricNode): CometIcebergSplitRDD = {
+
+    logInfo(
+      s"[ICEBERG-DEBUG] CometIcebergSplitRDD.apply: " +
+        s"perPartitionData.length=${perPartitionData.length}, " +
+        s"commonData.length=${commonData.length}, numOutputCols=$numOutputCols")
+
+    // Log details about each partition's file tasks
+    perPartitionData.zipWithIndex.foreach { case (bytes, idx) =>
+      val partition = IcebergFilePartition.parseFrom(bytes)
+      logInfo(
+        s"[ICEBERG-DEBUG] apply: partition $idx has " +
+          s"${partition.getFileScanTasksCount} file scan tasks")
+    }
 
     // Create compute function that captures nativeMetrics in its closure
     val computeFunc =

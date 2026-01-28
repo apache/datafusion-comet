@@ -1042,6 +1042,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     // Store per-partition data for injection at execution time
     val commonBytes = commonBuilder.build().toByteArray
     val perPartitionBytes = perPartitionBuilders.map(_.toByteArray).toArray
+
     splitDataThreadLocal.set(Some(SplitData(commonBytes, perPartitionBytes)))
 
     builder.clearChildren()
