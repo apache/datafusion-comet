@@ -2444,16 +2444,6 @@ index 272be70f9fe..06957694002 100644
      CostEvaluator.instantiate(
        classOf[SimpleShuffleSortCostEvaluator].getCanonicalName, spark.sparkContext.getConf)
      intercept[IllegalArgumentException] {
-@@ -2513,7 +2552,8 @@ class AdaptiveQueryExecSuite
-   }
- 
-   test("SPARK-48037: Fix SortShuffleWriter lacks shuffle write related metrics " +
--    "resulting in potentially inaccurate data") {
-+    "resulting in potentially inaccurate data",
-+    IgnoreComet("too many shuffle partitions causes Java heap OOM")) {
-     withTable("t3") {
-       withSQLConf(
-         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
 @@ -2548,6 +2588,7 @@ class AdaptiveQueryExecSuite
            val (_, adaptive) = runAdaptiveAndVerifyResult(query)
            assert(adaptive.collect {
