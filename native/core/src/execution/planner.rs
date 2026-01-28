@@ -71,7 +71,7 @@ use datafusion::{
 };
 use datafusion_comet_spark_expr::{
     create_comet_physical_fun, create_comet_physical_fun_with_eval_mode, BinaryOutputStyle,
-    BloomFilterAgg, BloomFilterMightContain, EvalMode, SumInteger,
+    BloomFilterAgg, BloomFilterMightContain, CsvWriteOptions, EvalMode, SumInteger, ToCsv,
 };
 use iceberg::expr::Bind;
 
@@ -585,6 +585,25 @@ impl PhysicalPlanner {
             ExprStruct::MonotonicallyIncreasingId(_) => Ok(Arc::new(
                 MonotonicallyIncreasingId::from_partition_id(self.partition),
             )),
+            ExprStruct::ToCsv(expr) => {
+                let csv_struct_expr =
+                    self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                let options = expr.options.clone().unwrap();
+                let csv_write_options = CsvWriteOptions::new(
+                    options.delimiter,
+                    options.quote,
+                    options.escape,
+                    options.null_value,
+                    options.quote_all,
+                    options.ignore_leading_white_space,
+                    options.ignore_trailing_white_space,
+                );
+                Ok(Arc::new(ToCsv::new(
+                    csv_struct_expr,
+                    &options.timezone,
+                    csv_write_options,
+                )))
+            }
             expr => Err(GeneralError(format!("Not implemented: {expr:?}"))),
         }
     }
