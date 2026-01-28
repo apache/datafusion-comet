@@ -69,6 +69,32 @@ this can be overridden by setting `spark.comet.regexp.allowIncompatible=true`.
 Comet's support for window functions is incomplete and known to be incorrect. It is disabled by default and
 should not be used in production. The feature will be enabled in a future release. Tracking issue: [#2721](https://github.com/apache/datafusion-comet/issues/2721).
 
+## Round-Robin Partitioning
+
+Comet's native shuffle implementation of round-robin partitioning (`df.repartition(n)`) is not compatible with
+Spark's implementation and is disabled by default. It can be enabled by setting
+`spark.comet.native.shuffle.partitioning.roundrobin.enabled=true`.
+
+**Why the incompatibility exists:**
+
+Spark's round-robin partitioning sorts rows by their binary `UnsafeRow` representation before assigning them to
+partitions. This ensures deterministic output for fault tolerance (task retries produce identical results).
+Comet uses Arrow format internally, which has a completely different binary layout than `UnsafeRow`, making it
+impossible to match Spark's exact partition assignments.
+
+**Comet's approach:**
+
+Instead of true round-robin assignment, Comet implements round-robin as hash partitioning on ALL columns. This
+achieves the same semantic goals:
+
+- **Even distribution**: Rows are distributed evenly across partitions (as long as the hash varies sufficiently -
+  in some cases there could be skew)
+- **Deterministic**: Same input always produces the same partition assignments (important for fault tolerance)
+- **No semantic grouping**: Unlike hash partitioning on specific columns, this doesn't group related rows together
+
+The only difference is that Comet's partition assignments will differ from Spark's. When results are sorted,
+they will be identical to Spark. Unsorted results may have different row ordering.
+
 ## Cast
 
 Cast operations in Comet fall into three levels of support:

@@ -41,14 +41,8 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 cd "${PROJECT_ROOT}"
 
-echo "Compiling common and spark modules..."
-./mvnw -q compile -pl common,spark -DskipTests
-
-echo "Generating documentation content..."
-./mvnw -q exec:java -pl spark \
-  -Dexec.mainClass=org.apache.comet.GenerateDocs \
-  -Dexec.arguments="${PROJECT_ROOT}/docs/source/user-guide/latest/" \
-  -Dexec.classpathScope=compile
+echo "Compiling and generating documentation content..."
+./mvnw package -Pgenerate-docs -DskipTests -Dmaven.test.skip=true
 
 echo ""
 echo "Done! Generated documentation content in docs/source/user-guide/latest/"
