@@ -27,12 +27,14 @@ import org.apache.spark.SparkEnv;
 import org.apache.spark.launcher.SparkLauncher;
 
 import org.apache.comet.CometConf;
+import org.apache.comet.IcebergApi;
 
 /**
  * Comet specific Parquet related read options.
  *
  * <p>TODO: merge this with {@link org.apache.parquet.HadoopReadOptions} once PARQUET-2203 is done.
  */
+@IcebergApi
 public class ReadOptions {
   private static final Logger LOG = LoggerFactory.getLogger(ReadOptions.class);
 
@@ -86,10 +88,12 @@ public class ReadOptions {
     return adjustReadRangeSkew;
   }
 
+  @IcebergApi
   public static Builder builder(Configuration conf) {
     return new Builder(conf);
   }
 
+  @IcebergApi
   public static class Builder {
     private final Configuration conf;
 
@@ -134,6 +138,7 @@ public class ReadOptions {
       return this;
     }
 
+    @IcebergApi
     public ReadOptions build() {
       return new ReadOptions(
           parallelIOEnabled,
