@@ -81,12 +81,14 @@ against Iceberg tables with native scan acceleration.
 
 ### Prerequisites
 
-Download the Iceberg Spark runtime JAR:
+Download the Iceberg Spark runtime JAR (required for running the benchmark):
 
 ```shell
 wget https://repo1.maven.org/maven2/org/apache/iceberg/iceberg-spark-runtime-3.5_2.12/1.8.1/iceberg-spark-runtime-3.5_2.12-1.8.1.jar
 export ICEBERG_JAR=/path/to/iceberg-spark-runtime-3.5_2.12-1.8.1.jar
 ```
+
+Note: Table creation uses `--packages` which auto-downloads the dependency.
 
 ### Create Iceberg TPC-H tables
 
@@ -94,21 +96,22 @@ Convert existing Parquet TPC-H data to Iceberg format:
 
 ```shell
 export ICEBERG_WAREHOUSE=/mnt/bigdata/iceberg-warehouse
+export ICEBERG_CATALOG=${ICEBERG_CATALOG:-local}
 
 $SPARK_HOME/bin/spark-submit \
     --master $SPARK_MASTER \
-    --jars $ICEBERG_JAR \
+    --packages org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.8.1 \
     --conf spark.driver.memory=8G \
     --conf spark.executor.instances=1 \
     --conf spark.executor.cores=8 \
     --conf spark.cores.max=8 \
     --conf spark.executor.memory=16g \
-    --conf spark.sql.catalog.local=org.apache.iceberg.spark.SparkCatalog \
-    --conf spark.sql.catalog.local.type=hadoop \
-    --conf spark.sql.catalog.local.warehouse=$ICEBERG_WAREHOUSE \
+    --conf spark.sql.catalog.${ICEBERG_CATALOG}=org.apache.iceberg.spark.SparkCatalog \
+    --conf spark.sql.catalog.${ICEBERG_CATALOG}.type=hadoop \
+    --conf spark.sql.catalog.${ICEBERG_CATALOG}.warehouse=$ICEBERG_WAREHOUSE \
     create-iceberg-tpch.py \
     --parquet-path $TPCH_DATA \
-    --catalog local \
+    --catalog $ICEBERG_CATALOG \
     --database tpch
 ```
 
