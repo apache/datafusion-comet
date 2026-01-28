@@ -367,9 +367,8 @@ abstract class CometNativeExec extends CometExec {
             numParts: Int,
             partitionIndex: Int): CometExecIterator = {
           // Get the actual serialized plan - either shared or per-partition injected
-          // Only inject partition data when there are NO inputs - if there are inputs,
-          // the Iceberg scans already executed via their own RDDs with per-partition data
-          val actualPlan = if (icebergSplitDataByLocation.nonEmpty && inputs.isEmpty) {
+          // Inject partition data if we have any IcebergScans with split data
+          val actualPlan = if (icebergSplitDataByLocation.nonEmpty) {
             // Build a map of metadataLocation -> partitionBytes for this partition index
             val partitionDataByLocation = icebergSplitDataByLocation.map {
               case (metadataLocation, perPartitionData) =>
@@ -382,13 +381,13 @@ abstract class CometNativeExec extends CometExec {
                       s"(${perPartitionData.length} partitions)")
                 }
             }
-            // No inputs = Iceberg scan is part of native plan, inject partition data
+            // Inject partition data into IcebergScan nodes in the native plan
             val basePlan = OperatorOuterClass.Operator.parseFrom(serializedPlanCopy)
             val injected =
               IcebergPartitionInjector.injectPartitionData(basePlan, partitionDataByLocation)
             IcebergPartitionInjector.serializeOperator(injected)
           } else {
-            // Has inputs or no split data - use plan as-is
+            // No split data - use plan as-is
             serializedPlanCopy
           }
 
@@ -559,11 +558,18 @@ abstract class CometNativeExec extends CometExec {
           if iceberg.commonData.nonEmpty && iceberg.perPartitionData.nonEmpty =>
         Map(iceberg.metadataLocation -> iceberg.perPartitionData)
 
+      // For broadcast stages, we CAN look inside because broadcast data is replicated
+      // to all partitions, so partition indices align. This handles broadcast joins
+      // over Iceberg tables.
+      case bqs: BroadcastQueryStageExec =>
+        findAllIcebergSplitData(bqs.plan)
+      case cbe: CometBroadcastExchangeExec =>
+        cbe.children.flatMap(c => findAllIcebergSplitData(c)).toMap
+
       // Stage boundaries - stop searching (partition indices won't align after these)
       case _: ShuffleQueryStageExec | _: AQEShuffleReadExec | _: CometShuffleExchangeExec |
           _: CometUnionExec | _: CometTakeOrderedAndProjectExec | _: CometCoalesceExec |
-          _: ReusedExchangeExec | _: CometBroadcastExchangeExec | _: BroadcastQueryStageExec |
-          _: CometSparkToColumnarExec =>
+          _: ReusedExchangeExec | _: CometSparkToColumnarExec =>
         Map.empty
 
       // Continue searching through other operators, combining results from all children
