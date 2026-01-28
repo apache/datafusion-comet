@@ -100,7 +100,7 @@ object CometIcebergSplitRDD extends Logging {
       nativeMetrics: CometMetricNode): CometIcebergSplitRDD = {
 
     logInfo(
-      s"[ICEBERG-DEBUG] CometIcebergSplitRDD.apply: " +
+      "[ICEBERG-DEBUG] CometIcebergSplitRDD.apply: " +
         s"perPartitionData.length=${perPartitionData.length}, " +
         s"commonData.length=${commonData.length}, numOutputCols=$numOutputCols")
 
