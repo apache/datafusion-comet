@@ -164,6 +164,7 @@ message IcebergScan {
   map<string, string> catalog_properties = 2;
 
   // Pre-planned file scan tasks grouped by Spark partition
+  // DEPRECATED when use_jni_task_retrieval=true: Tasks retrieved via JNI callback instead
   repeated IcebergFilePartition file_partitions = 3;
 
   // Table metadata file path for FileIO initialization
@@ -178,6 +179,10 @@ message IcebergScan {
   repeated PartitionData partition_data_pool = 10;
   repeated DeleteFileList delete_files_pool = 11;
   repeated spark.spark_expression.Expr residual_pool = 12;
+
+  // When true, file_partitions is empty and tasks are retrieved via JNI callback
+  // This optimizes network/memory usage by avoiding broadcast of all partition tasks
+  bool use_jni_task_retrieval = 13;
 }
 
 // Helper message for deduplicating field ID lists

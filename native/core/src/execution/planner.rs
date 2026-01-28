@@ -1144,14 +1144,69 @@ impl PhysicalPlanner {
                 let metadata_location = scan.metadata_location.clone();
 
                 debug_assert!(
-                    !scan.file_partitions.is_empty(),
-                    "IcebergScan must have at least one file partition. This indicates a bug in Scala serialization."
+                    scan.use_jni_task_retrieval || !scan.file_partitions.is_empty(),
+                    "IcebergScan must have use_jni_task_retrieval=true OR non-empty file_partitions. This indicates a bug in Scala serialization."
                 );
 
-                let tasks = parse_file_scan_tasks(
-                    scan,
-                    &scan.file_partitions[self.partition as usize].file_scan_tasks,
-                )?;
+                // Get file scan tasks either from JNI callback or from protobuf
+                let file_scan_tasks = if scan.use_jni_task_retrieval {
+                    // Call JNI to get partition-specific tasks from thread-local storage
+                    use crate::jvm_bridge::JVMClasses;
+                    use datafusion_comet_proto::spark_operator::IcebergFilePartition;
+                    use jni::objects::JByteArray;
+                    use jni::signature::ReturnType;
+                    use prost::Message;
+
+                    let mut env = JVMClasses::get_env()?;
+                    let jvm_classes = JVMClasses::get();
+
+                    // Call Native.getIcebergPartitionTasksInternal() directly
+                    let result = unsafe {
+                        env.call_static_method_unchecked(
+                            &jvm_classes.native.class,
+                            jvm_classes
+                                .native
+                                .method_get_iceberg_partition_tasks_internal,
+                            ReturnType::Array,
+                            &[],
+                        )
+                    };
+
+                    let result = result.map_err(|e| {
+                        ExecutionError::GeneralError(format!("JNI call failed: {}", e))
+                    })?;
+
+                    // Extract byte array from result
+                    let task_bytes_obj = result.l().map_err(|e| {
+                        ExecutionError::GeneralError(format!("Failed to extract JObject: {}", e))
+                    })?;
+                    let task_bytes_array: JByteArray = task_bytes_obj.into();
+
+                    if task_bytes_array.is_null() {
+                        return Err(ExecutionError::GeneralError(format!(
+                            "No partition tasks found for partition {} (JNI returned null). \
+                             This may indicate that partition tasks were not set in thread-local storage.",
+                            self.partition
+                        )));
+                    }
+
+                    // Convert JByteArray to Vec<u8>
+                    let task_bytes = env.convert_byte_array(&task_bytes_array).map_err(|e| {
+                        ExecutionError::GeneralError(format!("Failed to convert byte array: {}", e))
+                    })?;
+
+                    // Parse protobuf bytes into IcebergFilePartition
+                    let partition = IcebergFilePartition::decode(&task_bytes[..])?;
+
+                    partition.file_scan_tasks
+                } else {
+                    // Use tasks from protobuf (backward compatibility)
+                    scan.file_partitions[self.partition as usize]
+                        .file_scan_tasks
+                        .clone()
+                };
+
+                let tasks = parse_file_scan_tasks(scan, &file_scan_tasks)?;
                 let file_task_groups = vec![tasks];
 
                 let iceberg_scan = IcebergScanExec::new(

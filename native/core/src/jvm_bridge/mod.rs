@@ -174,11 +174,13 @@ pub use comet_exec::*;
 mod batch_iterator;
 mod comet_metric_node;
 mod comet_task_memory_manager;
+mod native;
 
 use crate::{errors::CometError, JAVA_VM};
 use batch_iterator::CometBatchIterator;
 pub use comet_metric_node::*;
 pub use comet_task_memory_manager::*;
+pub use native::*;
 
 /// The JVM classes that are used in the JNI calls.
 #[allow(dead_code)] // we need to keep references to Java items to prevent GC
@@ -207,6 +209,8 @@ pub struct JVMClasses<'a> {
     /// The CometTaskMemoryManager used for interacting with JVM side to
     /// acquire & release native memory.
     pub comet_task_memory_manager: CometTaskMemoryManager<'a>,
+    /// The Native object. Used for Iceberg partition task retrieval.
+    pub native: Native<'a>,
 }
 
 unsafe impl Send for JVMClasses<'_> {}
@@ -254,10 +258,18 @@ impl JVMClasses<'_> {
                 class_get_name_method,
                 throwable_get_message_method,
                 throwable_get_cause_method,
-                comet_metric_node: CometMetricNode::new(env).unwrap(),
-                comet_exec: CometExec::new(env).unwrap(),
-                comet_batch_iterator: CometBatchIterator::new(env).unwrap(),
-                comet_task_memory_manager: CometTaskMemoryManager::new(env).unwrap(),
+                comet_metric_node: CometMetricNode::new(env)
+                    .unwrap_or_else(|e| panic!("CometMetricNode initialization failed: {:?}", e)),
+                comet_exec: CometExec::new(env)
+                    .unwrap_or_else(|e| panic!("CometExec initialization failed: {:?}", e)),
+                comet_batch_iterator: CometBatchIterator::new(env).unwrap_or_else(|e| {
+                    panic!("CometBatchIterator initialization failed: {:?}", e)
+                }),
+                comet_task_memory_manager: CometTaskMemoryManager::new(env).unwrap_or_else(|e| {
+                    panic!("CometTaskMemoryManager initialization failed: {:?}", e)
+                }),
+                native: Native::new(env)
+                    .unwrap_or_else(|e| panic!("Native JNI initialization failed: {:?}", e)),
             }
         });
     }
