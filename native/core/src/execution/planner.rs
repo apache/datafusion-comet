@@ -95,7 +95,7 @@ use datafusion::physical_expr::window::WindowExpr;
 use datafusion::physical_expr::LexOrdering;
 
 use crate::parquet::parquet_exec::init_datasource_exec;
-
+use crate::parquet::schema_adapter::ParquetSchemaAdapterExec;
 use arrow::array::{
     new_empty_array, Array, ArrayRef, BinaryBuilder, BooleanArray, Date32Array, Decimal128Array,
     Float32Array, Float64Array, Int16Array, Int32Array, Int64Array, Int8Array, ListArray,
@@ -956,12 +956,15 @@ impl PhysicalPlanner {
                     .iter()
                     .map(|offset| *offset as usize)
                     .collect();
+                dbg!(&data_schema);
+                dbg!(&required_schema);
+                dbg!(&partition_schema);
 
                 // Check if this partition has any files (bucketed scan with bucket pruning may have empty partitions)
                 let partition_files = &scan.file_partitions[self.partition as usize];
 
                 if partition_files.partitioned_file.is_empty() {
-                    let empty_exec = Arc::new(EmptyExec::new(required_schema));
+                    let empty_exec = Arc::new(EmptyExec::new(data_schema));
                     return Ok((
                         vec![],
                         Arc::new(SparkPlan::new(spark_plan.plan_id, empty_exec, vec![])),
@@ -972,7 +975,7 @@ impl PhysicalPlanner {
                 let data_filters: Result<Vec<Arc<dyn PhysicalExpr>>, ExecutionError> = scan
                     .data_filters
                     .iter()
-                    .map(|expr| self.create_expr(expr, Arc::clone(&required_schema)))
+                    .map(|expr| self.create_expr(expr, Arc::clone(&data_schema)))
                     .collect();
 
                 let default_values: Option<HashMap<usize, ScalarValue>> = if !scan
@@ -1041,8 +1044,8 @@ impl PhysicalPlanner {
                         Field::new(field.name(), field.data_type().clone(), field.is_nullable())
                     })
                     .collect_vec();
-                let scan = init_datasource_exec(
-                    required_schema,
+                let scan_exec = init_datasource_exec(
+                    Arc::clone(&data_schema),
                     Some(data_schema),
                     Some(partition_schema),
                     Some(partition_fields),
@@ -1050,15 +1053,30 @@ impl PhysicalPlanner {
                     file_groups,
                     Some(projection_vector),
                     Some(data_filters?),
-                    default_values,
                     scan.session_timezone.as_str(),
                     scan.case_sensitive,
                     self.session_ctx(),
                     scan.encryption_enabled,
                 )?;
+
+                dbg!("after datasource");
+
+                // Wrap the scan with ParquetSchemaAdapterExec to handle schema transformations
+                let parquet_options = crate::parquet::parquet_support::SparkParquetOptions::new(
+                    datafusion_comet_spark_expr::EvalMode::Legacy,
+                    &scan.session_timezone,
+                    false,
+                );
+                let adapter_exec: Arc<dyn ExecutionPlan> = Arc::new(ParquetSchemaAdapterExec::new(
+                    scan_exec,
+                    required_schema,
+                    parquet_options,
+                    default_values,
+                ));
+
                 Ok((
                     vec![],
-                    Arc::new(SparkPlan::new(spark_plan.plan_id, scan, vec![])),
+                    Arc::new(SparkPlan::new(spark_plan.plan_id, adapter_exec, vec![])),
                 ))
             }
             OpStruct::CsvScan(scan) => {
@@ -3434,9 +3452,7 @@ mod tests {
     use datafusion::catalog::memory::DataSourceExec;
     use datafusion::datasource::listing::PartitionedFile;
     use datafusion::datasource::object_store::ObjectStoreUrl;
-    use datafusion::datasource::physical_plan::{
-        FileGroup, FileScanConfigBuilder, FileSource, ParquetSource,
-    };
+    use datafusion::datasource::physical_plan::{FileGroup, FileScanConfigBuilder, ParquetSource};
     use datafusion::error::DataFusionError;
     use datafusion::logical_expr::ScalarUDF;
     use datafusion::physical_plan::ExecutionPlan;
@@ -3449,7 +3465,7 @@ mod tests {
     use crate::execution::operators::ExecutionError;
     use crate::execution::planner::literal_to_array_ref;
     use crate::parquet::parquet_support::SparkParquetOptions;
-    use crate::parquet::schema_adapter::SparkSchemaAdapterFactory;
+    use crate::parquet::schema_adapter::ParquetSchemaAdapterExec;
     use datafusion_comet_proto::spark_expression::expr::ExprStruct;
     use datafusion_comet_proto::spark_expression::ListLiteral;
     use datafusion_comet_proto::{
@@ -4034,7 +4050,12 @@ mod tests {
             .await?;
 
         // Write a parquet file into temp folder
-        session_ctx.write_parquet(plan, test_path, None).await?;
+        session_ctx
+            .write_parquet(Arc::clone(&plan), test_path, None)
+            .await?;
+
+        // Get the file schema from the plan that wrote the data
+        let file_schema = plan.schema();
 
         // Register all parquet with temp data as file groups
         let mut file_groups: Vec<FileGroup> = vec![];
@@ -4051,22 +4072,28 @@ mod tests {
             }
         }
 
-        let source = ParquetSource::default().with_schema_adapter_factory(Arc::new(
-            SparkSchemaAdapterFactory::new(
-                SparkParquetOptions::new(EvalMode::Ansi, "", false),
-                None,
-            ),
-        ))?;
+        let source = Arc::new(ParquetSource::default());
 
         let object_store_url = ObjectStoreUrl::local_filesystem();
-        let file_scan_config =
-            FileScanConfigBuilder::new(object_store_url, read_schema.into(), source)
-                .with_file_groups(file_groups)
-                .build();
+        // Use file_schema for FileScanConfigBuilder to avoid schema validation errors
+        let file_scan_config = FileScanConfigBuilder::new(object_store_url, file_schema, source)
+            .with_file_groups(file_groups)
+            .build();
 
         // Run native read
         let scan = Arc::new(DataSourceExec::new(Arc::new(file_scan_config.clone())));
-        let result: Vec<_> = scan.execute(0, session_ctx.task_ctx())?.collect().await;
+        // ParquetSchemaAdapterExec will handle the schema transformation from file_schema to read_schema
+        let adapter_exec: Arc<dyn ExecutionPlan> = Arc::new(ParquetSchemaAdapterExec::new(
+            scan,
+            read_schema.into(),
+            SparkParquetOptions::new(EvalMode::Ansi, "", false),
+            None,
+        ));
+
+        let result: Vec<_> = adapter_exec
+            .execute(0, session_ctx.task_ctx())?
+            .collect()
+            .await;
         Ok(result.first().unwrap().as_ref().unwrap().clone())
     }
 
