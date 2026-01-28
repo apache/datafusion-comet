@@ -36,6 +36,7 @@ use datafusion::physical_plan::ColumnarValue;
 use std::any::Any;
 use std::fmt::Debug;
 use std::sync::Arc;
+use datafusion::functions::datetime::to_date::ToDateFunc;
 
 macro_rules! make_comet_scalar_udf {
     ($name:expr, $func:ident, $data_type:ident) => {{
@@ -196,6 +197,7 @@ fn all_scalar_functions() -> Vec<Arc<ScalarUDF>> {
         Arc::new(ScalarUDF::new_from_impl(SparkDateTrunc::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkStringSpace::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkSizeFunc::default())),
+        Arc::new(ScalarUDF::new_from_impl(ToDateFunc::default())),
     ]
 }
 
