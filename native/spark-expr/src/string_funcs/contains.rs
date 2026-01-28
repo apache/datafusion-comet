@@ -17,29 +17,22 @@
 
 //! Optimized `contains` string function for Spark compatibility.
 //!
-//! This implementation is optimized for the common case where the pattern
-//! (second argument) is a scalar value. In this case, we use `memchr::memmem::Finder`
-//! which is SIMD-optimized and reuses a single finder instance across all rows.
-//!
-//! The DataFusion built-in `contains` function uses `make_scalar_function` which
-//! expands scalar values to arrays, losing the performance benefit of the optimized
-//! scalar path in arrow-rs.
+//! Optimized for scalar pattern case by passing scalar directly to arrow_contains
+//! instead of expanding to arrays like DataFusion's built-in contains.
 
-use arrow::array::{Array, ArrayRef, AsArray, BooleanArray};
+use arrow::array::{Array, ArrayRef, BooleanArray, StringArray};
+use arrow::compute::kernels::comparison::contains as arrow_contains;
 use arrow::datatypes::DataType;
-use arrow_string::like::contains as arrow_contains;
 use datafusion::common::{exec_err, Result, ScalarValue};
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };
-use memchr::memmem::Finder;
 use std::any::Any;
 use std::sync::Arc;
 
 /// Spark-optimized contains function.
-///
 /// Returns true if the first string argument contains the second string argument.
-/// Optimized for the common case where the pattern is a scalar constant.
+/// Optimized for scalar pattern constants.
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub struct SparkContains {
     signature: Signature,
@@ -84,31 +77,29 @@ impl ScalarUDFImpl for SparkContains {
     }
 }
 
-/// Execute the contains function with optimized scalar pattern handling.
+/// Execute contains function with optimized scalar pattern handling.
 fn spark_contains(haystack: &ColumnarValue, needle: &ColumnarValue) -> Result<ColumnarValue> {
     match (haystack, needle) {
-        // Case 1: Both are arrays - use arrow's contains directly
+        // Both arrays - use arrow's contains directly
         (ColumnarValue::Array(haystack_array), ColumnarValue::Array(needle_array)) => {
             let result = arrow_contains(haystack_array, needle_array)?;
             Ok(ColumnarValue::Array(Arc::new(result)))
         }
 
-        // Case 2: Haystack is array, needle is scalar - OPTIMIZED PATH
-        // This is the common case in SQL like: WHERE col CONTAINS 'pattern'
+        // Array haystack, scalar needle - OPTIMIZED PATH
         (ColumnarValue::Array(haystack_array), ColumnarValue::Scalar(needle_scalar)) => {
-            let result = contains_with_scalar_pattern(haystack_array, needle_scalar)?;
+            let result = contains_with_arrow_scalar(haystack_array, needle_scalar)?;
             Ok(ColumnarValue::Array(result))
         }
 
-        // Case 3: Haystack is scalar, needle is array - less common
+        // Scalar haystack, array needle - less common
         (ColumnarValue::Scalar(haystack_scalar), ColumnarValue::Array(needle_array)) => {
-            // Convert scalar to array and use arrow's contains
             let haystack_array = haystack_scalar.to_array_of_size(needle_array.len())?;
             let result = arrow_contains(&haystack_array, needle_array)?;
             Ok(ColumnarValue::Array(Arc::new(result)))
         }
 
-        // Case 4: Both are scalars - compute single result
+        // Both scalars - compute single result
         (ColumnarValue::Scalar(haystack_scalar), ColumnarValue::Scalar(needle_scalar)) => {
             let result = contains_scalar_scalar(haystack_scalar, needle_scalar)?;
             Ok(ColumnarValue::Scalar(result))
@@ -116,9 +107,9 @@ fn spark_contains(haystack: &ColumnarValue, needle: &ColumnarValue) -> Result<Co
     }
 }
 
-/// Optimized contains for array haystack with scalar needle pattern.
-/// Uses memchr's SIMD-optimized Finder for efficient repeated searches.
-fn contains_with_scalar_pattern(
+/// Optimized contains for array haystack with scalar needle.
+/// Uses Arrow's native scalar handling for better performance.
+fn contains_with_arrow_scalar(
     haystack_array: &ArrayRef,
     needle_scalar: &ScalarValue,
 ) -> Result<ArrayRef> {
@@ -131,7 +122,7 @@ fn contains_with_scalar_pattern(
     let needle_str = match needle_scalar {
         ScalarValue::Utf8(Some(s))
         | ScalarValue::LargeUtf8(Some(s))
-        | ScalarValue::Utf8View(Some(s)) => s.as_str(),
+        | ScalarValue::Utf8View(Some(s)) => s.clone(),
         _ => {
             return exec_err!(
                 "contains function requires string type for needle, got {:?}",
@@ -140,39 +131,12 @@ fn contains_with_scalar_pattern(
         }
     };
 
-    // Create a reusable Finder for efficient SIMD-optimized searching
-    let finder = Finder::new(needle_str.as_bytes());
+    // Create scalar array for needle - tells Arrow to use optimized paths
+    let needle_scalar_array = StringArray::new_scalar(needle_str);
 
-    match haystack_array.data_type() {
-        DataType::Utf8 => {
-            let array = haystack_array.as_string::<i32>();
-            let result: BooleanArray = array
-                .iter()
-                .map(|opt_haystack| opt_haystack.map(|h| finder.find(h.as_bytes()).is_some()))
-                .collect();
-            Ok(Arc::new(result))
-        }
-        DataType::LargeUtf8 => {
-            let array = haystack_array.as_string::<i64>();
-            let result: BooleanArray = array
-                .iter()
-                .map(|opt_haystack| opt_haystack.map(|h| finder.find(h.as_bytes()).is_some()))
-                .collect();
-            Ok(Arc::new(result))
-        }
-        DataType::Utf8View => {
-            let array = haystack_array.as_string_view();
-            let result: BooleanArray = array
-                .iter()
-                .map(|opt_haystack| opt_haystack.map(|h| finder.find(h.as_bytes()).is_some()))
-                .collect();
-            Ok(Arc::new(result))
-        }
-        other => exec_err!(
-            "contains function requires string type for haystack, got {:?}",
-            other
-        ),
-    }
+    // Use Arrow's contains which detects scalar case and uses optimized paths
+    let result = arrow_contains(haystack_array, &needle_scalar_array)?;
+    Ok(Arc::new(result))
 }
 
 /// Contains for two scalar values.
@@ -229,7 +193,7 @@ mod tests {
         ])) as ArrayRef;
         let needle = ScalarValue::Utf8(Some("world".to_string()));
 
-        let result = contains_with_scalar_pattern(&haystack, &needle).unwrap();
+        let result = contains_with_arrow_scalar(&haystack, &needle).unwrap();
         let bool_array = result.as_any().downcast_ref::<BooleanArray>().unwrap();
 
         assert!(bool_array.value(0)); // "hello world" contains "world"
@@ -259,7 +223,7 @@ mod tests {
         ])) as ArrayRef;
         let needle = ScalarValue::Utf8(None);
 
-        let result = contains_with_scalar_pattern(&haystack, &needle).unwrap();
+        let result = contains_with_arrow_scalar(&haystack, &needle).unwrap();
         let bool_array = result.as_any().downcast_ref::<BooleanArray>().unwrap();
 
         // Null needle should produce null results
@@ -272,7 +236,7 @@ mod tests {
         let haystack = Arc::new(StringArray::from(vec![Some("hello world"), Some("")])) as ArrayRef;
         let needle = ScalarValue::Utf8(Some("".to_string()));
 
-        let result = contains_with_scalar_pattern(&haystack, &needle).unwrap();
+        let result = contains_with_arrow_scalar(&haystack, &needle).unwrap();
         let bool_array = result.as_any().downcast_ref::<BooleanArray>().unwrap();
 
         // Empty string is contained in any string
