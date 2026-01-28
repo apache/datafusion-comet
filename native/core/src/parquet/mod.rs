@@ -765,7 +765,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
             required_schema,
             Some(data_schema),
             None,
-            None,
             object_store_url,
             file_groups,
             None,
