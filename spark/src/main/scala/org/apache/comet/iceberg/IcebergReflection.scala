@@ -729,6 +729,8 @@ object IcebergReflection extends Logging {
  *   Mapping from column names to Iceberg field IDs (built from scanSchema)
  * @param catalogProperties
  *   Catalog properties for FileIO (S3 credentials, regions, etc.)
+ * @param tableMasterKey
+ *   Optional table master key for encrypted table
  */
 case class CometIcebergNativeScanMetadata(
     table: Any,
@@ -739,7 +741,8 @@ case class CometIcebergNativeScanMetadata(
     tableSchema: Any,
     globalFieldIdMapping: Map[String, Int],
     catalogProperties: Map[String, String],
-    fileFormat: String)
+    fileFormat: String,
+    tableMasterKey: Option[String])
 
 object CometIcebergNativeScanMetadata extends Logging {
 
@@ -780,6 +783,16 @@ object CometIcebergNativeScanMetadata extends Logging {
         }
       }
 
+      // tableMasterKey is optional
+      val tableMasterKey = getTableProperties(table).flatMap { properties =>
+        val masterKey = "encryption.key-id"
+        if (properties.containsKey(masterKey)) {
+          Some(properties.get(masterKey))
+        } else {
+          None
+        }
+      }
+
       val globalFieldIdMapping = buildFieldIdMapping(scanSchema)
 
       // File format is always PARQUET,
@@ -796,7 +809,8 @@ object CometIcebergNativeScanMetadata extends Logging {
         tableSchema = tableSchema,
         globalFieldIdMapping = globalFieldIdMapping,
         catalogProperties = catalogProperties,
-        fileFormat = fileFormat)
+        fileFormat = fileFormat,
+        tableMasterKey = tableMasterKey)
     }
   }
 }

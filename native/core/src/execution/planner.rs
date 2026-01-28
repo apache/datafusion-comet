@@ -1159,6 +1159,7 @@ impl PhysicalPlanner {
                     required_schema,
                     catalog_properties,
                     file_task_groups,
+                    scan.table_master_key.clone(),
                 )?;
 
                 Ok((
