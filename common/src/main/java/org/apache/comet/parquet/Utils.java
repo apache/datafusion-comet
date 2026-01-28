@@ -30,10 +30,12 @@ import org.apache.parquet.schema.Types;
 import org.apache.spark.sql.types.*;
 
 import org.apache.comet.CometSchemaImporter;
+import org.apache.comet.IcebergApi;
 
 public class Utils {
 
   /** This method is called from Apache Iceberg. */
+  @IcebergApi
   public static ColumnReader getColumnReader(
       DataType type,
       ParquetColumnSpec columnSpec,
@@ -61,6 +63,7 @@ public class Utils {
    *     instead.
    * @see <a href="https://github.com/apache/datafusion-comet/issues/2079">Comet Issue #2079</a>
    */
+  @IcebergApi
   public static ColumnReader getColumnReader(
       DataType type,
       ColumnDescriptor descriptor,
@@ -293,6 +296,7 @@ public class Utils {
     }
   }
 
+  @IcebergApi
   public static ColumnDescriptor buildColumnDescriptor(ParquetColumnSpec columnSpec) {
     PrimitiveType.PrimitiveTypeName primType =
         PrimitiveType.PrimitiveTypeName.valueOf(columnSpec.getPhysicalType());
@@ -458,6 +462,7 @@ public class Utils {
     }
   }
 
+  @IcebergApi
   public static ParquetColumnSpec descriptorToParquetColumnSpec(ColumnDescriptor descriptor) {
 
     String[] path = descriptor.getPath();

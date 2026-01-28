@@ -27,10 +27,13 @@ import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns;
 import org.apache.spark.sql.types.*;
 import org.apache.spark.unsafe.types.UTF8String;
 
+import org.apache.comet.IcebergApi;
+
 /**
  * A column reader that always return constant vectors. Used for reading partition columns, for
  * instance.
  */
+@IcebergApi
 public class ConstantColumnReader extends MetadataColumnReader {
   /** Whether all the values in this constant column are nulls */
   private boolean isNull;
@@ -56,6 +59,7 @@ public class ConstantColumnReader extends MetadataColumnReader {
    * @deprecated since 0.10.0, will be removed in 0.11.0.
    * @see <a href="https://github.com/apache/datafusion-comet/issues/2079">Comet Issue #2079</a>
    */
+  @IcebergApi
   public ConstantColumnReader(
       DataType type, ColumnDescriptor descriptor, Object value, boolean useDecimal128) {
     super(type, descriptor, useDecimal128, true);
@@ -63,6 +67,7 @@ public class ConstantColumnReader extends MetadataColumnReader {
   }
 
   // Used by Iceberg
+  @IcebergApi
   public ConstantColumnReader(
       DataType type, ParquetColumnSpec spec, Object value, boolean useDecimal128) {
     super(type, spec, useDecimal128, true);

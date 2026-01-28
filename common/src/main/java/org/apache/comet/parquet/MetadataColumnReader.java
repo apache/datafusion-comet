@@ -28,10 +28,12 @@ import org.apache.arrow.vector.FieldVector;
 import org.apache.parquet.column.ColumnDescriptor;
 import org.apache.spark.sql.types.DataType;
 
+import org.apache.comet.IcebergApi;
 import org.apache.comet.vector.CometPlainVector;
 import org.apache.comet.vector.CometVector;
 
 /** A metadata column reader that can be extended by {@link RowIndexColumnReader} etc. */
+@IcebergApi
 public class MetadataColumnReader extends AbstractColumnReader {
   private final BufferAllocator allocator = new RootAllocator();
 
@@ -46,6 +48,7 @@ public class MetadataColumnReader extends AbstractColumnReader {
    * @deprecated since 0.10.0, will be made package private in 0.11.0.
    * @see <a href="https://github.com/apache/datafusion-comet/issues/2079">Comet Issue #2079</a>
    */
+  @IcebergApi
   public MetadataColumnReader(
       DataType type, ColumnDescriptor descriptor, boolean useDecimal128, boolean isConstant) {
     // TODO: should we handle legacy dates & timestamps for metadata columns?
@@ -55,6 +58,7 @@ public class MetadataColumnReader extends AbstractColumnReader {
   }
 
   // Used by Iceberg
+  @IcebergApi
   public MetadataColumnReader(
       DataType type, ParquetColumnSpec spec, boolean useDecimal128, boolean isConstant) {
     // TODO: should we handle legacy dates & timestamps for metadata columns?
@@ -69,6 +73,7 @@ public class MetadataColumnReader extends AbstractColumnReader {
     super.setBatchSize(batchSize);
   }
 
+  @IcebergApi
   @Override
   public void readBatch(int total) {
     if (vector == null) {
@@ -90,6 +95,7 @@ public class MetadataColumnReader extends AbstractColumnReader {
     vector.setNumNulls(total);
   }
 
+  @IcebergApi
   @Override
   public CometVector currentBatch() {
     return vector;

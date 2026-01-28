@@ -30,6 +30,7 @@ import org.apache.spark.sql.internal.SQLConf;
 import org.apache.spark.sql.types.*;
 
 import org.apache.comet.CometConf;
+import org.apache.comet.IcebergApi;
 
 import static org.apache.comet.parquet.Utils.descriptorToParquetColumnSpec;
 
@@ -41,6 +42,7 @@ public class TypeUtil {
    * @deprecated since 0.10.0, will be removed in 0.11.0.
    * @see <a href="https://github.com/apache/datafusion-comet/issues/2079">Comet Issue #2079</a>
    */
+  @IcebergApi
   public static ColumnDescriptor convertToParquet(StructField field) {
     Type.Repetition repetition;
     int maxDefinitionLevel;
