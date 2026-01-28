@@ -41,6 +41,12 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] = None
 
+  /** Thread-local storage for split serialization data. */
+  private case class SplitData(commonBytes: Array[Byte], perPartitionBytes: Array[Array[Byte]])
+  private val splitDataThreadLocal = new java.lang.ThreadLocal[Option[SplitData]] {
+    override def initialValue(): Option[SplitData] = None
+  }
+
   /**
    * Constants specific to Iceberg expression conversion (not in shared IcebergReflection).
    */
@@ -309,7 +315,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       contentScanTaskClass: Class[_],
       fileScanTaskClass: Class[_],
       taskBuilder: OperatorOuterClass.IcebergFileScanTask.Builder,
-      icebergScanBuilder: OperatorOuterClass.IcebergScan.Builder,
+      commonBuilder: OperatorOuterClass.IcebergScanCommon.Builder,
       partitionTypeToPoolIndex: mutable.HashMap[String, Int],
       partitionSpecToPoolIndex: mutable.HashMap[String, Int],
       partitionDataToPoolIndex: mutable.HashMap[String, Int]): Unit = {
@@ -334,7 +340,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
           val specIdx = partitionSpecToPoolIndex.getOrElseUpdate(
             partitionSpecJson, {
               val idx = partitionSpecToPoolIndex.size
-              icebergScanBuilder.addPartitionSpecPool(partitionSpecJson)
+              commonBuilder.addPartitionSpecPool(partitionSpecJson)
               idx
             })
           taskBuilder.setPartitionSpecIdx(specIdx)
@@ -415,7 +421,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                 val typeIdx = partitionTypeToPoolIndex.getOrElseUpdate(
                   partitionTypeJson, {
                     val idx = partitionTypeToPoolIndex.size
-                    icebergScanBuilder.addPartitionTypePool(partitionTypeJson)
+                    commonBuilder.addPartitionTypePool(partitionTypeJson)
                     idx
                   })
                 taskBuilder.setPartitionTypeIdx(typeIdx)
@@ -470,7 +476,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
             val partitionDataIdx = partitionDataToPoolIndex.getOrElseUpdate(
               partitionDataKey, {
                 val idx = partitionDataToPoolIndex.size
-                icebergScanBuilder.addPartitionDataPool(partitionDataProto)
+                commonBuilder.addPartitionDataPool(partitionDataProto)
                 idx
               })
             taskBuilder.setPartitionDataIdx(partitionDataIdx)
@@ -682,6 +688,8 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       builder: Operator.Builder,
       childOp: Operator*): Option[OperatorOuterClass.Operator] = {
     val icebergScanBuilder = OperatorOuterClass.IcebergScan.newBuilder()
+    // commonBuilder holds shared data (pools, metadata) - built throughout this method
+    val commonBuilder = OperatorOuterClass.IcebergScanCommon.newBuilder()
 
     // Deduplication structures - map unique values to pool indices
     val schemaToPoolIndex = mutable.HashMap[AnyRef, Int]()
@@ -693,6 +701,9 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     val deleteFilesToPoolIndex =
       mutable.HashMap[Seq[OperatorOuterClass.IcebergDeleteFile], Int]()
     val residualToPoolIndex = mutable.HashMap[Option[Expr], Int]()
+
+    // Per-partition file tasks (for split serialization - injected at execution time)
+    val perPartitionBuilders = mutable.ArrayBuffer[OperatorOuterClass.IcebergFilePartition]()
 
     var totalTasks = 0
 
@@ -707,10 +718,10 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     }
 
     // Use pre-extracted metadata (no reflection needed)
-    icebergScanBuilder.setMetadataLocation(metadata.metadataLocation)
+    commonBuilder.setMetadataLocation(metadata.metadataLocation)
 
     metadata.catalogProperties.foreach { case (key, value) =>
-      icebergScanBuilder.putCatalogProperties(key, value)
+      commonBuilder.putCatalogProperties(key, value)
     }
 
     // Set required_schema from output
@@ -720,7 +731,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
         .setName(attr.name)
         .setNullable(attr.nullable)
       serializeDataType(attr.dataType).foreach(field.setDataType)
-      icebergScanBuilder.addRequiredSchema(field.build())
+      commonBuilder.addRequiredSchema(field.build())
     }
 
     // Extract FileScanTasks from the InputPartitions in the RDD
@@ -857,7 +868,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                         schema, {
                           val idx = schemaToPoolIndex.size
                           val schemaJson = toJsonMethod.invoke(null, schema).asInstanceOf[String]
-                          icebergScanBuilder.addSchemaPool(schemaJson)
+                          commonBuilder.addSchemaPool(schemaJson)
                           idx
                         })
                       taskBuilder.setSchemaIdx(schemaIdx)
@@ -886,7 +897,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                           val idx = projectFieldIdsToPoolIndex.size
                           val listBuilder = OperatorOuterClass.ProjectFieldIdList.newBuilder()
                           projectFieldIds.foreach(id => listBuilder.addFieldIds(id))
-                          icebergScanBuilder.addProjectFieldIdsPool(listBuilder.build())
+                          commonBuilder.addProjectFieldIdsPool(listBuilder.build())
                           idx
                         })
                       taskBuilder.setProjectFieldIdsIdx(projectFieldIdsIdx)
@@ -909,7 +920,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                           val idx = deleteFilesToPoolIndex.size
                           val listBuilder = OperatorOuterClass.DeleteFileList.newBuilder()
                           deleteFilesList.foreach(df => listBuilder.addDeleteFiles(df))
-                          icebergScanBuilder.addDeleteFilesPool(listBuilder.build())
+                          commonBuilder.addDeleteFilesPool(listBuilder.build())
                           idx
                         })
                       taskBuilder.setDeleteFilesIdx(deleteFilesIdx)
@@ -938,7 +949,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                       val residualIdx = residualToPoolIndex.getOrElseUpdate(
                         Some(residualExpr), {
                           val idx = residualToPoolIndex.size
-                          icebergScanBuilder.addResidualPool(residualExpr)
+                          commonBuilder.addResidualPool(residualExpr)
                           idx
                         })
                       taskBuilder.setResidualIdx(residualIdx)
@@ -950,7 +961,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                       contentScanTaskClass,
                       fileScanTaskClass,
                       taskBuilder,
-                      icebergScanBuilder,
+                      commonBuilder,
                       partitionTypeToPoolIndex,
                       partitionSpecToPoolIndex,
                       partitionDataToPoolIndex)
@@ -960,7 +971,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                       val nmIdx = nameMappingToPoolIndex.getOrElseUpdate(
                         nm, {
                           val idx = nameMappingToPoolIndex.size
-                          icebergScanBuilder.addNameMappingPool(nm)
+                          commonBuilder.addNameMappingPool(nm)
                           idx
                         })
                       taskBuilder.setNameMappingIdx(nmIdx)
@@ -972,8 +983,10 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
               }
             }
 
+            // Collect partition data for later per-partition injection
+            // Do NOT add to file_partitions (legacy format)
             val builtPartition = partitionBuilder.build()
-            icebergScanBuilder.addFilePartitions(builtPartition)
+            perPartitionBuilders += builtPartition
           }
         case _ =>
       }
@@ -1011,7 +1024,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     }
 
     // Calculate partition data pool size in bytes (protobuf format)
-    val partitionDataPoolBytes = icebergScanBuilder.getPartitionDataPoolList.asScala
+    val partitionDataPoolBytes = commonBuilder.getPartitionDataPoolList.asScala
       .map(_.getSerializedSize)
       .sum
 
@@ -1021,6 +1034,16 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
         s"  Partition data pool: ${partitionDataToPoolIndex.size} unique values, " +
           s"$partitionDataPoolBytes bytes (protobuf)")
     }
+
+    // Embed common data into IcebergScan (partition is injected at execution time)
+    icebergScanBuilder.setCommon(commonBuilder.build())
+    // Note: partition is NOT set here - it gets injected per-partition at execution time
+
+    // Store per-partition data for injection at execution time
+    val commonBytes = commonBuilder.build().toByteArray
+    val perPartitionBytes = perPartitionBuilders.map(_.toByteArray).toArray
+
+    splitDataThreadLocal.set(Some(SplitData(commonBytes, perPartitionBytes)))
 
     builder.clearChildren()
     Some(builder.setIcebergScan(icebergScanBuilder).build())
@@ -1036,10 +1059,24 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
           "Metadata should have been extracted in CometScanRule.")
     }
 
-    // Extract metadataLocation from the native operator
-    val metadataLocation = nativeOp.getIcebergScan.getMetadataLocation
+    // Extract metadataLocation from the native operator's common data
+    val metadataLocation = nativeOp.getIcebergScan.getCommon.getMetadataLocation
 
-    // Create the CometIcebergNativeScanExec using the companion object's apply method
-    CometIcebergNativeScanExec(nativeOp, op.wrapped, op.session, metadataLocation, metadata)
+    // Retrieve split data from thread-local (set during convert())
+    val splitData = splitDataThreadLocal.get().getOrElse {
+      throw new IllegalStateException(
+        "Programming error: split data not available. " +
+          "buildAndStoreSplitData() should have been called during convert().")
+    }
+    splitDataThreadLocal.remove()
+
+    CometIcebergNativeScanExec(
+      nativeOp,
+      op.wrapped,
+      op.session,
+      metadataLocation,
+      metadata,
+      splitData.commonBytes,
+      splitData.perPartitionBytes)
   }
 }

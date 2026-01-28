@@ -164,7 +164,7 @@ jobs:
             -Pquick=true -x javadoc
 
   iceberg-spark-rust:
-    if: contains(github.event.pull_request.title, '[iceberg]')
+    if: contains(github.event.pull_request.title, '[iceberg-rust]')
     strategy:
       matrix:
         os: [ubuntu-24.04]
@@ -203,7 +203,7 @@ jobs:
             -Pquick=true -x javadoc
 
   iceberg-spark-extensions-rust:
-    if: contains(github.event.pull_request.title, '[iceberg]')
+    if: contains(github.event.pull_request.title, '[iceberg-rust]')
     strategy:
       matrix:
         os: [ubuntu-24.04]
@@ -242,7 +242,7 @@ jobs:
             -Pquick=true -x javadoc
 
   iceberg-spark-runtime-rust:
-    if: contains(github.event.pull_request.title, '[iceberg]')
+    if: contains(github.event.pull_request.title, '[iceberg-rust]')
     strategy:
       matrix:
         os: [ubuntu-24.04]
