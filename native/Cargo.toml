@@ -50,7 +50,7 @@ num = "0.4"
 rand = "0.9"
 regex = "1.11.3"
 thiserror = "2"
-object_store = { version = "0.12.3", features = ["gcp", "azure", "aws", "http"] }
+object_store = { version = "0.13.1", features = ["gcp", "azure", "aws", "http"] }
 url = "2.2"
 aws-config = "1.8.10"
 aws-credential-types = "1.2.9"
