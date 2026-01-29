@@ -61,11 +61,10 @@ class CometSqlFileTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   /** Generate all config combinations from a ConfigMatrix specification. */
-  private def configCombinations(
-      matrix: Seq[(String, Seq[String])]): Seq[Seq[(String, String)]] = {
+  private def configMatrix(matrix: Seq[(String, Seq[String])]): Seq[Seq[(String, String)]] = {
     if (matrix.isEmpty) return Seq(Seq.empty)
     val (key, values) = matrix.head
-    val rest = configCombinations(matrix.tail)
+    val rest = configMatrix(matrix.tail)
     for {
       value <- values
       combo <- rest
@@ -101,7 +100,7 @@ class CometSqlFileTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   discoverTestFiles(testResourceDir).foreach { file =>
     val relativePath = testResourceDir.toURI.relativize(file.toURI).getPath
     val parsed = SqlFileTestParser.parse(file)
-    val combinations = configCombinations(parsed.configMatrix)
+    val combinations = configMatrix(parsed.configMatrix)
 
     // Skip tests that require a newer Spark version
     val skip = parsed.minSparkVersion.exists(!meetsMinSparkVersion(_))

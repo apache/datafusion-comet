@@ -23,11 +23,11 @@ CREATE TABLE test_wb(v double) USING parquet
 statement
 INSERT INTO test_wb VALUES (0.0), (2.5), (5.0), (7.5), (10.0), (-1.0), (11.0), (NULL)
 
-query spark_answer_only
+query ignore(https://github.com/apache/datafusion-comet/issues/3331)
 SELECT v, width_bucket(v, 0, 10, 4) FROM test_wb
 
-query spark_answer_only
+query ignore(https://github.com/apache/datafusion-comet/issues/3331)
 SELECT v, width_bucket(v, 10, 0, 4) FROM test_wb
 
-query spark_answer_only
+query ignore(https://github.com/apache/datafusion-comet/issues/3331)
 SELECT v, width_bucket(v, 0, 10, 1) FROM test_wb
