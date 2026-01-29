@@ -78,7 +78,7 @@ jobs:
           protoc-architecture: aarch_64
 
       - name: Restore Cargo cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: |
             ~/.cargo/registry
@@ -96,14 +96,14 @@ jobs:
           cargo build --profile ci
 
       - name: Upload native library
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: native-lib-macos
           path: native/target/ci/libcomet.dylib
           retention-days: 1
 
       - name: Save Cargo cache
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         if: github.ref == 'refs/heads/main'
         with:
           path: |
@@ -145,6 +145,7 @@ jobs:
             value: |
               org.apache.comet.exec.CometShuffleSuite
               org.apache.comet.exec.CometShuffle4_0Suite
+              org.apache.comet.exec.CometNativeColumnarToRowSuite
               org.apache.comet.exec.CometNativeShuffleSuite
               org.apache.comet.exec.CometShuffleEncryptionSuite
               org.apache.comet.exec.CometShuffleManagerSuite
@@ -224,7 +225,7 @@ jobs:
           protoc-architecture: aarch_64
 
       - name: Download native library
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: native-lib-macos
           # Download to release/ since Maven's -Prelease expects libcomet.dylib there
@@ -232,7 +233,7 @@ jobs:
 
       # Restore cargo registry cache (for any cargo commands that might run)
       - name: Cache Cargo registry
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry

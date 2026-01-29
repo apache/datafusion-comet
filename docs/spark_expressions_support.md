@@ -349,7 +349,7 @@
 - [x] try_multiply
 - [x] try_subtract
 - [x] unhex
-- [ ] width_bucket
+- [x] width_bucket
 
 ### misc_funcs
 

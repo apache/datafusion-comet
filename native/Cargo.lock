@@ -1242,9 +1242,9 @@ checksum = "37b2a672a2cb129a2e41c10b1224bb368f9f37a2b16b612598138befd7b37eb5"
 
 [[package]]
 name = "cc"
-version = "1.2.53"
+version = "1.2.54"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "755d2fce177175ffca841e9a06afdb2c4ab0f593d53b4dee48147dfaade85932"
+checksum = "6354c81bbfd62d9cfa9cb3c773c2b7b2a3a482d569de977fd0e961f6e7c00583"
 dependencies = [
  "find-msvc-tools",
  "jobserver",
@@ -1815,7 +1815,7 @@ dependencies = [
 
 [[package]]
 name = "datafusion-comet"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "arrow",
  "assertables",
@@ -1888,7 +1888,7 @@ dependencies = [
 
 [[package]]
 name = "datafusion-comet-objectstore-hdfs"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1902,7 +1902,7 @@ dependencies = [
 
 [[package]]
 name = "datafusion-comet-proto"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "prost",
  "prost-build",
@@ -1910,7 +1910,7 @@ dependencies = [
 
 [[package]]
 name = "datafusion-comet-spark-expr"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "arrow",
  "base64",
@@ -6110,9 +6110,9 @@ checksum = "b6c140620e7ffbb22c2dee59cafe6084a59b5ffc27a8859a5f0d494b5d52b6be"
 
 [[package]]
 name = "uuid"
-version = "1.19.0"
+version = "1.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e2e054861b4bd027cd373e18e8d8d8e6548085000e41290d95ce0c373a654b4a"
+checksum = "ee48d38b119b0cd71fe4141b30f5ba9c7c5d9f4e7a3a8b4a674e4b6ef789976f"
 dependencies = [
  "getrandom 0.3.4",
  "js-sys",
