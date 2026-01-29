@@ -17,25 +17,17 @@
 
 -- ConfigMatrix: parquet.enable.dictionary=false,true
 
--- DatePart functions
 statement
-CREATE TABLE test_dt(col timestamp) USING parquet
+CREATE TABLE test_coalesce(a int, b int, c int) USING parquet
 
 statement
-INSERT INTO test_dt VALUES (timestamp('2024-06-15 10:30:00')), (timestamp('1900-01-01')), (null)
+INSERT INTO test_coalesce VALUES (1, 2, 3), (NULL, 2, 3), (NULL, NULL, 3), (NULL, NULL, NULL), (1, NULL, NULL)
 
 query
-SELECT col, year(col), month(col), day(col), weekday(col), dayofweek(col), dayofyear(col), weekofyear(col), quarter(col) FROM test_dt
+SELECT coalesce(a, b, c) FROM test_coalesce
 
 query
-SELECT hour(col), minute(col), second(col) FROM test_dt
-
--- Midnight and end-of-day
-statement
-CREATE TABLE test_dt_hms(ts timestamp) USING parquet
-
-statement
-INSERT INTO test_dt_hms VALUES (timestamp('2024-01-01 00:00:00')), (timestamp('2024-01-01 23:59:59')), (timestamp('2024-06-15 12:30:45')), (NULL)
+SELECT coalesce(a) FROM test_coalesce
 
 query
-SELECT hour(ts), minute(ts), second(ts) FROM test_dt_hms
+SELECT coalesce(a, 99) FROM test_coalesce

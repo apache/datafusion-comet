@@ -79,6 +79,10 @@ class CometSqlFileTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                 checkSparkAnswer(sql)
               case WithTolerance(tol) =>
                 checkSparkAnswerWithTolerance(sql, tol)
+              case ExpectFallback(reason) =>
+                checkSparkAnswerAndFallbackReason(sql, reason)
+              case Ignore(reason) =>
+                logInfo(s"IGNORED query (${reason}): $sql")
             }
         }
       }

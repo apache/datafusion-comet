@@ -15,27 +15,15 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
+-- Test upper() with case conversion enabled (happy path)
+-- Config: spark.comet.caseConversion.enabled=true
 -- ConfigMatrix: parquet.enable.dictionary=false,true
 
--- DatePart functions
 statement
-CREATE TABLE test_dt(col timestamp) USING parquet
+CREATE TABLE test_upper_enabled(s string) USING parquet
 
 statement
-INSERT INTO test_dt VALUES (timestamp('2024-06-15 10:30:00')), (timestamp('1900-01-01')), (null)
+INSERT INTO test_upper_enabled VALUES ('hello'), ('HELLO'), ('Hello World'), (''), (NULL), ('123abc')
 
 query
-SELECT col, year(col), month(col), day(col), weekday(col), dayofweek(col), dayofyear(col), weekofyear(col), quarter(col) FROM test_dt
-
-query
-SELECT hour(col), minute(col), second(col) FROM test_dt
-
--- Midnight and end-of-day
-statement
-CREATE TABLE test_dt_hms(ts timestamp) USING parquet
-
-statement
-INSERT INTO test_dt_hms VALUES (timestamp('2024-01-01 00:00:00')), (timestamp('2024-01-01 23:59:59')), (timestamp('2024-06-15 12:30:45')), (NULL)
-
-query
-SELECT hour(ts), minute(ts), second(ts) FROM test_dt_hms
+SELECT upper(s) FROM test_upper_enabled

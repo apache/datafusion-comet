@@ -17,25 +17,11 @@
 
 -- ConfigMatrix: parquet.enable.dictionary=false,true
 
--- DatePart functions
 statement
-CREATE TABLE test_dt(col timestamp) USING parquet
-
-statement
-INSERT INTO test_dt VALUES (timestamp('2024-06-15 10:30:00')), (timestamp('1900-01-01')), (null)
-
-query
-SELECT col, year(col), month(col), day(col), weekday(col), dayofweek(col), dayofyear(col), weekofyear(col), quarter(col) FROM test_dt
-
-query
-SELECT hour(col), minute(col), second(col) FROM test_dt
-
--- Midnight and end-of-day
-statement
-CREATE TABLE test_dt_hms(ts timestamp) USING parquet
+CREATE TABLE test_log10(d double) USING parquet
 
 statement
-INSERT INTO test_dt_hms VALUES (timestamp('2024-01-01 00:00:00')), (timestamp('2024-01-01 23:59:59')), (timestamp('2024-06-15 12:30:45')), (NULL)
+INSERT INTO test_log10 VALUES (1.0), (10.0), (100.0), (0.1), (NULL), (cast('NaN' as double)), (cast('Infinity' as double))
 
-query
-SELECT hour(ts), minute(ts), second(ts) FROM test_dt_hms
+query tolerance=1e-6
+SELECT log10(d) FROM test_log10

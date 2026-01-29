@@ -17,25 +17,14 @@
 
 -- ConfigMatrix: parquet.enable.dictionary=false,true
 
--- DatePart functions
 statement
-CREATE TABLE test_dt(col timestamp) USING parquet
-
-statement
-INSERT INTO test_dt VALUES (timestamp('2024-06-15 10:30:00')), (timestamp('1900-01-01')), (null)
-
-query
-SELECT col, year(col), month(col), day(col), weekday(col), dayofweek(col), dayofyear(col), weekofyear(col), quarter(col) FROM test_dt
-
-query
-SELECT hour(col), minute(col), second(col) FROM test_dt
-
--- Midnight and end-of-day
-statement
-CREATE TABLE test_dt_hms(ts timestamp) USING parquet
+CREATE TABLE test_avg(i int, l long, f float, d double, grp string) USING parquet
 
 statement
-INSERT INTO test_dt_hms VALUES (timestamp('2024-01-01 00:00:00')), (timestamp('2024-01-01 23:59:59')), (timestamp('2024-06-15 12:30:45')), (NULL)
+INSERT INTO test_avg VALUES (1, 10, 1.5, 1.5, 'a'), (2, 20, 2.5, 2.5, 'a'), (3, 30, 3.5, 3.5, 'b'), (NULL, NULL, NULL, NULL, 'b'), (0, 0, 0.0, 0.0, 'a')
 
-query
-SELECT hour(ts), minute(ts), second(ts) FROM test_dt_hms
+query tolerance=1e-6
+SELECT avg(i), avg(l), avg(f), avg(d) FROM test_avg
+
+query tolerance=1e-6
+SELECT grp, avg(d) FROM test_avg GROUP BY grp ORDER BY grp

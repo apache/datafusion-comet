@@ -17,25 +17,26 @@
 
 -- ConfigMatrix: parquet.enable.dictionary=false,true
 
--- DatePart functions
 statement
-CREATE TABLE test_dt(col timestamp) USING parquet
+CREATE TABLE test_cast(i int, l long, f float, d double, s string, b boolean) USING parquet
 
 statement
-INSERT INTO test_dt VALUES (timestamp('2024-06-15 10:30:00')), (timestamp('1900-01-01')), (null)
+INSERT INTO test_cast VALUES (1, 1, 1.5, 1.5, '123', true), (0, 0, 0.0, 0.0, '0', false), (NULL, NULL, NULL, NULL, NULL, NULL), (-1, -1, -1.5, -1.5, '-1', true), (2147483647, 9223372036854775807, cast('NaN' as float), cast('Infinity' as double), 'abc', false)
 
 query
-SELECT col, year(col), month(col), day(col), weekday(col), dayofweek(col), dayofyear(col), weekofyear(col), quarter(col) FROM test_dt
+SELECT cast(i as long), cast(i as double), cast(i as string) FROM test_cast
 
 query
-SELECT hour(col), minute(col), second(col) FROM test_dt
-
--- Midnight and end-of-day
-statement
-CREATE TABLE test_dt_hms(ts timestamp) USING parquet
-
-statement
-INSERT INTO test_dt_hms VALUES (timestamp('2024-01-01 00:00:00')), (timestamp('2024-01-01 23:59:59')), (timestamp('2024-06-15 12:30:45')), (NULL)
+SELECT cast(l as int), cast(l as double), cast(l as string) FROM test_cast
 
 query
-SELECT hour(ts), minute(ts), second(ts) FROM test_dt_hms
+SELECT cast(f as double), cast(f as int), cast(f as string) FROM test_cast
+
+query
+SELECT cast(d as float), cast(d as int), cast(d as string) FROM test_cast
+
+query
+SELECT cast(s as int), cast(s as double) FROM test_cast
+
+query
+SELECT cast(b as int), cast(b as string), cast(i as boolean) FROM test_cast

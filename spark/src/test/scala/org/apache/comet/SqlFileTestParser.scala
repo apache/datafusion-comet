@@ -36,6 +36,8 @@ sealed trait QueryMode
 case object CheckOperator extends QueryMode
 case object SparkAnswerOnly extends QueryMode
 case class WithTolerance(tol: Double) extends QueryMode
+case class ExpectFallback(reason: String) extends QueryMode
+case class Ignore(reason: String) extends QueryMode
 
 /**
  * Parsed representation of a .sql test file.
@@ -113,14 +115,24 @@ object SqlFileTestParser {
     SqlTestFile(configs, configMatrix, records.result(), tables.result())
   }
 
+  private val FallbackPattern = """query\s+expect_fallback\((.+)\)""".r
+  private val IgnorePattern = """query\s+ignore\((.+)\)""".r
+
   private def parseQueryMode(directive: String): QueryMode = {
-    val parts = directive.split("\\s+")
-    if (parts.length == 1) return CheckOperator
-    parts(1) match {
-      case "spark_answer_only" => SparkAnswerOnly
-      case s if s.startsWith("tolerance=") =>
-        WithTolerance(s.stripPrefix("tolerance=").toDouble)
-      case _ => CheckOperator
+    directive match {
+      case FallbackPattern(reason) =>
+        ExpectFallback(reason.trim)
+      case IgnorePattern(reason) =>
+        Ignore(reason.trim)
+      case _ =>
+        val parts = directive.split("\\s+")
+        if (parts.length == 1) return CheckOperator
+        parts(1) match {
+          case "spark_answer_only" => SparkAnswerOnly
+          case s if s.startsWith("tolerance=") =>
+            WithTolerance(s.stripPrefix("tolerance=").toDouble)
+          case _ => CheckOperator
+        }
     }
   }
 

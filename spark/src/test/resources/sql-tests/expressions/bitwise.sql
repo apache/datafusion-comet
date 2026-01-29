@@ -48,3 +48,23 @@ SELECT shiftleft(col1, 2), shiftleft(col1, col2) FROM test
 
 query
 SELECT ~(11), ~col1, ~col2 FROM test
+
+-- BitwiseCount
+statement
+CREATE TABLE test_bit_count(i int, l long) USING parquet
+
+statement
+INSERT INTO test_bit_count VALUES (0, 0), (1, 1), (7, 7), (-1, -1), (2147483647, 9223372036854775807), (NULL, NULL)
+
+query
+SELECT bit_count(i), bit_count(l) FROM test_bit_count
+
+-- BitwiseGet
+statement
+CREATE TABLE test_bit_get(i int, pos int) USING parquet
+
+statement
+INSERT INTO test_bit_get VALUES (11, 0), (11, 1), (11, 2), (11, 3), (0, 0), (NULL, 0), (11, NULL)
+
+query spark_answer_only
+SELECT bit_get(i, pos) FROM test_bit_get

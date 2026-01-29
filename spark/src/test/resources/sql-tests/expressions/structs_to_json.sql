@@ -17,25 +17,11 @@
 
 -- ConfigMatrix: parquet.enable.dictionary=false,true
 
--- DatePart functions
 statement
-CREATE TABLE test_dt(col timestamp) USING parquet
-
-statement
-INSERT INTO test_dt VALUES (timestamp('2024-06-15 10:30:00')), (timestamp('1900-01-01')), (null)
-
-query
-SELECT col, year(col), month(col), day(col), weekday(col), dayofweek(col), dayofyear(col), weekofyear(col), quarter(col) FROM test_dt
-
-query
-SELECT hour(col), minute(col), second(col) FROM test_dt
-
--- Midnight and end-of-day
-statement
-CREATE TABLE test_dt_hms(ts timestamp) USING parquet
+CREATE TABLE test_to_json(a int, b string) USING parquet
 
 statement
-INSERT INTO test_dt_hms VALUES (timestamp('2024-01-01 00:00:00')), (timestamp('2024-01-01 23:59:59')), (timestamp('2024-06-15 12:30:45')), (NULL)
+INSERT INTO test_to_json VALUES (1, 'hello'), (NULL, NULL), (0, '')
 
-query
-SELECT hour(ts), minute(ts), second(ts) FROM test_dt_hms
+query spark_answer_only
+SELECT to_json(named_struct('a', a, 'b', b)) FROM test_to_json
