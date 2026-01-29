@@ -129,6 +129,53 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("partialMerge - cnt distinct + sum") {
+    withTempDir(dir => {
+      withSQLConf("spark.comet.enabled" -> "false") {
+        sql("""
+              CREATE OR REPLACE TEMP VIEW t (v, v1, i) AS
+              VALUES
+                ('c',  'a',  1),
+                ('c1', 'a1', 1),
+                ('c2', 'a2', 2),
+                ('c3', 'a3', 2),
+                ('c4', 'a4', 2),
+                ('c',  'a',  1),
+                ('c1', 'a1', 1),
+                ('c2', 'a2', 2),
+                ('c3', 'a3', 2),
+                ('c4', 'a4', 2),
+                ('c',  'a',  1),
+                ('c1', 'a1', 1),
+                ('c2', 'a2', 2),
+                ('c3', 'a3', 2),
+                ('c4', 'a4', 2)
+              """)
+        sql("select * from t").repartition(3).write.mode("overwrite").parquet(dir.getAbsolutePath)
+      }
+
+      withSQLConf(
+        CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+        "spark.comet.exec.shuffle.fallbackToColumnar" -> "false",
+        "spark.comet.cast.allowIncompatible" -> "true",
+        "spark.sql.adaptive.enabled" -> "false",
+        "spark.comet.explain.native.enabled" -> "true",
+        "spark.comet.enabled" -> "true",
+        "spark.comet.expression.Cast.allowIncompatible" -> "true",
+        "spark.comet.exec.shuffle.enableFastEncoding" -> "true",
+        "spark.comet.exec.shuffle.enabled" -> "true",
+        "spark.comet.explainFallback.enabled" -> "true",
+        CometConf.COMET_NATIVE_SCAN_IMPL.key -> "native_iceberg_compat",
+        "spark.shuffle.manager" -> "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager",
+        "spark.comet.logFallbackReasons.enabled" -> "true") {
+        spark.read.parquet(dir.getAbsolutePath).createOrReplaceTempView("t2")
+        // sql("SELECT count(distinct v, v) FROM t2").explain("formatted")
+        // sql("SELECT i, sum(v1), count(distinct v) FROM t2 group by i").explain()
+        checkSparkAnswerAndOperator("SELECT i, sum(v1), count(distinct v) FROM t2 group by i")
+      }
+    })
+  }
+
   test("multiple column distinct count") {
     withSQLConf(
       CometConf.COMET_ENABLED.key -> "true",
