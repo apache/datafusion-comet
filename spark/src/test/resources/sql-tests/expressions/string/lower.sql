@@ -25,3 +25,7 @@ INSERT INTO test_lower VALUES ('HELLO'), ('hello'), ('Hello World'), (''), (NULL
 
 query expect_fallback(case conversion)
 SELECT lower(s) FROM test_lower
+
+-- literal arguments
+query expect_fallback(case conversion)
+SELECT lower('HELLO'), lower(''), lower(NULL)

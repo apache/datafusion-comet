@@ -25,3 +25,15 @@ INSERT INTO test_starts_with VALUES ('hello world', 'hello'), ('hello', ''), (''
 
 query
 SELECT startswith(s, prefix) FROM test_starts_with
+
+-- column + literal
+query
+SELECT startswith(s, 'hello') FROM test_starts_with
+
+-- literal + column
+query
+SELECT startswith('hello world', prefix) FROM test_starts_with
+
+-- literal + literal
+query
+SELECT startswith('hello world', 'hello'), startswith('hello', 'xyz'), startswith('', ''), startswith(NULL, 'a')

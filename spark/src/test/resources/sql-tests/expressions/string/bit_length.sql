@@ -25,3 +25,7 @@ INSERT INTO test_bit_length VALUES (''), ('a'), ('hello'), (NULL), ('café')
 
 query
 SELECT bit_length(s) FROM test_bit_length
+
+-- literal arguments
+query
+SELECT bit_length('hello'), bit_length(''), bit_length(NULL)

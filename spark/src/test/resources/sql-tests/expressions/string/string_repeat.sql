@@ -25,3 +25,15 @@ INSERT INTO test_repeat VALUES ('hi', 3), ('', 5), ('a', 0), ('a', -1), (NULL, 3
 
 query
 SELECT repeat(s, n) FROM test_repeat
+
+-- column + literal
+query
+SELECT repeat(s, 3) FROM test_repeat
+
+-- literal + column
+query
+SELECT repeat('hi', n) FROM test_repeat
+
+-- literal + literal
+query
+SELECT repeat('hi', 3), repeat('', 5), repeat('a', 0), repeat(NULL, 3)

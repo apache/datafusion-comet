@@ -25,3 +25,7 @@ INSERT INTO test_from_json VALUES ('{"a": 1, "b": "hello"}'), ('{}'), (NULL), ('
 
 query spark_answer_only
 SELECT from_json(j, 'a INT, b STRING') FROM test_from_json
+
+-- literal arguments
+query spark_answer_only
+SELECT from_json('{"a": 1, "b": "hello"}', 'a INT, b STRING')

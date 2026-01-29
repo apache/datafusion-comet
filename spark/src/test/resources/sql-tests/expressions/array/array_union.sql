@@ -25,3 +25,15 @@ INSERT INTO test_array_union VALUES (array(1, 2, 3), array(3, 4, 5)), (array(1, 
 
 query spark_answer_only
 SELECT array_union(a, b) FROM test_array_union
+
+-- column + literal
+query spark_answer_only
+SELECT array_union(a, array(3, 4, 5)) FROM test_array_union
+
+-- literal + column
+query spark_answer_only
+SELECT array_union(array(1, 2, 3), b) FROM test_array_union
+
+-- literal + literal
+query ignore(https://github.com/apache/datafusion-comet/issues/3338)
+SELECT array_union(array(1, 2, 3), array(3, 4, 5)), array_union(array(1, 2), array()), array_union(array(), array(1)), array_union(cast(NULL as array<int>), array(1))

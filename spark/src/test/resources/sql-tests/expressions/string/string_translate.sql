@@ -25,3 +25,15 @@ INSERT INTO test_translate VALUES ('hello', 'el', 'ip'), ('hello', 'aeiou', '123
 
 query
 SELECT translate(s, from_str, to_str) FROM test_translate
+
+-- column + literal + literal
+query
+SELECT translate(s, 'el', 'ip') FROM test_translate
+
+-- literal + column + column
+query
+SELECT translate('hello', from_str, to_str) FROM test_translate
+
+-- literal + literal + literal
+query
+SELECT translate('hello', 'el', 'ip'), translate('hello', 'aeiou', '12345'), translate('', 'a', 'b'), translate(NULL, 'a', 'b')

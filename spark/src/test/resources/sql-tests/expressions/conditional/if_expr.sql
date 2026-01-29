@@ -28,3 +28,7 @@ SELECT IF(cond, a, b) FROM test_if
 
 query
 SELECT IF(a > 0, 'positive', 'non-positive') FROM test_if
+
+-- literal arguments
+query
+SELECT IF(true, 1, 2), IF(false, 1, 2), IF(NULL, 1, 2)

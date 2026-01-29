@@ -28,3 +28,11 @@ SELECT rpad(s, len, pad) FROM test_rpad
 
 query
 SELECT rpad(s, len) FROM test_rpad
+
+-- column + literal + literal
+query
+SELECT rpad(s, 5, 'x') FROM test_rpad
+
+-- literal + literal + literal
+query expect_fallback(Scalar values are not supported for the str argument)
+SELECT rpad('hi', 5, 'x'), rpad('hello', 3, 'x'), rpad('', 3, 'a'), rpad(NULL, 5, 'x')

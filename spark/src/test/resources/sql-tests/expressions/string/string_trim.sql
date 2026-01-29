@@ -28,3 +28,10 @@ SELECT trim(s), ltrim(s), rtrim(s) FROM test_trim
 
 query
 SELECT trim(BOTH 'h' FROM s) FROM test_trim
+
+-- literal arguments
+query
+SELECT trim('  hello  '), ltrim('  hello  '), rtrim('  hello  ')
+
+query
+SELECT trim(BOTH 'h' FROM 'hello'), trim(LEADING ' ' FROM '  hello  '), trim(TRAILING ' ' FROM '  hello  ')

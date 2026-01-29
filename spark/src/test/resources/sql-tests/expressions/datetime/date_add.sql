@@ -25,3 +25,15 @@ INSERT INTO test_date_add VALUES (date('2024-01-15'), 1), (date('2024-01-15'), -
 
 query
 SELECT date_add(d, n) FROM test_date_add
+
+-- column + literal
+query
+SELECT date_add(d, 5) FROM test_date_add
+
+-- literal + column
+query
+SELECT date_add(date('2024-01-15'), n) FROM test_date_add
+
+-- literal + literal
+query
+SELECT date_add(date('2024-01-15'), 5), date_add(date('2024-12-31'), 1), date_add(NULL, 1)

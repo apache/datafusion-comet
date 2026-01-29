@@ -25,3 +25,7 @@ INSERT INTO test_upper VALUES ('hello'), ('HELLO'), ('Hello World'), (''), (NULL
 
 query expect_fallback(case conversion)
 SELECT upper(s) FROM test_upper
+
+-- literal arguments
+query expect_fallback(case conversion)
+SELECT upper('hello'), upper(''), upper(NULL)

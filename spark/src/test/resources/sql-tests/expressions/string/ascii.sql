@@ -25,3 +25,7 @@ INSERT INTO test_ascii VALUES ('A'), ('z'), ('0'), (''), (NULL), ('hello')
 
 query
 SELECT ascii(s) FROM test_ascii
+
+-- literal arguments
+query
+SELECT ascii('A'), ascii(''), ascii(NULL)

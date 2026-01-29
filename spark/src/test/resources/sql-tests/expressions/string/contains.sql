@@ -25,3 +25,15 @@ INSERT INTO test_contains VALUES ('hello world', 'world'), ('hello', ''), ('', '
 
 query
 SELECT contains(s, sub) FROM test_contains
+
+-- column + literal
+query
+SELECT contains(s, 'world') FROM test_contains
+
+-- literal + column
+query
+SELECT contains('hello world', sub) FROM test_contains
+
+-- literal + literal
+query
+SELECT contains('hello world', 'world'), contains('hello', 'xyz'), contains('', ''), contains(NULL, 'a')

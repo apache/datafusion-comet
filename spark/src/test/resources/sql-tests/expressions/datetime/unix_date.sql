@@ -25,3 +25,7 @@ INSERT INTO test_unix_date VALUES (date('1970-01-01')), (date('2024-01-15')), (d
 
 query spark_answer_only
 SELECT unix_date(d) FROM test_unix_date
+
+-- literal arguments
+query spark_answer_only
+SELECT unix_date(date('1970-01-01')), unix_date(date('2024-01-15')), unix_date(date('1969-12-31')), unix_date(NULL)

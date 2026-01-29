@@ -25,3 +25,7 @@ INSERT INTO test_cos VALUES (0.0), (3.141592653589793), (1.5707963267948966), (-
 
 query tolerance=1e-6
 SELECT cos(d) FROM test_cos
+
+-- literal arguments
+query tolerance=1e-6
+SELECT cos(0.0), cos(3.141592653589793), cos(NULL)

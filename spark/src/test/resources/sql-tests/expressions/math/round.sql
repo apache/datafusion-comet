@@ -34,3 +34,7 @@ SELECT round(d, -1) FROM test_round WHERE i = -1
 
 query expect_fallback(BigDecimal rounding)
 SELECT round(d) FROM test_round
+
+-- literal + literal
+query expect_fallback(BigDecimal rounding)
+SELECT round(123.456, 2), round(2.5, 0), round(3.5, 0), round(-2.5, 0), round(NULL, 0)

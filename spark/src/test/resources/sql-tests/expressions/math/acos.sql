@@ -25,3 +25,7 @@ INSERT INTO test_acos VALUES (0.0), (1.0), (-1.0), (0.5), (NULL), (cast('NaN' as
 
 query tolerance=1e-6
 SELECT acos(d) FROM test_acos
+
+-- literal arguments
+query tolerance=1e-6
+SELECT acos(0.5), acos(1.0), acos(-1.0), acos(NULL)

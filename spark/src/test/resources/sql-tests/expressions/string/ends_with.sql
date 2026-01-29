@@ -25,3 +25,15 @@ INSERT INTO test_ends_with VALUES ('hello world', 'world'), ('hello', ''), ('', 
 
 query
 SELECT endswith(s, suffix) FROM test_ends_with
+
+-- column + literal
+query
+SELECT endswith(s, 'world') FROM test_ends_with
+
+-- literal + column
+query
+SELECT endswith('hello world', suffix) FROM test_ends_with
+
+-- literal + literal
+query
+SELECT endswith('hello world', 'world'), endswith('hello', 'xyz'), endswith('', ''), endswith(NULL, 'a')

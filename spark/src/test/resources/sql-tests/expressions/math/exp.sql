@@ -25,3 +25,7 @@ INSERT INTO test_exp VALUES (0.0), (1.0), (-1.0), (100.0), (-100.0), (NULL), (ca
 
 query tolerance=1e-6
 SELECT exp(d) FROM test_exp
+
+-- literal arguments
+query tolerance=1e-6
+SELECT exp(0.0), exp(1.0), exp(NULL)

@@ -31,3 +31,15 @@ SELECT a != b, NOT (a = b) FROM test_pred
 
 query
 SELECT (a > 1) AND (b > 1), (a > 1) OR (b > 1), NOT (a > 1) FROM test_pred
+
+-- column op literal
+query
+SELECT a = 1, a <=> 1, a < 2, a > 0, a <= 1, a >= 2 FROM test_pred
+
+-- literal op column
+query
+SELECT 2 = a, 2 < a, 0 > a, 1 <= a, 3 >= a FROM test_pred
+
+-- literal op literal
+query
+SELECT 1 = 1, 1 = 2, 1 <=> NULL, NULL <=> NULL, NULL = NULL, 1 < 2, 2 > 1

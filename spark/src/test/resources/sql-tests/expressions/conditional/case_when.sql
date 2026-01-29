@@ -31,3 +31,7 @@ SELECT CASE i WHEN 1 THEN 'one' WHEN 2 THEN 'two' END FROM test_case_when
 
 query
 SELECT CASE WHEN s IS NULL THEN 'null_val' ELSE s END FROM test_case_when
+
+-- literal arguments
+query
+SELECT CASE WHEN i = 1 THEN s WHEN i = 2 THEN 'fixed' ELSE s END FROM test_case_when

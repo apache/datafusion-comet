@@ -25,3 +25,15 @@ INSERT INTO test_array_intersect VALUES (array(1, 2, 3), array(2, 3, 4)), (array
 
 query spark_answer_only
 SELECT array_intersect(a, b) FROM test_array_intersect
+
+-- column + literal
+query spark_answer_only
+SELECT array_intersect(a, array(2, 3)) FROM test_array_intersect
+
+-- literal + column
+query spark_answer_only
+SELECT array_intersect(array(1, 2, 3), b) FROM test_array_intersect
+
+-- literal + literal
+query ignore(https://github.com/apache/datafusion-comet/issues/3338)
+SELECT array_intersect(array(1, 2, 3), array(2, 3, 4)), array_intersect(array(1, 2), array(3, 4)), array_intersect(array(), array(1)), array_intersect(cast(NULL as array<int>), array(1))

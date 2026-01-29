@@ -28,3 +28,10 @@ SELECT named_struct('x', a, 'y', b, 'z', c) FROM test_named_struct
 
 query
 SELECT struct(a, b, c) FROM test_named_struct
+
+-- literal arguments
+query
+SELECT named_struct('x', 1, 'y', 'hello', 'z', 3.14)
+
+query
+SELECT named_struct('x', a, 'y', 'fixed_val', 'z', c) FROM test_named_struct

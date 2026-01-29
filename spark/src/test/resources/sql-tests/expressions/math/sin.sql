@@ -25,3 +25,7 @@ INSERT INTO test_sin VALUES (0.0), (3.141592653589793), (1.5707963267948966), (-
 
 query tolerance=1e-6
 SELECT sin(d) FROM test_sin
+
+-- literal arguments
+query tolerance=1e-6
+SELECT sin(0.0), sin(1.5707963267948966), sin(NULL)

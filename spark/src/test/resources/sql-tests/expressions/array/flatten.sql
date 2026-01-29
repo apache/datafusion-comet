@@ -25,3 +25,7 @@ INSERT INTO test_flatten VALUES (array(array(1, 2), array(3, 4))), (array(array(
 
 query spark_answer_only
 SELECT flatten(arr) FROM test_flatten
+
+-- literal arguments
+query spark_answer_only
+SELECT flatten(array(array(1, 2), array(3, 4)))

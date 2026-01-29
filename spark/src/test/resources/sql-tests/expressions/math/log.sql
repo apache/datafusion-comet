@@ -28,3 +28,15 @@ SELECT ln(d) FROM test_log
 
 query tolerance=1e-6
 SELECT log(10.0, d) FROM test_log
+
+-- column + literal (log base from column)
+query tolerance=1e-6
+SELECT log(d, 10.0) FROM test_log
+
+-- literal (1-arg form)
+query tolerance=1e-6
+SELECT ln(1.0), ln(2.718281828459045), ln(10.0), ln(NULL)
+
+-- literal + literal (2-arg form)
+query tolerance=1e-6
+SELECT log(10.0, 100.0), log(2.0, 8.0), log(10.0, 1.0), log(NULL, 10.0)

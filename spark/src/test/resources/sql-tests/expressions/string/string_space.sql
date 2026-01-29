@@ -30,3 +30,7 @@ SELECT concat('[', space(n), ']') FROM test_space WHERE n >= 0 OR n IS NULL
 -- https://github.com/apache/datafusion-comet/issues/3326
 query ignore(https://github.com/apache/datafusion-comet/issues/3326)
 SELECT concat('[', space(n), ']') FROM test_space WHERE n < 0
+
+-- literal arguments
+query ignore(https://github.com/apache/datafusion-comet/issues/3337)
+SELECT concat('[', space(5), ']'), concat('[', space(0), ']'), space(-1), space(NULL)

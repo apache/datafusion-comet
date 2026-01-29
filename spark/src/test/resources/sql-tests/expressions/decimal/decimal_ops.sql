@@ -31,6 +31,18 @@ SELECT a + b, a - b, a * b, a / b FROM test_decimal
 query
 SELECT a % b FROM test_decimal
 
+-- column + literal
+query
+SELECT a + cast(1.00 as decimal(10,2)), a - cast(1.00 as decimal(10,2)), a * cast(2.00 as decimal(10,2)) FROM test_decimal
+
+-- literal + column
+query
+SELECT cast(100.00 as decimal(10,2)) + b, cast(100.00 as decimal(10,2)) - b, cast(100.00 as decimal(10,2)) * b FROM test_decimal
+
+-- literal + literal
+query
+SELECT cast(10.50 as decimal(10,2)) + cast(3.20 as decimal(10,2)), cast(10.50 as decimal(10,2)) - cast(3.20 as decimal(10,2)), cast(10.50 as decimal(10,2)) * cast(3.20 as decimal(10,2)), cast(10.50 as decimal(10,2)) / cast(3.20 as decimal(10,2))
+
 -- Mixed precision
 statement
 CREATE TABLE test_decimal_mix(a decimal(18,6), b decimal(10,2)) USING parquet
@@ -53,3 +65,7 @@ INSERT INTO test_dec_cast VALUES (42, 123456789, 3.14159, '99.99'), (0, 0, 0.0, 
 
 query
 SELECT cast(i as decimal(10,2)), cast(l as decimal(18,2)), cast(d as decimal(10,5)), cast(s as decimal(10,2)) FROM test_dec_cast
+
+-- literal arguments
+query
+SELECT cast(42 as decimal(10,2)), cast(3.14 as decimal(10,5)), cast(NULL as decimal(10,2))

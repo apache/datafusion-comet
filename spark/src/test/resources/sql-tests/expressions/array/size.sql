@@ -25,3 +25,7 @@ INSERT INTO test_size VALUES (array(1, 2, 3), map('a', 1, 'b', 2)), (array(), ma
 
 query spark_answer_only
 SELECT size(arr), size(m) FROM test_size
+
+-- literal arguments
+query ignore(https://github.com/apache/datafusion-comet/issues/3338)
+SELECT size(array(1, 2, 3)), size(array()), size(cast(NULL as array<int>))

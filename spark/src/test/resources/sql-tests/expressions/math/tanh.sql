@@ -25,3 +25,7 @@ INSERT INTO test_tanh VALUES (0.0), (1.0), (-1.0), (100.0), (-100.0), (NULL), (c
 
 query tolerance=1e-6
 SELECT tanh(d) FROM test_tanh
+
+-- literal arguments
+query tolerance=1e-6
+SELECT tanh(0.0), tanh(1.0), tanh(NULL)

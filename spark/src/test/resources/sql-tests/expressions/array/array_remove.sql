@@ -25,3 +25,15 @@ INSERT INTO test_array_remove VALUES (array(1, 2, 3, 2), 2), (array(1, 2, 3), 4)
 
 query spark_answer_only
 SELECT array_remove(arr, val) FROM test_array_remove
+
+-- column + literal
+query spark_answer_only
+SELECT array_remove(arr, 2) FROM test_array_remove
+
+-- literal + column
+query spark_answer_only
+SELECT array_remove(array(1, 2, 3, 2), val) FROM test_array_remove
+
+-- literal + literal
+query ignore(https://github.com/apache/datafusion-comet/issues/3338)
+SELECT array_remove(array(1, 2, 3, 2), 2), array_remove(array(1, 2, 3), 4), array_remove(array(), 1), array_remove(cast(NULL as array<int>), 1)

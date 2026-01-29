@@ -25,3 +25,7 @@ INSERT INTO test_cosh VALUES (0.0), (1.0), (-1.0), (100.0), (NULL), (cast('NaN' 
 
 query tolerance=1e-6
 SELECT cosh(d) FROM test_cosh
+
+-- literal arguments
+query tolerance=1e-6
+SELECT cosh(0.0), cosh(1.0), cosh(NULL)

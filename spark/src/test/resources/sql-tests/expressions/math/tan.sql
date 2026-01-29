@@ -25,3 +25,7 @@ INSERT INTO test_tan VALUES (0.0), (0.7853981633974483), (-0.7853981633974483), 
 
 query tolerance=1e-6
 SELECT tan(d) FROM test_tan
+
+-- literal arguments
+query tolerance=1e-6
+SELECT tan(0.0), tan(0.7853981633974483), tan(NULL)

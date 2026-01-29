@@ -25,3 +25,15 @@ INSERT INTO test_str_left VALUES ('hello', 3), ('hello', 0), ('hello', -1), ('he
 
 query expect_fallback(Substring pos and len must be literals)
 SELECT left(s, n) FROM test_str_left
+
+-- column + literal
+query
+SELECT left(s, 3) FROM test_str_left
+
+-- literal + column
+query expect_fallback(Substring pos and len must be literals)
+SELECT left('hello', n) FROM test_str_left
+
+-- literal + literal
+query ignore(https://github.com/apache/datafusion-comet/issues/3337)
+SELECT left('hello', 3), left('hello', 0), left('hello', -1), left('', 3), left(NULL, 3)

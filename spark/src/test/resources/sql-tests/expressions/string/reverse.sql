@@ -25,3 +25,7 @@ INSERT INTO test_reverse VALUES ('hello'), (''), (NULL), ('a'), ('abcde'), ('caf
 
 query
 SELECT reverse(s) FROM test_reverse
+
+-- literal arguments
+query
+SELECT reverse('hello'), reverse(''), reverse(NULL)

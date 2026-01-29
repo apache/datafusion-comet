@@ -25,3 +25,7 @@ INSERT INTO test_array_distinct VALUES (array(1, 2, 2, 3, 3)), (array()), (NULL)
 
 query spark_answer_only
 SELECT array_distinct(arr) FROM test_array_distinct
+
+-- literal arguments
+query spark_answer_only
+SELECT array_distinct(array(1, 2, 2, 3, 3))

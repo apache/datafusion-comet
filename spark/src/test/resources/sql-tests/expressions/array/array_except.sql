@@ -25,3 +25,15 @@ INSERT INTO test_array_except VALUES (array(1, 2, 3), array(2, 3, 4)), (array(1,
 
 query spark_answer_only
 SELECT array_except(a, b) FROM test_array_except
+
+-- column + literal
+query spark_answer_only
+SELECT array_except(a, array(2, 3)) FROM test_array_except
+
+-- literal + column
+query spark_answer_only
+SELECT array_except(array(1, 2, 3), b) FROM test_array_except
+
+-- literal + literal
+query ignore(https://github.com/apache/datafusion-comet/issues/3338)
+SELECT array_except(array(1, 2, 3), array(2, 3, 4)), array_except(array(1, 2), array()), array_except(array(), array(1)), array_except(cast(NULL as array<int>), array(1))

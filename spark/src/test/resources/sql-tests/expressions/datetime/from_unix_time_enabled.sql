@@ -33,3 +33,10 @@ SELECT from_unixtime(t) FROM test_from_unix_time_enabled
 
 query spark_answer_only
 SELECT from_unixtime(t, 'yyyy-MM-dd') FROM test_from_unix_time_enabled
+
+-- literal arguments
+query spark_answer_only
+SELECT from_unixtime(0)
+
+query spark_answer_only
+SELECT from_unixtime(1718451045, 'yyyy-MM-dd')

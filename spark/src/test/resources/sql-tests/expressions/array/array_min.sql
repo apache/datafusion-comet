@@ -25,3 +25,7 @@ INSERT INTO test_array_min VALUES (array(1, 2, 3)), (array(3, 1, 2)), (array()),
 
 query spark_answer_only
 SELECT array_min(arr) FROM test_array_min
+
+-- literal arguments
+query ignore(https://github.com/apache/datafusion-comet/issues/3338)
+SELECT array_min(array(1, 2, 3)), array_min(array()), array_min(cast(NULL as array<int>))

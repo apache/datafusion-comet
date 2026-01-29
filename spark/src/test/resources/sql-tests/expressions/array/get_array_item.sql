@@ -28,3 +28,7 @@ SELECT arr[0], arr[1], arr[2] FROM test_get_array_item
 
 query ignore(https://github.com/apache/datafusion-comet/issues/3332)
 SELECT arr[idx] FROM test_get_array_item
+
+-- literal arguments
+query spark_answer_only
+SELECT array(10, 20, 30)[0], array(10, 20, 30)[2], array()[0]

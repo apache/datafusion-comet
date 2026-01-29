@@ -25,3 +25,7 @@ INSERT INTO test_last_day VALUES (date('2024-01-15')), (date('2024-02-15')), (da
 
 query
 SELECT last_day(d) FROM test_last_day
+
+-- literal arguments
+query
+SELECT last_day(date('2024-01-15')), last_day(date('2024-02-15')), last_day(date('2023-02-15')), last_day(NULL)

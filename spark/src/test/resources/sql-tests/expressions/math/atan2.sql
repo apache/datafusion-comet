@@ -25,3 +25,15 @@ INSERT INTO test_atan2 VALUES (0.0, 1.0), (1.0, 0.0), (1.0, 1.0), (-1.0, -1.0), 
 
 query tolerance=1e-6
 SELECT atan2(y, x) FROM test_atan2
+
+-- column + literal
+query tolerance=1e-6
+SELECT atan2(y, 1.0) FROM test_atan2
+
+-- literal + column
+query tolerance=1e-6
+SELECT atan2(1.0, x) FROM test_atan2
+
+-- literal + literal
+query tolerance=1e-6
+SELECT atan2(1.0, 1.0), atan2(0.0, 0.0), atan2(-1.0, -1.0), atan2(NULL, 1.0)

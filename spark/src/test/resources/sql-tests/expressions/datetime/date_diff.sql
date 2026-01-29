@@ -25,3 +25,15 @@ INSERT INTO test_datediff VALUES (date('2024-01-15'), date('2024-01-10')), (date
 
 query
 SELECT datediff(d1, d2) FROM test_datediff
+
+-- column + literal
+query
+SELECT datediff(d1, date('2024-01-10')) FROM test_datediff
+
+-- literal + column
+query
+SELECT datediff(date('2024-01-20'), d2) FROM test_datediff
+
+-- literal + literal
+query
+SELECT datediff(date('2024-01-15'), date('2024-01-10')), datediff(date('2024-01-10'), date('2024-01-15')), datediff(NULL, date('2024-01-15'))

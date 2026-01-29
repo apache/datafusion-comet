@@ -31,3 +31,7 @@ SELECT concat_ws('', a, b, c) FROM test_concat_ws
 
 query
 SELECT concat_ws(NULL, a, b, c) FROM test_concat_ws
+
+-- literal + literal + literal
+query ignore(https://github.com/apache/datafusion-comet/issues/3339)
+SELECT concat_ws(',', 'hello', 'world'), concat_ws(',', '', ''), concat_ws(',', NULL, 'b', 'c'), concat_ws(NULL, 'a', 'b')

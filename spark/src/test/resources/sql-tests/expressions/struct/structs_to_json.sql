@@ -25,3 +25,7 @@ INSERT INTO test_to_json VALUES (1, 'hello'), (NULL, NULL), (0, '')
 
 query spark_answer_only
 SELECT to_json(named_struct('a', a, 'b', b)) FROM test_to_json
+
+-- literal arguments
+query spark_answer_only
+SELECT to_json(named_struct('a', 1, 'b', 'hello'))

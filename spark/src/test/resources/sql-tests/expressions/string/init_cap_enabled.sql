@@ -27,3 +27,7 @@ INSERT INTO test_initcap_enabled VALUES ('hello world'), ('HELLO WORLD'), (''), 
 
 query
 SELECT initcap(s) FROM test_initcap_enabled
+
+-- literal arguments
+query
+SELECT initcap('hello world'), initcap(''), initcap(NULL)

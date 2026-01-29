@@ -25,3 +25,7 @@ INSERT INTO test_array_compact VALUES (array(1, NULL, 2, NULL, 3)), (array()), (
 
 query spark_answer_only
 SELECT array_compact(arr) FROM test_array_compact
+
+-- literal arguments
+query spark_answer_only
+SELECT array_compact(array(1, NULL, 2, NULL, 3))

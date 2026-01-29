@@ -25,3 +25,7 @@ INSERT INTO test_sqrt VALUES (0.0), (1.0), (4.0), (2.0), (-1.0), (NULL), (cast('
 
 query tolerance=1e-6
 SELECT sqrt(d) FROM test_sqrt
+
+-- literal arguments
+query tolerance=1e-6
+SELECT sqrt(4.0), sqrt(2.0), sqrt(0.0), sqrt(NULL)

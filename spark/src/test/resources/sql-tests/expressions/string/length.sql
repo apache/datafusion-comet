@@ -25,3 +25,7 @@ INSERT INTO test_length VALUES (''), ('a'), ('hello'), (NULL), ('café')
 
 query
 SELECT length(s), char_length(s) FROM test_length
+
+-- literal arguments
+query
+SELECT length('hello'), length(''), length(NULL)

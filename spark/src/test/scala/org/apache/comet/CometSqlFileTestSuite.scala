@@ -71,8 +71,14 @@ class CometSqlFileTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     } yield (key, value) +: combo
   }
 
+  // Disable constant folding so that literal expressions are evaluated by Comet's
+  // native engine rather than being folded away by Spark's optimizer at plan time.
+  private val constantFoldingExcluded = Seq(
+    "spark.sql.optimizer.excludedRules" ->
+      "org.apache.spark.sql.catalyst.optimizer.ConstantFolding")
+
   private def runTestFile(file: SqlTestFile): Unit = {
-    val allConfigs = file.configs
+    val allConfigs = file.configs ++ constantFoldingExcluded
     withSQLConf(allConfigs: _*) {
       withTable(file.tables: _*) {
         file.records.foreach {

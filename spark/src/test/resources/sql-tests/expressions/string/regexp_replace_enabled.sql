@@ -30,3 +30,7 @@ SELECT regexp_replace(s, '(\d+)', 'X') FROM test_regexp_replace_enabled
 
 query
 SELECT regexp_replace(s, '(\d+)', 'X', 1) FROM test_regexp_replace_enabled
+
+-- literal + literal + literal
+query
+SELECT regexp_replace('100-200', '(\d+)', 'X'), regexp_replace('abc', '(\d+)', 'X'), regexp_replace(NULL, '(\d+)', 'X')

@@ -25,3 +25,7 @@ INSERT INTO test_atan VALUES (0.0), (1.0), (-1.0), (100.0), (-100.0), (NULL), (c
 
 query tolerance=1e-6
 SELECT atan(d) FROM test_atan
+
+-- literal arguments
+query tolerance=1e-6
+SELECT atan(1.0), atan(0.0), atan(-1.0), atan(NULL)

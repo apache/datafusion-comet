@@ -56,6 +56,22 @@ SELECT fa + fb, fa - fb, fa * fb, fa / fb FROM test_arith
 query
 SELECT da + db, da - db, da * db, da / db FROM test_arith
 
+-- column + literal
+query
+SELECT a + 3, a - 3, a * 3, a / 3, a % 3 FROM test_arith
+
+-- literal + column
+query
+SELECT 10 + b, 10 - b, 10 * b, 10 / b, 10 % b FROM test_arith
+
+-- literal + literal
+query
+SELECT 10 + 3, 10 - 3, 10 * 3, 10 / 3, 10 % 3
+
+-- unary negative with literal
+query
+SELECT negative(5), negative(-5), negative(0), -(5)
+
 -- division by zero
 statement
 CREATE TABLE test_div_zero(a int, b int, d double) USING parquet

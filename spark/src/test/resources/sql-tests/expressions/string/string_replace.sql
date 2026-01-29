@@ -26,5 +26,17 @@ INSERT INTO test_str_replace VALUES ('hello world', 'world', 'there'), ('aaa', '
 query
 SELECT replace(s, search, replace) FROM test_str_replace
 
-query spark_answer_only
+query ignore(https://github.com/apache/datafusion-comet/issues/3344)
 SELECT replace('hello', '', 'x')
+
+-- column + literal + literal
+query
+SELECT replace(s, 'world', 'there') FROM test_str_replace
+
+-- literal + column + column
+query
+SELECT replace('hello world', search, replace) FROM test_str_replace
+
+-- literal + literal + literal
+query
+SELECT replace('hello world', 'world', 'there'), replace('aaa', 'a', 'bb'), replace('hello', 'xyz', 'abc'), replace(NULL, 'a', 'b')

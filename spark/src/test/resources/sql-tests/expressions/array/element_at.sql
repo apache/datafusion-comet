@@ -25,3 +25,7 @@ INSERT INTO test_element_at VALUES (array(1, 2, 3)), (array(10)), (NULL)
 
 query spark_answer_only
 SELECT element_at(arr, 1), element_at(arr, -1) FROM test_element_at
+
+-- literal arguments
+query ignore(Spark codegen bug with literal element_at when constant folding is disabled)
+SELECT element_at(array(1, 2, 3), 1), element_at(array(1, 2, 3), -1)

@@ -25,3 +25,7 @@ INSERT INTO test_abs VALUES (1, 1, 1.5, 1.5), (-1, -1, -1.5, -1.5), (0, 0, 0.0, 
 
 query
 SELECT abs(i), abs(l), abs(f), abs(d) FROM test_abs
+
+-- literal arguments
+query
+SELECT abs(-5), abs(-1.5), abs(0), abs(NULL)

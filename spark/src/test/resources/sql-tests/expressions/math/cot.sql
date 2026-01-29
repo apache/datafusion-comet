@@ -25,3 +25,7 @@ INSERT INTO test_cot VALUES (0.7853981633974483), (1.0), (-1.0), (0.1), (NULL), 
 
 query tolerance=1e-6
 SELECT cot(d) FROM test_cot
+
+-- literal arguments
+query tolerance=1e-6
+SELECT cot(1.0), cot(0.5), cot(NULL)

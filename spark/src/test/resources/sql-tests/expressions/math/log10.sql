@@ -25,3 +25,7 @@ INSERT INTO test_log10 VALUES (1.0), (10.0), (100.0), (0.1), (NULL), (cast('NaN'
 
 query tolerance=1e-6
 SELECT log10(d) FROM test_log10
+
+-- literal arguments
+query tolerance=1e-6
+SELECT log10(100.0), log10(1.0), log10(NULL)

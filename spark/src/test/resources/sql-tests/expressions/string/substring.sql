@@ -40,3 +40,7 @@ SELECT substring(s, 1, -1) FROM test_substring
 
 query
 SELECT substring(s, 100) FROM test_substring
+
+-- literal + literal + literal
+query ignore(https://github.com/apache/datafusion-comet/issues/3337)
+SELECT substring('hello world', 1, 5), substring('hello world', -3), substring('', 1, 5), substring(NULL, 1, 5)

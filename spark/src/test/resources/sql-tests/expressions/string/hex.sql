@@ -25,3 +25,7 @@ INSERT INTO test_hex VALUES (0, 0, ''), (255, 255, 'Spark'), (-1, -1, NULL), (NU
 
 query
 SELECT hex(i), hex(l), hex(s) FROM test_hex
+
+-- literal arguments
+query
+SELECT hex(255), hex('Spark'), hex(NULL)

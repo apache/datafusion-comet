@@ -25,3 +25,7 @@ INSERT INTO test_asin VALUES (0.0), (1.0), (-1.0), (0.5), (NULL), (cast('NaN' as
 
 query tolerance=1e-6
 SELECT asin(d) FROM test_asin
+
+-- literal arguments
+query tolerance=1e-6
+SELECT asin(0.5), asin(1.0), asin(-1.0), asin(NULL)

@@ -25,3 +25,7 @@ INSERT INTO test_isnan VALUES (1.0, 1.0), (cast('NaN' as float), cast('NaN' as d
 
 query
 SELECT isnan(f), isnan(d) FROM test_isnan
+
+-- literal arguments
+query
+SELECT isnan(cast('NaN' as double)), isnan(1.0), isnan(NULL)

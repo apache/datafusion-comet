@@ -28,3 +28,7 @@ SELECT hex(unhex(s)) FROM test_unhex
 
 query
 SELECT unhex(s) IS NULL FROM test_unhex
+
+-- literal arguments
+query
+SELECT unhex('41'), unhex('GG'), unhex(''), unhex(NULL)

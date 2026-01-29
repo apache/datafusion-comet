@@ -25,3 +25,7 @@ INSERT INTO test_sinh VALUES (0.0), (1.0), (-1.0), (NULL), (cast('NaN' as double
 
 query tolerance=1e-6
 SELECT sinh(d) FROM test_sinh
+
+-- literal arguments
+query tolerance=1e-6
+SELECT sinh(0.0), sinh(1.0), sinh(NULL)

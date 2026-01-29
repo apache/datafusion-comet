@@ -25,3 +25,15 @@ INSERT INTO test_instr VALUES ('hello world', 'world'), ('hello', 'xyz'), ('hell
 
 query
 SELECT instr(s, sub) FROM test_instr
+
+-- column + literal
+query
+SELECT instr(s, 'world') FROM test_instr
+
+-- literal + column
+query
+SELECT instr('hello world', sub) FROM test_instr
+
+-- literal + literal
+query
+SELECT instr('hello world', 'world'), instr('hello', 'xyz'), instr('', ''), instr(NULL, 'a')

@@ -31,3 +31,7 @@ SELECT coalesce(a) FROM test_coalesce
 
 query
 SELECT coalesce(a, 99) FROM test_coalesce
+
+-- literal arguments
+query
+SELECT coalesce(NULL, NULL, 99), coalesce(1, NULL, 99), coalesce(NULL)

@@ -28,3 +28,10 @@ SELECT from_unixtime(t) FROM test_from_unix_time
 
 query expect_fallback(not fully compatible with Spark)
 SELECT from_unixtime(t, 'yyyy-MM-dd') FROM test_from_unix_time
+
+-- literal arguments
+query expect_fallback(not fully compatible with Spark)
+SELECT from_unixtime(0)
+
+query expect_fallback(not fully compatible with Spark)
+SELECT from_unixtime(1718451045, 'yyyy-MM-dd')

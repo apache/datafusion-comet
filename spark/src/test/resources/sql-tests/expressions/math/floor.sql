@@ -25,3 +25,7 @@ INSERT INTO test_floor VALUES (1.9, 1.9), (-1.1, -1.1), (0.0, 0.0), (1.0, 1.0), 
 
 query
 SELECT floor(f), floor(d) FROM test_floor
+
+-- literal arguments
+query
+SELECT floor(1.9), floor(-1.1), floor(0.0), floor(NULL)

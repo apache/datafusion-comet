@@ -34,3 +34,7 @@ SELECT s LIKE 'h_llo' FROM test_like
 
 query
 SELECT s LIKE '' FROM test_like
+
+-- literal arguments
+query
+SELECT 'hello' LIKE 'h%', 'hello' LIKE 'xyz%', '' LIKE '', NULL LIKE 'a'

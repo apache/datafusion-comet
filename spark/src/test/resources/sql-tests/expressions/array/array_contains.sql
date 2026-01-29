@@ -25,3 +25,15 @@ INSERT INTO test_array_contains VALUES (array(1, 2, 3), 2), (array(1, 2, 3), 4),
 
 query spark_answer_only
 SELECT array_contains(arr, val) FROM test_array_contains
+
+-- column + literal
+query ignore(https://github.com/apache/datafusion-comet/issues/3346)
+SELECT array_contains(arr, 2) FROM test_array_contains
+
+-- literal + column
+query spark_answer_only
+SELECT array_contains(array(1, 2, 3), val) FROM test_array_contains
+
+-- literal + literal
+query ignore(https://github.com/apache/datafusion-comet/issues/3345)
+SELECT array_contains(array(1, 2, 3), 2), array_contains(array(1, 2, 3), 4), array_contains(array(), 1), array_contains(cast(NULL as array<int>), 1)

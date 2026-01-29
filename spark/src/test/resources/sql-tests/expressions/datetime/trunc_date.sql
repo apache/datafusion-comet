@@ -31,3 +31,7 @@ SELECT trunc(d, 'month') FROM test_trunc_date
 
 query
 SELECT trunc(d, 'quarter') FROM test_trunc_date
+
+-- literal arguments
+query ignore(https://github.com/apache/datafusion-comet/issues/3342)
+SELECT trunc(date('2024-06-15'), 'year'), trunc(date('2024-06-15'), 'month'), trunc(date('2024-06-15'), 'quarter')

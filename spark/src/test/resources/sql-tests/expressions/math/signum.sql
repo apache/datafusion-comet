@@ -25,3 +25,7 @@ INSERT INTO test_signum VALUES (5.0), (-5.0), (0.0), (NULL), (cast('NaN' as doub
 
 query
 SELECT signum(d) FROM test_signum
+
+-- literal arguments
+query
+SELECT signum(-5.0), signum(5.0), signum(0.0), signum(NULL)

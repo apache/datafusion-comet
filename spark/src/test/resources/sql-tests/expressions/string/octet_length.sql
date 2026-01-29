@@ -25,3 +25,7 @@ INSERT INTO test_octet_length VALUES (''), ('a'), ('hello'), (NULL), ('café')
 
 query
 SELECT octet_length(s) FROM test_octet_length
+
+-- literal arguments
+query
+SELECT octet_length('hello'), octet_length(''), octet_length(NULL)

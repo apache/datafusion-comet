@@ -25,3 +25,7 @@ INSERT INTO test_ceil VALUES (1.1, 1.1), (-1.1, -1.1), (0.0, 0.0), (1.0, 1.0), (
 
 query
 SELECT ceil(f), ceil(d) FROM test_ceil
+
+-- literal arguments
+query
+SELECT ceil(1.1), ceil(-1.1), ceil(0.0), ceil(NULL)

@@ -25,3 +25,7 @@ INSERT INTO test_expm1 VALUES (0.0), (1.0), (-1.0), (0.001), (NULL), (cast('NaN'
 
 query tolerance=1e-6
 SELECT expm1(d) FROM test_expm1
+
+-- literal arguments
+query tolerance=1e-6
+SELECT expm1(0.0), expm1(1.0), expm1(NULL)

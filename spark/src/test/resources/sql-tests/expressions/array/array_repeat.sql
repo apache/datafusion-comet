@@ -25,3 +25,15 @@ INSERT INTO test_array_repeat VALUES (1, 3), (NULL, 3), (1, 0), (1, -1), (1, NUL
 
 query spark_answer_only
 SELECT array_repeat(val, cnt) FROM test_array_repeat
+
+-- column + literal
+query spark_answer_only
+SELECT array_repeat(val, 3) FROM test_array_repeat
+
+-- literal + column
+query spark_answer_only
+SELECT array_repeat(1, cnt) FROM test_array_repeat
+
+-- literal + literal
+query spark_answer_only
+SELECT array_repeat(1, 3), array_repeat(NULL, 3), array_repeat(1, 0), array_repeat(1, -1)

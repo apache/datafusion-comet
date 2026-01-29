@@ -25,3 +25,7 @@ INSERT INTO test_array_max VALUES (array(1, 2, 3)), (array(3, 1, 2)), (array()),
 
 query spark_answer_only
 SELECT array_max(arr) FROM test_array_max
+
+-- literal arguments
+query ignore(https://github.com/apache/datafusion-comet/issues/3338)
+SELECT array_max(array(1, 2, 3)), array_max(array()), array_max(cast(NULL as array<int>))

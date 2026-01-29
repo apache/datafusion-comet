@@ -25,3 +25,7 @@ INSERT INTO test_hour VALUES (timestamp('2024-01-15 00:00:00')), (timestamp('202
 
 query
 SELECT hour(ts) FROM test_hour
+
+-- literal arguments
+query ignore(https://github.com/apache/datafusion-comet/issues/3336)
+SELECT hour(timestamp('2024-01-15 00:00:00')), hour(timestamp('2024-01-15 12:30:45')), hour(timestamp('2024-01-15 23:59:59'))

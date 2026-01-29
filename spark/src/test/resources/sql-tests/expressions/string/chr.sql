@@ -25,3 +25,7 @@ INSERT INTO test_chr VALUES (65), (97), (0), (NULL), (128522), (256), (48)
 
 query
 SELECT chr(i) FROM test_chr
+
+-- literal arguments
+query
+SELECT chr(65), chr(0), chr(-1), chr(NULL)

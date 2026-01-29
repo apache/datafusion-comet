@@ -31,3 +31,7 @@ SELECT date_format(ts, 'HH:mm:ss') FROM test_date_format
 
 query expect_fallback(Non-UTC timezone)
 SELECT date_format(ts, 'yyyy-MM-dd HH:mm:ss') FROM test_date_format
+
+-- literal arguments
+query expect_fallback(Non-UTC timezone)
+SELECT date_format(timestamp('2024-06-15 10:30:45'), 'yyyy-MM-dd')

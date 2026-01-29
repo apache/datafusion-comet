@@ -28,3 +28,7 @@ SELECT m['a'], m['b'], m['c'] FROM test_map
 
 query spark_answer_only
 SELECT m['x'], m['missing'] FROM test_map
+
+-- literal arguments
+query spark_answer_only
+SELECT map('a', 1, 'b', 2)['a'], map('a', 1, 'b', 2)['missing'], map('a', 1, 'b', 2)[NULL]

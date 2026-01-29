@@ -68,3 +68,16 @@ INSERT INTO test_bit_get VALUES (11, 0), (11, 1), (11, 2), (11, 3), (0, 0), (NUL
 
 query spark_answer_only
 SELECT bit_get(i, pos) FROM test_bit_get
+
+-- literal arguments
+query
+SELECT 1111 & 2, 1111 | 2, 1111 ^ 2
+
+query ignore(https://github.com/apache/datafusion-comet/issues/3341)
+SELECT bit_count(0), bit_count(7), bit_count(-1)
+
+query spark_answer_only
+SELECT bit_get(11, 0), bit_get(11, 1), bit_get(11, 2), bit_get(11, 3)
+
+query
+SELECT shiftright(1111, 2), shiftleft(1111, 2)

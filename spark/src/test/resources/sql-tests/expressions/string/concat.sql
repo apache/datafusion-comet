@@ -28,3 +28,11 @@ SELECT concat(a, b, c) FROM test_concat
 
 query
 SELECT a || b || c FROM test_concat
+
+-- mixed: column + literal + column
+query
+SELECT concat(a, ' ', c) FROM test_concat
+
+-- literal + literal + literal
+query
+SELECT concat('hello', ' ', 'world'), concat('', '', ''), concat(NULL, 'b', 'c')
