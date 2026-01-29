@@ -39,6 +39,7 @@ import org.apache.comet.serde.{CometOperatorSerde, Compatible, OperatorOuterClas
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType}
+import org.apache.comet.shims.ShimFileFormat
 
 /**
  * Validation and serde logic for `native_datafusion` scans.
@@ -75,6 +76,18 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
         .contains("true")) {
 
       withInfo(scanExec, "Full native scan disabled because ignoreMissingFiles enabled")
+    }
+
+    if (scanExec.fileConstantMetadataColumns.nonEmpty) {
+      withInfo(scanExec, "Native DataFusion scan does not support metadata columns")
+    }
+
+    if (scanExec.bucketedScan) {
+      withInfo(scanExec, "Native DataFusion scan does not support bucketed scans")
+    }
+
+    if (ShimFileFormat.findRowIndexColumnIndexInSchema(scanExec.requiredSchema) >= 0) {
+      withInfo(scanExec, "Native DataFusion scan does not support row index generation")
     }
 
     // the scan is supported if no fallback reasons were added to the node
