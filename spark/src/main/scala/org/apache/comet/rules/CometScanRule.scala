@@ -622,7 +622,7 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
           complexTypePredicatesSupported && transformFunctionsSupported &&
           deleteFileTypesSupported) {
           logInfo(
-            s"Creating CometBatchScanExec for native Iceberg scan with " +
+            "Creating CometBatchScanExec for native Iceberg scan with " +
               s"runtimeFilters=${scanExec.runtimeFilters}")
           CometBatchScanExec(
             scanExec.clone().asInstanceOf[BatchScanExec],

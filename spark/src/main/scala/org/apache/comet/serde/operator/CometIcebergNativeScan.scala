@@ -980,8 +980,8 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     } catch {
       case e: Exception =>
         logError(
-          s"Native Iceberg scan serialization failed. This may be caused by dynamic partition " +
-            s"pruning runtime filters that cannot be resolved during planning. " +
+          "Native Iceberg scan serialization failed. This may be caused by dynamic partition " +
+            "pruning runtime filters that cannot be resolved during planning. " +
             s"runtimeFilters=${scan.runtimeFilters}, error=${e.getMessage}",
           e)
         return None
