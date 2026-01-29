@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import java.util.Locale
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Concat, Expression, InitCap, Length, Like, Literal, Lower, RegExpExtract, RegExpExtractAll, RegExpReplace, RLike, StringLPad, StringRepeat, StringRPad, Substring, Upper}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Concat, Expression, InitCap, Left, Length, Like, Literal, Lower, RegExpExtract, RegExpExtractAll, RegExpReplace, RLike, StringLPad, StringRepeat, StringRPad, Substring, Upper}
 import org.apache.spark.sql.types.{BinaryType, DataTypes, LongType, StringType}
 
 import org.apache.comet.CometConf
@@ -109,6 +109,36 @@ object CometSubstring extends CometExpressionSerde[Substring] {
       case _ =>
         withInfo(expr, "Substring pos and len must be literals")
         None
+    }
+  }
+}
+
+object CometLeft extends CometExpressionSerde[Left] {
+
+  override def convert(expr: Left, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
+    expr.len match {
+      case Literal(lenValue, _) =>
+        exprToProtoInternal(expr.str, inputs, binding) match {
+          case Some(strExpr) =>
+            val builder = ExprOuterClass.Substring.newBuilder()
+            builder.setChild(strExpr)
+            builder.setStart(1)
+            builder.setLen(lenValue.asInstanceOf[Int])
+            Some(ExprOuterClass.Expr.newBuilder().setSubstring(builder).build())
+          case None =>
+            withInfo(expr, expr.str)
+            None
+        }
+      case _ =>
+        withInfo(expr, "LEFT len must be a literal")
+        None
+    }
+  }
+
+  override def getSupportLevel(expr: Left): SupportLevel = {
+    expr.str.dataType match {
+      case _: BinaryType | _: StringType => Compatible()
+      case _ => Unsupported(Some(s"LEFT does not support ${expr.str.dataType}"))
     }
   }
 }

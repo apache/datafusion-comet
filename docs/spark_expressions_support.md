@@ -217,7 +217,7 @@
 - [ ] unix_micros
 - [ ] unix_millis
 - [ ] unix_seconds
-- [ ] unix_timestamp
+- [x] unix_timestamp
 - [ ] weekday
 - [ ] weekofyear
 - [ ] year
@@ -349,7 +349,7 @@
 - [x] try_multiply
 - [x] try_subtract
 - [x] unhex
-- [ ] width_bucket
+- [x] width_bucket
 
 ### misc_funcs
 
