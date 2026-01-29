@@ -57,10 +57,12 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
       withInfo(scanExec, s"Full native scan disabled because ${COMET_EXEC_ENABLED.key} disabled")
     }
 
-    // Native DataFusion doesn't support subqueries/dynamic pruning
-    if (scanExec.partitionFilters.exists(isDynamicPruningFilter)) {
-      withInfo(scanExec, "Native DataFusion scan does not support subqueries/dynamic pruning")
-    }
+    // Dynamic partition pruning (DPP) is now supported!
+    // The dynamicallySelectedPartitions in CometScanExec evaluates DPP filters
+    // and returns the filtered file list. Native scan receives these pre-filtered
+    // files, so partition-level pruning works correctly.
+    // Note: DPP filters are excluded from dataFilters to avoid pushing subqueries
+    // to native execution (see supportedDataFilters in CometScanExec).
 
     if (SQLConf.get.ignoreCorruptFiles ||
       scanExec.relation.options
