@@ -30,14 +30,15 @@ sealed trait SqlTestRecord
 case class SqlStatement(sql: String) extends SqlTestRecord
 
 /** A SQL query whose results are compared between Spark and Comet. */
-case class SqlQuery(sql: String, mode: QueryMode = CheckOperator) extends SqlTestRecord
+case class SqlQuery(sql: String, mode: QueryAssertionMode = CheckCoverageAndAnswer)
+    extends SqlTestRecord
 
-sealed trait QueryMode
-case object CheckOperator extends QueryMode
-case object SparkAnswerOnly extends QueryMode
-case class WithTolerance(tol: Double) extends QueryMode
-case class ExpectFallback(reason: String) extends QueryMode
-case class Ignore(reason: String) extends QueryMode
+sealed trait QueryAssertionMode
+case object CheckCoverageAndAnswer extends QueryAssertionMode
+case object SparkAnswerOnly extends QueryAssertionMode
+case class WithTolerance(tol: Double) extends QueryAssertionMode
+case class ExpectFallback(reason: String) extends QueryAssertionMode
+case class Ignore(reason: String) extends QueryAssertionMode
 
 /**
  * Parsed representation of a .sql test file.
@@ -83,41 +84,41 @@ object SqlFileTestParser {
     val records = Seq.newBuilder[SqlTestRecord]
     val tables = Seq.newBuilder[String]
 
-    var i = 0
-    while (i < lines.length) {
-      val line = lines(i).trim
+    var lineIdx = 0
+    while (lineIdx < lines.length) {
+      val line = lines(lineIdx).trim
 
       line match {
         case ConfigPattern(key, value) =>
           configs :+= (key.trim -> value.trim)
-          i += 1
+          lineIdx += 1
 
         case ConfigMatrixPattern(key, values) =>
           configMatrix :+= (key.trim -> values.split(",").map(_.trim).toSeq)
-          i += 1
+          lineIdx += 1
 
         case MinSparkVersionPattern(version) =>
           minSparkVersion = Some(version.trim)
-          i += 1
+          lineIdx += 1
 
         case "statement" =>
-          i += 1
-          val (sql, nextIdx) = collectSql(lines, i)
+          lineIdx += 1
+          val (sql, nextIdx) = collectSql(lines, lineIdx)
           // Extract table names for cleanup
           CreateTablePattern.findFirstMatchIn(sql).foreach(m => tables += m.group(1))
           records += SqlStatement(sql)
-          i = nextIdx
+          lineIdx = nextIdx
 
         case s if s.startsWith("query") =>
-          val mode = parseQueryMode(s)
-          i += 1
-          val (sql, nextIdx) = collectSql(lines, i)
+          val mode = parseQueryAssertionMode(s)
+          lineIdx += 1
+          val (sql, nextIdx) = collectSql(lines, lineIdx)
           records += SqlQuery(sql, mode)
-          i = nextIdx
+          lineIdx = nextIdx
 
         case _ =>
           // Skip blank lines and comments
-          i += 1
+          lineIdx += 1
       }
     }
 
@@ -127,7 +128,7 @@ object SqlFileTestParser {
   private val FallbackPattern = """query\s+expect_fallback\((.+)\)""".r
   private val IgnorePattern = """query\s+ignore\((.+)\)""".r
 
-  private def parseQueryMode(directive: String): QueryMode = {
+  private def parseQueryAssertionMode(directive: String): QueryAssertionMode = {
     directive match {
       case FallbackPattern(reason) =>
         ExpectFallback(reason.trim)
@@ -135,12 +136,12 @@ object SqlFileTestParser {
         Ignore(reason.trim)
       case _ =>
         val parts = directive.split("\\s+")
-        if (parts.length == 1) return CheckOperator
+        if (parts.length == 1) return CheckCoverageAndAnswer
         parts(1) match {
           case "spark_answer_only" => SparkAnswerOnly
           case s if s.startsWith("tolerance=") =>
             WithTolerance(s.stripPrefix("tolerance=").toDouble)
-          case _ => CheckOperator
+          case _ => CheckCoverageAndAnswer
         }
     }
   }
@@ -148,12 +149,12 @@ object SqlFileTestParser {
   /** Collect SQL lines until a blank line or end of file. */
   private def collectSql(lines: Seq[String], start: Int): (String, Int) = {
     val sb = new StringBuilder
-    var i = start
-    while (i < lines.length && lines(i).trim.nonEmpty) {
+    var lineIdx = start
+    while (lineIdx < lines.length && lines(lineIdx).trim.nonEmpty) {
       if (sb.nonEmpty) sb.append("\n")
-      sb.append(lines(i))
-      i += 1
+      sb.append(lines(lineIdx))
+      lineIdx += 1
     }
-    (sb.toString, i)
+    (sb.toString, lineIdx)
   }
 }

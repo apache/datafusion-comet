@@ -80,7 +80,7 @@ class CometSqlFileTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             spark.sql(sql)
           case SqlQuery(sql, mode) =>
             mode match {
-              case CheckOperator =>
+              case CheckCoverageAndAnswer =>
                 checkSparkAnswerAndOperator(sql)
               case SparkAnswerOnly =>
                 checkSparkAnswer(sql)
