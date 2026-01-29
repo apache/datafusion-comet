@@ -64,7 +64,7 @@ object SqlFileTestParser {
   private val CreateTablePattern = """(?i)CREATE\s+TABLE\s+(\w+)""".r.unanchored
 
   def parse(file: File): SqlTestFile = {
-    val source = Source.fromFile(file)
+    val source = Source.fromFile(file, "UTF-8")
     try {
       parse(source.getLines().toSeq)
     } finally {
