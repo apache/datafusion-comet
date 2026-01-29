@@ -19,16 +19,15 @@
 
 package org.apache.comet.serde
 
-import java.util.Locale
-
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Concat, Elt, Expression, InitCap, Left, Length, Like, Literal, Lower, RegExpReplace, RLike, StringLPad, StringRepeat, StringRPad, Substring, Upper}
-import org.apache.spark.sql.types.{BinaryType, DataTypes, LongType, StringType}
-
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.expressions.{CometCast, CometEvalMode, RegExp}
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Concat, Elt, Expression, InitCap, Left, Length, Like, Literal, Lower, RLike, RegExpReplace, StringLPad, StringRPad, StringRepeat, Substring, Upper}
+import org.apache.spark.sql.types._
+
+import java.util.Locale
 
 object CometStringRepeat extends CometExpressionSerde[StringRepeat] {
 
@@ -294,6 +293,24 @@ object CometElt extends CometScalarFunction[Elt]("elt") {
   override def getSupportLevel(expr: Elt): SupportLevel = {
     if (expr.failOnError) {
       return Unsupported(Some("ANSI mode not supported"))
+    }
+    if (expr.children.length < 2) {
+      return Unsupported(Some("The `elt` requires > 1 parameters but the actual number is 1"))
+    }
+    val idxDataType = expr.children.head.dataType
+    if (idxDataType != IntegerType) {
+      return Unsupported(Some(s"Parameter 1 requires the int type, but got: $idxDataType"))
+    }
+    if (!expr.children.tail.forall(_.dataType == StringType)) {
+      val unsupportedTypes =
+        expr.children.tail
+          .filter(_.dataType != StringType)
+          .map(_.dataType)
+          .distinct
+          .mkString(", ")
+      return Unsupported(
+        Some(
+          s"Parameters 2 and onwards require the string type, but contains: $unsupportedTypes"))
     }
     Compatible(None)
   }
