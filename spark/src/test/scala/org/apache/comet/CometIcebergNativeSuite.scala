@@ -2437,6 +2437,169 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
     }
   }
 
+  test("non-identity transform residual - month transform allows native scan") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        // Create table partitioned by month transform
+        // When filtering by exact date, Iceberg creates a residual expression
+        // because months(event_date) groups all dates in a month together
+        spark.sql("""
+          CREATE TABLE test_cat.db.month_residual_test (
+            id INT,
+            event_date DATE,
+            data STRING
+          ) USING iceberg
+          PARTITIONED BY (months(event_date))
+        """)
+
+        spark.sql("""
+          INSERT INTO test_cat.db.month_residual_test VALUES
+          (1, DATE '2023-06-01', 'first'),
+          (2, DATE '2023-06-15', 'mid'),
+          (3, DATE '2023-06-30', 'last'),
+          (4, DATE '2023-07-05', 'july'),
+          (5, DATE '2023-05-20', 'may')
+        """)
+
+        // This filter creates a residual with month transform
+        // Partition pruning narrows to June 2023, but exact date match
+        // requires post-scan filtering
+        checkIcebergNativeScan(
+          "SELECT * FROM test_cat.db.month_residual_test WHERE event_date = DATE '2023-06-15'")
+
+        // Verify correct results
+        val result = spark
+          .sql(
+            "SELECT * FROM test_cat.db.month_residual_test WHERE event_date = DATE '2023-06-15'")
+          .collect()
+        assert(result.length == 1, s"Expected 1 row, got ${result.length}")
+        assert(result(0).getInt(0) == 2, s"Expected id=2, got ${result(0).getInt(0)}")
+        assert(
+          result(0).getString(2) == "mid",
+          s"Expected data='mid', got ${result(0).getString(2)}")
+
+        spark.sql("DROP TABLE test_cat.db.month_residual_test")
+      }
+    }
+  }
+
+  test("non-identity transform residual - day transform allows native scan") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        // Create table partitioned by day transform
+        // When filtering by exact timestamp, Iceberg creates a residual expression
+        // because days(event_time) groups all timestamps in a day together
+        spark.sql("""
+          CREATE TABLE test_cat.db.day_residual_test (
+            id INT,
+            event_time TIMESTAMP,
+            data STRING
+          ) USING iceberg
+          PARTITIONED BY (days(event_time))
+        """)
+
+        spark.sql("""
+          INSERT INTO test_cat.db.day_residual_test VALUES
+          (1, TIMESTAMP '2023-06-15 08:00:00', 'morning'),
+          (2, TIMESTAMP '2023-06-15 14:30:00', 'afternoon'),
+          (3, TIMESTAMP '2023-06-15 22:45:00', 'evening'),
+          (4, TIMESTAMP '2023-06-16 10:00:00', 'next_day'),
+          (5, TIMESTAMP '2023-06-14 18:00:00', 'prev_day')
+        """)
+
+        // This filter creates a residual with day transform
+        // Partition pruning narrows to June 15, but exact timestamp match
+        // requires post-scan filtering
+        checkIcebergNativeScan(
+          "SELECT * FROM test_cat.db.day_residual_test WHERE event_time = TIMESTAMP '2023-06-15 14:30:00'")
+
+        // Verify correct results
+        val result = spark
+          .sql("SELECT * FROM test_cat.db.day_residual_test WHERE event_time = TIMESTAMP '2023-06-15 14:30:00'")
+          .collect()
+        assert(result.length == 1, s"Expected 1 row, got ${result.length}")
+        assert(result(0).getInt(0) == 2, s"Expected id=2, got ${result(0).getInt(0)}")
+        assert(
+          result(0).getString(2) == "afternoon",
+          s"Expected data='afternoon', got ${result(0).getString(2)}")
+
+        spark.sql("DROP TABLE test_cat.db.day_residual_test")
+      }
+    }
+  }
+
+  test("non-identity transform residual - hour transform allows native scan") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        // Create table partitioned by hour transform
+        // When filtering by exact timestamp with seconds, Iceberg creates a residual
+        // because hours(event_time) groups all timestamps in an hour together
+        spark.sql("""
+          CREATE TABLE test_cat.db.hour_residual_test (
+            id INT,
+            event_time TIMESTAMP,
+            data STRING
+          ) USING iceberg
+          PARTITIONED BY (hours(event_time))
+        """)
+
+        spark.sql("""
+          INSERT INTO test_cat.db.hour_residual_test VALUES
+          (1, TIMESTAMP '2023-06-15 14:10:30', 'early'),
+          (2, TIMESTAMP '2023-06-15 14:30:45', 'mid'),
+          (3, TIMESTAMP '2023-06-15 14:55:15', 'late'),
+          (4, TIMESTAMP '2023-06-15 15:05:00', 'next_hour'),
+          (5, TIMESTAMP '2023-06-15 13:50:00', 'prev_hour')
+        """)
+
+        // This filter creates a residual with hour transform
+        // Partition pruning narrows to hour 14 (2pm), but exact timestamp
+        // with seconds requires post-scan filtering
+        checkIcebergNativeScan(
+          "SELECT * FROM test_cat.db.hour_residual_test WHERE event_time = TIMESTAMP '2023-06-15 14:30:45'")
+
+        // Verify correct results
+        val result = spark
+          .sql("SELECT * FROM test_cat.db.hour_residual_test WHERE event_time = TIMESTAMP '2023-06-15 14:30:45'")
+          .collect()
+        assert(result.length == 1, s"Expected 1 row, got ${result.length}")
+        assert(result(0).getInt(0) == 2, s"Expected id=2, got ${result(0).getInt(0)}")
+        assert(
+          result(0).getString(2) == "mid",
+          s"Expected data='mid', got ${result(0).getString(2)}")
+
+        spark.sql("DROP TABLE test_cat.db.hour_residual_test")
+      }
+    }
+  }
+
   // Helper to create temp directory
   def withTempIcebergDir(f: File => Unit): Unit = {
     val dir = Files.createTempDirectory("comet-iceberg-test").toFile
