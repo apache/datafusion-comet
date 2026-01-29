@@ -1,4 +1,4 @@
-CometColumnarToRow
+CometNativeColumnarToRow
 +- CometTakeOrderedAndProject
    +- CometHashAggregate
       +- CometColumnarExchange
@@ -10,7 +10,7 @@ CometColumnarToRow
                   :     +- BroadcastHashJoin
                   :        :- Project
                   :        :  +- BroadcastHashJoin
-                  :        :     :- CometColumnarToRow
+                  :        :     :- CometNativeColumnarToRow
                   :        :     :  +- CometProject
                   :        :     :     +- CometFilter
                   :        :     :        +- CometNativeScan parquet spark_catalog.default.item
@@ -21,16 +21,16 @@ CometColumnarToRow
                   :        :                 +-  Scan parquet spark_catalog.default.inventory [COMET: Native DataFusion scan does not support subqueries/dynamic pruning]
                   :        :                       +- SubqueryBroadcast
                   :        :                          +- BroadcastExchange
-                  :        :                             +- CometColumnarToRow
+                  :        :                             +- CometNativeColumnarToRow
                   :        :                                +- CometProject
                   :        :                                   +- CometFilter
                   :        :                                      +- CometNativeScan parquet spark_catalog.default.date_dim
                   :        +- BroadcastExchange
-                  :           +- CometColumnarToRow
+                  :           +- CometNativeColumnarToRow
                   :              +- CometProject
                   :                 +- CometFilter
                   :                    +- CometNativeScan parquet spark_catalog.default.date_dim
-                  +- CometColumnarToRow
+                  +- CometNativeColumnarToRow
                      +- CometProject
                         +- CometFilter
                            +- CometNativeScan parquet spark_catalog.default.catalog_sales
