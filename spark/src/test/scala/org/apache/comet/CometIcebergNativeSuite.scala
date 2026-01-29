@@ -2294,4 +2294,70 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
       deleteRecursively(dir)
     }
   }
+
+  test("runtime filtering - join with dynamic partition pruning") {
+    assume(icebergAvailable, "Iceberg not available")
+    withTempIcebergDir { warehouseDir =>
+      val dimDir = new File(warehouseDir, "dim_parquet")
+      withSQLConf(
+        "spark.sql.catalog.runtime_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.runtime_cat.type" -> "hadoop",
+        "spark.sql.catalog.runtime_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        // Create partitioned Iceberg table (fact table)
+        spark.sql("""
+          CREATE TABLE runtime_cat.db.fact_table (
+            id BIGINT,
+            data STRING,
+            date DATE
+          ) USING iceberg
+          PARTITIONED BY (date)
+        """)
+
+        // Insert data across multiple partitions
+        spark.sql("""
+          INSERT INTO runtime_cat.db.fact_table VALUES
+          (1, 'a', DATE '1970-01-01'),
+          (2, 'b', DATE '1970-01-02'),
+          (3, 'c', DATE '1970-01-02'),
+          (4, 'd', DATE '1970-01-03')
+        """)
+
+        // Create dimension table (Parquet) in temp directory
+        spark
+          .createDataFrame(Seq((1L, java.sql.Date.valueOf("1970-01-02"))))
+          .toDF("id", "date")
+          .write
+          .parquet(dimDir.getAbsolutePath)
+        spark.read.parquet(dimDir.getAbsolutePath).createOrReplaceTempView("dim")
+
+        // This join should trigger dynamic partition pruning
+        val query =
+          """SELECT f.* FROM runtime_cat.db.fact_table f
+            |JOIN dim d ON f.date = d.date AND d.id = 1
+            |ORDER BY f.id""".stripMargin
+
+        // Verify the initial plan contains dynamic pruning expression
+        val df = spark.sql(query)
+        val initialPlan = df.queryExecution.executedPlan
+        val planStr = initialPlan.toString
+        assert(
+          planStr.contains("dynamicpruning"),
+          s"Expected dynamic pruning in plan but got:\n$planStr")
+
+        // Check results match Spark
+        // Note: AQE re-plans after subquery executes, converting dynamicpruningexpression(...)
+        // to dynamicpruningexpression(true), which allows native Iceberg scan to proceed.
+        // This is correct behavior - no actual subquery to wait for after AQE re-planning.
+        // However, the rest of the still contains non-native operators because CometExecRule
+        // doesn't run again.
+        checkSparkAnswer(df)
+
+        spark.sql("DROP TABLE runtime_cat.db.fact_table")
+      }
+    }
+  }
 }
