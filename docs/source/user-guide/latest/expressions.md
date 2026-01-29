@@ -93,14 +93,14 @@ Expressions that are not Spark-compatible will fall back to Spark by default and
 ## Date/Time Functions
 
 | Expression     | SQL                          | Spark-Compatible? | Compatibility Notes                                                                                                  |
-| -------------- | ---------------------------- | ----------------- | -------------------------------------------------------------------------------------------------------------------- |
+| -------------- | ---------------------------- | ----------------- |----------------------------------------------------------------------------------------------------------------------|
 | DateAdd        | `date_add`                   | Yes               |                                                                                                                      |
 | DateDiff       | `datediff`                   | Yes               |                                                                                                                      |
 | DateFormat     | `date_format`                | Yes               | Partial support. Only specific format patterns are supported.                                                        |
 | DateSub        | `date_sub`                   | Yes               |                                                                                                                      |
 | DatePart       | `date_part(field, source)`   | Yes               | Supported values of `field`: `year`/`month`/`week`/`day`/`dayofweek`/`dayofweek_iso`/`doy`/`quarter`/`hour`/`minute` |
 | Extract        | `extract(field FROM source)` | Yes               | Supported values of `field`: `year`/`month`/`week`/`day`/`dayofweek`/`dayofweek_iso`/`doy`/`quarter`/`hour`/`minute` |
-| FromUnixTime   | `from_unixtime`              | No                | Does not support format, supports only -8334601211038 <= sec <= 8210266876799                                        |
+| FromUnixTime   | `from_unixtime`              | No                | Supports only -8334601211038 <= sec <= 8210266876799                                                                 |
 | Hour           | `hour`                       | Yes               |                                                                                                                      |
 | LastDay        | `last_day`                   | Yes               |                                                                                                                      |
 | Minute         | `minute`                     | Yes               |                                                                                                                      |
