@@ -19,15 +19,16 @@
 
 package org.apache.comet.serde
 
+import java.util.Locale
+
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Concat, Elt, Expression, InitCap, Left, Length, Like, Literal, Lower, RegExpReplace, RLike, StringLPad, StringRepeat, StringRPad, Substring, Upper}
+import org.apache.spark.sql.types._
+
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.expressions.{CometCast, CometEvalMode, RegExp}
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Concat, Elt, Expression, InitCap, Left, Length, Like, Literal, Lower, RLike, RegExpReplace, StringLPad, StringRPad, StringRepeat, Substring, Upper}
-import org.apache.spark.sql.types._
-
-import java.util.Locale
 
 object CometStringRepeat extends CometExpressionSerde[StringRepeat] {
 
