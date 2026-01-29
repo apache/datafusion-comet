@@ -1,13 +1,13 @@
 diff --git a/pom.xml b/pom.xml
-index dc757d78812..a7bb268dd39 100644
+index dc757d78812..0dc4099c5d8 100644
 --- a/pom.xml
 +++ b/pom.xml
 @@ -152,6 +152,8 @@
      <kryo.version>4.0.3</kryo.version>
      <ivy.version>2.5.3</ivy.version>
      <oro.version>2.0.8</oro.version>
-+    <spark.version.short>4.0</spark.version.short>
-+    <comet.version>0.13.0-SNAPSHOT</comet.version>
++    <spark.version.short>4.1</spark.version.short>
++    <comet.version>0.14.0-SNAPSHOT</comet.version>
      <!--
      If you change codahale.metrics.version, you also need to change
      the link to metrics.dropwizard.io in docs/monitoring.md.
@@ -37,19 +37,6 @@ index dc757d78812..a7bb268dd39 100644
        <!-- SPARK-16484 add `datasketches-java` for support Datasketches HllSketch -->
        <dependency>
          <groupId>org.apache.datasketches</groupId>
-diff --git a/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/ToStringBase.scala b/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/ToStringBase.scala
-index bc294fd722b..33bef120c0a 100644
---- a/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/ToStringBase.scala
-+++ b/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/ToStringBase.scala
-@@ -457,7 +457,7 @@ trait ToStringBase { self: UnaryExpression with TimeZoneAwareExpression =>
- 
- object ToStringBase {
-   def getBinaryFormatter: BinaryFormatter = {
--    val style = SQLConf.get.getConf(SQLConf.BINARY_OUTPUT_STYLE)
-+    val style: = SQLConf.get.getConf(SQLConf.BINARY_OUTPUT_STYLE)
-     style match {
-       case Some(BinaryOutputStyle.UTF8) =>
-         (array: Array[Byte]) => UTF8String.fromBytes(array)
 diff --git a/sql/core/pom.xml b/sql/core/pom.xml
 index d2d07a08aa9..d89f80e5b68 100644
 --- a/sql/core/pom.xml
@@ -700,57 +687,6 @@ index 95e86fe4311..24f99384bb7 100644
            }.flatten
            assert(filters.contains(GreaterThan(scan.logicalPlan.output.head, Literal(5L))))
          }
-diff --git a/sql/core/src/test/scala/org/apache/spark/sql/IgnoreComet.scala b/sql/core/src/test/scala/org/apache/spark/sql/IgnoreComet.scala
-new file mode 100644
-index 00000000000..5691536c114
---- /dev/null
-+++ b/sql/core/src/test/scala/org/apache/spark/sql/IgnoreComet.scala
-@@ -0,0 +1,45 @@
-+/*
-+ * Licensed to the Apache Software Foundation (ASF) under one or more
-+ * contributor license agreements.  See the NOTICE file distributed with
-+ * this work for additional information regarding copyright ownership.
-+ * The ASF licenses this file to You under the Apache License, Version 2.0
-+ * (the "License"); you may not use this file except in compliance with
-+ * the License.  You may obtain a copy of the License at
-+ *
-+ *    http://www.apache.org/licenses/LICENSE-2.0
-+ *
-+ * Unless required by applicable law or agreed to in writing, software
-+ * distributed under the License is distributed on an "AS IS" BASIS,
-+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-+ * See the License for the specific language governing permissions and
-+ * limitations under the License.
-+ */
-+
-+package org.apache.spark.sql
-+
-+import org.scalactic.source.Position
-+import org.scalatest.Tag
-+
-+import org.apache.spark.sql.test.SQLTestUtils
-+
-+/**
-+ * Tests with this tag will be ignored when Comet is enabled (e.g., via `ENABLE_COMET`).
-+ */
-+case class IgnoreComet(reason: String) extends Tag("DisableComet")
-+case class IgnoreCometNativeIcebergCompat(reason: String) extends Tag("DisableComet")
-+case class IgnoreCometNativeDataFusion(reason: String) extends Tag("DisableComet")
-+case class IgnoreCometNativeScan(reason: String) extends Tag("DisableComet")
-+
-+/**
-+ * Helper trait that disables Comet for all tests regardless of default config values.
-+ */
-+trait IgnoreCometSuite extends SQLTestUtils {
-+  override protected def test(testName: String, testTags: Tag*)(testFun: => Any)
-+    (implicit pos: Position): Unit = {
-+    if (isCometEnabled) {
-+      ignore(testName + " (disabled when Comet is on)", testTags: _*)(testFun)
-+    } else {
-+      super.test(testName, testTags: _*)(testFun)
-+    }
-+  }
-+}
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/InjectRuntimeFilterSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/InjectRuntimeFilterSuite.scala
 index 7d7185ae6c1..442a5bddeb8 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/InjectRuntimeFilterSuite.scala
@@ -1819,14 +1755,14 @@ index 47679ed7865..9ffbaecb98e 100644
      assert(collectWithSubqueries(plan) { case s: SortAggregateExec => s }.length == sortAggCount)
    }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/SparkPlanSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/SparkPlanSuite.scala
-index aed11badb71..ab7e9456e26 100644
+index aed11badb71..1a0b22ef6fd 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/SparkPlanSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/SparkPlanSuite.scala
 @@ -23,6 +23,7 @@ import org.apache.spark.sql.QueryTest
  import org.apache.spark.sql.catalyst.InternalRow
  import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference}
  import org.apache.spark.sql.catalyst.plans.logical.Deduplicate
-+import org.apache.spark.sql.comet.CometColumnarToRowExec
++import org.apache.spark.sql.comet.CometNativeColumnarToRowExec
  import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
  import org.apache.spark.sql.internal.SQLConf
  import org.apache.spark.sql.test.SharedSparkSession
@@ -1837,20 +1773,20 @@ index aed11badb71..ab7e9456e26 100644
 -          df.queryExecution.executedPlan.collectFirst { case p: ColumnarToRowExec => p }.get
 +          df.queryExecution.executedPlan.collectFirst {
 +            case p: ColumnarToRowExec => p
-+            case p: CometColumnarToRowExec => p
++            case p: CometNativeColumnarToRowExec => p
 +          }.get
          try {
            spark.range(1).foreach { _ =>
              columnarToRowExec.canonicalized
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/WholeStageCodegenSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/WholeStageCodegenSuite.scala
-index a3cfdc5a240..1b08a1f42ee 100644
+index a3cfdc5a240..87039732332 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/WholeStageCodegenSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/WholeStageCodegenSuite.scala
 @@ -22,6 +22,7 @@ import org.apache.spark.rdd.MapPartitionsWithEvaluatorRDD
  import org.apache.spark.sql.{Dataset, QueryTest, Row, SaveMode}
  import org.apache.spark.sql.catalyst.expressions.CodegenObjectFactoryMode
  import org.apache.spark.sql.catalyst.expressions.codegen.{ByteCodeStats, CodeAndComment, CodeGenerator}
-+import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometHashJoinExec, CometSortExec, CometSortMergeJoinExec}
++import org.apache.spark.sql.comet.{CometHashJoinExec, CometNativeColumnarToRowExec, CometSortExec, CometSortMergeJoinExec}
  import org.apache.spark.sql.execution.adaptive.DisableAdaptiveExecutionSuite
  import org.apache.spark.sql.execution.aggregate.{HashAggregateExec, SortAggregateExec}
  import org.apache.spark.sql.execution.columnar.InMemoryTableScanExec
@@ -2063,12 +1999,13 @@ index a3cfdc5a240..1b08a1f42ee 100644
            val projection = Seq.tabulate(columnNum)(i => s"c$i + c$i as newC$i")
            val df = spark.read.parquet(path).selectExpr(projection: _*)
  
-@@ -815,6 +852,9 @@ class WholeStageCodegenSuite extends QueryTest with SharedSparkSession
+@@ -815,6 +852,10 @@ class WholeStageCodegenSuite extends QueryTest with SharedSparkSession
        assert(distinctWithId.queryExecution.executedPlan.exists {
          case WholeStageCodegenExec(
            ProjectExec(_, BroadcastHashJoinExec(_, _, _, _, _, _: HashAggregateExec, _, _))) => true
 +        case WholeStageCodegenExec(
-+          ProjectExec(_, BroadcastHashJoinExec(_, _, _, _, _, _: CometColumnarToRowExec, _, _))) =>
++          ProjectExec(_, BroadcastHashJoinExec(_, _, _, _, _,
++            InputAdapter(_: CometNativeColumnarToRowExec), _, _))) =>
 +            true
          case _ => false
        })
@@ -3068,7 +3005,7 @@ index e31e0e70cf3..034ad5b953e 100644
    import testImplicits._
  
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala
-index 83ebd24384c..eeaa1d94bc0 100644
+index 83ebd24384c..39c2f46c9b8 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala
 @@ -26,10 +26,11 @@ import org.apache.spark.sql.catalyst.expressions
@@ -3144,7 +3081,7 @@ index 83ebd24384c..eeaa1d94bc0 100644
 +                case s: SortMergeJoinExec => s
 +                case o => fail(s"expected SortMergeJoinExec, but found\n$o")
 +              }
-+            case CometColumnarToRowExec(child) =>
++            case CometNativeColumnarToRowExec(child) =>
 +              child.asInstanceOf[CometSortMergeJoinExec].originalPlan match {
 +                case s: SortMergeJoinExec => s
 +                case o => fail(s"expected SortMergeJoinExec, but found\n$o")
@@ -3398,7 +3335,7 @@ index 22028a585e2..20c6b7c796a 100644
    }
  
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamingQuerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamingQuerySuite.scala
-index 7adf98b7920..fd1696da07b 100644
+index 7adf98b7920..0939894117a 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamingQuerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamingQuerySuite.scala
 @@ -43,7 +43,7 @@ import org.apache.spark.sql.catalyst.types.DataTypeUtils.toAttributes
@@ -3406,7 +3343,7 @@ index 7adf98b7920..fd1696da07b 100644
  import org.apache.spark.sql.connector.read.InputPartition
  import org.apache.spark.sql.connector.read.streaming.{Offset => OffsetV2, ReadLimit}
 -import org.apache.spark.sql.execution.exchange.{REQUIRED_BY_STATEFUL_OPERATOR, ReusedExchangeExec, ShuffleExchangeExec}
-+import org.apache.spark.sql.execution.exchange.{REQUIRED_BY_STATEFUL_OPERATOR, ReusedExchangeExec, ShuffleExchangeLike}
++import org.apache.spark.sql.execution.exchange.{REQUIRED_BY_STATEFUL_OPERATOR, ReusedExchangeExec, ShuffleExchangeExec, ShuffleExchangeLike}
  import org.apache.spark.sql.execution.streaming._
  import org.apache.spark.sql.execution.streaming.checkpointing.{CheckpointFileManager, OffsetSeqMetadata}
  import org.apache.spark.sql.execution.streaming.operators.stateful.StateStoreSaveExec
