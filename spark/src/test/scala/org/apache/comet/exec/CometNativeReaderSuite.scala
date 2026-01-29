@@ -240,6 +240,7 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
         |""".stripMargin,
       "select c0 from tbl")
   }
+
   test("native reader - read a STRUCT subfield from ARRAY of STRUCTS - second field") {
     testSingleLineQuery(
       """
