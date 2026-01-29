@@ -131,6 +131,31 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("compare true/false to negative zero") {
+    Seq(false, true).foreach { dictionary =>
+      withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
+        val table = "test"
+        withTable(table) {
+          sql(s"create table $table(col1 boolean, col2 float) using parquet")
+          sql(s"insert into $table values(true, -0.0)")
+          sql(s"insert into $table values(false, -0.0)")
+
+          checkSparkAnswerAndOperator(
+            s"SELECT col1, negative(col2), cast(col1 as float), col1 = negative(col2) FROM $table")
+        }
+      }
+    }
+  }
+
+  test("parquet default values") {
+    withTable("t1") {
+      sql("create table t1(col1 boolean) using parquet")
+      sql("insert into t1 values(true)")
+      sql("alter table t1 add column col2 string default 'hello'")
+      checkSparkAnswerAndOperator("select * from t1")
+    }
+  }
+
   test("decimals divide by zero") {
     Seq(true, false).foreach { dictionary =>
       withSQLConf(
@@ -148,6 +173,16 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           }
         }
       }
+    }
+  }
+
+  test("Integral Division Overflow Handling Matches Spark Behavior") {
+    withTable("t1") {
+      val value = Long.MinValue
+      sql("create table t1(c1 long, c2 short) using parquet")
+      sql(s"insert into t1 values($value, -1)")
+      val res = sql("select c1 div c2 from t1 order by c1")
+      checkSparkAnswerAndOperator(res)
     }
   }
 
@@ -464,6 +499,17 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       checkSparkAnswerAndOperator("SELECT _1, substring(_2, -2, 10) FROM tbl")
       checkSparkAnswerAndOperator("SELECT _1, substring(_2, 0, 0) FROM tbl")
       checkSparkAnswerAndOperator("SELECT _1, substring(_2, 1, 0) FROM tbl")
+    }
+  }
+
+  test("substring with start < 1") {
+    withTempPath { _ =>
+      withTable("t") {
+        sql("create table t (col string) using parquet")
+        sql("insert into t values('123456')")
+        checkSparkAnswerAndOperator(sql("select substring(col, 0) from t"))
+        checkSparkAnswerAndOperator(sql("select substring(col, -1) from t"))
+      }
     }
   }
 
@@ -1511,6 +1557,20 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("md5") {
+    Seq(false, true).foreach { dictionary =>
+      withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
+        val table = "test"
+        withTable(table) {
+          sql(s"create table $table(col String) using parquet")
+          sql(
+            s"insert into $table values ('test1'), ('test1'), ('test2'), ('test2'), (NULL), ('')")
+          checkSparkAnswerAndOperator(s"select md5(col) FROM $table")
+        }
+      }
+    }
+  }
+
   test("hex") {
     // https://github.com/apache/datafusion-comet/issues/1441
     assume(!usingDataSourceExec)
@@ -1526,6 +1586,26 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           }
         }
       }
+    }
+  }
+
+  test("unhex") {
+    val table = "unhex_table"
+    withTable(table) {
+      sql(s"create table $table(col string) using parquet")
+
+      sql(s"""INSERT INTO $table VALUES
+        |('537061726B2053514C'),
+        |('737472696E67'),
+        |('\\0'),
+        |(''),
+        |('###'),
+        |('G123'),
+        |('hello'),
+        |('A1B'),
+        |('0A1B')""".stripMargin)
+
+      checkSparkAnswerAndOperator(s"SELECT unhex(col) FROM $table")
     }
   }
 
@@ -1551,6 +1631,58 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         Seq("SELECT * FROM tbl where _2 is not false", "SELECT * FROM tbl where not _2 <=> false")
           .foreach(s => checkSparkAnswerAndOperator(s))
       })
+  }
+
+  test("test in(set)/not in(set)") {
+    Seq("100", "0").foreach { inSetThreshold =>
+      Seq(false, true).foreach { dictionary =>
+        withSQLConf(
+          SQLConf.OPTIMIZER_INSET_CONVERSION_THRESHOLD.key -> inSetThreshold,
+          "parquet.enable.dictionary" -> dictionary.toString) {
+          val table = "names"
+          withTable(table) {
+            sql(s"create table $table(id int, name varchar(20)) using parquet")
+            sql(
+              s"insert into $table values(1, 'James'), (1, 'Jones'), (2, 'Smith'), (3, 'Smith')," +
+                "(NULL, 'Jones'), (4, NULL)")
+
+            checkSparkAnswerAndOperator(s"SELECT * FROM $table WHERE id in (1, 2, 4, NULL)")
+            checkSparkAnswerAndOperator(
+              s"SELECT * FROM $table WHERE name in ('Smith', 'Brown', NULL)")
+
+            // TODO: why with not in, the plan is only `LocalTableScan`?
+            checkSparkAnswerAndOperator(s"SELECT * FROM $table WHERE id not in (1)")
+            checkSparkAnswer(s"SELECT * FROM $table WHERE name not in ('Smith', 'Brown', NULL)")
+          }
+        }
+      }
+    }
+  }
+
+  test("not") {
+    Seq(false, true).foreach { dictionary =>
+      withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
+        val table = "test"
+        withTable(table) {
+          sql(s"create table $table(col1 int, col2 boolean) using parquet")
+          sql(s"insert into $table values(1, false), (2, true), (3, true), (3, false)")
+          checkSparkAnswerAndOperator(s"SELECT col1, col2, NOT(col2), !(col2) FROM $table")
+        }
+      }
+    }
+  }
+
+  test("negative") {
+    Seq(false, true).foreach { dictionary =>
+      withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
+        val table = "test"
+        withTable(table) {
+          sql(s"create table $table(col1 int) using parquet")
+          sql(s"insert into $table values(1), (2), (3), (3)")
+          checkSparkAnswerAndOperator(s"SELECT negative(col1), -(col1) FROM $table")
+        }
+      }
+    }
   }
 
   test("basic arithmetic") {
@@ -1584,6 +1716,21 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             |(2, date'2021-06-30')""".stripMargin)
       checkSparkAnswerAndOperator(sql("SELECT CAST(cal_dt as STRING) FROM t1"))
       checkSparkAnswer("SHOW PARTITIONS t1")
+    }
+  }
+
+  test("DatePart functions: Year/Month/DayOfMonth/DayOfWeek/DayOfYear/WeekOfYear/Quarter") {
+    Seq(false, true).foreach { dictionary =>
+      withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
+        val table = "test"
+        withTable(table) {
+          sql(s"create table $table(col timestamp) using parquet")
+          sql(s"insert into $table values (now()), (timestamp('1900-01-01')), (null)")
+          checkSparkAnswerAndOperator(
+            "SELECT col, year(col), month(col), day(col), weekday(col), " +
+              s" dayofweek(col), dayofyear(col), weekofyear(col), quarter(col) FROM $table")
+        }
+      }
     }
   }
 
@@ -1834,6 +1981,31 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             df.collect() // force an execution
             checkSparkAnswerAndFallbackReasons(df, expected)
           })
+      }
+    }
+  }
+
+  test("hash functions") {
+    Seq(true, false).foreach { dictionary =>
+      withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
+        val table = "test"
+        withTable(table) {
+          sql(s"create table $table(col string, a int, b float) using parquet")
+          sql(s"""
+              |insert into $table values
+              |('Spark SQL  ', 10, 1.2), (NULL, NULL, NULL), ('', 0, 0.0), ('苹果手机', NULL, 3.999999)
+              |, ('Spark SQL  ', 10, 1.2), (NULL, NULL, NULL), ('', 0, 0.0), ('苹果手机', NULL, 3.999999)
+              |""".stripMargin)
+          checkSparkAnswerAndOperator("""
+              |select
+              |md5(col), md5(cast(a as string)), md5(cast(b as string)),
+              |hash(col), hash(col, 1), hash(col, 0), hash(col, a, b), hash(b, a, col),
+              |xxhash64(col), xxhash64(col, 1), xxhash64(col, 0), xxhash64(col, a, b), xxhash64(b, a, col),
+              |sha2(col, 0), sha2(col, 256), sha2(col, 224), sha2(col, 384), sha2(col, 512), sha2(col, 128), sha2(col, -1),
+              |sha1(col), sha1(cast(a as string)), sha1(cast(b as string))
+              |from test
+              |""".stripMargin)
+        }
       }
     }
   }
