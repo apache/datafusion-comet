@@ -1,5 +1,5 @@
 diff --git a/pom.xml b/pom.xml
-index a0e25ce4d8d..29d3b93f994 100644
+index a0e25ce4d8d..b95fba458f2 100644
 --- a/pom.xml
 +++ b/pom.xml
 @@ -152,6 +152,8 @@
@@ -7,7 +7,7 @@ index a0e25ce4d8d..29d3b93f994 100644
      <ivy.version>2.5.1</ivy.version>
      <oro.version>2.0.8</oro.version>
 +    <spark.version.short>3.5</spark.version.short>
-+    <comet.version>0.13.0-SNAPSHOT</comet.version>
++    <comet.version>0.14.0-SNAPSHOT</comet.version>
      <!--
      If you changes codahale.metrics.version, you also need to change
      the link to metrics.dropwizard.io in docs/monitoring.md.
@@ -1402,18 +1402,18 @@ index eec396b2e39..bf3f1c769d6 100644
      nums.createOrReplaceTempView("nums")
  
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/SparkPlanSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/SparkPlanSuite.scala
-index b14f4a405f6..ab7baf434a5 100644
+index b14f4a405f6..90bed10eca9 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/SparkPlanSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/SparkPlanSuite.scala
 @@ -23,6 +23,7 @@ import org.apache.spark.sql.QueryTest
  import org.apache.spark.sql.catalyst.InternalRow
  import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference}
  import org.apache.spark.sql.catalyst.plans.logical.Deduplicate
-+import org.apache.spark.sql.comet.CometColumnarToRowExec
++import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometNativeColumnarToRowExec}
  import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
  import org.apache.spark.sql.internal.SQLConf
  import org.apache.spark.sql.test.SharedSparkSession
-@@ -131,7 +132,10 @@ class SparkPlanSuite extends QueryTest with SharedSparkSession {
+@@ -131,7 +132,11 @@ class SparkPlanSuite extends QueryTest with SharedSparkSession {
          spark.range(1).write.parquet(path.getAbsolutePath)
          val df = spark.read.parquet(path.getAbsolutePath)
          val columnarToRowExec =
@@ -1421,6 +1421,7 @@ index b14f4a405f6..ab7baf434a5 100644
 +          df.queryExecution.executedPlan.collectFirst {
 +            case p: ColumnarToRowExec => p
 +            case p: CometColumnarToRowExec => p
++            case p: CometNativeColumnarToRowExec => p
 +          }.get
          try {
            spark.range(1).foreach { _ =>
@@ -2383,7 +2384,7 @@ index d083cac48ff..3c11bcde807 100644
    import testImplicits._
  
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala
-index 746f289c393..a90106a1463 100644
+index 746f289c393..a773971d3c1 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala
 @@ -19,16 +19,19 @@ package org.apache.spark.sql.sources
@@ -2441,7 +2442,7 @@ index 746f289c393..a90106a1463 100644
  
            val bucketColumnType = bucketedDataFrame.schema.apply(bucketColumnIndex).dataType
            val rowsWithInvalidBuckets = fileScan.execute().filter(row => {
-@@ -452,28 +464,49 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
+@@ -452,28 +464,54 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
          val joinOperator = if (joined.sqlContext.conf.adaptiveExecutionEnabled) {
            val executedPlan =
              joined.queryExecution.executedPlan.asInstanceOf[AdaptiveSparkPlanExec].executedPlan
@@ -2468,6 +2469,11 @@ index 746f289c393..a90106a1463 100644
 +                case o => fail(s"expected SortMergeJoinExec, but found\n$o")
 +              }
 +            case CometColumnarToRowExec(child) =>
++              child.asInstanceOf[CometSortMergeJoinExec].originalPlan match {
++                case s: SortMergeJoinExec => s
++                case o => fail(s"expected SortMergeJoinExec, but found\n$o")
++              }
++            case CometNativeColumnarToRowExec(child) =>
 +              child.asInstanceOf[CometSortMergeJoinExec].originalPlan match {
 +                case s: SortMergeJoinExec => s
 +                case o => fail(s"expected SortMergeJoinExec, but found\n$o")
@@ -2499,7 +2505,7 @@ index 746f289c393..a90106a1463 100644
            s"expected sort in the right child to be $sortRight but found\n${joinOperator.right}")
  
          // check the output partitioning
-@@ -836,11 +869,11 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
+@@ -836,11 +874,11 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
        df1.write.format("parquet").bucketBy(8, "i").saveAsTable("bucketed_table")
  
        val scanDF = spark.table("bucketed_table").select("j")
@@ -2513,7 +2519,7 @@ index 746f289c393..a90106a1463 100644
        checkAnswer(aggDF, df1.groupBy("j").agg(max("k")))
      }
    }
-@@ -895,7 +928,10 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
+@@ -895,7 +933,10 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
    }
  
    test("SPARK-29655 Read bucketed tables obeys spark.sql.shuffle.partitions") {
@@ -2524,7 +2530,7 @@ index 746f289c393..a90106a1463 100644
        SQLConf.SHUFFLE_PARTITIONS.key -> "5",
        SQLConf.COALESCE_PARTITIONS_INITIAL_PARTITION_NUM.key -> "7")  {
        val bucketSpec = Some(BucketSpec(6, Seq("i", "j"), Nil))
-@@ -914,7 +950,10 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
+@@ -914,7 +955,10 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
    }
  
    test("SPARK-32767 Bucket join should work if SHUFFLE_PARTITIONS larger than bucket number") {
@@ -2535,7 +2541,7 @@ index 746f289c393..a90106a1463 100644
        SQLConf.SHUFFLE_PARTITIONS.key -> "9",
        SQLConf.COALESCE_PARTITIONS_INITIAL_PARTITION_NUM.key -> "10")  {
  
-@@ -944,7 +983,10 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
+@@ -944,7 +988,10 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
    }
  
    test("bucket coalescing eliminates shuffle") {
@@ -2546,7 +2552,7 @@ index 746f289c393..a90106a1463 100644
        SQLConf.COALESCE_BUCKETS_IN_JOIN_ENABLED.key -> "true",
        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
        // The side with bucketedTableTestSpec1 will be coalesced to have 4 output partitions.
-@@ -1029,15 +1071,21 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
+@@ -1029,15 +1076,21 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
            Seq(true, false).foreach { aqeEnabled =>
              withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqeEnabled.toString) {
                val plan = sql(query).queryExecution.executedPlan
@@ -2935,49 +2941,6 @@ index 52abd248f3a..7a199931a08 100644
        case h: HiveTableScanExec => h.partitionPruningPred.collect {
          case d: DynamicPruningExpression => d.child
        }
-diff --git a/sql/hive/src/test/scala/org/apache/spark/sql/hive/ParquetEncryptionSuite.scala b/sql/hive/src/test/scala/org/apache/spark/sql/hive/ParquetEncryptionSuite.scala
-index 549431ef4f4..e48f1730da6 100644
---- a/sql/hive/src/test/scala/org/apache/spark/sql/hive/ParquetEncryptionSuite.scala
-+++ b/sql/hive/src/test/scala/org/apache/spark/sql/hive/ParquetEncryptionSuite.scala
-@@ -22,7 +22,7 @@ import java.io.RandomAccessFile
- import java.nio.charset.StandardCharsets
- import java.util.Base64
- 
--import org.apache.spark.sql.QueryTest
-+import org.apache.spark.sql.{IgnoreCometNativeScan, QueryTest}
- import org.apache.spark.sql.hive.test.TestHiveSingleton
- 
- /**
-@@ -37,7 +37,8 @@ class ParquetEncryptionSuite extends QueryTest with TestHiveSingleton {
-   private val key1 = encoder.encodeToString("1234567890123450".getBytes(StandardCharsets.UTF_8))
-   private val key2 = encoder.encodeToString("1234567890123451".getBytes(StandardCharsets.UTF_8))
- 
--  test("SPARK-34990: Write and read an encrypted parquet") {
-+  test("SPARK-34990: Write and read an encrypted parquet",
-+    IgnoreCometNativeScan("no encryption support yet")) {
-     withTempDir { dir =>
-       withSQLConf(
-         "parquet.crypto.factory.class" ->
-@@ -64,7 +65,8 @@ class ParquetEncryptionSuite extends QueryTest with TestHiveSingleton {
-     }
-   }
- 
--  test("SPARK-37117: Can't read files in Parquet encryption external key material mode") {
-+  test("SPARK-37117: Can't read files in Parquet encryption external key material mode",
-+    IgnoreCometNativeScan("no encryption support yet")) {
-     withTempDir { dir =>
-       withSQLConf(
-         "parquet.crypto.factory.class" ->
-@@ -91,7 +93,8 @@ class ParquetEncryptionSuite extends QueryTest with TestHiveSingleton {
-     }
-   }
- 
--  test("SPARK-42114: Test of uniform parquet encryption") {
-+  test("SPARK-42114: Test of uniform parquet encryption",
-+    IgnoreCometNativeScan("no encryption support yet")) {
-     withTempDir { dir =>
-       withSQLConf(
-         "parquet.crypto.factory.class" ->
 diff --git a/sql/hive/src/test/scala/org/apache/spark/sql/hive/PartitionedTablePerfStatsSuite.scala b/sql/hive/src/test/scala/org/apache/spark/sql/hive/PartitionedTablePerfStatsSuite.scala
 index de3b1ffccf0..2a76d127093 100644
 --- a/sql/hive/src/test/scala/org/apache/spark/sql/hive/PartitionedTablePerfStatsSuite.scala
