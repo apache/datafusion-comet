@@ -82,10 +82,6 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
       withInfo(scanExec, "Native DataFusion scan does not support metadata columns")
     }
 
-    if (CometParquetUtils.readFieldId(SQLConf.get)) {
-      withInfo(scanExec, "Native DataFusion scan does not support Parquet field ID based reads")
-    }
-
     if (scanExec.bucketedScan) {
       withInfo(scanExec, "Native DataFusion scan does not support bucketed scans")
     }
