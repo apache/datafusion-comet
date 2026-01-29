@@ -44,6 +44,7 @@ public abstract class NativeBase {
 
   private static final Logger LOG = LoggerFactory.getLogger(NativeBase.class);
   private static final String NATIVE_LIB_NAME = "comet";
+  private static final String NATIVE_VARIANT_ENV = "COMET_NATIVE_VARIANT";
 
   private static final String libraryToLoad = System.mapLibraryName(NATIVE_LIB_NAME);
   private static boolean loaded = false;
@@ -279,11 +280,80 @@ public abstract class NativeBase {
     return true;
   }
 
+  /**
+   * Detects if running on AWS Graviton hardware by checking CPU information. Graviton processors
+   * are based on ARM Neoverse cores (N1, V1, V2).
+   *
+   * @return true if running on Graviton, false otherwise
+   */
+  private static boolean isGraviton() {
+    // Allow manual override via environment variable
+    String variant = System.getenv(NATIVE_VARIANT_ENV);
+    if ("graviton".equalsIgnoreCase(variant)) {
+      return true;
+    }
+    if (variant != null && !variant.isEmpty()) {
+      return false; // Explicit non-graviton variant
+    }
+
+    // Only check on Linux ARM64
+    if (os() != OS.LINUX || !arch().equals("aarch64")) {
+      return false;
+    }
+
+    // Check /proc/cpuinfo for Neoverse cores (Graviton signature)
+    try {
+      Process process = Runtime.getRuntime().exec("cat /proc/cpuinfo");
+      if (process.waitFor() == 0) {
+        BufferedReader in = new BufferedReader(new InputStreamReader(process.getInputStream()));
+        String line;
+        while ((line = in.readLine()) != null) {
+          // Check for Neoverse in CPU part/model
+          if (line.contains("Neoverse")) {
+            LOG.info("Detected AWS Graviton processor, will attempt to load optimized library");
+            return true;
+          }
+          // Alternative: Check CPU implementer (0x41 = ARM) and part numbers
+          // Graviton2: 0xd0c, Graviton3: 0xd40, Graviton4: 0xd4f
+          if (line.startsWith("CPU implementer") && line.contains("0x41")) {
+            // Keep reading to find CPU part
+            continue;
+          }
+          if (line.startsWith("CPU part")
+              && (line.contains("0xd0c") || line.contains("0xd40") || line.contains("0xd4f"))) {
+            LOG.info(
+                "Detected AWS Graviton processor (CPU part), will attempt to load optimized library");
+            return true;
+          }
+        }
+      }
+    } catch (IOException | InterruptedException e) {
+      LOG.debug("Unable to detect Graviton hardware, falling back to standard library", e);
+    }
+
+    return false;
+  }
+
   private static String resourceName() {
     OS os = os();
     String packagePrefix = NativeBase.class.getPackage().getName().replace('.', '/');
+    String archPath = arch();
 
-    return "/" + packagePrefix + "/" + os.name + "/" + arch() + "/" + libraryToLoad;
+    // Check if running on Graviton and try Graviton-optimized library first
+    if (isGraviton()) {
+      String gravitonPath = "/" + packagePrefix + "/" + os.name + "/graviton/" + libraryToLoad;
+      // Check if Graviton library exists in the JAR
+      if (NativeBase.class.getResource(gravitonPath) != null) {
+        LOG.info("Using Graviton-optimized native library");
+        return gravitonPath;
+      } else {
+        LOG.info(
+            "Graviton processor detected but optimized library not found, falling back to standard aarch64 library");
+      }
+    }
+
+    // Standard path (existing behavior)
+    return "/" + packagePrefix + "/" + os.name + "/" + archPath + "/" + libraryToLoad;
   }
 
   /**

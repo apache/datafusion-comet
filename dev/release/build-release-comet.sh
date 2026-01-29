@@ -33,9 +33,22 @@ This script builds comet native binaries inside a docker image. The image is nam
 
 Options are:
 
-  -r [repo]   : git repo (default: ${REPO})
-  -b [branch] : git branch (default: ${BRANCH})
-  -t [tag]    : tag for the spark-rm docker image to use for building (default: "latest").
+  -r [repo]     : git repo (default: ${REPO})
+  -b [branch]   : git branch (default: ${BRANCH})
+  -t [tag]      : tag for the spark-rm docker image to use for building (default: "latest")
+  -p [platforms]: comma-separated list of platforms to build (default: "amd64,arm64")
+                  Available platforms: amd64, arm64, graviton
+                  Examples:
+                    -p amd64              (build only amd64)
+                    -p arm64,graviton     (build arm64 and graviton)
+                    -p amd64,arm64,graviton (build all platforms)
+  -g            : alias for -p amd64,arm64,graviton
+
+Examples:
+  $NAME                           # Build amd64 and arm64 (default)
+  $NAME -p amd64                  # Build only amd64
+  $NAME -p arm64,graviton         # Build arm64 and graviton
+  $NAME -g                        # Build all platforms including graviton
 EOF
 exit 1
 }
@@ -53,6 +66,10 @@ function cleanup()
     then
       docker rm comet-amd64-builder-container
     fi
+    if [ "$(docker ps -a | grep comet-graviton-builder-container)" != "" ]
+    then
+      docker rm comet-graviton-builder-container
+    fi
     CLEANUP=0
   fi
 }
@@ -66,17 +83,55 @@ BRANCH="release"
 MACOS_SDK=
 HAS_MACOS_SDK="false"
 IMGTAG=latest
+PLATFORMS="amd64,arm64"  # Default platforms
 
-while getopts "b:hr:t:" opt; do
+while getopts "b:ghr:t:p:" opt; do
   case $opt in
     r) REPO="$OPTARG";;
     b) BRANCH="$OPTARG";;
     t) IMGTAG="$OPTARG" ;;
+    p) PLATFORMS="$OPTARG" ;;
+    g) PLATFORMS="amd64,arm64,graviton" ;;  # Deprecated: build all platforms
     h) usage ;;
     \?) error "Invalid option. Run with -h for help." ;;
   esac
 done
 
+# Parse and validate platforms
+BUILD_AMD64=0
+BUILD_ARM64=0
+BUILD_GRAVITON=0
+
+IFS=',' read -ra PLATFORM_ARRAY <<< "$PLATFORMS"
+for platform in "${PLATFORM_ARRAY[@]}"; do
+  # Trim whitespace
+  platform=$(echo "$platform" | xargs)
+
+  case "$platform" in
+    amd64)
+      BUILD_AMD64=1
+      ;;
+    arm64)
+      BUILD_ARM64=1
+      ;;
+    graviton)
+      BUILD_GRAVITON=1
+      ;;
+    *)
+      echo "Error: Unknown platform '$platform'"
+      echo "Available platforms: amd64, arm64, graviton"
+      exit 1
+      ;;
+  esac
+done
+
+# Validate at least one platform is selected
+if [ $BUILD_AMD64 -eq 0 ] && [ $BUILD_ARM64 -eq 0 ] && [ $BUILD_GRAVITON -eq 0 ]; then
+  echo "Error: No platforms selected. Use -p to specify platforms or -h for help."
+  exit 1
+fi
+
+echo "Building platforms: $PLATFORMS"
 echo "Building binaries from $REPO/$BRANCH"
 
 # Check Java version
@@ -107,56 +162,102 @@ fi
 BUILDER_IMAGE_ARM64="comet-rm-arm64:$IMGTAG"
 BUILDER_IMAGE_AMD64="comet-rm-amd64:$IMGTAG"
 
-# Build the docker image in which we will do the build
-docker build --no-cache \
-  --platform=linux/arm64 \
-  -t "$BUILDER_IMAGE_ARM64" \
-  --build-arg HAS_MACOS_SDK=${HAS_MACOS_SDK} \
-  --build-arg MACOS_SDK=${MACOS_SDK} \
-  "$SCRIPT_DIR/comet-rm"
+# Build the docker images for selected platforms
+if [ $BUILD_ARM64 -eq 1 ]
+then
+  echo "Building ARM64 Docker image..."
+  docker build --no-cache \
+    --platform=linux/arm64 \
+    -t "$BUILDER_IMAGE_ARM64" \
+    --build-arg HAS_MACOS_SDK=${HAS_MACOS_SDK} \
+    --build-arg MACOS_SDK=${MACOS_SDK} \
+    "$SCRIPT_DIR/comet-rm"
+fi
 
-docker build --no-cache \
-  --platform=linux/amd64 \
-  -t "$BUILDER_IMAGE_AMD64" \
-  --build-arg HAS_MACOS_SDK=${HAS_MACOS_SDK} \
-  --build-arg MACOS_SDK=${MACOS_SDK} \
-  "$SCRIPT_DIR/comet-rm"
+if [ $BUILD_AMD64 -eq 1 ]
+then
+  echo "Building AMD64 Docker image..."
+  docker build --no-cache \
+    --platform=linux/amd64 \
+    -t "$BUILDER_IMAGE_AMD64" \
+    --build-arg HAS_MACOS_SDK=${HAS_MACOS_SDK} \
+    --build-arg MACOS_SDK=${MACOS_SDK} \
+    "$SCRIPT_DIR/comet-rm"
+fi
+
+# Build Graviton image if requested
+if [ $BUILD_GRAVITON -eq 1 ]
+then
+  BUILDER_IMAGE_GRAVITON="comet-rm-graviton:$IMGTAG"
+
+  echo "Building Graviton Docker image..."
+  docker build --no-cache \
+    --platform=linux/arm64 \
+    -t "$BUILDER_IMAGE_GRAVITON" \
+    -f "$SCRIPT_DIR/comet-rm/Dockerfile.graviton" \
+    "$SCRIPT_DIR/comet-rm"
+fi
 
 # Clean previous Java build
 pushd $COMET_HOME_DIR && ./mvnw clean && popd
 
-# Run the builder container for each architecture. The entrypoint script will build the binaries
+# Run the builder container for each selected architecture. The entrypoint script will build the binaries
 
 # AMD64
-echo "Building amd64 binary"
-docker run \
-   --name comet-amd64-builder-container \
-   --memory 24g \
-   --cpus 6 \
-   -it \
-   --platform linux/amd64 \
-   $BUILDER_IMAGE_AMD64 "${REPO}" "${BRANCH}" amd64
-
-if [ $? != 0 ]
+if [ $BUILD_AMD64 -eq 1 ]
 then
-  echo "Building amd64 binary failed."
-  exit 1
+  echo "Building amd64 binary"
+  docker run \
+     --name comet-amd64-builder-container \
+     --memory 24g \
+     --cpus 6 \
+     -it \
+     --platform linux/amd64 \
+     $BUILDER_IMAGE_AMD64 "${REPO}" "${BRANCH}" amd64
+
+  if [ $? != 0 ]
+  then
+    echo "Building amd64 binary failed."
+    exit 1
+  fi
 fi
 
 # ARM64
-echo "Building arm64 binary"
-docker run \
-   --name comet-arm64-builder-container \
-   --memory 24g \
-   --cpus 6 \
-   -it \
-   --platform linux/arm64 \
-   $BUILDER_IMAGE_ARM64 "${REPO}" "${BRANCH}" arm64
-
-if [ $? != 0 ]
+if [ $BUILD_ARM64 -eq 1 ]
 then
-  echo "Building arm64 binary failed."
-  exit 1
+  echo "Building arm64 binary"
+  docker run \
+     --name comet-arm64-builder-container \
+     --memory 24g \
+     --cpus 6 \
+     -it \
+     --platform linux/arm64 \
+     $BUILDER_IMAGE_ARM64 "${REPO}" "${BRANCH}" arm64
+
+  if [ $? != 0 ]
+  then
+    echo "Building arm64 binary failed."
+    exit 1
+  fi
+fi
+
+# GRAVITON (if requested)
+if [ $BUILD_GRAVITON -eq 1 ]
+then
+  echo "Building Graviton binary"
+  docker run \
+     --name comet-graviton-builder-container \
+     --memory 24g \
+     --cpus 6 \
+     -it \
+     --platform linux/arm64 \
+     $BUILDER_IMAGE_GRAVITON "${REPO}" "${BRANCH}" graviton
+
+  if [ $? != 0 ]
+  then
+    echo "Building Graviton binary failed."
+    exit 1
+  fi
 fi
 
 echo "Building binaries completed"
@@ -165,30 +266,50 @@ echo "Copying to java build directories"
 JVM_TARGET_DIR=$COMET_HOME_DIR/common/target/classes/org/apache/comet
 mkdir -p $JVM_TARGET_DIR
 
-mkdir -p $JVM_TARGET_DIR/linux/amd64
-docker cp \
-  comet-amd64-builder-container:"/opt/comet-rm/comet/native/target/release/libcomet.so" \
-  $JVM_TARGET_DIR/linux/amd64/
-
-if [ "$HAS_MACOS_SDK" == "true" ]
+# Copy AMD64 binaries if built
+if [ $BUILD_AMD64 -eq 1 ]
 then
-  mkdir -p $JVM_TARGET_DIR/darwin/x86_64
+  echo "Copying amd64 binary"
+  mkdir -p $JVM_TARGET_DIR/linux/amd64
   docker cp \
-    comet-amd64-builder-container:"/opt/comet-rm/comet/native/target/x86_64-apple-darwin/release/libcomet.dylib" \
-    $JVM_TARGET_DIR/darwin/x86_64/
+    comet-amd64-builder-container:"/opt/comet-rm/comet/native/target/release/libcomet.so" \
+    $JVM_TARGET_DIR/linux/amd64/
+
+  if [ "$HAS_MACOS_SDK" == "true" ]
+  then
+    mkdir -p $JVM_TARGET_DIR/darwin/x86_64
+    docker cp \
+      comet-amd64-builder-container:"/opt/comet-rm/comet/native/target/x86_64-apple-darwin/release/libcomet.dylib" \
+      $JVM_TARGET_DIR/darwin/x86_64/
+  fi
 fi
 
-mkdir -p $JVM_TARGET_DIR/linux/aarch64
-docker cp \
-  comet-arm64-builder-container:"/opt/comet-rm/comet/native/target/release/libcomet.so" \
-  $JVM_TARGET_DIR/linux/aarch64/
-
-if [ "$HAS_MACOS_SDK" == "true" ]
+# Copy ARM64 binaries if built
+if [ $BUILD_ARM64 -eq 1 ]
 then
+  echo "Copying arm64 binary"
   mkdir -p $JVM_TARGET_DIR/linux/aarch64
   docker cp \
-    comet-arm64-builder-container:"/opt/comet-rm/comet/native/target/aarch64-apple-darwin/release/libcomet.dylib" \
-    $JVM_TARGET_DIR/darwin/aarch64/
+    comet-arm64-builder-container:"/opt/comet-rm/comet/native/target/release/libcomet.so" \
+    $JVM_TARGET_DIR/linux/aarch64/
+
+  if [ "$HAS_MACOS_SDK" == "true" ]
+  then
+    mkdir -p $JVM_TARGET_DIR/darwin/aarch64
+    docker cp \
+      comet-arm64-builder-container:"/opt/comet-rm/comet/native/target/aarch64-apple-darwin/release/libcomet.dylib" \
+      $JVM_TARGET_DIR/darwin/aarch64/
+  fi
+fi
+
+# Copy Graviton binary if built
+if [ $BUILD_GRAVITON -eq 1 ]
+then
+  echo "Copying Graviton binary"
+  mkdir -p $JVM_TARGET_DIR/linux/graviton
+  docker cp \
+    comet-graviton-builder-container:"/opt/comet-rm/comet/native/target/aarch64-unknown-linux-gnu/release/libcomet.so" \
+    $JVM_TARGET_DIR/linux/graviton/
 fi
 
 # Build final jar

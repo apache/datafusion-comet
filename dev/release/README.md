@@ -134,9 +134,22 @@ This script builds comet native binaries inside a docker image. The image is nam
 
 Options are:
 
--r [repo]   : git repo (default: https://github.com/apache/datafusion-comet.git)
--b [branch] : git branch (default: release)
--t [tag]    : tag for the spark-rm docker image to use for building (default: "latest").
+  -r [repo]     : git repo (default: https://github.com/apache/datafusion-comet.git)
+  -b [branch]   : git branch (default: release)
+  -t [tag]      : tag for the spark-rm docker image to use for building (default: "latest")
+  -p [platforms]: comma-separated list of platforms to build (default: "amd64,arm64")
+                  Available platforms: amd64, arm64, graviton
+                  Examples:
+                    -p amd64              (build only amd64)
+                    -p arm64,graviton     (build arm64 and graviton)
+                    -p amd64,arm64,graviton (build all platforms)
+  -g            : alias for -p amd64,arm64,graviton
+
+Examples:
+  build-release-comet.sh                           # Build amd64 and arm64 (default)
+  build-release-comet.sh -p amd64                  # Build only amd64
+  build-release-comet.sh -p arm64,graviton         # Build arm64 and graviton
+  build-release-comet.sh -g                        # Build all platforms including graviton
 ```
 
 Example:
@@ -144,6 +157,30 @@ Example:
 ```shell
 cd dev/release && ./build-release-comet.sh && cd ../..
 ```
+
+To build with Graviton-optimized binaries:
+
+```shell
+cd dev/release && ./build-release-comet.sh -p amd64,arm64,graviton && cd ../..
+```
+
+Or build only for specific platforms:
+
+```shell
+# Build only for amd64
+cd dev/release && ./build-release-comet.sh -p amd64 && cd ../..
+
+# Build only for Graviton
+cd dev/release && ./build-release-comet.sh -p graviton && cd ../..
+```
+
+**Note on Graviton builds:** The Graviton-optimized binary uses AWS Graviton-specific optimizations including:
+- `-Z tls-model=initial-exec` for fast TLS access
+- `-C target-feature=+lse` for Large System Extensions
+- `-C target-cpu=native` for native CPU optimizations
+
+For optimal performance, Graviton builds should be executed on actual AWS Graviton hardware (Graviton2, Graviton3, or Graviton4).
+The native library loader will automatically detect Graviton processors at runtime and use the optimized binary when available.
 
 #### Build output
 

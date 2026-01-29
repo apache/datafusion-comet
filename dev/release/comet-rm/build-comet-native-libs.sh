@@ -28,7 +28,7 @@ ARCH=$3
 
 function usage {
   local NAME=$(basename $0)
-  echo "Usage: ${NAME} [git repo] [branch] [arm64 | amd64]"
+  echo "Usage: ${NAME} [git repo] [branch] [arm64 | amd64 | graviton]"
   exit 1
 }
 
@@ -37,7 +37,7 @@ then
   usage
 fi
 
-if [ "$ARCH" != "arm64" ] && [ "$ARCH" != "amd64" ]
+if [ "$ARCH" != "arm64" ] && [ "$ARCH" != "amd64" ] && [ "$ARCH" != "graviton" ]
 then
   usage
 fi

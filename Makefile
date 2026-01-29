@@ -65,6 +65,13 @@ ifdef HAS_OSXCROSS
 	cd native && cargo build -j 2 --target aarch64-apple-darwin --release $(FEATURES_ARG)
 endif
 
+# build native libs for Graviton architecture Linux on a Graviton machine/container
+# Requires Rust nightly for -Z tls-model flag
+# Uses initial-exec TLS model, LSE, and native CPU optimizations for Graviton
+core-graviton-libs:
+	cd native && RUSTFLAGS="-Z tls-model=initial-exec -C target-feature=+lse -C target-cpu=native" \
+		cargo +nightly build -j 2 --release --target aarch64-unknown-linux-gnu $(FEATURES_ARG)
+
 core-amd64:
 	rustup target add x86_64-apple-darwin
 	cd native && RUSTFLAGS="-Ctarget-cpu=skylake -Ctarget-feature=-prefer-256-bit" CC=o64-clang CXX=o64-clang++ cargo build --target x86_64-apple-darwin --release $(FEATURES_ARG)
@@ -90,6 +97,17 @@ core-arm64:
 		-C common/target/classes/org/apache/comet darwin \
 		-C common/target/classes/org/apache/comet linux
 	./dev/deploy-file common/target/comet-native-aarch64.jar comet-native-aarch64${COMET_CLASSIFIER} jar
+
+# Build Graviton-optimized native libs (Linux only, no macOS support)
+# Must be built on Graviton hardware for optimal performance
+core-graviton:
+	cd native && RUSTFLAGS="-Z tls-model=initial-exec -C target-feature=+lse -C target-cpu=native" \
+		cargo +nightly build --release --target aarch64-unknown-linux-gnu $(FEATURES_ARG)
+	mkdir -p common/target/classes/org/apache/comet/linux/graviton
+	cp native/target/aarch64-unknown-linux-gnu/release/libcomet.so common/target/classes/org/apache/comet/linux/graviton
+	jar -cf common/target/comet-native-graviton.jar \
+		-C common/target/classes/org/apache/comet linux
+	./dev/deploy-file common/target/comet-native-graviton.jar comet-native-graviton${COMET_CLASSIFIER} jar
 
 release-linux: clean
 	rustup target add aarch64-apple-darwin x86_64-apple-darwin
