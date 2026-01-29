@@ -979,10 +979,11 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       }
     } catch {
       case e: Exception =>
-        val msg =
-          "Iceberg reflection failure: Failed to extract FileScanTasks from Iceberg scan RDD: " +
-            s"${e.getMessage}"
-        logError(msg, e)
+        logError(
+          s"Native Iceberg scan serialization failed. This may be caused by dynamic partition " +
+            s"pruning runtime filters that cannot be resolved during planning. " +
+            s"runtimeFilters=${scan.runtimeFilters}, error=${e.getMessage}",
+          e)
         return None
     }
 
