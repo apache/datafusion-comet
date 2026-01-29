@@ -38,6 +38,14 @@ class CometSqlFileTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  /** Check if the current Spark version meets a minimum version requirement. */
+  private def meetsMinSparkVersion(minVersion: String): Boolean = {
+    val current = org.apache.spark.SPARK_VERSION.split("[.-]").take(2).map(_.toInt)
+    val required = minVersion.split("[.-]").take(2).map(_.toInt)
+    (current(0) > required(0)) ||
+    (current(0) == required(0) && current(1) >= required(1))
+  }
+
   private val testResourceDir = {
     val url = getClass.getClassLoader.getResource("sql-tests")
     assert(url != null, "Could not find sql-tests resource directory")
@@ -95,18 +103,29 @@ class CometSqlFileTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     val parsed = SqlFileTestParser.parse(file)
     val combinations = configCombinations(parsed.configMatrix)
 
+    // Skip tests that require a newer Spark version
+    val skip = parsed.minSparkVersion.exists(!meetsMinSparkVersion(_))
+
     if (combinations.size <= 1) {
       // No matrix or single combination
       test(s"sql-file: $relativePath") {
-        val effectiveConfigs = parsed.configs ++ combinations.headOption.getOrElse(Seq.empty)
-        runTestFile(parsed.copy(configs = effectiveConfigs))
+        if (skip) {
+          logInfo(s"SKIPPED (requires Spark ${parsed.minSparkVersion.get}): $relativePath")
+        } else {
+          val effectiveConfigs = parsed.configs ++ combinations.headOption.getOrElse(Seq.empty)
+          runTestFile(parsed.copy(configs = effectiveConfigs))
+        }
       }
     } else {
       // Multiple combinations: generate one test per combination
       combinations.foreach { matrixConfigs =>
         val label = matrixConfigs.map { case (k, v) => s"$k=$v" }.mkString(", ")
         test(s"sql-file: $relativePath [$label]") {
-          runTestFile(parsed.copy(configs = parsed.configs ++ matrixConfigs))
+          if (skip) {
+            logInfo(s"SKIPPED (requires Spark ${parsed.minSparkVersion.get}): $relativePath")
+          } else {
+            runTestFile(parsed.copy(configs = parsed.configs ++ matrixConfigs))
+          }
         }
       }
     }
