@@ -737,7 +737,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       mutable.HashMap[Seq[OperatorOuterClass.IcebergDeleteFile], Int]()
     val residualToPoolIndex = mutable.HashMap[Option[Expr], Int]()
 
-    val perPartitionBuilders = mutable.ArrayBuffer[OperatorOuterClass.IcebergFilePartition]()
+    val perPartitionBuilders = mutable.ArrayBuffer[OperatorOuterClass.IcebergScan]()
 
     var totalTasks = 0
 
@@ -778,7 +778,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       case rdd: DataSourceRDD =>
         val partitions = rdd.partitions
         partitions.foreach { partition =>
-          val partitionBuilder = OperatorOuterClass.IcebergFilePartition.newBuilder()
+          val partitionBuilder = OperatorOuterClass.IcebergScan.newBuilder()
 
           val inputPartitions = partition
             .asInstanceOf[DataSourceRDDPartition]

@@ -1138,10 +1138,6 @@ impl PhysicalPlanner {
                     .common
                     .as_ref()
                     .ok_or_else(|| GeneralError("IcebergScan missing common data".into()))?;
-                let partition = scan
-                    .partition
-                    .as_ref()
-                    .ok_or_else(|| GeneralError("IcebergScan missing partition data".into()))?;
 
                 let required_schema =
                     convert_spark_types_to_arrow_schema(common.required_schema.as_slice());
@@ -1151,15 +1147,13 @@ impl PhysicalPlanner {
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect();
                 let metadata_location = common.metadata_location.clone();
-                let tasks = parse_file_scan_tasks_from_common(common, &partition.file_scan_tasks)?;
-
-                let file_task_groups = vec![tasks];
+                let tasks = parse_file_scan_tasks_from_common(common, &scan.file_scan_tasks)?;
 
                 let iceberg_scan = IcebergScanExec::new(
                     metadata_location,
                     required_schema,
                     catalog_properties,
-                    file_task_groups,
+                    tasks,
                 )?;
 
                 Ok((

@@ -55,7 +55,7 @@ import org.apache.comet.{CometConf, CometExecIterator, CometRuntimeException, Co
 import org.apache.comet.CometSparkSessionExtensions.{isCometShuffleEnabled, withInfo}
 import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.serde.{CometOperatorSerde, Compatible, Incompatible, OperatorOuterClass, SupportLevel, Unsupported}
-import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, IcebergFilePartition, Operator}
+import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, Operator}
 import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, supportedSortType}
 import org.apache.comet.serde.operator.CometSink
 
@@ -86,20 +86,21 @@ private[comet] object IcebergPartitionInjector {
       partitionByLocation: Map[String, Array[Byte]]): Operator = {
     val builder = op.toBuilder
 
-    // If this is an IcebergScan without partition data, inject it based on metadata_location
+    // If this is an IcebergScan without tasks, inject them based on metadata_location
     if (op.hasIcebergScan) {
       val scan = op.getIcebergScan
-      if (!scan.hasPartition && scan.hasCommon) {
+      if (scan.getFileScanTasksCount == 0 && scan.hasCommon) {
         val metadataLocation = scan.getCommon.getMetadataLocation
         (
           commonByLocation.get(metadataLocation),
           partitionByLocation.get(metadataLocation)) match {
           case (Some(commonBytes), Some(partitionBytes)) =>
             val common = OperatorOuterClass.IcebergScanCommon.parseFrom(commonBytes)
-            val partition = IcebergFilePartition.parseFrom(partitionBytes)
+            // partitionBytes is a serialized IcebergScan with just tasks (no common)
+            val tasksOnly = OperatorOuterClass.IcebergScan.parseFrom(partitionBytes)
             val scanBuilder = scan.toBuilder
             scanBuilder.setCommon(common)
-            scanBuilder.setPartition(partition)
+            scanBuilder.addAllFileScanTasks(tasksOnly.getFileScanTasksList)
             builder.setIcebergScan(scanBuilder)
           case _ =>
             throw new CometRuntimeException(

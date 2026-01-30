@@ -183,7 +183,7 @@ message IcebergScan {
   IcebergScanCommon common = 1;
 
   // Single partition's file scan tasks
-  IcebergFilePartition partition = 2;
+  repeated IcebergFileScanTask file_scan_tasks = 2;
 }
 
 // Helper message for deduplicating field ID lists
@@ -194,11 +194,6 @@ message ProjectFieldIdList {
 // Helper message for deduplicating delete file lists
 message DeleteFileList {
   repeated IcebergDeleteFile delete_files = 1;
-}
-
-// Groups FileScanTasks for a single Spark partition
-message IcebergFilePartition {
-  repeated IcebergFileScanTask file_scan_tasks = 1;
 }
 
 // Iceberg FileScanTask containing data file, delete files, and residual filter

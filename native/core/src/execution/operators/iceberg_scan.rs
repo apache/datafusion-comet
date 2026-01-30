@@ -44,6 +44,7 @@ use crate::parquet::parquet_support::SparkParquetOptions;
 use crate::parquet::schema_adapter::SparkSchemaAdapterFactory;
 use datafusion::datasource::schema_adapter::{SchemaAdapterFactory, SchemaMapper};
 use datafusion_comet_spark_expr::EvalMode;
+use iceberg::scan::FileScanTask;
 
 /// Iceberg table scan operator that uses iceberg-rust to read Iceberg tables.
 ///
@@ -58,8 +59,8 @@ pub struct IcebergScanExec {
     plan_properties: PlanProperties,
     /// Catalog-specific configuration for FileIO
     catalog_properties: HashMap<String, String>,
-    /// Pre-planned file scan tasks, grouped by partition
-    file_task_groups: Vec<Vec<iceberg::scan::FileScanTask>>,
+    /// Pre-planned file scan tasks
+    tasks: Vec<FileScanTask>,
     /// Metrics
     metrics: ExecutionPlanMetricsSet,
 }
@@ -69,11 +70,10 @@ impl IcebergScanExec {
         metadata_location: String,
         schema: SchemaRef,
         catalog_properties: HashMap<String, String>,
-        file_task_groups: Vec<Vec<iceberg::scan::FileScanTask>>,
+        tasks: Vec<FileScanTask>,
     ) -> Result<Self, ExecutionError> {
         let output_schema = schema;
-        let num_partitions = file_task_groups.len();
-        let plan_properties = Self::compute_properties(Arc::clone(&output_schema), num_partitions);
+        let plan_properties = Self::compute_properties(Arc::clone(&output_schema), 1);
 
         let metrics = ExecutionPlanMetricsSet::new();
 
@@ -82,7 +82,7 @@ impl IcebergScanExec {
             output_schema,
             plan_properties,
             catalog_properties,
-            file_task_groups,
+            tasks,
             metrics,
         })
     }
@@ -127,29 +127,10 @@ impl ExecutionPlan for IcebergScanExec {
 
     fn execute(
         &self,
-        partition: usize,
+        _partition: usize,
         context: Arc<TaskContext>,
     ) -> DFResult<SendableRecordBatchStream> {
-        // In split mode (single task group), always use index 0 regardless of requested partition.
-        // This is because in Comet's per-partition execution model, each task builds its own plan
-        // with only its partition's data. The parent operator may request partition N, but this
-        // IcebergScanExec already contains the correct data for partition N in task_groups[0].
-        let effective_partition = if self.file_task_groups.len() == 1 {
-            0
-        } else {
-            partition
-        };
-
-        if effective_partition < self.file_task_groups.len() {
-            let tasks = &self.file_task_groups[effective_partition];
-            self.execute_with_tasks(tasks.clone(), partition, context)
-        } else {
-            Err(DataFusionError::Execution(format!(
-                "IcebergScanExec: Partition index {} out of range (only {} task groups available)",
-                partition,
-                self.file_task_groups.len()
-            )))
-        }
+        self.execute_with_tasks(self.tasks.clone(), context)
     }
 
     fn metrics(&self) -> Option<MetricsSet> {
@@ -162,15 +143,14 @@ impl IcebergScanExec {
     /// deletes via iceberg-rust's ArrowReader.
     fn execute_with_tasks(
         &self,
-        tasks: Vec<iceberg::scan::FileScanTask>,
-        partition: usize,
+        tasks: Vec<FileScanTask>,
         context: Arc<TaskContext>,
     ) -> DFResult<SendableRecordBatchStream> {
         let output_schema = Arc::clone(&self.output_schema);
         let file_io = Self::load_file_io(&self.catalog_properties, &self.metadata_location)?;
         let batch_size = context.session_config().batch_size();
 
-        let metrics = IcebergScanMetrics::new(&self.metrics, partition);
+        let metrics = IcebergScanMetrics::new(&self.metrics);
         let num_tasks = tasks.len();
         metrics.num_splits.add(num_tasks);
 
@@ -231,10 +211,10 @@ struct IcebergScanMetrics {
 }
 
 impl IcebergScanMetrics {
-    fn new(metrics: &ExecutionPlanMetricsSet, partition: usize) -> Self {
+    fn new(metrics: &ExecutionPlanMetricsSet) -> Self {
         Self {
-            baseline: BaselineMetrics::new(metrics, partition),
-            num_splits: MetricBuilder::new(metrics).counter("num_splits", partition),
+            baseline: BaselineMetrics::new(metrics, 0),
+            num_splits: MetricBuilder::new(metrics).counter("num_splits", 0),
         }
     }
 }
@@ -321,11 +301,11 @@ where
 
 impl DisplayAs for IcebergScanExec {
     fn fmt_as(&self, _t: DisplayFormatType, f: &mut fmt::Formatter) -> fmt::Result {
-        let num_tasks: usize = self.file_task_groups.iter().map(|g| g.len()).sum();
         write!(
             f,
             "IcebergScanExec: metadata_location={}, num_tasks={}",
-            self.metadata_location, num_tasks
+            self.metadata_location,
+            self.tasks.len()
         )
     }
 }
