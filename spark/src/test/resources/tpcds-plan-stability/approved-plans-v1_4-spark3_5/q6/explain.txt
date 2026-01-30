@@ -231,7 +231,7 @@ Input [2]: [state#24, cnt#25]
 
 Subquery:1 Hosting operator id = 9 Hosting Expression = ss_sold_date_sk#8 IN dynamicpruning#9
 BroadcastExchange (45)
-+- CometNativeColumnarToRow (44)
++- * CometColumnarToRow (44)
    +- CometProject (43)
       +- CometFilter (42)
          +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim (41)
@@ -252,7 +252,7 @@ Condition : ((isnotnull(d_month_seq#11) AND (d_month_seq#11 = Subquery scalar-su
 Input [2]: [d_date_sk#10, d_month_seq#11]
 Arguments: [d_date_sk#10], [d_date_sk#10]
 
-(44) CometNativeColumnarToRow
+(44) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#10]
 
 (45) BroadcastExchange
@@ -260,7 +260,7 @@ Input [1]: [d_date_sk#10]
 Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint)),false), [plan_id=3]
 
 Subquery:2 Hosting operator id = 42 Hosting Expression = Subquery scalar-subquery#12, [id=#13]
-CometNativeColumnarToRow (52)
+* CometColumnarToRow (52)
 +- CometHashAggregate (51)
    +- CometExchange (50)
       +- CometHashAggregate (49)
@@ -270,36 +270,36 @@ CometNativeColumnarToRow (52)
 
 
 (46) CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
-Output [3]: [d_month_seq#13, d_year#26, d_moy#27]
+Output [3]: [d_month_seq#26, d_year#27, d_moy#28]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
 PushedFilters: [IsNotNull(d_year), IsNotNull(d_moy), EqualTo(d_year,2000), EqualTo(d_moy,1)]
 ReadSchema: struct<d_month_seq:int,d_year:int,d_moy:int>
 
 (47) CometFilter
-Input [3]: [d_month_seq#13, d_year#26, d_moy#27]
-Condition : (((isnotnull(d_year#26) AND isnotnull(d_moy#27)) AND (d_year#26 = 2000)) AND (d_moy#27 = 1))
+Input [3]: [d_month_seq#26, d_year#27, d_moy#28]
+Condition : (((isnotnull(d_year#27) AND isnotnull(d_moy#28)) AND (d_year#27 = 2000)) AND (d_moy#28 = 1))
 
 (48) CometProject
-Input [3]: [d_month_seq#13, d_year#26, d_moy#27]
-Arguments: [d_month_seq#13], [d_month_seq#13]
+Input [3]: [d_month_seq#26, d_year#27, d_moy#28]
+Arguments: [d_month_seq#26], [d_month_seq#26]
 
 (49) CometHashAggregate
-Input [1]: [d_month_seq#13]
-Keys [1]: [d_month_seq#13]
+Input [1]: [d_month_seq#26]
+Keys [1]: [d_month_seq#26]
 Functions: []
 
 (50) CometExchange
-Input [1]: [d_month_seq#13]
-Arguments: hashpartitioning(d_month_seq#13, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=4]
+Input [1]: [d_month_seq#26]
+Arguments: hashpartitioning(d_month_seq#26, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=4]
 
 (51) CometHashAggregate
-Input [1]: [d_month_seq#13]
-Keys [1]: [d_month_seq#13]
+Input [1]: [d_month_seq#26]
+Keys [1]: [d_month_seq#26]
 Functions: []
 
-(52) CometNativeColumnarToRow
-Input [1]: [d_month_seq#13]
+(52) CometColumnarToRow [codegen id : 1]
+Input [1]: [d_month_seq#26]
 
 Subquery:3 Hosting operator id = 15 Hosting Expression = ReusedSubquery Subquery scalar-subquery#12, [id=#13]
 

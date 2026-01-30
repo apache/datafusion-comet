@@ -31,10 +31,12 @@ TakeOrderedAndProject [lochierarchy,s_state,rank_within_parent,total_sum,s_count
                                                             CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales [ss_store_sk,ss_net_profit,ss_sold_date_sk]
                                                               SubqueryBroadcast [d_date_sk] #1
                                                                 BroadcastExchange #4
-                                                                  CometNativeColumnarToRow
-                                                                    CometProject [d_date_sk]
-                                                                      CometFilter [d_date_sk,d_month_seq]
-                                                                        CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_month_seq]
+                                                                  WholeStageCodegen (1)
+                                                                    CometColumnarToRow
+                                                                      InputAdapter
+                                                                        CometProject [d_date_sk]
+                                                                          CometFilter [d_date_sk,d_month_seq]
+                                                                            CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_month_seq]
                                                           CometBroadcastExchange [d_date_sk] #5
                                                             CometProject [d_date_sk]
                                                               CometFilter [d_date_sk,d_month_seq]
@@ -44,8 +46,8 @@ TakeOrderedAndProject [lochierarchy,s_state,rank_within_parent,total_sum,s_count
                                                       WholeStageCodegen (3)
                                                         Project [s_store_sk,s_county,s_state]
                                                           BroadcastHashJoin [s_state,s_state]
-                                                            InputAdapter
-                                                              CometNativeColumnarToRow
+                                                            CometColumnarToRow
+                                                              InputAdapter
                                                                 CometFilter [s_store_sk,s_county,s_state]
                                                                   CometScan [native_iceberg_compat] parquet spark_catalog.default.store [s_store_sk,s_county,s_state]
                                                             InputAdapter

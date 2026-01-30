@@ -1,5 +1,5 @@
 TakeOrderedAndProject [rnk,best_performing,worst_performing]
-  WholeStageCodegen (7)
+  WholeStageCodegen (9)
     Project [rnk,i_product_name,i_product_name]
       BroadcastHashJoin [item_sk,i_item_sk]
         Project [rnk,item_sk,i_product_name]
@@ -65,9 +65,11 @@ TakeOrderedAndProject [rnk,best_performing,worst_performing]
                                                         ReusedExchange [ss_item_sk,sum,count] #2
             InputAdapter
               BroadcastExchange #5
-                CometNativeColumnarToRow
-                  CometProject [i_product_name] [i_item_sk,i_product_name]
-                    CometFilter [i_item_sk,i_product_name]
-                      CometScan [native_iceberg_compat] parquet spark_catalog.default.item [i_item_sk,i_product_name]
+                WholeStageCodegen (7)
+                  CometColumnarToRow
+                    InputAdapter
+                      CometProject [i_product_name] [i_item_sk,i_product_name]
+                        CometFilter [i_item_sk,i_product_name]
+                          CometScan [native_iceberg_compat] parquet spark_catalog.default.item [i_item_sk,i_product_name]
         InputAdapter
           ReusedExchange [i_item_sk,i_product_name] #5

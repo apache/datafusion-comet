@@ -306,7 +306,7 @@ Input [8]: [item_id#23, sr_item_qty#24, sr_dev#35, cr_item_qty#22, cr_dev#36, wr
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = sr_returned_date_sk#3 IN dynamicpruning#4
 BroadcastExchange (68)
-+- CometNativeColumnarToRow (67)
++- * CometColumnarToRow (67)
    +- CometProject (66)
       +- CometBroadcastHashJoin (65)
          :- CometFilter (56)
@@ -378,7 +378,7 @@ Arguments: [d_date#9], [d_date#9#10], LeftSemi, BuildRight
 Input [2]: [d_date_sk#8, d_date#9]
 Arguments: [d_date_sk#8], [d_date_sk#8]
 
-(67) CometNativeColumnarToRow
+(67) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#8]
 
 (68) BroadcastExchange
@@ -387,7 +387,7 @@ Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint))
 
 Subquery:2 Hosting operator id = 20 Hosting Expression = cr_returned_date_sk#14 IN dynamicpruning#15
 BroadcastExchange (79)
-+- CometNativeColumnarToRow (78)
++- * CometColumnarToRow (78)
    +- CometProject (77)
       +- CometBroadcastHashJoin (76)
          :- CometFilter (70)
@@ -441,7 +441,7 @@ Arguments: [d_date#19], [d_date#9], LeftSemi, BuildRight
 Input [2]: [d_date_sk#18, d_date#19]
 Arguments: [d_date_sk#18], [d_date_sk#18]
 
-(78) CometNativeColumnarToRow
+(78) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#18]
 
 (79) BroadcastExchange

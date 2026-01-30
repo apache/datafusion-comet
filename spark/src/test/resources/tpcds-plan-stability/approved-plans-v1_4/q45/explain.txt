@@ -34,7 +34,7 @@ TakeOrderedAndProject (39)
                      :              +- CometFilter (21)
                      :                 +- CometScan [native_iceberg_compat] parquet spark_catalog.default.item (20)
                      +- BroadcastExchange (31)
-                        +- CometNativeColumnarToRow (30)
+                        +- * CometColumnarToRow (30)
                            +- CometProject (29)
                               +- CometFilter (28)
                                  +- CometScan [native_iceberg_compat] parquet spark_catalog.default.item (27)
@@ -160,7 +160,7 @@ Arguments: [ws_item_sk#2], [i_item_sk#16], Inner, BuildRight
 Input [6]: [ws_item_sk#2, ws_sales_price#4, ca_city#10, ca_zip#12, i_item_sk#16, i_item_id#18]
 Arguments: [ws_sales_price#4, ca_city#10, ca_zip#12, i_item_id#18], [ws_sales_price#4, ca_city#10, ca_zip#12, i_item_id#18]
 
-(26) CometColumnarToRow [codegen id : 1]
+(26) CometColumnarToRow [codegen id : 2]
 Input [4]: [ws_sales_price#4, ca_city#10, ca_zip#12, i_item_id#18]
 
 (27) CometScan [native_iceberg_compat] parquet spark_catalog.default.item
@@ -178,28 +178,28 @@ Condition : i_item_sk#16 IN (2,3,5,7,11,13,17,19,23,29)
 Input [2]: [i_item_sk#16, i_item_id#17]
 Arguments: [i_item_id#19], [staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_item_id#17, 16, true, false, true) AS i_item_id#19]
 
-(30) CometNativeColumnarToRow
+(30) CometColumnarToRow [codegen id : 1]
 Input [1]: [i_item_id#19]
 
 (31) BroadcastExchange
 Input [1]: [i_item_id#19]
 Arguments: HashedRelationBroadcastMode(List(input[0, string, true]),false), [plan_id=1]
 
-(32) BroadcastHashJoin [codegen id : 1]
+(32) BroadcastHashJoin [codegen id : 2]
 Left keys [1]: [i_item_id#18]
 Right keys [1]: [i_item_id#19]
 Join type: ExistenceJoin(exists#1)
 Join condition: None
 
-(33) Filter [codegen id : 1]
+(33) Filter [codegen id : 2]
 Input [5]: [ws_sales_price#4, ca_city#10, ca_zip#12, i_item_id#18, exists#1]
 Condition : (substr(ca_zip#12, 1, 5) IN (85669,86197,88274,83405,86475,85392,85460,80348,81792) OR exists#1)
 
-(34) Project [codegen id : 1]
+(34) Project [codegen id : 2]
 Output [3]: [ws_sales_price#4, ca_city#10, ca_zip#12]
 Input [5]: [ws_sales_price#4, ca_city#10, ca_zip#12, i_item_id#18, exists#1]
 
-(35) HashAggregate [codegen id : 1]
+(35) HashAggregate [codegen id : 2]
 Input [3]: [ws_sales_price#4, ca_city#10, ca_zip#12]
 Keys [2]: [ca_zip#12, ca_city#10]
 Functions [1]: [partial_sum(UnscaledValue(ws_sales_price#4))]
@@ -210,10 +210,10 @@ Results [3]: [ca_zip#12, ca_city#10, sum#21]
 Input [3]: [ca_zip#12, ca_city#10, sum#21]
 Arguments: hashpartitioning(ca_zip#12, ca_city#10, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=2]
 
-(37) CometColumnarToRow [codegen id : 2]
+(37) CometColumnarToRow [codegen id : 3]
 Input [3]: [ca_zip#12, ca_city#10, sum#21]
 
-(38) HashAggregate [codegen id : 2]
+(38) HashAggregate [codegen id : 3]
 Input [3]: [ca_zip#12, ca_city#10, sum#21]
 Keys [2]: [ca_zip#12, ca_city#10]
 Functions [1]: [sum(UnscaledValue(ws_sales_price#4))]
@@ -228,7 +228,7 @@ Arguments: 100, [ca_zip#12 ASC NULLS FIRST, ca_city#10 ASC NULLS FIRST], [ca_zip
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = ws_sold_date_sk#5 IN dynamicpruning#6
 BroadcastExchange (44)
-+- CometNativeColumnarToRow (43)
++- * CometColumnarToRow (43)
    +- CometProject (42)
       +- CometFilter (41)
          +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim (40)
@@ -249,7 +249,7 @@ Condition : ((((isnotnull(d_qoy#15) AND isnotnull(d_year#14)) AND (d_qoy#15 = 2)
 Input [3]: [d_date_sk#13, d_year#14, d_qoy#15]
 Arguments: [d_date_sk#13], [d_date_sk#13]
 
-(43) CometNativeColumnarToRow
+(43) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#13]
 
 (44) BroadcastExchange

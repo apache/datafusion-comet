@@ -15,7 +15,7 @@ CometColumnarToRow
          :     :              :     :  +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_returns
          :     :              :     :        +- SubqueryBroadcast
          :     :              :     :           +- BroadcastExchange
-         :     :              :     :              +- CometNativeColumnarToRow
+         :     :              :     :              +- CometColumnarToRow
          :     :              :     :                 +- CometProject
          :     :              :     :                    +- CometBroadcastHashJoin
          :     :              :     :                       :- CometFilter
@@ -57,7 +57,7 @@ CometColumnarToRow
          :                       :     :  +- CometScan [native_iceberg_compat] parquet spark_catalog.default.catalog_returns
          :                       :     :        +- SubqueryBroadcast
          :                       :     :           +- BroadcastExchange
-         :                       :     :              +- CometNativeColumnarToRow
+         :                       :     :              +- CometColumnarToRow
          :                       :     :                 +- CometProject
          :                       :     :                    +- CometBroadcastHashJoin
          :                       :     :                       :- CometFilter

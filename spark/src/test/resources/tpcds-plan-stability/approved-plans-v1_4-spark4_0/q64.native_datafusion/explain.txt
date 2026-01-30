@@ -1,5 +1,5 @@
 == Physical Plan ==
-CometNativeColumnarToRow (180)
+* CometColumnarToRow (180)
 +- CometSort (179)
    +- CometExchange (178)
       +- CometProject (177)
@@ -48,7 +48,7 @@ CometNativeColumnarToRow (180)
             :                 :     :     :     :     :     :     :     :     :     :     :     :     :     :     :     :           :  +- * Filter (3)
             :                 :     :     :     :     :     :     :     :     :     :     :     :     :     :     :     :           :     +- * ColumnarToRow (2)
             :                 :     :     :     :     :     :     :     :     :     :     :     :     :     :     :     :           :        +- Scan parquet spark_catalog.default.store_sales (1)
-            :                 :     :     :     :     :     :     :     :     :     :     :     :     :     :     :     :           +- CometNativeColumnarToRow (8)
+            :                 :     :     :     :     :     :     :     :     :     :     :     :     :     :     :     :           +- * CometColumnarToRow (8)
             :                 :     :     :     :     :     :     :     :     :     :     :     :     :     :     :     :              +- CometProject (7)
             :                 :     :     :     :     :     :     :     :     :     :     :     :     :     :     :     :                 +- CometFilter (6)
             :                 :     :     :     :     :     :     :     :     :     :     :     :     :     :     :     :                    +- CometNativeScan parquet spark_catalog.default.store_returns (5)
@@ -153,7 +153,7 @@ CometNativeColumnarToRow (180)
                               :     :     :     :     :     :     :     :     :     :     :     :     :     :     :     :           :  +- * Filter (108)
                               :     :     :     :     :     :     :     :     :     :     :     :     :     :     :     :           :     +- * ColumnarToRow (107)
                               :     :     :     :     :     :     :     :     :     :     :     :     :     :     :     :           :        +- Scan parquet spark_catalog.default.store_sales (106)
-                              :     :     :     :     :     :     :     :     :     :     :     :     :     :     :     :           +- CometNativeColumnarToRow (113)
+                              :     :     :     :     :     :     :     :     :     :     :     :     :     :     :     :           +- * CometColumnarToRow (113)
                               :     :     :     :     :     :     :     :     :     :     :     :     :     :     :     :              +- CometProject (112)
                               :     :     :     :     :     :     :     :     :     :     :     :     :     :     :     :                 +- CometFilter (111)
                               :     :     :     :     :     :     :     :     :     :     :     :     :     :     :     :                    +- CometNativeScan parquet spark_catalog.default.store_returns (110)
@@ -215,7 +215,7 @@ Condition : (isnotnull(sr_item_sk#14) AND isnotnull(sr_ticket_number#15))
 Input [3]: [sr_item_sk#14, sr_ticket_number#15, sr_returned_date_sk#16]
 Arguments: [sr_item_sk#14, sr_ticket_number#15], [sr_item_sk#14, sr_ticket_number#15]
 
-(8) CometNativeColumnarToRow
+(8) CometColumnarToRow
 Input [2]: [sr_item_sk#14, sr_ticket_number#15]
 
 (9) BroadcastHashJoin [codegen id : 2]
@@ -694,7 +694,7 @@ Condition : (isnotnull(sr_item_sk#111) AND isnotnull(sr_ticket_number#112))
 Input [3]: [sr_item_sk#111, sr_ticket_number#112, sr_returned_date_sk#113]
 Arguments: [sr_item_sk#111, sr_ticket_number#112], [sr_item_sk#111, sr_ticket_number#112]
 
-(113) CometNativeColumnarToRow
+(113) CometColumnarToRow
 Input [2]: [sr_item_sk#111, sr_ticket_number#112]
 
 (114) BroadcastHashJoin [codegen id : 4]
@@ -971,14 +971,14 @@ Arguments: rangepartitioning(product_name#81 ASC NULLS FIRST, store_name#83 ASC 
 Input [21]: [product_name#81, store_name#83, store_zip#84, b_street_number#85, b_streen_name#86, b_city#87, b_zip#88, c_street_number#89, c_street_name#90, c_city#91, c_zip#92, syear#93, cnt#94, s1#95, s2#96, s3#97, s1#170, s2#171, s3#172, syear#168, cnt#169]
 Arguments: [product_name#81, store_name#83, store_zip#84, b_street_number#85, b_streen_name#86, b_city#87, b_zip#88, c_street_number#89, c_street_name#90, c_city#91, c_zip#92, syear#93, cnt#94, s1#95, s2#96, s3#97, s1#170, s2#171, s3#172, syear#168, cnt#169], [product_name#81 ASC NULLS FIRST, store_name#83 ASC NULLS FIRST, cnt#169 ASC NULLS FIRST]
 
-(180) CometNativeColumnarToRow
+(180) CometColumnarToRow [codegen id : 5]
 Input [21]: [product_name#81, store_name#83, store_zip#84, b_street_number#85, b_streen_name#86, b_city#87, b_zip#88, c_street_number#89, c_street_name#90, c_city#91, c_zip#92, syear#93, cnt#94, s1#95, s2#96, s3#97, s1#170, s2#171, s3#172, syear#168, cnt#169]
 
 ===== Subqueries =====
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = ss_sold_date_sk#12 IN dynamicpruning#13
 BroadcastExchange (184)
-+- CometNativeColumnarToRow (183)
++- * CometColumnarToRow (183)
    +- CometFilter (182)
       +- CometNativeScan parquet spark_catalog.default.date_dim (181)
 
@@ -994,7 +994,7 @@ ReadSchema: struct<d_date_sk:int,d_year:int>
 Input [2]: [d_date_sk#32, d_year#33]
 Condition : ((isnotnull(d_year#33) AND (d_year#33 = 1999)) AND isnotnull(d_date_sk#32))
 
-(183) CometNativeColumnarToRow
+(183) CometColumnarToRow [codegen id : 1]
 Input [2]: [d_date_sk#32, d_year#33]
 
 (184) BroadcastExchange
@@ -1003,7 +1003,7 @@ Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, false] as bigint)
 
 Subquery:2 Hosting operator id = 106 Hosting Expression = ss_sold_date_sk#109 IN dynamicpruning#110
 BroadcastExchange (188)
-+- CometNativeColumnarToRow (187)
++- * CometColumnarToRow (187)
    +- CometFilter (186)
       +- CometNativeScan parquet spark_catalog.default.date_dim (185)
 
@@ -1019,7 +1019,7 @@ ReadSchema: struct<d_date_sk:int,d_year:int>
 Input [2]: [d_date_sk#124, d_year#125]
 Condition : ((isnotnull(d_year#125) AND (d_year#125 = 2000)) AND isnotnull(d_date_sk#124))
 
-(187) CometNativeColumnarToRow
+(187) CometColumnarToRow [codegen id : 1]
 Input [2]: [d_date_sk#124, d_year#125]
 
 (188) BroadcastExchange

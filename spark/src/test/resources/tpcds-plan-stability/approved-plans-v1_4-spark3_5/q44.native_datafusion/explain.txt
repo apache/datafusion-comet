@@ -11,11 +11,11 @@ TakeOrderedAndProject (45)
       :     :     :     +- * Filter (16)
       :     :     :        +- Window (15)
       :     :     :           +- WindowGroupLimit (14)
-      :     :     :              +- CometNativeColumnarToRow (13)
+      :     :     :              +- * CometColumnarToRow (13)
       :     :     :                 +- CometSort (12)
       :     :     :                    +- CometColumnarExchange (11)
       :     :     :                       +- WindowGroupLimit (10)
-      :     :     :                          +- CometNativeColumnarToRow (9)
+      :     :     :                          +- * CometColumnarToRow (9)
       :     :     :                             +- CometSort (8)
       :     :     :                                +- CometFilter (7)
       :     :     :                                   +- CometHashAggregate (6)
@@ -29,17 +29,17 @@ TakeOrderedAndProject (45)
       :     :           +- * Filter (30)
       :     :              +- Window (29)
       :     :                 +- WindowGroupLimit (28)
-      :     :                    +- CometNativeColumnarToRow (27)
+      :     :                    +- * CometColumnarToRow (27)
       :     :                       +- CometSort (26)
       :     :                          +- CometColumnarExchange (25)
       :     :                             +- WindowGroupLimit (24)
-      :     :                                +- CometNativeColumnarToRow (23)
+      :     :                                +- * CometColumnarToRow (23)
       :     :                                   +- CometSort (22)
       :     :                                      +- CometFilter (21)
       :     :                                         +- CometHashAggregate (20)
       :     :                                            +- ReusedExchange (19)
       :     +- BroadcastExchange (39)
-      :        +- CometNativeColumnarToRow (38)
+      :        +- * CometColumnarToRow (38)
       :           +- CometProject (37)
       :              +- CometFilter (36)
       :                 +- CometNativeScan parquet spark_catalog.default.item (35)
@@ -83,7 +83,7 @@ Condition : (isnotnull(rank_col#8) AND (cast(rank_col#8 as decimal(13,7)) > (0.9
 Input [2]: [item_sk#7, rank_col#8]
 Arguments: [item_sk#7, rank_col#8], [rank_col#8 ASC NULLS FIRST]
 
-(9) CometNativeColumnarToRow
+(9) CometColumnarToRow [codegen id : 1]
 Input [2]: [item_sk#7, rank_col#8]
 
 (10) WindowGroupLimit
@@ -98,7 +98,7 @@ Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=
 Input [2]: [item_sk#7, rank_col#8]
 Arguments: [item_sk#7, rank_col#8], [rank_col#8 ASC NULLS FIRST]
 
-(13) CometNativeColumnarToRow
+(13) CometColumnarToRow [codegen id : 2]
 Input [2]: [item_sk#7, rank_col#8]
 
 (14) WindowGroupLimit
@@ -109,15 +109,15 @@ Arguments: [rank_col#8 ASC NULLS FIRST], rank(rank_col#8), 10, Final
 Input [2]: [item_sk#7, rank_col#8]
 Arguments: [rank(rank_col#8) windowspecdefinition(rank_col#8 ASC NULLS FIRST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS rnk#11], [rank_col#8 ASC NULLS FIRST]
 
-(16) Filter [codegen id : 1]
+(16) Filter [codegen id : 3]
 Input [3]: [item_sk#7, rank_col#8, rnk#11]
 Condition : ((rnk#11 < 11) AND isnotnull(item_sk#7))
 
-(17) Project [codegen id : 1]
+(17) Project [codegen id : 3]
 Output [2]: [item_sk#7, rnk#11]
 Input [3]: [item_sk#7, rank_col#8, rnk#11]
 
-(18) Sort [codegen id : 1]
+(18) Sort [codegen id : 3]
 Input [2]: [item_sk#7, rnk#11]
 Arguments: [rnk#11 ASC NULLS FIRST], false, 0
 
@@ -137,7 +137,7 @@ Condition : (isnotnull(rank_col#17) AND (cast(rank_col#17 as decimal(13,7)) > (0
 Input [2]: [item_sk#16, rank_col#17]
 Arguments: [item_sk#16, rank_col#17], [rank_col#17 DESC NULLS LAST]
 
-(23) CometNativeColumnarToRow
+(23) CometColumnarToRow [codegen id : 4]
 Input [2]: [item_sk#16, rank_col#17]
 
 (24) WindowGroupLimit
@@ -152,7 +152,7 @@ Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=
 Input [2]: [item_sk#16, rank_col#17]
 Arguments: [item_sk#16, rank_col#17], [rank_col#17 DESC NULLS LAST]
 
-(27) CometNativeColumnarToRow
+(27) CometColumnarToRow [codegen id : 5]
 Input [2]: [item_sk#16, rank_col#17]
 
 (28) WindowGroupLimit
@@ -163,25 +163,25 @@ Arguments: [rank_col#17 DESC NULLS LAST], rank(rank_col#17), 10, Final
 Input [2]: [item_sk#16, rank_col#17]
 Arguments: [rank(rank_col#17) windowspecdefinition(rank_col#17 DESC NULLS LAST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS rnk#18], [rank_col#17 DESC NULLS LAST]
 
-(30) Filter [codegen id : 2]
+(30) Filter [codegen id : 6]
 Input [3]: [item_sk#16, rank_col#17, rnk#18]
 Condition : ((rnk#18 < 11) AND isnotnull(item_sk#16))
 
-(31) Project [codegen id : 2]
+(31) Project [codegen id : 6]
 Output [2]: [item_sk#16, rnk#18]
 Input [3]: [item_sk#16, rank_col#17, rnk#18]
 
-(32) Sort [codegen id : 2]
+(32) Sort [codegen id : 6]
 Input [2]: [item_sk#16, rnk#18]
 Arguments: [rnk#18 ASC NULLS FIRST], false, 0
 
-(33) SortMergeJoin [codegen id : 3]
+(33) SortMergeJoin [codegen id : 9]
 Left keys [1]: [rnk#11]
 Right keys [1]: [rnk#18]
 Join type: Inner
 Join condition: None
 
-(34) Project [codegen id : 3]
+(34) Project [codegen id : 9]
 Output [3]: [item_sk#7, rnk#11, item_sk#16]
 Input [4]: [item_sk#7, rnk#11, item_sk#16, rnk#18]
 
@@ -200,33 +200,33 @@ Condition : isnotnull(i_item_sk#19)
 Input [2]: [i_item_sk#19, i_product_name#20]
 Arguments: [i_item_sk#19, i_product_name#21], [i_item_sk#19, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_product_name#20, 50, true, false, true) AS i_product_name#21]
 
-(38) CometNativeColumnarToRow
+(38) CometColumnarToRow [codegen id : 7]
 Input [2]: [i_item_sk#19, i_product_name#21]
 
 (39) BroadcastExchange
 Input [2]: [i_item_sk#19, i_product_name#21]
 Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint)),false), [plan_id=4]
 
-(40) BroadcastHashJoin [codegen id : 3]
+(40) BroadcastHashJoin [codegen id : 9]
 Left keys [1]: [item_sk#7]
 Right keys [1]: [i_item_sk#19]
 Join type: Inner
 Join condition: None
 
-(41) Project [codegen id : 3]
+(41) Project [codegen id : 9]
 Output [3]: [rnk#11, item_sk#16, i_product_name#21]
 Input [5]: [item_sk#7, rnk#11, item_sk#16, i_item_sk#19, i_product_name#21]
 
 (42) ReusedExchange [Reuses operator id: 39]
 Output [2]: [i_item_sk#22, i_product_name#23]
 
-(43) BroadcastHashJoin [codegen id : 3]
+(43) BroadcastHashJoin [codegen id : 9]
 Left keys [1]: [item_sk#16]
 Right keys [1]: [i_item_sk#22]
 Join type: Inner
 Join condition: None
 
-(44) Project [codegen id : 3]
+(44) Project [codegen id : 9]
 Output [3]: [rnk#11, i_product_name#21 AS best_performing#24, i_product_name#23 AS worst_performing#25]
 Input [5]: [rnk#11, item_sk#16, i_product_name#21, i_item_sk#22, i_product_name#23]
 
@@ -237,7 +237,7 @@ Arguments: 100, [rnk#11 ASC NULLS FIRST], [rnk#11, best_performing#24, worst_per
 ===== Subqueries =====
 
 Subquery:1 Hosting operator id = 7 Hosting Expression = Subquery scalar-subquery#9, [id=#10]
-CometNativeColumnarToRow (52)
+* CometColumnarToRow (52)
 +- CometHashAggregate (51)
    +- CometExchange (50)
       +- CometHashAggregate (49)
@@ -275,7 +275,7 @@ Input [3]: [ss_store_sk#27, sum#30, count#31]
 Keys [1]: [ss_store_sk#27]
 Functions [1]: [avg(UnscaledValue(ss_net_profit#28))]
 
-(52) CometNativeColumnarToRow
+(52) CometColumnarToRow [codegen id : 1]
 Input [1]: [rank_col#32]
 
 Subquery:2 Hosting operator id = 21 Hosting Expression = ReusedSubquery Subquery scalar-subquery#9, [id=#10]

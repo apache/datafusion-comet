@@ -2,11 +2,11 @@
 TakeOrderedAndProject (24)
 +- * Project (23)
    +- Window (22)
-      +- CometNativeColumnarToRow (21)
+      +- * CometColumnarToRow (21)
          +- CometSort (20)
             +- CometColumnarExchange (19)
                +- * HashAggregate (18)
-                  +- CometNativeColumnarToRow (17)
+                  +- * CometColumnarToRow (17)
                      +- CometColumnarExchange (16)
                         +- * HashAggregate (15)
                            +- * Expand (14)
@@ -19,7 +19,7 @@ TakeOrderedAndProject (24)
                                     :     :     +- Scan parquet spark_catalog.default.web_sales (1)
                                     :     +- ReusedExchange (4)
                                     +- BroadcastExchange (11)
-                                       +- CometNativeColumnarToRow (10)
+                                       +- * CometColumnarToRow (10)
                                           +- CometProject (9)
                                              +- CometFilter (8)
                                                 +- CometNativeScan parquet spark_catalog.default.item (7)
@@ -33,23 +33,23 @@ PartitionFilters: [isnotnull(ws_sold_date_sk#3), dynamicpruningexpression(ws_sol
 PushedFilters: [IsNotNull(ws_item_sk)]
 ReadSchema: struct<ws_item_sk:int,ws_net_paid:decimal(7,2)>
 
-(2) ColumnarToRow [codegen id : 1]
+(2) ColumnarToRow [codegen id : 3]
 Input [3]: [ws_item_sk#1, ws_net_paid#2, ws_sold_date_sk#3]
 
-(3) Filter [codegen id : 1]
+(3) Filter [codegen id : 3]
 Input [3]: [ws_item_sk#1, ws_net_paid#2, ws_sold_date_sk#3]
 Condition : isnotnull(ws_item_sk#1)
 
 (4) ReusedExchange [Reuses operator id: 29]
 Output [1]: [d_date_sk#5]
 
-(5) BroadcastHashJoin [codegen id : 1]
+(5) BroadcastHashJoin [codegen id : 3]
 Left keys [1]: [ws_sold_date_sk#3]
 Right keys [1]: [d_date_sk#5]
 Join type: Inner
 Join condition: None
 
-(6) Project [codegen id : 1]
+(6) Project [codegen id : 3]
 Output [2]: [ws_item_sk#1, ws_net_paid#2]
 Input [4]: [ws_item_sk#1, ws_net_paid#2, ws_sold_date_sk#3, d_date_sk#5]
 
@@ -68,28 +68,28 @@ Condition : isnotnull(i_item_sk#6)
 Input [3]: [i_item_sk#6, i_class#7, i_category#8]
 Arguments: [i_item_sk#6, i_class#9, i_category#10], [i_item_sk#6, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_class#7, 50, true, false, true) AS i_class#9, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_category#8, 50, true, false, true) AS i_category#10]
 
-(10) CometNativeColumnarToRow
+(10) CometColumnarToRow [codegen id : 2]
 Input [3]: [i_item_sk#6, i_class#9, i_category#10]
 
 (11) BroadcastExchange
 Input [3]: [i_item_sk#6, i_class#9, i_category#10]
 Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint)),false), [plan_id=1]
 
-(12) BroadcastHashJoin [codegen id : 1]
+(12) BroadcastHashJoin [codegen id : 3]
 Left keys [1]: [ws_item_sk#1]
 Right keys [1]: [i_item_sk#6]
 Join type: Inner
 Join condition: None
 
-(13) Project [codegen id : 1]
+(13) Project [codegen id : 3]
 Output [3]: [ws_net_paid#2, i_category#10, i_class#9]
 Input [5]: [ws_item_sk#1, ws_net_paid#2, i_item_sk#6, i_class#9, i_category#10]
 
-(14) Expand [codegen id : 1]
+(14) Expand [codegen id : 3]
 Input [3]: [ws_net_paid#2, i_category#10, i_class#9]
 Arguments: [[ws_net_paid#2, i_category#10, i_class#9, 0], [ws_net_paid#2, i_category#10, null, 1], [ws_net_paid#2, null, null, 3]], [ws_net_paid#2, i_category#11, i_class#12, spark_grouping_id#13]
 
-(15) HashAggregate [codegen id : 1]
+(15) HashAggregate [codegen id : 3]
 Input [4]: [ws_net_paid#2, i_category#11, i_class#12, spark_grouping_id#13]
 Keys [3]: [i_category#11, i_class#12, spark_grouping_id#13]
 Functions [1]: [partial_sum(UnscaledValue(ws_net_paid#2))]
@@ -100,10 +100,10 @@ Results [4]: [i_category#11, i_class#12, spark_grouping_id#13, sum#15]
 Input [4]: [i_category#11, i_class#12, spark_grouping_id#13, sum#15]
 Arguments: hashpartitioning(i_category#11, i_class#12, spark_grouping_id#13, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=2]
 
-(17) CometNativeColumnarToRow
+(17) CometColumnarToRow [codegen id : 4]
 Input [4]: [i_category#11, i_class#12, spark_grouping_id#13, sum#15]
 
-(18) HashAggregate [codegen id : 2]
+(18) HashAggregate [codegen id : 4]
 Input [4]: [i_category#11, i_class#12, spark_grouping_id#13, sum#15]
 Keys [3]: [i_category#11, i_class#12, spark_grouping_id#13]
 Functions [1]: [sum(UnscaledValue(ws_net_paid#2))]
@@ -118,14 +118,14 @@ Arguments: hashpartitioning(_w1#20, _w2#21, 5), ENSURE_REQUIREMENTS, CometColumn
 Input [7]: [total_sum#17, i_category#11, i_class#12, lochierarchy#18, _w0#19, _w1#20, _w2#21]
 Arguments: [total_sum#17, i_category#11, i_class#12, lochierarchy#18, _w0#19, _w1#20, _w2#21], [_w1#20 ASC NULLS FIRST, _w2#21 ASC NULLS FIRST, _w0#19 DESC NULLS LAST]
 
-(21) CometNativeColumnarToRow
+(21) CometColumnarToRow [codegen id : 5]
 Input [7]: [total_sum#17, i_category#11, i_class#12, lochierarchy#18, _w0#19, _w1#20, _w2#21]
 
 (22) Window
 Input [7]: [total_sum#17, i_category#11, i_class#12, lochierarchy#18, _w0#19, _w1#20, _w2#21]
 Arguments: [rank(_w0#19) windowspecdefinition(_w1#20, _w2#21, _w0#19 DESC NULLS LAST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS rank_within_parent#22], [_w1#20, _w2#21], [_w0#19 DESC NULLS LAST]
 
-(23) Project [codegen id : 3]
+(23) Project [codegen id : 6]
 Output [5]: [total_sum#17, i_category#11, i_class#12, lochierarchy#18, rank_within_parent#22]
 Input [8]: [total_sum#17, i_category#11, i_class#12, lochierarchy#18, _w0#19, _w1#20, _w2#21, rank_within_parent#22]
 
@@ -137,7 +137,7 @@ Arguments: 100, [lochierarchy#18 DESC NULLS LAST, CASE WHEN (lochierarchy#18 = 0
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = ws_sold_date_sk#3 IN dynamicpruning#4
 BroadcastExchange (29)
-+- CometNativeColumnarToRow (28)
++- * CometColumnarToRow (28)
    +- CometProject (27)
       +- CometFilter (26)
          +- CometNativeScan parquet spark_catalog.default.date_dim (25)
@@ -158,7 +158,7 @@ Condition : (((isnotnull(d_month_seq#23) AND (d_month_seq#23 >= 1200)) AND (d_mo
 Input [2]: [d_date_sk#5, d_month_seq#23]
 Arguments: [d_date_sk#5], [d_date_sk#5]
 
-(28) CometNativeColumnarToRow
+(28) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#5]
 
 (29) BroadcastExchange

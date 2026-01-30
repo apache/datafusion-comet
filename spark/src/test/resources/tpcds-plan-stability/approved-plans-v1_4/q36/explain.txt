@@ -172,7 +172,7 @@ Arguments: 100, [lochierarchy#22 DESC NULLS LAST, CASE WHEN (lochierarchy#22 = 0
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = ss_sold_date_sk#5 IN dynamicpruning#6
 BroadcastExchange (35)
-+- CometNativeColumnarToRow (34)
++- * CometColumnarToRow (34)
    +- CometProject (33)
       +- CometFilter (32)
          +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim (31)
@@ -193,7 +193,7 @@ Condition : ((isnotnull(d_year#8) AND (d_year#8 = 2001)) AND isnotnull(d_date_sk
 Input [2]: [d_date_sk#7, d_year#8]
 Arguments: [d_date_sk#7], [d_date_sk#7]
 
-(34) CometNativeColumnarToRow
+(34) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#7]
 
 (35) BroadcastExchange

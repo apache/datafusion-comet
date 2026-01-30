@@ -3,72 +3,72 @@ BroadcastNestedLoopJoin
 :  :- BroadcastNestedLoopJoin
 :  :  :- BroadcastNestedLoopJoin
 :  :  :  :-  BroadcastNestedLoopJoin [COMET: BroadcastNestedLoopJoin is not supported]
-:  :  :  :  :- CometNativeColumnarToRow
+:  :  :  :  :- CometColumnarToRow
 :  :  :  :  :  +- CometHashAggregate
 :  :  :  :  :     +- CometColumnarExchange
 :  :  :  :  :        +- HashAggregate
 :  :  :  :  :           +-  HashAggregate [COMET: Unsupported aggregation mode PartialMerge]
-:  :  :  :  :              +- CometNativeColumnarToRow
+:  :  :  :  :              +- CometColumnarToRow
 :  :  :  :  :                 +- CometExchange
 :  :  :  :  :                    +- CometHashAggregate
 :  :  :  :  :                       +- CometProject
 :  :  :  :  :                          +- CometFilter
 :  :  :  :  :                             +- CometNativeScan parquet spark_catalog.default.store_sales
 :  :  :  :  +- BroadcastExchange
-:  :  :  :     +- CometNativeColumnarToRow
+:  :  :  :     +- CometColumnarToRow
 :  :  :  :        +- CometHashAggregate
 :  :  :  :           +- CometColumnarExchange
 :  :  :  :              +- HashAggregate
 :  :  :  :                 +-  HashAggregate [COMET: Unsupported aggregation mode PartialMerge]
-:  :  :  :                    +- CometNativeColumnarToRow
+:  :  :  :                    +- CometColumnarToRow
 :  :  :  :                       +- CometExchange
 :  :  :  :                          +- CometHashAggregate
 :  :  :  :                             +- CometProject
 :  :  :  :                                +- CometFilter
 :  :  :  :                                   +- CometNativeScan parquet spark_catalog.default.store_sales
 :  :  :  +- BroadcastExchange
-:  :  :     +- CometNativeColumnarToRow
+:  :  :     +- CometColumnarToRow
 :  :  :        +- CometHashAggregate
 :  :  :           +- CometColumnarExchange
 :  :  :              +- HashAggregate
 :  :  :                 +-  HashAggregate [COMET: Unsupported aggregation mode PartialMerge]
-:  :  :                    +- CometNativeColumnarToRow
+:  :  :                    +- CometColumnarToRow
 :  :  :                       +- CometExchange
 :  :  :                          +- CometHashAggregate
 :  :  :                             +- CometProject
 :  :  :                                +- CometFilter
 :  :  :                                   +- CometNativeScan parquet spark_catalog.default.store_sales
 :  :  +- BroadcastExchange
-:  :     +- CometNativeColumnarToRow
+:  :     +- CometColumnarToRow
 :  :        +- CometHashAggregate
 :  :           +- CometColumnarExchange
 :  :              +- HashAggregate
 :  :                 +-  HashAggregate [COMET: Unsupported aggregation mode PartialMerge]
-:  :                    +- CometNativeColumnarToRow
+:  :                    +- CometColumnarToRow
 :  :                       +- CometExchange
 :  :                          +- CometHashAggregate
 :  :                             +- CometProject
 :  :                                +- CometFilter
 :  :                                   +- CometNativeScan parquet spark_catalog.default.store_sales
 :  +- BroadcastExchange
-:     +- CometNativeColumnarToRow
+:     +- CometColumnarToRow
 :        +- CometHashAggregate
 :           +- CometColumnarExchange
 :              +- HashAggregate
 :                 +-  HashAggregate [COMET: Unsupported aggregation mode PartialMerge]
-:                    +- CometNativeColumnarToRow
+:                    +- CometColumnarToRow
 :                       +- CometExchange
 :                          +- CometHashAggregate
 :                             +- CometProject
 :                                +- CometFilter
 :                                   +- CometNativeScan parquet spark_catalog.default.store_sales
 +- BroadcastExchange
-   +- CometNativeColumnarToRow
+   +- CometColumnarToRow
       +- CometHashAggregate
          +- CometColumnarExchange
             +- HashAggregate
                +-  HashAggregate [COMET: Unsupported aggregation mode PartialMerge]
-                  +- CometNativeColumnarToRow
+                  +- CometColumnarToRow
                      +- CometExchange
                         +- CometHashAggregate
                            +- CometProject

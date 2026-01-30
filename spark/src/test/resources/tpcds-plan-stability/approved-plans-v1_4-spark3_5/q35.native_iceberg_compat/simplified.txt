@@ -1,10 +1,10 @@
 TakeOrderedAndProject [ca_state,cd_gender,cd_marital_status,cd_dep_count,cd_dep_employed_count,cd_dep_college_count,cnt1,min(cd_dep_count),max(cd_dep_count),avg(cd_dep_count),cnt2,min(cd_dep_employed_count),max(cd_dep_employed_count),avg(cd_dep_employed_count),cnt3,min(cd_dep_college_count),max(cd_dep_college_count),avg(cd_dep_college_count)]
-  WholeStageCodegen (4)
+  WholeStageCodegen (6)
     HashAggregate [ca_state,cd_gender,cd_marital_status,cd_dep_count,cd_dep_employed_count,cd_dep_college_count,count,min,max,sum,count,min,max,sum,count,min,max,sum,count] [count(1),min(cd_dep_count),max(cd_dep_count),avg(cd_dep_count),min(cd_dep_employed_count),max(cd_dep_employed_count),avg(cd_dep_employed_count),min(cd_dep_college_count),max(cd_dep_college_count),avg(cd_dep_college_count),cnt1,min(cd_dep_count),max(cd_dep_count),avg(cd_dep_count),cnt2,min(cd_dep_employed_count),max(cd_dep_employed_count),avg(cd_dep_employed_count),cnt3,min(cd_dep_college_count),max(cd_dep_college_count),avg(cd_dep_college_count),count,min,max,sum,count,min,max,sum,count,min,max,sum,count]
       CometColumnarToRow
         InputAdapter
           CometColumnarExchange [ca_state,cd_gender,cd_marital_status,cd_dep_count,cd_dep_employed_count,cd_dep_college_count] #1
-            WholeStageCodegen (3)
+            WholeStageCodegen (5)
               HashAggregate [ca_state,cd_gender,cd_marital_status,cd_dep_count,cd_dep_employed_count,cd_dep_college_count] [count,min,max,sum,count,min,max,sum,count,min,max,sum,count,count,min,max,sum,count,min,max,sum,count,min,max,sum,count]
                 Project [ca_state,cd_gender,cd_marital_status,cd_dep_count,cd_dep_employed_count,cd_dep_college_count]
                   BroadcastHashJoin [c_current_cdemo_sk,cd_demo_sk]
@@ -25,10 +25,12 @@ TakeOrderedAndProject [ca_state,cd_gender,cd_marital_status,cd_dep_count,cd_dep_
                                             CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales [ss_customer_sk,ss_sold_date_sk]
                                               SubqueryBroadcast [d_date_sk] #1
                                                 BroadcastExchange #3
-                                                  CometNativeColumnarToRow
-                                                    CometProject [d_date_sk]
-                                                      CometFilter [d_date_sk,d_year,d_qoy]
-                                                        CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_qoy]
+                                                  WholeStageCodegen (1)
+                                                    CometColumnarToRow
+                                                      InputAdapter
+                                                        CometProject [d_date_sk]
+                                                          CometFilter [d_date_sk,d_year,d_qoy]
+                                                            CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_qoy]
                                             CometBroadcastExchange [d_date_sk] #4
                                               CometProject [d_date_sk]
                                                 CometFilter [d_date_sk,d_year,d_qoy]
@@ -55,13 +57,17 @@ TakeOrderedAndProject [ca_state,cd_gender,cd_marital_status,cd_dep_count,cd_dep_
                                             ReusedExchange [d_date_sk] #4
                         InputAdapter
                           BroadcastExchange #7
-                            CometNativeColumnarToRow
-                              CometProject [ca_state] [ca_address_sk,ca_state]
-                                CometFilter [ca_address_sk,ca_state]
-                                  CometScan [native_iceberg_compat] parquet spark_catalog.default.customer_address [ca_address_sk,ca_state]
+                            WholeStageCodegen (3)
+                              CometColumnarToRow
+                                InputAdapter
+                                  CometProject [ca_state] [ca_address_sk,ca_state]
+                                    CometFilter [ca_address_sk,ca_state]
+                                      CometScan [native_iceberg_compat] parquet spark_catalog.default.customer_address [ca_address_sk,ca_state]
                     InputAdapter
                       BroadcastExchange #8
-                        CometNativeColumnarToRow
-                          CometProject [cd_gender,cd_marital_status] [cd_demo_sk,cd_gender,cd_marital_status,cd_dep_count,cd_dep_employed_count,cd_dep_college_count]
-                            CometFilter [cd_demo_sk,cd_gender,cd_marital_status,cd_dep_count,cd_dep_employed_count,cd_dep_college_count]
-                              CometScan [native_iceberg_compat] parquet spark_catalog.default.customer_demographics [cd_demo_sk,cd_gender,cd_marital_status,cd_dep_count,cd_dep_employed_count,cd_dep_college_count]
+                        WholeStageCodegen (4)
+                          CometColumnarToRow
+                            InputAdapter
+                              CometProject [cd_gender,cd_marital_status] [cd_demo_sk,cd_gender,cd_marital_status,cd_dep_count,cd_dep_employed_count,cd_dep_college_count]
+                                CometFilter [cd_demo_sk,cd_gender,cd_marital_status,cd_dep_count,cd_dep_employed_count,cd_dep_college_count]
+                                  CometScan [native_iceberg_compat] parquet spark_catalog.default.customer_demographics [cd_demo_sk,cd_gender,cd_marital_status,cd_dep_count,cd_dep_employed_count,cd_dep_college_count]

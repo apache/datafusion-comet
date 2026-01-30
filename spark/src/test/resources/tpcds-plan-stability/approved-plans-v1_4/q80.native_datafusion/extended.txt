@@ -1,4 +1,4 @@
-CometNativeColumnarToRow
+CometColumnarToRow
 +- CometTakeOrderedAndProject
    +- CometHashAggregate
       +- CometExchange
@@ -25,7 +25,7 @@ CometNativeColumnarToRow
                   :              :     :     :     :     :           +-  Scan parquet spark_catalog.default.store_sales [COMET: Native DataFusion scan does not support subqueries/dynamic pruning]
                   :              :     :     :     :     :                 +- SubqueryBroadcast
                   :              :     :     :     :     :                    +- BroadcastExchange
-                  :              :     :     :     :     :                       +- CometNativeColumnarToRow
+                  :              :     :     :     :     :                       +- CometColumnarToRow
                   :              :     :     :     :     :                          +- CometProject
                   :              :     :     :     :     :                             +- CometFilter
                   :              :     :     :     :     :                                +- CometNativeScan parquet spark_catalog.default.date_dim

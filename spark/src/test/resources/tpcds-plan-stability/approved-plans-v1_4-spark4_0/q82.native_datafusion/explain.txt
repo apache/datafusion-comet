@@ -1,5 +1,5 @@
 == Physical Plan ==
-CometNativeColumnarToRow (26)
+* CometColumnarToRow (26)
 +- CometTakeOrderedAndProject (25)
    +- CometHashAggregate (24)
       +- CometColumnarExchange (23)
@@ -11,7 +11,7 @@ CometNativeColumnarToRow (26)
                   :     +- * BroadcastHashJoin Inner BuildRight (13)
                   :        :- * Project (11)
                   :        :  +- * BroadcastHashJoin Inner BuildRight (10)
-                  :        :     :- CometNativeColumnarToRow (4)
+                  :        :     :- * CometColumnarToRow (4)
                   :        :     :  +- CometProject (3)
                   :        :     :     +- CometFilter (2)
                   :        :     :        +- CometNativeScan parquet spark_catalog.default.item (1)
@@ -21,7 +21,7 @@ CometNativeColumnarToRow (26)
                   :        :              +- * ColumnarToRow (6)
                   :        :                 +- Scan parquet spark_catalog.default.inventory (5)
                   :        +- ReusedExchange (12)
-                  +- CometNativeColumnarToRow (19)
+                  +- * CometColumnarToRow (19)
                      +- CometProject (18)
                         +- CometFilter (17)
                            +- CometNativeScan parquet spark_catalog.default.store_sales (16)
@@ -42,7 +42,7 @@ Condition : ((((isnotnull(i_current_price#4) AND (i_current_price#4 >= 62.00)) A
 Input [5]: [i_item_sk#1, i_item_id#2, i_item_desc#3, i_current_price#4, i_manufact_id#5]
 Arguments: [i_item_sk#1, i_item_id#6, i_item_desc#3, i_current_price#4], [i_item_sk#1, static_invoke(CharVarcharCodegenUtils.readSidePadding(i_item_id#2, 16)) AS i_item_id#6, i_item_desc#3, i_current_price#4]
 
-(4) CometNativeColumnarToRow
+(4) CometColumnarToRow [codegen id : 3]
 Input [4]: [i_item_sk#1, i_item_id#6, i_item_desc#3, i_current_price#4]
 
 (5) Scan parquet spark_catalog.default.inventory
@@ -68,26 +68,26 @@ Input [3]: [inv_item_sk#7, inv_quantity_on_hand#8, inv_date_sk#9]
 Input [2]: [inv_item_sk#7, inv_date_sk#9]
 Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint)),false), [plan_id=1]
 
-(10) BroadcastHashJoin [codegen id : 2]
+(10) BroadcastHashJoin [codegen id : 3]
 Left keys [1]: [i_item_sk#1]
 Right keys [1]: [inv_item_sk#7]
 Join type: Inner
 Join condition: None
 
-(11) Project [codegen id : 2]
+(11) Project [codegen id : 3]
 Output [5]: [i_item_sk#1, i_item_id#6, i_item_desc#3, i_current_price#4, inv_date_sk#9]
 Input [6]: [i_item_sk#1, i_item_id#6, i_item_desc#3, i_current_price#4, inv_item_sk#7, inv_date_sk#9]
 
 (12) ReusedExchange [Reuses operator id: 31]
 Output [1]: [d_date_sk#11]
 
-(13) BroadcastHashJoin [codegen id : 2]
+(13) BroadcastHashJoin [codegen id : 3]
 Left keys [1]: [inv_date_sk#9]
 Right keys [1]: [d_date_sk#11]
 Join type: Inner
 Join condition: None
 
-(14) Project [codegen id : 2]
+(14) Project [codegen id : 3]
 Output [4]: [i_item_sk#1, i_item_id#6, i_item_desc#3, i_current_price#4]
 Input [6]: [i_item_sk#1, i_item_id#6, i_item_desc#3, i_current_price#4, inv_date_sk#9, d_date_sk#11]
 
@@ -110,20 +110,20 @@ Condition : isnotnull(ss_item_sk#12)
 Input [2]: [ss_item_sk#12, ss_sold_date_sk#13]
 Arguments: [ss_item_sk#12], [ss_item_sk#12]
 
-(19) CometNativeColumnarToRow
+(19) CometColumnarToRow
 Input [1]: [ss_item_sk#12]
 
-(20) BroadcastHashJoin [codegen id : 3]
+(20) BroadcastHashJoin [codegen id : 4]
 Left keys [1]: [i_item_sk#1]
 Right keys [1]: [ss_item_sk#12]
 Join type: Inner
 Join condition: None
 
-(21) Project [codegen id : 3]
+(21) Project [codegen id : 4]
 Output [3]: [i_item_id#6, i_item_desc#3, i_current_price#4]
 Input [5]: [i_item_sk#1, i_item_id#6, i_item_desc#3, i_current_price#4, ss_item_sk#12]
 
-(22) HashAggregate [codegen id : 3]
+(22) HashAggregate [codegen id : 4]
 Input [3]: [i_item_id#6, i_item_desc#3, i_current_price#4]
 Keys [3]: [i_item_id#6, i_item_desc#3, i_current_price#4]
 Functions: []
@@ -143,14 +143,14 @@ Functions: []
 Input [3]: [i_item_id#6, i_item_desc#3, i_current_price#4]
 Arguments: TakeOrderedAndProject(limit=100, orderBy=[i_item_id#6 ASC NULLS FIRST], output=[i_item_id#6,i_item_desc#3,i_current_price#4]), [i_item_id#6, i_item_desc#3, i_current_price#4], 100, 0, [i_item_id#6 ASC NULLS FIRST], [i_item_id#6, i_item_desc#3, i_current_price#4]
 
-(26) CometNativeColumnarToRow
+(26) CometColumnarToRow [codegen id : 5]
 Input [3]: [i_item_id#6, i_item_desc#3, i_current_price#4]
 
 ===== Subqueries =====
 
 Subquery:1 Hosting operator id = 5 Hosting Expression = inv_date_sk#9 IN dynamicpruning#10
 BroadcastExchange (31)
-+- CometNativeColumnarToRow (30)
++- * CometColumnarToRow (30)
    +- CometProject (29)
       +- CometFilter (28)
          +- CometNativeScan parquet spark_catalog.default.date_dim (27)
@@ -171,7 +171,7 @@ Condition : (((isnotnull(d_date#14) AND (d_date#14 >= 2000-05-25)) AND (d_date#1
 Input [2]: [d_date_sk#11, d_date#14]
 Arguments: [d_date_sk#11], [d_date_sk#11]
 
-(30) CometNativeColumnarToRow
+(30) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#11]
 
 (31) BroadcastExchange
