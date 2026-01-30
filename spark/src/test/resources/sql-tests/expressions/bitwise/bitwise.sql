@@ -73,7 +73,7 @@ SELECT bit_get(i, pos) FROM test_bit_get
 query
 SELECT 1111 & 2, 1111 | 2, 1111 ^ 2
 
-query ignore(https://github.com/apache/datafusion-comet/issues/3341)
+query spark_answer_only
 SELECT bit_count(0), bit_count(7), bit_count(-1)
 
 query spark_answer_only
