@@ -304,9 +304,9 @@ object CometConf extends ShimCometConf {
         "Whether to enable native columnar to row conversion. When enabled, Comet will use " +
           "native Rust code to convert Arrow columnar data to Spark UnsafeRow format instead " +
           "of the JVM implementation. This can improve performance for queries that need to " +
-          "convert between columnar and row formats.")
+          "convert between columnar and row formats. This is an experimental feature.")
       .booleanConf
-      .createWithDefault(true)
+      .createWithDefault(false)
 
   val COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.sortMergeJoinWithJoinFilter.enabled")
