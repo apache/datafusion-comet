@@ -25,15 +25,17 @@ mkdir temp
 cp -rf source/* temp/
 
 # Add user guide from published releases
-rm -rf comet-0.8
-rm -rf comet-0.9
 rm -rf comet-0.10
 rm -rf comet-0.11
 rm -rf comet-0.12
 python3 generate-versions.py
 
-# Remove overview pages (this used to be part of the user guide but is now a top level page)
-rm temp/user-guide/0.9/overview.md 2> /dev/null
-rm temp/user-guide/0.8/overview.md 2> /dev/null
+# Generate dynamic content (configs, compatibility matrices) for latest docs
+# This runs GenerateDocs against the temp copy, not source files
+echo "Generating dynamic documentation content..."
+cd ..
+./mvnw -q package -Pgenerate-docs -DskipTests -Dmaven.test.skip=true \
+  -Dexec.arguments="$(pwd)/docs/temp/user-guide/latest/"
+cd docs
 
 make SOURCEDIR=`pwd`/temp html
