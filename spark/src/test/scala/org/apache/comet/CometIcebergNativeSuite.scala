@@ -2357,8 +2357,16 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
         val dppCount = "dynamicpruningexpression\\(".r.findAllIn(planStr).length
         assert(dppCount == 2, s"Expected 2 DPP expressions but found $dppCount in:\n$planStr")
 
-        // Should work with native Iceberg scan
-        checkIcebergNativeScan(query)
+        // Verify native Iceberg scan is used and DPP actually pruned partitions
+        val (_, cometPlan) = checkSparkAnswer(query)
+        val icebergScans = collectIcebergNativeScans(cometPlan)
+        assert(
+          icebergScans.nonEmpty,
+          s"Expected CometIcebergNativeScanExec but found none. Plan:\n$cometPlan")
+        // With 4 data values x 8 buckets = up to 32 partitions total
+        // DPP on (data='1970-01-02', bucket(id=1)) should prune to 1
+        val numPartitions = icebergScans.head.numPartitions
+        assert(numPartitions == 1, s"Expected DPP to prune to 1 partition but got $numPartitions")
 
         spark.sql("DROP TABLE runtime_cat.db.multi_dpp_fact")
       }

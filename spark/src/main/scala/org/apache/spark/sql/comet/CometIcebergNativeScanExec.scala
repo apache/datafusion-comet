@@ -135,11 +135,14 @@ case class CometIcebergNativeScanExec(
   private def setInSubqueryResult(e: InSubqueryExec, result: Array[_]): Unit = {
     val fields = e.getClass.getDeclaredFields
     // Field name is mangled by Scala compiler, e.g. "org$apache$...$InSubqueryExec$$result"
-    fields.find(f => f.getName.endsWith("$result") && !f.getName.contains("Broadcast")).foreach {
-      resultField =>
-        resultField.setAccessible(true)
-        resultField.set(e, result)
-    }
+    val resultField = fields.find(f => f.getName.endsWith("$result") && !f.getName.contains("Broadcast"))
+      .getOrElse {
+        throw new IllegalStateException(
+          s"Cannot find 'result' field in ${e.getClass.getName}. " +
+            "Spark version may be incompatible with Comet's DPP implementation.")
+      }
+    resultField.setAccessible(true)
+    resultField.set(e, result)
   }
 
   def commonData: Array[Byte] = splitData._1
@@ -249,8 +252,6 @@ case class CometIcebergNativeScanExec(
 
   /** Executes using split mode RDD - split data is computed lazily on first access. */
   override def doExecuteColumnar(): RDD[ColumnarBatch] = {
-    // Access perPartitionData triggers lazy serialization
-    // DPP is guaranteed resolved because doPrepare() already ran
     val nativeMetrics = CometMetricNode.fromCometPlan(this)
     CometIcebergSplitRDD(sparkContext, commonData, perPartitionData, output.length, nativeMetrics)
   }
