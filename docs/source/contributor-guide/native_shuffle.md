@@ -52,8 +52,7 @@ Native shuffle (`CometExchange`) is selected when all of the following condition
    - `HashPartitioning`
    - `RangePartitioning`
    - `SinglePartition`
-
-   `RoundRobinPartitioning` requires JVM shuffle.
+   - `RoundRobinPartitioning`
 
 4. **Supported partition key types**: For `HashPartitioning` and `RangePartitioning`, partition
    keys must be primitive types. Complex types (struct, array, map) as partition keys require
@@ -131,7 +130,7 @@ Native shuffle (`CometExchange`) is selected when all of the following condition
 2. **Native execution**: `CometExec.getCometIterator()` executes the plan in Rust.
 
 3. **Partitioning**: `ShuffleWriterExec` receives batches and routes to the appropriate partitioner:
-   - `MultiPartitionShuffleRepartitioner`: For hash/range partitioning
+   - `MultiPartitionShuffleRepartitioner`: For hash/range/round-robin partitioning
    - `SinglePartitionShufflePartitioner`: For single partition (simpler path)
 
 4. **Buffering and spilling**: The partitioner buffers rows per partition. When memory pressure
@@ -187,6 +186,19 @@ For range partitioning:
 The simplest case: all rows go to partition 0. Uses `SinglePartitionShufflePartitioner` which
 simply concatenates batches to reach the configured batch size.
 
+### Round Robin Partitioning
+
+Comet implements round robin partitioning using hash-based assignment for determinism:
+
+1. Computes a Murmur3 hash of columns (using seed 42)
+2. Assigns partitions directly using the hash: `partition_id = hash % num_partitions`
+
+This approach guarantees determinism across retries, which is critical for fault tolerance.
+However, unlike true round robin which cycles through partitions row-by-row, hash-based
+assignment only provides even distribution when the data has sufficient variation in the
+hashed columns. Data with low cardinality or identical values may result in skewed partition
+sizes.
+
 ## Memory Management
 
 Native shuffle uses DataFusion's memory management with spilling support:
@@ -235,8 +247,8 @@ independently compressed, allowing parallel decompression during reads.
 | ------------------- | -------------------------------------- | --------------------------------- |
 | Input format        | Columnar (direct from Comet operators) | Row-based (via ColumnarToRowExec) |
 | Partitioning logic  | Rust implementation                    | Spark's partitioner               |
-| Supported schemes   | Hash, Range, Single                    | Hash, Range, Single, RoundRobin   |
-| Partition key types | Primitives only                        | Any type                          |
+| Supported schemes   | Hash, Range, Single, RoundRobin        | Hash, Range, Single, RoundRobin   |
+| Partition key types | Primitives only (Hash, Range)          | Any type                          |
 | Performance         | Higher (no format conversion)          | Lower (columnar→row→columnar)     |
 | Writer variants     | Single path                            | Bypass (hash) and sort-based      |
 
