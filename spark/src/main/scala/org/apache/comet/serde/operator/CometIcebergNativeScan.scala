@@ -700,10 +700,9 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     // If metadata is None, this is a programming error - metadata should have been extracted
     // in CometScanRule before creating CometBatchScanExec
     val metadata = scan.nativeIcebergScanMetadata.getOrElse {
-      logError(
+      throw new IllegalStateException(
         "Programming error: CometBatchScanExec.nativeIcebergScanMetadata is None. " +
           "Metadata should have been extracted in CometScanRule.")
-      return None
     }
 
     // Use pre-extracted metadata (no reflection needed)
@@ -979,11 +978,11 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       }
     } catch {
       case e: Exception =>
-        val msg =
-          "Iceberg reflection failure: Failed to extract FileScanTasks from Iceberg scan RDD: " +
-            s"${e.getMessage}"
-        logError(msg, e)
-        return None
+        // CometScanRule already validated this scan should use native execution.
+        // Failure here is a programming error, not a graceful fallback scenario.
+        throw new IllegalStateException(
+          s"Native Iceberg scan serialization failed unexpectedly: ${e.getMessage}",
+          e)
     }
 
     // Log deduplication summary
