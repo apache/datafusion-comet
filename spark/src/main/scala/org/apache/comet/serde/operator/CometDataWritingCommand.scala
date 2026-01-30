@@ -25,11 +25,13 @@ import java.util.Locale
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.SparkException
+import org.apache.spark.sql.{SaveMode, SparkSession}
 import org.apache.spark.sql.comet.{CometNativeExec, CometNativeWriteExec}
 import org.apache.spark.sql.execution.command.DataWritingCommandExec
 import org.apache.spark.sql.execution.datasources.{InsertIntoHadoopFsRelationCommand, WriteFilesExec}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.internal.SQLConf.PartitionOverwriteMode
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.withInfo
@@ -67,8 +69,12 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
               return Unsupported(Some("Bucketed writes are not supported"))
             }
 
+            if (SQLConf.get.partitionOverwriteMode == PartitionOverwriteMode.DYNAMIC) {
+              return Unsupported(Some("Dynamic partition overwrite is not supported"))
+            }
+
             if (cmd.partitionColumns.nonEmpty || cmd.staticPartitions.nonEmpty) {
-              return Unsupported(Some("Partitioned writes are not supported"))
+              return Incompatible(Some("Partitioned writes are highly experimental"))
             }
 
             val codec = parseCompressionCodec(cmd)
@@ -133,6 +139,7 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
         .setOutputPath(outputPath)
         .setCompression(codec)
         .addAllColumnNames(cmd.query.output.map(_.name).asJava)
+        .addAllPartitionColumns(cmd.partitionColumns.map(_.name).asJava)
       // Note: work_dir, job_id, and task_attempt_id will be set at execution time
       // in CometNativeWriteExec, as they depend on the Spark task context
 
@@ -169,6 +176,14 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
     val cmd = op.cmd.asInstanceOf[InsertIntoHadoopFsRelationCommand]
     val outputPath = cmd.outputPath.toString
 
+//    TODO : support dynamic partition overwrite
+    if (cmd.mode == SaveMode.Overwrite) {
+      val fs = cmd.outputPath.getFileSystem(SparkSession.active.sparkContext.hadoopConfiguration)
+      if (fs.exists(cmd.outputPath)) {
+        fs.delete(cmd.outputPath, true)
+      }
+    }
+
     // Get the child plan from the WriteFilesExec or use the child directly
     val childPlan = op.child match {
       case writeFiles: WriteFilesExec =>
@@ -190,11 +205,7 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
           committerClass.getConstructor(classOf[String], classOf[String], classOf[Boolean])
         Some(
           constructor
-            .newInstance(
-              jobId,
-              outputPath,
-              java.lang.Boolean.FALSE // dynamicPartitionOverwrite = false for now
-            )
+            .newInstance(jobId, outputPath, false: java.lang.Boolean)
             .asInstanceOf[org.apache.spark.internal.io.FileCommitProtocol])
       } catch {
         case e: Exception =>
