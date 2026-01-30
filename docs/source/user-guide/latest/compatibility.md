@@ -85,6 +85,32 @@ this can be overridden by setting `spark.comet.regexp.allowIncompatible=true`.
 Comet's support for window functions is incomplete and known to be incorrect. It is disabled by default and
 should not be used in production. The feature will be enabled in a future release. Tracking issue: [#2721](https://github.com/apache/datafusion-comet/issues/2721).
 
+## Round-Robin Partitioning
+
+Comet's native shuffle implementation of round-robin partitioning (`df.repartition(n)`) is not compatible with
+Spark's implementation and is disabled by default. It can be enabled by setting
+`spark.comet.native.shuffle.partitioning.roundrobin.enabled=true`.
+
+**Why the incompatibility exists:**
+
+Spark's round-robin partitioning sorts rows by their binary `UnsafeRow` representation before assigning them to
+partitions. This ensures deterministic output for fault tolerance (task retries produce identical results).
+Comet uses Arrow format internally, which has a completely different binary layout than `UnsafeRow`, making it
+impossible to match Spark's exact partition assignments.
+
+**Comet's approach:**
+
+Instead of true round-robin assignment, Comet implements round-robin as hash partitioning on ALL columns. This
+achieves the same semantic goals:
+
+- **Even distribution**: Rows are distributed evenly across partitions (as long as the hash varies sufficiently -
+  in some cases there could be skew)
+- **Deterministic**: Same input always produces the same partition assignments (important for fault tolerance)
+- **No semantic grouping**: Unlike hash partitioning on specific columns, this doesn't group related rows together
+
+The only difference is that Comet's partition assignments will differ from Spark's. When results are sorted,
+they will be identical to Spark. Unsorted results may have different row ordering.
+
 ## Cast
 
 Cast operations in Comet fall into three levels of support:
@@ -100,110 +126,17 @@ Cast operations in Comet fall into three levels of support:
 
 ### Legacy Mode
 
-<!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
-
 <!--BEGIN:CAST_LEGACY_TABLE-->
-<!-- prettier-ignore-start -->
-| | binary | boolean | byte | date | decimal | double | float | integer | long | short | string | timestamp | timestamp_ntz |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| binary | - | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | C | N/A | N/A |
-| boolean | N/A | - | C | N/A | U | C | C | C | C | C | C | U | N/A |
-| byte | U | C | - | N/A | C | C | C | C | C | C | C | U | N/A |
-| date | N/A | U | U | - | U | U | U | U | U | U | C | U | U |
-| decimal | N/A | C | C | N/A | - | C | C | C | C | C | C | U | N/A |
-| double | N/A | C | C | N/A | I | - | C | C | C | C | C | U | N/A |
-| float | N/A | C | C | N/A | I | C | - | C | C | C | C | U | N/A |
-| integer | U | C | C | N/A | C | C | C | - | C | C | C | U | N/A |
-| long | U | C | C | N/A | C | C | C | C | - | C | C | U | N/A |
-| short | U | C | C | N/A | C | C | C | C | C | - | C | U | N/A |
-| string | C | C | C | C | I | C | C | C | C | C | - | I | U |
-| timestamp | N/A | U | U | C | U | U | U | U | C | U | C | - | U |
-| timestamp_ntz | N/A | N/A | N/A | C | N/A | N/A | N/A | N/A | N/A | N/A | C | C | - |
-<!-- prettier-ignore-end -->
-
-**Notes:**
-
-- **decimal -> string**: There can be formatting differences in some case due to Spark using scientific notation where Comet does not
-- **double -> decimal**: There can be rounding differences
-- **double -> string**: There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45
-- **float -> decimal**: There can be rounding differences
-- **float -> string**: There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45
-- **string -> date**: Only supports years between 262143 BC and 262142 AD
-- **string -> decimal**: Does not support fullwidth unicode digits (e.g \\uFF10)
-  or strings containing null bytes (e.g \\u0000)
-- **string -> timestamp**: Not all valid formats are supported
 <!--END:CAST_LEGACY_TABLE-->
 
 ### Try Mode
 
-<!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
-
 <!--BEGIN:CAST_TRY_TABLE-->
-<!-- prettier-ignore-start -->
-| | binary | boolean | byte | date | decimal | double | float | integer | long | short | string | timestamp | timestamp_ntz |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| binary | - | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | C | N/A | N/A |
-| boolean | N/A | - | C | N/A | U | C | C | C | C | C | C | U | N/A |
-| byte | U | C | - | N/A | C | C | C | C | C | C | C | U | N/A |
-| date | N/A | U | U | - | U | U | U | U | U | U | C | U | U |
-| decimal | N/A | C | C | N/A | - | C | C | C | C | C | C | U | N/A |
-| double | N/A | C | C | N/A | I | - | C | C | C | C | C | U | N/A |
-| float | N/A | C | C | N/A | I | C | - | C | C | C | C | U | N/A |
-| integer | U | C | C | N/A | C | C | C | - | C | C | C | U | N/A |
-| long | U | C | C | N/A | C | C | C | C | - | C | C | U | N/A |
-| short | U | C | C | N/A | C | C | C | C | C | - | C | U | N/A |
-| string | C | C | C | C | I | C | C | C | C | C | - | I | U |
-| timestamp | N/A | U | U | C | U | U | U | U | C | U | C | - | U |
-| timestamp_ntz | N/A | N/A | N/A | C | N/A | N/A | N/A | N/A | N/A | N/A | C | C | - |
-<!-- prettier-ignore-end -->
-
-**Notes:**
-
-- **decimal -> string**: There can be formatting differences in some case due to Spark using scientific notation where Comet does not
-- **double -> decimal**: There can be rounding differences
-- **double -> string**: There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45
-- **float -> decimal**: There can be rounding differences
-- **float -> string**: There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45
-- **string -> date**: Only supports years between 262143 BC and 262142 AD
-- **string -> decimal**: Does not support fullwidth unicode digits (e.g \\uFF10)
-  or strings containing null bytes (e.g \\u0000)
-- **string -> timestamp**: Not all valid formats are supported
 <!--END:CAST_TRY_TABLE-->
 
 ### ANSI Mode
 
-<!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
-
 <!--BEGIN:CAST_ANSI_TABLE-->
-<!-- prettier-ignore-start -->
-| | binary | boolean | byte | date | decimal | double | float | integer | long | short | string | timestamp | timestamp_ntz |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| binary | - | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | C | N/A | N/A |
-| boolean | N/A | - | C | N/A | U | C | C | C | C | C | C | U | N/A |
-| byte | U | C | - | N/A | C | C | C | C | C | C | C | U | N/A |
-| date | N/A | U | U | - | U | U | U | U | U | U | C | U | U |
-| decimal | N/A | C | C | N/A | - | C | C | C | C | C | C | U | N/A |
-| double | N/A | C | C | N/A | I | - | C | C | C | C | C | U | N/A |
-| float | N/A | C | C | N/A | I | C | - | C | C | C | C | U | N/A |
-| integer | U | C | C | N/A | C | C | C | - | C | C | C | U | N/A |
-| long | U | C | C | N/A | C | C | C | C | - | C | C | U | N/A |
-| short | U | C | C | N/A | C | C | C | C | C | - | C | U | N/A |
-| string | C | C | C | C | I | C | C | C | C | C | - | I | U |
-| timestamp | N/A | U | U | C | U | U | U | U | C | U | C | - | U |
-| timestamp_ntz | N/A | N/A | N/A | C | N/A | N/A | N/A | N/A | N/A | N/A | C | C | - |
-<!-- prettier-ignore-end -->
-
-**Notes:**
-
-- **decimal -> string**: There can be formatting differences in some case due to Spark using scientific notation where Comet does not
-- **double -> decimal**: There can be rounding differences
-- **double -> string**: There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45
-- **float -> decimal**: There can be rounding differences
-- **float -> string**: There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45
-- **string -> date**: Only supports years between 262143 BC and 262142 AD
-- **string -> decimal**: Does not support fullwidth unicode digits (e.g \\uFF10)
-  or strings containing null bytes (e.g \\u0000)
-- **string -> timestamp**: ANSI mode not supported
 <!--END:CAST_ANSI_TABLE-->
 
 See the [tracking issue](https://github.com/apache/datafusion-comet/issues/286) for more details.

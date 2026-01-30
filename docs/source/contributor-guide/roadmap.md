@@ -42,8 +42,8 @@ more Spark SQL tests and fully implementing ANSI support ([#313]) for all suppor
 
 ### Removing the native_comet scan implementation
 
-We are working towards deprecating ([#2186]) and removing ([#2177]) the `native_comet` scan implementation, which
-is the original scan implementation that uses mutable buffers (which is incompatible with best practices around
+The `native_comet` scan implementation is now deprecated and will be removed in a future release ([#2186], [#2177]).
+This is the original scan implementation that uses mutable buffers (which is incompatible with best practices around
 Arrow FFI) and does not support complex types.
 
 Now that the default `auto` scan mode uses `native_iceberg_compat` (which is based on DataFusion's `DataSourceExec`),

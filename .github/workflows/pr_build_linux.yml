@@ -78,7 +78,7 @@ jobs:
           jdk-version: 17  # JDK only needed for common module proto generation
 
       - name: Restore Cargo cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: |
             ~/.cargo/registry
@@ -96,14 +96,14 @@ jobs:
           cargo build --profile ci
 
       - name: Upload native library
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: native-lib-linux
           path: native/target/ci/libcomet.so
           retention-days: 1
 
       - name: Save Cargo cache
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         if: github.ref == 'refs/heads/main'
         with:
           path: |
@@ -129,7 +129,7 @@ jobs:
           jdk-version: 17
 
       - name: Restore Cargo cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: |
             ~/.cargo/registry
@@ -144,7 +144,7 @@ jobs:
         uses: ./.github/actions/rust-test
 
       - name: Save Cargo cache
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         if: github.ref == 'refs/heads/main'
         with:
           path: |
@@ -169,19 +169,19 @@ jobs:
           - name: "Spark 3.5.5, JDK 17, Scala 2.13"
             java_version: "17"
             maven_opts: "-Pspark-3.5 -Dspark.version=3.5.5 -Pscala-2.13"
-            scan_impl: "native_comet"
+            scan_impl: "auto"
 
           - name: "Spark 3.5.6, JDK 17, Scala 2.13"
             java_version: "17"
             maven_opts: "-Pspark-3.5 -Dspark.version=3.5.6 -Pscala-2.13"
             scan_impl: "native_comet"
 
-          - name: "Spark 3.5, JDK 17, Scala 2.12 native_datafusion"
+          - name: "Spark 3.5, JDK 17, Scala 2.12"
             java_version: "17"
             maven_opts: "-Pspark-3.5 -Pscala-2.12"
             scan_impl: "native_datafusion"
 
-          - name: "Spark 3.5, JDK 17, Scala 2.12 native_iceberg_compat"
+          - name: "Spark 3.5, JDK 17, Scala 2.12"
             java_version: "17"
             maven_opts: "-Pspark-3.5 -Pscala-2.12"
             scan_impl: "native_iceberg_compat"
@@ -189,7 +189,7 @@ jobs:
           - name: "Spark 4.0, JDK 17"
             java_version: "17"
             maven_opts: "-Pspark-4.0"
-            scan_impl: "native_comet"
+            scan_impl: "auto"
         suite:
           - name: "fuzz"
             value: |
@@ -202,6 +202,7 @@ jobs:
             value: |
               org.apache.comet.exec.CometShuffleSuite
               org.apache.comet.exec.CometShuffle4_0Suite
+              org.apache.comet.exec.CometNativeColumnarToRowSuite
               org.apache.comet.exec.CometNativeShuffleSuite
               org.apache.comet.exec.CometShuffleEncryptionSuite
               org.apache.comet.exec.CometShuffleManagerSuite
@@ -266,7 +267,7 @@ jobs:
             value: |
               org.apache.spark.sql.CometToPrettyStringSuite
       fail-fast: false
-    name: ${{ matrix.os }}/${{ matrix.profile.name }} [${{ matrix.suite.name }}]
+    name: ${{ matrix.os }}/${{ matrix.profile.name }}/${{ matrix.profile.scan_impl }} [${{ matrix.suite.name }}]
     runs-on: ${{ matrix.os }}
     container:
       image: amd64/rust
@@ -283,7 +284,7 @@ jobs:
           jdk-version: ${{ matrix.profile.java_version }}
 
       - name: Download native library
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: native-lib-linux
           # Download to release/ since Maven's -Prelease expects libcomet.so there
@@ -291,7 +292,7 @@ jobs:
 
       # Restore cargo registry cache (for any cargo commands that might run)
       - name: Cache Cargo registry
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -327,13 +328,13 @@ jobs:
           jdk-version: 11
 
       - name: Download native library
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: native-lib-linux
           path: native/target/release/
 
       - name: Cache Maven dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.m2/repository
@@ -344,14 +345,14 @@ jobs:
 
       - name: Cache TPC-H data
         id: cache-tpch
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ./tpch
           key: tpch-${{ hashFiles('.github/workflows/pr_build_linux.yml') }}
 
       - name: Build project
         run: |
-          ./mvnw -B -Prelease compile test-compile -DskipTests
+          ./mvnw -B -Prelease install -DskipTests
 
       - name: Generate TPC-H data (SF=1)
         if: steps.cache-tpch.outputs.cache-hit != 'true'
@@ -383,13 +384,13 @@ jobs:
           jdk-version: 11
 
       - name: Download native library
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: native-lib-linux
           path: native/target/release/
 
       - name: Cache Maven dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.m2/repository
@@ -400,14 +401,14 @@ jobs:
 
       - name: Cache TPC-DS data
         id: cache-tpcds
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ./tpcds-sf-1
           key: tpcds-${{ hashFiles('.github/workflows/pr_build_linux.yml') }}
 
       - name: Build project
         run: |
-          ./mvnw -B -Prelease compile test-compile -DskipTests
+          ./mvnw -B -Prelease install -DskipTests
 
       - name: Checkout tpcds-kit
         if: steps.cache-tpcds.outputs.cache-hit != 'true'
