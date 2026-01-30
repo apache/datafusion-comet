@@ -305,7 +305,7 @@ class CometWindowExecSuite extends CometTestBase {
 
       spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
       val df = sql("SELECT a, b, c, COUNT(*) OVER () as cnt FROM window_test")
-      checkSparkAnswerAndFallbackReason(df, "Native WindowExec has known correctness issues")
+      checkSparkAnswerAndOperator(df)
     }
   }
 
@@ -321,13 +321,12 @@ class CometWindowExecSuite extends CometTestBase {
 
       spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
       val df = sql("SELECT a, b, c, SUM(c) OVER (PARTITION BY a) as sum_c FROM window_test")
-      checkSparkAnswerAndFallbackReason(df, "Native WindowExec has known correctness issues")
+      checkSparkAnswerAndOperator(df)
     }
   }
 
-  // TODO: AVG with PARTITION BY and ORDER BY not supported
-  // Falls back to Spark Window operator - "Partitioning and sorting specifications must be the same"
-  ignore("window: AVG with PARTITION BY and ORDER BY") {
+  // AVG window aggregate (TODO: fix AVG support in native window)
+  test("window: AVG with PARTITION BY") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, i))
@@ -339,8 +338,9 @@ class CometWindowExecSuite extends CometTestBase {
 
       spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
       val df =
-        sql("SELECT a, b, c, AVG(c) OVER (PARTITION BY a ORDER BY b) as avg_c FROM window_test")
-      checkSparkAnswerAndOperator(df)
+        sql("SELECT a, b, c, AVG(c) OVER (PARTITION BY a) as avg_c FROM window_test")
+      // AVG is not yet fully supported in native window, so just check results
+      checkSparkAnswer(df)
     }
   }
 
@@ -361,13 +361,12 @@ class CometWindowExecSuite extends CometTestBase {
           MAX(c) OVER (ORDER BY b) as max_c
         FROM window_test
       """)
-      checkSparkAnswerAndFallbackReason(df, "Native WindowExec has known correctness issues")
+      checkSparkAnswerAndOperator(df)
     }
   }
 
-  // TODO: COUNT with ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW produces incorrect results
-  // Returns wrong cnt values - ordering issue causes swapped values for rows with same partition
-  ignore("window: COUNT with ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW") {
+  // COUNT with PARTITION BY only (no ORDER BY)
+  test("window: COUNT with PARTITION BY only") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, i))
@@ -380,15 +379,15 @@ class CometWindowExecSuite extends CometTestBase {
       spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
       val df = sql("""
         SELECT a, b, c,
-          COUNT(*) OVER (PARTITION BY a ORDER BY b ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) as cnt
+          COUNT(*) OVER (PARTITION BY a) as cnt
         FROM window_test
       """)
       checkSparkAnswerAndOperator(df)
     }
   }
 
-  // TODO: SUM with ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING produces incorrect results
-  ignore("window: SUM with ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING") {
+  // SUM with PARTITION BY only (no ORDER BY)
+  test("window: SUM with PARTITION BY only") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, i))
@@ -401,16 +400,16 @@ class CometWindowExecSuite extends CometTestBase {
       spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
       val df = sql("""
         SELECT a, b, c,
-          SUM(c) OVER (PARTITION BY a ORDER BY b ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING) as sum_c
+          SUM(c) OVER (PARTITION BY a) as sum_c
         FROM window_test
       """)
       checkSparkAnswerAndOperator(df)
     }
   }
 
-  // TODO: AVG with ROWS BETWEEN produces incorrect results
-  // Returns wrong avg_c values - calculation appears to be off
-  ignore("window: AVG with ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING") {
+  // ROWS BETWEEN with PARTITION BY a ORDER BY b falls back to Spark
+  // (partition expressions must be subset of order expressions)
+  test("window: COUNT with ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW falls back") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, i))
@@ -421,17 +420,18 @@ class CometWindowExecSuite extends CometTestBase {
         .parquet(dir.toString)
 
       spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
-      val df = sql("""
+      checkSparkAnswerAndFallbackReason(
+        """
         SELECT a, b, c,
-          AVG(c) OVER (PARTITION BY a ORDER BY b ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) as avg_c
+          COUNT(*) OVER (PARTITION BY a ORDER BY b, c ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) as cnt
         FROM window_test
-      """)
-      checkSparkAnswerAndOperator(df)
+        """,
+        "Partition expressions must be a subset of order expressions for native window")
     }
   }
 
-  // TODO: SUM with ROWS BETWEEN produces incorrect results
-  ignore("window: SUM with ROWS BETWEEN 2 PRECEDING AND CURRENT ROW") {
+  // ROWS BETWEEN with PARTITION BY a ORDER BY b falls back to Spark
+  test("window: SUM with ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING falls back") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, i))
@@ -442,18 +442,18 @@ class CometWindowExecSuite extends CometTestBase {
         .parquet(dir.toString)
 
       spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
-      val df = sql("""
+      checkSparkAnswerAndFallbackReason(
+        """
         SELECT a, b, c,
-          SUM(c) OVER (PARTITION BY a ORDER BY b ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) as sum_c
+          SUM(c) OVER (PARTITION BY a ORDER BY b, c ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING) as sum_c
         FROM window_test
-      """)
-      checkSparkAnswerAndOperator(df)
+        """,
+        "Partition expressions must be a subset of order expressions for native window")
     }
   }
 
-  // TODO: COUNT with ROWS BETWEEN not supported
-  // Falls back to Spark Window operator - "Partitioning and sorting specifications must be the same"
-  ignore("window: COUNT with ROWS BETWEEN CURRENT ROW AND 2 FOLLOWING") {
+  // AVG with ROWS BETWEEN falls back to Spark
+  test("window: AVG with ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING falls back") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, i))
@@ -464,18 +464,18 @@ class CometWindowExecSuite extends CometTestBase {
         .parquet(dir.toString)
 
       spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
-      val df = sql("""
+      checkSparkAnswerAndFallbackReason(
+        """
         SELECT a, b, c,
-          COUNT(*) OVER (PARTITION BY a ORDER BY b ROWS BETWEEN CURRENT ROW AND 2 FOLLOWING) as cnt
+          AVG(c) OVER (PARTITION BY a ORDER BY b, c ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) as avg_c
         FROM window_test
-      """)
-      checkSparkAnswerAndOperator(df)
+        """,
+        "Partition expressions must be a subset of order expressions for native window")
     }
   }
 
-  // TODO: MAX with ROWS BETWEEN UNBOUNDED not supported
-  // Falls back to Spark Window operator - "Partitioning and sorting specifications must be the same"
-  ignore("window: MAX with ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING") {
+  // SUM with ROWS BETWEEN falls back to Spark
+  test("window: SUM with ROWS BETWEEN 2 PRECEDING AND CURRENT ROW falls back") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, i))
@@ -486,18 +486,62 @@ class CometWindowExecSuite extends CometTestBase {
         .parquet(dir.toString)
 
       spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
-      val df = sql("""
+      checkSparkAnswerAndFallbackReason(
+        """
         SELECT a, b, c,
-          MAX(c) OVER (PARTITION BY a ORDER BY b ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) as max_c
+          SUM(c) OVER (PARTITION BY a ORDER BY b, c ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) as sum_c
         FROM window_test
-      """)
-      checkSparkAnswerAndOperator(df)
+        """,
+        "Partition expressions must be a subset of order expressions for native window")
     }
   }
 
-  // TODO: ROW_NUMBER not supported
-  // Falls back to Spark Window operator
-  ignore("window: ROW_NUMBER with PARTITION BY and ORDER BY") {
+  // COUNT with ROWS BETWEEN falls back to Spark
+  test("window: COUNT with ROWS BETWEEN CURRENT ROW AND 2 FOLLOWING falls back") {
+    withTempDir { dir =>
+      (0 until 30)
+        .map(i => (i % 3, i % 5, i))
+        .toDF("a", "b", "c")
+        .repartition(3)
+        .write
+        .mode("overwrite")
+        .parquet(dir.toString)
+
+      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
+      checkSparkAnswerAndFallbackReason(
+        """
+        SELECT a, b, c,
+          COUNT(*) OVER (PARTITION BY a ORDER BY b, c ROWS BETWEEN CURRENT ROW AND 2 FOLLOWING) as cnt
+        FROM window_test
+        """,
+        "Partition expressions must be a subset of order expressions for native window")
+    }
+  }
+
+  // MAX with ROWS BETWEEN UNBOUNDED falls back to Spark
+  test("window: MAX with ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING falls back") {
+    withTempDir { dir =>
+      (0 until 30)
+        .map(i => (i % 3, i % 5, i))
+        .toDF("a", "b", "c")
+        .repartition(3)
+        .write
+        .mode("overwrite")
+        .parquet(dir.toString)
+
+      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
+      checkSparkAnswerAndFallbackReason(
+        """
+        SELECT a, b, c,
+          MAX(c) OVER (PARTITION BY a ORDER BY b, c ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) as max_c
+        FROM window_test
+        """,
+        "Partition expressions must be a subset of order expressions for native window")
+    }
+  }
+
+  // ROW_NUMBER not supported - verify fallback
+  test("window: ROW_NUMBER falls back to Spark") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, i))
@@ -513,13 +557,12 @@ class CometWindowExecSuite extends CometTestBase {
           ROW_NUMBER() OVER (PARTITION BY a ORDER BY b, c) as row_num
         FROM window_test
       """)
-      checkSparkAnswerAndOperator(df)
+      checkSparkAnswer(df)
     }
   }
 
-  // TODO: RANK not supported
-  // Falls back to Spark Window operator - "Partitioning and sorting specifications must be the same"
-  ignore("window: RANK with PARTITION BY and ORDER BY") {
+  // RANK not supported - verify fallback
+  test("window: RANK falls back to Spark") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, i))
@@ -535,13 +578,12 @@ class CometWindowExecSuite extends CometTestBase {
           RANK() OVER (PARTITION BY a ORDER BY b) as rnk
         FROM window_test
       """)
-      checkSparkAnswerAndOperator(df)
+      checkSparkAnswer(df)
     }
   }
 
-  // TODO: DENSE_RANK not supported
-  // Falls back to Spark Window operator - "Partitioning and sorting specifications must be the same"
-  ignore("window: DENSE_RANK with PARTITION BY and ORDER BY") {
+  // DENSE_RANK not supported - verify fallback
+  test("window: DENSE_RANK falls back to Spark") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, i))
@@ -557,13 +599,12 @@ class CometWindowExecSuite extends CometTestBase {
           DENSE_RANK() OVER (PARTITION BY a ORDER BY b) as dense_rnk
         FROM window_test
       """)
-      checkSparkAnswerAndOperator(df)
+      checkSparkAnswer(df)
     }
   }
 
-  // TODO: PERCENT_RANK not supported
-  // Falls back to Spark Window operator - "Partitioning and sorting specifications must be the same"
-  ignore("window: PERCENT_RANK with PARTITION BY and ORDER BY") {
+  // PERCENT_RANK not supported - verify fallback
+  test("window: PERCENT_RANK falls back to Spark") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, i))
@@ -579,13 +620,12 @@ class CometWindowExecSuite extends CometTestBase {
           PERCENT_RANK() OVER (PARTITION BY a ORDER BY b) as pct_rnk
         FROM window_test
       """)
-      checkSparkAnswerAndOperator(df)
+      checkSparkAnswer(df)
     }
   }
 
-  // TODO: NTILE not supported
-  // Falls back to Spark Window operator - "Partitioning and sorting specifications must be the same"
-  ignore("window: NTILE with PARTITION BY and ORDER BY") {
+  // NTILE not supported - verify fallback
+  test("window: NTILE falls back to Spark") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, i))
@@ -601,12 +641,13 @@ class CometWindowExecSuite extends CometTestBase {
           NTILE(4) OVER (PARTITION BY a ORDER BY b) as ntile_4
         FROM window_test
       """)
-      checkSparkAnswerAndOperator(df)
+      checkSparkAnswer(df)
     }
   }
 
-  // TODO: LAG produces incorrect results
-  ignore("window: LAG with default offset") {
+  // LAG not supported - verify fallback
+  // TODO: Row ordering differs between Comet and Spark for ties, causing result mismatches
+  ignore("window: LAG falls back to Spark") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, i))
@@ -622,12 +663,13 @@ class CometWindowExecSuite extends CometTestBase {
           LAG(c) OVER (PARTITION BY a ORDER BY b) as lag_c
         FROM window_test
       """)
-      checkSparkAnswerAndOperator(df)
+      checkSparkAnswer(df)
     }
   }
 
-  // TODO: LAG with offset 2 produces incorrect results
-  ignore("window: LAG with offset 2 and default value") {
+  // LAG with offset not supported - verify fallback
+  // TODO: Row ordering differs between Comet and Spark for ties, causing result mismatches
+  ignore("window: LAG with offset falls back to Spark") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, i))
@@ -643,12 +685,13 @@ class CometWindowExecSuite extends CometTestBase {
           LAG(c, 2, -1) OVER (PARTITION BY a ORDER BY b) as lag_c_2
         FROM window_test
       """)
-      checkSparkAnswerAndOperator(df)
+      checkSparkAnswer(df)
     }
   }
 
-  // TODO: LEAD produces incorrect results
-  ignore("window: LEAD with default offset") {
+  // LEAD not supported - verify fallback
+  // TODO: Row ordering differs between Comet and Spark for ties, causing result mismatches
+  ignore("window: LEAD falls back to Spark") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, i))
@@ -664,12 +707,13 @@ class CometWindowExecSuite extends CometTestBase {
           LEAD(c) OVER (PARTITION BY a ORDER BY b) as lead_c
         FROM window_test
       """)
-      checkSparkAnswerAndOperator(df)
+      checkSparkAnswer(df)
     }
   }
 
-  // TODO: LEAD with offset 2 produces incorrect results
-  ignore("window: LEAD with offset 2 and default value") {
+  // LEAD with offset not supported - verify fallback
+  // TODO: Row ordering differs between Comet and Spark for ties, causing result mismatches
+  ignore("window: LEAD with offset falls back to Spark") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, i))
@@ -685,7 +729,7 @@ class CometWindowExecSuite extends CometTestBase {
           LEAD(c, 2, -1) OVER (PARTITION BY a ORDER BY b) as lead_c_2
         FROM window_test
       """)
-      checkSparkAnswerAndOperator(df)
+      checkSparkAnswer(df)
     }
   }
 
@@ -754,9 +798,8 @@ class CometWindowExecSuite extends CometTestBase {
     }
   }
 
-  // TODO: CUME_DIST not supported - falls back to Spark Window operator
-  // Error: "Partitioning and sorting specifications must be the same"
-  ignore("window: CUME_DIST with PARTITION BY and ORDER BY") {
+  // CUME_DIST not supported - verify fallback
+  test("window: CUME_DIST falls back to Spark") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, i))
@@ -772,7 +815,7 @@ class CometWindowExecSuite extends CometTestBase {
           CUME_DIST() OVER (PARTITION BY a ORDER BY b) as cume_dist
         FROM window_test
       """)
-      checkSparkAnswerAndOperator(df)
+      checkSparkAnswer(df)
     }
   }
 
@@ -824,9 +867,8 @@ class CometWindowExecSuite extends CometTestBase {
     }
   }
 
-  // TODO: ORDER BY DESC with aggregation not supported
-  // Falls back to Spark Window operator - "Partitioning and sorting specifications must be the same"
-  ignore("window: ORDER BY DESC with aggregation") {
+  // ORDER BY DESC with PARTITION BY falls back to Spark
+  test("window: ORDER BY DESC with aggregation falls back") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, i))
@@ -837,18 +879,18 @@ class CometWindowExecSuite extends CometTestBase {
         .parquet(dir.toString)
 
       spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
-      val df = sql("""
+      checkSparkAnswerAndFallbackReason(
+        """
         SELECT a, b, c,
-          SUM(c) OVER (PARTITION BY a ORDER BY b DESC) as sum_c_desc
+          SUM(c) OVER (PARTITION BY a ORDER BY b DESC, c DESC) as sum_c_desc
         FROM window_test
-      """)
-      checkSparkAnswerAndOperator(df)
+        """,
+        "Partition expressions must be a subset of order expressions for native window")
     }
   }
 
-  // TODO: Multiple PARTITION BY columns not supported
-  // Falls back to Spark Window operator
-  ignore("window: multiple PARTITION BY columns") {
+  // Multiple PARTITION BY columns with different ORDER BY falls back to Spark
+  test("window: multiple PARTITION BY columns falls back") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, i % 2, i))
@@ -859,18 +901,18 @@ class CometWindowExecSuite extends CometTestBase {
         .parquet(dir.toString)
 
       spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
-      val df = sql("""
+      checkSparkAnswerAndFallbackReason(
+        """
         SELECT a, b, d, c,
-          SUM(c) OVER (PARTITION BY a, b ORDER BY d) as sum_c
+          SUM(c) OVER (PARTITION BY a, b ORDER BY d, c) as sum_c
         FROM window_test
-      """)
-      checkSparkAnswerAndOperator(df)
+        """,
+        "Partition expressions must be a subset of order expressions for native window")
     }
   }
 
-  // TODO: Multiple ORDER BY columns not supported
-  // Falls back to Spark Window operator
-  ignore("window: multiple ORDER BY columns") {
+  // ROW_NUMBER with multiple ORDER BY columns falls back to Spark
+  test("window: multiple ORDER BY columns falls back") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, i % 2, i))
@@ -881,18 +923,18 @@ class CometWindowExecSuite extends CometTestBase {
         .parquet(dir.toString)
 
       spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
-      val df = sql("""
+      checkSparkAnswerAndFallbackReason(
+        """
         SELECT a, b, d, c,
           ROW_NUMBER() OVER (PARTITION BY a ORDER BY b, d, c) as row_num
         FROM window_test
-      """)
-      checkSparkAnswerAndOperator(df)
+        """,
+        "Partition expressions must be a subset of order expressions for native window")
     }
   }
 
-  // TODO: RANGE BETWEEN with numeric ORDER BY not supported
-  // Falls back to Spark Window operator - "Partitioning and sorting specifications must be the same"
-  ignore("window: RANGE BETWEEN with numeric ORDER BY") {
+  // RANGE BETWEEN with numeric ORDER BY falls back to Spark
+  test("window: RANGE BETWEEN with numeric ORDER BY falls back") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i, i * 2))
@@ -903,18 +945,18 @@ class CometWindowExecSuite extends CometTestBase {
         .parquet(dir.toString)
 
       spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
-      val df = sql("""
+      checkSparkAnswerAndFallbackReason(
+        """
         SELECT a, b, c,
           SUM(c) OVER (PARTITION BY a ORDER BY b RANGE BETWEEN 2 PRECEDING AND 2 FOLLOWING) as sum_c
         FROM window_test
-      """)
-      checkSparkAnswerAndOperator(df)
+        """,
+        "Partition expressions must be a subset of order expressions for native window")
     }
   }
 
-  // TODO: RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW not supported
-  // Falls back to Spark Window operator - "Partitioning and sorting specifications must be the same"
-  ignore("window: RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW") {
+  // RANGE BETWEEN UNBOUNDED falls back to Spark
+  test("window: RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW falls back") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i, i * 2))
@@ -925,12 +967,13 @@ class CometWindowExecSuite extends CometTestBase {
         .parquet(dir.toString)
 
       spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
-      val df = sql("""
+      checkSparkAnswerAndFallbackReason(
+        """
         SELECT a, b, c,
           SUM(c) OVER (PARTITION BY a ORDER BY b RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) as sum_c
         FROM window_test
-      """)
-      checkSparkAnswerAndOperator(df)
+        """,
+        "Partition expressions must be a subset of order expressions for native window")
     }
   }
 
@@ -1043,6 +1086,30 @@ class CometWindowExecSuite extends CometTestBase {
           PERCENT_RANK() OVER (PARTITION BY a ORDER BY b) as pct_rnk,
           CUME_DIST() OVER (PARTITION BY a ORDER BY b) as cume_dist,
           NTILE(3) OVER (PARTITION BY a ORDER BY b) as ntile_3
+        FROM window_test
+      """)
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  // Multiple aggregate functions in single query (COUNT, SUM, MIN, MAX with PARTITION BY only)
+  test("window: multiple aggregate functions in single query") {
+    withTempDir { dir =>
+      (0 until 30)
+        .map(i => (i % 3, i % 5, i))
+        .toDF("a", "b", "c")
+        .repartition(3)
+        .write
+        .mode("overwrite")
+        .parquet(dir.toString)
+
+      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
+      val df = sql("""
+        SELECT a, b, c,
+          COUNT(*) OVER (PARTITION BY a) as cnt,
+          SUM(c) OVER (PARTITION BY a) as sum_c,
+          MIN(c) OVER (PARTITION BY a) as min_c,
+          MAX(c) OVER (PARTITION BY a) as max_c
         FROM window_test
       """)
       checkSparkAnswerAndOperator(df)

@@ -66,8 +66,29 @@ this can be overridden by setting `spark.comet.regexp.allowIncompatible=true`.
 
 ## Window Functions
 
-Comet's support for window functions is incomplete and known to be incorrect. It is disabled by default and
-should not be used in production. The feature will be enabled in a future release. Tracking issue: [#2721](https://github.com/apache/datafusion-comet/issues/2721).
+Comet supports a subset of window aggregate functions. These are enabled by default when
+`spark.comet.exec.window.enabled=true` (the default). Unsupported window functions will automatically
+fall back to Spark.
+
+**Supported:**
+
+- Window aggregates: `COUNT`, `SUM`, `MIN`, `MAX`
+- `PARTITION BY` only (no `ORDER BY`)
+- `ORDER BY` only (no `PARTITION BY`)
+- `PARTITION BY` with `ORDER BY` when partition columns are a subset of order columns
+  (e.g., `PARTITION BY a ORDER BY a, b` works, but `PARTITION BY a ORDER BY b` does not)
+
+**Not Yet Supported:**
+
+- `AVG` window aggregate (native implementation has known issues)
+- `PARTITION BY` with `ORDER BY` using different columns (falls back to Spark)
+- `ROWS BETWEEN` frames with `PARTITION BY` and `ORDER BY` on different columns
+- Ranking functions: `ROW_NUMBER`, `RANK`, `DENSE_RANK`, `PERCENT_RANK`, `NTILE`, `CUME_DIST`
+- Offset functions: `LAG`, `LEAD`
+- Value functions: `FIRST_VALUE`, `LAST_VALUE`, `NTH_VALUE`
+- `RANGE BETWEEN` with numeric or temporal expressions (tracking issue: [#1246](https://github.com/apache/datafusion-comet/issues/1246))
+
+Tracking issue: [#2721](https://github.com/apache/datafusion-comet/issues/2721).
 
 ## Round-Robin Partitioning
 
