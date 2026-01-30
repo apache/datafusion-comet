@@ -673,9 +673,9 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
   /**
    * Converts a CometBatchScanExec to a minimal placeholder IcebergScan operator.
    *
-   * Returns a placeholder operator with only metadata - no pools, no partition data. The actual
-   * partition serialization is deferred to execution time (after DPP resolves) via
-   * serializePartitions().
+   * Returns a placeholder operator with only metadata_location for matching during partition
+   * injection. All other fields (catalog properties, required schema, pools, partition data) are
+   * set by serializePartitions() at execution time after DPP resolves.
    */
   override def convert(
       scan: CometBatchScanExec,
@@ -691,24 +691,10 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     val icebergScanBuilder = OperatorOuterClass.IcebergScan.newBuilder()
     val commonBuilder = OperatorOuterClass.IcebergScanCommon.newBuilder()
 
-    // Set metadata location and catalog properties
+    // Only set metadata_location - used for matching in IcebergPartitionInjector.
+    // All other fields (catalog_properties, required_schema, pools) are set by
+    // serializePartitions() at execution time, so setting them here would be wasted work.
     commonBuilder.setMetadataLocation(metadata.metadataLocation)
-    metadata.catalogProperties.foreach { case (key, value) =>
-      commonBuilder.putCatalogProperties(key, value)
-    }
-
-    // Set required_schema from output
-    scan.output.foreach { attr =>
-      val field = SparkStructField
-        .newBuilder()
-        .setName(attr.name)
-        .setNullable(attr.nullable)
-      serializeDataType(attr.dataType).foreach(field.setDataType)
-      commonBuilder.addRequiredSchema(field.build())
-    }
-
-    // NO pool building - deferred to execution time
-    // NO inputRDD access - deferred to execution time
 
     icebergScanBuilder.setCommon(commonBuilder.build())
     // partition field intentionally empty - will be populated at execution time
@@ -771,6 +757,24 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       commonBuilder.addRequiredSchema(field.build())
     }
 
+    // Load Iceberg classes once (avoid repeated Class.forName in loop)
+    // scalastyle:off classforname
+    val contentScanTaskClass = Class.forName(IcebergReflection.ClassNames.CONTENT_SCAN_TASK)
+    val fileScanTaskClass = Class.forName(IcebergReflection.ClassNames.FILE_SCAN_TASK)
+    val contentFileClass = Class.forName(IcebergReflection.ClassNames.CONTENT_FILE)
+    val schemaParserClass = Class.forName(IcebergReflection.ClassNames.SCHEMA_PARSER)
+    val schemaClass = Class.forName(IcebergReflection.ClassNames.SCHEMA)
+    // scalastyle:on classforname
+
+    // Cache method lookups (avoid repeated getMethod in loop)
+    val fileMethod = contentScanTaskClass.getMethod("file")
+    val startMethod = contentScanTaskClass.getMethod("start")
+    val lengthMethod = contentScanTaskClass.getMethod("length")
+    val residualMethod = contentScanTaskClass.getMethod("residual")
+    val taskSchemaMethod = fileScanTaskClass.getMethod("schema")
+    val toJsonMethod = schemaParserClass.getMethod("toJson", schemaClass)
+    toJsonMethod.setAccessible(true)
+
     // Access inputRDD - safe now, DPP is resolved
     wrappedScan.inputRDD match {
       case rdd: org.apache.spark.sql.execution.datasources.v2.DataSourceRDD =>
@@ -800,16 +804,6 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
 
                 val taskBuilder = OperatorOuterClass.IcebergFileScanTask.newBuilder()
 
-                // scalastyle:off classforname
-                val contentScanTaskClass =
-                  Class.forName(IcebergReflection.ClassNames.CONTENT_SCAN_TASK)
-                val fileScanTaskClass =
-                  Class.forName(IcebergReflection.ClassNames.FILE_SCAN_TASK)
-                val contentFileClass =
-                  Class.forName(IcebergReflection.ClassNames.CONTENT_FILE)
-                // scalastyle:on classforname
-
-                val fileMethod = contentScanTaskClass.getMethod("file")
                 val dataFile = fileMethod.invoke(task)
 
                 val filePathOpt =
@@ -825,16 +819,13 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                     throw new RuntimeException(msg)
                 }
 
-                val startMethod = contentScanTaskClass.getMethod("start")
                 val start = startMethod.invoke(task).asInstanceOf[Long]
                 taskBuilder.setStart(start)
 
-                val lengthMethod = contentScanTaskClass.getMethod("length")
                 val length = lengthMethod.invoke(task).asInstanceOf[Long]
                 taskBuilder.setLength(length)
 
-                // Schema selection logic (same as before)
-                val taskSchemaMethod = fileScanTaskClass.getMethod("schema")
+                // Schema selection logic
                 val taskSchema = taskSchemaMethod.invoke(task)
 
                 val deletes =
@@ -862,14 +853,6 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                       metadata.tableSchema.asInstanceOf[AnyRef]
                     }
                   }
-
-                // scalastyle:off classforname
-                val schemaParserClass =
-                  Class.forName(IcebergReflection.ClassNames.SCHEMA_PARSER)
-                val schemaClass = Class.forName(IcebergReflection.ClassNames.SCHEMA)
-                // scalastyle:on classforname
-                val toJsonMethod = schemaParserClass.getMethod("toJson", schemaClass)
-                toJsonMethod.setAccessible(true)
 
                 val schemaIdx = schemaToPoolIndex.getOrElseUpdate(
                   schema, {
@@ -921,7 +904,6 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                 // Extract and deduplicate residual expression
                 val residualExprOpt =
                   try {
-                    val residualMethod = contentScanTaskClass.getMethod("residual")
                     val residualExpr = residualMethod.invoke(task)
                     val catalystExpr = convertIcebergExpression(residualExpr, output)
                     catalystExpr.flatMap { expr =>
