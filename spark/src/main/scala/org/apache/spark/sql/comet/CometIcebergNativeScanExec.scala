@@ -77,8 +77,28 @@ case class CometIcebergNativeScanExec(
   }
 
   /**
-   * Lazy partition serialization - computed after doPrepare() resolves DPP. Builds pools and
-   * per-partition data in one pass from inputRDD.
+   * Lazy partition serialization - computed after doPrepare() resolves DPP.
+   *
+   * DPP (Dynamic Partition Pruning) Flow:
+   *
+   * {{{
+   * Planning time:
+   *   CometIcebergNativeScanExec created
+   *     - splitData NOT evaluated (lazy)
+   *     - No partition serialization yet
+   *
+   * Execution time:
+   *   1. Spark calls prepare() on the plan tree
+   *        - doPrepare() calls e.plan.prepare() for each DPP filter
+   *        - Broadcast exchange starts materializing
+   *
+   *   2. Spark calls doExecuteColumnar()
+   *        - Accesses perPartitionData
+   *        - Forces splitData evaluation (here)
+   *        - Waits for DPP values (updateResult or reflection)
+   *        - Calls serializePartitions with DPP-filtered inputRDD
+   *        - Only matching partitions are serialized
+   * }}}
    */
   @transient private lazy val splitData: (Array[Byte], Array[Array[Byte]]) = {
     // Ensure DPP subqueries are resolved before accessing inputRDD.
