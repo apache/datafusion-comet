@@ -1,5 +1,5 @@
 == Physical Plan ==
-CometNativeColumnarToRow (24)
+* CometColumnarToRow (24)
 +- CometHashAggregate (23)
    +- CometExchange (22)
       +- CometHashAggregate (21)
@@ -32,23 +32,23 @@ Location: InMemoryFileIndex []
 PartitionFilters: [isnotnull(ss_sold_date_sk#3), dynamicpruningexpression(ss_sold_date_sk#3 IN dynamicpruning#4)]
 ReadSchema: struct<ss_item_sk:int,ss_customer_sk:int>
 
-(2) ColumnarToRow [codegen id : 1]
+(2) ColumnarToRow [codegen id : 2]
 Input [3]: [ss_item_sk#1, ss_customer_sk#2, ss_sold_date_sk#3]
 
 (3) ReusedExchange [Reuses operator id: 29]
 Output [1]: [d_date_sk#5]
 
-(4) BroadcastHashJoin [codegen id : 1]
+(4) BroadcastHashJoin [codegen id : 2]
 Left keys [1]: [ss_sold_date_sk#3]
 Right keys [1]: [d_date_sk#5]
 Join type: Inner
 Join condition: None
 
-(5) Project [codegen id : 1]
+(5) Project [codegen id : 2]
 Output [2]: [ss_item_sk#1, ss_customer_sk#2]
 Input [4]: [ss_item_sk#1, ss_customer_sk#2, ss_sold_date_sk#3, d_date_sk#5]
 
-(6) HashAggregate [codegen id : 1]
+(6) HashAggregate [codegen id : 2]
 Input [2]: [ss_item_sk#1, ss_customer_sk#2]
 Keys [2]: [ss_customer_sk#2, ss_item_sk#1]
 Functions: []
@@ -75,23 +75,23 @@ Location: InMemoryFileIndex []
 PartitionFilters: [isnotnull(cs_sold_date_sk#10), dynamicpruningexpression(cs_sold_date_sk#10 IN dynamicpruning#4)]
 ReadSchema: struct<cs_bill_customer_sk:int,cs_item_sk:int>
 
-(11) ColumnarToRow [codegen id : 2]
+(11) ColumnarToRow [codegen id : 4]
 Input [3]: [cs_bill_customer_sk#8, cs_item_sk#9, cs_sold_date_sk#10]
 
 (12) ReusedExchange [Reuses operator id: 29]
 Output [1]: [d_date_sk#11]
 
-(13) BroadcastHashJoin [codegen id : 2]
+(13) BroadcastHashJoin [codegen id : 4]
 Left keys [1]: [cs_sold_date_sk#10]
 Right keys [1]: [d_date_sk#11]
 Join type: Inner
 Join condition: None
 
-(14) Project [codegen id : 2]
+(14) Project [codegen id : 4]
 Output [2]: [cs_bill_customer_sk#8, cs_item_sk#9]
 Input [4]: [cs_bill_customer_sk#8, cs_item_sk#9, cs_sold_date_sk#10, d_date_sk#11]
 
-(15) HashAggregate [codegen id : 2]
+(15) HashAggregate [codegen id : 4]
 Input [2]: [cs_bill_customer_sk#8, cs_item_sk#9]
 Keys [2]: [cs_bill_customer_sk#8, cs_item_sk#9]
 Functions: []
@@ -134,14 +134,14 @@ Input [3]: [sum#14, sum#15, sum#16]
 Keys: []
 Functions [3]: [sum(CASE WHEN (isnotnull(customer_sk#6) AND isnull(customer_sk#12)) THEN 1 ELSE 0 END), sum(CASE WHEN (isnull(customer_sk#6) AND isnotnull(customer_sk#12)) THEN 1 ELSE 0 END), sum(CASE WHEN (isnotnull(customer_sk#6) AND isnotnull(customer_sk#12)) THEN 1 ELSE 0 END)]
 
-(24) CometNativeColumnarToRow
+(24) CometColumnarToRow [codegen id : 5]
 Input [3]: [store_only#17, catalog_only#18, store_and_catalog#19]
 
 ===== Subqueries =====
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = ss_sold_date_sk#3 IN dynamicpruning#4
 BroadcastExchange (29)
-+- CometNativeColumnarToRow (28)
++- * CometColumnarToRow (28)
    +- CometProject (27)
       +- CometFilter (26)
          +- CometNativeScan parquet spark_catalog.default.date_dim (25)
@@ -162,7 +162,7 @@ Condition : (((isnotnull(d_month_seq#20) AND (d_month_seq#20 >= 1200)) AND (d_mo
 Input [2]: [d_date_sk#5, d_month_seq#20]
 Arguments: [d_date_sk#5], [d_date_sk#5]
 
-(28) CometNativeColumnarToRow
+(28) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#5]
 
 (29) BroadcastExchange

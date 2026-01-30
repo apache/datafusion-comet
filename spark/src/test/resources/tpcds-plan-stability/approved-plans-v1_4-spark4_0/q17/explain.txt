@@ -256,7 +256,7 @@ Input [15]: [i_item_id#30, i_item_desc#29, s_state#26, store_sales_quantitycount
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = ss_sold_date_sk#6 IN dynamicpruning#7
 BroadcastExchange (49)
-+- CometNativeColumnarToRow (48)
++- * CometColumnarToRow (48)
    +- CometProject (47)
       +- CometFilter (46)
          +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim (45)
@@ -277,7 +277,7 @@ Condition : ((isnotnull(d_quarter_name#20) AND (static_invoke(CharVarcharCodegen
 Input [2]: [d_date_sk#19, d_quarter_name#20]
 Arguments: [d_date_sk#19], [d_date_sk#19]
 
-(48) CometNativeColumnarToRow
+(48) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#19]
 
 (49) BroadcastExchange
@@ -286,7 +286,7 @@ Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint))
 
 Subquery:2 Hosting operator id = 3 Hosting Expression = sr_returned_date_sk#12 IN dynamicpruning#13
 BroadcastExchange (54)
-+- CometNativeColumnarToRow (53)
++- * CometColumnarToRow (53)
    +- CometProject (52)
       +- CometFilter (51)
          +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim (50)
@@ -307,7 +307,7 @@ Condition : (static_invoke(CharVarcharCodegenUtils.readSidePadding(d_quarter_nam
 Input [2]: [d_date_sk#21, d_quarter_name#22]
 Arguments: [d_date_sk#21], [d_date_sk#21]
 
-(53) CometNativeColumnarToRow
+(53) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#21]
 
 (54) BroadcastExchange

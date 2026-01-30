@@ -142,7 +142,7 @@ Input [2]: [ca_zip#11, sum(cs_sales_price)#16]
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = cs_sold_date_sk#3 IN dynamicpruning#4
 BroadcastExchange (29)
-+- CometNativeColumnarToRow (28)
++- * CometColumnarToRow (28)
    +- CometProject (27)
       +- CometFilter (26)
          +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim (25)
@@ -163,7 +163,7 @@ Condition : ((((isnotnull(d_qoy#14) AND isnotnull(d_year#13)) AND (d_qoy#14 = 2)
 Input [3]: [d_date_sk#12, d_year#13, d_qoy#14]
 Arguments: [d_date_sk#12], [d_date_sk#12]
 
-(28) CometNativeColumnarToRow
+(28) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#12]
 
 (29) BroadcastExchange

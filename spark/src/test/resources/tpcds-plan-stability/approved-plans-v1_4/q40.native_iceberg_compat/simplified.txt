@@ -19,9 +19,11 @@ WholeStageCodegen (1)
                                     CometScan [native_iceberg_compat] parquet spark_catalog.default.catalog_sales [cs_warehouse_sk,cs_item_sk,cs_order_number,cs_sales_price,cs_sold_date_sk]
                                       SubqueryBroadcast [d_date_sk] #1
                                         BroadcastExchange #3
-                                          CometNativeColumnarToRow
-                                            CometFilter [d_date_sk,d_date]
-                                              CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_date]
+                                          WholeStageCodegen (1)
+                                            CometColumnarToRow
+                                              InputAdapter
+                                                CometFilter [d_date_sk,d_date]
+                                                  CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_date]
                               CometSort [cr_item_sk,cr_order_number,cr_refunded_cash]
                                 CometExchange [cr_order_number,cr_item_sk] #4
                                   CometProject [cr_item_sk,cr_order_number,cr_refunded_cash]

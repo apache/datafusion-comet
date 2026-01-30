@@ -683,7 +683,7 @@ Input [10]: [prev_year#127, year#128, i_brand_id#8, i_class_id#9, i_category_id#
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = cs_sold_date_sk#5 IN dynamicpruning#6
 BroadcastExchange (128)
-+- CometNativeColumnarToRow (127)
++- * CometColumnarToRow (127)
    +- CometFilter (126)
       +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim (125)
 
@@ -699,7 +699,7 @@ ReadSchema: struct<d_date_sk:int,d_year:int>
 Input [2]: [d_date_sk#13, d_year#14]
 Condition : ((isnotnull(d_year#14) AND (d_year#14 = 2002)) AND isnotnull(d_date_sk#13))
 
-(127) CometNativeColumnarToRow
+(127) CometColumnarToRow [codegen id : 1]
 Input [2]: [d_date_sk#13, d_year#14]
 
 (128) BroadcastExchange
@@ -712,7 +712,7 @@ Subquery:3 Hosting operator id = 40 Hosting Expression = ws_sold_date_sk#46 IN d
 
 Subquery:4 Hosting operator id = 67 Hosting Expression = cs_sold_date_sk#70 IN dynamicpruning#71
 BroadcastExchange (132)
-+- CometNativeColumnarToRow (131)
++- * CometColumnarToRow (131)
    +- CometFilter (130)
       +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim (129)
 
@@ -728,7 +728,7 @@ ReadSchema: struct<d_date_sk:int,d_year:int>
 Input [2]: [d_date_sk#77, d_year#78]
 Condition : ((isnotnull(d_year#78) AND (d_year#78 = 2001)) AND isnotnull(d_date_sk#77))
 
-(131) CometNativeColumnarToRow
+(131) CometColumnarToRow [codegen id : 1]
 Input [2]: [d_date_sk#77, d_year#78]
 
 (132) BroadcastExchange

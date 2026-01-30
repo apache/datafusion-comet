@@ -1,16 +1,16 @@
 Filter
 :  +- Subquery
 :     +- HashAggregate
-:        +- CometNativeColumnarToRow
+:        +- CometColumnarToRow
 :           +- CometColumnarExchange
 :              +- HashAggregate
 :                 +- HashAggregate
-:                    +- CometNativeColumnarToRow
+:                    +- CometColumnarToRow
 :                       +- CometColumnarExchange
 :                          +- HashAggregate
 :                             +- Project
 :                                +-  BroadcastHashJoin [COMET: Comet is not compatible with Spark for case conversion in locale-specific cases. Set spark.comet.caseConversion.enabled=true to enable it anyway.]
-:                                   :- CometNativeColumnarToRow
+:                                   :- CometColumnarToRow
 :                                   :  +- CometProject
 :                                   :     +- CometBroadcastHashJoin
 :                                   :        :- CometProject
@@ -42,21 +42,21 @@ Filter
 :                                   :              +- CometFilter
 :                                   :                 +- CometNativeScan parquet spark_catalog.default.customer
 :                                   +- BroadcastExchange
-:                                      +- CometNativeColumnarToRow
+:                                      +- CometColumnarToRow
 :                                         +- CometProject
 :                                            +- CometFilter
 :                                               +- CometNativeScan parquet spark_catalog.default.customer_address
 +- HashAggregate
-   +- CometNativeColumnarToRow
+   +- CometColumnarToRow
       +- CometColumnarExchange
          +- HashAggregate
             +- HashAggregate
-               +- CometNativeColumnarToRow
+               +- CometColumnarToRow
                   +- CometColumnarExchange
                      +- HashAggregate
                         +- Project
                            +-  BroadcastHashJoin [COMET: Comet is not compatible with Spark for case conversion in locale-specific cases. Set spark.comet.caseConversion.enabled=true to enable it anyway.]
-                              :- CometNativeColumnarToRow
+                              :- CometColumnarToRow
                               :  +- CometProject
                               :     +- CometBroadcastHashJoin
                               :        :- CometProject
@@ -88,7 +88,7 @@ Filter
                               :              +- CometFilter
                               :                 +- CometNativeScan parquet spark_catalog.default.customer
                               +- BroadcastExchange
-                                 +- CometNativeColumnarToRow
+                                 +- CometColumnarToRow
                                     +- CometProject
                                        +- CometFilter
                                           +- CometNativeScan parquet spark_catalog.default.customer_address

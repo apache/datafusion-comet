@@ -1,7 +1,7 @@
 == Physical Plan ==
 TakeOrderedAndProject (25)
 +- * HashAggregate (24)
-   +- CometNativeColumnarToRow (23)
+   +- * CometColumnarToRow (23)
       +- CometColumnarExchange (22)
          +- * HashAggregate (21)
             +- * Expand (20)
@@ -16,12 +16,12 @@ TakeOrderedAndProject (25)
                      :     :     :     +- Scan parquet spark_catalog.default.inventory (1)
                      :     :     +- ReusedExchange (4)
                      :     +- BroadcastExchange (11)
-                     :        +- CometNativeColumnarToRow (10)
+                     :        +- * CometColumnarToRow (10)
                      :           +- CometProject (9)
                      :              +- CometFilter (8)
                      :                 +- CometNativeScan parquet spark_catalog.default.item (7)
                      +- BroadcastExchange (17)
-                        +- CometNativeColumnarToRow (16)
+                        +- * CometColumnarToRow (16)
                            +- CometFilter (15)
                               +- CometNativeScan parquet spark_catalog.default.warehouse (14)
 
@@ -34,23 +34,23 @@ PartitionFilters: [isnotnull(inv_date_sk#4), dynamicpruningexpression(inv_date_s
 PushedFilters: [IsNotNull(inv_item_sk), IsNotNull(inv_warehouse_sk)]
 ReadSchema: struct<inv_item_sk:int,inv_warehouse_sk:int,inv_quantity_on_hand:int>
 
-(2) ColumnarToRow [codegen id : 1]
+(2) ColumnarToRow [codegen id : 4]
 Input [4]: [inv_item_sk#1, inv_warehouse_sk#2, inv_quantity_on_hand#3, inv_date_sk#4]
 
-(3) Filter [codegen id : 1]
+(3) Filter [codegen id : 4]
 Input [4]: [inv_item_sk#1, inv_warehouse_sk#2, inv_quantity_on_hand#3, inv_date_sk#4]
 Condition : (isnotnull(inv_item_sk#1) AND isnotnull(inv_warehouse_sk#2))
 
 (4) ReusedExchange [Reuses operator id: 30]
 Output [1]: [d_date_sk#6]
 
-(5) BroadcastHashJoin [codegen id : 1]
+(5) BroadcastHashJoin [codegen id : 4]
 Left keys [1]: [inv_date_sk#4]
 Right keys [1]: [d_date_sk#6]
 Join type: Inner
 Join condition: None
 
-(6) Project [codegen id : 1]
+(6) Project [codegen id : 4]
 Output [3]: [inv_item_sk#1, inv_warehouse_sk#2, inv_quantity_on_hand#3]
 Input [5]: [inv_item_sk#1, inv_warehouse_sk#2, inv_quantity_on_hand#3, inv_date_sk#4, d_date_sk#6]
 
@@ -69,20 +69,20 @@ Condition : isnotnull(i_item_sk#7)
 Input [5]: [i_item_sk#7, i_brand#8, i_class#9, i_category#10, i_product_name#11]
 Arguments: [i_item_sk#7, i_brand#12, i_class#13, i_category#14, i_product_name#15], [i_item_sk#7, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_brand#8, 50, true, false, true) AS i_brand#12, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_class#9, 50, true, false, true) AS i_class#13, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_category#10, 50, true, false, true) AS i_category#14, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_product_name#11, 50, true, false, true) AS i_product_name#15]
 
-(10) CometNativeColumnarToRow
+(10) CometColumnarToRow [codegen id : 2]
 Input [5]: [i_item_sk#7, i_brand#12, i_class#13, i_category#14, i_product_name#15]
 
 (11) BroadcastExchange
 Input [5]: [i_item_sk#7, i_brand#12, i_class#13, i_category#14, i_product_name#15]
 Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint)),false), [plan_id=1]
 
-(12) BroadcastHashJoin [codegen id : 1]
+(12) BroadcastHashJoin [codegen id : 4]
 Left keys [1]: [inv_item_sk#1]
 Right keys [1]: [i_item_sk#7]
 Join type: Inner
 Join condition: None
 
-(13) Project [codegen id : 1]
+(13) Project [codegen id : 4]
 Output [6]: [inv_warehouse_sk#2, inv_quantity_on_hand#3, i_brand#12, i_class#13, i_category#14, i_product_name#15]
 Input [8]: [inv_item_sk#1, inv_warehouse_sk#2, inv_quantity_on_hand#3, i_item_sk#7, i_brand#12, i_class#13, i_category#14, i_product_name#15]
 
@@ -97,28 +97,28 @@ ReadSchema: struct<w_warehouse_sk:int>
 Input [1]: [w_warehouse_sk#16]
 Condition : isnotnull(w_warehouse_sk#16)
 
-(16) CometNativeColumnarToRow
+(16) CometColumnarToRow [codegen id : 3]
 Input [1]: [w_warehouse_sk#16]
 
 (17) BroadcastExchange
 Input [1]: [w_warehouse_sk#16]
 Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, false] as bigint)),false), [plan_id=2]
 
-(18) BroadcastHashJoin [codegen id : 1]
+(18) BroadcastHashJoin [codegen id : 4]
 Left keys [1]: [inv_warehouse_sk#2]
 Right keys [1]: [w_warehouse_sk#16]
 Join type: Inner
 Join condition: None
 
-(19) Project [codegen id : 1]
+(19) Project [codegen id : 4]
 Output [5]: [inv_quantity_on_hand#3, i_product_name#15, i_brand#12, i_class#13, i_category#14]
 Input [7]: [inv_warehouse_sk#2, inv_quantity_on_hand#3, i_brand#12, i_class#13, i_category#14, i_product_name#15, w_warehouse_sk#16]
 
-(20) Expand [codegen id : 1]
+(20) Expand [codegen id : 4]
 Input [5]: [inv_quantity_on_hand#3, i_product_name#15, i_brand#12, i_class#13, i_category#14]
 Arguments: [[inv_quantity_on_hand#3, i_product_name#15, i_brand#12, i_class#13, i_category#14, 0], [inv_quantity_on_hand#3, i_product_name#15, i_brand#12, i_class#13, null, 1], [inv_quantity_on_hand#3, i_product_name#15, i_brand#12, null, null, 3], [inv_quantity_on_hand#3, i_product_name#15, null, null, null, 7], [inv_quantity_on_hand#3, null, null, null, null, 15]], [inv_quantity_on_hand#3, i_product_name#17, i_brand#18, i_class#19, i_category#20, spark_grouping_id#21]
 
-(21) HashAggregate [codegen id : 1]
+(21) HashAggregate [codegen id : 4]
 Input [6]: [inv_quantity_on_hand#3, i_product_name#17, i_brand#18, i_class#19, i_category#20, spark_grouping_id#21]
 Keys [5]: [i_product_name#17, i_brand#18, i_class#19, i_category#20, spark_grouping_id#21]
 Functions [1]: [partial_avg(inv_quantity_on_hand#3)]
@@ -129,10 +129,10 @@ Results [7]: [i_product_name#17, i_brand#18, i_class#19, i_category#20, spark_gr
 Input [7]: [i_product_name#17, i_brand#18, i_class#19, i_category#20, spark_grouping_id#21, sum#24, count#25]
 Arguments: hashpartitioning(i_product_name#17, i_brand#18, i_class#19, i_category#20, spark_grouping_id#21, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=3]
 
-(23) CometNativeColumnarToRow
+(23) CometColumnarToRow [codegen id : 5]
 Input [7]: [i_product_name#17, i_brand#18, i_class#19, i_category#20, spark_grouping_id#21, sum#24, count#25]
 
-(24) HashAggregate [codegen id : 2]
+(24) HashAggregate [codegen id : 5]
 Input [7]: [i_product_name#17, i_brand#18, i_class#19, i_category#20, spark_grouping_id#21, sum#24, count#25]
 Keys [5]: [i_product_name#17, i_brand#18, i_class#19, i_category#20, spark_grouping_id#21]
 Functions [1]: [avg(inv_quantity_on_hand#3)]
@@ -147,7 +147,7 @@ Arguments: 100, [qoh#27 ASC NULLS FIRST, i_product_name#17 ASC NULLS FIRST, i_br
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = inv_date_sk#4 IN dynamicpruning#5
 BroadcastExchange (30)
-+- CometNativeColumnarToRow (29)
++- * CometColumnarToRow (29)
    +- CometProject (28)
       +- CometFilter (27)
          +- CometNativeScan parquet spark_catalog.default.date_dim (26)
@@ -168,7 +168,7 @@ Condition : (((isnotnull(d_month_seq#28) AND (d_month_seq#28 >= 1200)) AND (d_mo
 Input [2]: [d_date_sk#6, d_month_seq#28]
 Arguments: [d_date_sk#6], [d_date_sk#6]
 
-(29) CometNativeColumnarToRow
+(29) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#6]
 
 (30) BroadcastExchange

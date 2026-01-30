@@ -277,7 +277,7 @@ Input [8]: [item_id#22, sr_item_qty#23, sr_dev#34, cr_item_qty#21, cr_dev#35, wr
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = sr_returned_date_sk#3 IN dynamicpruning#4
 BroadcastExchange (63)
-+- CometNativeColumnarToRow (62)
++- * CometColumnarToRow (62)
    +- CometProject (61)
       +- CometBroadcastHashJoin (60)
          :- CometFilter (51)
@@ -349,7 +349,7 @@ Arguments: [d_date#9], [d_date#10], LeftSemi, BuildRight
 Input [2]: [d_date_sk#8, d_date#9]
 Arguments: [d_date_sk#8], [d_date_sk#8]
 
-(62) CometNativeColumnarToRow
+(62) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#8]
 
 (63) BroadcastExchange

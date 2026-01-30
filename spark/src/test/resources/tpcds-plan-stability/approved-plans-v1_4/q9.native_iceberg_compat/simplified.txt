@@ -65,7 +65,7 @@ WholeStageCodegen (1)
                         CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales [ss_quantity,ss_ext_discount_amt,ss_net_paid,ss_sold_date_sk]
     ReusedSubquery [mergedValue] #5
     ReusedSubquery [mergedValue] #5
-    InputAdapter
-      CometNativeColumnarToRow
+    CometColumnarToRow
+      InputAdapter
         CometFilter [r_reason_sk]
           CometScan [native_iceberg_compat] parquet spark_catalog.default.reason [r_reason_sk]

@@ -1,18 +1,18 @@
-WholeStageCodegen (7)
+WholeStageCodegen (12)
   BroadcastNestedLoopJoin
     BroadcastNestedLoopJoin
       BroadcastNestedLoopJoin
         BroadcastNestedLoopJoin
           BroadcastNestedLoopJoin
-            InputAdapter
-              CometNativeColumnarToRow
+            CometColumnarToRow
+              InputAdapter
                 CometHashAggregate [sum,count,count,count] [B1_LP,B1_CNT,B1_CNTD,avg(UnscaledValue(ss_list_price)),count(ss_list_price),count(ss_list_price)]
                   CometColumnarExchange #1
                     WholeStageCodegen (1)
                       HashAggregate [ss_list_price] [avg(UnscaledValue(ss_list_price)),count(ss_list_price),count(ss_list_price),sum,count,count,count,sum,count,count,count]
                         HashAggregate [ss_list_price] [avg(UnscaledValue(ss_list_price)),count(ss_list_price),sum,count,count,sum,count,count]
-                          InputAdapter
-                            CometNativeColumnarToRow
+                          CometColumnarToRow
+                            InputAdapter
                               CometExchange [ss_list_price] #2
                                 CometHashAggregate [ss_list_price,sum,count,count]
                                   CometProject [ss_list_price]
@@ -20,76 +20,86 @@ WholeStageCodegen (7)
                                       CometNativeScan parquet spark_catalog.default.store_sales [ss_quantity,ss_wholesale_cost,ss_list_price,ss_coupon_amt,ss_sold_date_sk]
             InputAdapter
               BroadcastExchange #3
-                CometNativeColumnarToRow
-                  CometHashAggregate [sum,count,count,count] [B2_LP,B2_CNT,B2_CNTD,avg(UnscaledValue(ss_list_price)),count(ss_list_price),count(ss_list_price)]
-                    CometColumnarExchange #4
-                      WholeStageCodegen (2)
+                WholeStageCodegen (3)
+                  CometColumnarToRow
+                    InputAdapter
+                      CometHashAggregate [sum,count,count,count] [B2_LP,B2_CNT,B2_CNTD,avg(UnscaledValue(ss_list_price)),count(ss_list_price),count(ss_list_price)]
+                        CometColumnarExchange #4
+                          WholeStageCodegen (2)
+                            HashAggregate [ss_list_price] [avg(UnscaledValue(ss_list_price)),count(ss_list_price),count(ss_list_price),sum,count,count,count,sum,count,count,count]
+                              HashAggregate [ss_list_price] [avg(UnscaledValue(ss_list_price)),count(ss_list_price),sum,count,count,sum,count,count]
+                                CometColumnarToRow
+                                  InputAdapter
+                                    CometExchange [ss_list_price] #5
+                                      CometHashAggregate [ss_list_price,sum,count,count]
+                                        CometProject [ss_list_price]
+                                          CometFilter [ss_quantity,ss_wholesale_cost,ss_list_price,ss_coupon_amt,ss_sold_date_sk]
+                                            CometNativeScan parquet spark_catalog.default.store_sales [ss_quantity,ss_wholesale_cost,ss_list_price,ss_coupon_amt,ss_sold_date_sk]
+          InputAdapter
+            BroadcastExchange #6
+              WholeStageCodegen (5)
+                CometColumnarToRow
+                  InputAdapter
+                    CometHashAggregate [sum,count,count,count] [B3_LP,B3_CNT,B3_CNTD,avg(UnscaledValue(ss_list_price)),count(ss_list_price),count(ss_list_price)]
+                      CometColumnarExchange #7
+                        WholeStageCodegen (4)
+                          HashAggregate [ss_list_price] [avg(UnscaledValue(ss_list_price)),count(ss_list_price),count(ss_list_price),sum,count,count,count,sum,count,count,count]
+                            HashAggregate [ss_list_price] [avg(UnscaledValue(ss_list_price)),count(ss_list_price),sum,count,count,sum,count,count]
+                              CometColumnarToRow
+                                InputAdapter
+                                  CometExchange [ss_list_price] #8
+                                    CometHashAggregate [ss_list_price,sum,count,count]
+                                      CometProject [ss_list_price]
+                                        CometFilter [ss_quantity,ss_wholesale_cost,ss_list_price,ss_coupon_amt,ss_sold_date_sk]
+                                          CometNativeScan parquet spark_catalog.default.store_sales [ss_quantity,ss_wholesale_cost,ss_list_price,ss_coupon_amt,ss_sold_date_sk]
+        InputAdapter
+          BroadcastExchange #9
+            WholeStageCodegen (7)
+              CometColumnarToRow
+                InputAdapter
+                  CometHashAggregate [sum,count,count,count] [B4_LP,B4_CNT,B4_CNTD,avg(UnscaledValue(ss_list_price)),count(ss_list_price),count(ss_list_price)]
+                    CometColumnarExchange #10
+                      WholeStageCodegen (6)
                         HashAggregate [ss_list_price] [avg(UnscaledValue(ss_list_price)),count(ss_list_price),count(ss_list_price),sum,count,count,count,sum,count,count,count]
                           HashAggregate [ss_list_price] [avg(UnscaledValue(ss_list_price)),count(ss_list_price),sum,count,count,sum,count,count]
-                            InputAdapter
-                              CometNativeColumnarToRow
-                                CometExchange [ss_list_price] #5
+                            CometColumnarToRow
+                              InputAdapter
+                                CometExchange [ss_list_price] #11
                                   CometHashAggregate [ss_list_price,sum,count,count]
                                     CometProject [ss_list_price]
                                       CometFilter [ss_quantity,ss_wholesale_cost,ss_list_price,ss_coupon_amt,ss_sold_date_sk]
                                         CometNativeScan parquet spark_catalog.default.store_sales [ss_quantity,ss_wholesale_cost,ss_list_price,ss_coupon_amt,ss_sold_date_sk]
-          InputAdapter
-            BroadcastExchange #6
-              CometNativeColumnarToRow
-                CometHashAggregate [sum,count,count,count] [B3_LP,B3_CNT,B3_CNTD,avg(UnscaledValue(ss_list_price)),count(ss_list_price),count(ss_list_price)]
-                  CometColumnarExchange #7
-                    WholeStageCodegen (3)
+      InputAdapter
+        BroadcastExchange #12
+          WholeStageCodegen (9)
+            CometColumnarToRow
+              InputAdapter
+                CometHashAggregate [sum,count,count,count] [B5_LP,B5_CNT,B5_CNTD,avg(UnscaledValue(ss_list_price)),count(ss_list_price),count(ss_list_price)]
+                  CometColumnarExchange #13
+                    WholeStageCodegen (8)
                       HashAggregate [ss_list_price] [avg(UnscaledValue(ss_list_price)),count(ss_list_price),count(ss_list_price),sum,count,count,count,sum,count,count,count]
                         HashAggregate [ss_list_price] [avg(UnscaledValue(ss_list_price)),count(ss_list_price),sum,count,count,sum,count,count]
-                          InputAdapter
-                            CometNativeColumnarToRow
-                              CometExchange [ss_list_price] #8
+                          CometColumnarToRow
+                            InputAdapter
+                              CometExchange [ss_list_price] #14
                                 CometHashAggregate [ss_list_price,sum,count,count]
                                   CometProject [ss_list_price]
                                     CometFilter [ss_quantity,ss_wholesale_cost,ss_list_price,ss_coupon_amt,ss_sold_date_sk]
                                       CometNativeScan parquet spark_catalog.default.store_sales [ss_quantity,ss_wholesale_cost,ss_list_price,ss_coupon_amt,ss_sold_date_sk]
-        InputAdapter
-          BroadcastExchange #9
-            CometNativeColumnarToRow
-              CometHashAggregate [sum,count,count,count] [B4_LP,B4_CNT,B4_CNTD,avg(UnscaledValue(ss_list_price)),count(ss_list_price),count(ss_list_price)]
-                CometColumnarExchange #10
-                  WholeStageCodegen (4)
+    InputAdapter
+      BroadcastExchange #15
+        WholeStageCodegen (11)
+          CometColumnarToRow
+            InputAdapter
+              CometHashAggregate [sum,count,count,count] [B6_LP,B6_CNT,B6_CNTD,avg(UnscaledValue(ss_list_price)),count(ss_list_price),count(ss_list_price)]
+                CometColumnarExchange #16
+                  WholeStageCodegen (10)
                     HashAggregate [ss_list_price] [avg(UnscaledValue(ss_list_price)),count(ss_list_price),count(ss_list_price),sum,count,count,count,sum,count,count,count]
                       HashAggregate [ss_list_price] [avg(UnscaledValue(ss_list_price)),count(ss_list_price),sum,count,count,sum,count,count]
-                        InputAdapter
-                          CometNativeColumnarToRow
-                            CometExchange [ss_list_price] #11
+                        CometColumnarToRow
+                          InputAdapter
+                            CometExchange [ss_list_price] #17
                               CometHashAggregate [ss_list_price,sum,count,count]
                                 CometProject [ss_list_price]
                                   CometFilter [ss_quantity,ss_wholesale_cost,ss_list_price,ss_coupon_amt,ss_sold_date_sk]
                                     CometNativeScan parquet spark_catalog.default.store_sales [ss_quantity,ss_wholesale_cost,ss_list_price,ss_coupon_amt,ss_sold_date_sk]
-      InputAdapter
-        BroadcastExchange #12
-          CometNativeColumnarToRow
-            CometHashAggregate [sum,count,count,count] [B5_LP,B5_CNT,B5_CNTD,avg(UnscaledValue(ss_list_price)),count(ss_list_price),count(ss_list_price)]
-              CometColumnarExchange #13
-                WholeStageCodegen (5)
-                  HashAggregate [ss_list_price] [avg(UnscaledValue(ss_list_price)),count(ss_list_price),count(ss_list_price),sum,count,count,count,sum,count,count,count]
-                    HashAggregate [ss_list_price] [avg(UnscaledValue(ss_list_price)),count(ss_list_price),sum,count,count,sum,count,count]
-                      InputAdapter
-                        CometNativeColumnarToRow
-                          CometExchange [ss_list_price] #14
-                            CometHashAggregate [ss_list_price,sum,count,count]
-                              CometProject [ss_list_price]
-                                CometFilter [ss_quantity,ss_wholesale_cost,ss_list_price,ss_coupon_amt,ss_sold_date_sk]
-                                  CometNativeScan parquet spark_catalog.default.store_sales [ss_quantity,ss_wholesale_cost,ss_list_price,ss_coupon_amt,ss_sold_date_sk]
-    InputAdapter
-      BroadcastExchange #15
-        CometNativeColumnarToRow
-          CometHashAggregate [sum,count,count,count] [B6_LP,B6_CNT,B6_CNTD,avg(UnscaledValue(ss_list_price)),count(ss_list_price),count(ss_list_price)]
-            CometColumnarExchange #16
-              WholeStageCodegen (6)
-                HashAggregate [ss_list_price] [avg(UnscaledValue(ss_list_price)),count(ss_list_price),count(ss_list_price),sum,count,count,count,sum,count,count,count]
-                  HashAggregate [ss_list_price] [avg(UnscaledValue(ss_list_price)),count(ss_list_price),sum,count,count,sum,count,count]
-                    InputAdapter
-                      CometNativeColumnarToRow
-                        CometExchange [ss_list_price] #17
-                          CometHashAggregate [ss_list_price,sum,count,count]
-                            CometProject [ss_list_price]
-                              CometFilter [ss_quantity,ss_wholesale_cost,ss_list_price,ss_coupon_amt,ss_sold_date_sk]
-                                CometNativeScan parquet spark_catalog.default.store_sales [ss_quantity,ss_wholesale_cost,ss_list_price,ss_coupon_amt,ss_sold_date_sk]

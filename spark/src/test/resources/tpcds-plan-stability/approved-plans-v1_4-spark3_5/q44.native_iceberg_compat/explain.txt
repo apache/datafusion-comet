@@ -39,7 +39,7 @@ TakeOrderedAndProject (45)
       :     :                                         +- CometHashAggregate (20)
       :     :                                            +- ReusedExchange (19)
       :     +- BroadcastExchange (39)
-      :        +- CometNativeColumnarToRow (38)
+      :        +- * CometColumnarToRow (38)
       :           +- CometProject (37)
       :              +- CometFilter (36)
       :                 +- CometScan [native_iceberg_compat] parquet spark_catalog.default.item (35)
@@ -175,13 +175,13 @@ Input [3]: [item_sk#16, rank_col#17, rnk#18]
 Input [2]: [item_sk#16, rnk#18]
 Arguments: [rnk#18 ASC NULLS FIRST], false, 0
 
-(33) SortMergeJoin [codegen id : 7]
+(33) SortMergeJoin [codegen id : 9]
 Left keys [1]: [rnk#11]
 Right keys [1]: [rnk#18]
 Join type: Inner
 Join condition: None
 
-(34) Project [codegen id : 7]
+(34) Project [codegen id : 9]
 Output [3]: [item_sk#7, rnk#11, item_sk#16]
 Input [4]: [item_sk#7, rnk#11, item_sk#16, rnk#18]
 
@@ -200,33 +200,33 @@ Condition : isnotnull(i_item_sk#19)
 Input [2]: [i_item_sk#19, i_product_name#20]
 Arguments: [i_item_sk#19, i_product_name#21], [i_item_sk#19, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_product_name#20, 50, true, false, true) AS i_product_name#21]
 
-(38) CometNativeColumnarToRow
+(38) CometColumnarToRow [codegen id : 7]
 Input [2]: [i_item_sk#19, i_product_name#21]
 
 (39) BroadcastExchange
 Input [2]: [i_item_sk#19, i_product_name#21]
 Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint)),false), [plan_id=4]
 
-(40) BroadcastHashJoin [codegen id : 7]
+(40) BroadcastHashJoin [codegen id : 9]
 Left keys [1]: [item_sk#7]
 Right keys [1]: [i_item_sk#19]
 Join type: Inner
 Join condition: None
 
-(41) Project [codegen id : 7]
+(41) Project [codegen id : 9]
 Output [3]: [rnk#11, item_sk#16, i_product_name#21]
 Input [5]: [item_sk#7, rnk#11, item_sk#16, i_item_sk#19, i_product_name#21]
 
 (42) ReusedExchange [Reuses operator id: 39]
 Output [2]: [i_item_sk#22, i_product_name#23]
 
-(43) BroadcastHashJoin [codegen id : 7]
+(43) BroadcastHashJoin [codegen id : 9]
 Left keys [1]: [item_sk#16]
 Right keys [1]: [i_item_sk#22]
 Join type: Inner
 Join condition: None
 
-(44) Project [codegen id : 7]
+(44) Project [codegen id : 9]
 Output [3]: [rnk#11, i_product_name#21 AS best_performing#24, i_product_name#23 AS worst_performing#25]
 Input [5]: [rnk#11, item_sk#16, i_product_name#21, i_item_sk#22, i_product_name#23]
 

@@ -1,12 +1,12 @@
 == Physical Plan ==
 TakeOrderedAndProject (56)
 +- * HashAggregate (55)
-   +- CometNativeColumnarToRow (54)
+   +- * CometColumnarToRow (54)
       +- CometColumnarExchange (53)
          +- * HashAggregate (52)
             +- Union (51)
                :- * HashAggregate (31)
-               :  +- CometNativeColumnarToRow (30)
+               :  +- * CometColumnarToRow (30)
                :     +- CometColumnarExchange (29)
                :        +- * HashAggregate (28)
                :           +- * Project (27)
@@ -21,23 +21,23 @@ TakeOrderedAndProject (56)
                :                 :     :     :     :  +- * ColumnarToRow (2)
                :                 :     :     :     :     +- Scan parquet spark_catalog.default.web_sales (1)
                :                 :     :     :     +- BroadcastExchange (8)
-               :                 :     :     :        +- CometNativeColumnarToRow (7)
+               :                 :     :     :        +- * CometColumnarToRow (7)
                :                 :     :     :           +- CometProject (6)
                :                 :     :     :              +- CometFilter (5)
                :                 :     :     :                 +- CometNativeScan parquet spark_catalog.default.warehouse (4)
                :                 :     :     +- ReusedExchange (11)
                :                 :     +- BroadcastExchange (18)
-               :                 :        +- CometNativeColumnarToRow (17)
+               :                 :        +- * CometColumnarToRow (17)
                :                 :           +- CometProject (16)
                :                 :              +- CometFilter (15)
                :                 :                 +- CometNativeScan parquet spark_catalog.default.time_dim (14)
                :                 +- BroadcastExchange (25)
-               :                    +- CometNativeColumnarToRow (24)
+               :                    +- * CometColumnarToRow (24)
                :                       +- CometProject (23)
                :                          +- CometFilter (22)
                :                             +- CometNativeScan parquet spark_catalog.default.ship_mode (21)
                +- * HashAggregate (50)
-                  +- CometNativeColumnarToRow (49)
+                  +- * CometColumnarToRow (49)
                      +- CometColumnarExchange (48)
                         +- * HashAggregate (47)
                            +- * Project (46)
@@ -65,10 +65,10 @@ PartitionFilters: [isnotnull(ws_sold_date_sk#7), dynamicpruningexpression(ws_sol
 PushedFilters: [IsNotNull(ws_warehouse_sk), IsNotNull(ws_sold_time_sk), IsNotNull(ws_ship_mode_sk)]
 ReadSchema: struct<ws_sold_time_sk:int,ws_ship_mode_sk:int,ws_warehouse_sk:int,ws_quantity:int,ws_ext_sales_price:decimal(7,2),ws_net_paid:decimal(7,2)>
 
-(2) ColumnarToRow [codegen id : 1]
+(2) ColumnarToRow [codegen id : 5]
 Input [7]: [ws_sold_time_sk#1, ws_ship_mode_sk#2, ws_warehouse_sk#3, ws_quantity#4, ws_ext_sales_price#5, ws_net_paid#6, ws_sold_date_sk#7]
 
-(3) Filter [codegen id : 1]
+(3) Filter [codegen id : 5]
 Input [7]: [ws_sold_time_sk#1, ws_ship_mode_sk#2, ws_warehouse_sk#3, ws_quantity#4, ws_ext_sales_price#5, ws_net_paid#6, ws_sold_date_sk#7]
 Condition : ((isnotnull(ws_warehouse_sk#3) AND isnotnull(ws_sold_time_sk#1)) AND isnotnull(ws_ship_mode_sk#2))
 
@@ -87,33 +87,33 @@ Condition : isnotnull(w_warehouse_sk#9)
 Input [7]: [w_warehouse_sk#9, w_warehouse_name#10, w_warehouse_sq_ft#11, w_city#12, w_county#13, w_state#14, w_country#15]
 Arguments: [w_warehouse_sk#9, w_warehouse_name#10, w_warehouse_sq_ft#11, w_city#12, w_county#13, w_state#16, w_country#15], [w_warehouse_sk#9, w_warehouse_name#10, w_warehouse_sq_ft#11, w_city#12, w_county#13, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, w_state#14, 2, true, false, true) AS w_state#16, w_country#15]
 
-(7) CometNativeColumnarToRow
+(7) CometColumnarToRow [codegen id : 1]
 Input [7]: [w_warehouse_sk#9, w_warehouse_name#10, w_warehouse_sq_ft#11, w_city#12, w_county#13, w_state#16, w_country#15]
 
 (8) BroadcastExchange
 Input [7]: [w_warehouse_sk#9, w_warehouse_name#10, w_warehouse_sq_ft#11, w_city#12, w_county#13, w_state#16, w_country#15]
 Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint)),false), [plan_id=1]
 
-(9) BroadcastHashJoin [codegen id : 1]
+(9) BroadcastHashJoin [codegen id : 5]
 Left keys [1]: [ws_warehouse_sk#3]
 Right keys [1]: [w_warehouse_sk#9]
 Join type: Inner
 Join condition: None
 
-(10) Project [codegen id : 1]
+(10) Project [codegen id : 5]
 Output [12]: [ws_sold_time_sk#1, ws_ship_mode_sk#2, ws_quantity#4, ws_ext_sales_price#5, ws_net_paid#6, ws_sold_date_sk#7, w_warehouse_name#10, w_warehouse_sq_ft#11, w_city#12, w_county#13, w_state#16, w_country#15]
 Input [14]: [ws_sold_time_sk#1, ws_ship_mode_sk#2, ws_warehouse_sk#3, ws_quantity#4, ws_ext_sales_price#5, ws_net_paid#6, ws_sold_date_sk#7, w_warehouse_sk#9, w_warehouse_name#10, w_warehouse_sq_ft#11, w_city#12, w_county#13, w_state#16, w_country#15]
 
 (11) ReusedExchange [Reuses operator id: 60]
 Output [3]: [d_date_sk#17, d_year#18, d_moy#19]
 
-(12) BroadcastHashJoin [codegen id : 1]
+(12) BroadcastHashJoin [codegen id : 5]
 Left keys [1]: [ws_sold_date_sk#7]
 Right keys [1]: [d_date_sk#17]
 Join type: Inner
 Join condition: None
 
-(13) Project [codegen id : 1]
+(13) Project [codegen id : 5]
 Output [13]: [ws_sold_time_sk#1, ws_ship_mode_sk#2, ws_quantity#4, ws_ext_sales_price#5, ws_net_paid#6, w_warehouse_name#10, w_warehouse_sq_ft#11, w_city#12, w_county#13, w_state#16, w_country#15, d_year#18, d_moy#19]
 Input [15]: [ws_sold_time_sk#1, ws_ship_mode_sk#2, ws_quantity#4, ws_ext_sales_price#5, ws_net_paid#6, ws_sold_date_sk#7, w_warehouse_name#10, w_warehouse_sq_ft#11, w_city#12, w_county#13, w_state#16, w_country#15, d_date_sk#17, d_year#18, d_moy#19]
 
@@ -132,20 +132,20 @@ Condition : (((isnotnull(t_time#21) AND (t_time#21 >= 30838)) AND (t_time#21 <= 
 Input [2]: [t_time_sk#20, t_time#21]
 Arguments: [t_time_sk#20], [t_time_sk#20]
 
-(17) CometNativeColumnarToRow
+(17) CometColumnarToRow [codegen id : 3]
 Input [1]: [t_time_sk#20]
 
 (18) BroadcastExchange
 Input [1]: [t_time_sk#20]
 Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint)),false), [plan_id=2]
 
-(19) BroadcastHashJoin [codegen id : 1]
+(19) BroadcastHashJoin [codegen id : 5]
 Left keys [1]: [ws_sold_time_sk#1]
 Right keys [1]: [t_time_sk#20]
 Join type: Inner
 Join condition: None
 
-(20) Project [codegen id : 1]
+(20) Project [codegen id : 5]
 Output [12]: [ws_ship_mode_sk#2, ws_quantity#4, ws_ext_sales_price#5, ws_net_paid#6, w_warehouse_name#10, w_warehouse_sq_ft#11, w_city#12, w_county#13, w_state#16, w_country#15, d_year#18, d_moy#19]
 Input [14]: [ws_sold_time_sk#1, ws_ship_mode_sk#2, ws_quantity#4, ws_ext_sales_price#5, ws_net_paid#6, w_warehouse_name#10, w_warehouse_sq_ft#11, w_city#12, w_county#13, w_state#16, w_country#15, d_year#18, d_moy#19, t_time_sk#20]
 
@@ -164,24 +164,24 @@ Condition : (staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCo
 Input [2]: [sm_ship_mode_sk#22, sm_carrier#23]
 Arguments: [sm_ship_mode_sk#22], [sm_ship_mode_sk#22]
 
-(24) CometNativeColumnarToRow
+(24) CometColumnarToRow [codegen id : 4]
 Input [1]: [sm_ship_mode_sk#22]
 
 (25) BroadcastExchange
 Input [1]: [sm_ship_mode_sk#22]
 Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint)),false), [plan_id=3]
 
-(26) BroadcastHashJoin [codegen id : 1]
+(26) BroadcastHashJoin [codegen id : 5]
 Left keys [1]: [ws_ship_mode_sk#2]
 Right keys [1]: [sm_ship_mode_sk#22]
 Join type: Inner
 Join condition: None
 
-(27) Project [codegen id : 1]
+(27) Project [codegen id : 5]
 Output [11]: [ws_quantity#4, ws_ext_sales_price#5, ws_net_paid#6, w_warehouse_name#10, w_warehouse_sq_ft#11, w_city#12, w_county#13, w_state#16, w_country#15, d_year#18, d_moy#19]
 Input [13]: [ws_ship_mode_sk#2, ws_quantity#4, ws_ext_sales_price#5, ws_net_paid#6, w_warehouse_name#10, w_warehouse_sq_ft#11, w_city#12, w_county#13, w_state#16, w_country#15, d_year#18, d_moy#19, sm_ship_mode_sk#22]
 
-(28) HashAggregate [codegen id : 1]
+(28) HashAggregate [codegen id : 5]
 Input [11]: [ws_quantity#4, ws_ext_sales_price#5, ws_net_paid#6, w_warehouse_name#10, w_warehouse_sq_ft#11, w_city#12, w_county#13, w_state#16, w_country#15, d_year#18, d_moy#19]
 Keys [7]: [w_warehouse_name#10, w_warehouse_sq_ft#11, w_city#12, w_county#13, w_state#16, w_country#15, d_year#18]
 Functions [24]: [partial_sum(CASE WHEN (d_moy#19 = 1) THEN (ws_ext_sales_price#5 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END), partial_sum(CASE WHEN (d_moy#19 = 2) THEN (ws_ext_sales_price#5 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END), partial_sum(CASE WHEN (d_moy#19 = 3) THEN (ws_ext_sales_price#5 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END), partial_sum(CASE WHEN (d_moy#19 = 4) THEN (ws_ext_sales_price#5 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END), partial_sum(CASE WHEN (d_moy#19 = 5) THEN (ws_ext_sales_price#5 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END), partial_sum(CASE WHEN (d_moy#19 = 6) THEN (ws_ext_sales_price#5 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END), partial_sum(CASE WHEN (d_moy#19 = 7) THEN (ws_ext_sales_price#5 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END), partial_sum(CASE WHEN (d_moy#19 = 8) THEN (ws_ext_sales_price#5 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END), partial_sum(CASE WHEN (d_moy#19 = 9) THEN (ws_ext_sales_price#5 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END), partial_sum(CASE WHEN (d_moy#19 = 10) THEN (ws_ext_sales_price#5 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END), partial_sum(CASE WHEN (d_moy#19 = 11) THEN (ws_ext_sales_price#5 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END), partial_sum(CASE WHEN (d_moy#19 = 12) THEN (ws_ext_sales_price#5 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END), partial_sum(CASE WHEN (d_moy#19 = 1) THEN (ws_net_paid#6 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END), partial_sum(CASE WHEN (d_moy#19 = 2) THEN (ws_net_paid#6 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END), partial_sum(CASE WHEN (d_moy#19 = 3) THEN (ws_net_paid#6 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END), partial_sum(CASE WHEN (d_moy#19 = 4) THEN (ws_net_paid#6 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END), partial_sum(CASE WHEN (d_moy#19 = 5) THEN (ws_net_paid#6 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END), partial_sum(CASE WHEN (d_moy#19 = 6) THEN (ws_net_paid#6 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END), partial_sum(CASE WHEN (d_moy#19 = 7) THEN (ws_net_paid#6 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END), partial_sum(CASE WHEN (d_moy#19 = 8) THEN (ws_net_paid#6 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END), partial_sum(CASE WHEN (d_moy#19 = 9) THEN (ws_net_paid#6 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END), partial_sum(CASE WHEN (d_moy#19 = 10) THEN (ws_net_paid#6 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END), partial_sum(CASE WHEN (d_moy#19 = 11) THEN (ws_net_paid#6 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END), partial_sum(CASE WHEN (d_moy#19 = 12) THEN (ws_net_paid#6 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END)]
@@ -192,10 +192,10 @@ Results [55]: [w_warehouse_name#10, w_warehouse_sq_ft#11, w_city#12, w_county#13
 Input [55]: [w_warehouse_name#10, w_warehouse_sq_ft#11, w_city#12, w_county#13, w_state#16, w_country#15, d_year#18, sum#72, isEmpty#73, sum#74, isEmpty#75, sum#76, isEmpty#77, sum#78, isEmpty#79, sum#80, isEmpty#81, sum#82, isEmpty#83, sum#84, isEmpty#85, sum#86, isEmpty#87, sum#88, isEmpty#89, sum#90, isEmpty#91, sum#92, isEmpty#93, sum#94, isEmpty#95, sum#96, isEmpty#97, sum#98, isEmpty#99, sum#100, isEmpty#101, sum#102, isEmpty#103, sum#104, isEmpty#105, sum#106, isEmpty#107, sum#108, isEmpty#109, sum#110, isEmpty#111, sum#112, isEmpty#113, sum#114, isEmpty#115, sum#116, isEmpty#117, sum#118, isEmpty#119]
 Arguments: hashpartitioning(w_warehouse_name#10, w_warehouse_sq_ft#11, w_city#12, w_county#13, w_state#16, w_country#15, d_year#18, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=4]
 
-(30) CometNativeColumnarToRow
+(30) CometColumnarToRow [codegen id : 6]
 Input [55]: [w_warehouse_name#10, w_warehouse_sq_ft#11, w_city#12, w_county#13, w_state#16, w_country#15, d_year#18, sum#72, isEmpty#73, sum#74, isEmpty#75, sum#76, isEmpty#77, sum#78, isEmpty#79, sum#80, isEmpty#81, sum#82, isEmpty#83, sum#84, isEmpty#85, sum#86, isEmpty#87, sum#88, isEmpty#89, sum#90, isEmpty#91, sum#92, isEmpty#93, sum#94, isEmpty#95, sum#96, isEmpty#97, sum#98, isEmpty#99, sum#100, isEmpty#101, sum#102, isEmpty#103, sum#104, isEmpty#105, sum#106, isEmpty#107, sum#108, isEmpty#109, sum#110, isEmpty#111, sum#112, isEmpty#113, sum#114, isEmpty#115, sum#116, isEmpty#117, sum#118, isEmpty#119]
 
-(31) HashAggregate [codegen id : 2]
+(31) HashAggregate [codegen id : 6]
 Input [55]: [w_warehouse_name#10, w_warehouse_sq_ft#11, w_city#12, w_county#13, w_state#16, w_country#15, d_year#18, sum#72, isEmpty#73, sum#74, isEmpty#75, sum#76, isEmpty#77, sum#78, isEmpty#79, sum#80, isEmpty#81, sum#82, isEmpty#83, sum#84, isEmpty#85, sum#86, isEmpty#87, sum#88, isEmpty#89, sum#90, isEmpty#91, sum#92, isEmpty#93, sum#94, isEmpty#95, sum#96, isEmpty#97, sum#98, isEmpty#99, sum#100, isEmpty#101, sum#102, isEmpty#103, sum#104, isEmpty#105, sum#106, isEmpty#107, sum#108, isEmpty#109, sum#110, isEmpty#111, sum#112, isEmpty#113, sum#114, isEmpty#115, sum#116, isEmpty#117, sum#118, isEmpty#119]
 Keys [7]: [w_warehouse_name#10, w_warehouse_sq_ft#11, w_city#12, w_county#13, w_state#16, w_country#15, d_year#18]
 Functions [24]: [sum(CASE WHEN (d_moy#19 = 1) THEN (ws_ext_sales_price#5 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END), sum(CASE WHEN (d_moy#19 = 2) THEN (ws_ext_sales_price#5 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END), sum(CASE WHEN (d_moy#19 = 3) THEN (ws_ext_sales_price#5 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END), sum(CASE WHEN (d_moy#19 = 4) THEN (ws_ext_sales_price#5 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END), sum(CASE WHEN (d_moy#19 = 5) THEN (ws_ext_sales_price#5 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END), sum(CASE WHEN (d_moy#19 = 6) THEN (ws_ext_sales_price#5 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END), sum(CASE WHEN (d_moy#19 = 7) THEN (ws_ext_sales_price#5 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END), sum(CASE WHEN (d_moy#19 = 8) THEN (ws_ext_sales_price#5 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END), sum(CASE WHEN (d_moy#19 = 9) THEN (ws_ext_sales_price#5 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END), sum(CASE WHEN (d_moy#19 = 10) THEN (ws_ext_sales_price#5 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END), sum(CASE WHEN (d_moy#19 = 11) THEN (ws_ext_sales_price#5 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END), sum(CASE WHEN (d_moy#19 = 12) THEN (ws_ext_sales_price#5 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END), sum(CASE WHEN (d_moy#19 = 1) THEN (ws_net_paid#6 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END), sum(CASE WHEN (d_moy#19 = 2) THEN (ws_net_paid#6 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END), sum(CASE WHEN (d_moy#19 = 3) THEN (ws_net_paid#6 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END), sum(CASE WHEN (d_moy#19 = 4) THEN (ws_net_paid#6 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END), sum(CASE WHEN (d_moy#19 = 5) THEN (ws_net_paid#6 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END), sum(CASE WHEN (d_moy#19 = 6) THEN (ws_net_paid#6 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END), sum(CASE WHEN (d_moy#19 = 7) THEN (ws_net_paid#6 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END), sum(CASE WHEN (d_moy#19 = 8) THEN (ws_net_paid#6 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END), sum(CASE WHEN (d_moy#19 = 9) THEN (ws_net_paid#6 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END), sum(CASE WHEN (d_moy#19 = 10) THEN (ws_net_paid#6 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END), sum(CASE WHEN (d_moy#19 = 11) THEN (ws_net_paid#6 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END), sum(CASE WHEN (d_moy#19 = 12) THEN (ws_net_paid#6 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END)]
@@ -210,66 +210,66 @@ PartitionFilters: [isnotnull(cs_sold_date_sk#176), dynamicpruningexpression(cs_s
 PushedFilters: [IsNotNull(cs_warehouse_sk), IsNotNull(cs_sold_time_sk), IsNotNull(cs_ship_mode_sk)]
 ReadSchema: struct<cs_sold_time_sk:int,cs_ship_mode_sk:int,cs_warehouse_sk:int,cs_quantity:int,cs_sales_price:decimal(7,2),cs_net_paid_inc_tax:decimal(7,2)>
 
-(33) ColumnarToRow [codegen id : 3]
+(33) ColumnarToRow [codegen id : 11]
 Input [7]: [cs_sold_time_sk#170, cs_ship_mode_sk#171, cs_warehouse_sk#172, cs_quantity#173, cs_sales_price#174, cs_net_paid_inc_tax#175, cs_sold_date_sk#176]
 
-(34) Filter [codegen id : 3]
+(34) Filter [codegen id : 11]
 Input [7]: [cs_sold_time_sk#170, cs_ship_mode_sk#171, cs_warehouse_sk#172, cs_quantity#173, cs_sales_price#174, cs_net_paid_inc_tax#175, cs_sold_date_sk#176]
 Condition : ((isnotnull(cs_warehouse_sk#172) AND isnotnull(cs_sold_time_sk#170)) AND isnotnull(cs_ship_mode_sk#171))
 
 (35) ReusedExchange [Reuses operator id: 8]
 Output [7]: [w_warehouse_sk#177, w_warehouse_name#178, w_warehouse_sq_ft#179, w_city#180, w_county#181, w_state#182, w_country#183]
 
-(36) BroadcastHashJoin [codegen id : 3]
+(36) BroadcastHashJoin [codegen id : 11]
 Left keys [1]: [cs_warehouse_sk#172]
 Right keys [1]: [w_warehouse_sk#177]
 Join type: Inner
 Join condition: None
 
-(37) Project [codegen id : 3]
+(37) Project [codegen id : 11]
 Output [12]: [cs_sold_time_sk#170, cs_ship_mode_sk#171, cs_quantity#173, cs_sales_price#174, cs_net_paid_inc_tax#175, cs_sold_date_sk#176, w_warehouse_name#178, w_warehouse_sq_ft#179, w_city#180, w_county#181, w_state#182, w_country#183]
 Input [14]: [cs_sold_time_sk#170, cs_ship_mode_sk#171, cs_warehouse_sk#172, cs_quantity#173, cs_sales_price#174, cs_net_paid_inc_tax#175, cs_sold_date_sk#176, w_warehouse_sk#177, w_warehouse_name#178, w_warehouse_sq_ft#179, w_city#180, w_county#181, w_state#182, w_country#183]
 
 (38) ReusedExchange [Reuses operator id: 60]
 Output [3]: [d_date_sk#184, d_year#185, d_moy#186]
 
-(39) BroadcastHashJoin [codegen id : 3]
+(39) BroadcastHashJoin [codegen id : 11]
 Left keys [1]: [cs_sold_date_sk#176]
 Right keys [1]: [d_date_sk#184]
 Join type: Inner
 Join condition: None
 
-(40) Project [codegen id : 3]
+(40) Project [codegen id : 11]
 Output [13]: [cs_sold_time_sk#170, cs_ship_mode_sk#171, cs_quantity#173, cs_sales_price#174, cs_net_paid_inc_tax#175, w_warehouse_name#178, w_warehouse_sq_ft#179, w_city#180, w_county#181, w_state#182, w_country#183, d_year#185, d_moy#186]
 Input [15]: [cs_sold_time_sk#170, cs_ship_mode_sk#171, cs_quantity#173, cs_sales_price#174, cs_net_paid_inc_tax#175, cs_sold_date_sk#176, w_warehouse_name#178, w_warehouse_sq_ft#179, w_city#180, w_county#181, w_state#182, w_country#183, d_date_sk#184, d_year#185, d_moy#186]
 
 (41) ReusedExchange [Reuses operator id: 18]
 Output [1]: [t_time_sk#187]
 
-(42) BroadcastHashJoin [codegen id : 3]
+(42) BroadcastHashJoin [codegen id : 11]
 Left keys [1]: [cs_sold_time_sk#170]
 Right keys [1]: [t_time_sk#187]
 Join type: Inner
 Join condition: None
 
-(43) Project [codegen id : 3]
+(43) Project [codegen id : 11]
 Output [12]: [cs_ship_mode_sk#171, cs_quantity#173, cs_sales_price#174, cs_net_paid_inc_tax#175, w_warehouse_name#178, w_warehouse_sq_ft#179, w_city#180, w_county#181, w_state#182, w_country#183, d_year#185, d_moy#186]
 Input [14]: [cs_sold_time_sk#170, cs_ship_mode_sk#171, cs_quantity#173, cs_sales_price#174, cs_net_paid_inc_tax#175, w_warehouse_name#178, w_warehouse_sq_ft#179, w_city#180, w_county#181, w_state#182, w_country#183, d_year#185, d_moy#186, t_time_sk#187]
 
 (44) ReusedExchange [Reuses operator id: 25]
 Output [1]: [sm_ship_mode_sk#188]
 
-(45) BroadcastHashJoin [codegen id : 3]
+(45) BroadcastHashJoin [codegen id : 11]
 Left keys [1]: [cs_ship_mode_sk#171]
 Right keys [1]: [sm_ship_mode_sk#188]
 Join type: Inner
 Join condition: None
 
-(46) Project [codegen id : 3]
+(46) Project [codegen id : 11]
 Output [11]: [cs_quantity#173, cs_sales_price#174, cs_net_paid_inc_tax#175, w_warehouse_name#178, w_warehouse_sq_ft#179, w_city#180, w_county#181, w_state#182, w_country#183, d_year#185, d_moy#186]
 Input [13]: [cs_ship_mode_sk#171, cs_quantity#173, cs_sales_price#174, cs_net_paid_inc_tax#175, w_warehouse_name#178, w_warehouse_sq_ft#179, w_city#180, w_county#181, w_state#182, w_country#183, d_year#185, d_moy#186, sm_ship_mode_sk#188]
 
-(47) HashAggregate [codegen id : 3]
+(47) HashAggregate [codegen id : 11]
 Input [11]: [cs_quantity#173, cs_sales_price#174, cs_net_paid_inc_tax#175, w_warehouse_name#178, w_warehouse_sq_ft#179, w_city#180, w_county#181, w_state#182, w_country#183, d_year#185, d_moy#186]
 Keys [7]: [w_warehouse_name#178, w_warehouse_sq_ft#179, w_city#180, w_county#181, w_state#182, w_country#183, d_year#185]
 Functions [24]: [partial_sum(CASE WHEN (d_moy#186 = 1) THEN (cs_sales_price#174 * cast(cs_quantity#173 as decimal(10,0))) ELSE 0.00 END), partial_sum(CASE WHEN (d_moy#186 = 2) THEN (cs_sales_price#174 * cast(cs_quantity#173 as decimal(10,0))) ELSE 0.00 END), partial_sum(CASE WHEN (d_moy#186 = 3) THEN (cs_sales_price#174 * cast(cs_quantity#173 as decimal(10,0))) ELSE 0.00 END), partial_sum(CASE WHEN (d_moy#186 = 4) THEN (cs_sales_price#174 * cast(cs_quantity#173 as decimal(10,0))) ELSE 0.00 END), partial_sum(CASE WHEN (d_moy#186 = 5) THEN (cs_sales_price#174 * cast(cs_quantity#173 as decimal(10,0))) ELSE 0.00 END), partial_sum(CASE WHEN (d_moy#186 = 6) THEN (cs_sales_price#174 * cast(cs_quantity#173 as decimal(10,0))) ELSE 0.00 END), partial_sum(CASE WHEN (d_moy#186 = 7) THEN (cs_sales_price#174 * cast(cs_quantity#173 as decimal(10,0))) ELSE 0.00 END), partial_sum(CASE WHEN (d_moy#186 = 8) THEN (cs_sales_price#174 * cast(cs_quantity#173 as decimal(10,0))) ELSE 0.00 END), partial_sum(CASE WHEN (d_moy#186 = 9) THEN (cs_sales_price#174 * cast(cs_quantity#173 as decimal(10,0))) ELSE 0.00 END), partial_sum(CASE WHEN (d_moy#186 = 10) THEN (cs_sales_price#174 * cast(cs_quantity#173 as decimal(10,0))) ELSE 0.00 END), partial_sum(CASE WHEN (d_moy#186 = 11) THEN (cs_sales_price#174 * cast(cs_quantity#173 as decimal(10,0))) ELSE 0.00 END), partial_sum(CASE WHEN (d_moy#186 = 12) THEN (cs_sales_price#174 * cast(cs_quantity#173 as decimal(10,0))) ELSE 0.00 END), partial_sum(CASE WHEN (d_moy#186 = 1) THEN (cs_net_paid_inc_tax#175 * cast(cs_quantity#173 as decimal(10,0))) ELSE 0.00 END), partial_sum(CASE WHEN (d_moy#186 = 2) THEN (cs_net_paid_inc_tax#175 * cast(cs_quantity#173 as decimal(10,0))) ELSE 0.00 END), partial_sum(CASE WHEN (d_moy#186 = 3) THEN (cs_net_paid_inc_tax#175 * cast(cs_quantity#173 as decimal(10,0))) ELSE 0.00 END), partial_sum(CASE WHEN (d_moy#186 = 4) THEN (cs_net_paid_inc_tax#175 * cast(cs_quantity#173 as decimal(10,0))) ELSE 0.00 END), partial_sum(CASE WHEN (d_moy#186 = 5) THEN (cs_net_paid_inc_tax#175 * cast(cs_quantity#173 as decimal(10,0))) ELSE 0.00 END), partial_sum(CASE WHEN (d_moy#186 = 6) THEN (cs_net_paid_inc_tax#175 * cast(cs_quantity#173 as decimal(10,0))) ELSE 0.00 END), partial_sum(CASE WHEN (d_moy#186 = 7) THEN (cs_net_paid_inc_tax#175 * cast(cs_quantity#173 as decimal(10,0))) ELSE 0.00 END), partial_sum(CASE WHEN (d_moy#186 = 8) THEN (cs_net_paid_inc_tax#175 * cast(cs_quantity#173 as decimal(10,0))) ELSE 0.00 END), partial_sum(CASE WHEN (d_moy#186 = 9) THEN (cs_net_paid_inc_tax#175 * cast(cs_quantity#173 as decimal(10,0))) ELSE 0.00 END), partial_sum(CASE WHEN (d_moy#186 = 10) THEN (cs_net_paid_inc_tax#175 * cast(cs_quantity#173 as decimal(10,0))) ELSE 0.00 END), partial_sum(CASE WHEN (d_moy#186 = 11) THEN (cs_net_paid_inc_tax#175 * cast(cs_quantity#173 as decimal(10,0))) ELSE 0.00 END), partial_sum(CASE WHEN (d_moy#186 = 12) THEN (cs_net_paid_inc_tax#175 * cast(cs_quantity#173 as decimal(10,0))) ELSE 0.00 END)]
@@ -280,10 +280,10 @@ Results [55]: [w_warehouse_name#178, w_warehouse_sq_ft#179, w_city#180, w_county
 Input [55]: [w_warehouse_name#178, w_warehouse_sq_ft#179, w_city#180, w_county#181, w_state#182, w_country#183, d_year#185, sum#237, isEmpty#238, sum#239, isEmpty#240, sum#241, isEmpty#242, sum#243, isEmpty#244, sum#245, isEmpty#246, sum#247, isEmpty#248, sum#249, isEmpty#250, sum#251, isEmpty#252, sum#253, isEmpty#254, sum#255, isEmpty#256, sum#257, isEmpty#258, sum#259, isEmpty#260, sum#261, isEmpty#262, sum#263, isEmpty#264, sum#265, isEmpty#266, sum#267, isEmpty#268, sum#269, isEmpty#270, sum#271, isEmpty#272, sum#273, isEmpty#274, sum#275, isEmpty#276, sum#277, isEmpty#278, sum#279, isEmpty#280, sum#281, isEmpty#282, sum#283, isEmpty#284]
 Arguments: hashpartitioning(w_warehouse_name#178, w_warehouse_sq_ft#179, w_city#180, w_county#181, w_state#182, w_country#183, d_year#185, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=5]
 
-(49) CometNativeColumnarToRow
+(49) CometColumnarToRow [codegen id : 12]
 Input [55]: [w_warehouse_name#178, w_warehouse_sq_ft#179, w_city#180, w_county#181, w_state#182, w_country#183, d_year#185, sum#237, isEmpty#238, sum#239, isEmpty#240, sum#241, isEmpty#242, sum#243, isEmpty#244, sum#245, isEmpty#246, sum#247, isEmpty#248, sum#249, isEmpty#250, sum#251, isEmpty#252, sum#253, isEmpty#254, sum#255, isEmpty#256, sum#257, isEmpty#258, sum#259, isEmpty#260, sum#261, isEmpty#262, sum#263, isEmpty#264, sum#265, isEmpty#266, sum#267, isEmpty#268, sum#269, isEmpty#270, sum#271, isEmpty#272, sum#273, isEmpty#274, sum#275, isEmpty#276, sum#277, isEmpty#278, sum#279, isEmpty#280, sum#281, isEmpty#282, sum#283, isEmpty#284]
 
-(50) HashAggregate [codegen id : 4]
+(50) HashAggregate [codegen id : 12]
 Input [55]: [w_warehouse_name#178, w_warehouse_sq_ft#179, w_city#180, w_county#181, w_state#182, w_country#183, d_year#185, sum#237, isEmpty#238, sum#239, isEmpty#240, sum#241, isEmpty#242, sum#243, isEmpty#244, sum#245, isEmpty#246, sum#247, isEmpty#248, sum#249, isEmpty#250, sum#251, isEmpty#252, sum#253, isEmpty#254, sum#255, isEmpty#256, sum#257, isEmpty#258, sum#259, isEmpty#260, sum#261, isEmpty#262, sum#263, isEmpty#264, sum#265, isEmpty#266, sum#267, isEmpty#268, sum#269, isEmpty#270, sum#271, isEmpty#272, sum#273, isEmpty#274, sum#275, isEmpty#276, sum#277, isEmpty#278, sum#279, isEmpty#280, sum#281, isEmpty#282, sum#283, isEmpty#284]
 Keys [7]: [w_warehouse_name#178, w_warehouse_sq_ft#179, w_city#180, w_county#181, w_state#182, w_country#183, d_year#185]
 Functions [24]: [sum(CASE WHEN (d_moy#186 = 1) THEN (cs_sales_price#174 * cast(cs_quantity#173 as decimal(10,0))) ELSE 0.00 END), sum(CASE WHEN (d_moy#186 = 2) THEN (cs_sales_price#174 * cast(cs_quantity#173 as decimal(10,0))) ELSE 0.00 END), sum(CASE WHEN (d_moy#186 = 3) THEN (cs_sales_price#174 * cast(cs_quantity#173 as decimal(10,0))) ELSE 0.00 END), sum(CASE WHEN (d_moy#186 = 4) THEN (cs_sales_price#174 * cast(cs_quantity#173 as decimal(10,0))) ELSE 0.00 END), sum(CASE WHEN (d_moy#186 = 5) THEN (cs_sales_price#174 * cast(cs_quantity#173 as decimal(10,0))) ELSE 0.00 END), sum(CASE WHEN (d_moy#186 = 6) THEN (cs_sales_price#174 * cast(cs_quantity#173 as decimal(10,0))) ELSE 0.00 END), sum(CASE WHEN (d_moy#186 = 7) THEN (cs_sales_price#174 * cast(cs_quantity#173 as decimal(10,0))) ELSE 0.00 END), sum(CASE WHEN (d_moy#186 = 8) THEN (cs_sales_price#174 * cast(cs_quantity#173 as decimal(10,0))) ELSE 0.00 END), sum(CASE WHEN (d_moy#186 = 9) THEN (cs_sales_price#174 * cast(cs_quantity#173 as decimal(10,0))) ELSE 0.00 END), sum(CASE WHEN (d_moy#186 = 10) THEN (cs_sales_price#174 * cast(cs_quantity#173 as decimal(10,0))) ELSE 0.00 END), sum(CASE WHEN (d_moy#186 = 11) THEN (cs_sales_price#174 * cast(cs_quantity#173 as decimal(10,0))) ELSE 0.00 END), sum(CASE WHEN (d_moy#186 = 12) THEN (cs_sales_price#174 * cast(cs_quantity#173 as decimal(10,0))) ELSE 0.00 END), sum(CASE WHEN (d_moy#186 = 1) THEN (cs_net_paid_inc_tax#175 * cast(cs_quantity#173 as decimal(10,0))) ELSE 0.00 END), sum(CASE WHEN (d_moy#186 = 2) THEN (cs_net_paid_inc_tax#175 * cast(cs_quantity#173 as decimal(10,0))) ELSE 0.00 END), sum(CASE WHEN (d_moy#186 = 3) THEN (cs_net_paid_inc_tax#175 * cast(cs_quantity#173 as decimal(10,0))) ELSE 0.00 END), sum(CASE WHEN (d_moy#186 = 4) THEN (cs_net_paid_inc_tax#175 * cast(cs_quantity#173 as decimal(10,0))) ELSE 0.00 END), sum(CASE WHEN (d_moy#186 = 5) THEN (cs_net_paid_inc_tax#175 * cast(cs_quantity#173 as decimal(10,0))) ELSE 0.00 END), sum(CASE WHEN (d_moy#186 = 6) THEN (cs_net_paid_inc_tax#175 * cast(cs_quantity#173 as decimal(10,0))) ELSE 0.00 END), sum(CASE WHEN (d_moy#186 = 7) THEN (cs_net_paid_inc_tax#175 * cast(cs_quantity#173 as decimal(10,0))) ELSE 0.00 END), sum(CASE WHEN (d_moy#186 = 8) THEN (cs_net_paid_inc_tax#175 * cast(cs_quantity#173 as decimal(10,0))) ELSE 0.00 END), sum(CASE WHEN (d_moy#186 = 9) THEN (cs_net_paid_inc_tax#175 * cast(cs_quantity#173 as decimal(10,0))) ELSE 0.00 END), sum(CASE WHEN (d_moy#186 = 10) THEN (cs_net_paid_inc_tax#175 * cast(cs_quantity#173 as decimal(10,0))) ELSE 0.00 END), sum(CASE WHEN (d_moy#186 = 11) THEN (cs_net_paid_inc_tax#175 * cast(cs_quantity#173 as decimal(10,0))) ELSE 0.00 END), sum(CASE WHEN (d_moy#186 = 12) THEN (cs_net_paid_inc_tax#175 * cast(cs_quantity#173 as decimal(10,0))) ELSE 0.00 END)]
@@ -292,7 +292,7 @@ Results [32]: [w_warehouse_name#178, w_warehouse_sq_ft#179, w_city#180, w_county
 
 (51) Union
 
-(52) HashAggregate [codegen id : 5]
+(52) HashAggregate [codegen id : 13]
 Input [32]: [w_warehouse_name#10, w_warehouse_sq_ft#11, w_city#12, w_county#13, w_state#16, w_country#15, ship_carriers#144, year#145, jan_sales#146, feb_sales#147, mar_sales#148, apr_sales#149, may_sales#150, jun_sales#151, jul_sales#152, aug_sales#153, sep_sales#154, oct_sales#155, nov_sales#156, dec_sales#157, jan_net#158, feb_net#159, mar_net#160, apr_net#161, may_net#162, jun_net#163, jul_net#164, aug_net#165, sep_net#166, oct_net#167, nov_net#168, dec_net#169]
 Keys [8]: [w_warehouse_name#10, w_warehouse_sq_ft#11, w_city#12, w_county#13, w_state#16, w_country#15, ship_carriers#144, year#145]
 Functions [36]: [partial_sum(jan_sales#146), partial_sum(feb_sales#147), partial_sum(mar_sales#148), partial_sum(apr_sales#149), partial_sum(may_sales#150), partial_sum(jun_sales#151), partial_sum(jul_sales#152), partial_sum(aug_sales#153), partial_sum(sep_sales#154), partial_sum(oct_sales#155), partial_sum(nov_sales#156), partial_sum(dec_sales#157), partial_sum((jan_sales#146 / cast(w_warehouse_sq_ft#11 as decimal(10,0)))), partial_sum((feb_sales#147 / cast(w_warehouse_sq_ft#11 as decimal(10,0)))), partial_sum((mar_sales#148 / cast(w_warehouse_sq_ft#11 as decimal(10,0)))), partial_sum((apr_sales#149 / cast(w_warehouse_sq_ft#11 as decimal(10,0)))), partial_sum((may_sales#150 / cast(w_warehouse_sq_ft#11 as decimal(10,0)))), partial_sum((jun_sales#151 / cast(w_warehouse_sq_ft#11 as decimal(10,0)))), partial_sum((jul_sales#152 / cast(w_warehouse_sq_ft#11 as decimal(10,0)))), partial_sum((aug_sales#153 / cast(w_warehouse_sq_ft#11 as decimal(10,0)))), partial_sum((sep_sales#154 / cast(w_warehouse_sq_ft#11 as decimal(10,0)))), partial_sum((oct_sales#155 / cast(w_warehouse_sq_ft#11 as decimal(10,0)))), partial_sum((nov_sales#156 / cast(w_warehouse_sq_ft#11 as decimal(10,0)))), partial_sum((dec_sales#157 / cast(w_warehouse_sq_ft#11 as decimal(10,0)))), partial_sum(jan_net#158), partial_sum(feb_net#159), partial_sum(mar_net#160), partial_sum(apr_net#161), partial_sum(may_net#162), partial_sum(jun_net#163), partial_sum(jul_net#164), partial_sum(aug_net#165), partial_sum(sep_net#166), partial_sum(oct_net#167), partial_sum(nov_net#168), partial_sum(dec_net#169)]
@@ -303,10 +303,10 @@ Results [80]: [w_warehouse_name#10, w_warehouse_sq_ft#11, w_city#12, w_county#13
 Input [80]: [w_warehouse_name#10, w_warehouse_sq_ft#11, w_city#12, w_county#13, w_state#16, w_country#15, ship_carriers#144, year#145, sum#407, isEmpty#408, sum#409, isEmpty#410, sum#411, isEmpty#412, sum#413, isEmpty#414, sum#415, isEmpty#416, sum#417, isEmpty#418, sum#419, isEmpty#420, sum#421, isEmpty#422, sum#423, isEmpty#424, sum#425, isEmpty#426, sum#427, isEmpty#428, sum#429, isEmpty#430, sum#431, isEmpty#432, sum#433, isEmpty#434, sum#435, isEmpty#436, sum#437, isEmpty#438, sum#439, isEmpty#440, sum#441, isEmpty#442, sum#443, isEmpty#444, sum#445, isEmpty#446, sum#447, isEmpty#448, sum#449, isEmpty#450, sum#451, isEmpty#452, sum#453, isEmpty#454, sum#455, isEmpty#456, sum#457, isEmpty#458, sum#459, isEmpty#460, sum#461, isEmpty#462, sum#463, isEmpty#464, sum#465, isEmpty#466, sum#467, isEmpty#468, sum#469, isEmpty#470, sum#471, isEmpty#472, sum#473, isEmpty#474, sum#475, isEmpty#476, sum#477, isEmpty#478]
 Arguments: hashpartitioning(w_warehouse_name#10, w_warehouse_sq_ft#11, w_city#12, w_county#13, w_state#16, w_country#15, ship_carriers#144, year#145, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=6]
 
-(54) CometNativeColumnarToRow
+(54) CometColumnarToRow [codegen id : 14]
 Input [80]: [w_warehouse_name#10, w_warehouse_sq_ft#11, w_city#12, w_county#13, w_state#16, w_country#15, ship_carriers#144, year#145, sum#407, isEmpty#408, sum#409, isEmpty#410, sum#411, isEmpty#412, sum#413, isEmpty#414, sum#415, isEmpty#416, sum#417, isEmpty#418, sum#419, isEmpty#420, sum#421, isEmpty#422, sum#423, isEmpty#424, sum#425, isEmpty#426, sum#427, isEmpty#428, sum#429, isEmpty#430, sum#431, isEmpty#432, sum#433, isEmpty#434, sum#435, isEmpty#436, sum#437, isEmpty#438, sum#439, isEmpty#440, sum#441, isEmpty#442, sum#443, isEmpty#444, sum#445, isEmpty#446, sum#447, isEmpty#448, sum#449, isEmpty#450, sum#451, isEmpty#452, sum#453, isEmpty#454, sum#455, isEmpty#456, sum#457, isEmpty#458, sum#459, isEmpty#460, sum#461, isEmpty#462, sum#463, isEmpty#464, sum#465, isEmpty#466, sum#467, isEmpty#468, sum#469, isEmpty#470, sum#471, isEmpty#472, sum#473, isEmpty#474, sum#475, isEmpty#476, sum#477, isEmpty#478]
 
-(55) HashAggregate [codegen id : 6]
+(55) HashAggregate [codegen id : 14]
 Input [80]: [w_warehouse_name#10, w_warehouse_sq_ft#11, w_city#12, w_county#13, w_state#16, w_country#15, ship_carriers#144, year#145, sum#407, isEmpty#408, sum#409, isEmpty#410, sum#411, isEmpty#412, sum#413, isEmpty#414, sum#415, isEmpty#416, sum#417, isEmpty#418, sum#419, isEmpty#420, sum#421, isEmpty#422, sum#423, isEmpty#424, sum#425, isEmpty#426, sum#427, isEmpty#428, sum#429, isEmpty#430, sum#431, isEmpty#432, sum#433, isEmpty#434, sum#435, isEmpty#436, sum#437, isEmpty#438, sum#439, isEmpty#440, sum#441, isEmpty#442, sum#443, isEmpty#444, sum#445, isEmpty#446, sum#447, isEmpty#448, sum#449, isEmpty#450, sum#451, isEmpty#452, sum#453, isEmpty#454, sum#455, isEmpty#456, sum#457, isEmpty#458, sum#459, isEmpty#460, sum#461, isEmpty#462, sum#463, isEmpty#464, sum#465, isEmpty#466, sum#467, isEmpty#468, sum#469, isEmpty#470, sum#471, isEmpty#472, sum#473, isEmpty#474, sum#475, isEmpty#476, sum#477, isEmpty#478]
 Keys [8]: [w_warehouse_name#10, w_warehouse_sq_ft#11, w_city#12, w_county#13, w_state#16, w_country#15, ship_carriers#144, year#145]
 Functions [36]: [sum(jan_sales#146), sum(feb_sales#147), sum(mar_sales#148), sum(apr_sales#149), sum(may_sales#150), sum(jun_sales#151), sum(jul_sales#152), sum(aug_sales#153), sum(sep_sales#154), sum(oct_sales#155), sum(nov_sales#156), sum(dec_sales#157), sum((jan_sales#146 / cast(w_warehouse_sq_ft#11 as decimal(10,0)))), sum((feb_sales#147 / cast(w_warehouse_sq_ft#11 as decimal(10,0)))), sum((mar_sales#148 / cast(w_warehouse_sq_ft#11 as decimal(10,0)))), sum((apr_sales#149 / cast(w_warehouse_sq_ft#11 as decimal(10,0)))), sum((may_sales#150 / cast(w_warehouse_sq_ft#11 as decimal(10,0)))), sum((jun_sales#151 / cast(w_warehouse_sq_ft#11 as decimal(10,0)))), sum((jul_sales#152 / cast(w_warehouse_sq_ft#11 as decimal(10,0)))), sum((aug_sales#153 / cast(w_warehouse_sq_ft#11 as decimal(10,0)))), sum((sep_sales#154 / cast(w_warehouse_sq_ft#11 as decimal(10,0)))), sum((oct_sales#155 / cast(w_warehouse_sq_ft#11 as decimal(10,0)))), sum((nov_sales#156 / cast(w_warehouse_sq_ft#11 as decimal(10,0)))), sum((dec_sales#157 / cast(w_warehouse_sq_ft#11 as decimal(10,0)))), sum(jan_net#158), sum(feb_net#159), sum(mar_net#160), sum(apr_net#161), sum(may_net#162), sum(jun_net#163), sum(jul_net#164), sum(aug_net#165), sum(sep_net#166), sum(oct_net#167), sum(nov_net#168), sum(dec_net#169)]
@@ -321,7 +321,7 @@ Arguments: 100, [w_warehouse_name#10 ASC NULLS FIRST], [w_warehouse_name#10, w_w
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = ws_sold_date_sk#7 IN dynamicpruning#8
 BroadcastExchange (60)
-+- CometNativeColumnarToRow (59)
++- * CometColumnarToRow (59)
    +- CometFilter (58)
       +- CometNativeScan parquet spark_catalog.default.date_dim (57)
 
@@ -337,7 +337,7 @@ ReadSchema: struct<d_date_sk:int,d_year:int,d_moy:int>
 Input [3]: [d_date_sk#17, d_year#18, d_moy#19]
 Condition : ((isnotnull(d_year#18) AND (d_year#18 = 2001)) AND isnotnull(d_date_sk#17))
 
-(59) CometNativeColumnarToRow
+(59) CometColumnarToRow [codegen id : 1]
 Input [3]: [d_date_sk#17, d_year#18, d_moy#19]
 
 (60) BroadcastExchange

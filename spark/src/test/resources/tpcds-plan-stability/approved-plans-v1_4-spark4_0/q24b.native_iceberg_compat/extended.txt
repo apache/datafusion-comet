@@ -42,7 +42,7 @@ Filter
 :                                   :              +- CometFilter
 :                                   :                 +- CometScan [native_iceberg_compat] parquet spark_catalog.default.customer
 :                                   +- BroadcastExchange
-:                                      +- CometNativeColumnarToRow
+:                                      +- CometColumnarToRow
 :                                         +- CometProject
 :                                            +- CometFilter
 :                                               +- CometScan [native_iceberg_compat] parquet spark_catalog.default.customer_address
@@ -88,7 +88,7 @@ Filter
                               :              +- CometFilter
                               :                 +- CometScan [native_iceberg_compat] parquet spark_catalog.default.customer
                               +- BroadcastExchange
-                                 +- CometNativeColumnarToRow
+                                 +- CometColumnarToRow
                                     +- CometProject
                                        +- CometFilter
                                           +- CometScan [native_iceberg_compat] parquet spark_catalog.default.customer_address

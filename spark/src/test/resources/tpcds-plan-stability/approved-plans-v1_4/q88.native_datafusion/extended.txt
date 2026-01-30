@@ -5,7 +5,7 @@ BroadcastNestedLoopJoin
 :  :  :  :- BroadcastNestedLoopJoin
 :  :  :  :  :- BroadcastNestedLoopJoin
 :  :  :  :  :  :-  BroadcastNestedLoopJoin [COMET: BroadcastNestedLoopJoin is not supported]
-:  :  :  :  :  :  :- CometNativeColumnarToRow
+:  :  :  :  :  :  :- CometColumnarToRow
 :  :  :  :  :  :  :  +- CometHashAggregate
 :  :  :  :  :  :  :     +- CometExchange
 :  :  :  :  :  :  :        +- CometHashAggregate
@@ -31,7 +31,7 @@ BroadcastNestedLoopJoin
 :  :  :  :  :  :  :                       +- CometFilter
 :  :  :  :  :  :  :                          +- CometNativeScan parquet spark_catalog.default.store
 :  :  :  :  :  :  +- BroadcastExchange
-:  :  :  :  :  :     +- CometNativeColumnarToRow
+:  :  :  :  :  :     +- CometColumnarToRow
 :  :  :  :  :  :        +- CometHashAggregate
 :  :  :  :  :  :           +- CometExchange
 :  :  :  :  :  :              +- CometHashAggregate
@@ -57,7 +57,7 @@ BroadcastNestedLoopJoin
 :  :  :  :  :  :                             +- CometFilter
 :  :  :  :  :  :                                +- CometNativeScan parquet spark_catalog.default.store
 :  :  :  :  :  +- BroadcastExchange
-:  :  :  :  :     +- CometNativeColumnarToRow
+:  :  :  :  :     +- CometColumnarToRow
 :  :  :  :  :        +- CometHashAggregate
 :  :  :  :  :           +- CometExchange
 :  :  :  :  :              +- CometHashAggregate
@@ -83,7 +83,7 @@ BroadcastNestedLoopJoin
 :  :  :  :  :                             +- CometFilter
 :  :  :  :  :                                +- CometNativeScan parquet spark_catalog.default.store
 :  :  :  :  +- BroadcastExchange
-:  :  :  :     +- CometNativeColumnarToRow
+:  :  :  :     +- CometColumnarToRow
 :  :  :  :        +- CometHashAggregate
 :  :  :  :           +- CometExchange
 :  :  :  :              +- CometHashAggregate
@@ -109,7 +109,7 @@ BroadcastNestedLoopJoin
 :  :  :  :                             +- CometFilter
 :  :  :  :                                +- CometNativeScan parquet spark_catalog.default.store
 :  :  :  +- BroadcastExchange
-:  :  :     +- CometNativeColumnarToRow
+:  :  :     +- CometColumnarToRow
 :  :  :        +- CometHashAggregate
 :  :  :           +- CometExchange
 :  :  :              +- CometHashAggregate
@@ -135,7 +135,7 @@ BroadcastNestedLoopJoin
 :  :  :                             +- CometFilter
 :  :  :                                +- CometNativeScan parquet spark_catalog.default.store
 :  :  +- BroadcastExchange
-:  :     +- CometNativeColumnarToRow
+:  :     +- CometColumnarToRow
 :  :        +- CometHashAggregate
 :  :           +- CometExchange
 :  :              +- CometHashAggregate
@@ -161,7 +161,7 @@ BroadcastNestedLoopJoin
 :  :                             +- CometFilter
 :  :                                +- CometNativeScan parquet spark_catalog.default.store
 :  +- BroadcastExchange
-:     +- CometNativeColumnarToRow
+:     +- CometColumnarToRow
 :        +- CometHashAggregate
 :           +- CometExchange
 :              +- CometHashAggregate
@@ -187,7 +187,7 @@ BroadcastNestedLoopJoin
 :                             +- CometFilter
 :                                +- CometNativeScan parquet spark_catalog.default.store
 +- BroadcastExchange
-   +- CometNativeColumnarToRow
+   +- CometColumnarToRow
       +- CometHashAggregate
          +- CometExchange
             +- CometHashAggregate

@@ -289,7 +289,7 @@ Input [44]: [w_warehouse_name#10, w_warehouse_sq_ft#11, w_city#12, w_county#13, 
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = ws_sold_date_sk#7 IN dynamicpruning#8
 BroadcastExchange (55)
-+- CometNativeColumnarToRow (54)
++- * CometColumnarToRow (54)
    +- CometFilter (53)
       +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim (52)
 
@@ -305,7 +305,7 @@ ReadSchema: struct<d_date_sk:int,d_year:int,d_moy:int>
 Input [3]: [d_date_sk#17, d_year#18, d_moy#19]
 Condition : ((isnotnull(d_year#18) AND (d_year#18 = 2001)) AND isnotnull(d_date_sk#17))
 
-(54) CometNativeColumnarToRow
+(54) CometColumnarToRow [codegen id : 1]
 Input [3]: [d_date_sk#17, d_year#18, d_moy#19]
 
 (55) BroadcastExchange
