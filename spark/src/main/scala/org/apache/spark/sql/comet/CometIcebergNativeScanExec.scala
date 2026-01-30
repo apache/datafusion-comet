@@ -114,8 +114,8 @@ case class CometIcebergNativeScanExec(
             val colIndex = sab.output.indexWhere(_.name.equalsIgnoreCase(childAttr.name))
             if (colIndex < 0) {
               throw new IllegalStateException(
-                s"DPP column '${childAttr.name}' not found in SubqueryAdaptiveBroadcastExec output: " +
-                  s"${sab.output.map(_.name).mkString(", ")}")
+                s"DPP column '${childAttr.name}' not found in SubqueryAdaptiveBroadcastExec " +
+                  s"output: ${sab.output.map(_.name).mkString(", ")}")
             }
             setInSubqueryResult(e, rows.map(_.get(colIndex, e.child.dataType)))
           case _ =>

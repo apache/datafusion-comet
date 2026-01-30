@@ -358,19 +358,14 @@ abstract class CometNativeExec extends CometExec {
             case None => (None, Seq.empty)
           }
 
-        // Check for IcebergScan with split mode data that needs per-partition injection.
-        // Only look within the current stage (stop at shuffle boundaries).
-        // Returns two maps: common data (shared) and per-partition data (varies by partition).
+        // Find Iceberg split data within this stage (stops at shuffle boundaries).
         val (commonByLocation, perPartitionByLocation) = findAllIcebergSplitData(this)
 
         def createCometExecIter(
             inputs: Seq[Iterator[ColumnarBatch]],
             numParts: Int,
             partitionIndex: Int): CometExecIterator = {
-          // Get the actual serialized plan - either shared or per-partition injected
-          // Inject partition data if we have any IcebergScans with split data
           val actualPlan = if (commonByLocation.nonEmpty) {
-            // Build partition map for this specific partition index
             val partitionByLocation = perPartitionByLocation.map {
               case (metadataLocation, perPartitionData) =>
                 if (partitionIndex < perPartitionData.length) {
@@ -382,7 +377,6 @@ abstract class CometNativeExec extends CometExec {
                       s"(${perPartitionData.length} partitions)")
                 }
             }
-            // Inject common and partition data into IcebergScan nodes in the native plan
             val basePlan = OperatorOuterClass.Operator.parseFrom(serializedPlanCopy)
             val injected = IcebergPartitionInjector.injectPartitionData(
               basePlan,
@@ -390,7 +384,6 @@ abstract class CometNativeExec extends CometExec {
               partitionByLocation)
             IcebergPartitionInjector.serializeOperator(injected)
           } else {
-            // No split data - use plan as-is
             serializedPlanCopy
           }
 
@@ -495,7 +488,17 @@ abstract class CometNativeExec extends CometExec {
           throw new CometRuntimeException(s"No input for CometNativeExec:\n $this")
         }
 
-        if (inputs.nonEmpty) {
+        // Avoid closure capture: per-partition data goes in Partition objects, not the closure
+        if (commonByLocation.nonEmpty) {
+          CometIcebergSplitRDD(
+            sparkContext,
+            inputs.toSeq,
+            commonByLocation,
+            perPartitionByLocation,
+            serializedPlanCopy,
+            output.length,
+            nativeMetrics)
+        } else if (inputs.nonEmpty) {
           ZippedPartitionsRDD(sparkContext, inputs.toSeq)(createCometExecIter)
         } else {
           val partitionNum = firstNonBroadcastPlanNumPartitions

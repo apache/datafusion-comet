@@ -19,68 +19,100 @@
 
 package org.apache.spark.sql.comet
 
-import org.apache.spark.{Partition, SparkContext, TaskContext}
+import org.apache.spark.{Dependency, OneToOneDependency, Partition, SparkContext, TaskContext}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.CometExecIterator
 import org.apache.comet.serde.OperatorOuterClass
-import org.apache.comet.serde.OperatorOuterClass.IcebergFilePartition
 
 /**
- * Custom partition for split Iceberg serialization. Holds only bytes for this partition's file
- * scan tasks.
+ * Partition that carries only its own Iceberg data, avoiding closure capture of all partitions.
  */
 private[spark] class CometIcebergSplitPartition(
     override val index: Int,
-    val partitionBytes: Array[Byte])
+    val inputPartitions: Array[Partition],
+    val icebergDataByLocation: Map[String, Array[Byte]])
     extends Partition
 
 /**
- * RDD for split Iceberg scan serialization that avoids sending all partition data to every task.
+ * RDD for Iceberg scan execution that efficiently distributes per-partition data.
  *
- * With split serialization:
- *   - commonData: serialized IcebergScanCommon (pools, metadata) - captured in closure
- *   - perPartitionData: Array of serialized IcebergFilePartition - populates Partition objects
+ * Solves the closure capture problem: instead of capturing all partitions' data in the closure
+ * (which gets serialized to every task), each Partition object carries only its own data.
  *
- * Each task receives commonData (via closure) + partitionBytes (via Partition), combines them
- * into an IcebergScan with split_mode=true, and passes to native execution.
+ * Supports two execution modes:
+ *   - Standalone: Iceberg scan is the root operator (no input RDDs)
+ *   - Nested: Iceberg scan is under other native operators (has input RDDs)
+ *
+ * NOTE: This RDD does not handle ScalarSubquery expressions. DPP uses InSubqueryExec which is
+ * resolved in CometIcebergNativeScanExec.splitData before this RDD is created.
  */
 private[spark] class CometIcebergSplitRDD(
     sc: SparkContext,
-    commonData: Array[Byte],
-    @transient perPartitionData: Array[Array[Byte]],
-    numParts: Int,
-    var computeFunc: (Array[Byte], CometMetricNode, Int, Int) => Iterator[ColumnarBatch])
+    inputRDDs: Seq[RDD[ColumnarBatch]],
+    commonByLocation: Map[String, Array[Byte]],
+    @transient perPartitionByLocation: Map[String, Array[Array[Byte]]],
+    serializedPlan: Array[Byte],
+    numOutputCols: Int,
+    nativeMetrics: CometMetricNode)
     extends RDD[ColumnarBatch](sc, Nil) {
 
+  // Cache partition count to avoid accessing @transient field on executor
+  private val numParts: Int =
+    perPartitionByLocation.values.headOption.map(_.length).getOrElse(0)
+
   override protected def getPartitions: Array[Partition] = {
-    perPartitionData.zipWithIndex.map { case (bytes, idx) =>
-      new CometIcebergSplitPartition(idx, bytes)
-    }
+    (0 until numParts).map { idx =>
+      val inputParts = inputRDDs.map(_.partitions(idx)).toArray
+      val icebergData = perPartitionByLocation.map { case (loc, arr) => loc -> arr(idx) }
+      new CometIcebergSplitPartition(idx, inputParts, icebergData)
+    }.toArray
   }
 
   override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
     val partition = split.asInstanceOf[CometIcebergSplitPartition]
 
-    val combinedPlan =
-      CometIcebergSplitRDD.buildCombinedPlan(commonData, partition.partitionBytes)
+    val inputs = inputRDDs.zip(partition.inputPartitions).map { case (rdd, part) =>
+      rdd.iterator(part, context)
+    }
 
-    // Use cached numParts to avoid triggering getPartitions() on executor
-    val it = computeFunc(combinedPlan, null, numParts, partition.index)
+    val basePlan = OperatorOuterClass.Operator.parseFrom(serializedPlan)
+    val injected = IcebergPartitionInjector.injectPartitionData(
+      basePlan,
+      commonByLocation,
+      partition.icebergDataByLocation)
+    val actualPlan = IcebergPartitionInjector.serializeOperator(injected)
+
+    val it = new CometExecIterator(
+      CometExec.newIterId,
+      inputs,
+      numOutputCols,
+      actualPlan,
+      nativeMetrics,
+      numParts,
+      partition.index,
+      None,
+      Seq.empty)
 
     Option(context).foreach { ctx =>
       ctx.addTaskCompletionListener[Unit] { _ =>
-        it.asInstanceOf[CometExecIterator].close()
+        it.close()
       }
     }
 
     it
   }
+
+  override def getDependencies: Seq[Dependency[_]] =
+    inputRDDs.map(rdd => new OneToOneDependency(rdd))
 }
 
 object CometIcebergSplitRDD {
 
+  /**
+   * Creates an RDD for standalone Iceberg scan (no parent native operators).
+   */
   def apply(
       sc: SparkContext,
       commonData: Array[Byte],
@@ -88,38 +120,54 @@ object CometIcebergSplitRDD {
       numOutputCols: Int,
       nativeMetrics: CometMetricNode): CometIcebergSplitRDD = {
 
-    // Create compute function that captures nativeMetrics in its closure
-    val computeFunc =
-      (combinedPlan: Array[Byte], _: CometMetricNode, numParts: Int, partIndex: Int) => {
-        new CometExecIterator(
-          CometExec.newIterId,
-          Seq.empty,
-          numOutputCols,
-          combinedPlan,
-          nativeMetrics,
-          numParts,
-          partIndex,
-          None,
-          Seq.empty)
-      }
+    // Standalone mode needs a placeholder plan for IcebergPartitionInjector to fill in.
+    // metadata_location must match what's in commonData for correct matching.
+    val common = OperatorOuterClass.IcebergScanCommon.parseFrom(commonData)
+    val metadataLocation = common.getMetadataLocation
 
-    val numParts = perPartitionData.length
-    new CometIcebergSplitRDD(sc, commonData, perPartitionData, numParts, computeFunc)
+    val placeholderCommon = OperatorOuterClass.IcebergScanCommon
+      .newBuilder()
+      .setMetadataLocation(metadataLocation)
+      .build()
+    val placeholderScan = OperatorOuterClass.IcebergScan
+      .newBuilder()
+      .setCommon(placeholderCommon)
+      .build()
+    val placeholderPlan = OperatorOuterClass.Operator
+      .newBuilder()
+      .setIcebergScan(placeholderScan)
+      .build()
+      .toByteArray
+
+    new CometIcebergSplitRDD(
+      sc,
+      inputRDDs = Seq.empty,
+      commonByLocation = Map(metadataLocation -> commonData),
+      perPartitionByLocation = Map(metadataLocation -> perPartitionData),
+      serializedPlan = placeholderPlan,
+      numOutputCols = numOutputCols,
+      nativeMetrics = nativeMetrics)
   }
 
-  private[comet] def buildCombinedPlan(
-      commonBytes: Array[Byte],
-      partitionBytes: Array[Byte]): Array[Byte] = {
-    val common = OperatorOuterClass.IcebergScanCommon.parseFrom(commonBytes)
-    val partition = IcebergFilePartition.parseFrom(partitionBytes)
+  /**
+   * Creates an RDD for nested Iceberg scan (under other native operators).
+   */
+  def apply(
+      sc: SparkContext,
+      inputRDDs: Seq[RDD[ColumnarBatch]],
+      commonByLocation: Map[String, Array[Byte]],
+      perPartitionByLocation: Map[String, Array[Array[Byte]]],
+      serializedPlan: Array[Byte],
+      numOutputCols: Int,
+      nativeMetrics: CometMetricNode): CometIcebergSplitRDD = {
 
-    val scanBuilder = OperatorOuterClass.IcebergScan.newBuilder()
-    scanBuilder.setCommon(common)
-    scanBuilder.setPartition(partition)
-
-    val opBuilder = OperatorOuterClass.Operator.newBuilder()
-    opBuilder.setIcebergScan(scanBuilder)
-
-    opBuilder.build().toByteArray
+    new CometIcebergSplitRDD(
+      sc,
+      inputRDDs,
+      commonByLocation,
+      perPartitionByLocation,
+      serializedPlan,
+      numOutputCols,
+      nativeMetrics)
   }
 }
