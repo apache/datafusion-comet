@@ -40,7 +40,6 @@ use datafusion_physical_expr_adapter::{
 };
 use std::collections::HashMap;
 use std::sync::Arc;
-
 // ============================================================================
 // New PhysicalExprAdapter Implementation (Recommended)
 // ============================================================================
@@ -119,6 +118,8 @@ impl PhysicalExprAdapter for SparkPhysicalExprAdapter {
         // Step 1: Handle default values for missing columns
         let expr = self.replace_missing_with_defaults(expr)?;
 
+        let expr = self.cast_datafusion_unsupported_expr(expr)?;
+
         // Step 2: Delegate to default adapter for standard handling
         // This handles: missing columns → nulls, type mismatches → CastColumnExpr
         let expr = self.default_adapter.rewrite(expr)?;
@@ -158,6 +159,22 @@ impl SparkPhysicalExprAdapter {
         }
 
         Ok(Transformed::no(expr))
+    }
+
+    // Cast expressions that currently not supported in DF
+    fn cast_datafusion_unsupported_expr(
+        &self,
+        expr: Arc<dyn PhysicalExpr>,
+    ) -> DataFusionResult<Arc<dyn PhysicalExpr>> {
+        // expr.transform(|expr| {
+        //     if let Some(col) = expr.as_any().downcast_ref::<Column>() {
+        //         dbg!(col.data_type(&self.logical_file_schema));
+        //     }
+        //     Ok(Transformed::no(expr))
+        // })
+        // .data()
+
+        Ok(expr)
     }
 
     /// Replace references to missing columns with default values.
