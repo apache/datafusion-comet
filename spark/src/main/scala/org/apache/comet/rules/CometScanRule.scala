@@ -28,12 +28,13 @@ import scala.jdk.CollectionConverters._
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, GenericInternalRow, PlanExpression}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, DynamicPruningExpression, Expression, GenericInternalRow, PlanExpression}
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.{sideBySide, ArrayBasedMapData, GenericArrayData, MetadataColumnHelper}
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
 import org.apache.spark.sql.comet.{CometBatchScanExec, CometScanExec}
 import org.apache.spark.sql.execution.{FileSourceScanExec, SparkPlan}
+import org.apache.spark.sql.execution.InSubqueryExec
 import org.apache.spark.sql.execution.datasources.HadoopFsRelation
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.datasources.v2.csv.CSVScan
@@ -327,10 +328,6 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
       case _
           if scanExec.scan.getClass.getName ==
             "org.apache.iceberg.spark.source.SparkBatchQueryScan" =>
-        if (scanExec.runtimeFilters.exists(isDynamicPruningFilter)) {
-          return withInfo(scanExec, "Dynamic Partition Pruning is not supported")
-        }
-
         val fallbackReasons = new ListBuffer[String]()
 
         // Native Iceberg scan requires both configs to be enabled
@@ -621,10 +618,27 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
           !hasUnsupportedDeletes
         }
 
+        // Check that all DPP subqueries use InSubqueryExec which we know how to handle.
+        // Future Spark versions might introduce new subquery types we haven't tested.
+        val dppSubqueriesSupported = {
+          val unsupportedSubqueries = scanExec.runtimeFilters.collect {
+            case DynamicPruningExpression(e) if !e.isInstanceOf[InSubqueryExec] =>
+              e.getClass.getSimpleName
+          }
+          if (unsupportedSubqueries.nonEmpty) {
+            fallbackReasons +=
+              s"Unsupported DPP subquery types: ${unsupportedSubqueries.mkString(", ")}. " +
+                "CometIcebergNativeScanExec only supports InSubqueryExec for DPP"
+            false
+          } else {
+            true
+          }
+        }
+
         if (schemaSupported && fileIOCompatible && formatVersionSupported && allParquetFiles &&
           allSupportedFilesystems && partitionTypesSupported &&
           complexTypePredicatesSupported && transformFunctionsSupported &&
-          deleteFileTypesSupported) {
+          deleteFileTypesSupported && dppSubqueriesSupported) {
           CometBatchScanExec(
             scanExec.clone().asInstanceOf[BatchScanExec],
             runtimeFilters = scanExec.runtimeFilters,

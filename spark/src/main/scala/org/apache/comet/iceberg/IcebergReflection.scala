@@ -734,7 +734,7 @@ case class CometIcebergNativeScanMetadata(
     table: Any,
     metadataLocation: String,
     nameMapping: Option[String],
-    tasks: java.util.List[_],
+    @transient tasks: java.util.List[_],
     scanSchema: Any,
     tableSchema: Any,
     globalFieldIdMapping: Map[String, Int],

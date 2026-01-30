@@ -21,18 +21,22 @@ package org.apache.spark.sql.comet
 
 import scala.jdk.CollectionConverters._
 
+import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.catalyst.expressions.{Attribute, SortOrder}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, DynamicPruningExpression, SortOrder}
 import org.apache.spark.sql.catalyst.plans.QueryPlan
-import org.apache.spark.sql.catalyst.plans.physical.{KeyGroupedPartitioning, Partitioning, UnknownPartitioning}
+import org.apache.spark.sql.catalyst.plans.physical.{Partitioning, UnknownPartitioning}
+import org.apache.spark.sql.execution.{InSubqueryExec, SubqueryAdaptiveBroadcastExec}
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
+import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.AccumulatorV2
 
 import com.google.common.base.Objects
 
 import org.apache.comet.iceberg.CometIcebergNativeScanMetadata
 import org.apache.comet.serde.OperatorOuterClass.Operator
+import org.apache.comet.serde.operator.CometIcebergNativeScan
 
 /**
  * Native Iceberg scan operator that delegates file reading to iceberg-rust.
@@ -41,6 +45,10 @@ import org.apache.comet.serde.OperatorOuterClass.Operator
  * execution. Iceberg's catalog and planning run in Spark to produce FileScanTasks, which are
  * serialized to protobuf for the native side to execute using iceberg-rust's FileIO and
  * ArrowReader. This provides better performance than reading through Spark's abstraction layers.
+ *
+ * Supports Dynamic Partition Pruning (DPP) by deferring partition serialization to execution
+ * time. The doPrepare() method waits for DPP subqueries to resolve, then lazy splitData
+ * serializes the DPP-filtered partitions from inputRDD.
  */
 case class CometIcebergNativeScanExec(
     override val nativeOp: Operator,
@@ -48,7 +56,6 @@ case class CometIcebergNativeScanExec(
     @transient override val originalPlan: BatchScanExec,
     override val serializedPlanOpt: SerializedPlan,
     metadataLocation: String,
-    numPartitions: Int,
     @transient nativeIcebergScanMetadata: CometIcebergNativeScanMetadata)
     extends CometLeafExec {
 
@@ -56,8 +63,70 @@ case class CometIcebergNativeScanExec(
 
   override val nodeName: String = "CometIcebergNativeScan"
 
-  override lazy val outputPartitioning: Partitioning =
-    UnknownPartitioning(numPartitions)
+  /**
+   * Prepare DPP subquery plans. Called by Spark's prepare() before doExecuteColumnar(). Only
+   * kicks off async work - doesn't wait for results (that happens in splitData).
+   */
+  override protected def doPrepare(): Unit = {
+    originalPlan.runtimeFilters.foreach {
+      case DynamicPruningExpression(e: InSubqueryExec) =>
+        e.plan.prepare()
+      case _ =>
+    }
+    super.doPrepare()
+  }
+
+  /**
+   * Lazy partition serialization - computed after doPrepare() resolves DPP. Builds pools and
+   * per-partition data in one pass from inputRDD.
+   */
+  @transient private lazy val splitData: (Array[Byte], Array[Array[Byte]]) = {
+    // Ensure DPP subqueries are resolved before accessing inputRDD.
+    originalPlan.runtimeFilters.foreach {
+      case DynamicPruningExpression(e: InSubqueryExec) if e.values().isEmpty =>
+        e.plan match {
+          case sab: SubqueryAdaptiveBroadcastExec =>
+            // SubqueryAdaptiveBroadcastExec doesn't support executeCollect(), but its child does.
+            // We must use reflection to set InSubqueryExec.result since there's no public setter.
+            val rows = sab.child.executeCollect()
+            val result = if (sab.output.length > 1) rows else rows.map(_.get(0, e.child.dataType))
+            setInSubqueryResult(e, result)
+          case _ =>
+            e.updateResult()
+        }
+      case _ =>
+    }
+
+    CometIcebergNativeScan.serializePartitions(originalPlan, output, nativeIcebergScanMetadata)
+  }
+
+  /**
+   * Sets InSubqueryExec's private result field via reflection.
+   *
+   * Reflection is required because:
+   *   - SubqueryAdaptiveBroadcastExec.executeCollect() throws UnsupportedOperationException
+   *   - InSubqueryExec has no public setter for result, only updateResult() which calls
+   *     executeCollect()
+   *   - We can't replace e.plan since it's a val
+   */
+  private def setInSubqueryResult(e: InSubqueryExec, result: Array[_]): Unit = {
+    val fields = e.getClass.getDeclaredFields
+    // Field name is mangled by Scala compiler, e.g. "org$apache$...$InSubqueryExec$$result"
+    fields.find(f => f.getName.endsWith("$result") && !f.getName.contains("Broadcast")).foreach {
+      resultField =>
+        resultField.setAccessible(true)
+        resultField.set(e, result)
+    }
+  }
+
+  def commonData: Array[Byte] = splitData._1
+  def perPartitionData: Array[Array[Byte]] = splitData._2
+
+  // numPartitions for execution - derived from actual DPP-filtered partitions
+  // Only accessed during execution, not planning
+  def numPartitions: Int = perPartitionData.length
+
+  override lazy val outputPartitioning: Partitioning = UnknownPartitioning(numPartitions)
 
   override lazy val outputOrdering: Seq[SortOrder] = Nil
 
@@ -95,17 +164,26 @@ case class CometIcebergNativeScanExec(
     }
   }
 
-  private val capturedMetricValues: Seq[MetricValue] = {
-    originalPlan.metrics
-      .filterNot { case (name, _) =>
-        // Filter out metrics that are now runtime metrics incremented on the native side
-        name == "numOutputRows" || name == "numDeletes" || name == "numSplits"
-      }
-      .map { case (name, metric) =>
-        val mappedType = mapMetricType(name, metric.metricType)
-        MetricValue(name, metric.value, mappedType)
-      }
-      .toSeq
+  @transient private lazy val capturedMetricValues: Seq[MetricValue] = {
+    // Guard against null originalPlan (from doCanonicalize)
+    if (originalPlan == null) {
+      Seq.empty
+    } else {
+      // Force splitData evaluation first - this triggers serializePartitions which
+      // accesses inputRDD, which triggers Iceberg planning and populates metrics
+      val _ = splitData
+
+      originalPlan.metrics
+        .filterNot { case (name, _) =>
+          // Filter out metrics that are now runtime metrics incremented on the native side
+          name == "numOutputRows" || name == "numDeletes" || name == "numSplits"
+        }
+        .map { case (name, metric) =>
+          val mappedType = mapMetricType(name, metric.metricType)
+          MetricValue(name, metric.value, mappedType)
+        }
+        .toSeq
+    }
   }
 
   /**
@@ -146,62 +224,80 @@ case class CometIcebergNativeScanExec(
     baseMetrics ++ icebergMetrics + ("num_splits" -> numSplitsMetric)
   }
 
+  /** Executes using split mode RDD - split data is computed lazily on first access. */
+  override def doExecuteColumnar(): RDD[ColumnarBatch] = {
+    // Access perPartitionData triggers lazy serialization
+    // DPP is guaranteed resolved because doPrepare() already ran
+    val nativeMetrics = CometMetricNode.fromCometPlan(this)
+    CometIcebergSplitRDD(sparkContext, commonData, perPartitionData, output.length, nativeMetrics)
+  }
+
+  /**
+   * Override convertBlock to preserve @transient fields. The parent implementation uses
+   * makeCopy() which loses transient fields.
+   */
+  override def convertBlock(): CometIcebergNativeScanExec = {
+    // Serialize the native plan if not already done
+    val newSerializedPlan = if (serializedPlanOpt.isEmpty) {
+      val bytes = CometExec.serializeNativePlan(nativeOp)
+      SerializedPlan(Some(bytes))
+    } else {
+      serializedPlanOpt
+    }
+
+    // Create new instance preserving transient fields
+    CometIcebergNativeScanExec(
+      nativeOp,
+      output,
+      originalPlan,
+      newSerializedPlan,
+      metadataLocation,
+      nativeIcebergScanMetadata)
+  }
+
   override protected def doCanonicalize(): CometIcebergNativeScanExec = {
     CometIcebergNativeScanExec(
       nativeOp,
       output.map(QueryPlan.normalizeExpressions(_, output)),
-      originalPlan.doCanonicalize(),
+      null, // Don't need originalPlan for canonicalization
       SerializedPlan(None),
       metadataLocation,
-      numPartitions,
-      nativeIcebergScanMetadata)
+      null
+    ) // Don't need metadata for canonicalization
   }
 
-  override def stringArgs: Iterator[Any] =
-    Iterator(output, s"$metadataLocation, ${originalPlan.scan.description()}", numPartitions)
+  override def stringArgs: Iterator[Any] = {
+    // Use metadata task count for display to avoid triggering splitData during planning
+    val hasMeta = nativeIcebergScanMetadata != null && nativeIcebergScanMetadata.tasks != null
+    val taskCount = if (hasMeta) nativeIcebergScanMetadata.tasks.size() else 0
+    val scanDesc = if (originalPlan != null) originalPlan.scan.description() else "canonicalized"
+    // Include runtime filters (DPP) in string representation
+    val runtimeFiltersStr = if (originalPlan != null && originalPlan.runtimeFilters.nonEmpty) {
+      s", runtimeFilters=${originalPlan.runtimeFilters.mkString("[", ", ", "]")}"
+    } else {
+      ""
+    }
+    Iterator(output, s"$metadataLocation, $scanDesc$runtimeFiltersStr", taskCount)
+  }
 
   override def equals(obj: Any): Boolean = {
     obj match {
       case other: CometIcebergNativeScanExec =>
         this.metadataLocation == other.metadataLocation &&
         this.output == other.output &&
-        this.serializedPlanOpt == other.serializedPlanOpt &&
-        this.numPartitions == other.numPartitions
+        this.serializedPlanOpt == other.serializedPlanOpt
       case _ =>
         false
     }
   }
 
   override def hashCode(): Int =
-    Objects.hashCode(
-      metadataLocation,
-      output.asJava,
-      serializedPlanOpt,
-      numPartitions: java.lang.Integer)
+    Objects.hashCode(metadataLocation, output.asJava, serializedPlanOpt)
 }
 
 object CometIcebergNativeScanExec {
 
-  /**
-   * Creates a CometIcebergNativeScanExec from a Spark BatchScanExec.
-   *
-   * Determines the number of partitions from Iceberg's output partitioning:
-   *   - KeyGroupedPartitioning: Use Iceberg's partition count
-   *   - Other cases: Use the number of InputPartitions from Iceberg's planning
-   *
-   * @param nativeOp
-   *   The serialized native operator
-   * @param scanExec
-   *   The original Spark BatchScanExec
-   * @param session
-   *   The SparkSession
-   * @param metadataLocation
-   *   Path to table metadata file
-   * @param nativeIcebergScanMetadata
-   *   Pre-extracted Iceberg metadata from planning phase
-   * @return
-   *   A new CometIcebergNativeScanExec
-   */
+  /** Creates a CometIcebergNativeScanExec with deferred partition serialization. */
   def apply(
       nativeOp: Operator,
       scanExec: BatchScanExec,
@@ -209,21 +305,12 @@ object CometIcebergNativeScanExec {
       metadataLocation: String,
       nativeIcebergScanMetadata: CometIcebergNativeScanMetadata): CometIcebergNativeScanExec = {
 
-    // Determine number of partitions from Iceberg's output partitioning
-    val numParts = scanExec.outputPartitioning match {
-      case p: KeyGroupedPartitioning =>
-        p.numPartitions
-      case _ =>
-        scanExec.inputRDD.getNumPartitions
-    }
-
     val exec = CometIcebergNativeScanExec(
       nativeOp,
       scanExec.output,
       scanExec,
       SerializedPlan(None),
       metadataLocation,
-      numParts,
       nativeIcebergScanMetadata)
 
     scanExec.logicalLink.foreach(exec.setLogicalLink)
