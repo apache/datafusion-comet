@@ -80,10 +80,11 @@ abstract class CometTestBase
     conf.set(CometConf.COMET_ONHEAP_ENABLED.key, "true")
     conf.set(CometConf.COMET_EXEC_ENABLED.key, "true")
     conf.set(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key, "true")
+    conf.set(CometConf.COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED.key, "true")
     conf.set(CometConf.COMET_RESPECT_PARQUET_FILTER_PUSHDOWN.key, "true")
     conf.set(CometConf.COMET_SPARK_TO_ARROW_ENABLED.key, "true")
     conf.set(CometConf.COMET_NATIVE_SCAN_ENABLED.key, "true")
-    conf.set(CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key, "true")
+    conf.set(CometConf.COMET_PARQUET_UNSIGNED_SMALL_INT_CHECK.key, "false")
     conf.set(CometConf.COMET_ONHEAP_MEMORY_OVERHEAD.key, "2g")
     conf.set(CometConf.COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED.key, "true")
     conf.set(CometConf.COMET_EXEC_WINDOW_ENABLED.key, "true")
@@ -1114,7 +1115,7 @@ abstract class CometTestBase
    *         |""".stripMargin,
    *       "select arr from tbl",
    *       sqlConf = Seq(
-   *         CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "false",
+   *         CometConf.COMET_SCAN_UNSIGNED_SMALL_INT_SAFETY_CHECK.key -> "true",
    *         "spark.comet.explainFallback.enabled" -> "false"
    *       ),
    *       debugCometDF = df => {
@@ -1276,6 +1277,6 @@ abstract class CometTestBase
 
   def usingDataSourceExecWithIncompatTypes(conf: SQLConf): Boolean = {
     usingDataSourceExec(conf) &&
-    !CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get(conf)
+    CometConf.COMET_PARQUET_UNSIGNED_SMALL_INT_CHECK.get(conf)
   }
 }

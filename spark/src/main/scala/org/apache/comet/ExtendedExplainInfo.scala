@@ -23,7 +23,7 @@ import scala.collection.mutable
 
 import org.apache.spark.sql.ExtendedExplainGenerator
 import org.apache.spark.sql.catalyst.trees.{TreeNode, TreeNodeTag}
-import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometPlan, CometSparkToColumnarExec}
+import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometNativeColumnarToRowExec, CometPlan, CometSparkToColumnarExec}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, InputAdapter, RowToColumnarExec, SparkPlan, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, QueryStageExec}
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
@@ -104,7 +104,7 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
           _: WholeStageCodegenExec | _: ReusedExchangeExec | _: AQEShuffleReadExec =>
       // ignore
       case _: RowToColumnarExec | _: ColumnarToRowExec | _: CometColumnarToRowExec |
-          _: CometSparkToColumnarExec =>
+          _: CometNativeColumnarToRowExec | _: CometSparkToColumnarExec =>
         planStats.transitions += 1
       case _: CometPlan =>
         planStats.cometOperators += 1
