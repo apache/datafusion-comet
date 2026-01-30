@@ -55,10 +55,10 @@ object CometDatetimeExpressionBenchmark extends CometBenchmarkBase {
           spark.sql(s"select timestamp_micros(cast(value/100000 as integer)) as ts FROM $tbl"))
         Seq(
           "YEAR",
-          "QUARTER",
           "MONTH",
-          "WEEK",
           "DAY",
+          "WEEK",
+          "QUARTER",
           "HOUR",
           "MINUTE",
           "SECOND",
@@ -98,7 +98,6 @@ object CometDatetimeExpressionBenchmark extends CometBenchmarkBase {
           val name = s"Unix Timestamp from Date ($timeZone)"
           val query = "select unix_timestamp(dt) from parquetV1Table"
           runExpressionBenchmark(name, values, query)
-        }
       }
     }
   }
