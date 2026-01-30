@@ -86,11 +86,14 @@ case class CometIcebergNativeScanExec(
       case DynamicPruningExpression(e: InSubqueryExec) if e.values().isEmpty =>
         e.plan match {
           case sab: SubqueryAdaptiveBroadcastExec =>
-            // SubqueryAdaptiveBroadcastExec doesn't support executeCollect(), but its child does.
-            // We must use reflection to set InSubqueryExec.result since there's no public setter.
+            // When multiple DPP filters share a broadcast, SAB outputs multiple columns.
+            // Each filter's e.child identifies which column it needs. We extract that
+            // specific column's values, as Iceberg's Literals.from() can't handle UnsafeRow.
             val rows = sab.child.executeCollect()
-            val result = if (sab.output.length > 1) rows else rows.map(_.get(0, e.child.dataType))
-            setInSubqueryResult(e, result)
+            val childAttr = e.child.asInstanceOf[Attribute]
+            val colIndex =
+              math.max(0, sab.output.indexWhere(_.name.equalsIgnoreCase(childAttr.name)))
+            setInSubqueryResult(e, rows.map(_.get(colIndex, e.child.dataType)))
           case _ =>
             e.updateResult()
         }
