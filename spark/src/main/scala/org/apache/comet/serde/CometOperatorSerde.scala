@@ -37,6 +37,13 @@ trait CometOperatorSerde[T <: SparkPlan] {
   def enabledConfig: Option[ConfigEntry[Boolean]]
 
   /**
+   * Indicates whether this operator requires all of its children to be CometNativeExec. If true
+   * and any child is not a native exec, conversion will be skipped and the operator will fall
+   * back to Spark. This is useful for operators like writes that require Arrow-formatted input.
+   */
+  def requiresNativeChildren: Boolean = false
+
+  /**
    * Determine the support level of the operator based on its attributes.
    *
    * @param operator
