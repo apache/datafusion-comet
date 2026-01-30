@@ -1506,7 +1506,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("round") {
     // https://github.com/apache/datafusion-comet/issues/1441
-    assume(!usingDataSourceExec)
+    assume(usingLegacyNativeCometScan)
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
@@ -1570,7 +1570,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("hex") {
     // https://github.com/apache/datafusion-comet/issues/1441
-    assume(!usingDataSourceExec)
+    assume(usingLegacyNativeCometScan)
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "hex.parquet")
@@ -2604,7 +2604,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("get_struct_field with DataFusion ParquetExec - read entire struct") {
-    assume(usingDataSourceExec(conf))
+    assume(!usingLegacyNativeCometScan(conf))
     withTempPath { dir =>
       // create input file with Comet disabled
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
@@ -2641,7 +2641,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("read array[int] from parquet") {
-    assume(usingDataSourceExec(conf))
+    assume(!usingLegacyNativeCometScan(conf))
 
     withTempPath { dir =>
 // create input file with Comet disabled
