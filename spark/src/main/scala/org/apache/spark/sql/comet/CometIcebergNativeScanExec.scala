@@ -111,8 +111,12 @@ case class CometIcebergNativeScanExec(
             // specific column's values, as Iceberg's Literals.from() can't handle UnsafeRow.
             val rows = sab.child.executeCollect()
             val childAttr = e.child.asInstanceOf[Attribute]
-            val colIndex =
-              math.max(0, sab.output.indexWhere(_.name.equalsIgnoreCase(childAttr.name)))
+            val colIndex = sab.output.indexWhere(_.name.equalsIgnoreCase(childAttr.name))
+            if (colIndex < 0) {
+              throw new IllegalStateException(
+                s"DPP column '${childAttr.name}' not found in SubqueryAdaptiveBroadcastExec output: " +
+                  s"${sab.output.map(_.name).mkString(", ")}")
+            }
             setInSubqueryResult(e, rows.map(_.get(colIndex, e.child.dataType)))
           case _ =>
             e.updateResult()
@@ -135,7 +139,8 @@ case class CometIcebergNativeScanExec(
   private def setInSubqueryResult(e: InSubqueryExec, result: Array[_]): Unit = {
     val fields = e.getClass.getDeclaredFields
     // Field name is mangled by Scala compiler, e.g. "org$apache$...$InSubqueryExec$$result"
-    val resultField = fields.find(f => f.getName.endsWith("$result") && !f.getName.contains("Broadcast"))
+    val resultField = fields
+      .find(f => f.getName.endsWith("$result") && !f.getName.contains("Broadcast"))
       .getOrElse {
         throw new IllegalStateException(
           s"Cannot find 'result' field in ${e.getClass.getName}. " +

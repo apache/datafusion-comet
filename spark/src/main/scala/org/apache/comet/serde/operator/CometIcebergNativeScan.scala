@@ -28,10 +28,11 @@ import org.json4s.jackson.JsonMethods._
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.comet.{CometBatchScanExec, CometNativeExec}
+import org.apache.spark.sql.execution.datasources.v2.{BatchScanExec, DataSourceRDD, DataSourceRDDPartition}
 import org.apache.spark.sql.types._
 
 import org.apache.comet.ConfigEntry
-import org.apache.comet.iceberg.IcebergReflection
+import org.apache.comet.iceberg.{CometIcebergNativeScanMetadata, IcebergReflection}
 import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass}
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.OperatorOuterClass.{Operator, SparkStructField}
@@ -719,10 +720,9 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
    *   Tuple of (commonBytes, perPartitionBytes) for native execution
    */
   def serializePartitions(
-      wrappedScan: org.apache.spark.sql.execution.datasources.v2.BatchScanExec,
+      wrappedScan: BatchScanExec,
       output: Seq[Attribute],
-      metadata: org.apache.comet.iceberg.CometIcebergNativeScanMetadata)
-      : (Array[Byte], Array[Array[Byte]]) = {
+      metadata: CometIcebergNativeScanMetadata): (Array[Byte], Array[Array[Byte]]) = {
 
     val commonBuilder = OperatorOuterClass.IcebergScanCommon.newBuilder()
 
@@ -741,13 +741,11 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
 
     var totalTasks = 0
 
-    // Set metadata location and catalog properties
     commonBuilder.setMetadataLocation(metadata.metadataLocation)
     metadata.catalogProperties.foreach { case (key, value) =>
       commonBuilder.putCatalogProperties(key, value)
     }
 
-    // Set required_schema from output
     output.foreach { attr =>
       val field = SparkStructField
         .newBuilder()
@@ -777,13 +775,13 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
 
     // Access inputRDD - safe now, DPP is resolved
     wrappedScan.inputRDD match {
-      case rdd: org.apache.spark.sql.execution.datasources.v2.DataSourceRDD =>
+      case rdd: DataSourceRDD =>
         val partitions = rdd.partitions
         partitions.foreach { partition =>
           val partitionBuilder = OperatorOuterClass.IcebergFilePartition.newBuilder()
 
           val inputPartitions = partition
-            .asInstanceOf[org.apache.spark.sql.execution.datasources.v2.DataSourceRDDPartition]
+            .asInstanceOf[DataSourceRDDPartition]
             .inputPartitions
 
           inputPartitions.foreach { inputPartition =>
@@ -825,7 +823,6 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                 val length = lengthMethod.invoke(task).asInstanceOf[Long]
                 taskBuilder.setLength(length)
 
-                // Schema selection logic
                 val taskSchema = taskSchemaMethod.invoke(task)
 
                 val deletes =
@@ -886,7 +883,6 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                   })
                 taskBuilder.setProjectFieldIdsIdx(projectFieldIdsIdx)
 
-                // Deduplicate delete files
                 val deleteFilesList =
                   extractDeleteFilesList(task, contentFileClass, fileScanTaskClass)
                 if (deleteFilesList.nonEmpty) {
@@ -901,7 +897,6 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                   taskBuilder.setDeleteFilesIdx(deleteFilesIdx)
                 }
 
-                // Extract and deduplicate residual expression
                 val residualExprOpt =
                   try {
                     val residualExpr = residualMethod.invoke(task)
@@ -927,7 +922,6 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                   taskBuilder.setResidualIdx(residualIdx)
                 }
 
-                // Serialize partition spec and data
                 serializePartitionData(
                   task,
                   contentScanTaskClass,
@@ -938,7 +932,6 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                   partitionSpecToPoolIndex,
                   partitionDataToPoolIndex)
 
-                // Deduplicate name mapping
                 metadata.nameMapping.foreach { nm =>
                   val nmIdx = nameMappingToPoolIndex.getOrElseUpdate(
                     nm, {

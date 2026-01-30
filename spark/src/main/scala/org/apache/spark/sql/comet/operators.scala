@@ -117,9 +117,6 @@ private[comet] object IcebergPartitionInjector {
     builder.build()
   }
 
-  /**
-   * Serializes an operator to bytes.
-   */
   def serializeOperator(op: Operator): Array[Byte] = {
     val size = op.getSerializedSize
     val bytes = new Array[Byte](size)
