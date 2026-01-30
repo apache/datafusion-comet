@@ -30,7 +30,7 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, FromUnixTime, Literal, TruncDate, TruncTimestamp}
 import org.apache.spark.sql.catalyst.optimizer.SimplifyExtractValueOps
-import org.apache.spark.sql.comet.{CometNativeColumnarToRowExec, CometProjectExec}
+import org.apache.spark.sql.comet.CometProjectExec
 import org.apache.spark.sql.execution.{ProjectExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions._
