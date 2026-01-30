@@ -757,7 +757,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       commonBuilder.addRequiredSchema(field.build())
     }
 
-    // Load Iceberg classes once (avoid repeated Class.forName in loop)
+    // Load Iceberg classes once (avoid repeated class loading in loop)
     // scalastyle:off classforname
     val contentScanTaskClass = Class.forName(IcebergReflection.ClassNames.CONTENT_SCAN_TASK)
     val fileScanTaskClass = Class.forName(IcebergReflection.ClassNames.FILE_SCAN_TASK)
