@@ -20,7 +20,7 @@
 package org.apache.comet.serde
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, Murmur3Hash, Sha1, Sha2, XxHash64}
-import org.apache.spark.sql.types.{DecimalType, IntegerType, LongType, StringType}
+import org.apache.spark.sql.types.{ArrayType, DataType, DecimalType, IntegerType, LongType, MapType, StringType, StructType}
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, scalarFunctionExprToProtoWithReturnType, serializeDataType, supportedDataType}
@@ -106,18 +106,31 @@ object CometSha1 extends CometExpressionSerde[Sha1] {
 private object HashUtils {
   def isSupportedType(expr: Expression): Boolean = {
     for (child <- expr.children) {
-      child.dataType match {
-        case dt: DecimalType if dt.precision > 18 =>
-          // Spark converts decimals with precision > 18 into
-          // Java BigDecimal before hashing
-          withInfo(expr, s"Unsupported datatype: $dt (precision > 18)")
-          return false
-        case dt if !supportedDataType(dt) =>
-          withInfo(expr, s"Unsupported datatype $dt")
-          return false
-        case _ =>
+      if (!isSupportedDataType(expr, child.dataType)) {
+        return false
       }
     }
     true
+  }
+
+  private def isSupportedDataType(expr: Expression, dt: DataType): Boolean = {
+    dt match {
+      case d: DecimalType if d.precision > 18 =>
+        // Spark converts decimals with precision > 18 into
+        // Java BigDecimal before hashing
+        withInfo(expr, s"Unsupported datatype: $dt (precision > 18)")
+        false
+      case s: StructType =>
+        s.fields.forall(f => isSupportedDataType(expr, f.dataType))
+      case a: ArrayType =>
+        isSupportedDataType(expr, a.elementType)
+      case m: MapType =>
+        isSupportedDataType(expr, m.keyType) && isSupportedDataType(expr, m.valueType)
+      case _ if !supportedDataType(dt, allowComplex = true) =>
+        withInfo(expr, s"Unsupported datatype $dt")
+        false
+      case _ =>
+        true
+    }
   }
 }

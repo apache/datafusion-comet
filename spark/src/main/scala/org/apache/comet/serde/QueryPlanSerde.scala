@@ -171,6 +171,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[StringTrimBoth] -> CometScalarFunction("btrim"),
     classOf[StringTrimLeft] -> CometScalarFunction("ltrim"),
     classOf[StringTrimRight] -> CometScalarFunction("rtrim"),
+    classOf[Left] -> CometLeft,
     classOf[Substring] -> CometSubstring,
     classOf[Upper] -> CometUpper)
 
@@ -186,13 +187,18 @@ object QueryPlanSerde extends Logging with CometExprShim {
 
   private val temporalExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     classOf[DateAdd] -> CometDateAdd,
+    classOf[DateDiff] -> CometDateDiff,
+    classOf[DateFormatClass] -> CometDateFormat,
     classOf[DateSub] -> CometDateSub,
+    classOf[UnixDate] -> CometUnixDate,
     classOf[FromUnixTime] -> CometFromUnixTime,
+    classOf[LastDay] -> CometLastDay,
     classOf[Hour] -> CometHour,
     classOf[Minute] -> CometMinute,
     classOf[Second] -> CometSecond,
     classOf[TruncDate] -> CometTruncDate,
     classOf[TruncTimestamp] -> CometTruncTimestamp,
+    classOf[UnixTimestamp] -> CometUnixTimestamp,
     classOf[Year] -> CometYear,
     classOf[Month] -> CometMonth,
     classOf[DayOfMonth] -> CometDayOfMonth,

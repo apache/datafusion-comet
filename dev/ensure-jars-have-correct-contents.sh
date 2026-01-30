@@ -86,6 +86,7 @@ allowed_expr+="|^org/apache/spark/shuffle/$"
 allowed_expr+="|^org/apache/spark/shuffle/sort/$"
 allowed_expr+="|^org/apache/spark/shuffle/sort/CometShuffleExternalSorter.*$"
 allowed_expr+="|^org/apache/spark/shuffle/sort/RowPartition.class$"
+allowed_expr+="|^org/apache/spark/shuffle/sort/SpillSorter.*$"
 allowed_expr+="|^org/apache/spark/shuffle/comet/.*$"
 allowed_expr+="|^org/apache/spark/sql/$"
 # allow ExplainPlanGenerator trait since it may not be available in older Spark versions
