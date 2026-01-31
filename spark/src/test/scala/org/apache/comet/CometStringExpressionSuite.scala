@@ -21,18 +21,17 @@ package org.apache.comet
 
 import scala.util.Random
 
+import org.apache.hadoop.fs.Path
 import org.apache.parquet.hadoop.ParquetOutputFormat
 import org.apache.spark.sql.{CometTestBase, DataFrame}
 import org.apache.spark.sql.functions.lit
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, StringType, StructField, StructType}
 
+import org.apache.comet.serde.CometElt
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 class CometStringExpressionSuite extends CometTestBase {
-
-  private val WRONG_NUM_ARGS_WITHOUT_SUGGESTION_EXCEPTION_MSG =
-    "[WRONG_NUM_ARGS.WITHOUT_SUGGESTION] The `elt` requires > 1 parameters but the actual number is 1."
 
   test("lpad string") {
     testStringPadding("lpad")
@@ -396,7 +395,12 @@ class CometStringExpressionSuite extends CometTestBase {
   }
 
   test("elt") {
-    withSQLConf(SQLConf.ANSI_ENABLED.key -> "false") {
+    val wrongNumArgsWithoutSuggestionExceptionMsg =
+      "[WRONG_NUM_ARGS.WITHOUT_SUGGESTION] The `elt` requires > 1 parameters but the actual number is 1."
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "false",
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+        "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
       val r = new Random(42)
       val fieldsCount = 10
       val indexes = Seq.range(1, fieldsCount)
@@ -420,13 +424,13 @@ class CometStringExpressionSuite extends CometTestBase {
         sql(s"SELECT elt(cast(null as int), ${schema.fieldNames.mkString(",")}) FROM t1"))
       checkSparkAnswerMaybeThrows(sql("SELECT elt(1) FROM t1")) match {
         case (Some(spark), Some(comet)) =>
-          assert(spark.getMessage.contains(WRONG_NUM_ARGS_WITHOUT_SUGGESTION_EXCEPTION_MSG))
-          assert(comet.getMessage.contains(WRONG_NUM_ARGS_WITHOUT_SUGGESTION_EXCEPTION_MSG))
+          assert(spark.getMessage.contains(wrongNumArgsWithoutSuggestionExceptionMsg))
+          assert(comet.getMessage.contains(wrongNumArgsWithoutSuggestionExceptionMsg))
         case (spark, comet) =>
           fail(
             s"Expected Spark and Comet to throw exception, but got\nSpark: $spark\nComet: $comet")
       }
+      checkSparkAnswerAndOperator("SELECT elt(2, 'a', 'b', 'c')")
     }
   }
-
 }

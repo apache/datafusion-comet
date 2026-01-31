@@ -295,24 +295,6 @@ object CometElt extends CometScalarFunction[Elt]("elt") {
     if (expr.failOnError) {
       return Unsupported(Some("ANSI mode not supported"))
     }
-    if (expr.children.length < 2) {
-      return Unsupported(Some("The `elt` requires > 1 parameters but the actual number is 1"))
-    }
-    val idxDataType = expr.children.head.dataType
-    if (idxDataType != IntegerType) {
-      return Unsupported(Some(s"Parameter 1 requires the int type, but got: $idxDataType"))
-    }
-    if (!expr.children.tail.forall(_.dataType == StringType)) {
-      val unsupportedTypes =
-        expr.children.tail
-          .filter(_.dataType != StringType)
-          .map(_.dataType)
-          .distinct
-          .mkString(", ")
-      return Unsupported(
-        Some(
-          s"Parameters 2 and onwards require the string type, but contains: $unsupportedTypes"))
-    }
     Compatible(None)
   }
 }
