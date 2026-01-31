@@ -46,15 +46,10 @@ env:
   RUST_VERSION: stable
 
 jobs:
-  # Build native library once per Spark version and share with all test jobs
+  # Build native library once and share with all test jobs
   build-native:
     if: contains(github.event.pull_request.title, '[iceberg]')
-    strategy:
-      matrix:
-        spark-version: [{short: '3.4', full: '3.4.3'}, {short: '3.5', full: '3.5.8'}]
-        scala-version: ['2.13']
-      fail-fast: false
-    name: build-native/spark-${{ matrix.spark-version.short }}/scala-${{ matrix.scala-version }}
+    name: Build Native Library
     runs-on: ubuntu-24.04
     container:
       image: amd64/rust
@@ -80,10 +75,8 @@ jobs:
 
       - name: Build native library
         # Use CI profile for faster builds (no LTO) and to share cache with pr_build_linux.yml.
-        # Move the library to target/release/ where Maven's -Prelease profile expects it.
         run: |
           cd native && cargo build --profile ci
-          mkdir -p target/release && mv target/ci/libcomet.so target/release/
 
       - name: Save Cargo cache
         uses: actions/cache/save@v5
@@ -98,8 +91,8 @@ jobs:
       - name: Upload native library
         uses: actions/upload-artifact@v6
         with:
-          name: native-lib-spark-${{ matrix.spark-version.short }}-scala-${{ matrix.scala-version }}
-          path: native/target/release/libcomet.so
+          name: native-lib-iceberg
+          path: native/target/ci/libcomet.so
           retention-days: 1
 
   iceberg-spark:
@@ -129,7 +122,7 @@ jobs:
       - name: Download native library
         uses: actions/download-artifact@v7
         with:
-          name: native-lib-spark-${{ matrix.spark-version.short }}-scala-${{ matrix.scala-version }}
+          name: native-lib-iceberg
           path: native/target/release/
       - name: Build Comet
         run: |
@@ -173,7 +166,7 @@ jobs:
       - name: Download native library
         uses: actions/download-artifact@v7
         with:
-          name: native-lib-spark-${{ matrix.spark-version.short }}-scala-${{ matrix.scala-version }}
+          name: native-lib-iceberg
           path: native/target/release/
       - name: Build Comet
         run: |
@@ -217,7 +210,7 @@ jobs:
       - name: Download native library
         uses: actions/download-artifact@v7
         with:
-          name: native-lib-spark-${{ matrix.spark-version.short }}-scala-${{ matrix.scala-version }}
+          name: native-lib-iceberg
           path: native/target/release/
       - name: Build Comet
         run: |
@@ -261,7 +254,7 @@ jobs:
       - name: Download native library
         uses: actions/download-artifact@v7
         with:
-          name: native-lib-spark-${{ matrix.spark-version.short }}-scala-${{ matrix.scala-version }}
+          name: native-lib-iceberg
           path: native/target/release/
       - name: Build Comet
         run: |
@@ -305,7 +298,7 @@ jobs:
       - name: Download native library
         uses: actions/download-artifact@v7
         with:
-          name: native-lib-spark-${{ matrix.spark-version.short }}-scala-${{ matrix.scala-version }}
+          name: native-lib-iceberg
           path: native/target/release/
       - name: Build Comet
         run: |
@@ -349,7 +342,7 @@ jobs:
       - name: Download native library
         uses: actions/download-artifact@v7
         with:
-          name: native-lib-spark-${{ matrix.spark-version.short }}-scala-${{ matrix.scala-version }}
+          name: native-lib-iceberg
           path: native/target/release/
       - name: Build Comet
         run: |
