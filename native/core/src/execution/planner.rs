@@ -667,31 +667,65 @@ impl PhysicalPlanner {
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
         let left = self.create_expr(left, Arc::clone(&input_schema))?;
         let right = self.create_expr(right, Arc::clone(&input_schema))?;
-        match (
-            &op,
-            left.data_type(&input_schema),
-            right.data_type(&input_schema),
-        ) {
+        let left_type = left.data_type(&input_schema);
+        let right_type = right.data_type(&input_schema);
+        match (&op, &left_type, &right_type) {
+            // Handle date arithmetic with Int8/Int16/Int32 by:
+            // 1. Casting Date32 to Int32 (days since epoch)
+            // 2. Performing the arithmetic as Int32 +/- Int32
+            // 3. Casting the result back to Date32 using DataFusion's CastExpr
+            // Arrow's date arithmetic kernel only supports Date32 +/- Interval types
+            // Note: We use DataFusion's CastExpr for the final cast because Spark's Cast
+            // doesn't support Int32 -> Date32 conversion
+            (
+                DataFusionOperator::Plus | DataFusionOperator::Minus,
+                Ok(DataType::Date32),
+                Ok(DataType::Int8) | Ok(DataType::Int16) | Ok(DataType::Int32),
+            ) => {
+                // Cast Date32 to Int32 (days since epoch)
+                let left_as_int = Arc::new(Cast::new(
+                    left,
+                    DataType::Int32,
+                    SparkCastOptions::new_without_timezone(EvalMode::Legacy, false),
+                ));
+                // Cast Int8/Int16 to Int32 if needed
+                let right_as_int: Arc<dyn PhysicalExpr> =
+                    if matches!(right_type, Ok(DataType::Int32)) {
+                        right
+                    } else {
+                        Arc::new(Cast::new(
+                            right,
+                            DataType::Int32,
+                            SparkCastOptions::new_without_timezone(EvalMode::Legacy, false),
+                        ))
+                    };
+                // Perform the arithmetic as Int32 +/- Int32
+                let result_int = Arc::new(BinaryExpr::new(left_as_int, op, right_as_int));
+                // Cast the result back to Date32 using DataFusion's CastExpr
+                // (Spark's Cast doesn't support Int32 -> Date32)
+                Ok(Arc::new(CastExpr::new(result_int, DataType::Date32, None)))
+            }
             (
                 DataFusionOperator::Plus | DataFusionOperator::Minus | DataFusionOperator::Multiply,
                 Ok(DataType::Decimal128(p1, s1)),
                 Ok(DataType::Decimal128(p2, s2)),
             ) if ((op == DataFusionOperator::Plus || op == DataFusionOperator::Minus)
-                && max(s1, s2) as u8 + max(p1 - s1 as u8, p2 - s2 as u8)
+                && max(*s1, *s2) as u8 + max(*p1 - *s1 as u8, *p2 - *s2 as u8)
                     >= DECIMAL128_MAX_PRECISION)
-                || (op == DataFusionOperator::Multiply && p1 + p2 >= DECIMAL128_MAX_PRECISION) =>
+                || (op == DataFusionOperator::Multiply
+                    && *p1 + *p2 >= DECIMAL128_MAX_PRECISION) =>
             {
                 let data_type = return_type.map(to_arrow_datatype).unwrap();
                 // For some Decimal128 operations, we need wider internal digits.
                 // Cast left and right to Decimal256 and cast the result back to Decimal128
                 let left = Arc::new(Cast::new(
                     left,
-                    DataType::Decimal256(p1, s1),
+                    DataType::Decimal256(*p1, *s1),
                     SparkCastOptions::new_without_timezone(EvalMode::Legacy, false),
                 ));
                 let right = Arc::new(Cast::new(
                     right,
-                    DataType::Decimal256(p2, s2),
+                    DataType::Decimal256(*p2, *s2),
                     SparkCastOptions::new_without_timezone(EvalMode::Legacy, false),
                 ));
                 let child = Arc::new(BinaryExpr::new(left, op, right));
@@ -3432,7 +3466,9 @@ mod tests {
     use futures::{poll, StreamExt};
     use std::{sync::Arc, task::Poll};
 
-    use arrow::array::{Array, DictionaryArray, Int32Array, ListArray, RecordBatch, StringArray};
+    use arrow::array::{
+        Array, DictionaryArray, Int32Array, Int8Array, ListArray, RecordBatch, StringArray,
+    };
     use arrow::datatypes::{DataType, Field, FieldRef, Fields, Schema};
     use datafusion::catalog::memory::DataSourceExec;
     use datafusion::config::TableParquetOptions;
@@ -4363,5 +4399,152 @@ mod tests {
         assert_eq!(vals3.values(), &[10, 0, 11]);
 
         Ok(())
+    }
+
+    /// Test that reproduces the "Cast error: Casting from Int8 to Date32 not supported" error
+    /// that occurs when performing date subtraction with Int8 (TINYINT) values.
+    /// This corresponds to the Scala test "date_sub with int arrays" in CometExpressionSuite.
+    ///
+    /// The error occurs because DataFusion's BinaryExpr tries to cast Int8 to Date32
+    /// when evaluating date - int8, but this cast is not supported.
+    #[test]
+    fn test_date_sub_with_int8_cast_error() {
+        use arrow::array::Date32Array;
+
+        let session_ctx = SessionContext::new();
+        let task_ctx = session_ctx.task_ctx();
+        let planner = PhysicalPlanner::new(Arc::from(session_ctx), 0);
+
+        // Create a scan operator with Date32 (DATE) and Int8 (TINYINT) columns
+        // This simulates the schema from the Scala test where _20 is DATE and _2 is TINYINT
+        let op_scan = Operator {
+            plan_id: 0,
+            children: vec![],
+            op_struct: Some(OpStruct::Scan(spark_operator::Scan {
+                fields: vec![
+                    spark_expression::DataType {
+                        type_id: 12, // DATE (Date32)
+                        type_info: None,
+                    },
+                    spark_expression::DataType {
+                        type_id: 1, // INT8 (TINYINT)
+                        type_info: None,
+                    },
+                ],
+                source: "test".to_string(),
+                arrow_ffi_safe: false,
+            })),
+        };
+
+        // Create bound reference for the DATE column (index 0)
+        let date_col = spark_expression::Expr {
+            expr_struct: Some(Bound(spark_expression::BoundReference {
+                index: 0,
+                datatype: Some(spark_expression::DataType {
+                    type_id: 12, // DATE
+                    type_info: None,
+                }),
+            })),
+        };
+
+        // Create bound reference for the INT8 column (index 1)
+        let int8_col = spark_expression::Expr {
+            expr_struct: Some(Bound(spark_expression::BoundReference {
+                index: 1,
+                datatype: Some(spark_expression::DataType {
+                    type_id: 1, // INT8
+                    type_info: None,
+                }),
+            })),
+        };
+
+        // Create a Subtract expression: date_col - int8_col
+        // This is equivalent to the SQL: SELECT _20 - _2 FROM tbl (date_sub operation)
+        // In the protobuf, subtract uses MathExpr type
+        let subtract_expr = spark_expression::Expr {
+            expr_struct: Some(ExprStruct::Subtract(Box::new(spark_expression::MathExpr {
+                left: Some(Box::new(date_col)),
+                right: Some(Box::new(int8_col)),
+                return_type: Some(spark_expression::DataType {
+                    type_id: 12, // DATE - result should be DATE
+                    type_info: None,
+                }),
+                eval_mode: 0, // Legacy mode
+            }))),
+        };
+
+        // Create a projection operator with the subtract expression
+        let projection = Operator {
+            children: vec![op_scan],
+            plan_id: 1,
+            op_struct: Some(OpStruct::Projection(spark_operator::Projection {
+                project_list: vec![subtract_expr],
+            })),
+        };
+
+        // Create the physical plan
+        let (mut scans, datafusion_plan) =
+            planner.create_plan(&projection, &mut vec![], 1).unwrap();
+
+        // Execute the plan with test data
+        let mut stream = datafusion_plan.native_plan.execute(0, task_ctx).unwrap();
+
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let (tx, mut rx) = mpsc::channel(1);
+
+        // Send test data: Date32 values and Int8 values
+        runtime.spawn(async move {
+            // Create Date32 array (days since epoch)
+            // 19000 days = approximately 2022-01-01
+            let date_array = Date32Array::from(vec![Some(19000), Some(19001), Some(19002)]);
+            // Create Int8 array
+            let int8_array = Int8Array::from(vec![Some(1i8), Some(2i8), Some(3i8)]);
+
+            let input_batch1 =
+                InputBatch::Batch(vec![Arc::new(date_array), Arc::new(int8_array)], 3);
+            let input_batch2 = InputBatch::EOF;
+
+            let batches = vec![input_batch1, input_batch2];
+
+            for batch in batches.into_iter() {
+                tx.send(batch).await.unwrap();
+            }
+        });
+
+        // Execute and expect success - the Int8 should be cast to Int32 for date arithmetic
+        runtime.block_on(async move {
+            loop {
+                let batch = rx.recv().await.unwrap();
+                scans[0].set_input_batch(batch);
+                match poll!(stream.next()) {
+                    Poll::Ready(Some(result)) => {
+                        // We expect success - the Int8 should be automatically cast to Int32
+                        assert!(
+                            result.is_ok(),
+                            "Expected success for date - int8 operation but got error: {:?}",
+                            result.unwrap_err()
+                        );
+                        let batch = result.unwrap();
+                        assert_eq!(batch.num_rows(), 3);
+                        // The result should be Date32 type
+                        assert_eq!(batch.column(0).data_type(), &DataType::Date32);
+                        // Verify the values: 19000-1=18999, 19001-2=18999, 19002-3=18999
+                        let date_array = batch
+                            .column(0)
+                            .as_any()
+                            .downcast_ref::<Date32Array>()
+                            .unwrap();
+                        assert_eq!(date_array.value(0), 18999); // 19000 - 1
+                        assert_eq!(date_array.value(1), 18999); // 19001 - 2
+                        assert_eq!(date_array.value(2), 18999); // 19002 - 3
+                        break;
+                    }
+                    Poll::Ready(None) => {
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        });
     }
 }

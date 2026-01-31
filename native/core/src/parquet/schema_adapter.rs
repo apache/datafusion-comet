@@ -25,7 +25,7 @@
 
 use crate::parquet::parquet_support::{spark_parquet_convert, SparkParquetOptions};
 use arrow::array::{ArrayRef, RecordBatch, RecordBatchOptions};
-use arrow::datatypes::{Schema, SchemaRef};
+use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNode};
 use datafusion::common::{ColumnStatistics, Result as DataFusionResult};
 use datafusion::datasource::schema_adapter::{SchemaAdapter, SchemaAdapterFactory, SchemaMapper};
@@ -162,19 +162,49 @@ impl SparkPhysicalExprAdapter {
     }
 
     // Cast expressions that currently not supported in DF
+    // For example, Arrow's date arithmetic kernel only supports Date32 +/- Int32 (days)
+    // but Spark may send Int8/Int16 values. We need to cast them to Int32.
     fn cast_datafusion_unsupported_expr(
         &self,
         expr: Arc<dyn PhysicalExpr>,
     ) -> DataFusionResult<Arc<dyn PhysicalExpr>> {
-        // expr.transform(|expr| {
-        //     if let Some(col) = expr.as_any().downcast_ref::<Column>() {
-        //         dbg!(col.data_type(&self.logical_file_schema));
-        //     }
-        //     Ok(Transformed::no(expr))
-        // })
-        // .data()
+        use datafusion::logical_expr::Operator;
+        use datafusion::physical_expr::expressions::{BinaryExpr, CastColumnExpr};
 
-        Ok(expr)
+        expr.transform(|e| {
+            // Check if this is a BinaryExpr with date arithmetic
+            if let Some(binary) = e.as_any().downcast_ref::<BinaryExpr>() {
+                let op = binary.op();
+                // Only handle Plus and Minus for date arithmetic
+                if matches!(op, &Operator::Plus | &Operator::Minus) {
+                    let left = binary.left();
+                    let right = binary.right();
+
+                    let left_type = left.data_type(&self.logical_file_schema);
+                    let right_type = right.data_type(&self.logical_file_schema);
+
+                    // Check for Date32 +/- Int8 or Date32 +/- Int16
+                    if let (Ok(DataType::Date32), Ok(ref rt @ (DataType::Int8 | DataType::Int16))) =
+                        (&left_type, &right_type)
+                    {
+                        // Cast the right operand (Int8/Int16) to Int32
+                        let input_field = Arc::new(Field::new("input", rt.clone(), true));
+                        let target_field = Arc::new(Field::new("cast", DataType::Int32, true));
+                        let casted_right: Arc<dyn PhysicalExpr> = Arc::new(CastColumnExpr::new(
+                            Arc::clone(right),
+                            input_field,
+                            target_field,
+                            None,
+                        ));
+                        let new_binary: Arc<dyn PhysicalExpr> =
+                            Arc::new(BinaryExpr::new(Arc::clone(left), *op, casted_right));
+                        return Ok(Transformed::yes(new_binary));
+                    }
+                }
+            }
+            Ok(Transformed::no(e))
+        })
+        .data()
     }
 
     /// Replace references to missing columns with default values.
