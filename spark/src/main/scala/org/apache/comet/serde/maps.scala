@@ -22,7 +22,6 @@ package org.apache.comet.serde
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.types.{ArrayType, MapType}
 
-import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType}
 
 object CometMapKeys extends CometExpressionSerde[MapKeys] {
