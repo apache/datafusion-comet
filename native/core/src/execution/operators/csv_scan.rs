@@ -16,64 +16,66 @@
 // under the License.
 
 use crate::execution::operators::ExecutionError;
-use arrow::datatypes::{Field, SchemaRef};
+use arrow::datatypes::SchemaRef;
+use datafusion::common::config::CsvOptions as DFCsvOptions;
 use datafusion::common::DataFusionError;
 use datafusion::common::Result;
 use datafusion::datasource::object_store::ObjectStoreUrl;
 use datafusion::datasource::physical_plan::CsvSource;
 use datafusion_comet_proto::spark_operator::CsvOptions;
 use datafusion_datasource::file_groups::FileGroup;
-use datafusion_datasource::file_scan_config::{FileScanConfig, FileScanConfigBuilder};
+use datafusion_datasource::file_scan_config::FileScanConfigBuilder;
 use datafusion_datasource::source::DataSourceExec;
 use datafusion_datasource::PartitionedFile;
-use itertools::Itertools;
 use std::sync::Arc;
 
 pub fn init_csv_datasource_exec(
     object_store_url: ObjectStoreUrl,
     file_groups: Vec<Vec<PartitionedFile>>,
     data_schema: SchemaRef,
-    partition_schema: SchemaRef,
+    _partition_schema: SchemaRef,
     projection_vector: Vec<usize>,
     csv_options: &CsvOptions,
 ) -> Result<Arc<DataSourceExec>, ExecutionError> {
-    let csv_source = build_csv_source(csv_options.clone());
+    let csv_source = build_csv_source(data_schema, csv_options)?;
 
     let file_groups = file_groups
         .iter()
         .map(|files| FileGroup::new(files.clone()))
         .collect();
 
-    let partition_fields = partition_schema
-        .fields()
-        .iter()
-        .map(|field| Field::new(field.name(), field.data_type().clone(), field.is_nullable()))
-        .collect_vec();
+    let file_scan_config = FileScanConfigBuilder::new(object_store_url, csv_source)
+        .with_file_groups(file_groups)
+        .with_projection_indices(Some(projection_vector))?
+        .build();
 
-    let file_scan_config: FileScanConfig =
-        FileScanConfigBuilder::new(object_store_url, data_schema, csv_source)
-            .with_file_groups(file_groups)
-            .with_table_partition_cols(partition_fields)
-            .with_projection_indices(Some(projection_vector))
-            .build();
-
-    Ok(Arc::new(DataSourceExec::new(Arc::new(file_scan_config))))
+    Ok(DataSourceExec::from_data_source(file_scan_config))
 }
 
-fn build_csv_source(options: CsvOptions) -> Arc<CsvSource> {
-    let delimiter = string_to_u8(&options.delimiter, "delimiter").unwrap();
-    let quote = string_to_u8(&options.quote, "quote").unwrap();
-    let escape = string_to_u8(&options.escape, "escape").unwrap();
-    let terminator = string_to_u8(&options.terminator, "terminator").unwrap();
+fn build_csv_source(schema: SchemaRef, options: &CsvOptions) -> Result<Arc<CsvSource>> {
+    let delimiter = string_to_u8(&options.delimiter, "delimiter")?;
+    let quote = string_to_u8(&options.quote, "quote")?;
+    let escape = string_to_u8(&options.escape, "escape")?;
+    let terminator = string_to_u8(&options.terminator, "terminator")?;
     let comment = options
         .comment
-        .map(|c| string_to_u8(&c, "comment").unwrap());
-    let csv_source = CsvSource::new(options.has_header, delimiter, quote)
-        .with_escape(Some(escape))
-        .with_comment(comment)
-        .with_terminator(Some(terminator))
-        .with_truncate_rows(options.truncated_rows);
-    Arc::new(csv_source)
+        .as_ref()
+        .map(|c| string_to_u8(c, "comment"))
+        .transpose()?;
+
+    let df_csv_options = DFCsvOptions {
+        has_header: Some(options.has_header),
+        delimiter,
+        quote,
+        escape: Some(escape),
+        terminator: Some(terminator),
+        comment,
+        truncated_rows: Some(options.truncated_rows),
+        ..Default::default()
+    };
+
+    let csv_source = CsvSource::new(schema).with_csv_options(df_csv_options);
+    Ok(Arc::new(csv_source))
 }
 
 fn string_to_u8(option: &str, option_name: &str) -> Result<u8> {

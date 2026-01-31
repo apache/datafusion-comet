@@ -18,7 +18,7 @@
 use crate::execution::operators::ExecutionError;
 use crate::parquet::encryption_support::{CometEncryptionConfig, ENCRYPTION_FACTORY_ID};
 use crate::parquet::parquet_support::SparkParquetOptions;
-use crate::parquet::schema_adapter::SparkSchemaAdapterFactory;
+use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
 use arrow::datatypes::{Field, SchemaRef};
 use datafusion::config::TableParquetOptions;
 use datafusion::datasource::listing::PartitionedFile;
@@ -29,10 +29,11 @@ use datafusion::datasource::source::DataSourceExec;
 use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::physical_expr::expressions::BinaryExpr;
 use datafusion::physical_expr::PhysicalExpr;
+use datafusion::physical_expr_adapter::PhysicalExprAdapterFactory;
 use datafusion::prelude::SessionContext;
 use datafusion::scalar::ScalarValue;
 use datafusion_comet_spark_expr::EvalMode;
-use itertools::Itertools;
+use datafusion_datasource::TableSchema;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -60,7 +61,6 @@ pub(crate) fn init_datasource_exec(
     required_schema: SchemaRef,
     data_schema: Option<SchemaRef>,
     partition_schema: Option<SchemaRef>,
-    partition_fields: Option<Vec<Field>>,
     object_store_url: ObjectStoreUrl,
     file_groups: Vec<Vec<PartitionedFile>>,
     projection_vector: Option<Vec<usize>>,
@@ -78,7 +78,26 @@ pub(crate) fn init_datasource_exec(
         encryption_enabled,
     );
 
-    let mut parquet_source = ParquetSource::new(table_parquet_options);
+    // Determine the schema to use for ParquetSource
+    let table_schema = if let Some(ref data_schema) = data_schema {
+        if let Some(ref partition_schema) = partition_schema {
+            let partition_fields: Vec<_> = partition_schema
+                .fields()
+                .iter()
+                .map(|f| {
+                    Arc::new(Field::new(f.name(), f.data_type().clone(), f.is_nullable())) as _
+                })
+                .collect();
+            TableSchema::new(Arc::clone(data_schema), partition_fields)
+        } else {
+            TableSchema::from_file_schema(Arc::clone(data_schema))
+        }
+    } else {
+        TableSchema::from_file_schema(Arc::clone(&required_schema))
+    };
+
+    let mut parquet_source =
+        ParquetSource::new(table_schema).with_table_parquet_options(table_parquet_options);
 
     // Create a conjunctive form of the vector because ParquetExecBuilder takes
     // a single expression
@@ -104,37 +123,27 @@ pub(crate) fn init_datasource_exec(
         );
     }
 
-    let file_source = parquet_source.with_schema_adapter_factory(Arc::new(
-        SparkSchemaAdapterFactory::new(spark_parquet_options, default_values),
-    ))?;
+    let expr_adapter_factory: Arc<dyn PhysicalExprAdapterFactory> = Arc::new(
+        SparkPhysicalExprAdapterFactory::new(spark_parquet_options, default_values),
+    );
+
+    let file_source: Arc<dyn FileSource> = Arc::new(parquet_source);
 
     let file_groups = file_groups
         .iter()
         .map(|files| FileGroup::new(files.clone()))
         .collect();
 
-    let file_scan_config = match (data_schema, projection_vector, partition_fields) {
-        (Some(data_schema), Some(projection_vector), Some(partition_fields)) => {
-            get_file_config_builder(
-                data_schema,
-                partition_schema,
-                file_groups,
-                object_store_url,
-                file_source,
-            )
-            .with_projection_indices(Some(projection_vector))
-            .with_table_partition_cols(partition_fields)
-            .build()
-        }
-        _ => get_file_config_builder(
-            required_schema,
-            partition_schema,
-            file_groups,
-            object_store_url,
-            file_source,
-        )
-        .build(),
-    };
+    let mut file_scan_config_builder =
+        FileScanConfigBuilder::new(object_store_url, file_source).with_file_groups(file_groups);
+
+    if let Some(projection_vector) = projection_vector {
+        file_scan_config_builder = file_scan_config_builder
+            .with_projection_indices(Some(projection_vector))?
+            .with_expr_adapter(Some(expr_adapter_factory));
+    }
+
+    let file_scan_config = file_scan_config_builder.build();
 
     Ok(Arc::new(DataSourceExec::new(Arc::new(file_scan_config))))
 }
@@ -164,29 +173,4 @@ fn get_options(
     }
 
     (table_parquet_options, spark_parquet_options)
-}
-
-fn get_file_config_builder(
-    schema: SchemaRef,
-    partition_schema: Option<SchemaRef>,
-    file_groups: Vec<FileGroup>,
-    object_store_url: ObjectStoreUrl,
-    file_source: Arc<dyn FileSource>,
-) -> FileScanConfigBuilder {
-    match partition_schema {
-        Some(partition_schema) => {
-            let partition_fields: Vec<Field> = partition_schema
-                .fields()
-                .iter()
-                .map(|field| {
-                    Field::new(field.name(), field.data_type().clone(), field.is_nullable())
-                })
-                .collect_vec();
-            FileScanConfigBuilder::new(object_store_url, Arc::clone(&schema), file_source)
-                .with_file_groups(file_groups)
-                .with_table_partition_cols(partition_fields)
-        }
-        _ => FileScanConfigBuilder::new(object_store_url, Arc::clone(&schema), file_source)
-            .with_file_groups(file_groups),
-    }
 }
