@@ -81,6 +81,7 @@ jobs:
       - name: Build native library
         run: |
           cd native && cargo build --profile ci
+          mkdir -p target/release && cp target/ci/libcomet.so target/release/
 
       - name: Build and install Maven artifacts
         run: |
