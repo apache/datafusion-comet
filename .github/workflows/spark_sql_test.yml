@@ -161,6 +161,10 @@ jobs:
         run: |
           cd apache-spark
           rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups
+          rm -rf /root/.m2/repository/org/scala-lang/modules/scala-xml_2.13
+          rm -rf /root/.m2/repository/org/xerial/snappy/snappy-java/1.1.10.4
+          rm -rf /root/.m2/repository/com/google/protobuf/protobuf-java/4.28.2
+          rm -rf /root/.m2/repository/org/bouncycastle/bcprov-jdk18on/1.80
           NOLINT_ON_COMPILE=true ENABLE_COMET=true ENABLE_COMET_ONHEAP=true COMET_PARQUET_SCAN_IMPL=${{ matrix.config.scan-impl }} ENABLE_COMET_LOG_FALLBACK_REASONS=${{ github.event.inputs.collect-fallback-logs || 'false' }} \
             build/sbt -Dsbt.log.noformat=true ${{ matrix.module.args1 }} "${{ matrix.module.args2 }}"
           if [ "${{ github.event.inputs.collect-fallback-logs }}" = "true" ]; then
