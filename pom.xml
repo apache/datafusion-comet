@@ -39,6 +39,7 @@ under the License.
     <module>spark</module>
     <module>spark-integration</module>
     <module>fuzz-testing</module>
+    <module>iceberg-public-api</module>
   </modules>
 
   <properties>
