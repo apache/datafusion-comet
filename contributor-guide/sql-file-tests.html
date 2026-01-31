@@ -1,0 +1,812 @@
+<!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../" data-theme="light">
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>SQL File Tests &#8212; Apache DataFusion Comet  documentation</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "light";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "light";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../_static/styles/theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../_static/theme_overrides.css?v=cd442bcd" />
+  
+  <!-- So that users can add custom icons -->
+  <script src="../_static/scripts/fontawesome.js?digest=8878045cc6db502f8baf"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf" />
+
+    <script src="../_static/documentation_options.js?v=5929fcd5"></script>
+    <script src="../_static/doctools.js?v=9a2dae69"></script>
+    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'contributor-guide/sql-file-tests';</script>
+    <script async="true" defer="true" src="https://buttons.github.io/buttons.js"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Comet Roadmap" href="roadmap.html" />
+    <link rel="prev" title="Running Spark SQL Tests" href="spark-sql-tests.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="" />
+  </head>
+  
+  
+  <body data-bs-spy="scroll" data-bs-target=".bd-toc-nav" data-offset="180" data-bs-root-margin="0px 0px -60%" data-default-mode="light">
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../index.html">
+  
+  
+  
+  
+  
+    
+    
+    
+    <img src="../_static/DataFusionComet-Logo-Light.png" class="logo__image only-light" alt="Apache DataFusion Comet  documentation - Home"/>
+    <img src="../_static/DataFusionComet-Logo-Dark.png" class="logo__image only-dark pst-js-only" alt="Apache DataFusion Comet  documentation - Home"/>
+  
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../about/index.html">
+    Comet Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../user-guide/index.html">
+    User Guide
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="index.html">
+    Contributor Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../asf/index.html">
+    ASF Links
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/apache/datafusion-comet" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+</ul></div>
+      
+        <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../about/index.html">
+    Comet Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../user-guide/index.html">
+    User Guide
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="index.html">
+    Contributor Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../asf/index.html">
+    ASF Links
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/apache/datafusion-comet" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+</ul></div>
+        
+          <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item"><!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
+<nav class="bd-links" id="bd-docs-nav" aria-label="Main navigation">
+  <div class="bd-toc-item active">
+    <p aria-level="2" class="caption" role="heading"><span class="caption-text">Index</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../about/index.html">Comet Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../user-guide/index.html">User Guide</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="index.html">Contributor Guide</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="contributing.html">Getting Started</a></li>
+<li class="toctree-l2"><a class="reference internal" href="plugin_overview.html">Comet Plugin Architecture</a></li>
+<li class="toctree-l2"><a class="reference internal" href="plugin_overview.html#plugin-components">Plugin Components</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ffi.html">Arrow FFI</a></li>
+<li class="toctree-l2"><a class="reference internal" href="jvm_shuffle.html">JVM Shuffle</a></li>
+<li class="toctree-l2"><a class="reference internal" href="native_shuffle.html">Native Shuffle</a></li>
+<li class="toctree-l2"><a class="reference internal" href="parquet_scans.html">Parquet Scans</a></li>
+<li class="toctree-l2"><a class="reference internal" href="development.html">Development Guide</a></li>
+<li class="toctree-l2"><a class="reference internal" href="debugging.html">Debugging Guide</a></li>
+<li class="toctree-l2"><a class="reference internal" href="benchmarking.html">Benchmarking Guide</a></li>
+<li class="toctree-l2"><a class="reference internal" href="adding_a_new_operator.html">Adding a New Operator</a></li>
+<li class="toctree-l2"><a class="reference internal" href="adding_a_new_expression.html">Adding a New Expression</a></li>
+<li class="toctree-l2"><a class="reference internal" href="tracing.html">Tracing</a></li>
+<li class="toctree-l2"><a class="reference internal" href="profiling_native_code.html">Profiling Native Code</a></li>
+<li class="toctree-l2"><a class="reference internal" href="spark-sql-tests.html">Spark SQL Tests</a></li>
+<li class="toctree-l2 current"><a class="current reference internal" href="#">SQL File Tests</a></li>
+<li class="toctree-l2"><a class="reference internal" href="roadmap.html">Roadmap</a></li>
+<li class="toctree-l2"><a class="reference external" href="https://github.com/apache/datafusion-comet">Github and Issue Tracker</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../asf/index.html">ASF Links</a></li>
+</ul>
+
+  </div>
+</nav>
+</div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    
+    <li class="breadcrumb-item"><a href="index.html" class="nav-link">Comet Contributor Guide</a></li>
+    
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">SQL File Tests</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+<section id="sql-file-tests">
+<h1>SQL File Tests<a class="headerlink" href="#sql-file-tests" title="Link to this heading">#</a></h1>
+<p><code class="docutils literal notranslate"><span class="pre">CometSqlFileTestSuite</span></code> is a test suite that automatically discovers <code class="docutils literal notranslate"><span class="pre">.sql</span></code> test files and
+runs each query through both Spark and Comet, comparing results. This provides a lightweight
+way to add expression and operator test coverage without writing Scala test code.</p>
+<section id="running-the-tests">
+<h2>Running the tests<a class="headerlink" href="#running-the-tests" title="Link to this heading">#</a></h2>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>mvn<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-pl<span class="w"> </span>spark<span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">&quot;org.apache.comet.CometSqlFileTestSuite&quot;</span><span class="w"> </span>-Dtest<span class="o">=</span>none
+</pre></div>
+</div>
+</section>
+<section id="test-file-location">
+<h2>Test file location<a class="headerlink" href="#test-file-location" title="Link to this heading">#</a></h2>
+<p>SQL test files live under:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">spark</span><span class="o">/</span><span class="n">src</span><span class="o">/</span><span class="n">test</span><span class="o">/</span><span class="n">resources</span><span class="o">/</span><span class="n">sql</span><span class="o">-</span><span class="n">tests</span><span class="o">/</span><span class="n">expressions</span><span class="o">/</span>
+</pre></div>
+</div>
+<p>Files are organized into category subdirectories:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">expressions</span><span class="o">/</span>
+  <span class="n">aggregate</span><span class="o">/</span>     <span class="o">--</span> <span class="n">avg</span><span class="p">,</span> <span class="nb">sum</span><span class="p">,</span> <span class="n">count</span><span class="p">,</span> <span class="n">min_max</span><span class="p">,</span> <span class="o">...</span>
+  <span class="n">array</span><span class="o">/</span>         <span class="o">--</span> <span class="n">array_contains</span><span class="p">,</span> <span class="n">array_append</span><span class="p">,</span> <span class="n">get_array_item</span><span class="p">,</span> <span class="o">...</span>
+  <span class="n">bitwise</span><span class="o">/</span>
+  <span class="n">cast</span><span class="o">/</span>
+  <span class="n">conditional</span><span class="o">/</span>   <span class="o">--</span> <span class="n">case_when</span><span class="p">,</span> <span class="n">coalesce</span><span class="p">,</span> <span class="n">if_expr</span><span class="p">,</span> <span class="o">...</span>
+  <span class="n">datetime</span><span class="o">/</span>      <span class="o">--</span> <span class="n">date_add</span><span class="p">,</span> <span class="n">date_diff</span><span class="p">,</span> <span class="n">unix_timestamp</span><span class="p">,</span> <span class="o">...</span>
+  <span class="n">decimal</span><span class="o">/</span>
+  <span class="nb">hash</span><span class="o">/</span>
+  <span class="nb">map</span><span class="o">/</span>           <span class="o">--</span> <span class="n">get_map_value</span><span class="p">,</span> <span class="n">map_keys</span><span class="p">,</span> <span class="n">map_values</span><span class="p">,</span> <span class="o">...</span>
+  <span class="n">math</span><span class="o">/</span>          <span class="o">--</span> <span class="nb">abs</span><span class="p">,</span> <span class="n">ceil</span><span class="p">,</span> <span class="n">floor</span><span class="p">,</span> <span class="nb">round</span><span class="p">,</span> <span class="n">sqrt</span><span class="p">,</span> <span class="o">...</span>
+  <span class="n">misc</span><span class="o">/</span>          <span class="o">--</span> <span class="n">width_bucket</span><span class="p">,</span> <span class="n">scalar_subquery</span><span class="p">,</span> <span class="o">...</span>
+  <span class="n">string</span><span class="o">/</span>        <span class="o">--</span> <span class="n">concat</span><span class="p">,</span> <span class="n">like</span><span class="p">,</span> <span class="n">substring</span><span class="p">,</span> <span class="n">lower</span><span class="p">,</span> <span class="n">upper</span><span class="p">,</span> <span class="o">...</span>
+  <span class="n">struct</span><span class="o">/</span>        <span class="o">--</span> <span class="n">create_named_struct</span><span class="p">,</span> <span class="n">get_struct_field</span><span class="p">,</span> <span class="o">...</span>
+</pre></div>
+</div>
+<p>The test suite recursively discovers all <code class="docutils literal notranslate"><span class="pre">.sql</span></code> files in these directories. Each file becomes
+one or more ScalaTest test cases.</p>
+</section>
+<section id="file-format">
+<h2>File format<a class="headerlink" href="#file-format" title="Link to this heading">#</a></h2>
+<p>A test file consists of SQL comments, directives, statements, and queries separated by blank
+lines. Here is a minimal example:</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="c1">-- ConfigMatrix: parquet.enable.dictionary=false,true</span>
+
+<span class="k">statement</span>
+<span class="k">CREATE</span><span class="w"> </span><span class="k">TABLE</span><span class="w"> </span><span class="n">test_abs</span><span class="p">(</span><span class="n">v</span><span class="w"> </span><span class="n">double</span><span class="p">)</span><span class="w"> </span><span class="k">USING</span><span class="w"> </span><span class="n">parquet</span>
+
+<span class="k">statement</span>
+<span class="k">INSERT</span><span class="w"> </span><span class="k">INTO</span><span class="w"> </span><span class="n">test_abs</span><span class="w"> </span><span class="k">VALUES</span><span class="w"> </span><span class="p">(</span><span class="mi">1</span><span class="p">.</span><span class="mi">5</span><span class="p">),</span><span class="w"> </span><span class="p">(</span><span class="o">-</span><span class="mi">2</span><span class="p">.</span><span class="mi">5</span><span class="p">),</span><span class="w"> </span><span class="p">(</span><span class="mi">0</span><span class="p">.</span><span class="mi">0</span><span class="p">),</span><span class="w"> </span><span class="p">(</span><span class="k">NULL</span><span class="p">)</span>
+
+<span class="n">query</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="k">abs</span><span class="p">(</span><span class="n">v</span><span class="p">)</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">test_abs</span>
+</pre></div>
+</div>
+<section id="directives">
+<h3>Directives<a class="headerlink" href="#directives" title="Link to this heading">#</a></h3>
+<p>Directives are SQL comments at the top of the file that configure how the test runs.</p>
+<section id="config">
+<h4><code class="docutils literal notranslate"><span class="pre">Config</span></code><a class="headerlink" href="#config" title="Link to this heading">#</a></h4>
+<p>Sets a Spark SQL config for all queries in the file.</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="c1">-- Config: spark.sql.ansi.enabled=true</span>
+</pre></div>
+</div>
+</section>
+<section id="configmatrix">
+<h4><code class="docutils literal notranslate"><span class="pre">ConfigMatrix</span></code><a class="headerlink" href="#configmatrix" title="Link to this heading">#</a></h4>
+<p>Runs the entire file once per combination of values. Multiple <code class="docutils literal notranslate"><span class="pre">ConfigMatrix</span></code> lines produce a
+cross product of all combinations.</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="c1">-- ConfigMatrix: parquet.enable.dictionary=false,true</span>
+</pre></div>
+</div>
+<p>This generates two test cases:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">sql</span><span class="o">-</span><span class="n">file</span><span class="p">:</span> <span class="n">expressions</span><span class="o">/</span><span class="n">cast</span><span class="o">/</span><span class="n">cast</span><span class="o">.</span><span class="n">sql</span> <span class="p">[</span><span class="n">parquet</span><span class="o">.</span><span class="n">enable</span><span class="o">.</span><span class="n">dictionary</span><span class="o">=</span><span class="n">false</span><span class="p">]</span>
+<span class="n">sql</span><span class="o">-</span><span class="n">file</span><span class="p">:</span> <span class="n">expressions</span><span class="o">/</span><span class="n">cast</span><span class="o">/</span><span class="n">cast</span><span class="o">.</span><span class="n">sql</span> <span class="p">[</span><span class="n">parquet</span><span class="o">.</span><span class="n">enable</span><span class="o">.</span><span class="n">dictionary</span><span class="o">=</span><span class="n">true</span><span class="p">]</span>
+</pre></div>
+</div>
+</section>
+<section id="minsparkversion">
+<h4><code class="docutils literal notranslate"><span class="pre">MinSparkVersion</span></code><a class="headerlink" href="#minsparkversion" title="Link to this heading">#</a></h4>
+<p>Skips the file when running on a Spark version older than the specified version.</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="c1">-- MinSparkVersion: 3.5</span>
+</pre></div>
+</div>
+</section>
+</section>
+<section id="statements">
+<h3>Statements<a class="headerlink" href="#statements" title="Link to this heading">#</a></h3>
+<p>A <code class="docutils literal notranslate"><span class="pre">statement</span></code> block executes DDL or DML and does not check results. Use this for <code class="docutils literal notranslate"><span class="pre">CREATE</span> <span class="pre">TABLE</span></code>
+and <code class="docutils literal notranslate"><span class="pre">INSERT</span></code> commands. Table names are automatically extracted for cleanup after the test.</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">statement</span>
+<span class="k">CREATE</span><span class="w"> </span><span class="k">TABLE</span><span class="w"> </span><span class="n">my_table</span><span class="p">(</span><span class="n">x</span><span class="w"> </span><span class="nb">int</span><span class="p">,</span><span class="w"> </span><span class="n">y</span><span class="w"> </span><span class="n">double</span><span class="p">)</span><span class="w"> </span><span class="k">USING</span><span class="w"> </span><span class="n">parquet</span>
+
+<span class="k">statement</span>
+<span class="k">INSERT</span><span class="w"> </span><span class="k">INTO</span><span class="w"> </span><span class="n">my_table</span><span class="w"> </span><span class="k">VALUES</span><span class="w"> </span><span class="p">(</span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="mi">2</span><span class="p">.</span><span class="mi">0</span><span class="p">),</span><span class="w"> </span><span class="p">(</span><span class="mi">3</span><span class="p">,</span><span class="w"> </span><span class="mi">4</span><span class="p">.</span><span class="mi">0</span><span class="p">),</span><span class="w"> </span><span class="p">(</span><span class="k">NULL</span><span class="p">,</span><span class="w"> </span><span class="k">NULL</span><span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="queries">
+<h3>Queries<a class="headerlink" href="#queries" title="Link to this heading">#</a></h3>
+<p>A <code class="docutils literal notranslate"><span class="pre">query</span></code> block executes a SELECT and compares results between Spark and Comet. The query
+mode controls how results are validated.</p>
+<section id="query-default-mode">
+<h4><code class="docutils literal notranslate"><span class="pre">query</span></code> (default mode)<a class="headerlink" href="#query-default-mode" title="Link to this heading">#</a></h4>
+<p>Checks that the query runs natively on Comet (not falling back to Spark) and that results
+match Spark exactly.</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="n">query</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="k">abs</span><span class="p">(</span><span class="n">v</span><span class="p">)</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">test_abs</span>
+</pre></div>
+</div>
+</section>
+<section id="query-spark-answer-only">
+<h4><code class="docutils literal notranslate"><span class="pre">query</span> <span class="pre">spark_answer_only</span></code><a class="headerlink" href="#query-spark-answer-only" title="Link to this heading">#</a></h4>
+<p>Only checks that Comet results match Spark. Does not assert that the query runs natively.
+Use this for expressions that Comet may not fully support yet but should still produce
+correct results.</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="n">query</span><span class="w"> </span><span class="n">spark_answer_only</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="n">some_expression</span><span class="p">(</span><span class="n">v</span><span class="p">)</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">test_table</span>
+</pre></div>
+</div>
+</section>
+<section id="query-tolerance-value">
+<h4><code class="docutils literal notranslate"><span class="pre">query</span> <span class="pre">tolerance=&lt;value&gt;</span></code><a class="headerlink" href="#query-tolerance-value" title="Link to this heading">#</a></h4>
+<p>Checks results with a numeric tolerance. Useful for floating-point functions where small
+differences are acceptable.</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="n">query</span><span class="w"> </span><span class="n">tolerance</span><span class="o">=</span><span class="mi">0</span><span class="p">.</span><span class="mi">0001</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="n">cos</span><span class="p">(</span><span class="n">v</span><span class="p">)</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">test_trig</span>
+</pre></div>
+</div>
+</section>
+<section id="query-expect-fallback-reason">
+<h4><code class="docutils literal notranslate"><span class="pre">query</span> <span class="pre">expect_fallback(&lt;reason&gt;)</span></code><a class="headerlink" href="#query-expect-fallback-reason" title="Link to this heading">#</a></h4>
+<p>Asserts that the query falls back to Spark and verifies the fallback reason contains the
+given string.</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="n">query</span><span class="w"> </span><span class="n">expect_fallback</span><span class="p">(</span><span class="n">unsupported</span><span class="w"> </span><span class="n">expression</span><span class="p">)</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="n">unsupported_func</span><span class="p">(</span><span class="n">v</span><span class="p">)</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">test_table</span>
+</pre></div>
+</div>
+</section>
+<section id="query-ignore-reason">
+<h4><code class="docutils literal notranslate"><span class="pre">query</span> <span class="pre">ignore(&lt;reason&gt;)</span></code><a class="headerlink" href="#query-ignore-reason" title="Link to this heading">#</a></h4>
+<p>Skips the query entirely. Use this for queries that hit known bugs. The reason should be a
+link to the tracking GitHub issue.</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="c1">-- Comet bug: space(-1) causes native crash</span>
+<span class="n">query</span><span class="w"> </span><span class="k">ignore</span><span class="p">(</span><span class="n">https</span><span class="p">:</span><span class="o">//</span><span class="n">github</span><span class="p">.</span><span class="n">com</span><span class="o">/</span><span class="n">apache</span><span class="o">/</span><span class="n">datafusion</span><span class="o">-</span><span class="n">comet</span><span class="o">/</span><span class="n">issues</span><span class="o">/</span><span class="mi">3326</span><span class="p">)</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="k">space</span><span class="p">(</span><span class="n">n</span><span class="p">)</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">test_space</span><span class="w"> </span><span class="k">WHERE</span><span class="w"> </span><span class="n">n</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="mi">0</span>
+</pre></div>
+</div>
+</section>
+</section>
+</section>
+<section id="adding-a-new-test">
+<h2>Adding a new test<a class="headerlink" href="#adding-a-new-test" title="Link to this heading">#</a></h2>
+<ol class="arabic">
+<li><p>Create a <code class="docutils literal notranslate"><span class="pre">.sql</span></code> file under the appropriate subdirectory in
+<code class="docutils literal notranslate"><span class="pre">spark/src/test/resources/sql-tests/expressions/</span></code>. Create a new subdirectory if no
+existing category fits.</p></li>
+<li><p>Add the Apache license header as a SQL comment.</p></li>
+<li><p>Add a <code class="docutils literal notranslate"><span class="pre">ConfigMatrix</span></code> directive if the test should run with multiple Parquet configurations.
+Most expression tests use:</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="c1">-- ConfigMatrix: parquet.enable.dictionary=false,true</span>
+</pre></div>
+</div>
+</li>
+<li><p>Create tables and insert test data using <code class="docutils literal notranslate"><span class="pre">statement</span></code> blocks. Include edge cases such as
+<code class="docutils literal notranslate"><span class="pre">NULL</span></code>, boundary values, and negative numbers.</p></li>
+<li><p>Add <code class="docutils literal notranslate"><span class="pre">query</span></code> blocks for each expression or behavior to test. Use the default <code class="docutils literal notranslate"><span class="pre">query</span></code> mode
+when you expect Comet to run the expression natively. Use <code class="docutils literal notranslate"><span class="pre">query</span> <span class="pre">spark_answer_only</span></code> when
+native execution is not yet expected.</p></li>
+<li><p>Run the tests to verify:</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>mvn<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-pl<span class="w"> </span>spark<span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">&quot;org.apache.comet.CometSqlFileTestSuite&quot;</span><span class="w"> </span>-Dtest<span class="o">=</span>none
+</pre></div>
+</div>
+</li>
+</ol>
+<section id="tips-for-writing-thorough-tests">
+<h3>Tips for writing thorough tests<a class="headerlink" href="#tips-for-writing-thorough-tests" title="Link to this heading">#</a></h3>
+<section id="cover-all-combinations-of-literal-and-column-arguments">
+<h4>Cover all combinations of literal and column arguments<a class="headerlink" href="#cover-all-combinations-of-literal-and-column-arguments" title="Link to this heading">#</a></h4>
+<p>Comet often uses different code paths for literal values versus column references. Tests
+should exercise both. For a function with multiple arguments, test every useful combination.</p>
+<p>For a single-argument function, test both a column reference and a literal:</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="c1">-- column argument (reads from Parquet, goes through columnar evaluation)</span>
+<span class="n">query</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="n">ascii</span><span class="p">(</span><span class="n">s</span><span class="p">)</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">test_ascii</span>
+
+<span class="c1">-- literal arguments</span>
+<span class="n">query</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="n">ascii</span><span class="p">(</span><span class="s1">&#39;A&#39;</span><span class="p">),</span><span class="w"> </span><span class="n">ascii</span><span class="p">(</span><span class="s1">&#39;&#39;</span><span class="p">),</span><span class="w"> </span><span class="n">ascii</span><span class="p">(</span><span class="k">NULL</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>For a multi-argument function like <code class="docutils literal notranslate"><span class="pre">concat_ws(sep,</span> <span class="pre">str1,</span> <span class="pre">str2,</span> <span class="pre">...)</span></code>, test with the separator
+as a column versus a literal, and similarly for the other arguments:</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="c1">-- all columns</span>
+<span class="n">query</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="n">concat_ws</span><span class="p">(</span><span class="n">sep</span><span class="p">,</span><span class="w"> </span><span class="n">a</span><span class="p">,</span><span class="w"> </span><span class="n">b</span><span class="p">)</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">test_table</span>
+
+<span class="c1">-- literal separator, column values</span>
+<span class="n">query</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="n">concat_ws</span><span class="p">(</span><span class="s1">&#39;,&#39;</span><span class="p">,</span><span class="w"> </span><span class="n">a</span><span class="p">,</span><span class="w"> </span><span class="n">b</span><span class="p">)</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">test_table</span>
+
+<span class="c1">-- all literals</span>
+<span class="n">query</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="n">concat_ws</span><span class="p">(</span><span class="s1">&#39;,&#39;</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;hello&#39;</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;world&#39;</span><span class="p">)</span>
+</pre></div>
+</div>
+<p><strong>Note on constant folding:</strong> Normally Spark constant-folds all-literal expressions during
+planning, so Comet would never see them. However, <code class="docutils literal notranslate"><span class="pre">CometSqlFileTestSuite</span></code> automatically
+disables constant folding (by excluding <code class="docutils literal notranslate"><span class="pre">ConstantFolding</span></code> from the optimizer rules), so
+all-literal queries are evaluated by Comet’s native engine. This means you can use the
+default <code class="docutils literal notranslate"><span class="pre">query</span></code> mode for all-literal cases and they will be tested natively just like
+column-based queries.</p>
+</section>
+<section id="cover-edge-cases">
+<h4>Cover edge cases<a class="headerlink" href="#cover-edge-cases" title="Link to this heading">#</a></h4>
+<p>Include edge-case values in your test data. The exact cases depend on the function, but
+common ones include:</p>
+<ul class="simple">
+<li><p><strong>NULL values</strong> – every test should include NULLs</p></li>
+<li><p><strong>Empty strings</strong> – for string functions</p></li>
+<li><p><strong>Zero, negative, and very large numbers</strong> – for numeric functions</p></li>
+<li><p><strong>Boundary values</strong> – <code class="docutils literal notranslate"><span class="pre">INT_MIN</span></code>, <code class="docutils literal notranslate"><span class="pre">INT_MAX</span></code>, <code class="docutils literal notranslate"><span class="pre">NaN</span></code>, <code class="docutils literal notranslate"><span class="pre">Infinity</span></code>, <code class="docutils literal notranslate"><span class="pre">-Infinity</span></code> for numeric
+types</p></li>
+<li><p><strong>Special characters and multibyte UTF-8</strong> – for string functions (e.g. <code class="docutils literal notranslate"><span class="pre">'é'</span></code>, <code class="docutils literal notranslate"><span class="pre">'中文'</span></code>,
+<code class="docutils literal notranslate"><span class="pre">'\t'</span></code>)</p></li>
+<li><p><strong>Empty arrays/maps</strong> – for collection functions</p></li>
+<li><p><strong>Single-element and multi-element collections</strong> – for aggregate and collection functions</p></li>
+</ul>
+</section>
+<section id="one-file-per-expression">
+<h4>One file per expression<a class="headerlink" href="#one-file-per-expression" title="Link to this heading">#</a></h4>
+<p>Keep each <code class="docutils literal notranslate"><span class="pre">.sql</span></code> file focused on a single expression or a small group of closely related
+expressions. This makes failures easy to locate and keeps files readable.</p>
+</section>
+<section id="use-comments-to-label-sections">
+<h4>Use comments to label sections<a class="headerlink" href="#use-comments-to-label-sections" title="Link to this heading">#</a></h4>
+<p>Add SQL comments before query blocks to describe what aspect of the expression is being
+tested. This helps reviewers and future maintainers understand the intent:</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="c1">-- literal separator with NULL values</span>
+<span class="n">query</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="n">concat_ws</span><span class="p">(</span><span class="s1">&#39;,&#39;</span><span class="p">,</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;b&#39;</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;c&#39;</span><span class="p">)</span>
+
+<span class="c1">-- empty separator</span>
+<span class="n">query</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="n">concat_ws</span><span class="p">(</span><span class="s1">&#39;&#39;</span><span class="p">,</span><span class="w"> </span><span class="n">a</span><span class="p">,</span><span class="w"> </span><span class="n">b</span><span class="p">,</span><span class="w"> </span><span class="k">c</span><span class="p">)</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">test_table</span>
+</pre></div>
+</div>
+</section>
+</section>
+<section id="using-agentic-coding-tools">
+<h3>Using agentic coding tools<a class="headerlink" href="#using-agentic-coding-tools" title="Link to this heading">#</a></h3>
+<p>Writing thorough SQL test files is a task well suited to agentic coding tools such as
+Claude Code. You can point the tool at an existing test file as an example, describe the
+expression you want to test, and ask it to generate a complete <code class="docutils literal notranslate"><span class="pre">.sql</span></code> file covering all
+argument combinations and edge cases. This is significantly faster than writing the
+combinatorial test cases by hand and helps ensure nothing is missed.</p>
+<p>For example:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>Read the test file spark/src/test/resources/sql-tests/expressions/string/ascii.sql
+and the documentation in docs/source/contributor-guide/sql-file-tests.md.
+Then write a similar test file for the `reverse` function, covering column arguments,
+literal arguments, NULLs, empty strings, and multibyte characters.
+</pre></div>
+</div>
+</section>
+</section>
+<section id="handling-test-failures">
+<h2>Handling test failures<a class="headerlink" href="#handling-test-failures" title="Link to this heading">#</a></h2>
+<p>When a query fails due to a known Comet bug:</p>
+<ol class="arabic simple">
+<li><p>File a GitHub issue describing the problem.</p></li>
+<li><p>Change the query mode to <code class="docutils literal notranslate"><span class="pre">ignore(...)</span></code> with a link to the issue.</p></li>
+<li><p>Optionally add a SQL comment above the query explaining the problem.</p></li>
+</ol>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="c1">-- GetArrayItem returns incorrect results with dynamic index</span>
+<span class="n">query</span><span class="w"> </span><span class="k">ignore</span><span class="p">(</span><span class="n">https</span><span class="p">:</span><span class="o">//</span><span class="n">github</span><span class="p">.</span><span class="n">com</span><span class="o">/</span><span class="n">apache</span><span class="o">/</span><span class="n">datafusion</span><span class="o">-</span><span class="n">comet</span><span class="o">/</span><span class="n">issues</span><span class="o">/</span><span class="mi">3332</span><span class="p">)</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="n">arr</span><span class="p">[</span><span class="n">idx</span><span class="p">]</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">test_get_array_item</span>
+</pre></div>
+</div>
+<p>When the bug is fixed, remove the <code class="docutils literal notranslate"><span class="pre">ignore(...)</span></code> and restore the original query mode.</p>
+</section>
+<section id="architecture">
+<h2>Architecture<a class="headerlink" href="#architecture" title="Link to this heading">#</a></h2>
+<p>The test infrastructure consists of two Scala files:</p>
+<ul class="simple">
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">SqlFileTestParser</span></code></strong> (<code class="docutils literal notranslate"><span class="pre">spark/src/test/scala/org/apache/comet/SqlFileTestParser.scala</span></code>) –
+Parses <code class="docutils literal notranslate"><span class="pre">.sql</span></code> files into a <code class="docutils literal notranslate"><span class="pre">SqlTestFile</span></code> data structure containing directives, statements,
+and queries.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">CometSqlFileTestSuite</span></code></strong> (<code class="docutils literal notranslate"><span class="pre">spark/src/test/scala/org/apache/comet/CometSqlFileTestSuite.scala</span></code>) –
+Discovers test files at suite initialization time, generates ScalaTest test cases for each
+file and config combination, and executes them using <code class="docutils literal notranslate"><span class="pre">CometTestBase</span></code> assertion methods.</p></li>
+</ul>
+<p>Tables created in test files are automatically cleaned up after each test.</p>
+</section>
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="spark-sql-tests.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">Running Spark SQL Tests</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="roadmap.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">Comet Roadmap</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf"></script>
+<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf"></script>
+
+<!-- Based on pydata_sphinx_theme/footer.html -->
+<footer class="footer mt-5 mt-md-0">
+  <div class="container">
+    
+    <div class="footer-item">
+      <p>Apache DataFusion, Apache DataFusion Comet, Apache, the Apache feather logo, and the Apache DataFusion project logo</p>
+      <p>are either registered trademarks or trademarks of The Apache Software Foundation in the United States and other countries.</p>
+    </div>
+  </div>
+</footer>
+
+
+  </body>
+</html>

@@ -582,8 +582,8 @@ under the License.
 <td><p>false</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.columnarToRow.native.enabled</span></code></p></td>
-<td><p>Whether to enable native columnar to row conversion. When enabled, Comet will use native Rust code to convert Arrow columnar data to Spark UnsafeRow format instead of the JVM implementation. This can improve performance for queries that need to convert between columnar and row formats.</p></td>
-<td><p>true</p></td>
+<td><p>Whether to enable native columnar to row conversion. When enabled, Comet will use native Rust code to convert Arrow columnar data to Spark UnsafeRow format instead of the JVM implementation. This can improve performance for queries that need to convert between columnar and row formats. This is an experimental feature.</p></td>
+<td><p>false</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.enabled</span></code></p></td>
 <td><p>Whether to enable Comet native vectorized execution for Spark. This controls whether Spark should convert operators into their Comet counterparts and execute them in native space. Note: each operator is associated with a separate config in the format of <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.&lt;operator_name&gt;.enabled</span></code> at the moment, and both the config and this need to be turned on, in order for the operator to be executed in native.</p></td>
