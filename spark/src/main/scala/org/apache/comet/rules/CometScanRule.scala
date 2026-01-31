@@ -28,12 +28,13 @@ import scala.jdk.CollectionConverters._
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, GenericInternalRow, PlanExpression}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, DynamicPruningExpression, Expression, GenericInternalRow, PlanExpression}
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.{sideBySide, ArrayBasedMapData, GenericArrayData, MetadataColumnHelper}
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
 import org.apache.spark.sql.comet.{CometBatchScanExec, CometScanExec}
-import org.apache.spark.sql.execution.{FileSourceScanExec, SparkPlan}
+import org.apache.spark.sql.execution.{FileSourceScanExec, SparkPlan, SubqueryAdaptiveBroadcastExec}
+import org.apache.spark.sql.execution.InSubqueryExec
 import org.apache.spark.sql.execution.datasources.HadoopFsRelation
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.datasources.v2.csv.CSVScan
@@ -51,11 +52,15 @@ import org.apache.comet.parquet.{CometParquetScan, Native, SupportsComet}
 import org.apache.comet.parquet.CometParquetUtils.{encryptionEnabled, isEncryptionConfigSupported}
 import org.apache.comet.serde.operator.CometNativeScan
 import org.apache.comet.shims.CometTypeShim
+import org.apache.comet.shims.ShimSubqueryBroadcast
 
 /**
  * Spark physical optimizer rule for replacing Spark scans with Comet scans.
  */
-case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with CometTypeShim {
+case class CometScanRule(session: SparkSession)
+    extends Rule[SparkPlan]
+    with CometTypeShim
+    with ShimSubqueryBroadcast {
 
   import CometScanRule._
 
@@ -327,10 +332,6 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
       case _
           if scanExec.scan.getClass.getName ==
             "org.apache.iceberg.spark.source.SparkBatchQueryScan" =>
-        if (scanExec.runtimeFilters.exists(isDynamicPruningFilter)) {
-          return withInfo(scanExec, "Dynamic Partition Pruning is not supported")
-        }
-
         val fallbackReasons = new ListBuffer[String]()
 
         // Native Iceberg scan requires both configs to be enabled
@@ -621,10 +622,47 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
           !hasUnsupportedDeletes
         }
 
+        // Check that all DPP subqueries use InSubqueryExec which we know how to handle.
+        // Future Spark versions might introduce new subquery types we haven't tested.
+        val dppSubqueriesSupported = {
+          val unsupportedSubqueries = scanExec.runtimeFilters.collect {
+            case DynamicPruningExpression(e) if !e.isInstanceOf[InSubqueryExec] =>
+              e.getClass.getSimpleName
+          }
+          // Check for multi-index DPP which we don't support yet.
+          // SPARK-46946 changed SubqueryAdaptiveBroadcastExec from index: Int to indices: Seq[Int]
+          // as a preparatory refactor for future features (Null Safe Equality DPP, multiple
+          // equality predicates). Currently indices always has one element, but future Spark
+          // versions might use multiple indices.
+          val multiIndexDpp = scanExec.runtimeFilters.exists {
+            case DynamicPruningExpression(e: InSubqueryExec) =>
+              e.plan match {
+                case sab: SubqueryAdaptiveBroadcastExec =>
+                  getSubqueryBroadcastIndices(sab).length > 1
+                case _ => false
+              }
+            case _ => false
+          }
+          if (unsupportedSubqueries.nonEmpty) {
+            fallbackReasons +=
+              s"Unsupported DPP subquery types: ${unsupportedSubqueries.mkString(", ")}. " +
+                "CometIcebergNativeScanExec only supports InSubqueryExec for DPP"
+            false
+          } else if (multiIndexDpp) {
+            // See SPARK-46946 for context on multi-index DPP
+            fallbackReasons +=
+              "Multi-index DPP (indices.length > 1) is not yet supported. " +
+                "See SPARK-46946 for context."
+            false
+          } else {
+            true
+          }
+        }
+
         if (schemaSupported && fileIOCompatible && formatVersionSupported && allParquetFiles &&
           allSupportedFilesystems && partitionTypesSupported &&
           complexTypePredicatesSupported && transformFunctionsSupported &&
-          deleteFileTypesSupported) {
+          deleteFileTypesSupported && dppSubqueriesSupported) {
           CometBatchScanExec(
             scanExec.clone().asInstanceOf[BatchScanExec],
             runtimeFilters = scanExec.runtimeFilters,
