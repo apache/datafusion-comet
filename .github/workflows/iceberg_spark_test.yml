@@ -111,8 +111,8 @@ jobs:
       - name: Upload Maven artifacts
         uses: actions/upload-artifact@v6
         with:
-          path: ~/.m2/repository/org/apache/comet
           name: comet-maven-spark-${{ matrix.spark-version.short }}-scala-${{ matrix.scala-version }}
+          path: /root/.m2/repository/org/apache/comet
           retention-days: 1
 
   iceberg-spark:
@@ -148,7 +148,7 @@ jobs:
         uses: actions/download-artifact@v7
         with:
           name: comet-maven-spark-${{ matrix.spark-version.short }}-scala-${{ matrix.scala-version }}
-          path: ~/.m2/repository/org/apache/comet
+          path: /root/.m2/repository/org/apache/comet
       - name: Setup Iceberg
         uses: ./.github/actions/setup-iceberg-builder
         with:
@@ -194,7 +194,7 @@ jobs:
         uses: actions/download-artifact@v7
         with:
           name: comet-maven-spark-${{ matrix.spark-version.short }}-scala-${{ matrix.scala-version }}
-          path: ~/.m2/repository/org/apache/comet
+          path: /root/.m2/repository/org/apache/comet
       - name: Setup Iceberg
         uses: ./.github/actions/setup-iceberg-builder
         with:
@@ -240,7 +240,7 @@ jobs:
         uses: actions/download-artifact@v7
         with:
           name: comet-maven-spark-${{ matrix.spark-version.short }}-scala-${{ matrix.scala-version }}
-          path: ~/.m2/repository/org/apache/comet
+          path: /root/.m2/repository/org/apache/comet
       - name: Setup Iceberg
         uses: ./.github/actions/setup-iceberg-builder
         with:
@@ -286,7 +286,7 @@ jobs:
         uses: actions/download-artifact@v7
         with:
           name: comet-maven-spark-${{ matrix.spark-version.short }}-scala-${{ matrix.scala-version }}
-          path: ~/.m2/repository/org/apache/comet
+          path: /root/.m2/repository/org/apache/comet
       - name: Setup Iceberg
         uses: ./.github/actions/setup-iceberg-rust-builder
         with:
@@ -332,7 +332,7 @@ jobs:
         uses: actions/download-artifact@v7
         with:
           name: comet-maven-spark-${{ matrix.spark-version.short }}-scala-${{ matrix.scala-version }}
-          path: ~/.m2/repository/org/apache/comet
+          path: /root/.m2/repository/org/apache/comet
       - name: Setup Iceberg
         uses: ./.github/actions/setup-iceberg-rust-builder
         with:
@@ -378,7 +378,7 @@ jobs:
         uses: actions/download-artifact@v7
         with:
           name: comet-maven-spark-${{ matrix.spark-version.short }}-scala-${{ matrix.scala-version }}
-          path: ~/.m2/repository/org/apache/comet
+          path: /root/.m2/repository/org/apache/comet
       - name: Setup Iceberg
         uses: ./.github/actions/setup-iceberg-rust-builder
         with:
