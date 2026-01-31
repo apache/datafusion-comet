@@ -93,9 +93,9 @@ case class CometShuffleExchangeExec(
     // CometNativeShuffle assumes that the input plan is Comet plan.
     child.executeColumnar()
   } else if (shuffleType == CometColumnarShuffle) {
-    // CometColumnarShuffle assumes that the input plan is row-based plan from Spark.
-    // One exception is that the input plan is CometScanExec which manually converts
-    // ColumnarBatch to InternalRow in its doExecute().
+    // CometColumnarShuffle uses Spark's row-based execute() API. For Spark row-based plans,
+    // rows flow directly. For Comet native plans, their doExecute() wraps with ColumnarToRowExec
+    // to convert columnar batches to rows.
     child.execute()
   } else {
     throw new UnsupportedOperationException(
@@ -266,10 +266,29 @@ object CometShuffleExchangeExec
     def supportedHashPartitioningDataType(dt: DataType): Boolean = dt match {
       case _: BooleanType | _: ByteType | _: ShortType | _: IntegerType | _: LongType |
           _: FloatType | _: DoubleType | _: StringType | _: BinaryType | _: TimestampType |
-          _: TimestampNTZType | _: DecimalType | _: DateType =>
+          _: TimestampNTZType | _: DateType =>
+        true
+      case _: DecimalType =>
+        // TODO enforce this check
+        // https://github.com/apache/datafusion-comet/issues/3079
+        // Decimals with precision > 18 require Java BigDecimal conversion before hashing
+        // d.precision <= 18
         true
       case _ =>
         false
+    }
+
+    /**
+     * Check if a data type contains a decimal with precision > 18. Such decimals require
+     * conversion to Java BigDecimal before hashing, which is not supported in native shuffle.
+     */
+    def containsHighPrecisionDecimal(dt: DataType): Boolean = dt match {
+      case d: DecimalType => d.precision > 18
+      case StructType(fields) => fields.exists(f => containsHighPrecisionDecimal(f.dataType))
+      case ArrayType(elementType, _) => containsHighPrecisionDecimal(elementType)
+      case MapType(keyType, valueType, _) =>
+        containsHighPrecisionDecimal(keyType) || containsHighPrecisionDecimal(valueType)
+      case _ => false
     }
 
     /**
@@ -384,6 +403,14 @@ object CometShuffleExchangeExec
           }
         }
         supported
+      case RoundRobinPartitioning(_) =>
+        val config = CometConf.COMET_EXEC_SHUFFLE_WITH_ROUND_ROBIN_PARTITIONING_ENABLED
+        if (!config.get(conf)) {
+          withInfo(s, s"${config.key} is disabled")
+          return false
+        }
+        // RoundRobin partitioning uses position-based distribution matching Spark's behavior
+        true
       case _ =>
         withInfo(
           s,
@@ -393,8 +420,9 @@ object CometShuffleExchangeExec
   }
 
   /**
-   * Check if the datatypes of shuffle input are supported. This is used for Columnar shuffle
-   * which supports struct/array.
+   * Check if JVM-based columnar shuffle (CometColumnarExchange) can be used for this shuffle. JVM
+   * shuffle is used when the child plan is not a Comet native operator, or when native shuffle
+   * doesn't support the required partitioning type.
    */
   def columnarShuffleSupported(s: ShuffleExchangeExec): Boolean = {
 

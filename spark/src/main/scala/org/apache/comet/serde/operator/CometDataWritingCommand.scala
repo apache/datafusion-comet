@@ -19,6 +19,7 @@
 
 package org.apache.comet.serde.operator
 
+import java.net.URI
 import java.util.Locale
 
 import scala.jdk.CollectionConverters._
@@ -29,8 +30,9 @@ import org.apache.spark.sql.execution.datasources.{InsertIntoHadoopFsRelationCom
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.internal.SQLConf
 
-import org.apache.comet.{CometConf, ConfigEntry, DataTypeSupport}
+import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.serde.{CometOperatorSerde, Incompatible, OperatorOuterClass, SupportLevel, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde.serializeDataType
@@ -45,6 +47,10 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] =
     Some(CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED)
+
+  // Native writes require Arrow-formatted input data. If the scan falls back to Spark
+  // (e.g., due to unsupported complex types), the write must also fall back.
+  override def requiresNativeChildren: Boolean = true
 
   override def getSupportLevel(op: DataWritingCommandExec): SupportLevel = {
     op.cmd match {
@@ -62,10 +68,6 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
 
             if (cmd.partitionColumns.nonEmpty || cmd.staticPartitions.nonEmpty) {
               return Unsupported(Some("Partitioned writes are not supported"))
-            }
-
-            if (cmd.query.output.exists(attr => DataTypeSupport.isComplexType(attr.dataType))) {
-              return Unsupported(Some("Complex types are not supported"))
             }
 
             val codec = parseCompressionCodec(cmd)
@@ -125,14 +127,24 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
           return None
       }
 
-      val writerOp = OperatorOuterClass.ParquetWriter
+      val writerOpBuilder = OperatorOuterClass.ParquetWriter
         .newBuilder()
         .setOutputPath(outputPath)
         .setCompression(codec)
         .addAllColumnNames(cmd.query.output.map(_.name).asJava)
-        // Note: work_dir, job_id, and task_attempt_id will be set at execution time
-        // in CometNativeWriteExec, as they depend on the Spark task context
-        .build()
+      // Note: work_dir, job_id, and task_attempt_id will be set at execution time
+      // in CometNativeWriteExec, as they depend on the Spark task context
+
+      // Collect S3/cloud storage configurations
+      val session = op.session
+      val hadoopConf = session.sessionState.newHadoopConfWithOptions(cmd.options)
+      val objectStoreOptions =
+        NativeConfig.extractObjectStoreOptions(hadoopConf, URI.create(outputPath))
+      objectStoreOptions.foreach { case (key, value) =>
+        writerOpBuilder.putObjectStoreOptions(key, value)
+      }
+
+      val writerOp = writerOpBuilder.build()
 
       val writerOperator = Operator
         .newBuilder()

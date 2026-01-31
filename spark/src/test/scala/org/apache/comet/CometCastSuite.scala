@@ -64,7 +64,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   private val timestampPattern = "0123456789/:T" + whitespaceChars
 
   lazy val usingParquetExecWithIncompatTypes: Boolean =
-    usingDataSourceExecWithIncompatTypes(conf)
+    hasUnsignedSmallIntSafetyCheck(conf)
 
   test("all valid cast combinations covered") {
     val names = testNames
@@ -1087,7 +1087,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
            |USING parquet
          """.stripMargin)
       sql("INSERT INTO TABLE tab1 SELECT named_struct('col1','1','col2','2')")
-      if (usingDataSourceExec) {
+      if (!usingLegacyNativeCometScan) {
         checkSparkAnswerAndOperator(
           "SELECT CAST(s AS struct<field1:string, field2:string>) AS new_struct FROM tab1")
       } else {

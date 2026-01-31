@@ -51,6 +51,7 @@ message Operator {
     IcebergScan iceberg_scan = 112;
     ParquetWriter parquet_writer = 113;
     Explode explode = 114;
+    CsvScan csv_scan = 115;
   }
 }
 
@@ -110,6 +111,51 @@ message NativeScan {
   bool encryption_enabled = 14;
 }
 
+message CsvScan {
+  repeated SparkStructField data_schema = 1;
+  repeated SparkStructField partition_schema = 2;
+  repeated int32 projection_vector = 3;
+  repeated SparkFilePartition file_partitions = 4;
+  map<string, string> object_store_options = 5;
+  CsvOptions csv_options = 6;
+}
+
+message CsvOptions {
+  bool has_header = 1;
+  string delimiter = 2;
+  string quote = 3;
+  string escape = 4;
+  optional string comment = 5;
+  string terminator = 7;
+  bool truncated_rows = 8;
+}
+
+// Partition value for Iceberg partition data
+message PartitionValue {
+  int32 field_id = 1;
+  oneof value {
+    int32 int_val = 2;
+    int64 long_val = 3;
+    int64 date_val = 4;           // days since epoch
+    int64 timestamp_val = 5;       // microseconds since epoch
+    int64 timestamp_tz_val = 6;    // microseconds with timezone
+    string string_val = 7;
+    double double_val = 8;
+    float float_val = 9;
+    bytes decimal_val = 10;        // unscaled BigInteger bytes
+    bool bool_val = 11;
+    bytes uuid_val = 12;
+    bytes fixed_val = 13;
+    bytes binary_val = 14;
+  }
+  bool is_null = 15;
+}
+
+// Collection of partition values for a single partition
+message PartitionData {
+  repeated PartitionValue values = 1;
+}
+
 message IcebergScan {
   // Schema to read
   repeated SparkStructField required_schema = 1;
@@ -129,7 +175,7 @@ message IcebergScan {
   repeated string partition_spec_pool = 7;
   repeated string name_mapping_pool = 8;
   repeated ProjectFieldIdList project_field_ids_pool = 9;
-  repeated string partition_data_pool = 10;
+  repeated PartitionData partition_data_pool = 10;
   repeated DeleteFileList delete_files_pool = 11;
   repeated spark.spark_expression.Expr residual_pool = 12;
 }
@@ -245,9 +291,16 @@ message ParquetWriter {
   optional string job_id = 6;
   // Task attempt ID for this specific task
   optional int32 task_attempt_id = 7;
+  // Options for configuring object stores such as AWS S3, GCS, etc. The key-value pairs are taken
+  // from Hadoop configuration for compatibility with Hadoop FileSystem implementations of object
+  // stores.
+  // The configuration values have hadoop. or spark.hadoop. prefix trimmed. For instance, the
+  // configuration value "spark.hadoop.fs.s3a.access.key" will be stored as "fs.s3a.access.key" in
+  // the map.
+  map<string, string> object_store_options = 8;
   // Complete staging file path from FileCommitProtocol.newTaskTempFile()
   // When set, native writer writes directly to this path for proper 2PC
-  optional string staging_file_path = 8;
+  optional string staging_file_path = 9;
 }
 
 enum AggregateMode {

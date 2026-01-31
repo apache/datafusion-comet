@@ -376,7 +376,7 @@ class CometStringExpressionSuite extends CometTestBase {
   }
 
   test("string_space") {
-    withParquetTable((0 until 5).map(i => (i, i + 1)), "tbl") {
+    withParquetTable((0 until 5).map(i => (-i, i + 1)), "tbl") {
       checkSparkAnswerAndOperator("SELECT space(_1), space(_2) FROM tbl")
     }
   }
