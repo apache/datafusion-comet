@@ -83,7 +83,7 @@ abstract class CometTestBase
     conf.set(CometConf.COMET_RESPECT_PARQUET_FILTER_PUSHDOWN.key, "true")
     conf.set(CometConf.COMET_SPARK_TO_ARROW_ENABLED.key, "true")
     conf.set(CometConf.COMET_NATIVE_SCAN_ENABLED.key, "true")
-    conf.set(CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key, "true")
+    conf.set(CometConf.COMET_PARQUET_UNSIGNED_SMALL_INT_CHECK.key, "false")
     conf.set(CometConf.COMET_ONHEAP_MEMORY_OVERHEAD.key, "2g")
     conf.set(CometConf.COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED.key, "true")
     // SortOrder is incompatible for mixed zero and negative zero floating point values, but
@@ -590,7 +590,7 @@ abstract class CometTestBase
   }
 
   def getPrimitiveTypesParquetSchema: String = {
-    if (usingDataSourceExecWithIncompatTypes(conf)) {
+    if (hasUnsignedSmallIntSafetyCheck(conf)) {
       // Comet complex type reader has different behavior for uint_8, uint_16 types.
       // The issue stems from undefined behavior in the parquet spec and is tracked
       // here: https://github.com/apache/parquet-java/issues/3142
@@ -1113,7 +1113,7 @@ abstract class CometTestBase
    *         |""".stripMargin,
    *       "select arr from tbl",
    *       sqlConf = Seq(
-   *         CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "false",
+   *         CometConf.COMET_SCAN_UNSIGNED_SMALL_INT_SAFETY_CHECK.key -> "true",
    *         "spark.comet.explainFallback.enabled" -> "false"
    *       ),
    *       debugCometDF = df => {
@@ -1267,14 +1267,13 @@ abstract class CometTestBase
     writer.close()
   }
 
-  def usingDataSourceExec: Boolean = usingDataSourceExec(SQLConf.get)
+  def usingLegacyNativeCometScan: Boolean = usingLegacyNativeCometScan(SQLConf.get)
 
-  def usingDataSourceExec(conf: SQLConf): Boolean =
-    Seq(CometConf.SCAN_NATIVE_ICEBERG_COMPAT, CometConf.SCAN_NATIVE_DATAFUSION).contains(
-      CometConf.COMET_NATIVE_SCAN_IMPL.get(conf))
+  def usingLegacyNativeCometScan(conf: SQLConf): Boolean =
+    CometConf.COMET_NATIVE_SCAN_IMPL.get(conf) == CometConf.SCAN_NATIVE_COMET
 
-  def usingDataSourceExecWithIncompatTypes(conf: SQLConf): Boolean = {
-    usingDataSourceExec(conf) &&
-    !CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get(conf)
+  def hasUnsignedSmallIntSafetyCheck(conf: SQLConf): Boolean = {
+    !usingLegacyNativeCometScan(conf) &&
+    CometConf.COMET_PARQUET_UNSIGNED_SMALL_INT_CHECK.get(conf)
   }
 }

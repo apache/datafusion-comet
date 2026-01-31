@@ -46,7 +46,7 @@ trait CometPlanChecker {
       case _: CometNativeScanExec | _: CometScanExec | _: CometBatchScanExec |
           _: CometIcebergNativeScanExec =>
       case _: CometSinkPlaceHolder | _: CometScanWrapper =>
-      case _: CometColumnarToRowExec =>
+      case _: CometColumnarToRowExec | _: CometNativeColumnarToRowExec =>
       case _: CometSparkToColumnarExec =>
       case _: CometExec | _: CometShuffleExchangeExec =>
       case _: CometBroadcastExchangeExec =>

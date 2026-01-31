@@ -33,7 +33,7 @@ import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOpti
 class CometMapExpressionSuite extends CometTestBase {
 
   test("read map[int, int] from parquet") {
-    assume(usingDataSourceExec(conf))
+    assume(!usingLegacyNativeCometScan(conf))
 
     withTempPath { dir =>
       // create input file with Comet disabled
@@ -65,7 +65,7 @@ class CometMapExpressionSuite extends CometTestBase {
 
   // repro for https://github.com/apache/datafusion-comet/issues/1754
   test("read map[struct, struct] from parquet") {
-    assume(usingDataSourceExec(conf))
+    assume(!usingLegacyNativeCometScan(conf))
 
     withTempPath { dir =>
       // create input file with Comet disabled

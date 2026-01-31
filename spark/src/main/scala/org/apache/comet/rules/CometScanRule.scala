@@ -327,6 +327,10 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
       case _
           if scanExec.scan.getClass.getName ==
             "org.apache.iceberg.spark.source.SparkBatchQueryScan" =>
+        if (scanExec.runtimeFilters.exists(isDynamicPruningFilter)) {
+          return withInfo(scanExec, "Dynamic Partition Pruning is not supported")
+        }
+
         val fallbackReasons = new ListBuffer[String]()
 
         // Native Iceberg scan requires both configs to be enabled
@@ -721,11 +725,13 @@ case class CometScanTypeChecker(scanImpl: String) extends DataTypeSupport with C
       name: String,
       fallbackReasons: ListBuffer[String]): Boolean = {
     dt match {
-      case ByteType | ShortType
+      case ShortType
           if scanImpl != CometConf.SCAN_NATIVE_COMET &&
-            !CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get() =>
-        fallbackReasons += s"$scanImpl scan cannot read $dt when " +
-          s"${CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key} is false. ${CometConf.COMPAT_GUIDE}."
+            CometConf.COMET_PARQUET_UNSIGNED_SMALL_INT_CHECK.get() =>
+        fallbackReasons += s"$scanImpl scan may not handle unsigned UINT_8 correctly for $dt. " +
+          s"Set ${CometConf.COMET_PARQUET_UNSIGNED_SMALL_INT_CHECK.key}=false to allow " +
+          "native execution if your data does not contain unsigned small integers. " +
+          CometConf.COMPAT_GUIDE
         false
       case _: StructType | _: ArrayType | _: MapType if scanImpl == CometConf.SCAN_NATIVE_COMET =>
         false
