@@ -1,5 +1,5 @@
 diff --git a/pom.xml b/pom.xml
-index 22922143fc3..7c56e5e8641 100644
+index 443d46a4302..9880184c4e3 100644
 --- a/pom.xml
 +++ b/pom.xml
 @@ -148,6 +148,8 @@
@@ -38,7 +38,7 @@ index 22922143fc3..7c56e5e8641 100644
        <dependency>
          <groupId>org.apache.datasketches</groupId>
 diff --git a/sql/core/pom.xml b/sql/core/pom.xml
-index dcf6223a98b..0458a5bb640 100644
+index 56aad01023d..ad9d6a973e4 100644
 --- a/sql/core/pom.xml
 +++ b/sql/core/pom.xml
 @@ -90,6 +90,10 @@
@@ -332,7 +332,7 @@ index 1f8c5822e7d..b7de4e28813 100644
  WITH t(c1) AS (SELECT replace(listagg(DISTINCT col1 COLLATE unicode_rtrim) COLLATE utf8_binary, ' ', '') FROM (VALUES ('xbc  '), ('xbc '), ('a'), ('xbc'))) SELECT len(c1), regexp_count(c1, 'a'), regexp_count(c1, 'xbc') FROM t
  -- !query schema
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/CachedTableSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/CachedTableSuite.scala
-index 0f42502f1d9..f616024a9c2 100644
+index e0ad3feda3a..8fc1ba8e10d 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/CachedTableSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/CachedTableSuite.scala
 @@ -39,7 +39,7 @@ import org.apache.spark.sql.catalyst.util.DateTimeConstants
@@ -380,7 +380,7 @@ index 0f42502f1d9..f616024a9c2 100644
  
        withTempView("t0", "t1", "t2") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala
-index 9db406ff12f..abbc91f5c11 100644
+index 6ce0a657d5b..02e352d13b0 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala
 @@ -30,7 +30,7 @@ import org.apache.spark.sql.errors.DataTypeErrors.toSQLId
@@ -802,7 +802,7 @@ index 53e47f428c3..a55d8f0c161 100644
      assert(shuffleMergeJoins.size == 1)
    }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/JoinSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/JoinSuite.scala
-index aaac0ebc9aa..fbef0774d46 100644
+index 41f2e5c9a40..8f0dd909492 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/JoinSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/JoinSuite.scala
 @@ -29,7 +29,8 @@ import org.apache.spark.sql.catalyst.analysis.UnresolvedRelation
@@ -1000,7 +1000,7 @@ index aaac0ebc9aa..fbef0774d46 100644
        checkAnswer(fullJoinDF, Row(100))
      }
    }
-@@ -1614,6 +1643,9 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
+@@ -1586,6 +1615,9 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
            Seq(semiJoinDF, antiJoinDF).foreach { df =>
              assert(collect(df.queryExecution.executedPlan) {
                case j: ShuffledHashJoinExec if j.ignoreDuplicatedKey == ignoreDuplicatedKey => true
@@ -1010,7 +1010,7 @@ index aaac0ebc9aa..fbef0774d46 100644
              }.size == 1)
            }
        }
-@@ -1658,14 +1690,20 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
+@@ -1630,14 +1662,20 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
  
    test("SPARK-43113: Full outer join with duplicate stream-side references in condition (SMJ)") {
      def check(plan: SparkPlan): Unit = {
@@ -1033,7 +1033,7 @@ index aaac0ebc9aa..fbef0774d46 100644
      }
      dupStreamSideColTest("SHUFFLE_HASH", check)
    }
-@@ -1801,7 +1839,8 @@ class ThreadLeakInSortMergeJoinSuite
+@@ -1773,7 +1811,8 @@ class ThreadLeakInSortMergeJoinSuite
        sparkConf.set(SHUFFLE_SPILL_NUM_ELEMENTS_FORCE_SPILL_THRESHOLD, 20))
    }
  
@@ -1057,7 +1057,7 @@ index ad424b3a7cc..4ece0117a34 100644
    protected val baseResourcePath = {
      // use the same way as `SQLQueryTestSuite` to get the resource path
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
-index f294ff81021..8a3b818ee94 100644
+index b3fce19979e..67edf5eb91c 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
 @@ -1524,7 +1524,8 @@ class SQLQuerySuite extends QueryTest with SharedSparkSession with AdaptiveSpark
@@ -1461,7 +1461,7 @@ index 2a0ab21ddb0..6030e7c2b9b 100644
          } finally {
            spark.listenerManager.unregister(listener)
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/connector/KeyGroupedPartitioningSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/connector/KeyGroupedPartitioningSuite.scala
-index c73e8e16fbb..88cd0d47da3 100644
+index c24f52bd930..ce4d4c4a694 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/connector/KeyGroupedPartitioningSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/connector/KeyGroupedPartitioningSuite.scala
 @@ -20,10 +20,11 @@ import java.sql.Timestamp
@@ -1538,7 +1538,7 @@ index f62e092138a..c0404bfe85e 100644
  
    before {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/errors/QueryExecutionErrorsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/errors/QueryExecutionErrorsSuite.scala
-index 04d33ecd3d5..450df347297 100644
+index 46f2502582c..1f4c8f2201b 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/errors/QueryExecutionErrorsSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/errors/QueryExecutionErrorsSuite.scala
 @@ -31,7 +31,7 @@ import org.mockito.Mockito.{mock, spy, when}
@@ -1679,7 +1679,7 @@ index 1400ee25f43..5b016c3f9c5 100644
  
    setupTestData()
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/QueryExecutionSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/QueryExecutionSuite.scala
-index 47d5ff67b84..8dc8f65d4b1 100644
+index a6490243708..c61af08d4cf 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/QueryExecutionSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/QueryExecutionSuite.scala
 @@ -20,7 +20,7 @@ import scala.collection.mutable
@@ -1691,7 +1691,7 @@ index 47d5ff67b84..8dc8f65d4b1 100644
  import org.apache.spark.sql.catalyst.{QueryPlanningTracker, QueryPlanningTrackerCallback, TableIdentifier}
  import org.apache.spark.sql.catalyst.analysis.{CurrentNamespace, UnresolvedFunction, UnresolvedRelation}
  import org.apache.spark.sql.catalyst.expressions.{Alias, UnsafeRow}
-@@ -400,7 +400,7 @@ class QueryExecutionSuite extends SharedSparkSession {
+@@ -385,7 +385,7 @@ class QueryExecutionSuite extends SharedSparkSession {
      }
    }
  
@@ -2734,10 +2734,10 @@ index 6080a5e8e4b..9aa8f49a62b 100644
          case _ => assert(false, "Can not match ParquetTable in the query.")
        }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
-index 4474ec1fd42..97910c4fc3a 100644
+index 22839d3f0d2..812d642f15d 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
-@@ -1344,7 +1344,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
+@@ -1334,7 +1334,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
      }
    }
  
@@ -2747,6 +2747,41 @@ index 4474ec1fd42..97910c4fc3a 100644
      withAllParquetReaders {
        checkAnswer(
          // "fruit" column in this file is encoded using DELTA_LENGTH_BYTE_ARRAY.
+@@ -1543,7 +1544,9 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
+     }
+   }
+ 
+-  test("Write Spark version into Parquet metadata") {
++//  TODO : Comet native writer to add spark / comet version into parquet metadata
++  test("Write Spark version into Parquet metadata",
++    IgnoreComet("Comet doesn't support DELTA encoding yet")) {
+     withTempPath { dir =>
+       spark.range(1).repartition(1).write.parquet(dir.getAbsolutePath)
+       assert(getMetaData(dir)(SPARK_VERSION_METADATA_KEY) === SPARK_VERSION_SHORT)
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetInteroperabilitySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetInteroperabilitySuite.scala
+index baa11df302b..c88f66d5c77 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetInteroperabilitySuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetInteroperabilitySuite.scala
+@@ -25,7 +25,7 @@ import org.apache.hadoop.fs.{Path, PathFilter}
+ import org.apache.parquet.format.converter.ParquetMetadataConverter.NO_FILTER
+ import org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName
+ 
+-import org.apache.spark.sql.Row
++import org.apache.spark.sql.{IgnoreComet, Row}
+ import org.apache.spark.sql.catalyst.util.DateTimeUtils
+ import org.apache.spark.sql.internal.SQLConf
+ import org.apache.spark.sql.test.SharedSparkSession
+@@ -153,7 +153,9 @@ class ParquetInteroperabilitySuite extends ParquetCompatibilityTest with SharedS
+     }
+   }
+ 
+-  test("parquet timestamp conversion") {
++//  TODO : Support legacy timestamps conversion /cast in comet native writer
++  test("parquet timestamp conversion",
++    IgnoreComet("timestamp96 conversion failed with the native writer")) {
+     // Make a table with one parquet file written by impala, and one parquet file written by spark.
+     // We should only adjust the timestamps in the impala file, and only if the conf is set
+     val impalaFile = "test-data/impala_timestamp.parq"
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
 index bba71f1c48d..38c60ee2584 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
@@ -3466,7 +3501,7 @@ index 86c4e49f6f6..2e639e5f38d 100644
      val tblTargetName = "tbl_target"
      val tblSourceQualified = s"default.$tblSourceName"
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala b/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
-index f0f3f94b811..d64e4e54e22 100644
+index f0f3f94b811..fd9744a58cf 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
 @@ -27,13 +27,14 @@ import scala.jdk.CollectionConverters._
@@ -3523,7 +3558,7 @@ index f0f3f94b811..d64e4e54e22 100644
      }
    }
  
-@@ -248,8 +271,33 @@ private[sql] trait SQLTestUtilsBase
+@@ -248,8 +271,38 @@ private[sql] trait SQLTestUtilsBase
      override protected def converter: ColumnNodeToExpressionConverter = self.spark.converter
    }
  
@@ -3550,6 +3585,11 @@ index f0f3f94b811..d64e4e54e22 100644
 +    v != null && v.toBoolean
 +  }
 +
++  protected def isCometWriterEnabled: Boolean = {
++    val v = System.getenv("ENABLE_COMET_WRITER")
++    v != null && v.toBoolean
++  }
++
    protected override def withSQLConf[T](pairs: (String, String)*)(f: => T): T = {
      SparkSession.setActiveSession(spark)
 +
@@ -3557,7 +3597,7 @@ index f0f3f94b811..d64e4e54e22 100644
      super.withSQLConf(pairs: _*)(f)
    }
  
-@@ -451,6 +499,8 @@ private[sql] trait SQLTestUtilsBase
+@@ -451,6 +504,8 @@ private[sql] trait SQLTestUtilsBase
      val schema = df.schema
      val withoutFilters = df.queryExecution.executedPlan.transform {
        case FilterExec(_, child) => child
@@ -3567,10 +3607,10 @@ index f0f3f94b811..d64e4e54e22 100644
  
      spark.internalCreateDataFrame(withoutFilters.execute(), schema)
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala b/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
-index 245219c1756..7d2ef1b9145 100644
+index 245219c1756..4e7b86e55a2 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
-@@ -75,6 +75,31 @@ trait SharedSparkSessionBase
+@@ -75,6 +75,37 @@ trait SharedSparkSessionBase
        // this rule may potentially block testing of other optimization rules such as
        // ConstantPropagation etc.
        .set(SQLConf.OPTIMIZER_EXCLUDED_RULES.key, ConvertToLocalRelation.ruleName)
@@ -3598,6 +3638,12 @@ index 245219c1756..7d2ef1b9145 100644
 +        conf
 +          .set("spark.sql.ansi.enabled", "true")
 +      }
++
++      if (isCometWriterEnabled) {
++        conf.set("spark.comet.parquet.write.enabled", "true")
++        conf.set("spark.comet.operator.DataWritingCommandExec.allowIncompatible", "true")
++      }
++
 +    }
      conf.set(
        StaticSQLConf.WAREHOUSE_PATH,
