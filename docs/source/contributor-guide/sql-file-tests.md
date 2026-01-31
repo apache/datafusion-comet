@@ -211,6 +211,101 @@ SELECT space(n) FROM test_space WHERE n < 0
    mvn test -pl spark -Dsuites="org.apache.comet.CometSqlFileTestSuite" -Dtest=none
    ```
 
+### Tips for writing thorough tests
+
+#### Cover all combinations of literal and column arguments
+
+Comet often uses different code paths for literal values versus column references. Tests
+should exercise both. For a function with multiple arguments, test every useful combination.
+
+For a single-argument function, test both a column reference and a literal:
+
+```sql
+-- column argument (reads from Parquet, goes through columnar evaluation)
+query
+SELECT ascii(s) FROM test_ascii
+
+-- literal arguments
+query
+SELECT ascii('A'), ascii(''), ascii(NULL)
+```
+
+For a multi-argument function like `concat_ws(sep, str1, str2, ...)`, test with the separator
+as a column versus a literal, and similarly for the other arguments:
+
+```sql
+-- all columns
+query
+SELECT concat_ws(sep, a, b) FROM test_table
+
+-- literal separator, column values
+query
+SELECT concat_ws(',', a, b) FROM test_table
+
+-- all literals
+query
+SELECT concat_ws(',', 'hello', 'world')
+```
+
+**Note on constant folding:** Normally Spark constant-folds all-literal expressions during
+planning, so Comet would never see them. However, `CometSqlFileTestSuite` automatically
+disables constant folding (by excluding `ConstantFolding` from the optimizer rules), so
+all-literal queries are evaluated by Comet's native engine. This means you can use the
+default `query` mode for all-literal cases and they will be tested natively just like
+column-based queries.
+
+#### Cover edge cases
+
+Include edge-case values in your test data. The exact cases depend on the function, but
+common ones include:
+
+- **NULL values** -- every test should include NULLs
+- **Empty strings** -- for string functions
+- **Zero, negative, and very large numbers** -- for numeric functions
+- **Boundary values** -- `INT_MIN`, `INT_MAX`, `NaN`, `Infinity`, `-Infinity` for numeric
+  types
+- **Special characters and multibyte UTF-8** -- for string functions (e.g. `'é'`, `'中文'`,
+  `'\t'`)
+- **Empty arrays/maps** -- for collection functions
+- **Single-element and multi-element collections** -- for aggregate and collection functions
+
+#### One file per expression
+
+Keep each `.sql` file focused on a single expression or a small group of closely related
+expressions. This makes failures easy to locate and keeps files readable.
+
+#### Use comments to label sections
+
+Add SQL comments before query blocks to describe what aspect of the expression is being
+tested. This helps reviewers and future maintainers understand the intent:
+
+```sql
+-- literal separator with NULL values
+query
+SELECT concat_ws(',', NULL, 'b', 'c')
+
+-- empty separator
+query
+SELECT concat_ws('', a, b, c) FROM test_table
+```
+
+### Using agentic coding tools
+
+Writing thorough SQL test files is a task well suited to agentic coding tools such as
+Claude Code. You can point the tool at an existing test file as an example, describe the
+expression you want to test, and ask it to generate a complete `.sql` file covering all
+argument combinations and edge cases. This is significantly faster than writing the
+combinatorial test cases by hand and helps ensure nothing is missed.
+
+For example:
+
+```
+Read the test file spark/src/test/resources/sql-tests/expressions/string/ascii.sql
+and the documentation in docs/source/contributor-guide/sql-file-tests.md.
+Then write a similar test file for the `reverse` function, covering column arguments,
+literal arguments, NULLs, empty strings, and multibyte characters.
+```
+
 ## Handling test failures
 
 When a query fails due to a known Comet bug:
