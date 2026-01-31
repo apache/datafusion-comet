@@ -21,6 +21,7 @@ package org.apache.spark.sql.comet
 
 import org.apache.spark.{Dependency, OneToOneDependency, Partition, SparkContext, TaskContext}
 import org.apache.spark.rdd.RDD
+import org.apache.spark.sql.execution.ScalarSubquery
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.CometExecIterator
@@ -45,8 +46,9 @@ private[spark] class CometIcebergSplitPartition(
  *   - Standalone: Iceberg scan is the root operator (no input RDDs)
  *   - Nested: Iceberg scan is under other native operators (has input RDDs)
  *
- * NOTE: This RDD does not handle ScalarSubquery expressions. DPP uses InSubqueryExec which is
- * resolved in CometIcebergNativeScanExec.splitData before this RDD is created.
+ * NOTE: This RDD does not handle DPP (InSubqueryExec), which is resolved in
+ * CometIcebergNativeScanExec.splitData before this RDD is created. However, it DOES handle
+ * ScalarSubquery expressions by registering them with CometScalarSubquery before execution.
  */
 private[spark] class CometIcebergSplitRDD(
     sc: SparkContext,
@@ -55,7 +57,8 @@ private[spark] class CometIcebergSplitRDD(
     @transient perPartitionByLocation: Map[String, Array[Array[Byte]]],
     serializedPlan: Array[Byte],
     numOutputCols: Int,
-    nativeMetrics: CometMetricNode)
+    nativeMetrics: CometMetricNode,
+    subqueries: Seq[ScalarSubquery])
     extends RDD[ColumnarBatch](sc, Nil) {
 
   // Cache partition count to avoid accessing @transient field on executor
@@ -95,9 +98,13 @@ private[spark] class CometIcebergSplitRDD(
       None,
       Seq.empty)
 
+    // Register ScalarSubqueries so native code can look them up
+    subqueries.foreach(sub => CometScalarSubquery.setSubquery(it.id, sub))
+
     Option(context).foreach { ctx =>
       ctx.addTaskCompletionListener[Unit] { _ =>
         it.close()
+        subqueries.foreach(sub => CometScalarSubquery.removeSubquery(it.id, sub))
       }
     }
 
@@ -146,7 +153,9 @@ object CometIcebergSplitRDD {
       perPartitionByLocation = Map(metadataLocation -> perPartitionData),
       serializedPlan = placeholderPlan,
       numOutputCols = numOutputCols,
-      nativeMetrics = nativeMetrics)
+      nativeMetrics = nativeMetrics,
+      subqueries = Seq.empty
+    ) // Standalone scans don't have ScalarSubqueries in their plan
   }
 
   /**
@@ -159,7 +168,8 @@ object CometIcebergSplitRDD {
       perPartitionByLocation: Map[String, Array[Array[Byte]]],
       serializedPlan: Array[Byte],
       numOutputCols: Int,
-      nativeMetrics: CometMetricNode): CometIcebergSplitRDD = {
+      nativeMetrics: CometMetricNode,
+      subqueries: Seq[ScalarSubquery]): CometIcebergSplitRDD = {
 
     new CometIcebergSplitRDD(
       sc,
@@ -168,6 +178,7 @@ object CometIcebergSplitRDD {
       perPartitionByLocation,
       serializedPlan,
       numOutputCols,
-      nativeMetrics)
+      nativeMetrics,
+      subqueries)
   }
 }

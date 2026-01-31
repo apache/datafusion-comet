@@ -23,7 +23,7 @@ import scala.jdk.CollectionConverters._
 
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.catalyst.expressions.{Attribute, DynamicPruningExpression, SortOrder}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, DynamicPruningExpression, SortOrder}
 import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.plans.physical.{Partitioning, UnknownPartitioning}
 import org.apache.spark.sql.execution.{InSubqueryExec, SubqueryAdaptiveBroadcastExec}
@@ -106,16 +106,31 @@ case class CometIcebergNativeScanExec(
       case DynamicPruningExpression(e: InSubqueryExec) if e.values().isEmpty =>
         e.plan match {
           case sab: SubqueryAdaptiveBroadcastExec =>
-            // When multiple DPP filters share a broadcast, SAB outputs multiple columns.
-            // Each filter's e.child identifies which column it needs. We extract that
-            // specific column's values, as Iceberg's Literals.from() can't handle UnsafeRow.
+            // SAB.executeCollect() throws, so we call child.executeCollect() directly.
+            // Use sab.index and sab.buildKeys to find which column to extract - this
+            // mirrors what SubqueryBroadcastExec.executeCollect() does internally.
             val rows = sab.child.executeCollect()
-            val childAttr = e.child.asInstanceOf[Attribute]
-            val colIndex = sab.output.indexWhere(_.name.equalsIgnoreCase(childAttr.name))
+            val buildKey = sab.buildKeys(sab.index)
+
+            // Find the column index by matching the build key's exprId against child output
+            val colIndex = buildKey match {
+              case attr: Attribute =>
+                val idx = sab.child.output.indexWhere(_.exprId == attr.exprId)
+                if (idx >= 0) idx
+                else sab.child.output.indexWhere(_.name.equalsIgnoreCase(attr.name))
+              case Cast(attr: Attribute, _, _, _) =>
+                val idx = sab.child.output.indexWhere(_.exprId == attr.exprId)
+                if (idx >= 0) idx
+                else sab.child.output.indexWhere(_.name.equalsIgnoreCase(attr.name))
+              case _ =>
+                // Fallback: use the index directly if buildKey is complex expression
+                sab.index
+            }
+
             if (colIndex < 0) {
               throw new IllegalStateException(
-                s"DPP column '${childAttr.name}' not found in SubqueryAdaptiveBroadcastExec " +
-                  s"output: ${sab.output.map(_.name).mkString(", ")}")
+                s"DPP build key '$buildKey' not found in broadcast output: " +
+                  s"${sab.child.output.map(_.name).mkString(", ")}")
             }
             setInSubqueryResult(e, rows.map(_.get(colIndex, e.child.dataType)))
           case _ =>

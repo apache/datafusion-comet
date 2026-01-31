@@ -174,6 +174,15 @@ abstract class CometExec extends CometPlan {
       }
     }
   }
+
+  /** Collects all ScalarSubquery expressions from a plan tree. */
+  protected def collectSubqueries(sparkPlan: SparkPlan): Seq[ScalarSubquery] = {
+    val childSubqueries = sparkPlan.children.flatMap(collectSubqueries)
+    val planSubqueries = sparkPlan.expressions.flatMap {
+      _.collect { case sub: ScalarSubquery => sub }
+    }
+    childSubqueries ++ planSubqueries
+  }
 }
 
 object CometExec {
@@ -491,6 +500,7 @@ abstract class CometNativeExec extends CometExec {
 
         // Avoid closure capture: per-partition data goes in Partition objects, not the closure
         if (commonByLocation.nonEmpty) {
+          val subqueries = collectSubqueries(this)
           CometIcebergSplitRDD(
             sparkContext,
             inputs.toSeq,
@@ -498,7 +508,8 @@ abstract class CometNativeExec extends CometExec {
             perPartitionByLocation,
             serializedPlanCopy,
             output.length,
-            nativeMetrics)
+            nativeMetrics,
+            subqueries)
         } else if (inputs.nonEmpty) {
           ZippedPartitionsRDD(sparkContext, inputs.toSeq)(createCometExecIter)
         } else {
