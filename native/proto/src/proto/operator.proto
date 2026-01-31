@@ -285,7 +285,7 @@ message ParquetWriter {
   CompressionCodec compression = 2;
   repeated string column_names = 4;
   // Working directory for temporary files (used by FileCommitProtocol)
-  // If not set, files are written directly to output_path
+  // DEPRECATED: Use staging_file_path instead for proper 2PC support
   optional string work_dir = 5;
   // Job ID for tracking this write operation
   optional string job_id = 6;
@@ -298,6 +298,9 @@ message ParquetWriter {
   // configuration value "spark.hadoop.fs.s3a.access.key" will be stored as "fs.s3a.access.key" in
   // the map.
   map<string, string> object_store_options = 8;
+  // Complete staging file path from FileCommitProtocol.newTaskTempFile()
+  // When set, native writer writes directly to this path for proper 2PC
+  optional string staging_file_path = 9;
 }
 
 enum AggregateMode {
