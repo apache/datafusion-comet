@@ -80,16 +80,10 @@ jobs:
 
       - name: Build native library
         # Use CI profile for faster builds (no LTO) and to share cache with pr_build_linux.yml.
-        # Unlike pr_build_linux.yml which only builds native here and runs Maven in test jobs,
-        # we run Maven install in this job to avoid running it 36+ times in test jobs.
         # Move the library to target/release/ where Maven's -Prelease profile expects it.
         run: |
           cd native && cargo build --profile ci
           mkdir -p target/release && mv target/ci/libcomet.so target/release/
-
-      - name: Build and install Maven artifacts
-        run: |
-          ./mvnw install -Prelease -DskipTests -Pspark-${{ matrix.spark-version.short }} -Pscala-${{ matrix.scala-version }}
 
       - name: Save Cargo cache
         uses: actions/cache/save@v5
@@ -106,13 +100,6 @@ jobs:
         with:
           name: native-lib-spark-${{ matrix.spark-version.short }}-scala-${{ matrix.scala-version }}
           path: native/target/release/libcomet.so
-          retention-days: 1
-
-      - name: Upload Maven artifacts
-        uses: actions/upload-artifact@v6
-        with:
-          name: comet-maven-spark-${{ matrix.spark-version.short }}-scala-${{ matrix.scala-version }}
-          path: /root/.m2/repository/org/apache/comet
           retention-days: 1
 
   iceberg-spark:
@@ -144,11 +131,9 @@ jobs:
         with:
           name: native-lib-spark-${{ matrix.spark-version.short }}-scala-${{ matrix.scala-version }}
           path: native/target/release/
-      - name: Download Maven artifacts
-        uses: actions/download-artifact@v7
-        with:
-          name: comet-maven-spark-${{ matrix.spark-version.short }}-scala-${{ matrix.scala-version }}
-          path: /root/.m2/repository/org/apache/comet
+      - name: Build Comet
+        run: |
+          ./mvnw install -Prelease -DskipTests -Pspark-${{ matrix.spark-version.short }} -Pscala-${{ matrix.scala-version }}
       - name: Setup Iceberg
         uses: ./.github/actions/setup-iceberg-builder
         with:
@@ -190,11 +175,9 @@ jobs:
         with:
           name: native-lib-spark-${{ matrix.spark-version.short }}-scala-${{ matrix.scala-version }}
           path: native/target/release/
-      - name: Download Maven artifacts
-        uses: actions/download-artifact@v7
-        with:
-          name: comet-maven-spark-${{ matrix.spark-version.short }}-scala-${{ matrix.scala-version }}
-          path: /root/.m2/repository/org/apache/comet
+      - name: Build Comet
+        run: |
+          ./mvnw install -Prelease -DskipTests -Pspark-${{ matrix.spark-version.short }} -Pscala-${{ matrix.scala-version }}
       - name: Setup Iceberg
         uses: ./.github/actions/setup-iceberg-builder
         with:
@@ -236,11 +219,9 @@ jobs:
         with:
           name: native-lib-spark-${{ matrix.spark-version.short }}-scala-${{ matrix.scala-version }}
           path: native/target/release/
-      - name: Download Maven artifacts
-        uses: actions/download-artifact@v7
-        with:
-          name: comet-maven-spark-${{ matrix.spark-version.short }}-scala-${{ matrix.scala-version }}
-          path: /root/.m2/repository/org/apache/comet
+      - name: Build Comet
+        run: |
+          ./mvnw install -Prelease -DskipTests -Pspark-${{ matrix.spark-version.short }} -Pscala-${{ matrix.scala-version }}
       - name: Setup Iceberg
         uses: ./.github/actions/setup-iceberg-builder
         with:
@@ -282,11 +263,9 @@ jobs:
         with:
           name: native-lib-spark-${{ matrix.spark-version.short }}-scala-${{ matrix.scala-version }}
           path: native/target/release/
-      - name: Download Maven artifacts
-        uses: actions/download-artifact@v7
-        with:
-          name: comet-maven-spark-${{ matrix.spark-version.short }}-scala-${{ matrix.scala-version }}
-          path: /root/.m2/repository/org/apache/comet
+      - name: Build Comet
+        run: |
+          ./mvnw install -Prelease -DskipTests -Pspark-${{ matrix.spark-version.short }} -Pscala-${{ matrix.scala-version }}
       - name: Setup Iceberg
         uses: ./.github/actions/setup-iceberg-rust-builder
         with:
@@ -328,11 +307,9 @@ jobs:
         with:
           name: native-lib-spark-${{ matrix.spark-version.short }}-scala-${{ matrix.scala-version }}
           path: native/target/release/
-      - name: Download Maven artifacts
-        uses: actions/download-artifact@v7
-        with:
-          name: comet-maven-spark-${{ matrix.spark-version.short }}-scala-${{ matrix.scala-version }}
-          path: /root/.m2/repository/org/apache/comet
+      - name: Build Comet
+        run: |
+          ./mvnw install -Prelease -DskipTests -Pspark-${{ matrix.spark-version.short }} -Pscala-${{ matrix.scala-version }}
       - name: Setup Iceberg
         uses: ./.github/actions/setup-iceberg-rust-builder
         with:
@@ -374,11 +351,9 @@ jobs:
         with:
           name: native-lib-spark-${{ matrix.spark-version.short }}-scala-${{ matrix.scala-version }}
           path: native/target/release/
-      - name: Download Maven artifacts
-        uses: actions/download-artifact@v7
-        with:
-          name: comet-maven-spark-${{ matrix.spark-version.short }}-scala-${{ matrix.scala-version }}
-          path: /root/.m2/repository/org/apache/comet
+      - name: Build Comet
+        run: |
+          ./mvnw install -Prelease -DskipTests -Pspark-${{ matrix.spark-version.short }} -Pscala-${{ matrix.scala-version }}
       - name: Setup Iceberg
         uses: ./.github/actions/setup-iceberg-rust-builder
         with:
