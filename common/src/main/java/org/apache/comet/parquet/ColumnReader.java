@@ -44,12 +44,14 @@ import org.apache.spark.sql.types.DataType;
 
 import org.apache.comet.CometConf;
 import org.apache.comet.CometSchemaImporter;
+import org.apache.comet.IcebergApi;
 import org.apache.comet.vector.CometDecodedVector;
 import org.apache.comet.vector.CometDictionary;
 import org.apache.comet.vector.CometDictionaryVector;
 import org.apache.comet.vector.CometPlainVector;
 import org.apache.comet.vector.CometVector;
 
+@IcebergApi
 public class ColumnReader extends AbstractColumnReader {
   protected static final Logger LOG = LoggerFactory.getLogger(ColumnReader.class);
   protected final BufferAllocator ALLOCATOR = new RootAllocator();
@@ -114,6 +116,7 @@ public class ColumnReader extends AbstractColumnReader {
    * @deprecated since 0.10.0, will be removed in 0.11.0.
    * @see <a href="https://github.com/apache/datafusion-comet/issues/2079">Comet Issue #2079</a>
    */
+  @IcebergApi
   public void setPageReader(PageReader pageReader) throws IOException {
     this.pageReader = pageReader;
 
@@ -129,6 +132,7 @@ public class ColumnReader extends AbstractColumnReader {
   }
 
   /** This method is called from Apache Iceberg. */
+  @IcebergApi
   public void setRowGroupReader(RowGroupReader rowGroupReader, ParquetColumnSpec columnSpec)
       throws IOException {
     ColumnDescriptor descriptor = Utils.buildColumnDescriptor(columnSpec);
