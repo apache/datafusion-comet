@@ -79,9 +79,13 @@ jobs:
             ${{ runner.os }}-cargo-ci-
 
       - name: Build native library
+        # Use CI profile for faster builds (no LTO) and to share cache with pr_build_linux.yml.
+        # Unlike pr_build_linux.yml which only builds native here and runs Maven in test jobs,
+        # we run Maven install in this job to avoid running it 36+ times in test jobs.
+        # Move the library to target/release/ where Maven's -Prelease profile expects it.
         run: |
           cd native && cargo build --profile ci
-          mkdir -p target/release && cp target/ci/libcomet.so target/release/
+          mkdir -p target/release && mv target/ci/libcomet.so target/release/
 
       - name: Build and install Maven artifacts
         run: |
@@ -101,7 +105,7 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: native-lib-spark-${{ matrix.spark-version.short }}-scala-${{ matrix.scala-version }}
-          path: native/target/ci/libcomet.so
+          path: native/target/release/libcomet.so
           retention-days: 1
 
       - name: Upload Maven artifacts
