@@ -487,26 +487,32 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
           try {
             IcebergReflection.findNonIdentityTransformInResiduals(metadata.tasks) match {
               case Some(transformType) =>
-                // Found non-identity transform - log info and continue with native scan
-                // Row-group filtering will skip these predicates, but post-scan
-                // filtering will apply
-                logInfo(
-                  s"Iceberg residual contains transform '$transformType' - " +
-                    "row-group filtering will skip this predicate, " +
-                    "post-scan filtering by CometFilter will apply instead.")
-                true // Allow native execution
+                val deleteFiles = IcebergReflection.getDeleteFiles(metadata.tasks)
+
+                if (!deleteFiles.isEmpty) {
+                  // Delete operations with non-identity transforms must fall back to Spark.
+                  // convertIcebergExpression() cannot convert BoundTerm with transforms,
+                  // causing residuals to be dropped. This breaks delete operations which
+                  // rely on residuals to identify correct rows.
+                  // Future: Convert transforms to Spark expressions (bucket→pmod, year→Year, etc)
+                  fallbackReasons +=
+                    s"Iceberg transform '$transformType' with delete files present. " +
+                      "Falling back to ensure correct delete operation."
+                  false
+                } else {
+                  // Read-only: Safe to continue natively with post-scan filtering
+                  logInfo(
+                    s"Iceberg residual contains transform '$transformType' - " +
+                      "post-scan filtering will apply.")
+                  true
+                }
               case None =>
-                // No non-identity transforms - optimal row-group filtering will apply
                 true
             }
           } catch {
             case e: Exception =>
-              // Reflection failure - log warning but allow native execution
-              // The predicate conversion will handle unsupported cases gracefully
-              logWarning(
-                s"Could not check for transform functions in residuals: ${e.getMessage}. " +
-                  "Continuing with native scan.")
-              true
+              fallbackReasons += s"Could not check for transform functions: ${e.getMessage}"
+              false
           }
 
         // Check for unsupported struct types in delete files
