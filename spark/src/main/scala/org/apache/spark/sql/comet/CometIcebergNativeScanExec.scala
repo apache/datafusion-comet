@@ -106,32 +106,29 @@ case class CometIcebergNativeScanExec(
       case DynamicPruningExpression(e: InSubqueryExec) if e.values().isEmpty =>
         e.plan match {
           case sab: SubqueryAdaptiveBroadcastExec =>
-            // SAB.executeCollect() throws, so we call child.executeCollect() directly.
-            // Use sab.index and sab.buildKeys to find which column to extract - this
-            // mirrors what SubqueryBroadcastExec.executeCollect() does internally.
+            // SubqueryAdaptiveBroadcastExec.executeCollect() throws, so we call
+            // child.executeCollect() directly to get raw rows. Unlike SubqueryBroadcastExec
+            // which uses HashedRelation.keys() with BoundReference(index), we need to
+            // manually find which column in child.output corresponds to buildKeys(index).
+            //
+            // buildKeys are expressions over child.output. For simple joins, buildKeys(index)
+            // is an Attribute from child.output. We match by exprId (stable across renames).
             val rows = sab.child.executeCollect()
             val buildKey = sab.buildKeys(sab.index)
 
-            // Find the column index by matching the build key's exprId against child output
             val colIndex = buildKey match {
               case attr: Attribute =>
-                val idx = sab.child.output.indexWhere(_.exprId == attr.exprId)
-                if (idx >= 0) idx
-                else sab.child.output.indexWhere(_.name.equalsIgnoreCase(attr.name))
+                sab.child.output.indexWhere(_.exprId == attr.exprId)
               case Cast(attr: Attribute, _, _, _) =>
-                val idx = sab.child.output.indexWhere(_.exprId == attr.exprId)
-                if (idx >= 0) idx
-                else sab.child.output.indexWhere(_.name.equalsIgnoreCase(attr.name))
+                sab.child.output.indexWhere(_.exprId == attr.exprId)
               case _ =>
-                // Fallback: use the index directly if buildKey is complex expression
                 sab.index
             }
-
             if (colIndex < 0) {
               throw new IllegalStateException(
-                s"DPP build key '$buildKey' not found in broadcast output: " +
-                  s"${sab.child.output.map(_.name).mkString(", ")}")
+                s"DPP build key '$buildKey' not found in ${sab.child.output.map(_.name)}")
             }
+
             setInSubqueryResult(e, rows.map(_.get(colIndex, e.child.dataType)))
           case _ =>
             e.updateResult()
