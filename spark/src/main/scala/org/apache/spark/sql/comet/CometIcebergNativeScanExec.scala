@@ -37,6 +37,7 @@ import com.google.common.base.Objects
 import org.apache.comet.iceberg.CometIcebergNativeScanMetadata
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.operator.CometIcebergNativeScan
+import org.apache.comet.shims.ShimSubqueryBroadcast
 
 /**
  * Native Iceberg scan operator that delegates file reading to iceberg-rust.
@@ -57,7 +58,8 @@ case class CometIcebergNativeScanExec(
     override val serializedPlanOpt: SerializedPlan,
     metadataLocation: String,
     @transient nativeIcebergScanMetadata: CometIcebergNativeScanMetadata)
-    extends CometLeafExec {
+    extends CometLeafExec
+    with ShimSubqueryBroadcast {
 
   override val supportsColumnar: Boolean = true
 
@@ -107,22 +109,28 @@ case class CometIcebergNativeScanExec(
         e.plan match {
           case sab: SubqueryAdaptiveBroadcastExec =>
             // SubqueryAdaptiveBroadcastExec.executeCollect() throws, so we call
-            // child.executeCollect() directly to get raw rows. Unlike SubqueryBroadcastExec
-            // which uses HashedRelation.keys() with BoundReference(index), we need to
-            // manually find which column in child.output corresponds to buildKeys(index).
-            //
-            // buildKeys are expressions over child.output. For simple joins, buildKeys(index)
-            // is an Attribute from child.output. We match by exprId (stable across renames).
+            // child.executeCollect() directly. We use the index from SAB to find the
+            // right buildKey, then locate that key's column in child.output.
             val rows = sab.child.executeCollect()
-            val buildKey = sab.buildKeys(sab.index)
+            val indices = getSubqueryBroadcastIndices(sab)
 
+            // SPARK-46946 changed index: Int to indices: Seq[Int] as a preparatory refactor
+            // for future features (Null Safe Equality DPP, multiple equality predicates).
+            // Currently indices always has one element. CometScanRule checks for multi-index
+            // DPP and falls back, so this assertion should never fail.
+            assert(
+              indices.length == 1,
+              s"Multi-index DPP not supported: indices=$indices. See SPARK-46946.")
+            val buildKeyIndex = indices.head
+            val buildKey = sab.buildKeys(buildKeyIndex)
+
+            // Find column index in child.output by matching buildKey's exprId
             val colIndex = buildKey match {
               case attr: Attribute =>
                 sab.child.output.indexWhere(_.exprId == attr.exprId)
               case Cast(attr: Attribute, _, _, _) =>
                 sab.child.output.indexWhere(_.exprId == attr.exprId)
-              case _ =>
-                sab.index
+              case _ => buildKeyIndex
             }
             if (colIndex < 0) {
               throw new IllegalStateException(
