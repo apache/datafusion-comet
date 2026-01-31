@@ -46,7 +46,72 @@ env:
   RUST_VERSION: stable
 
 jobs:
+  # Build native library once per Spark version and share with all test jobs
+  build-native:
+    if: contains(github.event.pull_request.title, '[iceberg]')
+    strategy:
+      matrix:
+        spark-version: [{short: '3.4', full: '3.4.3'}, {short: '3.5', full: '3.5.8'}]
+        scala-version: ['2.13']
+      fail-fast: false
+    name: build-native/spark-${{ matrix.spark-version.short }}/scala-${{ matrix.scala-version }}
+    runs-on: ubuntu-24.04
+    container:
+      image: amd64/rust
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Rust & Java toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: ${{ env.RUST_VERSION }}
+          jdk-version: 17
+
+      - name: Restore Cargo cache
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/target
+          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-ci-
+
+      - name: Build native library
+        run: |
+          cd native && cargo build --profile ci
+
+      - name: Build and install Maven artifacts
+        run: |
+          ./mvnw install -Prelease -DskipTests -Pspark-${{ matrix.spark-version.short }} -Pscala-${{ matrix.scala-version }}
+
+      - name: Save Cargo cache
+        uses: actions/cache/save@v5
+        if: github.ref == 'refs/heads/main'
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/target
+          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}
+
+      - name: Upload native library
+        uses: actions/upload-artifact@v6
+        with:
+          name: native-lib-spark-${{ matrix.spark-version.short }}-scala-${{ matrix.scala-version }}
+          path: native/target/ci/libcomet.so
+          retention-days: 1
+
+      - name: Upload Maven artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          path: ~/.m2/repository/org/apache/comet
+          name: comet-maven-spark-${{ matrix.spark-version.short }}-scala-${{ matrix.scala-version }}
+          retention-days: 1
+
   iceberg-spark:
+    needs: build-native
     if: contains(github.event.pull_request.title, '[iceberg]')
     strategy:
       matrix:
@@ -69,10 +134,16 @@ jobs:
         with:
           rust-version: ${{env.RUST_VERSION}}
           jdk-version: ${{ matrix.java-version }}
-      - name: Build Comet
-        shell: bash
-        run: |
-          PROFILES="-Pspark-${{matrix.spark-version.short}} -Pscala-${{matrix.scala-version}}" make release
+      - name: Download native library
+        uses: actions/download-artifact@v7
+        with:
+          name: native-lib-spark-${{ matrix.spark-version.short }}-scala-${{ matrix.scala-version }}
+          path: native/target/release/
+      - name: Download Maven artifacts
+        uses: actions/download-artifact@v7
+        with:
+          name: comet-maven-spark-${{ matrix.spark-version.short }}-scala-${{ matrix.scala-version }}
+          path: ~/.m2/repository/org/apache/comet
       - name: Setup Iceberg
         uses: ./.github/actions/setup-iceberg-builder
         with:
@@ -86,6 +157,7 @@ jobs:
             -Pquick=true -x javadoc
 
   iceberg-spark-extensions:
+    needs: build-native
     if: contains(github.event.pull_request.title, '[iceberg]')
     strategy:
       matrix:
@@ -108,10 +180,16 @@ jobs:
         with:
           rust-version: ${{env.RUST_VERSION}}
           jdk-version: ${{ matrix.java-version }}
-      - name: Build Comet
-        shell: bash
-        run: |
-          PROFILES="-Pspark-${{matrix.spark-version.short}} -Pscala-${{matrix.scala-version}}" make release
+      - name: Download native library
+        uses: actions/download-artifact@v7
+        with:
+          name: native-lib-spark-${{ matrix.spark-version.short }}-scala-${{ matrix.scala-version }}
+          path: native/target/release/
+      - name: Download Maven artifacts
+        uses: actions/download-artifact@v7
+        with:
+          name: comet-maven-spark-${{ matrix.spark-version.short }}-scala-${{ matrix.scala-version }}
+          path: ~/.m2/repository/org/apache/comet
       - name: Setup Iceberg
         uses: ./.github/actions/setup-iceberg-builder
         with:
@@ -125,6 +203,7 @@ jobs:
             -Pquick=true -x javadoc
 
   iceberg-spark-runtime:
+    needs: build-native
     if: contains(github.event.pull_request.title, '[iceberg]')
     strategy:
       matrix:
@@ -147,10 +226,16 @@ jobs:
         with:
           rust-version: ${{env.RUST_VERSION}}
           jdk-version: ${{ matrix.java-version }}
-      - name: Build Comet
-        shell: bash
-        run: |
-          PROFILES="-Pspark-${{matrix.spark-version.short}} -Pscala-${{matrix.scala-version}}" make release
+      - name: Download native library
+        uses: actions/download-artifact@v7
+        with:
+          name: native-lib-spark-${{ matrix.spark-version.short }}-scala-${{ matrix.scala-version }}
+          path: native/target/release/
+      - name: Download Maven artifacts
+        uses: actions/download-artifact@v7
+        with:
+          name: comet-maven-spark-${{ matrix.spark-version.short }}-scala-${{ matrix.scala-version }}
+          path: ~/.m2/repository/org/apache/comet
       - name: Setup Iceberg
         uses: ./.github/actions/setup-iceberg-builder
         with:
@@ -164,6 +249,7 @@ jobs:
             -Pquick=true -x javadoc
 
   iceberg-spark-rust:
+    needs: build-native
     if: contains(github.event.pull_request.title, '[iceberg]')
     strategy:
       matrix:
@@ -186,10 +272,16 @@ jobs:
         with:
           rust-version: ${{env.RUST_VERSION}}
           jdk-version: ${{ matrix.java-version }}
-      - name: Build Comet
-        shell: bash
-        run: |
-          PROFILES="-Pspark-${{matrix.spark-version.short}} -Pscala-${{matrix.scala-version}}" make release
+      - name: Download native library
+        uses: actions/download-artifact@v7
+        with:
+          name: native-lib-spark-${{ matrix.spark-version.short }}-scala-${{ matrix.scala-version }}
+          path: native/target/release/
+      - name: Download Maven artifacts
+        uses: actions/download-artifact@v7
+        with:
+          name: comet-maven-spark-${{ matrix.spark-version.short }}-scala-${{ matrix.scala-version }}
+          path: ~/.m2/repository/org/apache/comet
       - name: Setup Iceberg
         uses: ./.github/actions/setup-iceberg-rust-builder
         with:
@@ -203,6 +295,7 @@ jobs:
             -Pquick=true -x javadoc
 
   iceberg-spark-extensions-rust:
+    needs: build-native
     if: contains(github.event.pull_request.title, '[iceberg]')
     strategy:
       matrix:
@@ -225,10 +318,16 @@ jobs:
         with:
           rust-version: ${{env.RUST_VERSION}}
           jdk-version: ${{ matrix.java-version }}
-      - name: Build Comet
-        shell: bash
-        run: |
-          PROFILES="-Pspark-${{matrix.spark-version.short}} -Pscala-${{matrix.scala-version}}" make release
+      - name: Download native library
+        uses: actions/download-artifact@v7
+        with:
+          name: native-lib-spark-${{ matrix.spark-version.short }}-scala-${{ matrix.scala-version }}
+          path: native/target/release/
+      - name: Download Maven artifacts
+        uses: actions/download-artifact@v7
+        with:
+          name: comet-maven-spark-${{ matrix.spark-version.short }}-scala-${{ matrix.scala-version }}
+          path: ~/.m2/repository/org/apache/comet
       - name: Setup Iceberg
         uses: ./.github/actions/setup-iceberg-rust-builder
         with:
@@ -242,6 +341,7 @@ jobs:
             -Pquick=true -x javadoc
 
   iceberg-spark-runtime-rust:
+    needs: build-native
     if: contains(github.event.pull_request.title, '[iceberg]')
     strategy:
       matrix:
@@ -264,10 +364,16 @@ jobs:
         with:
           rust-version: ${{env.RUST_VERSION}}
           jdk-version: ${{ matrix.java-version }}
-      - name: Build Comet
-        shell: bash
-        run: |
-          PROFILES="-Pspark-${{matrix.spark-version.short}} -Pscala-${{matrix.scala-version}}" make release
+      - name: Download native library
+        uses: actions/download-artifact@v7
+        with:
+          name: native-lib-spark-${{ matrix.spark-version.short }}-scala-${{ matrix.scala-version }}
+          path: native/target/release/
+      - name: Download Maven artifacts
+        uses: actions/download-artifact@v7
+        with:
+          name: comet-maven-spark-${{ matrix.spark-version.short }}-scala-${{ matrix.scala-version }}
+          path: ~/.m2/repository/org/apache/comet
       - name: Setup Iceberg
         uses: ./.github/actions/setup-iceberg-rust-builder
         with:
