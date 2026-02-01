@@ -692,7 +692,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     val icebergScanBuilder = OperatorOuterClass.IcebergScan.newBuilder()
     val commonBuilder = OperatorOuterClass.IcebergScanCommon.newBuilder()
 
-    // Only set metadata_location - used for matching in IcebergPartitionInjector.
+    // Only set metadata_location - used for matching in PlanDataInjector.
     // All other fields (catalog_properties, required_schema, pools) are set by
     // serializePartitions() at execution time, so setting them here would be wasted work.
     commonBuilder.setMetadataLocation(metadata.metadataLocation)
@@ -710,7 +710,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
    * Called after doPrepare() has resolved DPP subqueries. Builds pools and per-partition data in
    * one pass from the DPP-filtered partitions.
    *
-   * @param wrappedScan
+   * @param scanExec
    *   The BatchScanExec whose inputRDD contains the DPP-filtered partitions
    * @param output
    *   The output attributes for the scan
@@ -720,7 +720,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
    *   Tuple of (commonBytes, perPartitionBytes) for native execution
    */
   def serializePartitions(
-      wrappedScan: BatchScanExec,
+      scanExec: BatchScanExec,
       output: Seq[Attribute],
       metadata: CometIcebergNativeScanMetadata): (Array[Byte], Array[Array[Byte]]) = {
 
@@ -774,7 +774,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     toJsonMethod.setAccessible(true)
 
     // Access inputRDD - safe now, DPP is resolved
-    wrappedScan.inputRDD match {
+    scanExec.inputRDD match {
       case rdd: DataSourceRDD =>
         val partitions = rdd.partitions
         partitions.foreach { partition =>
@@ -1006,7 +1006,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     // Extract metadataLocation from the native operator's common data
     val metadataLocation = nativeOp.getIcebergScan.getCommon.getMetadataLocation
 
-    // Pass wrappedScan reference for deferred serialization (DPP support)
+    // Pass BatchScanExec reference for deferred serialization (DPP support)
     // Serialization happens at execution time after doPrepare() resolves DPP subqueries
     CometIcebergNativeScanExec(nativeOp, op.wrapped, op.session, metadataLocation, metadata)
   }

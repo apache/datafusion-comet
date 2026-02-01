@@ -60,59 +60,67 @@ import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, suppo
 import org.apache.comet.serde.operator.CometSink
 
 /**
- * Helper object for building per-partition native plans with injected IcebergScan partition data.
+ * Trait for injecting per-partition planning data into operator nodes.
+ *
+ * Implementations handle specific operator types (e.g., Iceberg scans, Delta scans).
  */
-private[comet] object IcebergPartitionInjector {
+private[comet] trait PlanDataInjector {
+
+  /** Check if this injector can handle the given operator. */
+  def canInject(op: Operator): Boolean
+
+  /** Extract the key used to look up planning data for this operator. */
+  def getKey(op: Operator): Option[String]
+
+  /** Inject common + partition data into the operator node. */
+  def inject(op: Operator, commonBytes: Array[Byte], partitionBytes: Array[Byte]): Operator
+}
+
+/**
+ * Registry and utilities for injecting per-partition planning data into operator trees.
+ */
+private[comet] object PlanDataInjector {
+
+  // Registry of injectors for different operator types
+  private val injectors: Seq[PlanDataInjector] = Seq(
+    IcebergPlanDataInjector
+    // Future: DeltaPlanDataInjector, HudiPlanDataInjector, etc.
+  )
 
   /**
-   * Injects common and partition data into an Operator tree by finding IcebergScan nodes and
-   * setting them using the provided maps keyed by metadata_location.
+   * Injects planning data into an Operator tree by finding nodes that need injection and applying
+   * the appropriate injector.
    *
-   * This handles joins over multiple Iceberg tables by matching each IcebergScan with its
-   * corresponding data based on the table's metadata_location.
-   *
-   * @param op
-   *   The operator tree to modify
-   * @param commonByLocation
-   *   Map of metadataLocation -> common bytes (schema pools, metadata) - shared across partitions
-   * @param partitionByLocation
-   *   Map of metadataLocation -> partition bytes for this specific partition index
-   * @return
-   *   New operator tree with data injected
+   * Supports joins over multiple tables by matching each operator with its corresponding data
+   * based on a key (e.g., metadata_location for Iceberg).
    */
-  def injectPartitionData(
+  def injectPlanData(
       op: Operator,
-      commonByLocation: Map[String, Array[Byte]],
-      partitionByLocation: Map[String, Array[Byte]]): Operator = {
+      commonByKey: Map[String, Array[Byte]],
+      partitionByKey: Map[String, Array[Byte]]): Operator = {
     val builder = op.toBuilder
 
-    // If this is an IcebergScan without tasks, inject them based on metadata_location
-    if (op.hasIcebergScan) {
-      val scan = op.getIcebergScan
-      if (scan.getFileScanTasksCount == 0 && scan.hasCommon) {
-        val metadataLocation = scan.getCommon.getMetadataLocation
-        (
-          commonByLocation.get(metadataLocation),
-          partitionByLocation.get(metadataLocation)) match {
-          case (Some(commonBytes), Some(partitionBytes)) =>
-            val common = OperatorOuterClass.IcebergScanCommon.parseFrom(commonBytes)
-            // partitionBytes is a serialized IcebergScan with just tasks (no common)
-            val tasksOnly = OperatorOuterClass.IcebergScan.parseFrom(partitionBytes)
-            val scanBuilder = scan.toBuilder
-            scanBuilder.setCommon(common)
-            scanBuilder.addAllFileScanTasks(tasksOnly.getFileScanTasksList)
-            builder.setIcebergScan(scanBuilder)
-          case _ =>
-            throw new CometRuntimeException(
-              s"Missing data for Iceberg scan with metadata_location: $metadataLocation")
-        }
+    // Try each injector to see if it can handle this operator
+    for (injector <- injectors if injector.canInject(op)) {
+      injector.getKey(op) match {
+        case Some(key) =>
+          (commonByKey.get(key), partitionByKey.get(key)) match {
+            case (Some(commonBytes), Some(partitionBytes)) =>
+              val injectedOp = injector.inject(op, commonBytes, partitionBytes)
+              // Copy the injected operator's fields to our builder
+              builder.clear()
+              builder.mergeFrom(injectedOp)
+            case _ =>
+              throw new CometRuntimeException(s"Missing planning data for key: $key")
+          }
+        case None => // No key, skip injection
       }
     }
 
     // Recursively process children
     builder.clearChildren()
     op.getChildrenList.asScala.foreach { child =>
-      builder.addChildren(injectPartitionData(child, commonByLocation, partitionByLocation))
+      builder.addChildren(injectPlanData(child, commonByKey, partitionByKey))
     }
 
     builder.build()
@@ -125,6 +133,35 @@ private[comet] object IcebergPartitionInjector {
     op.writeTo(codedOutput)
     codedOutput.checkNoSpaceLeft()
     bytes
+  }
+}
+
+/**
+ * Injector for Iceberg scan operators.
+ */
+private[comet] object IcebergPlanDataInjector extends PlanDataInjector {
+
+  override def canInject(op: Operator): Boolean =
+    op.hasIcebergScan &&
+      op.getIcebergScan.getFileScanTasksCount == 0 &&
+      op.getIcebergScan.hasCommon
+
+  override def getKey(op: Operator): Option[String] =
+    Some(op.getIcebergScan.getCommon.getMetadataLocation)
+
+  override def inject(
+      op: Operator,
+      commonBytes: Array[Byte],
+      partitionBytes: Array[Byte]): Operator = {
+    val scan = op.getIcebergScan
+    val common = OperatorOuterClass.IcebergScanCommon.parseFrom(commonBytes)
+    val tasksOnly = OperatorOuterClass.IcebergScan.parseFrom(partitionBytes)
+
+    val scanBuilder = scan.toBuilder
+    scanBuilder.setCommon(common)
+    scanBuilder.addAllFileScanTasks(tasksOnly.getFileScanTasksList)
+
+    op.toBuilder.setIcebergScan(scanBuilder).build()
   }
 }
 
@@ -368,57 +405,8 @@ abstract class CometNativeExec extends CometExec {
             case None => (None, Seq.empty)
           }
 
-        // Find Iceberg split data within this stage (stops at shuffle boundaries).
-        val (commonByLocation, perPartitionByLocation) = findAllIcebergSplitData(this)
-
-        def createCometExecIter(
-            inputs: Seq[Iterator[ColumnarBatch]],
-            numParts: Int,
-            partitionIndex: Int): CometExecIterator = {
-          val actualPlan = if (commonByLocation.nonEmpty) {
-            val partitionByLocation = perPartitionByLocation.map {
-              case (metadataLocation, perPartitionData) =>
-                if (partitionIndex < perPartitionData.length) {
-                  metadataLocation -> perPartitionData(partitionIndex)
-                } else {
-                  throw new CometRuntimeException(
-                    s"Partition index $partitionIndex out of bounds for Iceberg scan " +
-                      s"with metadata_location $metadataLocation " +
-                      s"(${perPartitionData.length} partitions)")
-                }
-            }
-            val basePlan = OperatorOuterClass.Operator.parseFrom(serializedPlanCopy)
-            val injected = IcebergPartitionInjector.injectPartitionData(
-              basePlan,
-              commonByLocation,
-              partitionByLocation)
-            IcebergPartitionInjector.serializeOperator(injected)
-          } else {
-            serializedPlanCopy
-          }
-
-          val it = new CometExecIterator(
-            CometExec.newIterId,
-            inputs,
-            output.length,
-            actualPlan,
-            nativeMetrics,
-            numParts,
-            partitionIndex,
-            broadcastedHadoopConfForEncryption,
-            encryptedFilePaths)
-
-          setSubqueries(it.id, this)
-
-          Option(TaskContext.get()).foreach { context =>
-            context.addTaskCompletionListener[Unit] { _ =>
-              it.close()
-              cleanSubqueries(it.id, this)
-            }
-          }
-
-          it
-        }
+        // Find planning data within this stage (stops at shuffle boundaries).
+        val (commonByKey, perPartitionByKey) = findAllPlanData(this)
 
         // Collect the input ColumnarBatches from the child operators and create a CometExecIterator
         // to execute the native plan.
@@ -498,24 +486,20 @@ abstract class CometNativeExec extends CometExec {
           throw new CometRuntimeException(s"No input for CometNativeExec:\n $this")
         }
 
-        // Avoid closure capture: per-partition data goes in Partition objects, not the closure
-        if (commonByLocation.nonEmpty) {
-          val subqueries = collectSubqueries(this)
-          CometIcebergSplitRDD(
-            sparkContext,
-            inputs.toSeq,
-            commonByLocation,
-            perPartitionByLocation,
-            serializedPlanCopy,
-            output.length,
-            nativeMetrics,
-            subqueries)
-        } else if (inputs.nonEmpty) {
-          ZippedPartitionsRDD(sparkContext, inputs.toSeq)(createCometExecIter)
-        } else {
-          val partitionNum = firstNonBroadcastPlanNumPartitions
-          CometExecRDD(sparkContext, partitionNum)(createCometExecIter)
-        }
+        // Unified RDD creation - CometExecRDD handles all cases
+        val subqueries = collectSubqueries(this)
+        CometExecRDD(
+          sparkContext,
+          inputs.toSeq,
+          commonByKey,
+          perPartitionByKey,
+          serializedPlanCopy,
+          firstNonBroadcastPlanNumPartitions,
+          output.length,
+          nativeMetrics,
+          subqueries,
+          broadcastedHadoopConfForEncryption,
+          encryptedFilePaths)
     }
   }
 
@@ -556,27 +540,23 @@ abstract class CometNativeExec extends CometExec {
   }
 
   /**
-   * Find ALL CometIcebergNativeScanExec nodes with split mode data in the plan tree. Returns two
-   * maps keyed by metadataLocation: one for common data (shared across partitions) and one for
+   * Find all plan nodes with per-partition planning data in the plan tree. Returns two maps keyed
+   * by a unique identifier: one for common data (shared across partitions) and one for
    * per-partition data.
    *
-   * This supports joins over multiple Iceberg tables by collecting data from each scan and keying
-   * by metadata_location (which is unique per table).
-   *
-   * NOTE: This is only used when Iceberg scans are NOT executed via their own RDD. When Iceberg
-   * scans execute via CometIcebergSplitRDD, the partition data is handled there and this function
-   * returns empty maps.
+   * Currently supports Iceberg scans (keyed by metadata_location). Additional scan types can be
+   * added by extending this method.
    *
    * Stops at stage boundaries (shuffle exchanges, etc.) because partition indices are only valid
    * within the same stage.
    *
    * @return
-   *   (commonByLocation, perPartitionByLocation) - common data is shared, per-partition varies
+   *   (commonByKey, perPartitionByKey) - common data is shared, per-partition varies
    */
-  private def findAllIcebergSplitData(
+  private def findAllPlanData(
       plan: SparkPlan): (Map[String, Array[Byte]], Map[String, Array[Array[Byte]]]) = {
     plan match {
-      // Found an Iceberg scan with split data
+      // Found an Iceberg scan with planning data
       case iceberg: CometIcebergNativeScanExec
           if iceberg.commonData.nonEmpty && iceberg.perPartitionData.nonEmpty =>
         (
@@ -587,9 +567,9 @@ abstract class CometNativeExec extends CometExec {
       // to all partitions, so partition indices align. This handles broadcast joins
       // over Iceberg tables.
       case bqs: BroadcastQueryStageExec =>
-        findAllIcebergSplitData(bqs.plan)
+        findAllPlanData(bqs.plan)
       case cbe: CometBroadcastExchangeExec =>
-        val results = cbe.children.map(findAllIcebergSplitData)
+        val results = cbe.children.map(findAllPlanData)
         (results.flatMap(_._1).toMap, results.flatMap(_._2).toMap)
 
       // Stage boundaries - stop searching (partition indices won't align after these)
@@ -600,7 +580,7 @@ abstract class CometNativeExec extends CometExec {
 
       // Continue searching through other operators, combining results from all children
       case _ =>
-        val results = plan.children.map(findAllIcebergSplitData)
+        val results = plan.children.map(findAllPlanData)
         (results.flatMap(_._1).toMap, results.flatMap(_._2).toMap)
     }
   }

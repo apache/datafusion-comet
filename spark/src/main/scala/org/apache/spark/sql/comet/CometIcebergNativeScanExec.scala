@@ -276,10 +276,10 @@ case class CometIcebergNativeScanExec(
     baseMetrics ++ icebergMetrics + ("num_splits" -> numSplitsMetric)
   }
 
-  /** Executes using split mode RDD - split data is computed lazily on first access. */
+  /** Executes using CometExecRDD - planning data is computed lazily on first access. */
   override def doExecuteColumnar(): RDD[ColumnarBatch] = {
     val nativeMetrics = CometMetricNode.fromCometPlan(this)
-    CometIcebergSplitRDD(sparkContext, commonData, perPartitionData, output.length, nativeMetrics)
+    CometExecRDD(sparkContext, commonData, perPartitionData, output.length, nativeMetrics)
   }
 
   /**
