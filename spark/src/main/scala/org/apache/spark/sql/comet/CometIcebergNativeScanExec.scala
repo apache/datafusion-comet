@@ -128,6 +128,7 @@ case class CometIcebergNativeScanExec(
             val colIndex = buildKey match {
               case attr: Attribute =>
                 sab.child.output.indexWhere(_.exprId == attr.exprId)
+              // DPP may cast partition column to match join key type
               case Cast(attr: Attribute, _, _, _) =>
                 sab.child.output.indexWhere(_.exprId == attr.exprId)
               case _ => buildKeyIndex
