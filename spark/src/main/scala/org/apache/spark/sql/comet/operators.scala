@@ -19,7 +19,6 @@
 
 package org.apache.spark.sql.comet
 
-import java.io.ByteArrayOutputStream
 import java.util.Locale
 
 import scala.collection.mutable
@@ -50,6 +49,7 @@ import org.apache.spark.util.SerializableConfiguration
 import org.apache.spark.util.io.ChunkedByteBuffer
 
 import com.google.common.base.Objects
+import com.google.protobuf.CodedOutputStream
 
 import org.apache.comet.{CometConf, CometExecIterator, CometRuntimeException, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.{isCometShuffleEnabled, withInfo}
@@ -113,6 +113,19 @@ object CometExec {
 
   def newIterId: Long = curId.getAndIncrement()
 
+  /**
+   * Serialize a native plan to bytes. Use this method to serialize the plan once before calling
+   * getCometIterator for each partition, avoiding repeated serialization.
+   */
+  def serializeNativePlan(nativePlan: Operator): Array[Byte] = {
+    val size = nativePlan.getSerializedSize
+    val bytes = new Array[Byte](size)
+    val codedOutput = CodedOutputStream.newInstance(bytes)
+    nativePlan.writeTo(codedOutput)
+    codedOutput.checkNoSpaceLeft()
+    bytes
+  }
+
   def getCometIterator(
       inputs: Seq[Iterator[ColumnarBatch]],
       numOutputCols: Int,
@@ -130,6 +143,28 @@ object CometExec {
       encryptedFilePaths = Seq.empty)
   }
 
+  /**
+   * Create a CometExecIterator with a pre-serialized native plan. Use this overload when
+   * executing the same plan across multiple partitions to avoid serializing the plan repeatedly.
+   */
+  def getCometIterator(
+      inputs: Seq[Iterator[ColumnarBatch]],
+      numOutputCols: Int,
+      serializedPlan: Array[Byte],
+      numParts: Int,
+      partitionIdx: Int): CometExecIterator = {
+    new CometExecIterator(
+      newIterId,
+      inputs,
+      numOutputCols,
+      serializedPlan,
+      CometMetricNode(Map.empty),
+      numParts,
+      partitionIdx,
+      broadcastedHadoopConfForEncryption = None,
+      encryptedFilePaths = Seq.empty)
+  }
+
   def getCometIterator(
       inputs: Seq[Iterator[ColumnarBatch]],
       numOutputCols: Int,
@@ -139,10 +174,7 @@ object CometExec {
       partitionIdx: Int,
       broadcastedHadoopConfForEncryption: Option[Broadcast[SerializableConfiguration]],
       encryptedFilePaths: Seq[String]): CometExecIterator = {
-    val outputStream = new ByteArrayOutputStream()
-    nativePlan.writeTo(outputStream)
-    outputStream.close()
-    val bytes = outputStream.toByteArray
+    val bytes = serializeNativePlan(nativePlan)
     new CometExecIterator(
       newIterId,
       inputs,
@@ -394,10 +426,11 @@ abstract class CometNativeExec extends CometExec {
   def foreachUntilCometInput(plan: SparkPlan)(func: SparkPlan => Unit): Unit = {
     plan match {
       case _: CometNativeScanExec | _: CometScanExec | _: CometBatchScanExec |
-          _: CometIcebergNativeScanExec | _: ShuffleQueryStageExec | _: AQEShuffleReadExec |
-          _: CometShuffleExchangeExec | _: CometUnionExec | _: CometTakeOrderedAndProjectExec |
-          _: CometCoalesceExec | _: ReusedExchangeExec | _: CometBroadcastExchangeExec |
-          _: BroadcastQueryStageExec | _: CometSparkToColumnarExec | _: CometLocalTableScanExec =>
+          _: CometIcebergNativeScanExec | _: CometCsvNativeScanExec | _: ShuffleQueryStageExec |
+          _: AQEShuffleReadExec | _: CometShuffleExchangeExec | _: CometUnionExec |
+          _: CometTakeOrderedAndProjectExec | _: CometCoalesceExec | _: ReusedExchangeExec |
+          _: CometBroadcastExchangeExec | _: BroadcastQueryStageExec |
+          _: CometSparkToColumnarExec | _: CometLocalTableScanExec =>
         func(plan)
       case _: CometPlan =>
         // Other Comet operators, continue to traverse the tree.
@@ -414,10 +447,12 @@ abstract class CometNativeExec extends CometExec {
   def convertBlock(): CometNativeExec = {
     def transform(arg: Any): AnyRef = arg match {
       case serializedPlan: SerializedPlan if serializedPlan.isEmpty =>
-        val out = new ByteArrayOutputStream()
-        nativeOp.writeTo(out)
-        out.close()
-        SerializedPlan(Some(out.toByteArray))
+        val size = nativeOp.getSerializedSize
+        val bytes = new Array[Byte](size)
+        val codedOutput = CodedOutputStream.newInstance(bytes)
+        nativeOp.writeTo(codedOutput)
+        codedOutput.checkNoSpaceLeft()
+        SerializedPlan(Some(bytes))
       case other: AnyRef => other
       case null => null
     }
