@@ -317,7 +317,7 @@ case class CometIcebergNativeScanExec(
   }
 
   override def stringArgs: Iterator[Any] = {
-    // Use metadata task count for display to avoid triggering serializedPartitionData during planning
+    // Use metadata task count to avoid triggering serializedPartitionData during planning
     val hasMeta = nativeIcebergScanMetadata != null && nativeIcebergScanMetadata.tasks != null
     val taskCount = if (hasMeta) nativeIcebergScanMetadata.tasks.size() else 0
     val scanDesc = if (originalPlan != null) originalPlan.scan.description() else "canonicalized"
