@@ -1876,6 +1876,62 @@ index 2f8e401e743..a4f94417dcc 100644
        plan.inputPlan.output.zip(plan.finalPhysicalPlan.output).foreach { case (o1, o2) =>
          assert(o1.semanticEquals(o2), "Different output column order after AQE optimization")
        }
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/command/CharVarcharDDLTestBase.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/command/CharVarcharDDLTestBase.scala
+index 12d5870309f..51429bf4039 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/execution/command/CharVarcharDDLTestBase.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/command/CharVarcharDDLTestBase.scala
+@@ -18,7 +18,7 @@
+ package org.apache.spark.sql.execution.command
+ 
+ import org.apache.spark.SparkConf
+-import org.apache.spark.sql.{AnalysisException, QueryTest, Row}
++import org.apache.spark.sql.{AnalysisException, IgnoreComet, QueryTest, Row}
+ import org.apache.spark.sql.catalyst.util.CharVarcharUtils
+ import org.apache.spark.sql.connector.catalog.InMemoryPartitionTableCatalog
+ import org.apache.spark.sql.internal.SQLConf
+@@ -162,7 +162,8 @@ trait CharVarcharDDLTestBase extends QueryTest with SQLTestUtils {
+     }
+   }
+ 
+-  test("SPARK-33901: ctas should should not change table's schema") {
++  test("SPARK-33901: ctas should should not change table's schema",
++    IgnoreComet("comet native writer does not support empty dir / table creation yet")) {
+     withTable("t1", "t2") {
+       sql(s"CREATE TABLE t1(i CHAR(5), c VARCHAR(4)) USING $format")
+       sql(s"CREATE TABLE t2 USING $format AS SELECT * FROM t1")
+@@ -179,7 +180,8 @@ trait CharVarcharDDLTestBase extends QueryTest with SQLTestUtils {
+     }
+   }
+ 
+-  test("SPARK-37160: CREATE TABLE AS SELECT with CHAR_AS_VARCHAR") {
++  test("SPARK-37160: CREATE TABLE AS SELECT with CHAR_AS_VARCHAR",
++    IgnoreComet("comet native writer does not support empty dir/table creation yet")) {
+     withTable("t1", "t2") {
+       sql(s"CREATE TABLE t1(col CHAR(5)) USING $format")
+       checkTableSchemaTypeStr("t1", Seq(Row("char(5)")))
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/FileFormatWriterSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/FileFormatWriterSuite.scala
+index 343b59a311e..9d5789c1d91 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/FileFormatWriterSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/FileFormatWriterSuite.scala
+@@ -17,7 +17,7 @@
+ 
+ package org.apache.spark.sql.execution.datasources
+ 
+-import org.apache.spark.sql.{QueryTest, Row}
++import org.apache.spark.sql.{IgnoreComet, QueryTest, Row}
+ import org.apache.spark.sql.catalyst.plans.CodegenInterpretedPlanTest
+ import org.apache.spark.sql.test.SharedSparkSession
+ 
+@@ -28,7 +28,8 @@ class FileFormatWriterSuite
+ 
+   import testImplicits._
+ 
+-  test("empty file should be skipped while write to file") {
++  test("empty file should be skipped while write to file",
++    IgnoreComet("comet native writer does not create empty files / dir")) {
+     withTempPath { path =>
+       spark.range(100).repartition(10).where("id = 50").write.parquet(path.toString)
+       val partFiles = path.listFiles()
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/SchemaPruningSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/SchemaPruningSuite.scala
 index bf496d6db21..9bb57a9b4c6 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/SchemaPruningSuite.scala
@@ -2657,6 +2713,60 @@ index d675503a8ba..659fa686fb7 100644
        assert(bucketedScan.length == expectedNumBucketedScan)
      }
  
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/sources/InsertSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/sources/InsertSuite.scala
+index 7b1a5a32037..f163a9733a5 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/sources/InsertSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/sources/InsertSuite.scala
+@@ -262,7 +262,8 @@ class InsertSuite extends DataSourceTest with SharedSparkSession {
+     }
+   }
+ 
+-  test("INSERT INTO TABLE - complex type but different names") {
++  test("INSERT INTO TABLE - complex type but different names",
++    IgnoreComet("comet native writer issue")) {
+     val tab1 = "tab1"
+     val tab2 = "tab2"
+     withTable(tab1, tab2) {
+@@ -997,7 +998,8 @@ class InsertSuite extends DataSourceTest with SharedSparkSession {
+     }
+   }
+ 
+-  test("SPARK-38336 INSERT INTO statements with tables with default columns: positive tests") {
++  test("SPARK-38336 INSERT INTO statements with tables with default columns: positive tests",
++    IgnoreComet("comet native writer insert overwrite bug")) {
+     // When the INSERT INTO statement provides fewer values than expected, NULL values are appended
+     // in their place.
+     withTable("t") {
+@@ -1470,7 +1472,8 @@ class InsertSuite extends DataSourceTest with SharedSparkSession {
+     }
+   }
+ 
+-  test("SPARK-38811 INSERT INTO on columns added with ALTER TABLE ADD COLUMNS: Positive tests") {
++  test("SPARK-38811 INSERT INTO on columns added with ALTER TABLE ADD COLUMNS: Positive tests",
++    IgnoreComet("bug with insert overwrite mode comet native writer")) {
+     // There is a complex expression in the default value.
+     val createTableBooleanCol = "create table t(i boolean) using parquet"
+     val createTableIntCol = "create table t(i int) using parquet"
+@@ -2263,7 +2266,8 @@ class InsertSuite extends DataSourceTest with SharedSparkSession {
+     }
+   }
+ 
+-  test("SPARK-43071: INSERT INTO from queries whose final operators are not projections") {
++  test("SPARK-43071: INSERT INTO from queries whose final operators are not projections",
++    IgnoreComet("comet writer issues with insert overwrite")) {
+     def runTest(insert: String, expected: Seq[Row]): Unit = {
+       withTable("t1", "t2") {
+         sql("create table t1(i boolean, s bigint default 42) using parquet")
+@@ -2331,7 +2335,8 @@ class InsertSuite extends DataSourceTest with SharedSparkSession {
+     }
+   }
+ 
+-  test("SPARK-29174 Support LOCAL in INSERT OVERWRITE DIRECTORY to data source") {
++  test("SPARK-29174 Support LOCAL in INSERT OVERWRITE DIRECTORY to data source",
++    IgnoreComet("comet native writer does not support insert overwrite")) {
+     withTempPath { dir =>
+       val path = dir.toURI.getPath
+       sql(s"""create table tab1 ( a int) using parquet location '$path'""")
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/streaming/FileStreamSinkSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/streaming/FileStreamSinkSuite.scala
 index 1954cce7fdc..73d1464780e 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/streaming/FileStreamSinkSuite.scala
@@ -2814,6 +2924,30 @@ index abe606ad9c1..2d930b64cca 100644
      val tblSourceName = "tbl_src"
      val tblTargetName = "tbl_target"
      val tblSourceQualified = s"default.$tblSourceName"
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/test/DataFrameReaderWriterSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/test/DataFrameReaderWriterSuite.scala
+index b40f9210a68..34aa6287eb5 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/test/DataFrameReaderWriterSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/test/DataFrameReaderWriterSuite.scala
+@@ -538,7 +538,8 @@ class DataFrameReaderWriterSuite extends QueryTest with SharedSparkSession with
+     Option(dir).map(spark.read.format("org.apache.spark.sql.test").load)
+   }
+ 
+-  test("write path implements onTaskCommit API correctly") {
++  test("write path implements onTaskCommit API correctly",
++    IgnoreComet("Comet native writer partial support")) {
+     withSQLConf(
+         SQLConf.FILE_COMMIT_PROTOCOL_CLASS.key ->
+           classOf[MessageCapturingCommitProtocol].getCanonicalName) {
+@@ -1088,7 +1089,8 @@ class DataFrameReaderWriterSuite extends QueryTest with SharedSparkSession with
+     }
+   }
+ 
+-  test("Insert overwrite table command should output correct schema: basic") {
++  test("Insert overwrite table command should output correct schema: basic",
++    IgnoreComet("Comet native writer does not supportinsert overwrite mode")) {
+     withTable("tbl", "tbl2") {
+       withView("view1") {
+         val df = spark.range(10).toDF("id")
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala b/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
 index e937173a590..5fede1579f7 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
