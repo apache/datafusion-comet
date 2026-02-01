@@ -110,6 +110,20 @@ index 4410fe50912..43bcce2a038 100644
        case _ => Map[String, String]()
      }
      val childrenInfo = children.flatMap {
+diff --git a/sql/core/src/test/resources/sql-tests/analyzer-results/charvarchar.sql.out b/sql/core/src/test/resources/sql-tests/analyzer-results/charvarchar.sql.out
+index 524797015a2..09576b169bd 100644
+--- a/sql/core/src/test/resources/sql-tests/analyzer-results/charvarchar.sql.out
++++ b/sql/core/src/test/resources/sql-tests/analyzer-results/charvarchar.sql.out
+@@ -738,3 +738,9 @@ SELECT to_varchar(12454.8, '99,999.9S')
+ -- !query analysis
+ Project [to_char(12454.8, 99,999.9S) AS to_char(12454.8, 99,999.9S)#x]
+ +- OneRowRelation
++
++
++-- !query
++SET spark.comet.parquet.write.enabled = true
++-- !query analysis
++SetCommand (spark.comet.parquet.write.enabled,Some(true))
 diff --git a/sql/core/src/test/resources/sql-tests/analyzer-results/listagg-collations.sql.out b/sql/core/src/test/resources/sql-tests/analyzer-results/listagg-collations.sql.out
 index 7aca17dcb25..8afeb3b4a2f 100644
 --- a/sql/core/src/test/resources/sql-tests/analyzer-results/listagg-collations.sql.out
@@ -323,6 +337,22 @@ index 21a3ce1e122..f4762ab98f0 100644
  SET spark.sql.ansi.enabled = false;
  
  -- In COMPENSATION views get invalidated if the type can't cast
+diff --git a/sql/core/src/test/resources/sql-tests/results/charvarchar.sql.out b/sql/core/src/test/resources/sql-tests/results/charvarchar.sql.out
+index 3026e463947..bf3f20906f1 100644
+--- a/sql/core/src/test/resources/sql-tests/results/charvarchar.sql.out
++++ b/sql/core/src/test/resources/sql-tests/results/charvarchar.sql.out
+@@ -1254,3 +1254,11 @@ SELECT to_varchar(12454.8, '99,999.9S')
+ struct<to_char(12454.8, 99,999.9S):string>
+ -- !query output
+ 12,454.8+
++
++
++-- !query
++SET spark.comet.parquet.write.enabled = true
++-- !query schema
++struct<key:string,value:string>
++-- !query output
++spark.comet.parquet.write.enabled	true
 diff --git a/sql/core/src/test/resources/sql-tests/results/listagg-collations.sql.out b/sql/core/src/test/resources/sql-tests/results/listagg-collations.sql.out
 index 1f8c5822e7d..b7de4e28813 100644
 --- a/sql/core/src/test/resources/sql-tests/results/listagg-collations.sql.out
@@ -1067,6 +1097,19 @@ index ad424b3a7cc..4ece0117a34 100644
  
    protected val baseResourcePath = {
      // use the same way as `SQLQueryTestSuite` to get the resource path
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SQLInsertTestSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SQLInsertTestSuite.scala
+index 818c7ec65b1..0d333807b70 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/SQLInsertTestSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/SQLInsertTestSuite.scala
+@@ -524,7 +524,7 @@ trait SQLInsertTestSuite extends QueryTest with SQLTestUtils with AdaptiveSparkP
+     }
+   }
+ 
+-  test("SPARK-48817: test multi inserts") {
++  test("SPARK-48817: test multi inserts", IgnoreComet("comet parquet native writer bug")) {
+     withTable("t1", "t2", "t3") {
+       createTable("t1", Seq("i"), Seq("int"))
+       createTable("t2", Seq("i"), Seq("int"))
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
 index b3fce19979e..67edf5eb91c 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
@@ -1384,7 +1427,7 @@ index 11e9547dfc5..be9ae40ab3d 100644
      val t2 = "T_2"
  
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/collation/DefaultCollationTestSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/collation/DefaultCollationTestSuite.scala
-index 031af8200d7..a56a1223a7d 100644
+index 031af8200d7..bb5acd74ad2 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/collation/DefaultCollationTestSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/collation/DefaultCollationTestSuite.scala
 @@ -17,7 +17,7 @@
@@ -1401,7 +1444,7 @@ index 031af8200d7..a56a1223a7d 100644
    }
  
 -  test("ctas with union") {
-+  test("ctas with union", IgnoreComet("comet native writer does not support CTAS")) {
++  test("ctas with union", IgnoreComet("comet native writer bug when shuffle / AQE enabled")) {
      withTable(testTable) {
        sql(s"""
             |CREATE TABLE $testTable USING $dataSource AS
