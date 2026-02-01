@@ -139,6 +139,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     container:
       image: amd64/rust
+      options: --shm-size=8192m
     steps:
       - uses: actions/checkout@v6
       - name: Setup Rust & Java toolchain
