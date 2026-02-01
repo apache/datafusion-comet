@@ -76,6 +76,14 @@ private[spark] class CometExecRDD(
     numPartitions
   }
 
+  // Validate all per-partition arrays have the same length to prevent
+  // ArrayIndexOutOfBoundsException in getPartitions (e.g., from broadcast scans with
+  // different partition counts after DPP filtering)
+  require(
+    perPartitionByKey.values.forall(_.length == numParts),
+    s"All per-partition arrays must have length $numParts, but found: " +
+      perPartitionByKey.map { case (key, arr) => s"$key -> ${arr.length}" }.mkString(", "))
+
   override protected def getPartitions: Array[Partition] = {
     (0 until numParts).map { idx =>
       val inputParts = inputRDDs.map(_.partitions(idx)).toArray

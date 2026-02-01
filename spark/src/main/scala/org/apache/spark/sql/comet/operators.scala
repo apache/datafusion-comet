@@ -562,14 +562,11 @@ abstract class CometNativeExec extends CometExec {
           Map(iceberg.metadataLocation -> iceberg.commonData),
           Map(iceberg.metadataLocation -> iceberg.perPartitionData))
 
-      // For broadcast stages, we CAN look inside because broadcast data is replicated
-      // to all partitions, so partition indices align. This handles broadcast joins
-      // over Iceberg tables.
-      case bqs: BroadcastQueryStageExec =>
-        findAllPlanData(bqs.plan)
-      case cbe: CometBroadcastExchangeExec =>
-        val results = cbe.children.map(findAllPlanData)
-        (results.flatMap(_._1).toMap, results.flatMap(_._2).toMap)
+      // Broadcast stages are boundaries - don't collect per-partition data from inside them.
+      // After DPP filtering, broadcast scans may have different partition counts than the
+      // probe side, causing ArrayIndexOutOfBoundsException in CometExecRDD.getPartitions.
+      case _: BroadcastQueryStageExec | _: CometBroadcastExchangeExec =>
+        (Map.empty, Map.empty)
 
       // Stage boundaries - stop searching (partition indices won't align after these)
       case _: ShuffleQueryStageExec | _: AQEShuffleReadExec | _: CometShuffleExchangeExec |
