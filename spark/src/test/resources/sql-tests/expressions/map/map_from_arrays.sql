@@ -26,9 +26,7 @@ INSERT INTO test_map_from_arrays VALUES (array('a', 'b', 'c'), array(1, 2, 3)), 
 query spark_answer_only
 SELECT map_from_arrays(k, v) FROM test_map_from_arrays WHERE k IS NOT NULL
 
--- Comet bug: map_from_arrays(NULL, NULL) causes native crash "map key cannot be null"
--- https://github.com/apache/datafusion-comet/issues/3327
-query ignore(https://github.com/apache/datafusion-comet/issues/3327)
+query spark_answer_only
 SELECT map_from_arrays(k, v) FROM test_map_from_arrays WHERE k IS NULL
 
 -- literal arguments
