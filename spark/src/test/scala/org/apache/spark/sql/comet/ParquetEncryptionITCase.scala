@@ -457,17 +457,16 @@ class ParquetEncryptionITCase extends CometTestBase with SQLTestUtils {
 
     Seq("true", "false").foreach { cometEnabled =>
       if (cometEnabled == "true") {
-        Seq(SCAN_NATIVE_DATAFUSION, SCAN_NATIVE_ICEBERG_COMPAT).foreach {
-          scanImpl =>
-            super.test(testName + s" Comet($cometEnabled)" + s" Scan($scanImpl)", testTags: _*) {
-              withSQLConf(
-                CometConf.COMET_ENABLED.key -> cometEnabled,
-                CometConf.COMET_EXEC_ENABLED.key -> "true",
-                SQLConf.ANSI_ENABLED.key -> "false",
-                CometConf.COMET_NATIVE_SCAN_IMPL.key -> scanImpl) {
-                testFun
-              }
+        Seq(SCAN_NATIVE_DATAFUSION, SCAN_NATIVE_ICEBERG_COMPAT).foreach { scanImpl =>
+          super.test(testName + s" Comet($cometEnabled)" + s" Scan($scanImpl)", testTags: _*) {
+            withSQLConf(
+              CometConf.COMET_ENABLED.key -> cometEnabled,
+              CometConf.COMET_EXEC_ENABLED.key -> "true",
+              SQLConf.ANSI_ENABLED.key -> "false",
+              CometConf.COMET_NATIVE_SCAN_IMPL.key -> scanImpl) {
+              testFun
             }
+          }
         }
       } else {
         super.test(testName + s" Comet($cometEnabled)", testTags: _*) {
