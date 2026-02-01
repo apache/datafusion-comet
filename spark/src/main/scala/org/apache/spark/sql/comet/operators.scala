@@ -139,6 +139,14 @@ private[comet] object PlanDataInjector {
  * Injector for Iceberg scan operators.
  */
 private[comet] object IcebergPlanDataInjector extends PlanDataInjector {
+  import java.nio.ByteBuffer
+  import java.util.concurrent.ConcurrentHashMap
+
+  // Cache parsed IcebergScanCommon by content to avoid repeated deserialization
+  // ByteBuffer wrapper provides content-based equality and hashCode
+  // TODO: This is a static singleton on the executor, should we cap the size (proper LRU cache?)
+  private val commonCache =
+    new ConcurrentHashMap[ByteBuffer, OperatorOuterClass.IcebergScanCommon]()
 
   override def canInject(op: Operator): Boolean =
     op.hasIcebergScan &&
@@ -153,7 +161,13 @@ private[comet] object IcebergPlanDataInjector extends PlanDataInjector {
       commonBytes: Array[Byte],
       partitionBytes: Array[Byte]): Operator = {
     val scan = op.getIcebergScan
-    val common = OperatorOuterClass.IcebergScanCommon.parseFrom(commonBytes)
+
+    // Cache the parsed common data to avoid deserializing on every partition
+    val cacheKey = ByteBuffer.wrap(commonBytes)
+    val common = commonCache.computeIfAbsent(
+      cacheKey,
+      _ => OperatorOuterClass.IcebergScanCommon.parseFrom(commonBytes))
+
     val tasksOnly = OperatorOuterClass.IcebergScan.parseFrom(partitionBytes)
 
     val scanBuilder = scan.toBuilder
