@@ -48,8 +48,8 @@ import org.apache.comet.shims.ShimSubqueryBroadcast
  * ArrowReader. This provides better performance than reading through Spark's abstraction layers.
  *
  * Supports Dynamic Partition Pruning (DPP) by deferring partition serialization to execution
- * time. The doPrepare() method waits for DPP subqueries to resolve, then lazy splitData
- * serializes the DPP-filtered partitions from inputRDD.
+ * time. The doPrepare() method waits for DPP subqueries to resolve, then lazy
+ * serializedPartitionData serializes the DPP-filtered partitions from inputRDD.
  */
 case class CometIcebergNativeScanExec(
     override val nativeOp: Operator,
@@ -67,7 +67,7 @@ case class CometIcebergNativeScanExec(
 
   /**
    * Prepare DPP subquery plans. Called by Spark's prepare() before doExecuteColumnar(). Only
-   * kicks off async work - doesn't wait for results (that happens in splitData).
+   * kicks off async work - doesn't wait for results (that happens in serializedPartitionData).
    */
   override protected def doPrepare(): Unit = {
     originalPlan.runtimeFilters.foreach {
@@ -86,7 +86,7 @@ case class CometIcebergNativeScanExec(
    * {{{
    * Planning time:
    *   CometIcebergNativeScanExec created
-   *     - splitData NOT evaluated (lazy)
+   *     - serializedPartitionData not evaluated (lazy)
    *     - No partition serialization yet
    *
    * Execution time:
@@ -96,13 +96,13 @@ case class CometIcebergNativeScanExec(
    *
    *   2. Spark calls doExecuteColumnar()
    *        - Accesses perPartitionData
-   *        - Forces splitData evaluation (here)
+   *        - Forces serializedPartitionData evaluation (here)
    *        - Waits for DPP values (updateResult or reflection)
    *        - Calls serializePartitions with DPP-filtered inputRDD
    *        - Only matching partitions are serialized
    * }}}
    */
-  @transient private lazy val splitData: (Array[Byte], Array[Array[Byte]]) = {
+  @transient private lazy val serializedPartitionData: (Array[Byte], Array[Array[Byte]]) = {
     // Ensure DPP subqueries are resolved before accessing inputRDD.
     originalPlan.runtimeFilters.foreach {
       case DynamicPruningExpression(e: InSubqueryExec) if e.values().isEmpty =>
@@ -171,8 +171,8 @@ case class CometIcebergNativeScanExec(
     resultField.set(e, result)
   }
 
-  def commonData: Array[Byte] = splitData._1
-  def perPartitionData: Array[Array[Byte]] = splitData._2
+  def commonData: Array[Byte] = serializedPartitionData._1
+  def perPartitionData: Array[Array[Byte]] = serializedPartitionData._2
 
   // numPartitions for execution - derived from actual DPP-filtered partitions
   // Only accessed during execution, not planning
@@ -221,9 +221,9 @@ case class CometIcebergNativeScanExec(
     if (originalPlan == null) {
       Seq.empty
     } else {
-      // Force splitData evaluation first - this triggers serializePartitions which
+      // Force serializedPartitionData evaluation first - this triggers serializePartitions which
       // accesses inputRDD, which triggers Iceberg planning and populates metrics
-      val _ = splitData
+      val _ = serializedPartitionData
 
       originalPlan.metrics
         .filterNot { case (name, _) =>
@@ -317,7 +317,7 @@ case class CometIcebergNativeScanExec(
   }
 
   override def stringArgs: Iterator[Any] = {
-    // Use metadata task count for display to avoid triggering splitData during planning
+    // Use metadata task count for display to avoid triggering serializedPartitionData during planning
     val hasMeta = nativeIcebergScanMetadata != null && nativeIcebergScanMetadata.tasks != null
     val taskCount = if (hasMeta) nativeIcebergScanMetadata.tasks.size() else 0
     val scanDesc = if (originalPlan != null) originalPlan.scan.description() else "canonicalized"

@@ -2744,7 +2744,7 @@ fn parse_file_scan_tasks_from_common(
     proto_common: &spark_operator::IcebergScanCommon,
     proto_tasks: &[spark_operator::IcebergFileScanTask],
 ) -> Result<Vec<iceberg::scan::FileScanTask>, ExecutionError> {
-    // Build caches upfront from common data
+    // Parse each unique schema once, not once per task
     let schema_cache: Vec<Arc<iceberg::spec::Schema>> = proto_common
         .schema_pool
         .iter()

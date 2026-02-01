@@ -50,7 +50,7 @@ private[spark] class CometExecPartition(
  *   - No inputs: uses numPartitions to create partitions
  *
  * NOTE: This RDD does not handle DPP (InSubqueryExec), which is resolved in
- * CometIcebergNativeScanExec.splitData before this RDD is created. However, it DOES handle
+ * CometIcebergNativeScanExec.serializedPartitionData before this RDD is created. It also handles
  * ScalarSubquery expressions by registering them with CometScalarSubquery before execution.
  */
 private[spark] class CometExecRDD(
@@ -59,7 +59,7 @@ private[spark] class CometExecRDD(
     commonByKey: Map[String, Array[Byte]],
     @transient perPartitionByKey: Map[String, Array[Array[Byte]]],
     serializedPlan: Array[Byte],
-    numPartitions: Int,
+    defaultNumPartitions: Int,
     numOutputCols: Int,
     nativeMetrics: CometMetricNode,
     subqueries: Seq[ScalarSubquery],
@@ -68,24 +68,24 @@ private[spark] class CometExecRDD(
     extends RDD[ColumnarBatch](sc, Nil) {
 
   // Determine partition count: from inputs if available, otherwise from parameter
-  private val numParts: Int = if (inputRDDs.nonEmpty) {
+  private val numPartitions: Int = if (inputRDDs.nonEmpty) {
     inputRDDs.head.partitions.length
   } else if (perPartitionByKey.nonEmpty) {
     perPartitionByKey.values.head.length
   } else {
-    numPartitions
+    defaultNumPartitions
   }
 
   // Validate all per-partition arrays have the same length to prevent
   // ArrayIndexOutOfBoundsException in getPartitions (e.g., from broadcast scans with
   // different partition counts after DPP filtering)
   require(
-    perPartitionByKey.values.forall(_.length == numParts),
-    s"All per-partition arrays must have length $numParts, but found: " +
+    perPartitionByKey.values.forall(_.length == numPartitions),
+    s"All per-partition arrays must have length $numPartitions, but found: " +
       perPartitionByKey.map { case (key, arr) => s"$key -> ${arr.length}" }.mkString(", "))
 
   override protected def getPartitions: Array[Partition] = {
-    (0 until numParts).map { idx =>
+    (0 until numPartitions).map { idx =>
       val inputParts = inputRDDs.map(_.partitions(idx)).toArray
       val planData = perPartitionByKey.map { case (key, arr) => key -> arr(idx) }
       new CometExecPartition(idx, inputParts, planData)
@@ -115,7 +115,7 @@ private[spark] class CometExecRDD(
       numOutputCols,
       actualPlan,
       nativeMetrics,
-      numParts,
+      numPartitions,
       partition.index,
       broadcastedHadoopConfForEncryption,
       encryptedFilePaths)
@@ -185,7 +185,7 @@ object CometExecRDD {
       commonByKey = Map(metadataLocation -> commonData),
       perPartitionByKey = Map(metadataLocation -> perPartitionData),
       serializedPlan = placeholderPlan,
-      numPartitions = perPartitionData.length,
+      defaultNumPartitions = perPartitionData.length,
       numOutputCols = numOutputCols,
       nativeMetrics = nativeMetrics,
       subqueries = Seq.empty)

@@ -167,7 +167,7 @@ message IcebergScanCommon {
   // Schema to read
   repeated SparkStructField required_schema = 3;
 
-  // Deduplication pools (must contain ALL entries for cross-partition deduplication)
+  // Deduplication pools (must contain all entries for cross-partition deduplication)
   repeated string schema_pool = 4;
   repeated string partition_type_pool = 5;
   repeated string partition_spec_pool = 6;
