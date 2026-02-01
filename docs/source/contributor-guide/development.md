@@ -140,6 +140,16 @@ size limit to 16 MB.
 First make sure to install the Rust plugin in CLion or you can use the dedicated Rust IDE: RustRover.
 After that you can open the project in CLion. The IDE should automatically detect the project structure and import as a Cargo project.
 
+### SQL file tests (recommended for expressions)
+
+For testing expressions and operators, prefer using SQL file tests over writing Scala test
+code. SQL file tests are plain `.sql` files that are automatically discovered and executed --
+no Scala code to write, and no recompilation needed when tests change. This makes it easy to
+iterate quickly and to get good coverage of edge cases and argument combinations.
+
+See the [SQL File Tests](sql-file-tests) guide for the full documentation on how to write
+and run these tests.
+
 ### Running Tests in IDEA
 
 Like other Maven projects, you can run tests in IntelliJ IDEA by right-clicking on the test class or test method and selecting "Run" or "Debug".
