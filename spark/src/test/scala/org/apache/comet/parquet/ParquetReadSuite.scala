@@ -2045,7 +2045,7 @@ class ParquetReadV2Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
       case (cometEnabled, expectedScanner) =>
         testScanner(
           cometEnabled,
-          CometConf.SCAN_NATIVE_DATAFUSION,
+          CometConf.SCAN_NATIVE_COMET,
           scanner = expectedScanner,
           v1 = None)
     }
