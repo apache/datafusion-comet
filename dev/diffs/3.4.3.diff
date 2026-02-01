@@ -133,6 +133,17 @@ index db587dd9868..aac7295a53d 100644
        case _ => Map[String, String]()
      }
      new SparkPlanInfo(
+diff --git a/sql/core/src/test/resources/sql-tests/inputs/charvarchar.sql b/sql/core/src/test/resources/sql-tests/inputs/charvarchar.sql
+index b62cbf64323..8d1f0cb7d20 100644
+--- a/sql/core/src/test/resources/sql-tests/inputs/charvarchar.sql
++++ b/sql/core/src/test/resources/sql-tests/inputs/charvarchar.sql
+@@ -1,3 +1,6 @@
++-- TODO: support empty table write / CTAS in native parquet writer
++--SET spark.comet.parquet.write.enabled = false
++
+ create table char_tbl(c char(5), v varchar(6)) using parquet;
+ desc formatted char_tbl;
+ desc formatted char_tbl c;
 diff --git a/sql/core/src/test/resources/sql-tests/inputs/explain-aqe.sql b/sql/core/src/test/resources/sql-tests/inputs/explain-aqe.sql
 index 7aef901da4f..f3d6e18926d 100644
 --- a/sql/core/src/test/resources/sql-tests/inputs/explain-aqe.sql

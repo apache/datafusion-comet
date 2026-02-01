@@ -110,20 +110,6 @@ index 4410fe50912..43bcce2a038 100644
        case _ => Map[String, String]()
      }
      val childrenInfo = children.flatMap {
-diff --git a/sql/core/src/test/resources/sql-tests/analyzer-results/charvarchar.sql.out b/sql/core/src/test/resources/sql-tests/analyzer-results/charvarchar.sql.out
-index 524797015a2..09576b169bd 100644
---- a/sql/core/src/test/resources/sql-tests/analyzer-results/charvarchar.sql.out
-+++ b/sql/core/src/test/resources/sql-tests/analyzer-results/charvarchar.sql.out
-@@ -738,3 +738,9 @@ SELECT to_varchar(12454.8, '99,999.9S')
- -- !query analysis
- Project [to_char(12454.8, 99,999.9S) AS to_char(12454.8, 99,999.9S)#x]
- +- OneRowRelation
-+
-+
-+-- !query
-+SET spark.comet.parquet.write.enabled = true
-+-- !query analysis
-+SetCommand (spark.comet.parquet.write.enabled,Some(true))
 diff --git a/sql/core/src/test/resources/sql-tests/analyzer-results/listagg-collations.sql.out b/sql/core/src/test/resources/sql-tests/analyzer-results/listagg-collations.sql.out
 index 7aca17dcb25..8afeb3b4a2f 100644
 --- a/sql/core/src/test/resources/sql-tests/analyzer-results/listagg-collations.sql.out
@@ -145,7 +131,7 @@ index 7aca17dcb25..8afeb3b4a2f 100644
  WITH t(c1) AS (SELECT replace(listagg(DISTINCT col1 COLLATE unicode_rtrim) COLLATE utf8_binary, ' ', '') FROM (VALUES ('xbc  '), ('xbc '), ('a'), ('xbc'))) SELECT len(c1), regexp_count(c1, 'a'), regexp_count(c1, 'xbc') FROM t
  -- !query analysis
 diff --git a/sql/core/src/test/resources/sql-tests/inputs/charvarchar.sql b/sql/core/src/test/resources/sql-tests/inputs/charvarchar.sql
-index be038e1083c..b3de0ee2641 100644
+index be038e1083c..58b512a3c17 100644
 --- a/sql/core/src/test/resources/sql-tests/inputs/charvarchar.sql
 +++ b/sql/core/src/test/resources/sql-tests/inputs/charvarchar.sql
 @@ -1,3 +1,6 @@
@@ -155,12 +141,6 @@ index be038e1083c..b3de0ee2641 100644
  create table char_tbl(c char(5), v varchar(6)) using parquet;
  desc formatted char_tbl;
  desc formatted char_tbl c;
-@@ -124,3 +127,5 @@ select chr(167), chr(247), chr(215);
- SELECT to_varchar(78.12, '$99.99');
- SELECT to_varchar(111.11, '99.9');
- SELECT to_varchar(12454.8, '99,999.9S');
-+
-+SET spark.comet.parquet.write.enabled = true;
 diff --git a/sql/core/src/test/resources/sql-tests/inputs/collations.sql b/sql/core/src/test/resources/sql-tests/inputs/collations.sql
 index 17815ed5dde..baad440b1ce 100644
 --- a/sql/core/src/test/resources/sql-tests/inputs/collations.sql
@@ -343,22 +323,6 @@ index 21a3ce1e122..f4762ab98f0 100644
  SET spark.sql.ansi.enabled = false;
  
  -- In COMPENSATION views get invalidated if the type can't cast
-diff --git a/sql/core/src/test/resources/sql-tests/results/charvarchar.sql.out b/sql/core/src/test/resources/sql-tests/results/charvarchar.sql.out
-index 3026e463947..bf3f20906f1 100644
---- a/sql/core/src/test/resources/sql-tests/results/charvarchar.sql.out
-+++ b/sql/core/src/test/resources/sql-tests/results/charvarchar.sql.out
-@@ -1254,3 +1254,11 @@ SELECT to_varchar(12454.8, '99,999.9S')
- struct<to_char(12454.8, 99,999.9S):string>
- -- !query output
- 12,454.8+
-+
-+
-+-- !query
-+SET spark.comet.parquet.write.enabled = true
-+-- !query schema
-+struct<key:string,value:string>
-+-- !query output
-+spark.comet.parquet.write.enabled	true
 diff --git a/sql/core/src/test/resources/sql-tests/results/listagg-collations.sql.out b/sql/core/src/test/resources/sql-tests/results/listagg-collations.sql.out
 index 1f8c5822e7d..b7de4e28813 100644
 --- a/sql/core/src/test/resources/sql-tests/results/listagg-collations.sql.out
@@ -1419,6 +1383,28 @@ index 11e9547dfc5..be9ae40ab3d 100644
      val t1 = "T_1"
      val t2 = "T_2"
  
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/collation/DefaultCollationTestSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/collation/DefaultCollationTestSuite.scala
+index 031af8200d7..a56a1223a7d 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/collation/DefaultCollationTestSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/collation/DefaultCollationTestSuite.scala
+@@ -17,7 +17,7 @@
+ 
+ package org.apache.spark.sql.collation
+ 
+-import org.apache.spark.sql.{AnalysisException, DataFrame, QueryTest, Row}
++import org.apache.spark.sql.{AnalysisException, DataFrame, IgnoreComet, QueryTest, Row}
+ import org.apache.spark.sql.catalyst.util.CollationFactory
+ import org.apache.spark.sql.connector.DatasourceV2SQLBase
+ import org.apache.spark.sql.test.SharedSparkSession
+@@ -184,7 +184,7 @@ abstract class DefaultCollationTestSuite extends QueryTest with SharedSparkSessi
+     }
+   }
+ 
+-  test("ctas with union") {
++  test("ctas with union", IgnoreComet("comet native writer does not support CTAS")) {
+     withTable(testTable) {
+       sql(s"""
+            |CREATE TABLE $testTable USING $dataSource AS
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/connector/DataSourceV2Suite.scala b/sql/core/src/test/scala/org/apache/spark/sql/connector/DataSourceV2Suite.scala
 index 3eeed2e4175..9f21d547c1c 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/connector/DataSourceV2Suite.scala
