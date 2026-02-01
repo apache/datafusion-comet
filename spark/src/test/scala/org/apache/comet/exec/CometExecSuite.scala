@@ -382,9 +382,10 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
-  test("ReusedExchangeExec should work on CometBroadcastExchangeExec") {
+  test("ReusedExchangeExec should work on CometBroadcastExchangeExec with V2 scan") {
     withSQLConf(
       CometConf.COMET_EXEC_BROADCAST_FORCE_ENABLED.key -> "true",
+      CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET,
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       SQLConf.USE_V1_SOURCE_LIST.key -> "") {
       withTempPath { path =>
