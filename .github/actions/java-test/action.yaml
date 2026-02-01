@@ -32,7 +32,7 @@ inputs:
   scan_impl:
     description: 'The default Parquet scan implementation'
     required: false
-    default: 'native_comet'
+    default: 'auto'
   upload-test-reports:
     description: 'Whether to upload test results including coverage to GitHub'
     required: false
