@@ -182,7 +182,7 @@ impl SparkPhysicalExprAdapter {
                 // Get the physical datatype (actual file schema)
                 let physical_field = self.physical_file_schema.fields().get(col_idx);
 
-                dbg!(&logical_field, &physical_field);
+                // dbg!(&logical_field, &physical_field);
 
                 if let (Some(logical_field), Some(physical_field)) = (logical_field, physical_field)
                 {
@@ -190,7 +190,7 @@ impl SparkPhysicalExprAdapter {
                     let physical_type = physical_field.data_type();
 
                     // If datatypes differ, insert a CastColumnExpr
-                    if logical_type != physical_type || 1==1 {
+                    if logical_type != physical_type {
                         let input_field = Arc::new(Field::new(
                             physical_field.name(),
                             physical_type.clone(),
@@ -203,12 +203,12 @@ impl SparkPhysicalExprAdapter {
                         ));
 
                         let cast_expr: Arc<dyn PhysicalExpr> = Arc::new(CastColumnExpr::new(
-                            e.clone(),
+                            Arc::clone(&e),
                             input_field,
                             target_field,
                             None,
                         ));
-                        dbg!(&cast_expr);
+                        // dbg!(&cast_expr);
                         return Ok(Transformed::yes(cast_expr));
                     }
                 }

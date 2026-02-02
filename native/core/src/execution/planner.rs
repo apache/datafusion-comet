@@ -965,7 +965,7 @@ impl PhysicalPlanner {
                 ))
             }
             OpStruct::NativeScan(scan) => {
-                dbg!(&scan);
+                // dbg!(&scan);
                 let data_schema = convert_spark_types_to_arrow_schema(scan.data_schema.as_slice());
                 let required_schema: SchemaRef =
                     convert_spark_types_to_arrow_schema(scan.required_schema.as_slice());
@@ -1113,7 +1113,7 @@ impl PhysicalPlanner {
                 ))
             }
             OpStruct::Scan(scan) => {
-                dbg!(&scan);
+                // dbg!(&scan);
                 let data_types = scan.fields.iter().map(to_arrow_datatype).collect_vec();
 
                 // If it is not test execution context for unit test, we should have at least one
@@ -1140,7 +1140,7 @@ impl PhysicalPlanner {
                     scan.arrow_ffi_safe,
                 )?;
 
-                dbg!(&scan);
+                // dbg!(&scan);
 
                 Ok((
                     vec![scan.clone()],
@@ -4459,7 +4459,8 @@ mod tests {
         let int8_array = Int8Array::from(vec![Some(1i8), Some(2i8), Some(3i8)]);
 
         // Set input batch for the scan
-        let input_batch = InputBatch::Batch(vec![Arc::new(date_array), Arc::new(int8_array)], row_count);
+        let input_batch =
+            InputBatch::Batch(vec![Arc::new(date_array), Arc::new(int8_array)], row_count);
         scans[0].set_input_batch(input_batch);
 
         let session_ctx = SessionContext::new();
@@ -4474,7 +4475,8 @@ mod tests {
             // Create test data again for the second batch
             let date_array = Date32Array::from(vec![Some(19000), Some(19001), Some(19002)]);
             let int8_array = Int8Array::from(vec![Some(1i8), Some(2i8), Some(3i8)]);
-            let input_batch1 = InputBatch::Batch(vec![Arc::new(date_array), Arc::new(int8_array)], row_count);
+            let input_batch1 =
+                InputBatch::Batch(vec![Arc::new(date_array), Arc::new(int8_array)], row_count);
             let input_batch2 = InputBatch::EOF;
 
             let batches = vec![input_batch1, input_batch2];

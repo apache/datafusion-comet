@@ -347,8 +347,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("date_sub with int scalars") {
-    Seq(false).foreach { dictionaryEnabled =>
-      Seq("INT").foreach { intType =>
+    Seq(true, false).foreach { dictionaryEnabled =>
+      Seq("TINYINT", "SHORT", "INT").foreach { intType =>
         withTempDir { dir =>
           val path = new Path(dir.toURI.toString, "test.parquet")
           makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
