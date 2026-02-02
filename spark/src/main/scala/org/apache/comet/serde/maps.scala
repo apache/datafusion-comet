@@ -20,11 +20,9 @@
 package org.apache.comet.serde
 
 import org.apache.spark.sql.catalyst.expressions._
-import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, MapType}
 
-import org.apache.comet.serde.CometSize.{createIsNotNullExprProto, createLiteralExprProto}
-import org.apache.comet.serde.QueryPlanSerde.{createUnaryExpr, exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType}
+import org.apache.comet.serde.QueryPlanSerde.{createUnaryExpr, exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
 
 object CometMapKeys extends CometExpressionSerde[MapKeys] {
 
