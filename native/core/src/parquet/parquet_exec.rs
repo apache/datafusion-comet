@@ -36,9 +36,6 @@ use datafusion_comet_spark_expr::EvalMode;
 use datafusion_datasource::TableSchema;
 use std::collections::HashMap;
 use std::sync::Arc;
-use arrow::util::pretty::print_batches;
-use datafusion::physical_plan::ExecutionPlan;
-use futures::StreamExt;
 
 /// Initializes a DataSourceExec plan with a ParquetSource. This may be used by either the
 /// `native_datafusion` scan or the `native_iceberg_compat` scan.
@@ -81,10 +78,14 @@ pub(crate) fn init_datasource_exec(
         encryption_enabled,
     );
 
-    dbg!(&required_schema, &data_schema);
+    // dbg!(&required_schema, &data_schema);
 
     // Determine the schema to use for ParquetSource
-    let base_schema = required_schema.clone();
+    // Use data_schema only if both data_schema and data_filters are set
+    let base_schema = match (&data_schema, &data_filters) {
+        (Some(schema), Some(_)) => Arc::clone(schema),
+        _ => Arc::clone(&required_schema),
+    };
     let partition_fields: Vec<_> = partition_schema
         .iter()
         .flat_map(|s| s.fields().iter())
@@ -98,7 +99,7 @@ pub(crate) fn init_datasource_exec(
     let mut parquet_source =
         ParquetSource::new(table_schema).with_table_parquet_options(table_parquet_options);
 
-    dbg!(&parquet_source);
+    // dbg!(&parquet_source);
 
     // Create a conjunctive form of the vector because ParquetExecBuilder takes
     // a single expression
@@ -135,12 +136,13 @@ pub(crate) fn init_datasource_exec(
         .map(|files| FileGroup::new(files.clone()))
         .collect();
 
-    let mut file_scan_config_builder =
-        FileScanConfigBuilder::new(object_store_url, file_source).with_file_groups(file_groups);//.with_expr_adapter(Some(expr_adapter_factory));
+    let mut file_scan_config_builder = FileScanConfigBuilder::new(object_store_url, file_source)
+        .with_file_groups(file_groups)
+        .with_expr_adapter(Some(expr_adapter_factory));
 
     if let Some(projection_vector) = projection_vector {
-        file_scan_config_builder = file_scan_config_builder
-            .with_projection_indices(Some(projection_vector))?;
+        file_scan_config_builder =
+            file_scan_config_builder.with_projection_indices(Some(projection_vector))?;
     }
 
     let file_scan_config = file_scan_config_builder.build();
