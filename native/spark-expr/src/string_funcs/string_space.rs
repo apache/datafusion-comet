@@ -119,9 +119,14 @@ fn generic_string_space<OffsetSize: OffsetSizeTrait>(length: &Int32Array) -> Arr
     let null_bit_buffer = length.to_data().nulls().map(|b| b.buffer().clone());
 
     // Gets slice of length array to access it directly for performance.
+    // Negative length values are set to zero to match Spark behavior
     let length_data = length.to_data();
-    let lengths = length_data.buffers()[0].typed_data::<i32>();
-    let total = lengths.iter().map(|l| *l as usize).sum::<usize>();
+    let lengths: Vec<_> = length_data.buffers()[0]
+        .typed_data::<i32>()
+        .iter()
+        .map(|l| (*l).max(0) as usize)
+        .collect();
+    let total = lengths.iter().sum::<usize>();
     let mut values = MutableBuffer::new(total);
 
     offsets.push(length_so_far);
@@ -130,7 +135,7 @@ fn generic_string_space<OffsetSize: OffsetSizeTrait>(length: &Int32Array) -> Arr
     values.resize(total, blank);
 
     (0..array_len).for_each(|i| {
-        let current_len = lengths[i] as usize;
+        let current_len = lengths[i];
 
         length_so_far += OffsetSize::from_usize(current_len).unwrap();
         offsets.push(length_so_far);
@@ -148,4 +153,25 @@ fn generic_string_space<OffsetSize: OffsetSizeTrait>(length: &Int32Array) -> Arr
         )
     };
     make_array(data)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::array::StringArray;
+    use datafusion::common::cast::as_string_array;
+
+    #[test]
+    fn test_negative_length() {
+        let input = Int32Array::from(vec![Some(-1), Some(-2), None]);
+        let args = ColumnarValue::Array(Arc::new(input));
+        match spark_string_space(&[args]) {
+            Ok(ColumnarValue::Array(result)) => {
+                let actual = as_string_array(&result).unwrap();
+                let expected = StringArray::from(vec![Some(""), Some(""), None]);
+                assert_eq!(actual, &expected)
+            }
+            _ => unreachable!(),
+        }
+    }
 }

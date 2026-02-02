@@ -35,7 +35,7 @@ import org.apache.spark.sql.catalyst.expressions.{Expression, ExpressionInfo, He
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, BloomFilterAggregate}
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
-import org.apache.spark.sql.execution.{CollectLimitExec, ProjectExec, SQLExecution, UnionExec}
+import org.apache.spark.sql.execution.{CollectLimitExec, ProjectExec, SparkPlan, SQLExecution, UnionExec}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, BroadcastQueryStageExec}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
@@ -382,9 +382,10 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
-  test("ReusedExchangeExec should work on CometBroadcastExchangeExec") {
+  test("ReusedExchangeExec should work on CometBroadcastExchangeExec with V2 scan") {
     withSQLConf(
       CometConf.COMET_EXEC_BROADCAST_FORCE_ENABLED.key -> "true",
+      CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET,
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       SQLConf.USE_V1_SOURCE_LIST.key -> "") {
       withTempPath { path =>
@@ -864,9 +865,11 @@ class CometExecSuite extends CometTestBase {
             checkSparkAnswerAndOperator(df)
 
             // Before AQE: one CometBroadcastExchange, no CometColumnarToRow
-            var columnarToRowExec = stripAQEPlan(df.queryExecution.executedPlan).collect {
-              case s: CometColumnarToRowExec => s
-            }
+            var columnarToRowExec: Seq[SparkPlan] =
+              stripAQEPlan(df.queryExecution.executedPlan).collect {
+                case s: CometColumnarToRowExec => s
+                case s: CometNativeColumnarToRowExec => s
+              }
             assert(columnarToRowExec.isEmpty)
 
             // Disable CometExecRule after the initial plan is generated. The CometSortMergeJoin and
@@ -880,14 +883,25 @@ class CometExecSuite extends CometTestBase {
             // After AQE: CometBroadcastExchange has to be converted to rows to conform to Spark
             // BroadcastHashJoin.
             val plan = stripAQEPlan(df.queryExecution.executedPlan)
-            columnarToRowExec = plan.collect { case s: CometColumnarToRowExec =>
-              s
+            columnarToRowExec = plan.collect {
+              case s: CometColumnarToRowExec => s
+              case s: CometNativeColumnarToRowExec => s
             }
             assert(columnarToRowExec.length == 1)
 
-            // This ColumnarToRowExec should be the immediate child of BroadcastHashJoinExec
-            val parent = plan.find(_.children.contains(columnarToRowExec.head))
-            assert(parent.get.isInstanceOf[BroadcastHashJoinExec])
+            // This ColumnarToRowExec should be a descendant of BroadcastHashJoinExec (possibly
+            // wrapped by InputAdapter for codegen).
+            val broadcastJoins = plan.collect { case b: BroadcastHashJoinExec => b }
+            assert(broadcastJoins.nonEmpty, s"Expected BroadcastHashJoinExec in plan:\n$plan")
+            val hasC2RDescendant = broadcastJoins.exists { join =>
+              join.find {
+                case _: CometColumnarToRowExec | _: CometNativeColumnarToRowExec => true
+                case _ => false
+              }.isDefined
+            }
+            assert(
+              hasC2RDescendant,
+              "BroadcastHashJoinExec should have a columnar-to-row descendant")
 
             // There should be a CometBroadcastExchangeExec under CometColumnarToRowExec
             val broadcastQueryStage =
