@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 
-.PHONY: all core jvm test clean release bench
+.PHONY: all core jvm test clean release-linux release bench
 
 define spark_jvm_17_extra_args
 $(shell ./mvnw help:evaluate -q -DforceStdout -Dexpression=extraJavaTestArgs)
