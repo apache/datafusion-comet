@@ -36,6 +36,9 @@ use datafusion_comet_spark_expr::EvalMode;
 use datafusion_datasource::TableSchema;
 use std::collections::HashMap;
 use std::sync::Arc;
+use arrow::util::pretty::print_batches;
+use datafusion::physical_plan::ExecutionPlan;
+use futures::StreamExt;
 
 /// Initializes a DataSourceExec plan with a ParquetSource. This may be used by either the
 /// `native_datafusion` scan or the `native_iceberg_compat` scan.
@@ -137,7 +140,7 @@ pub(crate) fn init_datasource_exec(
         .collect();
 
     let mut file_scan_config_builder =
-        FileScanConfigBuilder::new(object_store_url, file_source).with_file_groups(file_groups).with_expr_adapter(Some(expr_adapter_factory));
+        FileScanConfigBuilder::new(object_store_url, file_source).with_file_groups(file_groups);//.with_expr_adapter(Some(expr_adapter_factory));
 
     if let Some(projection_vector) = projection_vector {
         file_scan_config_builder = file_scan_config_builder
@@ -146,7 +149,25 @@ pub(crate) fn init_datasource_exec(
 
     let file_scan_config = file_scan_config_builder.build();
 
-    Ok(Arc::new(DataSourceExec::new(Arc::new(file_scan_config))))
+    let data_source_exec = Arc::new(DataSourceExec::new(Arc::new(file_scan_config)));
+
+    // Debug: Execute the plan and print output RecordBatches
+    // let debug_ctx = SessionContext::default();
+    // let task_ctx = debug_ctx.task_ctx();
+    // if let Ok(stream) = data_source_exec.execute(0, task_ctx) {
+    //     let rt = tokio::runtime::Runtime::new().unwrap();
+    //     rt.block_on(async {
+    //         let batches: Vec<_> = stream.collect::<Vec<_>>().await;
+    //         let record_batches: Vec<_> = batches.into_iter().filter_map(|r| r.ok()).collect();
+    //         println!("=== DataSourceExec output RecordBatches ===");
+    //         if let Err(e) = print_batches(&record_batches) {
+    //             println!("Error printing batches: {:?}", e);
+    //         }
+    //         println!("=== End of DataSourceExec output ===");
+    //     });
+    // }
+
+    Ok(data_source_exec)
 }
 
 fn get_options(
