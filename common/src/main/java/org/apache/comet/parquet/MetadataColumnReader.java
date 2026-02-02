@@ -45,7 +45,6 @@ public class MetadataColumnReader extends AbstractColumnReader {
   private boolean isConstant;
 
   /**
-   * @deprecated since 0.10.0, will be made package private in 0.11.0.
    * @see <a href="https://github.com/apache/datafusion-comet/issues/2079">Comet Issue #2079</a>
    */
   @IcebergApi
