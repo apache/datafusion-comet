@@ -21,14 +21,12 @@ package org.apache.comet
 
 import scala.util.Random
 
-import org.apache.hadoop.fs.Path
 import org.apache.parquet.hadoop.ParquetOutputFormat
 import org.apache.spark.sql.{CometTestBase, DataFrame}
 import org.apache.spark.sql.functions.lit
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, StringType, StructField, StructType}
 
-import org.apache.comet.serde.CometElt
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 class CometStringExpressionSuite extends CometTestBase {
