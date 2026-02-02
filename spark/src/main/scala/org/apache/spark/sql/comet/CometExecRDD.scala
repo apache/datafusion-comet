@@ -19,39 +19,204 @@
 
 package org.apache.spark.sql.comet
 
-import org.apache.spark.{Partition, SparkContext, TaskContext}
-import org.apache.spark.rdd.{RDD, RDDOperationScope}
+import org.apache.spark._
+import org.apache.spark.broadcast.Broadcast
+import org.apache.spark.rdd.RDD
+import org.apache.spark.sql.execution.ScalarSubquery
 import org.apache.spark.sql.vectorized.ColumnarBatch
+import org.apache.spark.util.SerializableConfiguration
+
+import org.apache.comet.CometExecIterator
+import org.apache.comet.serde.OperatorOuterClass
 
 /**
- * A RDD that executes Spark SQL query in Comet native execution to generate ColumnarBatch.
+ * Partition that carries per-partition planning data, avoiding closure capture of all partitions.
+ */
+private[spark] class CometExecPartition(
+    override val index: Int,
+    val inputPartitions: Array[Partition],
+    val planDataByKey: Map[String, Array[Byte]])
+    extends Partition
+
+/**
+ * Unified RDD for Comet native execution.
+ *
+ * Solves the closure capture problem: instead of capturing all partitions' data in the closure
+ * (which gets serialized to every task), each Partition object carries only its own data.
+ *
+ * Handles three cases:
+ *   - With inputs + per-partition data: injects planning data into operator tree
+ *   - With inputs + no per-partition data: just zips inputs (no injection overhead)
+ *   - No inputs: uses numPartitions to create partitions
+ *
+ * NOTE: This RDD does not handle DPP (InSubqueryExec), which is resolved in
+ * CometIcebergNativeScanExec.serializedPartitionData before this RDD is created. It also handles
+ * ScalarSubquery expressions by registering them with CometScalarSubquery before execution.
  */
 private[spark] class CometExecRDD(
     sc: SparkContext,
-    partitionNum: Int,
-    var f: (Seq[Iterator[ColumnarBatch]], Int, Int) => Iterator[ColumnarBatch])
-    extends RDD[ColumnarBatch](sc, Nil) {
+    inputRDDs: Seq[RDD[ColumnarBatch]],
+    commonByKey: Map[String, Array[Byte]],
+    @transient perPartitionByKey: Map[String, Array[Array[Byte]]],
+    serializedPlan: Array[Byte],
+    defaultNumPartitions: Int,
+    numOutputCols: Int,
+    nativeMetrics: CometMetricNode,
+    subqueries: Seq[ScalarSubquery],
+    broadcastedHadoopConfForEncryption: Option[Broadcast[SerializableConfiguration]] = None,
+    encryptedFilePaths: Seq[String] = Seq.empty)
+    extends RDD[ColumnarBatch](sc, inputRDDs.map(rdd => new OneToOneDependency(rdd))) {
 
-  override def compute(s: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
-    f(Seq.empty, partitionNum, s.index)
+  // Determine partition count: from inputs if available, otherwise from parameter
+  private val numPartitions: Int = if (inputRDDs.nonEmpty) {
+    inputRDDs.head.partitions.length
+  } else if (perPartitionByKey.nonEmpty) {
+    perPartitionByKey.values.head.length
+  } else {
+    defaultNumPartitions
   }
 
+  // Validate all per-partition arrays have the same length to prevent
+  // ArrayIndexOutOfBoundsException in getPartitions (e.g., from broadcast scans with
+  // different partition counts after DPP filtering)
+  require(
+    perPartitionByKey.values.forall(_.length == numPartitions),
+    s"All per-partition arrays must have length $numPartitions, but found: " +
+      perPartitionByKey.map { case (key, arr) => s"$key -> ${arr.length}" }.mkString(", "))
+
   override protected def getPartitions: Array[Partition] = {
-    Array.tabulate(partitionNum)(i =>
-      new Partition {
-        override def index: Int = i
-      })
+    (0 until numPartitions).map { idx =>
+      val inputParts = inputRDDs.map(_.partitions(idx)).toArray
+      val planData = perPartitionByKey.map { case (key, arr) => key -> arr(idx) }
+      new CometExecPartition(idx, inputParts, planData)
+    }.toArray
+  }
+
+  override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
+    val partition = split.asInstanceOf[CometExecPartition]
+
+    val inputs = inputRDDs.zip(partition.inputPartitions).map { case (rdd, part) =>
+      rdd.iterator(part, context)
+    }
+
+    // Only inject if we have per-partition planning data
+    val actualPlan = if (commonByKey.nonEmpty) {
+      val basePlan = OperatorOuterClass.Operator.parseFrom(serializedPlan)
+      val injected =
+        PlanDataInjector.injectPlanData(basePlan, commonByKey, partition.planDataByKey)
+      PlanDataInjector.serializeOperator(injected)
+    } else {
+      serializedPlan
+    }
+
+    val it = new CometExecIterator(
+      CometExec.newIterId,
+      inputs,
+      numOutputCols,
+      actualPlan,
+      nativeMetrics,
+      numPartitions,
+      partition.index,
+      broadcastedHadoopConfForEncryption,
+      encryptedFilePaths)
+
+    // Register ScalarSubqueries so native code can look them up
+    subqueries.foreach(sub => CometScalarSubquery.setSubquery(it.id, sub))
+
+    Option(context).foreach { ctx =>
+      ctx.addTaskCompletionListener[Unit] { _ =>
+        it.close()
+        subqueries.foreach(sub => CometScalarSubquery.removeSubquery(it.id, sub))
+      }
+    }
+
+    it
+  }
+
+  // Duplicates logic from Spark's ZippedPartitionsBaseRDD.getPreferredLocations
+  override def getPreferredLocations(split: Partition): Seq[String] = {
+    if (inputRDDs.isEmpty) return Nil
+
+    val idx = split.index
+    val prefs = inputRDDs.map(rdd => rdd.preferredLocations(rdd.partitions(idx)))
+    // Prefer nodes where all inputs are local; fall back to any input's preferred location
+    val intersection = prefs.reduce((a, b) => a.intersect(b))
+    if (intersection.nonEmpty) intersection else prefs.flatten.distinct
   }
 }
 
 object CometExecRDD {
-  def apply(sc: SparkContext, partitionNum: Int)(
-      f: (Seq[Iterator[ColumnarBatch]], Int, Int) => Iterator[ColumnarBatch])
-      : RDD[ColumnarBatch] =
-    withScope(sc) {
-      new CometExecRDD(sc, partitionNum, f)
-    }
 
-  private[spark] def withScope[U](sc: SparkContext)(body: => U): U =
-    RDDOperationScope.withScope[U](sc)(body)
+  /**
+   * Creates an RDD for standalone Iceberg scan (no parent native operators).
+   */
+  def apply(
+      sc: SparkContext,
+      commonData: Array[Byte],
+      perPartitionData: Array[Array[Byte]],
+      numOutputCols: Int,
+      nativeMetrics: CometMetricNode): CometExecRDD = {
+
+    // Standalone mode needs a placeholder plan for PlanDataInjector to fill in.
+    // PlanDataInjector correlates common/partition data by key (metadata_location for Iceberg).
+    val common = OperatorOuterClass.IcebergScanCommon.parseFrom(commonData)
+    val metadataLocation = common.getMetadataLocation
+
+    val placeholderCommon = OperatorOuterClass.IcebergScanCommon
+      .newBuilder()
+      .setMetadataLocation(metadataLocation)
+      .build()
+    val placeholderScan = OperatorOuterClass.IcebergScan
+      .newBuilder()
+      .setCommon(placeholderCommon)
+      .build()
+    val placeholderPlan = OperatorOuterClass.Operator
+      .newBuilder()
+      .setIcebergScan(placeholderScan)
+      .build()
+      .toByteArray
+
+    new CometExecRDD(
+      sc,
+      inputRDDs = Seq.empty,
+      commonByKey = Map(metadataLocation -> commonData),
+      perPartitionByKey = Map(metadataLocation -> perPartitionData),
+      serializedPlan = placeholderPlan,
+      defaultNumPartitions = perPartitionData.length,
+      numOutputCols = numOutputCols,
+      nativeMetrics = nativeMetrics,
+      subqueries = Seq.empty)
+  }
+
+  /**
+   * Creates an RDD for native execution with optional per-partition planning data.
+   */
+  // scalastyle:off
+  def apply(
+      sc: SparkContext,
+      inputRDDs: Seq[RDD[ColumnarBatch]],
+      commonByKey: Map[String, Array[Byte]],
+      perPartitionByKey: Map[String, Array[Array[Byte]]],
+      serializedPlan: Array[Byte],
+      numPartitions: Int,
+      numOutputCols: Int,
+      nativeMetrics: CometMetricNode,
+      subqueries: Seq[ScalarSubquery],
+      broadcastedHadoopConfForEncryption: Option[Broadcast[SerializableConfiguration]] = None,
+      encryptedFilePaths: Seq[String] = Seq.empty): CometExecRDD = {
+    // scalastyle:on
+
+    new CometExecRDD(
+      sc,
+      inputRDDs,
+      commonByKey,
+      perPartitionByKey,
+      serializedPlan,
+      numPartitions,
+      numOutputCols,
+      nativeMetrics,
+      subqueries,
+      broadcastedHadoopConfForEncryption,
+      encryptedFilePaths)
+  }
 }
