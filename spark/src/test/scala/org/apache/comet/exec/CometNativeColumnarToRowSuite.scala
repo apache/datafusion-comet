@@ -30,7 +30,6 @@ import org.scalatest.Tag
 import org.apache.spark.sql.{CometTestBase, Row}
 import org.apache.spark.sql.comet.CometNativeColumnarToRowExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
-import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 import org.apache.comet.{CometConf, NativeColumnarToRowConverter}
