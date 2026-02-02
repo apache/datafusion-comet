@@ -198,7 +198,11 @@ object CometArrayMin extends CometExpressionSerde[ArrayMin] {
 
 object CometArraysOverlap extends CometExpressionSerde[ArraysOverlap] {
 
-  override def getSupportLevel(expr: ArraysOverlap): SupportLevel = Incompatible(None)
+  override def getSupportLevel(expr: ArraysOverlap): SupportLevel = Incompatible(Some(
+    "Null handling differs from Spark: DataFusion's array_has_any returns false when no " +
+      "common elements are found, even if null elements exist. Spark returns null in such " +
+      "cases following three-valued logic (SQL standard). Example: " +
+      "arrays_overlap(array(1, null, 3), array(4, 5)) returns null in Spark but false in Comet."))
 
   override def convert(
       expr: ArraysOverlap,

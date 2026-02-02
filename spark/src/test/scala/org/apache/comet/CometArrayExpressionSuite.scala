@@ -521,6 +521,43 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
+  test("arrays_overlap - null handling behavior verification") {
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[ArraysOverlap]) -> "true") {
+      withTempDir { dir =>
+        withTempView("t1") {
+          val path = new Path(dir.toURI.toString, "test.parquet")
+          makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = false, 100)
+          spark.read.parquet(path.toString).createOrReplaceTempView("t1")
+
+          // Test case 1: Common element exists - should return true
+          checkSparkAnswerAndOperator(sql(
+            "SELECT arrays_overlap(array(1, 2, 3), array(3, 4, 5)) from t1 limit 1"))
+
+          // Test case 2: No common elements, no nulls - should return false
+          checkSparkAnswerAndOperator(sql(
+            "SELECT arrays_overlap(array(1, 2), array(3, 4)) from t1 limit 1"))
+
+          // Test case 3: No common elements, but null exists - Spark returns null (three-valued logic)
+          // This is the key incompatibility case documented in issue #3175
+          checkSparkAnswerAndOperator(sql(
+            "SELECT arrays_overlap(array(1, null, 3), array(4, 5)) from t1 limit 1"))
+
+          // Test case 4: Common element exists even with null - should return true
+          checkSparkAnswerAndOperator(sql(
+            "SELECT arrays_overlap(array(1, null, 3), array(1, 4)) from t1 limit 1"))
+
+          // Test case 5: Both arrays have null but no common non-null elements
+          checkSparkAnswerAndOperator(sql(
+            "SELECT arrays_overlap(array(1, null), array(2, null)) from t1 limit 1"))
+
+          // Test case 6: Empty arrays
+          checkSparkAnswerAndOperator(sql(
+            "SELECT arrays_overlap(array(), array(1, 2)) from t1 limit 1"))
+        }
+      }
+    }
+  }
+
   test("array_compact") {
     // TODO fix for Spark 4.0.0
     assume(!isSpark40Plus)
