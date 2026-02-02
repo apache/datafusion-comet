@@ -94,6 +94,7 @@ impl ScanExec {
 
         // Build schema directly from data types since get_next now always unpacks dictionaries
         let schema = schema_from_data_types(&data_types);
+        dbg!(&schema);
 
         let cache = PlanProperties::new(
             EquivalenceProperties::new(Arc::clone(&schema)),
@@ -208,6 +209,8 @@ impl ScanExec {
             // array_data.validate_full()?;
 
             let array = make_array(array_data);
+
+            dbg!(&array, &selection_indices_arrays);
 
             // Apply selection if selection vectors exist (applies to all columns)
             let array = if let Some(ref selection_arrays) = selection_indices_arrays {
@@ -487,7 +490,7 @@ impl ScanStream<'_> {
     ) -> DataFusionResult<RecordBatch, DataFusionError> {
         let schema_fields = self.schema.fields();
         assert_eq!(columns.len(), schema_fields.len());
-
+        dbg!(&columns, &self.schema);
         // Cast dictionary-encoded primitive arrays to regular arrays and cast
         // Utf8/LargeUtf8/Binary arrays to dictionary-encoded if the schema is
         // defined as dictionary-encoded and the data in this batch is not
@@ -507,6 +510,7 @@ impl ScanStream<'_> {
             })
             .collect::<Result<Vec<_>, _>>()?;
         let options = RecordBatchOptions::new().with_row_count(Some(num_rows));
+        dbg!(&new_columns, &self.schema);
         RecordBatch::try_new_with_options(Arc::clone(&self.schema), new_columns, &options)
             .map_err(|e| arrow_datafusion_err!(e))
     }
@@ -517,6 +521,7 @@ impl Stream for ScanStream<'_> {
 
     fn poll_next(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let mut timer = self.baseline_metrics.elapsed_compute().timer();
+        dbg!(&self.scan);
         let mut scan_batch = self.scan.batch.try_lock().unwrap();
 
         let input_batch = &*scan_batch;

@@ -96,6 +96,8 @@ pub(crate) fn init_datasource_exec(
         TableSchema::from_file_schema(Arc::clone(&required_schema))
     };
 
+    dbg!(&table_schema);
+
     let mut parquet_source =
         ParquetSource::new(table_schema).with_table_parquet_options(table_parquet_options);
 
@@ -135,12 +137,11 @@ pub(crate) fn init_datasource_exec(
         .collect();
 
     let mut file_scan_config_builder =
-        FileScanConfigBuilder::new(object_store_url, file_source).with_file_groups(file_groups);
+        FileScanConfigBuilder::new(object_store_url, file_source).with_file_groups(file_groups).with_expr_adapter(Some(expr_adapter_factory));
 
     if let Some(projection_vector) = projection_vector {
         file_scan_config_builder = file_scan_config_builder
-            .with_projection_indices(Some(projection_vector))?
-            .with_expr_adapter(Some(expr_adapter_factory));
+            .with_projection_indices(Some(projection_vector))?;
     }
 
     let file_scan_config = file_scan_config_builder.build();
