@@ -175,6 +175,7 @@ cd dev/release && ./build-release-comet.sh -p graviton && cd ../..
 ```
 
 **Note on Graviton builds:** The Graviton-optimized binary uses AWS Graviton-specific optimizations including:
+
 - `-Z tls-model=initial-exec` for fast TLS access
 - `-C target-feature=+lse` for Large System Extensions
 - `-C target-cpu=native` for native CPU optimizations
