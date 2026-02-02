@@ -81,28 +81,24 @@ pub(crate) fn init_datasource_exec(
         encryption_enabled,
     );
 
-    // Determine the schema to use for ParquetSource
-    let table_schema = if let Some(ref data_schema) = data_schema {
-        if let Some(ref partition_schema) = partition_schema {
-            let partition_fields: Vec<_> = partition_schema
-                .fields()
-                .iter()
-                .map(|f| {
-                    Arc::new(Field::new(f.name(), f.data_type().clone(), f.is_nullable())) as _
-                })
-                .collect();
-            TableSchema::new(Arc::clone(data_schema), partition_fields)
-        } else {
-            TableSchema::from_file_schema(Arc::clone(data_schema))
-        }
-    } else {
-        TableSchema::from_file_schema(Arc::clone(&required_schema))
-    };
+    dbg!(&required_schema, &data_schema);
 
-    dbg!(&table_schema);
+    // Determine the schema to use for ParquetSource
+    let base_schema = required_schema.clone();
+    let partition_fields: Vec<_> = partition_schema
+        .iter()
+        .flat_map(|s| s.fields().iter())
+        .map(|f| Arc::new(Field::new(f.name(), f.data_type().clone(), f.is_nullable())) as _)
+        .collect();
+    let table_schema =
+        TableSchema::from_file_schema(base_schema).with_table_partition_cols(partition_fields);
+
+    // dbg!(&table_schema);
 
     let mut parquet_source =
         ParquetSource::new(table_schema).with_table_parquet_options(table_parquet_options);
+
+    dbg!(&parquet_source);
 
     // Create a conjunctive form of the vector because ParquetExecBuilder takes
     // a single expression
