@@ -65,7 +65,7 @@ private[spark] class CometExecRDD(
     subqueries: Seq[ScalarSubquery],
     broadcastedHadoopConfForEncryption: Option[Broadcast[SerializableConfiguration]] = None,
     encryptedFilePaths: Seq[String] = Seq.empty)
-    extends RDD[ColumnarBatch](sc, Nil) {
+    extends RDD[ColumnarBatch](sc, inputRDDs.map(rdd => new OneToOneDependency(rdd))) {
 
   // Determine partition count: from inputs if available, otherwise from parameter
   private val numPartitions: Int = if (inputRDDs.nonEmpty) {
@@ -132,9 +132,6 @@ private[spark] class CometExecRDD(
 
     it
   }
-
-  override def getDependencies: Seq[Dependency[_]] =
-    inputRDDs.map(rdd => new OneToOneDependency(rdd))
 
   // Duplicates logic from Spark's ZippedPartitionsBaseRDD.getPreferredLocations
   override def getPreferredLocations(split: Partition): Seq[String] = {
