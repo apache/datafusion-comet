@@ -110,20 +110,6 @@ index 4410fe50912..43bcce2a038 100644
        case _ => Map[String, String]()
      }
      val childrenInfo = children.flatMap {
-diff --git a/sql/core/src/test/resources/sql-tests/analyzer-results/charvarchar.sql.out b/sql/core/src/test/resources/sql-tests/analyzer-results/charvarchar.sql.out
-index 524797015a2..09576b169bd 100644
---- a/sql/core/src/test/resources/sql-tests/analyzer-results/charvarchar.sql.out
-+++ b/sql/core/src/test/resources/sql-tests/analyzer-results/charvarchar.sql.out
-@@ -738,3 +738,9 @@ SELECT to_varchar(12454.8, '99,999.9S')
- -- !query analysis
- Project [to_char(12454.8, 99,999.9S) AS to_char(12454.8, 99,999.9S)#x]
- +- OneRowRelation
-+
-+
-+-- !query
-+SET spark.comet.parquet.write.enabled = true
-+-- !query analysis
-+SetCommand (spark.comet.parquet.write.enabled,Some(true))
 diff --git a/sql/core/src/test/resources/sql-tests/analyzer-results/listagg-collations.sql.out b/sql/core/src/test/resources/sql-tests/analyzer-results/listagg-collations.sql.out
 index 7aca17dcb25..8afeb3b4a2f 100644
 --- a/sql/core/src/test/resources/sql-tests/analyzer-results/listagg-collations.sql.out
@@ -337,22 +323,6 @@ index 21a3ce1e122..f4762ab98f0 100644
  SET spark.sql.ansi.enabled = false;
  
  -- In COMPENSATION views get invalidated if the type can't cast
-diff --git a/sql/core/src/test/resources/sql-tests/results/charvarchar.sql.out b/sql/core/src/test/resources/sql-tests/results/charvarchar.sql.out
-index 3026e463947..bf3f20906f1 100644
---- a/sql/core/src/test/resources/sql-tests/results/charvarchar.sql.out
-+++ b/sql/core/src/test/resources/sql-tests/results/charvarchar.sql.out
-@@ -1254,3 +1254,11 @@ SELECT to_varchar(12454.8, '99,999.9S')
- struct<to_char(12454.8, 99,999.9S):string>
- -- !query output
- 12,454.8+
-+
-+
-+-- !query
-+SET spark.comet.parquet.write.enabled = true
-+-- !query schema
-+struct<key:string,value:string>
-+-- !query output
-+spark.comet.parquet.write.enabled	true
 diff --git a/sql/core/src/test/resources/sql-tests/results/listagg-collations.sql.out b/sql/core/src/test/resources/sql-tests/results/listagg-collations.sql.out
 index 1f8c5822e7d..b7de4e28813 100644
 --- a/sql/core/src/test/resources/sql-tests/results/listagg-collations.sql.out
@@ -739,57 +709,6 @@ index 9c529d14221..2f1bc3880fd 100644
            }.flatten
            assert(filters.contains(GreaterThan(scan.logicalPlan.output.head, Literal(5L))))
          }
-diff --git a/sql/core/src/test/scala/org/apache/spark/sql/IgnoreComet.scala b/sql/core/src/test/scala/org/apache/spark/sql/IgnoreComet.scala
-new file mode 100644
-index 00000000000..5691536c114
---- /dev/null
-+++ b/sql/core/src/test/scala/org/apache/spark/sql/IgnoreComet.scala
-@@ -0,0 +1,45 @@
-+/*
-+ * Licensed to the Apache Software Foundation (ASF) under one or more
-+ * contributor license agreements.  See the NOTICE file distributed with
-+ * this work for additional information regarding copyright ownership.
-+ * The ASF licenses this file to You under the Apache License, Version 2.0
-+ * (the "License"); you may not use this file except in compliance with
-+ * the License.  You may obtain a copy of the License at
-+ *
-+ *    http://www.apache.org/licenses/LICENSE-2.0
-+ *
-+ * Unless required by applicable law or agreed to in writing, software
-+ * distributed under the License is distributed on an "AS IS" BASIS,
-+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-+ * See the License for the specific language governing permissions and
-+ * limitations under the License.
-+ */
-+
-+package org.apache.spark.sql
-+
-+import org.scalactic.source.Position
-+import org.scalatest.Tag
-+
-+import org.apache.spark.sql.test.SQLTestUtils
-+
-+/**
-+ * Tests with this tag will be ignored when Comet is enabled (e.g., via `ENABLE_COMET`).
-+ */
-+case class IgnoreComet(reason: String) extends Tag("DisableComet")
-+case class IgnoreCometNativeIcebergCompat(reason: String) extends Tag("DisableComet")
-+case class IgnoreCometNativeDataFusion(reason: String) extends Tag("DisableComet")
-+case class IgnoreCometNativeScan(reason: String) extends Tag("DisableComet")
-+
-+/**
-+ * Helper trait that disables Comet for all tests regardless of default config values.
-+ */
-+trait IgnoreCometSuite extends SQLTestUtils {
-+  override protected def test(testName: String, testTags: Tag*)(testFun: => Any)
-+    (implicit pos: Position): Unit = {
-+    if (isCometEnabled) {
-+      ignore(testName + " (disabled when Comet is on)", testTags: _*)(testFun)
-+    } else {
-+      super.test(testName, testTags: _*)(testFun)
-+    }
-+  }
-+}
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/InjectRuntimeFilterSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/InjectRuntimeFilterSuite.scala
 index 7d7185ae6c1..442a5bddeb8 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/InjectRuntimeFilterSuite.scala
@@ -1427,20 +1346,18 @@ index 11e9547dfc5..be9ae40ab3d 100644
      val t2 = "T_2"
  
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/collation/DefaultCollationTestSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/collation/DefaultCollationTestSuite.scala
-index 77ed8b411e3..18b51f0c939 100644
+index 77ed8b411e3..b82f70c0071 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/collation/DefaultCollationTestSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/collation/DefaultCollationTestSuite.scala
-@@ -17,9 +17,9 @@
+@@ -17,7 +17,7 @@
  
  package org.apache.spark.sql.collation
  
 -import org.apache.spark.sql.{AnalysisException, DataFrame, QueryTest, Row}
++import org.apache.spark.sql.{AnalysisException, DataFrame, IgnoreComet, QueryTest, Row}
  import org.apache.spark.sql.catalyst.expressions.AttributeReference
  import org.apache.spark.sql.catalyst.plans.logical.Project
-+import org.apache.spark.sql.{AnalysisException, DataFrame, IgnoreComet, QueryTest, Row}
  import org.apache.spark.sql.catalyst.util.CollationFactory
- import org.apache.spark.sql.connector.DatasourceV2SQLBase
- import org.apache.spark.sql.test.SharedSparkSession
 @@ -220,7 +220,7 @@ abstract class DefaultCollationTestSuite extends QueryTest with SharedSparkSessi
      }
    }
