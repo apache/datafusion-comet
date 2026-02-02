@@ -25,7 +25,7 @@
 
 use crate::parquet::parquet_support::{spark_parquet_convert, SparkParquetOptions};
 use arrow::array::{ArrayRef, RecordBatch, RecordBatchOptions};
-use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+use arrow::datatypes::{Field, Schema, SchemaRef};
 use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNode};
 use datafusion::common::{ColumnStatistics, Result as DataFusionResult};
 use datafusion::datasource::schema_adapter::{SchemaAdapter, SchemaAdapterFactory, SchemaMapper};
@@ -102,7 +102,6 @@ impl PhysicalExprAdapterFactory for SparkPhysicalExprAdapterFactory {
 struct SparkPhysicalExprAdapter {
     /// The logical schema expected by the query
     logical_file_schema: SchemaRef,
-    #[allow(dead_code)]
     /// The physical schema of the actual file being read
     physical_file_schema: SchemaRef,
     /// Spark-specific options for type conversions
@@ -161,44 +160,56 @@ impl SparkPhysicalExprAdapter {
         Ok(Transformed::no(expr))
     }
 
-    // Cast expressions that currently not supported in DF
-    // For example, Arrow's date arithmetic kernel only supports Date32 +/- Int32 (days)
-    // but Spark may send Int8/Int16 values. We need to cast them to Int32.
+    /// Cast Column expressions where the physical and logical datatypes differ.
+    ///
+    /// This function traverses the expression tree and for each Column expression,
+    /// checks if the physical file schema datatype differs from the logical file schema
+    /// datatype. If they differ, it wraps the Column with a CastColumnExpr to perform
+    /// the necessary type conversion.
     fn cast_datafusion_unsupported_expr(
         &self,
         expr: Arc<dyn PhysicalExpr>,
     ) -> DataFusionResult<Arc<dyn PhysicalExpr>> {
-        use datafusion::logical_expr::Operator;
-        use datafusion::physical_expr::expressions::{BinaryExpr, CastColumnExpr};
+        use datafusion::physical_expr::expressions::CastColumnExpr;
 
         expr.transform(|e| {
-            // Check if this is a BinaryExpr with date arithmetic
-            if let Some(binary) = e.as_any().downcast_ref::<BinaryExpr>() {
-                let op = binary.op();
-                // Only handle Plus and Minus for date arithmetic
-                if matches!(op, &Operator::Plus | &Operator::Minus) {
-                    let left = binary.left();
-                    let right = binary.right();
+            // Check if this is a Column expression
+            if let Some(column) = e.as_any().downcast_ref::<Column>() {
+                let col_idx = column.index();
 
-                    let left_type = left.data_type(&self.logical_file_schema);
-                    let right_type = right.data_type(&self.logical_file_schema);
+                // Get the logical datatype (expected by the query)
+                let logical_field = self.logical_file_schema.fields().get(col_idx);
+                // Get the physical datatype (actual file schema)
+                let physical_field = self.physical_file_schema.fields().get(col_idx);
 
-                    // Check for Date32 +/- Int8 or Date32 +/- Int16
-                    if let (Ok(DataType::Date32), Ok(ref rt @ (DataType::Int8 | DataType::Int16))) =
-                        (&left_type, &right_type)
-                    {
-                        // Cast the right operand (Int8/Int16) to Int32
-                        let input_field = Arc::new(Field::new("input", rt.clone(), true));
-                        let target_field = Arc::new(Field::new("cast", DataType::Int32, true));
-                        let casted_right: Arc<dyn PhysicalExpr> = Arc::new(CastColumnExpr::new(
-                            Arc::clone(right),
+                dbg!(&logical_field, &physical_field);
+
+                if let (Some(logical_field), Some(physical_field)) = (logical_field, physical_field)
+                {
+                    let logical_type = logical_field.data_type();
+                    let physical_type = physical_field.data_type();
+
+                    // If datatypes differ, insert a CastColumnExpr
+                    if logical_type != physical_type || 1==1 {
+                        let input_field = Arc::new(Field::new(
+                            physical_field.name(),
+                            physical_type.clone(),
+                            physical_field.is_nullable(),
+                        ));
+                        let target_field = Arc::new(Field::new(
+                            logical_field.name(),
+                            logical_type.clone(),
+                            logical_field.is_nullable(),
+                        ));
+
+                        let cast_expr: Arc<dyn PhysicalExpr> = Arc::new(CastColumnExpr::new(
+                            e.clone(),
                             input_field,
                             target_field,
                             None,
                         ));
-                        let new_binary: Arc<dyn PhysicalExpr> =
-                            Arc::new(BinaryExpr::new(Arc::clone(left), *op, casted_right));
-                        return Ok(Transformed::yes(new_binary));
+                        dbg!(&cast_expr);
+                        return Ok(Transformed::yes(cast_expr));
                     }
                 }
             }
@@ -459,7 +470,6 @@ impl SchemaMapper for SchemaMapping {
     /// columns, so if one needs a RecordBatch with a schema that references columns which are not
     /// in the projected, it would be better to use `map_partial_batch`
     fn map_batch(&self, batch: RecordBatch) -> datafusion::common::Result<RecordBatch> {
-        dbg!("map_batch");
         let batch_rows = batch.num_rows();
         let batch_cols = batch.columns().to_vec();
 

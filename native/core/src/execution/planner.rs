@@ -667,65 +667,31 @@ impl PhysicalPlanner {
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
         let left = self.create_expr(left, Arc::clone(&input_schema))?;
         let right = self.create_expr(right, Arc::clone(&input_schema))?;
-        let left_type = left.data_type(&input_schema);
-        let right_type = right.data_type(&input_schema);
-        match (&op, &left_type, &right_type) {
-            // Handle date arithmetic with Int8/Int16/Int32 by:
-            // 1. Casting Date32 to Int32 (days since epoch)
-            // 2. Performing the arithmetic as Int32 +/- Int32
-            // 3. Casting the result back to Date32 using DataFusion's CastExpr
-            // Arrow's date arithmetic kernel only supports Date32 +/- Interval types
-            // Note: We use DataFusion's CastExpr for the final cast because Spark's Cast
-            // doesn't support Int32 -> Date32 conversion
-            (
-                DataFusionOperator::Plus | DataFusionOperator::Minus,
-                Ok(DataType::Date32),
-                Ok(DataType::Int8) | Ok(DataType::Int16) | Ok(DataType::Int32),
-            ) => {
-                // Cast Date32 to Int32 (days since epoch)
-                let left_as_int = Arc::new(Cast::new(
-                    left,
-                    DataType::Int32,
-                    SparkCastOptions::new_without_timezone(EvalMode::Legacy, false),
-                ));
-                // Cast Int8/Int16 to Int32 if needed
-                let right_as_int: Arc<dyn PhysicalExpr> =
-                    if matches!(right_type, Ok(DataType::Int32)) {
-                        right
-                    } else {
-                        Arc::new(Cast::new(
-                            right,
-                            DataType::Int32,
-                            SparkCastOptions::new_without_timezone(EvalMode::Legacy, false),
-                        ))
-                    };
-                // Perform the arithmetic as Int32 +/- Int32
-                let result_int = Arc::new(BinaryExpr::new(left_as_int, op, right_as_int));
-                // Cast the result back to Date32 using DataFusion's CastExpr
-                // (Spark's Cast doesn't support Int32 -> Date32)
-                Ok(Arc::new(CastExpr::new(result_int, DataType::Date32, None)))
-            }
+        match (
+            &op,
+            left.data_type(&input_schema),
+            right.data_type(&input_schema),
+        ) {
             (
                 DataFusionOperator::Plus | DataFusionOperator::Minus | DataFusionOperator::Multiply,
                 Ok(DataType::Decimal128(p1, s1)),
                 Ok(DataType::Decimal128(p2, s2)),
             ) if ((op == DataFusionOperator::Plus || op == DataFusionOperator::Minus)
-                && max(*s1, *s2) as u8 + max(*p1 - *s1 as u8, *p2 - *s2 as u8)
+                && max(s1, s2) as u8 + max(p1 - s1 as u8, p2 - s2 as u8)
                     >= DECIMAL128_MAX_PRECISION)
-                || (op == DataFusionOperator::Multiply
-                    && *p1 + *p2 >= DECIMAL128_MAX_PRECISION) =>
+                || (op == DataFusionOperator::Multiply && p1 + p2 >= DECIMAL128_MAX_PRECISION) =>
             {
                 let data_type = return_type.map(to_arrow_datatype).unwrap();
                 // For some Decimal128 operations, we need wider internal digits.
                 // Cast left and right to Decimal256 and cast the result back to Decimal128
                 let left = Arc::new(Cast::new(
                     left,
-                    DataType::Decimal256(*p1, *s1),
+                    DataType::Decimal256(p1, s1),
                     SparkCastOptions::new_without_timezone(EvalMode::Legacy, false),
                 ));
                 let right = Arc::new(Cast::new(
                     right,
-                    DataType::Decimal256(*p2, *s2),
+                    DataType::Decimal256(p2, s2),
                     SparkCastOptions::new_without_timezone(EvalMode::Legacy, false),
                 ));
                 let child = Arc::new(BinaryExpr::new(left, op, right));
@@ -999,6 +965,7 @@ impl PhysicalPlanner {
                 ))
             }
             OpStruct::NativeScan(scan) => {
+                dbg!(&scan);
                 let data_schema = convert_spark_types_to_arrow_schema(scan.data_schema.as_slice());
                 let required_schema: SchemaRef =
                     convert_spark_types_to_arrow_schema(scan.required_schema.as_slice());
@@ -1146,6 +1113,7 @@ impl PhysicalPlanner {
                 ))
             }
             OpStruct::Scan(scan) => {
+                dbg!(&scan);
                 let data_types = scan.fields.iter().map(to_arrow_datatype).collect_vec();
 
                 // If it is not test execution context for unit test, we should have at least one
@@ -1171,6 +1139,8 @@ impl PhysicalPlanner {
                     data_types,
                     scan.arrow_ffi_safe,
                 )?;
+
+                dbg!(&scan);
 
                 Ok((
                     vec![scan.clone()],
@@ -4411,12 +4381,10 @@ mod tests {
     fn test_date_sub_with_int8_cast_error() {
         use arrow::array::Date32Array;
 
-        let session_ctx = SessionContext::new();
-        let task_ctx = session_ctx.task_ctx();
-        let planner = PhysicalPlanner::new(Arc::from(session_ctx), 0);
+        let planner = PhysicalPlanner::default();
+        let row_count = 3;
 
-        // Create a scan operator with Date32 (DATE) and Int8 (TINYINT) columns
-        // This simulates the schema from the Scala test where _20 is DATE and _2 is TINYINT
+        // Create a Scan operator with Date32 (DATE) and Int8 (TINYINT) columns
         let op_scan = Operator {
             plan_id: 0,
             children: vec![],
@@ -4431,7 +4399,7 @@ mod tests {
                         type_info: None,
                     },
                 ],
-                source: "test".to_string(),
+                source: "".to_string(),
                 arrow_ffi_safe: false,
             })),
         };
@@ -4486,22 +4454,27 @@ mod tests {
         let (mut scans, datafusion_plan) =
             planner.create_plan(&projection, &mut vec![], 1).unwrap();
 
-        // Execute the plan with test data
+        // Create test data: Date32 and Int8 columns
+        let date_array = Date32Array::from(vec![Some(19000), Some(19001), Some(19002)]);
+        let int8_array = Int8Array::from(vec![Some(1i8), Some(2i8), Some(3i8)]);
+
+        // Set input batch for the scan
+        let input_batch = InputBatch::Batch(vec![Arc::new(date_array), Arc::new(int8_array)], row_count);
+        scans[0].set_input_batch(input_batch);
+
+        let session_ctx = SessionContext::new();
+        let task_ctx = session_ctx.task_ctx();
         let mut stream = datafusion_plan.native_plan.execute(0, task_ctx).unwrap();
 
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let (tx, mut rx) = mpsc::channel(1);
 
-        // Send test data: Date32 values and Int8 values
+        // Separate thread to send the EOF signal once we've processed the only input batch
         runtime.spawn(async move {
-            // Create Date32 array (days since epoch)
-            // 19000 days = approximately 2022-01-01
+            // Create test data again for the second batch
             let date_array = Date32Array::from(vec![Some(19000), Some(19001), Some(19002)]);
-            // Create Int8 array
             let int8_array = Int8Array::from(vec![Some(1i8), Some(2i8), Some(3i8)]);
-
-            let input_batch1 =
-                InputBatch::Batch(vec![Arc::new(date_array), Arc::new(int8_array)], 3);
+            let input_batch1 = InputBatch::Batch(vec![Arc::new(date_array), Arc::new(int8_array)], row_count);
             let input_batch2 = InputBatch::EOF;
 
             let batches = vec![input_batch1, input_batch2];
@@ -4511,7 +4484,6 @@ mod tests {
             }
         });
 
-        // Execute and expect success - the Int8 should be cast to Int32 for date arithmetic
         runtime.block_on(async move {
             loop {
                 let batch = rx.recv().await.unwrap();
@@ -4524,10 +4496,13 @@ mod tests {
                             "Expected success for date - int8 operation but got error: {:?}",
                             result.unwrap_err()
                         );
+
                         let batch = result.unwrap();
-                        assert_eq!(batch.num_rows(), 3);
+                        assert_eq!(batch.num_rows(), row_count);
+
                         // The result should be Date32 type
                         assert_eq!(batch.column(0).data_type(), &DataType::Date32);
+
                         // Verify the values: 19000-1=18999, 19001-2=18999, 19002-3=18999
                         let date_array = batch
                             .column(0)
@@ -4537,7 +4512,6 @@ mod tests {
                         assert_eq!(date_array.value(0), 18999); // 19000 - 1
                         assert_eq!(date_array.value(1), 18999); // 19001 - 2
                         assert_eq!(date_array.value(2), 18999); // 19002 - 3
-                        break;
                     }
                     Poll::Ready(None) => {
                         break;
