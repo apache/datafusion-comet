@@ -30,9 +30,10 @@ import org.scalatest.Tag
 import org.apache.spark.sql.{CometTestBase, Row}
 import org.apache.spark.sql.comet.CometNativeColumnarToRowExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
-import org.apache.comet.CometConf
+import org.apache.comet.{CometConf, NativeColumnarToRowConverter}
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, SchemaGenOptions}
 
 /**
@@ -467,6 +468,83 @@ class CometNativeColumnarToRowSuite extends CometTestBase with AdaptiveSparkPlan
         assertNativeC2RPresent(parquetDf)
         checkSparkAnswer(parquetDf)
       }
+    }
+  }
+
+  // Regression test for https://github.com/apache/datafusion-comet/issues/3308
+  // Native columnar-to-row returns UnsafeRow pointing into a Rust-owned buffer that is
+  // cleared/reused on each convert() call. This test directly exercises the converter:
+  // it converts multiple batches and holds row references from earlier batches, then
+  // verifies they still contain correct data. Without a fix (e.g., copying rows),
+  // rows from earlier batches will contain corrupted data from buffer reuse.
+  test("rows from earlier batches are not corrupted by subsequent convert() calls") {
+    import org.apache.arrow.memory.RootAllocator
+    import org.apache.arrow.vector.{IntVector, VarCharVector, VectorSchemaRoot}
+    import org.apache.comet.vector.NativeUtil
+
+    val allocator = new RootAllocator()
+    val schema = new StructType().add("id", IntegerType).add("str", StringType)
+
+    // Create multiple small Arrow batches
+    val numBatches = 10
+    val rowsPerBatch = 5
+    val batches = (0 until numBatches).map { batchIdx =>
+      val intVector = new IntVector("id", allocator)
+      val varcharVector = new VarCharVector("str", allocator)
+      intVector.allocateNew(rowsPerBatch)
+      varcharVector.allocateNew(rowsPerBatch)
+
+      for (i <- 0 until rowsPerBatch) {
+        val globalIdx = batchIdx * rowsPerBatch + i
+        intVector.setSafe(i, globalIdx)
+        varcharVector.setSafe(i, s"value_$globalIdx".getBytes)
+      }
+      intVector.setValueCount(rowsPerBatch)
+      varcharVector.setValueCount(rowsPerBatch)
+
+      val fields = java.util.Arrays.asList(intVector.getField, varcharVector.getField)
+      val vectors = java.util.Arrays.asList(
+        intVector.asInstanceOf[org.apache.arrow.vector.FieldVector],
+        varcharVector.asInstanceOf[org.apache.arrow.vector.FieldVector])
+      val root = new VectorSchemaRoot(fields, vectors, rowsPerBatch)
+      NativeUtil.rootAsBatch(root)
+    }
+
+    val converter = new NativeColumnarToRowConverter(schema, rowsPerBatch)
+    try {
+      // Mimic the broadcast path: flatMap across batches, collecting all
+      // row references eagerly. The native buffer is reused on each
+      // convert() call, so rows from earlier batches point to stale memory.
+      // Note: NativeRowIterator reuses a single UnsafeRow object AND the
+      // native buffer is reused across convert() calls, so we must read
+      // row data lazily through the held references after all batches are
+      // converted to detect corruption.
+      val allRows = batches.iterator.flatMap { batch =>
+        converter.convert(batch)
+      }.toArray
+
+      assert(
+        allRows.length == numBatches * rowsPerBatch,
+        s"Expected ${numBatches * rowsPerBatch} rows, got ${allRows.length}")
+
+      // All entries in allRows are the same UnsafeRow object (reused by the
+      // iterator). After all batches are converted, it points to the last
+      // row's native memory. Verify that reading through held references
+      // produces all expected distinct values. Since the UnsafeRow is reused,
+      // all entries will return the same value (the last row), proving the bug.
+      val distinctIds = allRows.map(_.getInt(0)).toSet
+      val totalRows = numBatches * rowsPerBatch
+      assert(
+        distinctIds.size == totalRows,
+        s"UnsafeRow reuse bug: expected $totalRows distinct row IDs but got " +
+          s"${distinctIds.size} (values: ${distinctIds.toSeq.sorted.mkString(", ")}). " +
+          "This means rows were not copied and all references point to the same " +
+          "reused UnsafeRow object.")
+    } finally {
+      converter.close()
+      // Close all batches to free Arrow memory before closing the allocator
+      batches.foreach(_.close())
+      allocator.close()
     }
   }
 
