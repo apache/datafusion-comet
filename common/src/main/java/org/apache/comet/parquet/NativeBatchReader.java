@@ -473,8 +473,8 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
                       + filePath);
             }
             if (field.isPrimitive()) {
-              ConstantColumnReader reader =
-                  new ConstantColumnReader(nonPartitionFields[i], capacity, useDecimal128);
+              ImmutableConstantColumnReader reader =
+                  new ImmutableConstantColumnReader(nonPartitionFields[i], capacity, useDecimal128);
               columnReaders[i] = reader;
               missingColumns[i] = true;
             } else {
@@ -492,8 +492,9 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
         for (int i = fields.size(); i < columnReaders.length; i++) {
           int fieldIndex = i - fields.size();
           StructField field = partitionFields[fieldIndex];
-          ConstantColumnReader reader =
-              new ConstantColumnReader(field, capacity, partitionValues, fieldIndex, useDecimal128);
+          ImmutableConstantColumnReader reader =
+              new ImmutableConstantColumnReader(
+                  field, capacity, partitionValues, fieldIndex, useDecimal128);
           columnReaders[i] = reader;
         }
       }

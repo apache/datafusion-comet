@@ -47,7 +47,7 @@ import org.apache.comet.CometSparkSessionExtensions.{isCometLoaded, withInfo, wi
 import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.iceberg.{CometIcebergNativeScanMetadata, IcebergReflection}
 import org.apache.comet.objectstore.NativeConfig
-import org.apache.comet.parquet.{CometParquetScan, Native, SupportsComet}
+import org.apache.comet.parquet.{CometParquetScan, ImmutableConstantColumnReader, Native, SupportsComet}
 import org.apache.comet.parquet.CometParquetUtils.{encryptionEnabled, isEncryptionConfigSupported}
 import org.apache.comet.serde.operator.CometNativeScan
 import org.apache.comet.shims.CometTypeShim
@@ -660,7 +660,7 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
     val schemaSupported =
       typeChecker.isSchemaSupported(scanExec.requiredSchema, fallbackReasons)
     val partitionSchemaSupported =
-      typeChecker.isSchemaSupported(partitionSchema, fallbackReasons)
+      typeChecker.isPartitionSchemaSupported(partitionSchema, fallbackReasons)
 
     val cometExecEnabled = COMET_EXEC_ENABLED.get()
     if (!cometExecEnabled) {
@@ -698,7 +698,7 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
       return false
     }
     val partitionSchemaSupported =
-      typeChecker.isSchemaSupported(r.partitionSchema, fallbackReasons)
+      typeChecker.isPartitionSchemaSupported(r.partitionSchema, fallbackReasons)
     if (!partitionSchemaSupported) {
       withInfo(
         scanExec,
@@ -739,6 +739,32 @@ case class CometScanTypeChecker(scanImpl: String) extends DataTypeSupport with C
         false
       case _ =>
         super.isTypeSupported(dt, name, fallbackReasons)
+    }
+  }
+
+  /**
+   * Checks if the partition schema is supported for constant column readers. For
+   * native_iceberg_compat scan, partition columns use ImmutableConstantColumnReader which only
+   * supports primitive types.
+   */
+  def isPartitionSchemaSupported(
+      partitionSchema: StructType,
+      fallbackReasons: ListBuffer[String]): Boolean = {
+    if (scanImpl == CometConf.SCAN_NATIVE_ICEBERG_COMPAT) {
+      // For native_iceberg_compat, partition columns must be supported by
+      // ImmutableConstantColumnReader which only supports primitive types
+      partitionSchema.fields.forall { field =>
+        if (ImmutableConstantColumnReader.isTypeSupported(field.dataType)) {
+          true
+        } else {
+          fallbackReasons += s"Partition column '${field.name}' has unsupported type " +
+            s"${field.dataType} for ImmutableConstantColumnReader in $scanImpl scan"
+          false
+        }
+      }
+    } else {
+      // For other scan implementations, use the standard type check
+      isSchemaSupported(partitionSchema, fallbackReasons)
     }
   }
 }
