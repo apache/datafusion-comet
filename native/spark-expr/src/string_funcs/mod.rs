@@ -15,8 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
+mod regexp_extract;
 mod string_space;
 mod substring;
 
+pub use regexp_extract::{SparkRegExpExtract, SparkRegExpExtractAll};
 pub use string_space::SparkStringSpace;
 pub use substring::SubstringExpr;
