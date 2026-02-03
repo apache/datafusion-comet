@@ -94,10 +94,19 @@ impl ScalarUDFImpl for SparkMakeDate {
     fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
         let [year, month, day] = take_function_args(self.name(), args.args)?;
 
-        // Convert scalars to arrays for uniform processing
-        let year_arr = year.into_array(1)?;
-        let month_arr = month.into_array(1)?;
-        let day_arr = day.into_array(1)?;
+        // Determine the batch size from array arguments (scalars have no inherent size)
+        let num_rows = [&year, &month, &day]
+            .iter()
+            .find_map(|arg| match arg {
+                ColumnarValue::Array(array) => Some(array.len()),
+                ColumnarValue::Scalar(_) => None,
+            })
+            .unwrap_or(1);
+
+        // Convert scalars to arrays for uniform processing, using the correct batch size
+        let year_arr = year.into_array(num_rows)?;
+        let month_arr = month.into_array(num_rows)?;
+        let day_arr = day.into_array(num_rows)?;
 
         // Cast to Int32 if needed (handles Int64 literals from SQL)
         let year_arr = cast_to_int32(&year_arr)?;
