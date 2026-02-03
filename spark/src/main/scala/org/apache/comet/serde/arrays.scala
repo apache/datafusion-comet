@@ -22,6 +22,7 @@ package org.apache.comet.serde
 import scala.annotation.tailrec
 
 import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayFilter, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayRemove, ArrayRepeat, ArraysOverlap, ArrayUnion, Attribute, CreateArray, ElementAt, Expression, Flatten, GetArrayItem, IsNotNull, Literal, Reverse, Size}
+import org.apache.spark.sql.catalyst.util.GenericArrayData
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
@@ -422,6 +423,15 @@ object CometCreateArray extends CometExpressionSerde[CreateArray] {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val children = expr.children
+
+    // Handle empty array: return literal directly to avoid DataFusion coerce_types bug
+    // when make_array is called with 0 arguments (issue #3338)
+    if (children.isEmpty) {
+      val emptyArrayLiteral =
+        Literal.create(new GenericArrayData(Array.empty[Any]), expr.dataType)
+      return exprToProtoInternal(emptyArrayLiteral, inputs, binding)
+    }
+
     val childExprs = children.map(exprToProtoInternal(_, inputs, binding))
 
     if (childExprs.forall(_.isDefined)) {
