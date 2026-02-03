@@ -17,7 +17,7 @@
 
 use crate::{
     errors::CometError,
-    execution::shuffle::{
+    execution::shuffle::spark_unsafe::{
         map::append_map_elements,
         row::{append_field, downcast_builder_ref, SparkUnsafeObject, SparkUnsafeRow},
     },
