@@ -112,7 +112,6 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
         CometConf.COMET_EXEC_ENABLED.key -> "true",
         CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
 
-        // Create a V3 table with standard types (V2-compatible)
         spark.sql("""
           CREATE TABLE v3_cat.db.v3_basic (
             id INT,
@@ -127,10 +126,7 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
           VALUES (1, 'Alice', 10.5), (2, 'Bob', 20.3), (3, 'Charlie', 30.7)
         """)
 
-        // V3 tables using V2-compatible features should be accelerated
         checkIcebergNativeScan("SELECT * FROM v3_cat.db.v3_basic ORDER BY id")
-
-        // Verify filter pushdown works
         checkIcebergNativeScan("SELECT * FROM v3_cat.db.v3_basic WHERE id = 2")
         checkIcebergNativeScan("SELECT * FROM v3_cat.db.v3_basic WHERE name = 'Alice'")
         checkIcebergNativeScan("SELECT * FROM v3_cat.db.v3_basic WHERE value > 15.0 ORDER BY id")
@@ -152,7 +148,6 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
         CometConf.COMET_EXEC_ENABLED.key -> "true",
         CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
 
-        // Create a V3 table configured for merge-on-read with position deletes
         spark.sql("""
           CREATE TABLE v3_cat.db.v3_pos_deletes (
             id INT,
@@ -171,10 +166,8 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
           VALUES (1, 'Alice', 10.5), (2, 'Bob', 20.3), (3, 'Charlie', 30.7)
         """)
 
-        // Delete a row to create position delete file
         spark.sql("DELETE FROM v3_cat.db.v3_pos_deletes WHERE id = 2")
 
-        // Should be accelerated - position deletes are supported
         checkIcebergNativeScan("SELECT * FROM v3_cat.db.v3_pos_deletes ORDER BY id")
 
         spark.sql("DROP TABLE v3_cat.db.v3_pos_deletes")
@@ -194,7 +187,6 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
         CometConf.COMET_EXEC_ENABLED.key -> "true",
         CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
 
-        // Create a partitioned V3 table for equality deletes
         spark.sql("""
           CREATE TABLE v3_cat.db.v3_eq_deletes (
             id INT,
@@ -213,10 +205,8 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
           VALUES (1, 'A', 10.5), (2, 'B', 20.3), (3, 'A', 30.7), (4, 'B', 40.1)
         """)
 
-        // Delete rows by category to create equality delete file
         spark.sql("DELETE FROM v3_cat.db.v3_eq_deletes WHERE category = 'B'")
 
-        // Should be accelerated - equality deletes are supported
         checkIcebergNativeScan("SELECT * FROM v3_cat.db.v3_eq_deletes ORDER BY id")
 
         spark.sql("DROP TABLE v3_cat.db.v3_eq_deletes")
@@ -236,7 +226,6 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
         CometConf.COMET_EXEC_ENABLED.key -> "true",
         CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
 
-        // Create a V3 table with various supported types
         spark.sql("""
           CREATE TABLE v3_cat.db.v3_types (
             id INT,
@@ -265,7 +254,6 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
           )
         """)
 
-        // All these types should be supported in V3 tables
         checkIcebergNativeScan("SELECT * FROM v3_cat.db.v3_types")
 
         spark.sql("DROP TABLE v3_cat.db.v3_types")
@@ -322,7 +310,6 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
         CometConf.COMET_EXEC_ENABLED.key -> "true",
         CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
 
-        // Create two V3 tables for join
         spark.sql("""
           CREATE TABLE v3_cat.db.v3_orders (
             order_id INT,
@@ -350,11 +337,9 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
           (1, 'Alice'), (2, 'Bob'), (3, 'Charlie')
         """)
 
-        // Aggregation on V3 table
         checkIcebergNativeScan(
           "SELECT customer_id, SUM(amount) as total FROM v3_cat.db.v3_orders GROUP BY customer_id")
 
-        // Self-join on V3 table
         val (_, joinPlan) = checkSparkAnswer("""
           SELECT o.order_id, c.name, o.amount
           FROM v3_cat.db.v3_orders o

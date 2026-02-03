@@ -621,12 +621,10 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
           !hasUnsupportedDeletes
         }
 
-        // Check for V3-specific features that are not yet supported
         val v3FeaturesSupported = IcebergReflection.getFormatVersion(metadata.table) match {
           case Some(formatVersion) if formatVersion >= 3 =>
             var allV3FeaturesSupported = true
 
-            // Check for Deletion Vectors (V3 feature not yet implemented)
             try {
               if (IcebergReflection.hasDeletionVectors(metadata.tasks)) {
                 fallbackReasons += "Iceberg V3 Deletion Vectors are not yet supported. " +
@@ -640,7 +638,6 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
                 allV3FeaturesSupported = false
             }
 
-            // Check for unsupported V3-only data types
             try {
               val unsupportedTypes = IcebergReflection.findUnsupportedV3Types(metadata.scanSchema)
               if (unsupportedTypes.nonEmpty) {
@@ -657,9 +654,7 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
             }
 
             allV3FeaturesSupported
-          case _ =>
-            // V1/V2 tables don't have V3-specific features
-            true
+          case _ => true
         }
 
         if (schemaSupported && fileIOCompatible && formatVersionSupported && allParquetFiles &&

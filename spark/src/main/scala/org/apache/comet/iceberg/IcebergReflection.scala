@@ -710,12 +710,7 @@ object IcebergReflection extends Logging {
   // Iceberg V3 Feature Detection
   // ============================================================================
 
-  /**
-   * V3-only types that are not yet supported by Comet.
-   *
-   * These types were introduced in Iceberg spec V3 and require additional implementation work in
-   * both iceberg-rust and Comet's native reader.
-   */
+  /** V3-only types not yet supported by Comet. */
   object V3Types {
     val TIMESTAMP_NS = "timestamp_ns"
     val TIMESTAMPTZ_NS = "timestamptz_ns"
@@ -727,27 +722,12 @@ object IcebergReflection extends Logging {
       Set(TIMESTAMP_NS, TIMESTAMPTZ_NS, VARIANT, GEOMETRY, GEOGRAPHY)
   }
 
-  /**
-   * V3-only delete file content type.
-   *
-   * Deletion Vectors (DVs) were introduced in V3 as a more efficient replacement for position
-   * delete files. DVs are stored in Puffin files and use bitmap-based encoding.
-   */
+  /** V3 Deletion Vector content type. */
   object V3ContentTypes {
     val DELETION_VECTOR = "DELETION_VECTOR"
   }
 
-  /**
-   * Checks if any delete files in the scan tasks use Deletion Vectors (V3 feature).
-   *
-   * Deletion Vectors are a V3-only feature that stores deleted row positions in Puffin files
-   * using efficient bitmap encoding. They replace position delete files for better performance.
-   *
-   * @param tasks
-   *   List of Iceberg FileScanTask objects
-   * @return
-   *   true if any delete file uses Deletion Vectors, false otherwise
-   */
+  /** Checks if any delete files use Deletion Vectors (V3 feature). */
   def hasDeletionVectors(tasks: java.util.List[_]): Boolean = {
     import scala.jdk.CollectionConverters._
 
@@ -761,30 +741,17 @@ object IcebergReflection extends Logging {
           // scalastyle:on classforname
           val contentMethod = contentFileClass.getMethod("content")
           val content = contentMethod.invoke(deleteFile)
-          // Content type enum toString returns the type name
           content.toString == V3ContentTypes.DELETION_VECTOR
         } catch {
           case _: Exception => false
         }
       }
     } catch {
-      case _: Exception =>
-        // If we can't check delete files, assume no DVs (safe fallback)
-        false
+      case _: Exception => false
     }
   }
 
-  /**
-   * Finds V3-only types in a schema that are not yet supported by Comet.
-   *
-   * V3 introduced new types: timestamp_ns, timestamptz_ns, variant, geometry, geography. These
-   * types require additional support in iceberg-rust and Comet's native reader.
-   *
-   * @param schema
-   *   An Iceberg Schema object
-   * @return
-   *   Set of unsupported V3 type names found in the schema (empty if all supported)
-   */
+  /** Finds V3-only types in a schema not yet supported by Comet. */
   def findUnsupportedV3Types(schema: Any): Set[String] = {
     import scala.jdk.CollectionConverters._
 
@@ -800,14 +767,12 @@ object IcebergReflection extends Logging {
           val icebergType = typeMethod.invoke(column)
           val typeStr = icebergType.toString.toLowerCase(java.util.Locale.ROOT)
 
-          // Check for V3-only types
           V3Types.UNSUPPORTED_V3_TYPES.foreach { v3Type =>
             if (typeStr == v3Type || typeStr.startsWith(s"$v3Type(")) {
               unsupportedTypes += v3Type
             }
           }
 
-          // Recursively check nested types (struct fields, array elements, map values)
           checkNestedTypesForV3(icebergType, unsupportedTypes)
         } catch {
           case _: Exception => // Skip columns where we can't determine type
@@ -821,9 +786,7 @@ object IcebergReflection extends Logging {
     unsupportedTypes.toSet
   }
 
-  /**
-   * Recursively checks nested types (struct, list, map) for V3-only types.
-   */
+  /** Recursively checks nested types for V3-only types. */
   private def checkNestedTypesForV3(
       icebergType: Any,
       unsupportedTypes: scala.collection.mutable.Set[String]): Unit = {
@@ -832,7 +795,6 @@ object IcebergReflection extends Logging {
     try {
       val typeClass = icebergType.getClass
 
-      // Check if it's a struct type
       if (typeClass.getSimpleName.contains("StructType")) {
         try {
           val fieldsMethod = typeClass.getMethod("fields")
@@ -850,18 +812,16 @@ object IcebergReflection extends Logging {
                 }
               }
 
-              // Recursively check nested types
               checkNestedTypesForV3(fieldType, unsupportedTypes)
             } catch {
-              case _: Exception => // Skip fields where we can't determine type
+              case _: Exception =>
             }
           }
         } catch {
-          case _: Exception => // Not a struct type or can't access fields
+          case _: Exception =>
         }
       }
 
-      // Check if it's a list type
       if (typeClass.getSimpleName.contains("ListType")) {
         try {
           val elementTypeMethod = typeClass.getMethod("elementType")
@@ -876,11 +836,10 @@ object IcebergReflection extends Logging {
 
           checkNestedTypesForV3(elementType, unsupportedTypes)
         } catch {
-          case _: Exception => // Not a list type or can't access element type
+          case _: Exception =>
         }
       }
 
-      // Check if it's a map type
       if (typeClass.getSimpleName.contains("MapType")) {
         try {
           val keyTypeMethod = typeClass.getMethod("keyType")
@@ -898,11 +857,11 @@ object IcebergReflection extends Logging {
             checkNestedTypesForV3(mapType, unsupportedTypes)
           }
         } catch {
-          case _: Exception => // Not a map type or can't access key/value types
+          case _: Exception =>
         }
       }
     } catch {
-      case _: Exception => // Can't determine type class
+      case _: Exception =>
     }
   }
 }
