@@ -441,10 +441,10 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
 
         val formatVersionSupported = IcebergReflection.getFormatVersion(metadata.table) match {
           case Some(formatVersion) =>
-            if (formatVersion > 2) {
+            if (formatVersion > 3) {
               fallbackReasons += "Iceberg table format version " +
                 s"$formatVersion is not supported. " +
-                "Comet only supports Iceberg table format V1 and V2"
+                "Comet supports Iceberg table format V1, V2, and V3"
               false
             } else {
               true
@@ -621,10 +621,51 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
           !hasUnsupportedDeletes
         }
 
+        // Check for V3-specific features that are not yet supported
+        val v3FeaturesSupported = IcebergReflection.getFormatVersion(metadata.table) match {
+          case Some(formatVersion) if formatVersion >= 3 =>
+            var allV3FeaturesSupported = true
+
+            // Check for Deletion Vectors (V3 feature not yet implemented)
+            try {
+              if (IcebergReflection.hasDeletionVectors(metadata.tasks)) {
+                fallbackReasons += "Iceberg V3 Deletion Vectors are not yet supported. " +
+                  "Tables using Deletion Vectors will fall back to Spark"
+                allV3FeaturesSupported = false
+              }
+            } catch {
+              case e: Exception =>
+                fallbackReasons += "Iceberg reflection failure: Could not check for " +
+                  s"Deletion Vectors: ${e.getMessage}"
+                allV3FeaturesSupported = false
+            }
+
+            // Check for unsupported V3-only data types
+            try {
+              val unsupportedTypes = IcebergReflection.findUnsupportedV3Types(metadata.scanSchema)
+              if (unsupportedTypes.nonEmpty) {
+                fallbackReasons += "Iceberg V3 types not yet supported: " +
+                  s"${unsupportedTypes.mkString(", ")}. " +
+                  "Tables with these types will fall back to Spark"
+                allV3FeaturesSupported = false
+              }
+            } catch {
+              case e: Exception =>
+                fallbackReasons += "Iceberg reflection failure: Could not check for " +
+                  s"V3 types: ${e.getMessage}"
+                allV3FeaturesSupported = false
+            }
+
+            allV3FeaturesSupported
+          case _ =>
+            // V1/V2 tables don't have V3-specific features
+            true
+        }
+
         if (schemaSupported && fileIOCompatible && formatVersionSupported && allParquetFiles &&
           allSupportedFilesystems && partitionTypesSupported &&
           complexTypePredicatesSupported && transformFunctionsSupported &&
-          deleteFileTypesSupported) {
+          deleteFileTypesSupported && v3FeaturesSupported) {
           CometBatchScanExec(
             scanExec.clone().asInstanceOf[BatchScanExec],
             runtimeFilters = scanExec.runtimeFilters,
