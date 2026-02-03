@@ -96,6 +96,282 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
     }
   }
 
+  // ==========================================================================
+  // Iceberg V3 Table Format Tests
+  // ==========================================================================
+
+  test("V3 table - basic read support (no V3-specific features)") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.v3_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.v3_cat.type" -> "hadoop",
+        "spark.sql.catalog.v3_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        // Create a V3 table with standard types (V2-compatible)
+        spark.sql("""
+          CREATE TABLE v3_cat.db.v3_basic (
+            id INT,
+            name STRING,
+            value DOUBLE
+          ) USING iceberg
+          TBLPROPERTIES ('format-version' = '3')
+        """)
+
+        spark.sql("""
+          INSERT INTO v3_cat.db.v3_basic
+          VALUES (1, 'Alice', 10.5), (2, 'Bob', 20.3), (3, 'Charlie', 30.7)
+        """)
+
+        // V3 tables using V2-compatible features should be accelerated
+        checkIcebergNativeScan("SELECT * FROM v3_cat.db.v3_basic ORDER BY id")
+
+        // Verify filter pushdown works
+        checkIcebergNativeScan("SELECT * FROM v3_cat.db.v3_basic WHERE id = 2")
+        checkIcebergNativeScan("SELECT * FROM v3_cat.db.v3_basic WHERE name = 'Alice'")
+        checkIcebergNativeScan("SELECT * FROM v3_cat.db.v3_basic WHERE value > 15.0 ORDER BY id")
+
+        spark.sql("DROP TABLE v3_cat.db.v3_basic")
+      }
+    }
+  }
+
+  test("V3 table - with position deletes (V2 compatibility mode)") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.v3_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.v3_cat.type" -> "hadoop",
+        "spark.sql.catalog.v3_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        // Create a V3 table configured for merge-on-read with position deletes
+        spark.sql("""
+          CREATE TABLE v3_cat.db.v3_pos_deletes (
+            id INT,
+            name STRING,
+            value DOUBLE
+          ) USING iceberg
+          TBLPROPERTIES (
+            'format-version' = '3',
+            'write.delete.mode' = 'merge-on-read',
+            'write.update.mode' = 'merge-on-read'
+          )
+        """)
+
+        spark.sql("""
+          INSERT INTO v3_cat.db.v3_pos_deletes
+          VALUES (1, 'Alice', 10.5), (2, 'Bob', 20.3), (3, 'Charlie', 30.7)
+        """)
+
+        // Delete a row to create position delete file
+        spark.sql("DELETE FROM v3_cat.db.v3_pos_deletes WHERE id = 2")
+
+        // Should be accelerated - position deletes are supported
+        checkIcebergNativeScan("SELECT * FROM v3_cat.db.v3_pos_deletes ORDER BY id")
+
+        spark.sql("DROP TABLE v3_cat.db.v3_pos_deletes")
+      }
+    }
+  }
+
+  test("V3 table - with equality deletes") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.v3_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.v3_cat.type" -> "hadoop",
+        "spark.sql.catalog.v3_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        // Create a partitioned V3 table for equality deletes
+        spark.sql("""
+          CREATE TABLE v3_cat.db.v3_eq_deletes (
+            id INT,
+            category STRING,
+            value DOUBLE
+          ) USING iceberg
+          PARTITIONED BY (category)
+          TBLPROPERTIES (
+            'format-version' = '3',
+            'write.delete.mode' = 'merge-on-read'
+          )
+        """)
+
+        spark.sql("""
+          INSERT INTO v3_cat.db.v3_eq_deletes
+          VALUES (1, 'A', 10.5), (2, 'B', 20.3), (3, 'A', 30.7), (4, 'B', 40.1)
+        """)
+
+        // Delete rows by category to create equality delete file
+        spark.sql("DELETE FROM v3_cat.db.v3_eq_deletes WHERE category = 'B'")
+
+        // Should be accelerated - equality deletes are supported
+        checkIcebergNativeScan("SELECT * FROM v3_cat.db.v3_eq_deletes ORDER BY id")
+
+        spark.sql("DROP TABLE v3_cat.db.v3_eq_deletes")
+      }
+    }
+  }
+
+  test("V3 table - all data types supported in V3") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.v3_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.v3_cat.type" -> "hadoop",
+        "spark.sql.catalog.v3_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        // Create a V3 table with various supported types
+        spark.sql("""
+          CREATE TABLE v3_cat.db.v3_types (
+            id INT,
+            big_num BIGINT,
+            price DECIMAL(10, 2),
+            event_date DATE,
+            event_time TIMESTAMP,
+            is_active BOOLEAN,
+            description STRING,
+            score FLOAT,
+            rating DOUBLE,
+            tags ARRAY<STRING>,
+            metadata MAP<STRING, STRING>,
+            address STRUCT<city: STRING, zip: INT>
+          ) USING iceberg
+          TBLPROPERTIES ('format-version' = '3')
+        """)
+
+        spark.sql("""
+          INSERT INTO v3_cat.db.v3_types
+          VALUES (
+            1, 9223372036854775807, 123.45, DATE '2024-01-15',
+            TIMESTAMP '2024-01-15 10:30:00', true, 'Test description',
+            3.14, 2.718281828, array('tag1', 'tag2'),
+            map('key1', 'value1'), struct('NYC', 10001)
+          )
+        """)
+
+        // All these types should be supported in V3 tables
+        checkIcebergNativeScan("SELECT * FROM v3_cat.db.v3_types")
+
+        spark.sql("DROP TABLE v3_cat.db.v3_types")
+      }
+    }
+  }
+
+  test("V3 table - partitioned table with date transform") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.v3_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.v3_cat.type" -> "hadoop",
+        "spark.sql.catalog.v3_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE v3_cat.db.v3_partitioned (
+            id INT,
+            event_date DATE,
+            value STRING
+          ) USING iceberg
+          PARTITIONED BY (days(event_date))
+          TBLPROPERTIES ('format-version' = '3')
+        """)
+
+        spark.sql("""
+          INSERT INTO v3_cat.db.v3_partitioned VALUES
+          (1, DATE '2024-01-01', 'a'), (2, DATE '2024-01-02', 'b'),
+          (3, DATE '2024-01-03', 'c'), (4, DATE '2024-02-01', 'd')
+        """)
+
+        checkIcebergNativeScan("SELECT * FROM v3_cat.db.v3_partitioned ORDER BY id")
+        checkIcebergNativeScan(
+          "SELECT * FROM v3_cat.db.v3_partitioned WHERE event_date = DATE '2024-01-01'")
+
+        spark.sql("DROP TABLE v3_cat.db.v3_partitioned")
+      }
+    }
+  }
+
+  test("V3 table - aggregations and joins") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.v3_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.v3_cat.type" -> "hadoop",
+        "spark.sql.catalog.v3_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        // Create two V3 tables for join
+        spark.sql("""
+          CREATE TABLE v3_cat.db.v3_orders (
+            order_id INT,
+            customer_id INT,
+            amount DOUBLE
+          ) USING iceberg
+          TBLPROPERTIES ('format-version' = '3')
+        """)
+
+        spark.sql("""
+          CREATE TABLE v3_cat.db.v3_customers (
+            id INT,
+            name STRING
+          ) USING iceberg
+          TBLPROPERTIES ('format-version' = '3')
+        """)
+
+        spark.sql("""
+          INSERT INTO v3_cat.db.v3_orders VALUES
+          (1, 1, 100.0), (2, 1, 200.0), (3, 2, 150.0), (4, 3, 300.0)
+        """)
+
+        spark.sql("""
+          INSERT INTO v3_cat.db.v3_customers VALUES
+          (1, 'Alice'), (2, 'Bob'), (3, 'Charlie')
+        """)
+
+        // Aggregation on V3 table
+        checkIcebergNativeScan(
+          "SELECT customer_id, SUM(amount) as total FROM v3_cat.db.v3_orders GROUP BY customer_id")
+
+        // Self-join on V3 table
+        val (_, joinPlan) = checkSparkAnswer("""
+          SELECT o.order_id, c.name, o.amount
+          FROM v3_cat.db.v3_orders o
+          JOIN v3_cat.db.v3_customers c ON o.customer_id = c.id
+          ORDER BY o.order_id
+        """)
+        val icebergScans = collectIcebergNativeScans(joinPlan)
+        assert(
+          icebergScans.length == 2,
+          s"Expected 2 CometIcebergNativeScanExec for join but found ${icebergScans.length}")
+
+        spark.sql("DROP TABLE v3_cat.db.v3_orders")
+        spark.sql("DROP TABLE v3_cat.db.v3_customers")
+      }
+    }
+  }
+
   test("filter pushdown - equality predicates") {
     assume(icebergAvailable, "Iceberg not available in classpath")
 
