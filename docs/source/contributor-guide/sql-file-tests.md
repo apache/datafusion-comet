@@ -25,9 +25,20 @@ way to add expression and operator test coverage without writing Scala test code
 
 ## Running the tests
 
+Run all SQL file tests:
+
 ```shell
-mvn test -pl spark -Dsuites="org.apache.comet.CometSqlFileTestSuite" -Dtest=none
+mvn test -Dsuites="org.apache.comet.CometSqlFileTestSuite" -Dtest=none
 ```
+
+Run a single test file by adding the file name (without `.sql` extension) after the suite name:
+
+```shell
+mvn test -Dsuites="org.apache.comet.CometSqlFileTestSuite create_named_struct" -Dtest=none
+```
+
+This uses ScalaTest's substring matching, so the argument must match part of the test name.
+Test names follow the pattern `sql-file: expressions/<category>/<file>.sql [<config>]`.
 
 ## Test file location
 
@@ -208,7 +219,7 @@ SELECT space(n) FROM test_space WHERE n < 0
 6. Run the tests to verify:
 
    ```shell
-   mvn test -pl spark -Dsuites="org.apache.comet.CometSqlFileTestSuite" -Dtest=none
+   mvn test -Dsuites="org.apache.comet.CometSqlFileTestSuite" -Dtest=none
    ```
 
 ### Tips for writing thorough tests
