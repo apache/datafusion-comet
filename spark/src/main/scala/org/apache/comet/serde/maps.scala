@@ -89,3 +89,20 @@ object CometMapFromArrays extends CometExpressionSerde[MapFromArrays] {
     optExprWithInfo(mapFromArraysExpr, expr, expr.children: _*)
   }
 }
+
+object CometMapContainsKey extends CometExpressionSerde[MapContainsKey] {
+
+  override def convert(
+      expr: MapContainsKey,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    // Replace with array_has(map_keys(map), key)
+    val mapExpr = exprToProtoInternal(expr.left, inputs, binding)
+    val keyExpr = exprToProtoInternal(expr.right, inputs, binding)
+
+    val mapKeysExpr = scalarFunctionExprToProto("map_keys", mapExpr)
+
+    val mapContainsKeyExpr = scalarFunctionExprToProto("array_has", mapKeysExpr, keyExpr)
+    optExprWithInfo(mapContainsKeyExpr, expr, expr.children: _*)
+  }
+}

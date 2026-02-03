@@ -22,7 +22,7 @@ package org.apache.comet
 import scala.util.Random
 
 import org.apache.hadoop.fs.Path
-import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.{CometTestBase, Row}
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
 
@@ -154,6 +154,50 @@ class CometMapExpressionSuite extends CometTestBase {
         checkSparkAnswerAndOperator(
           sql("SELECT size(case when _2 < 0 then map(_8, _9) else map() end) from t1"))
       }
+    }
+  }
+
+  test("map_contains_key") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "test.parquet")
+      val filename = path.toString
+      val random = new Random(42)
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        val schemaGenOptions =
+          SchemaGenOptions(generateArray = true, generateStruct = false, generateMap = true)
+        val dataGenOptions = DataGenOptions(allowNull = false, generateNegativeZero = false)
+        ParquetGenerator.makeParquetFile(
+          random,
+          spark,
+          filename,
+          100,
+          schemaGenOptions,
+          dataGenOptions)
+      }
+      spark.read.parquet(filename).createOrReplaceTempView("t1")
+
+      checkSparkAnswer(
+        spark.sql("SELECT map_contains_key(c14, element_at(map_keys(c14), 1)) FROM t1"))
+      checkSparkAnswer(spark.sql("SELECT map_contains_key(c14, 999999) FROM t1"))
+
+      checkAnswer(
+        spark.sql("SELECT map_contains_key(c14, element_at(map_keys(c14), 1)) FROM t1 LIMIT 1"),
+        Row(true))
+      checkAnswer(spark.sql("SELECT map_contains_key(c14, 999999) FROM t1 LIMIT 1"), Row(false))
+
+      // Empty map
+      checkSparkAnswerAndOperator(spark.sql("""SELECT map_contains_key(
+          |  map_from_arrays(CAST(array() AS array<string>), CAST(array() AS array<int>)),
+          |  'any_key'
+          |) FROM t1 LIMIT 1""".stripMargin))
+
+      // Empty map with int keys
+      checkSparkAnswerAndOperator(spark.sql(
+        "SELECT map_contains_key(map_from_arrays(CAST(array() AS array<int>), CAST(array() AS array<string>)), 0) FROM t1"))
+
+      // Empty map with string keys
+      checkSparkAnswerAndOperator(spark.sql(
+        "SELECT map_contains_key(map_from_arrays(CAST(array() AS array<string>), CAST(array() AS array<double>)), 'key') FROM t1"))
     }
   }
 
