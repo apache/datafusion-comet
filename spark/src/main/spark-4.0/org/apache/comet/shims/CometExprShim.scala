@@ -29,7 +29,7 @@ import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.serde.{CommonStringExprs, Compatible, ExprOuterClass, Incompatible}
 import org.apache.comet.serde.ExprOuterClass.{BinaryOutputStyle, Expr}
-import org.apache.comet.serde.QueryPlanSerde.exprToProtoInternal
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
 
 /**
  * `CometExprShim` acts as a shim for parsing expressions from different Spark versions.
@@ -102,6 +102,11 @@ trait CometExprShim extends CommonStringExprs {
         } else {
           None
         }
+
+      case wb: WidthBucket =>
+        val childExprs = wb.children.map(exprToProtoInternal(_, inputs, binding))
+        val optExpr = scalarFunctionExprToProto("width_bucket", childExprs: _*)
+        optExprWithInfo(optExpr, wb, wb.children: _*)
 
       case _ => None
     }

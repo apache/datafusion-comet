@@ -36,6 +36,7 @@ import org.apache.spark.sql.comet.{CometBatchScanExec, CometScanExec}
 import org.apache.spark.sql.execution.{FileSourceScanExec, SparkPlan}
 import org.apache.spark.sql.execution.datasources.HadoopFsRelation
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
+import org.apache.spark.sql.execution.datasources.v2.csv.CSVScan
 import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
@@ -166,7 +167,6 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
           case SCAN_AUTO =>
             // TODO add support for native_datafusion in the future
             nativeIcebergCompatScan(session, scanExec, r, hadoopConf)
-              .orElse(nativeCometScan(session, scanExec, r, hadoopConf))
               .getOrElse(scanExec)
           case SCAN_NATIVE_DATAFUSION =>
             nativeDataFusionScan(session, scanExec, r, hadoopConf).getOrElse(scanExec)
@@ -228,7 +228,7 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
   private def transformV2Scan(scanExec: BatchScanExec): SparkPlan = {
 
     scanExec.scan match {
-      case scan: ParquetScan =>
+      case scan: ParquetScan if COMET_NATIVE_SCAN_IMPL.get() == SCAN_NATIVE_COMET =>
         val fallbackReasons = new ListBuffer[String]()
         val schemaSupported =
           CometBatchScanExec.isSchemaSupported(scan.readDataSchema, fallbackReasons)
@@ -250,6 +250,47 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
           val cometScan = CometParquetScan(session, scanExec.scan.asInstanceOf[ParquetScan])
           CometBatchScanExec(
             scanExec.copy(scan = cometScan),
+            runtimeFilters = scanExec.runtimeFilters)
+        } else {
+          withInfos(scanExec, fallbackReasons.toSet)
+        }
+
+      case scan: CSVScan if COMET_CSV_V2_NATIVE_ENABLED.get() =>
+        val fallbackReasons = new ListBuffer[String]()
+        val schemaSupported =
+          CometBatchScanExec.isSchemaSupported(scan.readDataSchema, fallbackReasons)
+        if (!schemaSupported) {
+          fallbackReasons += s"Schema ${scan.readDataSchema} is not supported"
+        }
+        val partitionSchemaSupported =
+          CometBatchScanExec.isSchemaSupported(scan.readPartitionSchema, fallbackReasons)
+        if (!partitionSchemaSupported) {
+          fallbackReasons += s"Partition schema ${scan.readPartitionSchema} is not supported"
+        }
+        val corruptedRecordsColumnName =
+          SQLConf.get.getConf(SQLConf.COLUMN_NAME_OF_CORRUPT_RECORD)
+        val containsCorruptedRecordsColumn =
+          !scan.readDataSchema.fieldNames.contains(corruptedRecordsColumnName)
+        if (!containsCorruptedRecordsColumn) {
+          fallbackReasons += "Comet doesn't support the processing of corrupted records"
+        }
+        val isInferSchemaEnabled = scan.options.getBoolean("inferSchema", false)
+        if (isInferSchemaEnabled) {
+          fallbackReasons += "Comet doesn't support inferSchema=true option"
+        }
+        val delimiter =
+          Option(scan.options.get("delimiter"))
+            .orElse(Option(scan.options.get("sep")))
+            .getOrElse(",")
+        val isSingleCharacterDelimiter = delimiter.length == 1
+        if (!isSingleCharacterDelimiter) {
+          fallbackReasons +=
+            s"Comet supports only single-character delimiters, but got: '$delimiter'"
+        }
+        if (schemaSupported && partitionSchemaSupported && containsCorruptedRecordsColumn
+          && !isInferSchemaEnabled && isSingleCharacterDelimiter) {
+          CometBatchScanExec(
+            scanExec.clone().asInstanceOf[BatchScanExec],
             runtimeFilters = scanExec.runtimeFilters)
         } else {
           withInfos(scanExec, fallbackReasons.toSet)
@@ -286,6 +327,10 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
       case _
           if scanExec.scan.getClass.getName ==
             "org.apache.iceberg.spark.source.SparkBatchQueryScan" =>
+        if (scanExec.runtimeFilters.exists(isDynamicPruningFilter)) {
+          return withInfo(scanExec, "Dynamic Partition Pruning is not supported")
+        }
+
         val fallbackReasons = new ListBuffer[String]()
 
         // Native Iceberg scan requires both configs to be enabled
@@ -680,11 +725,13 @@ case class CometScanTypeChecker(scanImpl: String) extends DataTypeSupport with C
       name: String,
       fallbackReasons: ListBuffer[String]): Boolean = {
     dt match {
-      case ByteType | ShortType
+      case ShortType
           if scanImpl != CometConf.SCAN_NATIVE_COMET &&
-            !CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get() =>
-        fallbackReasons += s"$scanImpl scan cannot read $dt when " +
-          s"${CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key} is false. ${CometConf.COMPAT_GUIDE}."
+            CometConf.COMET_PARQUET_UNSIGNED_SMALL_INT_CHECK.get() =>
+        fallbackReasons += s"$scanImpl scan may not handle unsigned UINT_8 correctly for $dt. " +
+          s"Set ${CometConf.COMET_PARQUET_UNSIGNED_SMALL_INT_CHECK.key}=false to allow " +
+          "native execution if your data does not contain unsigned small integers. " +
+          CometConf.COMPAT_GUIDE
         false
       case _: StructType | _: ArrayType | _: MapType if scanImpl == CometConf.SCAN_NATIVE_COMET =>
         false
