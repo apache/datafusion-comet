@@ -116,7 +116,7 @@ abstract class ParquetDatetimeRebaseSuite extends CometTestBase {
     }
   }
 
-  test("COMET-XXXX: datediff works with dictionary-encoded timestamp columns") {
+  test("datediff works with dictionary-encoded timestamp columns") {
     withTempPath { path =>
       withSQLConf(
         CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET,
