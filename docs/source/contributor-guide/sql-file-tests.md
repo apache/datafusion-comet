@@ -183,6 +183,27 @@ query ignore(https://github.com/apache/datafusion-comet/issues/3326)
 SELECT space(n) FROM test_space WHERE n < 0
 ```
 
+#### `query expect_error(<pattern>)`
+
+Asserts that both Spark and Comet throw an exception containing the given pattern. Use this
+for ANSI mode tests where invalid operations should throw errors.
+
+```sql
+-- Config: spark.sql.ansi.enabled=true
+
+-- integer overflow should throw in ANSI mode
+query expect_error(ARITHMETIC_OVERFLOW)
+SELECT 2147483647 + 1
+
+-- division by zero should throw in ANSI mode
+query expect_error(DIVIDE_BY_ZERO)
+SELECT 1 / 0
+
+-- array out of bounds should throw in ANSI mode
+query expect_error(INVALID_ARRAY_INDEX)
+SELECT array(1, 2, 3)[10]
+```
+
 ## Adding a new test
 
 1. Create a `.sql` file under the appropriate subdirectory in

@@ -39,6 +39,7 @@ case object SparkAnswerOnly extends QueryAssertionMode
 case class WithTolerance(tol: Double) extends QueryAssertionMode
 case class ExpectFallback(reason: String) extends QueryAssertionMode
 case class Ignore(reason: String) extends QueryAssertionMode
+case class ExpectError(pattern: String) extends QueryAssertionMode
 
 /**
  * Parsed representation of a .sql test file.
@@ -127,6 +128,7 @@ object SqlFileTestParser {
 
   private val FallbackPattern = """query\s+expect_fallback\((.+)\)""".r
   private val IgnorePattern = """query\s+ignore\((.+)\)""".r
+  private val ErrorPattern = """query\s+expect_error\((.+)\)""".r
 
   private def parseQueryAssertionMode(directive: String): QueryAssertionMode = {
     directive match {
@@ -134,6 +136,8 @@ object SqlFileTestParser {
         ExpectFallback(reason.trim)
       case IgnorePattern(reason) =>
         Ignore(reason.trim)
+      case ErrorPattern(pattern) =>
+        ExpectError(pattern.trim)
       case _ =>
         val parts = directive.split("\\s+")
         if (parts.length == 1) return CheckCoverageAndAnswer
