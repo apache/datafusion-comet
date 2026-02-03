@@ -653,6 +653,30 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
                 allV3FeaturesSupported = false
             }
 
+            try {
+              if (IcebergReflection.hasEncryption(metadata.table)) {
+                fallbackReasons += "Iceberg table encryption is not yet supported"
+                allV3FeaturesSupported = false
+              }
+            } catch {
+              case e: Exception =>
+                fallbackReasons += "Iceberg reflection failure: Could not check for " +
+                  s"encryption: ${e.getMessage}"
+                allV3FeaturesSupported = false
+            }
+
+            try {
+              if (IcebergReflection.hasDefaultColumnValues(metadata.scanSchema)) {
+                fallbackReasons += "Iceberg default column values are not yet supported"
+                allV3FeaturesSupported = false
+              }
+            } catch {
+              case e: Exception =>
+                fallbackReasons += "Iceberg reflection failure: Could not check for " +
+                  s"default column values: ${e.getMessage}"
+                allV3FeaturesSupported = false
+            }
+
             allV3FeaturesSupported
           case _ => true
         }

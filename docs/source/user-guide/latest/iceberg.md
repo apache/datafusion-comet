@@ -279,6 +279,8 @@ The following scenarios will fall back to Spark's native Iceberg reader:
 
 - Deletion Vectors (DVs) - V3's efficient bitmap-based deletes stored in Puffin files
 - V3-only data types: `timestamp_ns`, `timestamptz_ns`, `variant`, `geometry`, `geography`
+- Table encryption - tables with `encryption.key-id` or other encryption properties
+- Default column values - schema fields with `initial-default` or `write-default`
 
 Note: V3 tables that use only V2-compatible features (position deletes, equality deletes,
-standard types) are fully accelerated by Comet.
+standard types, no encryption, no column defaults) are fully accelerated by Comet.

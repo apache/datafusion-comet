@@ -864,6 +864,97 @@ object IcebergReflection extends Logging {
       case _: Exception =>
     }
   }
+
+  /** Checks if table has encryption configured (V3 feature). */
+  def hasEncryption(table: Any): Boolean = {
+    import scala.jdk.CollectionConverters._
+
+    try {
+      // Check table properties for encryption.key-id
+      getTableProperties(table).exists { props =>
+        props.asScala.keys.exists { key =>
+          key.startsWith("encryption.") || key.startsWith("kms.")
+        }
+      }
+    } catch {
+      case _: Exception => false
+    }
+  }
+
+  /** Checks if schema has default column values (V3 feature). */
+  def hasDefaultColumnValues(schema: Any): Boolean = {
+    import scala.jdk.CollectionConverters._
+
+    try {
+      val columnsMethod = schema.getClass.getMethod("columns")
+      val columns = columnsMethod.invoke(schema).asInstanceOf[java.util.List[_]]
+
+      columns.asScala.exists { column =>
+        try {
+          hasFieldDefault(column) || hasNestedDefaults(column)
+        } catch {
+          case _: Exception => false
+        }
+      }
+    } catch {
+      case _: Exception => false
+    }
+  }
+
+  /** Checks if a field has initial-default or write-default set. */
+  private def hasFieldDefault(field: Any): Boolean = {
+    try {
+      val fieldClass = field.getClass
+
+      // Check initialDefault()
+      val hasInitialDefault =
+        try {
+          val initialDefaultMethod = fieldClass.getMethod("initialDefault")
+          val initialDefault = initialDefaultMethod.invoke(field)
+          initialDefault != null
+        } catch {
+          case _: NoSuchMethodException => false
+        }
+
+      // Check writeDefault()
+      val hasWriteDefault =
+        try {
+          val writeDefaultMethod = fieldClass.getMethod("writeDefault")
+          val writeDefault = writeDefaultMethod.invoke(field)
+          writeDefault != null
+        } catch {
+          case _: NoSuchMethodException => false
+        }
+
+      hasInitialDefault || hasWriteDefault
+    } catch {
+      case _: Exception => false
+    }
+  }
+
+  /** Recursively checks nested struct fields for defaults. */
+  private def hasNestedDefaults(field: Any): Boolean = {
+    import scala.jdk.CollectionConverters._
+
+    try {
+      val typeMethod = field.getClass.getMethod("type")
+      val fieldType = typeMethod.invoke(field)
+      val typeClass = fieldType.getClass
+
+      if (typeClass.getSimpleName.contains("StructType")) {
+        val fieldsMethod = typeClass.getMethod("fields")
+        val nestedFields = fieldsMethod.invoke(fieldType).asInstanceOf[java.util.List[_]]
+
+        nestedFields.asScala.exists { nestedField =>
+          hasFieldDefault(nestedField) || hasNestedDefaults(nestedField)
+        }
+      } else {
+        false
+      }
+    } catch {
+      case _: Exception => false
+    }
+  }
 }
 
 /**
