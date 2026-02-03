@@ -17,7 +17,7 @@
 
 use crate::{
     errors::CometError,
-    execution::shuffle::list::{append_to_builder, SparkUnsafeArray},
+    execution::shuffle::spark_unsafe::list::{append_to_builder, SparkUnsafeArray},
 };
 use arrow::array::builder::{ArrayBuilder, MapBuilder, MapFieldNames};
 use arrow::datatypes::{DataType, FieldRef};
