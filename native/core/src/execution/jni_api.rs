@@ -47,6 +47,7 @@ use datafusion_spark::function::datetime::date_sub::SparkDateSub;
 use datafusion_spark::function::datetime::last_day::SparkLastDay;
 use datafusion_spark::function::hash::sha1::SparkSha1;
 use datafusion_spark::function::hash::sha2::SparkSha2;
+use datafusion_spark::function::map::map_from_entries::MapFromEntries;
 use datafusion_spark::function::math::expm1::SparkExpm1;
 use datafusion_spark::function::math::hex::SparkHex;
 use datafusion_spark::function::math::width_bucket::SparkWidthBucket;
@@ -353,6 +354,7 @@ fn register_datafusion_spark_function(session_ctx: &SessionContext) {
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitwiseNot::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkHex::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkWidthBucket::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(MapFromEntries::default()));
 }
 
 /// Prepares arrow arrays for output.
