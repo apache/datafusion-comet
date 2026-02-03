@@ -22,8 +22,10 @@ use crate::{
     execution::{
         shuffle::{
             codec::{Checksum, ShuffleBlockWriter},
-            list::{append_list_element, SparkUnsafeArray},
-            map::{append_map_elements, get_map_key_value_fields, SparkUnsafeMap},
+            spark_unsafe::{
+                list::{append_list_element, SparkUnsafeArray},
+                map::{append_map_elements, get_map_key_value_fields, SparkUnsafeMap},
+            },
         },
         utils::bytes_to_i128,
     },
@@ -293,7 +295,7 @@ pub(crate) use downcast_builder_ref;
 /// `struct_builder.append` is called before/after calling this function to append the null buffer
 /// of the struct array.
 #[allow(clippy::redundant_closure_call)]
-pub(crate) fn append_field(
+pub(super) fn append_field(
     dt: &DataType,
     struct_builder: &mut StructBuilder,
     row: &SparkUnsafeRow,
@@ -441,7 +443,7 @@ pub(crate) fn append_field(
 
 /// Appends column of top rows to the given array builder.
 #[allow(clippy::redundant_closure_call, clippy::too_many_arguments)]
-pub(crate) fn append_columns(
+fn append_columns(
     row_addresses_ptr: *mut jlong,
     row_sizes_ptr: *mut jint,
     row_start: usize,

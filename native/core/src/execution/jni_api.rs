@@ -22,7 +22,7 @@ use crate::{
     errors::{try_unwrap_or_throw, CometError, CometResult},
     execution::{
         metrics::utils::update_comet_metric, planner::PhysicalPlanner, serde::to_arrow_datatype,
-        shuffle::row::process_sorted_row_partition, sort::RdxSort,
+        shuffle::spark_unsafe::row::process_sorted_row_partition, sort::RdxSort,
     },
     jvm_bridge::{jni_new_global_ref, JVMClasses},
 };
