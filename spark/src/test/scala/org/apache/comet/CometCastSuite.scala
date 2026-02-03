@@ -989,8 +989,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateDates(), DataTypes.StringType)
   }
 
-  ignore("cast DateType to TimestampType") {
-    // Arrow error: Cast error: Casting from Date32 to Timestamp(Microsecond, Some("UTC")) not supported
+  test("cast DateType to TimestampType") {
     castTest(generateDates(), DataTypes.TimestampType)
   }
 
