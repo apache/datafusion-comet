@@ -19,6 +19,7 @@ pub(crate) mod codec;
 mod comet_partitioning;
 mod list;
 mod map;
+mod metrics;
 pub mod row;
 mod shuffle_writer;
 
