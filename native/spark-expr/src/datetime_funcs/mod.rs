@@ -19,6 +19,7 @@ mod date_diff;
 mod date_trunc;
 mod extract_date_part;
 mod timestamp_trunc;
+mod to_timestamp;
 mod unix_timestamp;
 
 pub use date_diff::SparkDateDiff;
@@ -27,4 +28,5 @@ pub use extract_date_part::SparkHour;
 pub use extract_date_part::SparkMinute;
 pub use extract_date_part::SparkSecond;
 pub use timestamp_trunc::TimestampTruncExpr;
+pub use to_timestamp::custom_to_timestamp;
 pub use unix_timestamp::SparkUnixTimestamp;

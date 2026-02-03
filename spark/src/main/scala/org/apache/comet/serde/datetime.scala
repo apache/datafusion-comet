@@ -19,10 +19,13 @@
 
 package org.apache.comet.serde
 
+import java.time.ZoneId
 import java.util.Locale
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, DateAdd, DateDiff, DateFormatClass, DateSub, DayOfMonth, DayOfWeek, DayOfYear, GetDateField, Hour, LastDay, Literal, Minute, Month, Quarter, Second, TruncDate, TruncTimestamp, UnixDate, UnixTimestamp, WeekDay, WeekOfYear, Year}
-import org.apache.spark.sql.types.{DateType, IntegerType, StringType, TimestampType}
+import scala.util.Try
+
+import org.apache.spark.sql.catalyst.expressions.{Attribute, DateAdd, DateDiff, DateFormatClass, DateSub, DayOfMonth, DayOfWeek, DayOfYear, GetDateField, GetTimestamp, Hour, LastDay, Literal, Minute, Month, ParseToDate, Quarter, Second, TruncDate, TruncTimestamp, UnixDate, UnixTimestamp, WeekDay, WeekOfYear, Year}
+import org.apache.spark.sql.types.{DataType, DateType, IntegerType, StringType, TimestampType}
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
@@ -174,6 +177,91 @@ object CometQuarter extends CometExpressionSerde[Quarter] with CometExprGetDateF
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     getDateField(expr, CometGetDateField.Quarter, inputs, binding)
   }
+}
+
+object CometGetTimestamp extends CometExpressionSerde[GetTimestamp] {
+
+  /**
+   * Convert a Spark expression into a protocol buffer representation that can be passed into
+   * native code.
+   *
+   * @param expr
+   *   The Spark expression.
+   * @param inputs
+   *   The input attributes.
+   * @param binding
+   *   Whether the attributes are bound (this is only relevant in aggregate expressions).
+   * @return
+   *   Protocol buffer representation, or None if the expression could not be converted. In this
+   *   case it is expected that the input expression will have been tagged with reasons why it
+   *   could not be converted.
+   */
+  override def convert(
+      expr: GetTimestamp,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    val leftExpr: Option[Expr] =
+      exprToProtoInternal(expr.left, inputs, binding) // timestamp or date
+    val rightExpr: Option[Expr] = exprToProtoInternal(expr.right, inputs, binding) // format
+    val tZ: Option[Expr] =
+      expr.timeZoneId.flatMap(tz => exprToProtoInternal(Literal(tz), inputs, binding))
+    scalarFunctionExprToProtoWithReturnType(
+      "custom_to_timestamp",
+      expr.dataType,
+      failOnError = expr.failOnError,
+      args = leftExpr,
+      rightExpr,
+      tZ)
+  }
+}
+
+object CometParseToDate extends CometExpressionSerde[ParseToDate] {
+
+  /**
+   * Convert a Spark expression into a protocol buffer representation that can be passed into
+   * native code.
+   *
+   * @param expr
+   *   The Spark expression.
+   * @param inputs
+   *   The input attributes.
+   * @param binding
+   *   Whether the attributes are bound (this is only relevant in aggregate expressions).
+   * @return
+   *   Protocol buffer representation, or None if the expression could not be converted. In this
+   *   case it is expected that the input expression will have been tagged with reasons why it
+   *   could not be converted.
+   */
+  override def convert(
+      expr: ParseToDate,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    val childExpr: Option[Expr] = exprToProtoInternal(expr.left, inputs, binding)
+    val failOnErrorExpr: Option[Expr] =
+      exprToProtoInternal(Literal(expr.ansiEnabled), inputs, binding)
+    scalarFunctionExprToProtoWithReturnType(
+      "to_date",
+      expr.dataType,
+      expr.ansiEnabled,
+      childExpr,
+      failOnErrorExpr)
+  }
+
+//  private val isValidTz: String => Boolean = tz => Try(ZoneId.of(tz)).isSuccess
+//
+//  override def getSupportLevel(expr: ParseToDate): SupportLevel = {
+//    val formatDataType: Option[DataType] = expr.format.map(e => e.dataType)
+//    (expr.dataType, formatDataType, expr.timeZoneId) match {
+//      case (StringType, Some(StringType) | None, Some(timeZone)) =>
+//        if (isValidTz(timeZone)) Compatible()
+//        else {
+//          Incompatible(
+//            Option("Invalid time zone. Use a valid time zone (e.g. 'UTC', 'Europe/Madrid')"))
+//        }
+//      case (StringType, Some(StringType) | None, None) => Compatible()
+//      case _ => Incompatible(Option("Only string types are supported"))
+//    }
+//  }
 }
 
 object CometHour extends CometExpressionSerde[Hour] {

@@ -205,7 +205,9 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[WeekDay] -> CometWeekDay,
     classOf[DayOfYear] -> CometDayOfYear,
     classOf[WeekOfYear] -> CometWeekOfYear,
-    classOf[Quarter] -> CometQuarter)
+    classOf[Quarter] -> CometQuarter,
+    classOf[GetTimestamp] -> CometGetTimestamp,
+    classOf[ParseToDate] -> CometParseToDate)
 
   private val conversionExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     classOf[Cast] -> CometCast)
