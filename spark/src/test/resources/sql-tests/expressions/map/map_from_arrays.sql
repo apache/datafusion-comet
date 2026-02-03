@@ -26,7 +26,7 @@ INSERT INTO test_map_from_arrays VALUES (array('a', 'b', 'c'), array(1, 2, 3)), 
 query spark_answer_only
 SELECT map_from_arrays(k, v) FROM test_map_from_arrays WHERE k IS NOT NULL
 
-query spark_answer_only
+query
 SELECT map_from_arrays(k, v) FROM test_map_from_arrays WHERE k IS NULL
 
 -- literal arguments
