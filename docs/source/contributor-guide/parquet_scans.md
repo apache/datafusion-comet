@@ -37,8 +37,14 @@ implementation:
 
 - Leverages the DataFusion community's ongoing improvements to `DataSourceExec`
 - Provides support for reading complex types (structs, arrays, and maps)
-- Removes the use of reusable mutable-buffers in Comet, which is complex to maintain
+- Delegates Parquet decoding to native Rust code rather than JVM-side decoding
 - Improves performance
+
+> **Note on mutable buffers:** Both `native_comet` and `native_iceberg_compat` use reusable mutable buffers
+> when transferring data from JVM to native code via Arrow FFI. The `native_iceberg_compat` implementation
+> still reuses `CometVector` arrays across batches in `NativeBatchReader`. This means native operators that
+> buffer data (such as `SortExec` or `ShuffleWriterExec`) must perform deep copies to avoid data corruption.
+> See the [FFI documentation](ffi.md) for details on the `arrow_ffi_safe` flag and ownership semantics.
 
 The `native_datafusion` and `native_iceberg_compat` scans share the following limitations:
 
