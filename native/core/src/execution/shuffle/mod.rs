@@ -20,6 +20,7 @@ mod comet_partitioning;
 mod metrics;
 mod shuffle_writer;
 pub mod spark_unsafe;
+mod writers;
 
 pub use codec::{read_ipc_compressed, CompressionCodec, ShuffleBlockWriter};
 pub use comet_partitioning::CometPartitioning;
