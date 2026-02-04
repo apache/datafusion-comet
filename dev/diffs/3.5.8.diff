@@ -1111,7 +1111,7 @@ index cfc8b2cc845..c6fcfd7bd08 100644
  import org.apache.spark.SparkConf
  import org.apache.spark.sql.{AnalysisException, QueryTest}
  import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
-+import org.apache.spark.sql.comet.CometScanExec
++import org.apache.spark.sql.comet.{CometNativeScanExec, CometScanExec}
  import org.apache.spark.sql.connector.catalog.{SupportsRead, SupportsWrite, Table, TableCapability}
  import org.apache.spark.sql.connector.read.ScanBuilder
  import org.apache.spark.sql.connector.write.{LogicalWriteInfo, WriteBuilder}
@@ -1121,7 +1121,7 @@ index cfc8b2cc845..c6fcfd7bd08 100644
              assert(
 -              df.queryExecution.executedPlan.exists(_.isInstanceOf[FileSourceScanExec]))
 +              df.queryExecution.executedPlan.exists {
-+                case _: FileSourceScanExec | _: CometScanExec => true
++                case _: FileSourceScanExec | _: CometScanExec | _: CometNativeScanExec => true
 +                case _ => false
 +              }
 +            )
