@@ -486,9 +486,14 @@ implementation:</p>
 <ul class="simple">
 <li><p>Leverages the DataFusion community’s ongoing improvements to <code class="docutils literal notranslate"><span class="pre">DataSourceExec</span></code></p></li>
 <li><p>Provides support for reading complex types (structs, arrays, and maps)</p></li>
-<li><p>Removes the use of reusable mutable-buffers in Comet, which is complex to maintain</p></li>
+<li><p>Delegates Parquet decoding to native Rust code rather than JVM-side decoding</p></li>
 <li><p>Improves performance</p></li>
 </ul>
+<blockquote>
+<div><p><strong>Note on mutable buffers:</strong> Both <code class="docutils literal notranslate"><span class="pre">native_comet</span></code> and <code class="docutils literal notranslate"><span class="pre">native_iceberg_compat</span></code> use reusable mutable buffers
+when transferring data from JVM to native code via Arrow FFI. The <code class="docutils literal notranslate"><span class="pre">native_iceberg_compat</span></code> implementation uses DataFusion’s native Parquet reader for data columns, bypassing Comet’s mutable buffer infrastructure entirely. However, partition columns still use <code class="docutils literal notranslate"><span class="pre">ConstantColumnReader</span></code>, which relies on Comet’s mutable buffers that are reused across batches. This means native operators that buffer data (such as <code class="docutils literal notranslate"><span class="pre">SortExec</span></code> or <code class="docutils literal notranslate"><span class="pre">ShuffleWriterExec</span></code>) must perform deep copies to avoid data corruption.
+See the <a class="reference internal" href="ffi.html"><span class="std std-doc">FFI documentation</span></a> for details on the <code class="docutils literal notranslate"><span class="pre">arrow_ffi_safe</span></code> flag and ownership semantics.</p>
+</div></blockquote>
 <p>The <code class="docutils literal notranslate"><span class="pre">native_datafusion</span></code> and <code class="docutils literal notranslate"><span class="pre">native_iceberg_compat</span></code> scans share the following limitations:</p>
 <ul class="simple">
 <li><p>When reading Parquet files written by systems other than Spark that contain columns with the logical type <code class="docutils literal notranslate"><span class="pre">UINT_8</span></code>
