@@ -34,7 +34,7 @@ sealed trait SqlTestRecord
  * @param line
  *   1-based line number in the original .sql file where the statement starts.
  */
-case class SqlStatement(sql: String, line: Int = -1) extends SqlTestRecord
+case class SqlStatement(sql: String, line: Int) extends SqlTestRecord
 
 /**
  * A SQL query whose results are compared between Spark and Comet.
@@ -46,10 +46,7 @@ case class SqlStatement(sql: String, line: Int = -1) extends SqlTestRecord
  * @param line
  *   1-based line number in the original .sql file where the query starts.
  */
-case class SqlQuery(
-    sql: String,
-    mode: QueryAssertionMode = CheckCoverageAndAnswer,
-    line: Int = -1)
+case class SqlQuery(sql: String, mode: QueryAssertionMode = CheckCoverageAndAnswer, line: Int)
     extends SqlTestRecord
 
 sealed trait QueryAssertionMode
