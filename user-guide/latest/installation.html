@@ -548,6 +548,11 @@ Cloud Service Providers.</p>
 <h2>Using a Published JAR File<a class="headerlink" href="#using-a-published-jar-file" title="Link to this heading">#</a></h2>
 <p>Comet jar files are available in <a class="reference external" href="https://central.sonatype.com/namespace/org.apache.datafusion">Maven Central</a> for amd64 and arm64 architectures for Linux. For Apple macOS, it
 is currently necessary to build from source.</p>
+<p>For performance reasons, published Comet jar files target baseline CPUs available in modern data centers. For example,
+the amd64 build uses the <code class="docutils literal notranslate"><span class="pre">x86-64-v3</span></code> target that adds CPU instructions (<em>e.g.</em>, AVX2) common after 2013. Similarly, the
+arm64 build uses the <code class="docutils literal notranslate"><span class="pre">neoverse-n1</span></code> target, which is a common baseline for ARM cores found in AWS (Graviton2+), GCP, and
+Azure after 2019. If the Comet library fails for SIGILL (illegal instruction), please open an issue on the GitHub
+repository describing your environment, and [build from source] for your target architecture.</p>
 <p>Here are the direct links for downloading the Comet 0.14.0-SNAPSHOT jar file. Note that these links are not valid if
 you are viewing the documentation for the latest <code class="docutils literal notranslate"><span class="pre">SNAPSHOT</span></code> release, or for the latest release while it is still going
 through the release vote. Release candidate jars can be found <a class="reference external" href="https://repository.apache.org/#nexus-search;quick~org.apache.datafusion">here</a>.</p>
@@ -561,7 +566,7 @@ through the release vote. Release candidate jars can be found <a class="referenc
 </section>
 <section id="building-from-source">
 <h2>Building from source<a class="headerlink" href="#building-from-source" title="Link to this heading">#</a></h2>
-<p>Refer to the <a class="reference internal" href="source.html"><span class="std std-doc">Building from Source</span></a> guide for instructions from building Comet from source, either from official
+<p>Refer to the <a class="reference internal" href="source.html"><span class="std std-doc">Building from source</span></a> guide for instructions from building Comet from source, either from official
 source releases, or from the latest code in the GitHub repository.</p>
 </section>
 <section id="deploying-to-kubernetes">

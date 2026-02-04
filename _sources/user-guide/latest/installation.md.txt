@@ -60,6 +60,12 @@ Cloud Service Providers.
 Comet jar files are available in [Maven Central](https://central.sonatype.com/namespace/org.apache.datafusion) for amd64 and arm64 architectures for Linux. For Apple macOS, it
 is currently necessary to build from source.
 
+For performance reasons, published Comet jar files target baseline CPUs available in modern data centers. For example,
+the amd64 build uses the `x86-64-v3` target that adds CPU instructions (_e.g._, AVX2) common after 2013. Similarly, the
+arm64 build uses the `neoverse-n1` target, which is a common baseline for ARM cores found in AWS (Graviton2+), GCP, and
+Azure after 2019. If the Comet library fails for SIGILL (illegal instruction), please open an issue on the GitHub
+repository describing your environment, and [build from source] for your target architecture.
+
 Here are the direct links for downloading the Comet 0.14.0-SNAPSHOT jar file. Note that these links are not valid if
 you are viewing the documentation for the latest `SNAPSHOT` release, or for the latest release while it is still going
 through the release vote. Release candidate jars can be found [here](https://repository.apache.org/#nexus-search;quick~org.apache.datafusion).
@@ -72,10 +78,10 @@ through the release vote. Release candidate jars can be found [here](https://rep
 
 ## Building from source
 
-Refer to the [Building from Source] guide for instructions from building Comet from source, either from official
+Refer to the [Building from source] guide for instructions from building Comet from source, either from official
 source releases, or from the latest code in the GitHub repository.
 
-[Building from Source]: source.md
+[Building from source]: source.md
 
 ## Deploying to Kubernetes
 
