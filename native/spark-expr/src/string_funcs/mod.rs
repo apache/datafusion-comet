@@ -15,8 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
+mod string_replace;
 mod string_space;
 mod substring;
 
+pub use string_replace::SparkStringReplace;
 pub use string_space::SparkStringSpace;
 pub use substring::SubstringExpr;

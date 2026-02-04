@@ -280,6 +280,16 @@ class CometStringExpressionSuite extends CometTestBase {
     }
   }
 
+  test("replace with empty search string") {
+    val table = "test"
+    withTable(table) {
+      sql(s"create table $table(col string) using parquet")
+      sql(s"insert into $table values('hello'), (NULL), ('')")
+      checkSparkAnswerAndOperator(
+        s"select replace(col, '', 'x'), replace(col, '', '') from $table")
+    }
+  }
+
   // Simplified version of "filter pushdown - StringPredicate" that does not generate dictionaries
   test("string predicate filter") {
     Seq(false, true).foreach { pushdown =>

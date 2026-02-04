@@ -162,7 +162,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[StartsWith] -> CometScalarFunction("starts_with"),
     classOf[StringInstr] -> CometScalarFunction("instr"),
     classOf[StringRepeat] -> CometStringRepeat,
-    classOf[StringReplace] -> CometScalarFunction("replace"),
+    classOf[StringReplace] -> CometScalarFunction("spark_replace"),
     classOf[StringRPad] -> CometStringRPad,
     classOf[StringLPad] -> CometStringLPad,
     classOf[StringSpace] -> CometScalarFunction("string_space"),
