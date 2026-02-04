@@ -1,6 +1,6 @@
 TakeOrderedAndProject
 +- Project
-   +-  Window [COMET: WindowExec is not fully compatible with Spark (Native WindowExec has known correctness issues). To enable it anyway, set spark.comet.operator.WindowExec.allowIncompatible=true. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/compatibility.html).]
+   +-  Window [COMET: Native support for operator WindowExec is disabled. Set spark.comet.exec.window.enabled=true to enable it.]
       +- CometColumnarToRow
          +- CometSort
             +- CometColumnarExchange
@@ -35,7 +35,7 @@ TakeOrderedAndProject
                                              +- BroadcastExchange
                                                 +- Project
                                                    +- Filter
-                                                      +-  Window [COMET: WindowExec is not fully compatible with Spark (Native WindowExec has known correctness issues). To enable it anyway, set spark.comet.operator.WindowExec.allowIncompatible=true. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/compatibility.html).]
+                                                      +-  Window [COMET: Native support for operator WindowExec is disabled. Set spark.comet.exec.window.enabled=true to enable it.]
                                                          +- CometColumnarToRow
                                                             +- CometSort
                                                                +- CometHashAggregate
