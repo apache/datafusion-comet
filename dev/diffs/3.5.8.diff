@@ -1061,18 +1061,10 @@ index 04702201f82..5ee11f83ecf 100644
        assert(exchanges.size === 1)
      }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/UDFSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/UDFSuite.scala
-index 9f8e979e3fb..62e717a6796 100644
+index 9f8e979e3fb..3bc9dab8023 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/UDFSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/UDFSuite.scala
-@@ -25,6 +25,7 @@ import java.time.format.DateTimeFormatter
- import scala.collection.mutable.{ArrayBuffer, WrappedArray}
- 
- import org.apache.spark.{SPARK_DOC_ROOT, SparkException}
-+import org.apache.spark.sql.IgnoreCometNativeDataFusion
- import org.apache.spark.sql.api.java._
- import org.apache.spark.sql.catalyst.FunctionIdentifier
- import org.apache.spark.sql.catalyst.encoders.{ExpressionEncoder, OuterScopes}
-@@ -87,7 +88,8 @@ class UDFSuite extends QueryTest with SharedSparkSession {
+@@ -87,7 +87,8 @@ class UDFSuite extends QueryTest with SharedSparkSession {
      spark.catalog.dropTempView("tmp_table")
    }
  
@@ -2419,14 +2411,14 @@ index 5c0b7def039..151184bc98c 100644
      assert(fileSourceScanSchemata.size === expectedSchemaCatalogStrings.size,
        s"Found ${fileSourceScanSchemata.size} file sources in dataframe, " +
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaSuite.scala
-index 3f47c5e506f..b2385840745 100644
+index 3f47c5e506f..92a5eafec84 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaSuite.scala
 @@ -27,6 +27,7 @@ import org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName
  import org.apache.parquet.schema.Type._
  
  import org.apache.spark.SparkException
-+import org.apache.spark.sql.IgnoreComet
++import org.apache.spark.sql.{IgnoreComet, IgnoreCometNativeDataFusion}
  import org.apache.spark.sql.catalyst.expressions.Cast.toSQLType
  import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException
  import org.apache.spark.sql.functions.desc
@@ -2509,14 +2501,15 @@ index 5cdbdc27b32..307fba16578 100644
        spark.range(10).selectExpr("id", "id % 3 as p")
          .write.partitionBy("p").saveAsTable("testDataForScan")
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/python/ExtractPythonUDFsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/python/ExtractPythonUDFsSuite.scala
-index 0ab8691801d..7535061d01e 100644
+index 0ab8691801d..7b81f3a8f6d 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/python/ExtractPythonUDFsSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/python/ExtractPythonUDFsSuite.scala
-@@ -18,6 +18,8 @@
+@@ -17,7 +17,9 @@
+ 
  package org.apache.spark.sql.execution.python
  
- import org.apache.spark.sql.catalyst.plans.logical.{ArrowEvalPython, BatchEvalPython, Limit, LocalLimit}
 +import org.apache.spark.sql.IgnoreCometNativeDataFusion
+ import org.apache.spark.sql.catalyst.plans.logical.{ArrowEvalPython, BatchEvalPython, Limit, LocalLimit}
 +import org.apache.spark.sql.comet._
  import org.apache.spark.sql.execution.{FileSourceScanExec, SparkPlan, SparkPlanTest}
  import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
