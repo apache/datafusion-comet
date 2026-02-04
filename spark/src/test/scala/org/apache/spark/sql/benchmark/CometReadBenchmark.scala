@@ -38,7 +38,7 @@ import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.ColumnVector
 
 import org.apache.comet.{CometConf, WithHdfsCluster}
-import org.apache.comet.CometConf.{SCAN_NATIVE_COMET, SCAN_NATIVE_DATAFUSION, SCAN_NATIVE_ICEBERG_COMPAT}
+import org.apache.comet.CometConf.{SCAN_NATIVE_DATAFUSION, SCAN_NATIVE_ICEBERG_COMPAT}
 import org.apache.comet.parquet.BatchReader
 
 /**
@@ -65,14 +65,6 @@ class CometReadBaseBenchmark extends CometBenchmarkBase {
 
         sqlBenchmark.addCase("SQL Parquet - Spark") { _ =>
           spark.sql(s"select $query from parquetV1Table").noop()
-        }
-
-        sqlBenchmark.addCase("SQL Parquet - Comet") { _ =>
-          withSQLConf(
-            CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_NATIVE_SCAN_IMPL.key -> SCAN_NATIVE_COMET) {
-            spark.sql(s"select $query from parquetV1Table").noop()
-          }
         }
 
         sqlBenchmark.addCase("SQL Parquet - Comet Native DataFusion") { _ =>
@@ -175,21 +167,6 @@ class CometReadBaseBenchmark extends CometBenchmarkBase {
           }
         }
 
-        sqlBenchmark.addCase("SQL Parquet - Comet") { _ =>
-          withSQLConf(
-            "spark.memory.offHeap.enabled" -> "true",
-            "spark.memory.offHeap.size" -> "10g",
-            CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_NATIVE_SCAN_IMPL.key -> SCAN_NATIVE_COMET,
-            DecryptionPropertiesFactory.CRYPTO_FACTORY_CLASS_PROPERTY_NAME -> cryptoFactoryClass,
-            KeyToolkit.KMS_CLIENT_CLASS_PROPERTY_NAME ->
-              "org.apache.parquet.crypto.keytools.mocks.InMemoryKMS",
-            InMemoryKMS.KEY_LIST_PROPERTY_NAME ->
-              s"footerKey: ${footerKey}, key1: ${key1}") {
-            spark.sql(s"select $query from parquetV1Table").noop()
-          }
-        }
-
         sqlBenchmark.addCase("SQL Parquet - Comet Native DataFusion") { _ =>
           withSQLConf(
             "spark.memory.offHeap.enabled" -> "true",
@@ -243,14 +220,6 @@ class CometReadBaseBenchmark extends CometBenchmarkBase {
 
         sqlBenchmark.addCase("SQL Parquet - Spark") { _ =>
           spark.sql("select sum(id) from parquetV1Table").noop()
-        }
-
-        sqlBenchmark.addCase("SQL Parquet - Comet") { _ =>
-          withSQLConf(
-            CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_NATIVE_SCAN_IMPL.key -> SCAN_NATIVE_COMET) {
-            spark.sql("select sum(id) from parquetV1Table").noop()
-          }
         }
 
         sqlBenchmark.addCase("SQL Parquet - Comet Native DataFusion") { _ =>
@@ -373,14 +342,6 @@ class CometReadBaseBenchmark extends CometBenchmarkBase {
           spark.sql("select sum(c2) from parquetV1Table where c1 + 1 > 0").noop()
         }
 
-        benchmark.addCase("SQL Parquet - Comet") { _ =>
-          withSQLConf(
-            CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_NATIVE_SCAN_IMPL.key -> SCAN_NATIVE_COMET) {
-            spark.sql("select sum(c2) from parquetV1Table where c1 + 1 > 0").noop()
-          }
-        }
-
         benchmark.addCase("SQL Parquet - Comet Native DataFusion") { _ =>
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
@@ -431,14 +392,6 @@ class CometReadBaseBenchmark extends CometBenchmarkBase {
           spark.sql("select sum(length(id)) from parquetV1Table").noop()
         }
 
-        sqlBenchmark.addCase("SQL Parquet - Comet") { _ =>
-          withSQLConf(
-            CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_NATIVE_SCAN_IMPL.key -> SCAN_NATIVE_COMET) {
-            spark.sql("select sum(length(id)) from parquetV1Table").noop()
-          }
-        }
-
         sqlBenchmark.addCase("SQL Parquet - Comet Native DataFusion") { _ =>
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
@@ -480,17 +433,6 @@ class CometReadBaseBenchmark extends CometBenchmarkBase {
             .sql("select sum(length(c2)) from parquetV1Table where c1 is " +
               "not NULL and c2 is not NULL")
             .noop()
-        }
-
-        benchmark.addCase("SQL Parquet - Comet") { _ =>
-          withSQLConf(
-            CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_NATIVE_SCAN_IMPL.key -> SCAN_NATIVE_COMET) {
-            spark
-              .sql("select sum(length(c2)) from parquetV1Table where c1 is " +
-                "not NULL and c2 is not NULL")
-              .noop()
-          }
         }
 
         benchmark.addCase("SQL Parquet - Comet Native DataFusion") { _ =>
@@ -538,14 +480,6 @@ class CometReadBaseBenchmark extends CometBenchmarkBase {
           spark.sql(s"SELECT sum(c$middle) FROM parquetV1Table").noop()
         }
 
-        benchmark.addCase("SQL Parquet - Comet") { _ =>
-          withSQLConf(
-            CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_NATIVE_SCAN_IMPL.key -> SCAN_NATIVE_COMET) {
-            spark.sql(s"SELECT sum(c$middle) FROM parquetV1Table").noop()
-          }
-        }
-
         benchmark.addCase("SQL Parquet - Comet Native DataFusion") { _ =>
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
@@ -589,14 +523,6 @@ class CometReadBaseBenchmark extends CometBenchmarkBase {
           spark.sql("SELECT * FROM parquetV1Table WHERE c1 + 1 > 0").noop()
         }
 
-        benchmark.addCase("SQL Parquet - Comet") { _ =>
-          withSQLConf(
-            CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_NATIVE_SCAN_IMPL.key -> SCAN_NATIVE_COMET) {
-            spark.sql("SELECT * FROM parquetV1Table WHERE c1 + 1 > 0").noop()
-          }
-        }
-
         benchmark.addCase("SQL Parquet - Comet Native DataFusion") { _ =>
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
@@ -638,14 +564,6 @@ class CometReadBaseBenchmark extends CometBenchmarkBase {
 
         benchmark.addCase("SQL Parquet - Spark") { _ =>
           spark.sql("SELECT * FROM parquetV1Table WHERE c1 + 1 > 0").noop()
-        }
-
-        benchmark.addCase("SQL Parquet - Comet") { _ =>
-          withSQLConf(
-            CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_NATIVE_SCAN_IMPL.key -> SCAN_NATIVE_COMET) {
-            spark.sql("SELECT * FROM parquetV1Table WHERE c1 + 1 > 0").noop()
-          }
         }
 
         benchmark.addCase("SQL Parquet - Comet Native DataFusion") { _ =>
