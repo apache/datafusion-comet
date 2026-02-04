@@ -16,7 +16,7 @@
 // under the License.
 
 use crate::execution::shuffle::metrics::ShufflePartitionerMetrics;
-use crate::execution::shuffle::shuffle_writer::PartitionedBatchIterator;
+use crate::execution::shuffle::partitioners::PartitionedBatchIterator;
 use crate::execution::shuffle::writers::buf_batch_writer::BufBatchWriter;
 use crate::execution::shuffle::ShuffleBlockWriter;
 use datafusion::common::DataFusionError;
