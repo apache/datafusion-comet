@@ -146,7 +146,3 @@ runs:
          path: "**/target/surefire-reports/*.txt"
          retention-days: 7 # 1 week for test reports
          overwrite: true
-
-    - name: Upload coverage results
-      if: ${{ inputs.upload-test-reports == 'true' }}
-      uses: codecov/codecov-action@v5

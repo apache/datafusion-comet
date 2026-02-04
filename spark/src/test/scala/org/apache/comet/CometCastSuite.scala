@@ -33,7 +33,6 @@ import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, BooleanType, ByteType, DataType, DataTypes, DecimalType, IntegerType, LongType, ShortType, StringType, StructField, StructType}
 
-import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.rules.CometScanTypeChecker
 import org.apache.comet.serde.Compatible
@@ -64,7 +63,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   private val timestampPattern = "0123456789/:T" + whitespaceChars
 
   lazy val usingParquetExecWithIncompatTypes: Boolean =
-    usingDataSourceExecWithIncompatTypes(conf)
+    hasUnsignedSmallIntSafetyCheck(conf)
 
   test("all valid cast combinations covered") {
     val names = testNames
@@ -709,8 +708,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("cast StringType to DecimalType(10,2) (does not support fullwidth unicode digits)") {
     withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true") {
-      // TODO fix for Spark 4.0.0
-      assume(!isSpark40Plus)
       val values = gen.generateStrings(dataSize, numericPattern, 12).toDF("a")
       Seq(true, false).foreach(ansiEnabled =>
         castTest(values, DataTypes.createDecimalType(10, 2), testAnsi = ansiEnabled))
@@ -719,18 +716,38 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("cast StringType to DecimalType(2,2)") {
     withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true") {
-      // TODO fix for Spark 4.0.0
-      assume(!isSpark40Plus)
       val values = gen.generateStrings(dataSize, numericPattern, 12).toDF("a")
       Seq(true, false).foreach(ansiEnabled =>
         castTest(values, DataTypes.createDecimalType(2, 2), testAnsi = ansiEnabled))
     }
   }
 
+  test("cast StringType to DecimalType check if right exception message is thrown") {
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true") {
+      val values = Seq("d11307\n").toDF("a")
+      Seq(true, false).foreach(ansiEnabled =>
+        castTest(values, DataTypes.createDecimalType(2, 2), testAnsi = ansiEnabled))
+    }
+  }
+
+  test("cast StringType to DecimalType(2,2) check if right exception is being thrown") {
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true") {
+      val values = gen.generateInts(10000).map("    " + _).toDF("a")
+      Seq(true, false).foreach(ansiEnabled =>
+        castTest(values, DataTypes.createDecimalType(2, 2), testAnsi = ansiEnabled))
+    }
+  }
+
+  test("cast StringType to DecimalType(38,10) high precision - check 0 mantissa") {
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true") {
+      val values = Seq("0e31", "000e3375", "0e40", "0E+695", "0e5887677").toDF("a")
+      Seq(true, false).foreach(ansiEnabled =>
+        castTest(values, DataTypes.createDecimalType(38, 10), testAnsi = ansiEnabled))
+    }
+  }
+
   test("cast StringType to DecimalType(38,10) high precision") {
     withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true") {
-      // TODO fix for Spark 4.0.0
-      assume(!isSpark40Plus)
       val values = gen.generateStrings(dataSize, numericPattern, 38).toDF("a")
       Seq(true, false).foreach(ansiEnabled =>
         castTest(values, DataTypes.createDecimalType(38, 10), testAnsi = ansiEnabled))
@@ -739,8 +756,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("cast StringType to DecimalType(10,2) basic values") {
     withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true") {
-      // TODO fix for Spark 4.0.0
-      assume(!isSpark40Plus)
       val values = Seq(
         "123.45",
         "-67.89",
@@ -766,8 +781,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("cast StringType to Decimal type scientific notation") {
     withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true") {
-      // TODO fix for Spark 4.0.0
-      assume(!isSpark40Plus)
       val values = Seq(
         "1.23E-5",
         "1.23e10",
@@ -1087,7 +1100,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
            |USING parquet
          """.stripMargin)
       sql("INSERT INTO TABLE tab1 SELECT named_struct('col1','1','col2','2')")
-      if (usingDataSourceExec) {
+      if (!usingLegacyNativeCometScan) {
         checkSparkAnswerAndOperator(
           "SELECT CAST(s AS struct<field1:string, field2:string>) AS new_struct FROM tab1")
       } else {

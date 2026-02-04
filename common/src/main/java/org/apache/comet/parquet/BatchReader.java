@@ -65,6 +65,7 @@ import org.apache.spark.util.AccumulatorV2;
 
 import org.apache.comet.CometConf;
 import org.apache.comet.CometSchemaImporter;
+import org.apache.comet.IcebergApi;
 import org.apache.comet.shims.ShimBatchReader;
 import org.apache.comet.shims.ShimFileFormat;
 import org.apache.comet.vector.CometVector;
@@ -87,6 +88,7 @@ import org.apache.comet.vector.CometVector;
  *   }
  * </pre>
  */
+@IcebergApi
 public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Closeable {
   private static final Logger LOG = LoggerFactory.getLogger(FileReader.class);
   protected static final BufferAllocator ALLOCATOR = new RootAllocator();
@@ -186,9 +188,9 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
   }
 
   /**
-   * @deprecated since 0.10.0, will be removed in 0.11.0.
    * @see <a href="https://github.com/apache/datafusion-comet/issues/2079">Comet Issue #2079</a>
    */
+  @IcebergApi
   public BatchReader(AbstractColumnReader[] columnReaders) {
     // Todo: set useDecimal128 and useLazyMaterialization
     int numColumns = columnReaders.length;
@@ -384,17 +386,17 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
   }
 
   /**
-   * @deprecated since 0.10.0, will be removed in 0.11.0.
    * @see <a href="https://github.com/apache/datafusion-comet/issues/2079">Comet Issue #2079</a>
    */
+  @IcebergApi
   public void setSparkSchema(StructType schema) {
     this.sparkSchema = schema;
   }
 
   /**
-   * @deprecated since 0.10.0, will be removed in 0.11.0.
    * @see <a href="https://github.com/apache/datafusion-comet/issues/2079">Comet Issue #2079</a>
    */
+  @IcebergApi
   public AbstractColumnReader[] getColumnReaders() {
     return columnReaders;
   }
@@ -498,6 +500,7 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
     return nextBatch(batchSize);
   }
 
+  @IcebergApi
   public boolean nextBatch(int batchSize) {
     long totalDecodeTime = 0, totalLoadTime = 0;
     for (int i = 0; i < columnReaders.length; i++) {
@@ -524,6 +527,7 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
     return true;
   }
 
+  @IcebergApi
   @Override
   public void close() throws IOException {
     if (columnReaders != null) {

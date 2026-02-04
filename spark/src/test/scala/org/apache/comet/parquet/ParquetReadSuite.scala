@@ -92,7 +92,7 @@ abstract class ParquetReadSuite extends CometTestBase {
       // for native iceberg compat, CometScanExec supports some types that native_comet does not.
       // note that native_datafusion does not use CometScanExec so we need not include that in
       // the check
-      val isDataFusionScan = usingDataSourceExec(conf)
+      val isDataFusionScan = !usingLegacyNativeCometScan(conf)
       Seq(
         NullType -> false,
         BooleanType -> true,
@@ -143,7 +143,7 @@ abstract class ParquetReadSuite extends CometTestBase {
 
       // Arrays support for iceberg compat native and for Parquet V1
       val cometScanExecSupported =
-        if (usingDataSourceExec(conf) && this.isInstanceOf[ParquetReadV1Suite])
+        if (!usingLegacyNativeCometScan(conf) && this.isInstanceOf[ParquetReadV1Suite])
           Seq(true, true, true)
         else Seq(true, false, false)
 
@@ -185,7 +185,7 @@ abstract class ParquetReadSuite extends CometTestBase {
             i.toDouble,
             DateTimeUtils.toJavaDate(i))
         }
-        if (!usingDataSourceExecWithIncompatTypes(conf)) {
+        if (!hasUnsignedSmallIntSafetyCheck(conf)) {
           checkParquetScan(data)
         }
         checkParquetFile(data)
@@ -207,7 +207,7 @@ abstract class ParquetReadSuite extends CometTestBase {
             i.toDouble,
             DateTimeUtils.toJavaDate(i))
         }
-        if (!usingDataSourceExecWithIncompatTypes(conf)) {
+        if (!hasUnsignedSmallIntSafetyCheck(conf)) {
           checkParquetScan(data)
         }
         checkParquetFile(data)
@@ -228,7 +228,7 @@ abstract class ParquetReadSuite extends CometTestBase {
         DateTimeUtils.toJavaDate(i))
     }
     val filter = (row: Row) => row.getBoolean(0)
-    if (!usingDataSourceExecWithIncompatTypes(conf)) {
+    if (!hasUnsignedSmallIntSafetyCheck(conf)) {
       checkParquetScan(data, filter)
     }
     checkParquetFile(data, filter)
@@ -1515,7 +1515,7 @@ abstract class ParquetReadSuite extends CometTestBase {
   test("row group skipping doesn't overflow when reading into larger type") {
     // Spark 4.0 no longer fails for widening types SPARK-40876
     // https://github.com/apache/spark/commit/3361f25dc0ff6e5233903c26ee105711b79ba967
-    assume(!isSpark40Plus && !usingDataSourceExec(conf))
+    assume(!isSpark40Plus && usingLegacyNativeCometScan(conf))
     withTempPath { path =>
       Seq(0).toDF("a").write.parquet(path.toString)
       // Reading integer 'a' as a long isn't supported. Check that an exception is raised instead
@@ -2045,7 +2045,7 @@ class ParquetReadV2Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
       case (cometEnabled, expectedScanner) =>
         testScanner(
           cometEnabled,
-          CometConf.SCAN_NATIVE_DATAFUSION,
+          CometConf.SCAN_NATIVE_COMET,
           scanner = expectedScanner,
           v1 = None)
     }

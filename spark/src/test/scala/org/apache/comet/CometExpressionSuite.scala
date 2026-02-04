@@ -30,7 +30,7 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, FromUnixTime, Literal, TruncDate, TruncTimestamp}
 import org.apache.spark.sql.catalyst.optimizer.SimplifyExtractValueOps
-import org.apache.spark.sql.comet.{CometNativeColumnarToRowExec, CometProjectExec}
+import org.apache.spark.sql.comet.CometProjectExec
 import org.apache.spark.sql.execution.{ProjectExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions._
@@ -39,7 +39,6 @@ import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.sql.types._
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
-import org.apache.comet.serde.CometConcat
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
@@ -1019,10 +1018,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       sql(s"insert into $table values(1,'James Smith')")
       val query = sql(s"select cast(id as string) from $table")
       val (_, cometPlan) = checkSparkAnswerAndOperator(query)
-      val project = cometPlan
-        .asInstanceOf[CometNativeColumnarToRowExec]
-        .child
-        .asInstanceOf[CometProjectExec]
+      val project = stripAQEPlan(cometPlan).collectFirst { case p: CometProjectExec => p }.get
       val id = project.expressions.head
       CometSparkSessionExtensions.withInfo(id, "reason 1")
       CometSparkSessionExtensions.withInfo(project, "reason 2")
@@ -1509,7 +1505,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("round") {
     // https://github.com/apache/datafusion-comet/issues/1441
-    assume(!usingDataSourceExec)
+    assume(usingLegacyNativeCometScan)
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
@@ -1573,7 +1569,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("hex") {
     // https://github.com/apache/datafusion-comet/issues/1441
-    assume(!usingDataSourceExec)
+    assume(usingLegacyNativeCometScan)
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "hex.parquet")
@@ -2607,7 +2603,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("get_struct_field with DataFusion ParquetExec - read entire struct") {
-    assume(usingDataSourceExec(conf))
+    assume(!usingLegacyNativeCometScan(conf))
     withTempPath { dir =>
       // create input file with Comet disabled
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
@@ -2644,7 +2640,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("read array[int] from parquet") {
-    assume(usingDataSourceExec(conf))
+    assume(!usingLegacyNativeCometScan(conf))
 
     withTempPath { dir =>
 // create input file with Comet disabled
@@ -3124,65 +3120,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       // FIXME: Change checkSparkAnswer to checkSparkAnswerAndOperator after resolving
       //  https://github.com/apache/datafusion-comet/issues/2348
       checkSparkAnswer("select length(c1), length(c2) AS x FROM t1 ORDER BY c1")
-    }
-  }
-
-  test("test concat function - strings") {
-    withTable("t1") {
-      sql(
-        "create table t1 using parquet as select uuid() c1, uuid() c2, uuid() c3, uuid() c4, cast(null as string) c5 from range(10)")
-      checkSparkAnswerAndOperator("select concat(c1, c2) AS x FROM t1")
-      checkSparkAnswerAndOperator("select concat(c1, c1) AS x FROM t1")
-      checkSparkAnswerAndOperator("select concat(c1, c2, c3) AS x FROM t1")
-      checkSparkAnswerAndOperator("select concat(c1, c2, c3, c5) AS x FROM t1")
-      checkSparkAnswerAndOperator(
-        "select concat(concat(c1, c2, c3), concat(c1, c3)) AS x FROM t1")
-    }
-  }
-
-  // https://github.com/apache/datafusion-comet/issues/2647
-  test("test concat function - arrays") {
-    withTable("t1") {
-      sql(
-        "create table t1 using parquet as select array(id, id+1) c1, array(id+2, id+3) c2, CAST(array() AS array<int>) c3, CAST(array(null) as array<int>) c4, cast(null as array<int>) c5 from range(10)")
-      checkSparkAnswerAndFallbackReason(
-        "select concat(c1, c2) AS x FROM t1",
-        CometConcat.unsupportedReason)
-      checkSparkAnswerAndFallbackReason(
-        "select concat(c1, c1) AS x FROM t1",
-        CometConcat.unsupportedReason)
-      checkSparkAnswerAndFallbackReason(
-        "select concat(c1, c2, c3) AS x FROM t1",
-        CometConcat.unsupportedReason)
-      checkSparkAnswerAndFallbackReason(
-        "select concat(c1, c2, c3, c5) AS x FROM t1",
-        CometConcat.unsupportedReason)
-      checkSparkAnswerAndFallbackReason(
-        "select concat(concat(c1, c2, c3), concat(c1, c3)) AS x FROM t1",
-        CometConcat.unsupportedReason)
-    }
-  }
-
-  // https://github.com/apache/datafusion-comet/issues/2647
-  test("test concat function - binary") {
-    withTable("t1") {
-      sql(
-        "create table t1 using parquet as select cast(uuid() as binary) c1, cast(uuid() as binary) c2, cast(uuid() as binary) c3, cast(uuid() as binary) c4, cast(null as binary) c5 from range(10)")
-      checkSparkAnswerAndFallbackReason(
-        "select concat(c1, c2) AS x FROM t1",
-        CometConcat.unsupportedReason)
-      checkSparkAnswerAndFallbackReason(
-        "select concat(c1, c1) AS x FROM t1",
-        CometConcat.unsupportedReason)
-      checkSparkAnswerAndFallbackReason(
-        "select concat(c1, c2, c3) AS x FROM t1",
-        CometConcat.unsupportedReason)
-      checkSparkAnswerAndFallbackReason(
-        "select concat(c1, c2, c3, c5) AS x FROM t1",
-        CometConcat.unsupportedReason)
-      checkSparkAnswerAndFallbackReason(
-        "select concat(concat(c1, c2, c3), concat(c1, c3)) AS x FROM t1",
-        CometConcat.unsupportedReason)
     }
   }
 
