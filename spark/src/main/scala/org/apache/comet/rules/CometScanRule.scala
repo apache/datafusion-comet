@@ -233,7 +233,7 @@ case class CometScanRule(session: SparkSession)
   private def transformV2Scan(scanExec: BatchScanExec): SparkPlan = {
 
     scanExec.scan match {
-      case scan: ParquetScan =>
+      case scan: ParquetScan if COMET_NATIVE_SCAN_IMPL.get() == SCAN_NATIVE_COMET =>
         val fallbackReasons = new ListBuffer[String]()
         val schemaSupported =
           CometBatchScanExec.isSchemaSupported(scan.readDataSchema, fallbackReasons)

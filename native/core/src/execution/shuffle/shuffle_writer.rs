@@ -17,10 +17,13 @@
 
 //! Defines the External shuffle repartition plan.
 
+use crate::execution::shuffle::metrics::ShufflePartitionerMetrics;
+use crate::execution::shuffle::writers::{BufBatchWriter, PartitionWriter};
 use crate::execution::shuffle::{CometPartitioning, CompressionCodec, ShuffleBlockWriter};
 use crate::execution::tracing::{with_trace, with_trace_async};
 use arrow::compute::interleave_record_batch;
 use async_trait::async_trait;
+use datafusion::common::exec_datafusion_err;
 use datafusion::common::utils::proxy::VecAllocExt;
 use datafusion::physical_expr::{EquivalenceProperties, Partitioning};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
@@ -30,14 +33,11 @@ use datafusion::{
     error::{DataFusionError, Result},
     execution::{
         context::TaskContext,
-        disk_manager::RefCountedTempFile,
         memory_pool::{MemoryConsumer, MemoryReservation},
         runtime_env::RuntimeEnv,
     },
     physical_plan::{
-        metrics::{
-            BaselineMetrics, Count, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet, Time,
-        },
+        metrics::{ExecutionPlanMetricsSet, MetricsSet, Time},
         stream::RecordBatchStreamAdapter,
         DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, SendableRecordBatchStream,
         Statistics,
@@ -46,8 +46,6 @@ use datafusion::{
 use datafusion_comet_spark_expr::hash_funcs::murmur3::create_murmur3_hashes;
 use futures::{StreamExt, TryFutureExt, TryStreamExt};
 use itertools::Itertools;
-use std::borrow::Borrow;
-use std::io::{Cursor, Error, SeekFrom};
 use std::{
     any::Any,
     fmt,
@@ -185,7 +183,7 @@ impl ExecutionPlan for ShuffleWriterExec {
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
         let input = self.input.execute(partition, Arc::clone(&context))?;
-        let metrics = ShuffleRepartitionerMetrics::new(&self.metrics, 0);
+        let metrics = ShufflePartitionerMetrics::new(&self.metrics, 0);
 
         Ok(Box::pin(RecordBatchStreamAdapter::new(
             self.schema(),
@@ -216,7 +214,7 @@ async fn external_shuffle(
     output_data_file: String,
     output_index_file: String,
     partitioning: CometPartitioning,
-    metrics: ShuffleRepartitionerMetrics,
+    metrics: ShufflePartitionerMetrics,
     context: Arc<TaskContext>,
     codec: CompressionCodec,
     tracing_enabled: bool,
@@ -257,56 +255,20 @@ async fn external_shuffle(
             // into the corresponding partition buffer.
             // Otherwise, pull the next batch from the input stream might overwrite the
             // current batch in the repartitioner.
-            repartitioner.insert_batch(batch?).await?;
+            repartitioner
+                .insert_batch(batch?)
+                .await
+                .map_err(|err| exec_datafusion_err!("Error inserting batch: {err}"))?;
         }
 
-        repartitioner.shuffle_write()?;
+        repartitioner
+            .shuffle_write()
+            .map_err(|err| exec_datafusion_err!("Error in shuffle write: {err}"))?;
 
         // shuffle writer always has empty output
         Ok(Box::pin(EmptyRecordBatchStream::new(Arc::clone(&schema))) as SendableRecordBatchStream)
     })
     .await
-}
-
-struct ShuffleRepartitionerMetrics {
-    /// metrics
-    baseline: BaselineMetrics,
-
-    /// Time to perform repartitioning
-    repart_time: Time,
-
-    /// Time encoding batches to IPC format
-    encode_time: Time,
-
-    /// Time spent writing to disk. Maps to "shuffleWriteTime" in Spark SQL Metrics.
-    write_time: Time,
-
-    /// Number of input batches
-    input_batches: Count,
-
-    /// count of spills during the execution of the operator
-    spill_count: Count,
-
-    /// total spilled bytes during the execution of the operator
-    spilled_bytes: Count,
-
-    /// The original size of spilled data. Different to `spilled_bytes` because of compression.
-    data_size: Count,
-}
-
-impl ShuffleRepartitionerMetrics {
-    fn new(metrics: &ExecutionPlanMetricsSet, partition: usize) -> Self {
-        Self {
-            baseline: BaselineMetrics::new(metrics, partition),
-            repart_time: MetricBuilder::new(metrics).subset_time("repart_time", partition),
-            encode_time: MetricBuilder::new(metrics).subset_time("encode_time", partition),
-            write_time: MetricBuilder::new(metrics).subset_time("write_time", partition),
-            input_batches: MetricBuilder::new(metrics).counter("input_batches", partition),
-            spill_count: MetricBuilder::new(metrics).spill_count(partition),
-            spilled_bytes: MetricBuilder::new(metrics).spilled_bytes(partition),
-            data_size: MetricBuilder::new(metrics).counter("data_size", partition),
-        }
-    }
 }
 
 #[async_trait::async_trait]
@@ -328,7 +290,7 @@ struct MultiPartitionShuffleRepartitioner {
     /// Partitioning scheme to use
     partitioning: CometPartitioning,
     runtime: Arc<RuntimeEnv>,
-    metrics: ShuffleRepartitionerMetrics,
+    metrics: ShufflePartitionerMetrics,
     /// Reused scratch space for computing partition indices
     scratch: ScratchSpace,
     /// The configured batch size
@@ -356,6 +318,54 @@ struct ScratchSpace {
     partition_starts: Vec<u32>,
 }
 
+impl ScratchSpace {
+    fn map_partition_ids_to_starts_and_indices(
+        &mut self,
+        num_output_partitions: usize,
+        num_rows: usize,
+    ) {
+        let partition_ids = &mut self.partition_ids[..num_rows];
+
+        // count each partition size, while leaving the last extra element as 0
+        let partition_counters = &mut self.partition_starts;
+        partition_counters.resize(num_output_partitions + 1, 0);
+        partition_counters.fill(0);
+        partition_ids
+            .iter()
+            .for_each(|partition_id| partition_counters[*partition_id as usize] += 1);
+
+        // accumulate partition counters into partition ends
+        // e.g. partition counter: [1, 3, 2, 1, 0] => [1, 4, 6, 7, 7]
+        let partition_ends = partition_counters;
+        let mut accum = 0;
+        partition_ends.iter_mut().for_each(|v| {
+            *v += accum;
+            accum = *v;
+        });
+
+        // calculate partition row indices and partition starts
+        // e.g. partition ids: [3, 1, 1, 1, 2, 2, 0] will produce the following partition_row_indices
+        // and partition_starts arrays:
+        //
+        //  partition_row_indices: [6, 1, 2, 3, 4, 5, 0]
+        //  partition_starts: [0, 1, 4, 6, 7]
+        //
+        // partition_starts conceptually splits partition_row_indices into smaller slices.
+        // Each slice partition_row_indices[partition_starts[K]..partition_starts[K + 1]] contains the
+        // row indices of the input batch that are partitioned into partition K. For example,
+        // first partition 0 has one row index [6], partition 1 has row indices [1, 2, 3], etc.
+        let partition_row_indices = &mut self.partition_row_indices;
+        partition_row_indices.resize(num_rows, 0);
+        for (index, partition_id) in partition_ids.iter().enumerate().rev() {
+            partition_ends[*partition_id as usize] -= 1;
+            let end = partition_ends[*partition_id as usize];
+            partition_row_indices[end as usize] = index as u32;
+        }
+
+        // after calculating, partition ends become partition starts
+    }
+}
+
 impl MultiPartitionShuffleRepartitioner {
     #[allow(clippy::too_many_arguments)]
     pub fn try_new(
@@ -364,7 +374,7 @@ impl MultiPartitionShuffleRepartitioner {
         output_index_file: String,
         schema: SchemaRef,
         partitioning: CometPartitioning,
-        metrics: ShuffleRepartitionerMetrics,
+        metrics: ShufflePartitionerMetrics,
         runtime: Arc<RuntimeEnv>,
         batch_size: usize,
         codec: CompressionCodec,
@@ -432,52 +442,6 @@ impl MultiPartitionShuffleRepartitioner {
             return Ok(());
         }
 
-        fn map_partition_ids_to_starts_and_indices(
-            scratch: &mut ScratchSpace,
-            num_output_partitions: usize,
-            num_rows: usize,
-        ) {
-            let partition_ids = &mut scratch.partition_ids[..num_rows];
-
-            // count each partition size, while leaving the last extra element as 0
-            let partition_counters = &mut scratch.partition_starts;
-            partition_counters.resize(num_output_partitions + 1, 0);
-            partition_counters.fill(0);
-            partition_ids
-                .iter()
-                .for_each(|partition_id| partition_counters[*partition_id as usize] += 1);
-
-            // accumulate partition counters into partition ends
-            // e.g. partition counter: [1, 3, 2, 1, 0] => [1, 4, 6, 7, 7]
-            let partition_ends = partition_counters;
-            let mut accum = 0;
-            partition_ends.iter_mut().for_each(|v| {
-                *v += accum;
-                accum = *v;
-            });
-
-            // calculate partition row indices and partition starts
-            // e.g. partition ids: [3, 1, 1, 1, 2, 2, 0] will produce the following partition_row_indices
-            // and partition_starts arrays:
-            //
-            //  partition_row_indices: [6, 1, 2, 3, 4, 5, 0]
-            //  partition_starts: [0, 1, 4, 6, 7]
-            //
-            // partition_starts conceptually splits partition_row_indices into smaller slices.
-            // Each slice partition_row_indices[partition_starts[K]..partition_starts[K + 1]] contains the
-            // row indices of the input batch that are partitioned into partition K. For example,
-            // first partition 0 has one row index [6], partition 1 has row indices [1, 2, 3], etc.
-            let partition_row_indices = &mut scratch.partition_row_indices;
-            partition_row_indices.resize(num_rows, 0);
-            for (index, partition_id) in partition_ids.iter().enumerate().rev() {
-                partition_ends[*partition_id as usize] -= 1;
-                let end = partition_ends[*partition_id as usize];
-                partition_row_indices[end as usize] = index as u32;
-            }
-
-            // after calculating, partition ends become partition starts
-        }
-
         if input.num_rows() > self.batch_size {
             return Err(DataFusionError::Internal(
                 "Input batch size exceeds configured batch size. Call `insert_batch` instead."
@@ -524,11 +488,8 @@ impl MultiPartitionShuffleRepartitioner {
 
                     // We now have partition ids for every input row, map that to partition starts
                     // and partition indices to eventually right these rows to partition buffers.
-                    map_partition_ids_to_starts_and_indices(
-                        &mut scratch,
-                        *num_output_partitions,
-                        num_rows,
-                    );
+                    scratch
+                        .map_partition_ids_to_starts_and_indices(*num_output_partitions, num_rows);
 
                     timer.stop();
                     Ok::<(&Vec<u32>, &Vec<u32>), DataFusionError>((
@@ -580,11 +541,8 @@ impl MultiPartitionShuffleRepartitioner {
 
                     // We now have partition ids for every input row, map that to partition starts
                     // and partition indices to eventually right these rows to partition buffers.
-                    map_partition_ids_to_starts_and_indices(
-                        &mut scratch,
-                        *num_output_partitions,
-                        num_rows,
-                    );
+                    scratch
+                        .map_partition_ids_to_starts_and_indices(*num_output_partitions, num_rows);
 
                     timer.stop();
                     Ok::<(&Vec<u32>, &Vec<u32>), DataFusionError>((
@@ -642,11 +600,8 @@ impl MultiPartitionShuffleRepartitioner {
 
                     // We now have partition ids for every input row, map that to partition starts
                     // and partition indices to eventually write these rows to partition buffers.
-                    map_partition_ids_to_starts_and_indices(
-                        &mut scratch,
-                        *num_output_partitions,
-                        num_rows,
-                    );
+                    scratch
+                        .map_partition_ids_to_starts_and_indices(*num_output_partitions, num_rows);
 
                     timer.stop();
                     Ok::<(&Vec<u32>, &Vec<u32>), DataFusionError>((
@@ -852,11 +807,10 @@ impl ShufflePartitioner for MultiPartitionShuffleRepartitioner {
 
                 // if we wrote a spill file for this partition then copy the
                 // contents into the shuffle file
-                if let Some(spill_data) = self.partition_writers[i].spill_file.as_ref() {
-                    let mut spill_file =
-                        BufReader::new(File::open(spill_data.temp_file.path()).map_err(to_df_err)?);
+                if let Some(spill_path) = self.partition_writers[i].path() {
+                    let mut spill_file = BufReader::new(File::open(spill_path)?);
                     let mut write_timer = self.metrics.write_time.timer();
-                    std::io::copy(&mut spill_file, &mut output_data).map_err(to_df_err)?;
+                    std::io::copy(&mut spill_file, &mut output_data)?;
                     write_timer.stop();
                 }
 
@@ -877,7 +831,7 @@ impl ShufflePartitioner for MultiPartitionShuffleRepartitioner {
             write_timer.stop();
 
             // add one extra offset at last to ease partition length computation
-            offsets[num_output_partitions] = output_data.stream_position().map_err(to_df_err)?;
+            offsets[num_output_partitions] = output_data.stream_position()?;
 
             let mut write_timer = self.metrics.write_time.timer();
             let mut output_index =
@@ -885,9 +839,7 @@ impl ShufflePartitioner for MultiPartitionShuffleRepartitioner {
                     DataFusionError::Execution(format!("shuffle write error: {e:?}"))
                 })?);
             for offset in offsets {
-                output_index
-                    .write_all(&(offset as i64).to_le_bytes()[..])
-                    .map_err(to_df_err)?;
+                output_index.write_all(&(offset as i64).to_le_bytes()[..])?;
             }
             output_index.flush()?;
             write_timer.stop();
@@ -923,7 +875,7 @@ struct SinglePartitionShufflePartitioner {
     /// Number of rows in the concatenating batches
     num_buffered_rows: usize,
     /// Metrics for the repartitioner
-    metrics: ShuffleRepartitionerMetrics,
+    metrics: ShufflePartitionerMetrics,
     /// The configured batch size
     batch_size: usize,
 }
@@ -933,7 +885,7 @@ impl SinglePartitionShufflePartitioner {
         output_data_path: String,
         output_index_path: String,
         schema: SchemaRef,
-        metrics: ShuffleRepartitionerMetrics,
+        metrics: ShufflePartitionerMetrics,
         batch_size: usize,
         codec: CompressionCodec,
         write_buffer_size: usize,
@@ -944,8 +896,7 @@ impl SinglePartitionShufflePartitioner {
             .write(true)
             .create(true)
             .truncate(true)
-            .open(output_data_path)
-            .map_err(to_df_err)?;
+            .open(output_data_path)?;
 
         let output_data_writer =
             BufBatchWriter::new(shuffle_block_writer, output_data_file, write_buffer_size);
@@ -1060,15 +1011,9 @@ impl ShufflePartitioner for SinglePartitionShufflePartitioner {
             .open(self.output_index_path.clone())
             .map_err(|e| DataFusionError::Execution(format!("shuffle write error: {e:?}")))?;
         let mut index_buf_writer = BufWriter::new(index_file);
-        let data_file_length = self
-            .output_data_writer
-            .writer
-            .stream_position()
-            .map_err(to_df_err)?;
+        let data_file_length = self.output_data_writer.writer_stream_position()?;
         for offset in [0, data_file_length] {
-            index_buf_writer
-                .write_all(&(offset as i64).to_le_bytes()[..])
-                .map_err(to_df_err)?;
+            index_buf_writer.write_all(&(offset as i64).to_le_bytes()[..])?;
         }
         index_buf_writer.flush()?;
 
@@ -1080,21 +1025,17 @@ impl ShufflePartitioner for SinglePartitionShufflePartitioner {
     }
 }
 
-fn to_df_err(e: Error) -> DataFusionError {
-    DataFusionError::Execution(format!("shuffle write error: {e:?}"))
-}
-
 /// A helper struct to produce shuffled batches.
 /// This struct takes ownership of the buffered batches and partition indices from the
 /// ShuffleRepartitioner, and provides an iterator over the batches in the specified partitions.
-struct PartitionedBatchesProducer {
+pub(crate) struct PartitionedBatchesProducer {
     buffered_batches: Vec<RecordBatch>,
     partition_indices: Vec<Vec<(u32, u32)>>,
     batch_size: usize,
 }
 
 impl PartitionedBatchesProducer {
-    fn new(
+    pub(crate) fn new(
         buffered_batches: Vec<RecordBatch>,
         indices: Vec<Vec<(u32, u32)>>,
         batch_size: usize,
@@ -1115,7 +1056,7 @@ impl PartitionedBatchesProducer {
     }
 }
 
-struct PartitionedBatchIterator<'a> {
+pub(crate) struct PartitionedBatchIterator<'a> {
     record_batches: Vec<&'a RecordBatch>,
     batch_size: usize,
     indices: Vec<(usize, usize)>,
@@ -1171,141 +1112,6 @@ impl Iterator for PartitionedBatchIterator<'_> {
                 Some(DataFusionError::get_back_trace()),
             ))),
         }
-    }
-}
-
-struct PartitionWriter {
-    /// Spill file for intermediate shuffle output for this partition. Each spill event
-    /// will append to this file and the contents will be copied to the shuffle file at
-    /// the end of processing.
-    spill_file: Option<SpillFile>,
-    /// Writer that performs encoding and compression
-    shuffle_block_writer: ShuffleBlockWriter,
-}
-
-struct SpillFile {
-    temp_file: RefCountedTempFile,
-    file: File,
-}
-
-impl PartitionWriter {
-    fn try_new(shuffle_block_writer: ShuffleBlockWriter) -> Result<Self> {
-        Ok(Self {
-            spill_file: None,
-            shuffle_block_writer,
-        })
-    }
-
-    fn spill(
-        &mut self,
-        iter: &mut PartitionedBatchIterator,
-        runtime: &RuntimeEnv,
-        metrics: &ShuffleRepartitionerMetrics,
-        write_buffer_size: usize,
-    ) -> Result<usize> {
-        if let Some(batch) = iter.next() {
-            self.ensure_spill_file_created(runtime)?;
-
-            let total_bytes_written = {
-                let mut buf_batch_writer = BufBatchWriter::new(
-                    &mut self.shuffle_block_writer,
-                    &mut self.spill_file.as_mut().unwrap().file,
-                    write_buffer_size,
-                );
-                let mut bytes_written =
-                    buf_batch_writer.write(&batch?, &metrics.encode_time, &metrics.write_time)?;
-                for batch in iter {
-                    let batch = batch?;
-                    bytes_written += buf_batch_writer.write(
-                        &batch,
-                        &metrics.encode_time,
-                        &metrics.write_time,
-                    )?;
-                }
-                buf_batch_writer.flush(&metrics.write_time)?;
-                bytes_written
-            };
-
-            Ok(total_bytes_written)
-        } else {
-            Ok(0)
-        }
-    }
-
-    fn ensure_spill_file_created(&mut self, runtime: &RuntimeEnv) -> Result<()> {
-        if self.spill_file.is_none() {
-            // Spill file is not yet created, create it
-            let spill_file = runtime
-                .disk_manager
-                .create_tmp_file("shuffle writer spill")?;
-            let spill_data = OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .open(spill_file.path())
-                .map_err(|e| {
-                    DataFusionError::Execution(format!("Error occurred while spilling {e}"))
-                })?;
-            self.spill_file = Some(SpillFile {
-                temp_file: spill_file,
-                file: spill_data,
-            });
-        }
-        Ok(())
-    }
-}
-
-/// Write batches to writer while using a buffer to avoid frequent system calls.
-/// The record batches were first written by ShuffleBlockWriter into an internal buffer.
-/// Once the buffer exceeds the max size, the buffer will be flushed to the writer.
-struct BufBatchWriter<S: Borrow<ShuffleBlockWriter>, W: Write> {
-    shuffle_block_writer: S,
-    writer: W,
-    buffer: Vec<u8>,
-    buffer_max_size: usize,
-}
-
-impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
-    fn new(shuffle_block_writer: S, writer: W, buffer_max_size: usize) -> Self {
-        Self {
-            shuffle_block_writer,
-            writer,
-            buffer: vec![],
-            buffer_max_size,
-        }
-    }
-
-    fn write(
-        &mut self,
-        batch: &RecordBatch,
-        encode_time: &Time,
-        write_time: &Time,
-    ) -> Result<usize> {
-        let mut cursor = Cursor::new(&mut self.buffer);
-        cursor.seek(SeekFrom::End(0))?;
-        let bytes_written =
-            self.shuffle_block_writer
-                .borrow()
-                .write_batch(batch, &mut cursor, encode_time)?;
-        let pos = cursor.position();
-        if pos >= self.buffer_max_size as u64 {
-            let mut write_timer = write_time.timer();
-            self.writer.write_all(&self.buffer)?;
-            write_timer.stop();
-            self.buffer.clear();
-        }
-        Ok(bytes_written)
-    }
-
-    fn flush(&mut self, write_time: &Time) -> Result<()> {
-        let mut write_timer = write_time.timer();
-        if !self.buffer.is_empty() {
-            self.writer.write_all(&self.buffer)?;
-        }
-        self.writer.flush()?;
-        write_timer.stop();
-        self.buffer.clear();
-        Ok(())
     }
 }
 
@@ -1393,7 +1199,7 @@ mod test {
     }
 
     #[tokio::test]
-    async fn shuffle_repartitioner_memory() {
+    async fn shuffle_partitioner_memory() {
         let batch = create_batch(900);
         assert_eq!(8316, batch.get_array_memory_size()); // Not stable across Arrow versions
 
@@ -1407,7 +1213,7 @@ mod test {
             "/tmp/index.out".to_string(),
             batch.schema(),
             CometPartitioning::Hash(vec![Arc::new(Column::new("a", 0))], num_partitions),
-            ShuffleRepartitionerMetrics::new(&metrics_set, 0),
+            ShufflePartitionerMetrics::new(&metrics_set, 0),
             runtime_env,
             1024,
             CompressionCodec::Lz4Frame,
@@ -1420,14 +1226,14 @@ mod test {
 
         assert_eq!(2, repartitioner.partition_writers.len());
 
-        assert!(repartitioner.partition_writers[0].spill_file.is_none());
-        assert!(repartitioner.partition_writers[1].spill_file.is_none());
+        assert!(!repartitioner.partition_writers[0].has_spill_file());
+        assert!(!repartitioner.partition_writers[1].has_spill_file());
 
         repartitioner.spill().unwrap();
 
         // after spill, there should be spill files
-        assert!(repartitioner.partition_writers[0].spill_file.is_some());
-        assert!(repartitioner.partition_writers[1].spill_file.is_some());
+        assert!(repartitioner.partition_writers[0].has_spill_file());
+        assert!(repartitioner.partition_writers[1].has_spill_file());
 
         // insert another batch after spilling
         repartitioner.insert_batch(batch.clone()).await.unwrap();

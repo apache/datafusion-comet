@@ -32,6 +32,16 @@ SELECT concat_ws('', a, b, c) FROM test_concat_ws
 query
 SELECT concat_ws(NULL, a, b, c) FROM test_concat_ws
 
+-- migrated from CometStringExpressionSuite "string concat_ws"
+statement
+CREATE TABLE names(id int, first_name varchar(20), middle_initial char(1), last_name varchar(20)) USING parquet
+
+statement
+INSERT INTO names VALUES(1, 'James', 'B', 'Taylor'), (2, 'Smith', 'C', 'Davis'), (3, NULL, NULL, NULL), (4, 'Smith', 'C', 'Davis')
+
+query
+SELECT concat_ws(' ', first_name, middle_initial, last_name) FROM names
+
 -- literal + literal + literal
 query ignore(https://github.com/apache/datafusion-comet/issues/3339)
 SELECT concat_ws(',', 'hello', 'world'), concat_ws(',', '', ''), concat_ws(',', NULL, 'b', 'c'), concat_ws(NULL, 'a', 'b')

@@ -26,11 +26,27 @@ import scala.io.Source
 /** A record in a SQL test file: either a statement (DDL/DML) or a query (SELECT). */
 sealed trait SqlTestRecord
 
-/** A SQL statement to execute (CREATE TABLE, INSERT, etc.). */
-case class SqlStatement(sql: String) extends SqlTestRecord
+/**
+ * A SQL statement to execute (CREATE TABLE, INSERT, etc.).
+ *
+ * @param sql
+ *   The SQL text.
+ * @param line
+ *   1-based line number in the original .sql file where the statement starts.
+ */
+case class SqlStatement(sql: String, line: Int) extends SqlTestRecord
 
-/** A SQL query whose results are compared between Spark and Comet. */
-case class SqlQuery(sql: String, mode: QueryAssertionMode = CheckCoverageAndAnswer)
+/**
+ * A SQL query whose results are compared between Spark and Comet.
+ *
+ * @param sql
+ *   The SQL text.
+ * @param mode
+ *   How to validate the query.
+ * @param line
+ *   1-based line number in the original .sql file where the query starts.
+ */
+case class SqlQuery(sql: String, mode: QueryAssertionMode = CheckCoverageAndAnswer, line: Int)
     extends SqlTestRecord
 
 sealed trait QueryAssertionMode
@@ -103,17 +119,19 @@ object SqlFileTestParser {
 
         case "statement" =>
           lineIdx += 1
+          val startLine = lineIdx + 1
           val (sql, nextIdx) = collectSql(lines, lineIdx)
           // Extract table names for cleanup
           CreateTablePattern.findFirstMatchIn(sql).foreach(m => tables += m.group(1))
-          records += SqlStatement(sql)
+          records += SqlStatement(sql, startLine)
           lineIdx = nextIdx
 
         case s if s.startsWith("query") =>
           val mode = parseQueryAssertionMode(s)
           lineIdx += 1
+          val startLine = lineIdx + 1
           val (sql, nextIdx) = collectSql(lines, lineIdx)
-          records += SqlQuery(sql, mode)
+          records += SqlQuery(sql, mode, startLine)
           lineIdx = nextIdx
 
         case _ =>
