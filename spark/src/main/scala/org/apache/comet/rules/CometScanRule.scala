@@ -57,8 +57,6 @@ import org.apache.comet.shims.CometTypeShim
  */
 case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with CometTypeShim {
 
-  import CometScanRule._
-
   private lazy val showTransformations = CometConf.COMET_EXPLAIN_TRANSFORMATIONS.get()
 
   override def apply(plan: SparkPlan): SparkPlan = {
