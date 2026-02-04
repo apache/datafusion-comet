@@ -566,7 +566,7 @@ index 93275487f29..510e3087e0f 100644
          }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/IgnoreComet.scala b/sql/core/src/test/scala/org/apache/spark/sql/IgnoreComet.scala
 new file mode 100644
-index 00000000000..5691536c114
+index 00000000000..1ee842b6f62
 --- /dev/null
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/IgnoreComet.scala
 @@ -0,0 +1,45 @@
@@ -606,8 +606,8 @@ index 00000000000..5691536c114
 + * Helper trait that disables Comet for all tests regardless of default config values.
 + */
 +trait IgnoreCometSuite extends SQLTestUtils {
-+  override protected def test(testName: String, testTags: Tag*)(testFun: => Any)
-+    (implicit pos: Position): Unit = {
++  override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
++      pos: Position): Unit = {
 +    if (isCometEnabled) {
 +      ignore(testName + " (disabled when Comet is on)", testTags: _*)(testFun)
 +    } else {
