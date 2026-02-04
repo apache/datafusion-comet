@@ -23,6 +23,7 @@ use crate::execution::shuffle::{CometPartitioning, CompressionCodec, ShuffleBloc
 use crate::execution::tracing::{with_trace, with_trace_async};
 use arrow::compute::interleave_record_batch;
 use async_trait::async_trait;
+use datafusion::common::exec_datafusion_err;
 use datafusion::common::utils::proxy::VecAllocExt;
 use datafusion::physical_expr::{EquivalenceProperties, Partitioning};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
@@ -45,7 +46,6 @@ use datafusion::{
 use datafusion_comet_spark_expr::hash_funcs::murmur3::create_murmur3_hashes;
 use futures::{StreamExt, TryFutureExt, TryStreamExt};
 use itertools::Itertools;
-use std::io::Error;
 use std::{
     any::Any,
     fmt,
@@ -255,10 +255,15 @@ async fn external_shuffle(
             // into the corresponding partition buffer.
             // Otherwise, pull the next batch from the input stream might overwrite the
             // current batch in the repartitioner.
-            repartitioner.insert_batch(batch?).await?;
+            repartitioner
+                .insert_batch(batch?)
+                .await
+                .map_err(|err| exec_datafusion_err!("Error inserting batch: {err}"))?;
         }
 
-        repartitioner.shuffle_write()?;
+        repartitioner
+            .shuffle_write()
+            .map_err(|err| exec_datafusion_err!("Error in shuffle write: {err}"))?;
 
         // shuffle writer always has empty output
         Ok(Box::pin(EmptyRecordBatchStream::new(Arc::clone(&schema))) as SendableRecordBatchStream)
@@ -803,9 +808,9 @@ impl ShufflePartitioner for MultiPartitionShuffleRepartitioner {
                 // if we wrote a spill file for this partition then copy the
                 // contents into the shuffle file
                 if let Some(spill_path) = self.partition_writers[i].path() {
-                    let mut spill_file = BufReader::new(File::open(spill_path).map_err(to_df_err)?);
+                    let mut spill_file = BufReader::new(File::open(spill_path)?);
                     let mut write_timer = self.metrics.write_time.timer();
-                    std::io::copy(&mut spill_file, &mut output_data).map_err(to_df_err)?;
+                    std::io::copy(&mut spill_file, &mut output_data)?;
                     write_timer.stop();
                 }
 
@@ -826,7 +831,7 @@ impl ShufflePartitioner for MultiPartitionShuffleRepartitioner {
             write_timer.stop();
 
             // add one extra offset at last to ease partition length computation
-            offsets[num_output_partitions] = output_data.stream_position().map_err(to_df_err)?;
+            offsets[num_output_partitions] = output_data.stream_position()?;
 
             let mut write_timer = self.metrics.write_time.timer();
             let mut output_index =
@@ -834,9 +839,7 @@ impl ShufflePartitioner for MultiPartitionShuffleRepartitioner {
                     DataFusionError::Execution(format!("shuffle write error: {e:?}"))
                 })?);
             for offset in offsets {
-                output_index
-                    .write_all(&(offset as i64).to_le_bytes()[..])
-                    .map_err(to_df_err)?;
+                output_index.write_all(&(offset as i64).to_le_bytes()[..])?;
             }
             output_index.flush()?;
             write_timer.stop();
@@ -893,8 +896,7 @@ impl SinglePartitionShufflePartitioner {
             .write(true)
             .create(true)
             .truncate(true)
-            .open(output_data_path)
-            .map_err(to_df_err)?;
+            .open(output_data_path)?;
 
         let output_data_writer =
             BufBatchWriter::new(shuffle_block_writer, output_data_file, write_buffer_size);
@@ -1011,9 +1013,7 @@ impl ShufflePartitioner for SinglePartitionShufflePartitioner {
         let mut index_buf_writer = BufWriter::new(index_file);
         let data_file_length = self.output_data_writer.writer_stream_position()?;
         for offset in [0, data_file_length] {
-            index_buf_writer
-                .write_all(&(offset as i64).to_le_bytes()[..])
-                .map_err(to_df_err)?;
+            index_buf_writer.write_all(&(offset as i64).to_le_bytes()[..])?;
         }
         index_buf_writer.flush()?;
 
@@ -1023,10 +1023,6 @@ impl ShufflePartitioner for SinglePartitionShufflePartitioner {
             .add_duration(start_time.elapsed());
         Ok(())
     }
-}
-
-fn to_df_err(e: Error) -> DataFusionError {
-    DataFusionError::Execution(format!("shuffle write error: {e:?}"))
 }
 
 /// A helper struct to produce shuffled batches.
