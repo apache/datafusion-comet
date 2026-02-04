@@ -82,10 +82,6 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
       withInfo(scanExec, "Native DataFusion scan does not support metadata columns")
     }
 
-    if (scanExec.bucketedScan) {
-      withInfo(scanExec, "Native DataFusion scan does not support bucketed scans")
-    }
-
     if (ShimFileFormat.findRowIndexColumnIndexInSchema(scanExec.requiredSchema) >= 0) {
       withInfo(scanExec, "Native DataFusion scan does not support row index generation")
     }
