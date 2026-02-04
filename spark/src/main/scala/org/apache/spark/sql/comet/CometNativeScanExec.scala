@@ -65,8 +65,16 @@ case class CometNativeScanExec(
   override val nodeName: String =
     s"CometNativeScan $relation ${tableIdentifier.map(_.unquotedString).getOrElse("")}"
 
-  override lazy val outputPartitioning: Partitioning =
-    UnknownPartitioning(originalPlan.inputRDD.getNumPartitions)
+  // exposed for testing
+  lazy val bucketedScan: Boolean = originalPlan.bucketedScan && !disableBucketedScan
+
+  override lazy val outputPartitioning: Partitioning = {
+    if (bucketedScan) {
+      originalPlan.outputPartitioning
+    } else {
+      UnknownPartitioning(originalPlan.inputRDD.getNumPartitions)
+    }
+  }
 
   override lazy val outputOrdering: Seq[SortOrder] = originalPlan.outputOrdering
 
