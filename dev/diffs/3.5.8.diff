@@ -1111,7 +1111,7 @@ index cfc8b2cc845..c6fcfd7bd08 100644
  import org.apache.spark.SparkConf
  import org.apache.spark.sql.{AnalysisException, QueryTest}
  import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
-+import org.apache.spark.sql.comet.CometScanExec
++import org.apache.spark.sql.comet.{CometNativeScanExec, CometScanExec}
  import org.apache.spark.sql.connector.catalog.{SupportsRead, SupportsWrite, Table, TableCapability}
  import org.apache.spark.sql.connector.read.ScanBuilder
  import org.apache.spark.sql.connector.write.{LogicalWriteInfo, WriteBuilder}
@@ -1121,7 +1121,7 @@ index cfc8b2cc845..c6fcfd7bd08 100644
              assert(
 -              df.queryExecution.executedPlan.exists(_.isInstanceOf[FileSourceScanExec]))
 +              df.queryExecution.executedPlan.exists {
-+                case _: FileSourceScanExec | _: CometScanExec => true
++                case _: FileSourceScanExec | _: CometScanExec | _: CometNativeScanExec => true
 +                case _ => false
 +              }
 +            )
@@ -2941,49 +2941,6 @@ index 52abd248f3a..7a199931a08 100644
        case h: HiveTableScanExec => h.partitionPruningPred.collect {
          case d: DynamicPruningExpression => d.child
        }
-diff --git a/sql/hive/src/test/scala/org/apache/spark/sql/hive/ParquetEncryptionSuite.scala b/sql/hive/src/test/scala/org/apache/spark/sql/hive/ParquetEncryptionSuite.scala
-index 549431ef4f4..e48f1730da6 100644
---- a/sql/hive/src/test/scala/org/apache/spark/sql/hive/ParquetEncryptionSuite.scala
-+++ b/sql/hive/src/test/scala/org/apache/spark/sql/hive/ParquetEncryptionSuite.scala
-@@ -22,7 +22,7 @@ import java.io.RandomAccessFile
- import java.nio.charset.StandardCharsets
- import java.util.Base64
- 
--import org.apache.spark.sql.QueryTest
-+import org.apache.spark.sql.{IgnoreCometNativeScan, QueryTest}
- import org.apache.spark.sql.hive.test.TestHiveSingleton
- 
- /**
-@@ -37,7 +37,8 @@ class ParquetEncryptionSuite extends QueryTest with TestHiveSingleton {
-   private val key1 = encoder.encodeToString("1234567890123450".getBytes(StandardCharsets.UTF_8))
-   private val key2 = encoder.encodeToString("1234567890123451".getBytes(StandardCharsets.UTF_8))
- 
--  test("SPARK-34990: Write and read an encrypted parquet") {
-+  test("SPARK-34990: Write and read an encrypted parquet",
-+    IgnoreCometNativeScan("no encryption support yet")) {
-     withTempDir { dir =>
-       withSQLConf(
-         "parquet.crypto.factory.class" ->
-@@ -64,7 +65,8 @@ class ParquetEncryptionSuite extends QueryTest with TestHiveSingleton {
-     }
-   }
- 
--  test("SPARK-37117: Can't read files in Parquet encryption external key material mode") {
-+  test("SPARK-37117: Can't read files in Parquet encryption external key material mode",
-+    IgnoreCometNativeScan("no encryption support yet")) {
-     withTempDir { dir =>
-       withSQLConf(
-         "parquet.crypto.factory.class" ->
-@@ -91,7 +93,8 @@ class ParquetEncryptionSuite extends QueryTest with TestHiveSingleton {
-     }
-   }
- 
--  test("SPARK-42114: Test of uniform parquet encryption") {
-+  test("SPARK-42114: Test of uniform parquet encryption",
-+    IgnoreCometNativeScan("no encryption support yet")) {
-     withTempDir { dir =>
-       withSQLConf(
-         "parquet.crypto.factory.class" ->
 diff --git a/sql/hive/src/test/scala/org/apache/spark/sql/hive/PartitionedTablePerfStatsSuite.scala b/sql/hive/src/test/scala/org/apache/spark/sql/hive/PartitionedTablePerfStatsSuite.scala
 index de3b1ffccf0..2a76d127093 100644
 --- a/sql/hive/src/test/scala/org/apache/spark/sql/hive/PartitionedTablePerfStatsSuite.scala

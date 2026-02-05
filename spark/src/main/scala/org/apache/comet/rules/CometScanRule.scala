@@ -228,7 +228,7 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
   private def transformV2Scan(scanExec: BatchScanExec): SparkPlan = {
 
     scanExec.scan match {
-      case scan: ParquetScan =>
+      case scan: ParquetScan if COMET_NATIVE_SCAN_IMPL.get() == SCAN_NATIVE_COMET =>
         val fallbackReasons = new ListBuffer[String]()
         val schemaSupported =
           CometBatchScanExec.isSchemaSupported(scan.readDataSchema, fallbackReasons)
@@ -327,6 +327,10 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
       case _
           if scanExec.scan.getClass.getName ==
             "org.apache.iceberg.spark.source.SparkBatchQueryScan" =>
+        if (scanExec.runtimeFilters.exists(isDynamicPruningFilter)) {
+          return withInfo(scanExec, "Dynamic Partition Pruning is not supported")
+        }
+
         val fallbackReasons = new ListBuffer[String]()
 
         // Native Iceberg scan requires both configs to be enabled
