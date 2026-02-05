@@ -20,6 +20,7 @@
 package org.apache.comet.serde
 
 import java.util.Locale
+
 import org.apache.spark.sql.catalyst.expressions.{Attribute, DateAdd, DateDiff, DateFormatClass, DateSub, DayOfMonth, DayOfWeek, DayOfYear, GetDateField, Hour, LastDay, Literal, Minute, Month, Quarter, Second, TruncDate, TruncTimestamp, UnixDate, UnixTimestamp, WeekDay, WeekOfYear, Year, Years}
 import org.apache.spark.sql.types.{DateType, IntegerType, StringType, TimestampNTZType, TimestampType}
 import org.apache.spark.unsafe.types.UTF8String
@@ -546,9 +547,10 @@ object CometYears extends CometExpressionSerde[Years] {
     }
   }
 
-  override def convert(expr: Years,
-                       inputs: Seq[Attribute],
-                       binding: Boolean): Option[ExprOuterClass.Expr] = {
+  override def convert(
+      expr: Years,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
     val periodType = exprToProtoInternal(Literal("year"), inputs, binding)
     val childExpr = exprToProtoInternal(expr.child, inputs, binding)
     val optExpr = scalarFunctionExprToProto("datepart", Seq(periodType, childExpr): _*)
