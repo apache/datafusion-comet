@@ -22,7 +22,7 @@ package org.apache.spark.sql.benchmark
 import org.apache.spark.benchmark.Benchmark
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometConf.{SCAN_NATIVE_COMET, SCAN_NATIVE_ICEBERG_COMPAT}
+import org.apache.comet.CometConf.{SCAN_NATIVE_DATAFUSION, SCAN_NATIVE_ICEBERG_COMPAT}
 
 /**
  * Benchmark to measure partition column scan performance. This exercises the CometConstantVector
@@ -63,15 +63,16 @@ object CometPartitionColumnBenchmark extends CometBenchmarkBase {
           spark.sql("select sum(id) from parquetV1Table").noop()
         }
 
-        sqlBenchmark.addCase("SQL Parquet - Comet (Scan Only)") { _ =>
+        sqlBenchmark.addCase("SQL Parquet - Comet Native DataFusion") { _ =>
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_NATIVE_SCAN_IMPL.key -> SCAN_NATIVE_COMET) {
+            CometConf.COMET_EXEC_ENABLED.key -> "true",
+            CometConf.COMET_NATIVE_SCAN_IMPL.key -> SCAN_NATIVE_DATAFUSION) {
             spark.sql("select sum(id) from parquetV1Table").noop()
           }
         }
 
-        sqlBenchmark.addCase("SQL Parquet - Comet (Scan + Exec)") { _ =>
+        sqlBenchmark.addCase("SQL Parquet - Comet Native Iceberg Compat") { _ =>
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true",
@@ -88,7 +89,16 @@ object CometPartitionColumnBenchmark extends CometBenchmarkBase {
           spark.sql(s"select $partSumExpr from parquetV1Table").noop()
         }
 
-        sqlBenchmark.addCase("SQL Parquet - Comet (read partition cols)") { _ =>
+        sqlBenchmark.addCase("SQL Parquet - Comet Native DataFusion (partition cols)") { _ =>
+          withSQLConf(
+            CometConf.COMET_ENABLED.key -> "true",
+            CometConf.COMET_EXEC_ENABLED.key -> "true",
+            CometConf.COMET_NATIVE_SCAN_IMPL.key -> SCAN_NATIVE_DATAFUSION) {
+            spark.sql(s"select $partSumExpr from parquetV1Table").noop()
+          }
+        }
+
+        sqlBenchmark.addCase("SQL Parquet - Comet Native Iceberg Compat (partition cols)") { _ =>
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true",
