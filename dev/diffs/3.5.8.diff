@@ -2138,49 +2138,6 @@ index 5e01d3f447c..284d6657d4f 100644
      withTempDir { dir =>
        val readSchema =
          new StructType()
-diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFileMetadataStructRowIndexSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFileMetadataStructRowIndexSuite.scala
-index c10e1799702..ba6629abfd9 100644
---- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFileMetadataStructRowIndexSuite.scala
-+++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFileMetadataStructRowIndexSuite.scala
-@@ -16,7 +16,7 @@
-  */
- package org.apache.spark.sql.execution.datasources.parquet
- 
--import org.apache.spark.sql.{AnalysisException, DataFrame, QueryTest}
-+import org.apache.spark.sql.{AnalysisException, DataFrame, IgnoreCometNativeDataFusion, QueryTest}
- import org.apache.spark.sql.execution.datasources.FileFormat
- import org.apache.spark.sql.functions.{col, lit}
- import org.apache.spark.sql.internal.SQLConf
-@@ -154,7 +154,8 @@ class ParquetFileMetadataStructRowIndexSuite extends QueryTest with SharedSparkS
-     }
-   }
- 
--  test(s"reading ${ROW_INDEX_TEMPORARY_COLUMN_NAME} - not present in a table") {
-+  test(s"reading ${ROW_INDEX_TEMPORARY_COLUMN_NAME} - not present in a table",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3317")) {
-     // File format supporting row index generation populates the column with row indexes.
-     withReadDataFrame("parquet", extraSchemaFields =
-         Seq(StructField(ROW_INDEX_TEMPORARY_COLUMN_NAME, LongType))) { df =>
-@@ -172,7 +173,8 @@ class ParquetFileMetadataStructRowIndexSuite extends QueryTest with SharedSparkS
-     }
-   }
- 
--  test(s"reading ${ROW_INDEX_TEMPORARY_COLUMN_NAME} - present in a table") {
-+  test(s"reading ${ROW_INDEX_TEMPORARY_COLUMN_NAME} - present in a table",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3317")) {
-     withReadDataFrame("parquet", extraCol = ROW_INDEX_TEMPORARY_COLUMN_NAME) { df =>
-       // Values of ROW_INDEX_TEMPORARY_COLUMN_NAME column are always populated with
-       // generated row indexes, rather than read from the file.
-@@ -189,7 +191,8 @@ class ParquetFileMetadataStructRowIndexSuite extends QueryTest with SharedSparkS
-     }
-   }
- 
--  test(s"reading ${ROW_INDEX_TEMPORARY_COLUMN_NAME} - as partition col") {
-+  test(s"reading ${ROW_INDEX_TEMPORARY_COLUMN_NAME} - as partition col",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3317")) {
-     withReadDataFrame("parquet", partitionCol = ROW_INDEX_TEMPORARY_COLUMN_NAME) { df =>
-       // Column values are set for each partition, rather than populated with generated row indexes.
-       assert(df
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFilterSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFilterSuite.scala
 index 8e88049f51e..49f2001dc6b 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFilterSuite.scala
