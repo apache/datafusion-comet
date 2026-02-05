@@ -49,8 +49,15 @@ object CometPartitionColumnBenchmark extends CometBenchmarkBase {
       withTempTable("parquetV1Table") {
         val partCols =
           (1 to numPartitionCols).map(i => s"'part$i' as p$i").mkString(", ")
-        val partNames = (1 to numPartitionCols).map(i => s"p$i").mkString(", ")
-        prepareTable(dir, spark.sql(s"SELECT value as id, $partCols FROM $tbl"), Some(partNames))
+        val partNames = (1 to numPartitionCols).map(i => s"p$i")
+        val df = spark.sql(s"SELECT value as id, $partCols FROM $tbl")
+        val parquetDir = dir.getCanonicalPath + "/parquetV1"
+        df.write
+          .partitionBy(partNames: _*)
+          .mode("overwrite")
+          .option("compression", "snappy")
+          .parquet(parquetDir)
+        spark.read.parquet(parquetDir).createOrReplaceTempView("parquetV1Table")
 
         sqlBenchmark.addCase("SQL Parquet - Spark") { _ =>
           spark.sql("select sum(id) from parquetV1Table").noop()
