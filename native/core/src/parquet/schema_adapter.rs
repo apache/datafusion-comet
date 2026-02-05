@@ -120,9 +120,9 @@ impl PhysicalExprAdapter for SparkPhysicalExprAdapter {
 
         let expr = self.default_adapter.rewrite(expr)?;
 
-        self.cast_datafusion_unsupported_expr(expr)
+        //self.cast_datafusion_unsupported_expr(expr)
 
-        //expr.transform(|e| self.replace_with_spark_cast(e)).data()
+        expr.transform(|e| self.replace_with_spark_cast(e)).data()
     }
 }
 
