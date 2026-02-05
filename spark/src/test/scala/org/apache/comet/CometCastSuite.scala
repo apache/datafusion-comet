@@ -1448,7 +1448,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
         if (testTry) {
           data.createOrReplaceTempView("t")
-          // try_cast() should always return null for invalid inputs
+//          try_cast() should always return null for invalid inputs
 //          not using spark DSL since it `try_cast` is only available from Spark 4x
           val df2 =
             spark.sql(s"select a, try_cast(a as ${toType.sql}) from t order by a")
