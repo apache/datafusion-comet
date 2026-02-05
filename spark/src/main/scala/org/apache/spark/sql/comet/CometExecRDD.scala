@@ -55,7 +55,7 @@ private[spark] class CometExecPartition(
  */
 private[spark] class CometExecRDD(
     sc: SparkContext,
-    inputRDDs: Seq[RDD[ColumnarBatch]],
+    var inputRDDs: Seq[RDD[ColumnarBatch]],
     commonByKey: Map[String, Array[Byte]],
     @transient perPartitionByKey: Map[String, Array[Array[Byte]]],
     serializedPlan: Array[Byte],
@@ -135,13 +135,18 @@ private[spark] class CometExecRDD(
 
   // Duplicates logic from Spark's ZippedPartitionsBaseRDD.getPreferredLocations
   override def getPreferredLocations(split: Partition): Seq[String] = {
-    if (inputRDDs.isEmpty) return Nil
+    if (inputRDDs == null || inputRDDs.isEmpty) return Nil
 
     val idx = split.index
     val prefs = inputRDDs.map(rdd => rdd.preferredLocations(rdd.partitions(idx)))
     // Prefer nodes where all inputs are local; fall back to any input's preferred location
     val intersection = prefs.reduce((a, b) => a.intersect(b))
     if (intersection.nonEmpty) intersection else prefs.flatten.distinct
+  }
+
+  override def clearDependencies(): Unit = {
+    super.clearDependencies()
+    inputRDDs = null
   }
 }
 
