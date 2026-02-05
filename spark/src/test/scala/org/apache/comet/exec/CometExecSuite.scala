@@ -709,7 +709,7 @@ class CometExecSuite extends CometTestBase {
         assert(metrics.contains("input_rows"))
         assert(metrics("input_rows").value == 5L)
         assert(metrics.contains("output_batches"))
-        assert(metrics("output_batches").value == 5L)
+        assert(metrics("output_batches").value == 1L)
         assert(metrics.contains("output_rows"))
         assert(metrics("output_rows").value == 5L)
         assert(metrics.contains("join_time"))

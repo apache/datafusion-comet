@@ -1094,7 +1094,6 @@ impl PhysicalPlanner {
                 ))
             }
             OpStruct::Scan(scan) => {
-                // dbg!(&scan);
                 let data_types = scan.fields.iter().map(to_arrow_datatype).collect_vec();
 
                 // If it is not test execution context for unit test, we should have at least one

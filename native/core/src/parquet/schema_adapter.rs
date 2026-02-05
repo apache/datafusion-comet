@@ -23,6 +23,7 @@
 
 #![allow(deprecated)]
 
+use crate::parquet::cast_column::CometCastColumnExpr;
 use crate::parquet::parquet_support::{spark_parquet_convert, SparkParquetOptions};
 use arrow::array::{ArrayRef, RecordBatch, RecordBatchOptions};
 use arrow::datatypes::{Field, Schema, SchemaRef};
@@ -114,17 +115,13 @@ struct SparkPhysicalExprAdapter {
 
 impl PhysicalExprAdapter for SparkPhysicalExprAdapter {
     fn rewrite(&self, expr: Arc<dyn PhysicalExpr>) -> DataFusionResult<Arc<dyn PhysicalExpr>> {
-        // Step 1: Handle default values for missing columns
-        let expr = self.replace_missing_with_defaults(expr)?;
+        // dbg!(&expr);
 
-        let expr = self.cast_datafusion_unsupported_expr(expr)?;
-
-        // Step 2: Delegate to default adapter for standard handling
-        // This handles: missing columns → nulls, type mismatches → CastColumnExpr
         let expr = self.default_adapter.rewrite(expr)?;
 
-        // Step 3: Replace CastColumnExpr with Spark-compatible Cast expressions
-        expr.transform(|e| self.replace_with_spark_cast(e)).data()
+        self.cast_datafusion_unsupported_expr(expr)
+
+        //expr.transform(|e| self.replace_with_spark_cast(e)).data()
     }
 }
 
@@ -170,17 +167,18 @@ impl SparkPhysicalExprAdapter {
         &self,
         expr: Arc<dyn PhysicalExpr>,
     ) -> DataFusionResult<Arc<dyn PhysicalExpr>> {
-        use datafusion::physical_expr::expressions::CastColumnExpr;
-
         expr.transform(|e| {
             // Check if this is a Column expression
             if let Some(column) = e.as_any().downcast_ref::<Column>() {
                 let col_idx = column.index();
 
+                // dbg!(&self.logical_file_schema, &self.physical_file_schema);
+
                 // Get the logical datatype (expected by the query)
                 let logical_field = self.logical_file_schema.fields().get(col_idx);
                 // Get the physical datatype (actual file schema)
                 let physical_field = self.physical_file_schema.fields().get(col_idx);
+
 
                 // dbg!(&logical_field, &physical_field);
 
@@ -191,21 +189,10 @@ impl SparkPhysicalExprAdapter {
 
                     // If datatypes differ, insert a CastColumnExpr
                     if logical_type != physical_type {
-                        let input_field = Arc::new(Field::new(
-                            physical_field.name(),
-                            physical_type.clone(),
-                            physical_field.is_nullable(),
-                        ));
-                        let target_field = Arc::new(Field::new(
-                            logical_field.name(),
-                            logical_type.clone(),
-                            logical_field.is_nullable(),
-                        ));
-
-                        let cast_expr: Arc<dyn PhysicalExpr> = Arc::new(CastColumnExpr::new(
+                        let cast_expr: Arc<dyn PhysicalExpr> = Arc::new(CometCastColumnExpr::new(
                             Arc::clone(&e),
-                            input_field,
-                            target_field,
+                            physical_field.clone(),
+                            logical_field.clone(),
                             None,
                         ));
                         // dbg!(&cast_expr);
