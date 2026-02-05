@@ -37,8 +37,10 @@ import org.apache.comet.vector.CometVector;
  * mutable buffers). Used for partition columns and missing columns in the native_iceberg_compat
  * scan path.
  *
- * <p>Since the vector is constant, only a single element is stored and {@link CometPlainVector}
- * broadcasts it to all rows.
+ * <p>The vector is filled with the constant value repeated for every row in the batch. This is
+ * necessary because the underlying Arrow vector's buffers must be large enough to match the
+ * reported value count — otherwise variable-width types (strings, binary) would have undersized
+ * offset buffers, causing out-of-bounds reads on the native side.
  */
 public class ArrowConstantColumnReader extends AbstractColumnReader {
   private final BufferAllocator allocator = new RootAllocator();
@@ -47,6 +49,7 @@ public class ArrowConstantColumnReader extends AbstractColumnReader {
   private Object value;
   private FieldVector fieldVector;
   private CometPlainVector vector;
+  private int currentSize;
 
   /** Constructor for missing columns (default values from schema). */
   ArrowConstantColumnReader(StructField field, int batchSize, boolean useDecimal128) {
@@ -55,7 +58,7 @@ public class ArrowConstantColumnReader extends AbstractColumnReader {
     this.value =
         ResolveDefaultColumns.getExistenceDefaultValues(new StructType(new StructField[] {field}))[
             0];
-    initVector(value);
+    initVector(value, batchSize);
   }
 
   /** Constructor for partition columns with values from a row. */
@@ -65,20 +68,22 @@ public class ArrowConstantColumnReader extends AbstractColumnReader {
     this.batchSize = batchSize;
     Object v = values.get(index, field.dataType());
     this.value = v;
-    initVector(v);
+    initVector(v, batchSize);
   }
 
   @Override
   public void setBatchSize(int batchSize) {
     close();
     this.batchSize = batchSize;
-    initVector(value);
+    initVector(value, batchSize);
   }
 
   @Override
   public void readBatch(int total) {
-    vector.setNumValues(total);
-    if (isNull) vector.setNumNulls(total);
+    if (total != currentSize) {
+      close();
+      initVector(value, total);
+    }
   }
 
   @Override
@@ -98,135 +103,149 @@ public class ArrowConstantColumnReader extends AbstractColumnReader {
     }
   }
 
-  private void initVector(Object value) {
+  private void initVector(Object value, int count) {
+    currentSize = count;
     if (value == null) {
       isNull = true;
-      fieldVector = createTypedVector();
-      fieldVector.setValueCount(1);
+      fieldVector = createNullVector(count);
     } else {
       isNull = false;
-      fieldVector = createAndSetVector(value);
+      fieldVector = createFilledVector(value, count);
     }
     vector = new CometPlainVector(fieldVector, useDecimal128, false, true);
   }
 
-  private FieldVector createTypedVector() {
+  /** Creates a vector of the correct type with {@code count} null values. */
+  private FieldVector createNullVector(int count) {
     String name = "constant";
+    FieldVector v;
     if (type == DataTypes.BooleanType) {
-      return new BitVector(name, allocator);
+      v = new BitVector(name, allocator);
     } else if (type == DataTypes.ByteType) {
-      return new TinyIntVector(name, allocator);
+      v = new TinyIntVector(name, allocator);
     } else if (type == DataTypes.ShortType) {
-      return new SmallIntVector(name, allocator);
+      v = new SmallIntVector(name, allocator);
     } else if (type == DataTypes.IntegerType || type == DataTypes.DateType) {
-      return new IntVector(name, allocator);
+      v = new IntVector(name, allocator);
     } else if (type == DataTypes.LongType
         || type == DataTypes.TimestampType
         || type == TimestampNTZType$.MODULE$) {
-      return new BigIntVector(name, allocator);
+      v = new BigIntVector(name, allocator);
     } else if (type == DataTypes.FloatType) {
-      return new Float4Vector(name, allocator);
+      v = new Float4Vector(name, allocator);
     } else if (type == DataTypes.DoubleType) {
-      return new Float8Vector(name, allocator);
+      v = new Float8Vector(name, allocator);
     } else if (type == DataTypes.BinaryType) {
-      return new VarBinaryVector(name, allocator);
+      v = new VarBinaryVector(name, allocator);
     } else if (type == DataTypes.StringType) {
-      return new VarCharVector(name, allocator);
+      v = new VarCharVector(name, allocator);
     } else if (type instanceof DecimalType) {
       DecimalType dt = (DecimalType) type;
       if (!useDecimal128 && dt.precision() <= Decimal.MAX_INT_DIGITS()) {
-        return new IntVector(name, allocator);
+        v = new IntVector(name, allocator);
       } else if (!useDecimal128 && dt.precision() <= Decimal.MAX_LONG_DIGITS()) {
-        return new BigIntVector(name, allocator);
+        v = new BigIntVector(name, allocator);
       } else {
-        return new DecimalVector(name, allocator, dt.precision(), dt.scale());
+        v = new DecimalVector(name, allocator, dt.precision(), dt.scale());
       }
     } else {
       throw new UnsupportedOperationException("Unsupported Spark type: " + type);
     }
+    v.setValueCount(count);
+    return v;
   }
 
-  private FieldVector createAndSetVector(Object value) {
+  /** Creates a vector filled with {@code count} copies of the given value. */
+  private FieldVector createFilledVector(Object value, int count) {
     String name = "constant";
     if (type == DataTypes.BooleanType) {
       BitVector v = new BitVector(name, allocator);
-      v.allocateNew(1);
-      v.setSafe(0, (boolean) value ? 1 : 0);
-      v.setValueCount(1);
+      v.allocateNew(count);
+      int bit = (boolean) value ? 1 : 0;
+      for (int i = 0; i < count; i++) v.setSafe(i, bit);
+      v.setValueCount(count);
       return v;
     } else if (type == DataTypes.ByteType) {
       TinyIntVector v = new TinyIntVector(name, allocator);
-      v.allocateNew(1);
-      v.setSafe(0, (byte) value);
-      v.setValueCount(1);
+      v.allocateNew(count);
+      byte val = (byte) value;
+      for (int i = 0; i < count; i++) v.setSafe(i, val);
+      v.setValueCount(count);
       return v;
     } else if (type == DataTypes.ShortType) {
       SmallIntVector v = new SmallIntVector(name, allocator);
-      v.allocateNew(1);
-      v.setSafe(0, (short) value);
-      v.setValueCount(1);
+      v.allocateNew(count);
+      short val = (short) value;
+      for (int i = 0; i < count; i++) v.setSafe(i, val);
+      v.setValueCount(count);
       return v;
     } else if (type == DataTypes.IntegerType || type == DataTypes.DateType) {
       IntVector v = new IntVector(name, allocator);
-      v.allocateNew(1);
-      v.setSafe(0, (int) value);
-      v.setValueCount(1);
+      v.allocateNew(count);
+      int val = (int) value;
+      for (int i = 0; i < count; i++) v.setSafe(i, val);
+      v.setValueCount(count);
       return v;
     } else if (type == DataTypes.LongType
         || type == DataTypes.TimestampType
         || type == TimestampNTZType$.MODULE$) {
       BigIntVector v = new BigIntVector(name, allocator);
-      v.allocateNew(1);
-      v.setSafe(0, (long) value);
-      v.setValueCount(1);
+      v.allocateNew(count);
+      long val = (long) value;
+      for (int i = 0; i < count; i++) v.setSafe(i, val);
+      v.setValueCount(count);
       return v;
     } else if (type == DataTypes.FloatType) {
       Float4Vector v = new Float4Vector(name, allocator);
-      v.allocateNew(1);
-      v.setSafe(0, (float) value);
-      v.setValueCount(1);
+      v.allocateNew(count);
+      float val = (float) value;
+      for (int i = 0; i < count; i++) v.setSafe(i, val);
+      v.setValueCount(count);
       return v;
     } else if (type == DataTypes.DoubleType) {
       Float8Vector v = new Float8Vector(name, allocator);
-      v.allocateNew(1);
-      v.setSafe(0, (double) value);
-      v.setValueCount(1);
+      v.allocateNew(count);
+      double val = (double) value;
+      for (int i = 0; i < count; i++) v.setSafe(i, val);
+      v.setValueCount(count);
       return v;
     } else if (type == DataTypes.BinaryType) {
       VarBinaryVector v = new VarBinaryVector(name, allocator);
-      v.allocateNew(1);
+      v.allocateNew(count);
       byte[] bytes = (byte[]) value;
-      v.setSafe(0, bytes, 0, bytes.length);
-      v.setValueCount(1);
+      for (int i = 0; i < count; i++) v.setSafe(i, bytes, 0, bytes.length);
+      v.setValueCount(count);
       return v;
     } else if (type == DataTypes.StringType) {
       VarCharVector v = new VarCharVector(name, allocator);
-      v.allocateNew(1);
+      v.allocateNew(count);
       byte[] bytes = ((UTF8String) value).getBytes();
-      v.setSafe(0, bytes, 0, bytes.length);
-      v.setValueCount(1);
+      for (int i = 0; i < count; i++) v.setSafe(i, bytes, 0, bytes.length);
+      v.setValueCount(count);
       return v;
     } else if (type instanceof DecimalType) {
       DecimalType dt = (DecimalType) type;
       Decimal d = (Decimal) value;
       if (!useDecimal128 && dt.precision() <= Decimal.MAX_INT_DIGITS()) {
         IntVector v = new IntVector(name, allocator);
-        v.allocateNew(1);
-        v.setSafe(0, (int) d.toUnscaledLong());
-        v.setValueCount(1);
+        v.allocateNew(count);
+        int val = (int) d.toUnscaledLong();
+        for (int i = 0; i < count; i++) v.setSafe(i, val);
+        v.setValueCount(count);
         return v;
       } else if (!useDecimal128 && dt.precision() <= Decimal.MAX_LONG_DIGITS()) {
         BigIntVector v = new BigIntVector(name, allocator);
-        v.allocateNew(1);
-        v.setSafe(0, d.toUnscaledLong());
-        v.setValueCount(1);
+        v.allocateNew(count);
+        long val = d.toUnscaledLong();
+        for (int i = 0; i < count; i++) v.setSafe(i, val);
+        v.setValueCount(count);
         return v;
       } else {
         DecimalVector v = new DecimalVector(name, allocator, dt.precision(), dt.scale());
-        v.allocateNew(1);
+        v.allocateNew(count);
         BigDecimal bd = d.toJavaBigDecimal();
-        v.setSafe(0, bd);
-        v.setValueCount(1);
+        for (int i = 0; i < count; i++) v.setSafe(i, bd);
+        v.setValueCount(count);
         return v;
       }
     } else {
