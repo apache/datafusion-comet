@@ -21,7 +21,7 @@ use arrow::array::{
 };
 use arrow::buffer::MutableBuffer;
 use arrow::datatypes::{DataType, Int32Type};
-use datafusion::common::{exec_err, internal_datafusion_err, DataFusionError, Result};
+use datafusion::common::{exec_err, internal_datafusion_err, DataFusionError, Result, ScalarValue};
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };
@@ -86,15 +86,17 @@ impl ScalarUDFImpl for SparkStringSpace {
 pub fn spark_string_space(args: &[ColumnarValue; 1]) -> Result<ColumnarValue> {
     match args {
         [ColumnarValue::Array(array)] => {
-            let result = string_space(&array)?;
-
+            let result = string_space_array(&array)?;
             Ok(ColumnarValue::Array(result))
         }
-        _ => exec_err!("StringSpace(scalar) should be fold in Spark JVM side."),
+        [ColumnarValue::Scalar(scalar)] => {
+            let result = spark_space_scalar(scalar)?;
+            Ok(ColumnarValue::Scalar(result))
+        },
     }
 }
 
-fn string_space(length: &dyn Array) -> std::result::Result<ArrayRef, DataFusionError> {
+fn string_space_array(length: &dyn Array) -> std::result::Result<ArrayRef, DataFusionError> {
     match length.data_type() {
         DataType::Int32 => {
             let array = length.as_any().downcast_ref::<Int32Array>().unwrap();
@@ -102,11 +104,29 @@ fn string_space(length: &dyn Array) -> std::result::Result<ArrayRef, DataFusionE
         }
         DataType::Dictionary(_, _) => {
             let dict = as_dictionary_array::<Int32Type>(length);
-            let values = string_space(dict.values())?;
+            let values = string_space_array(dict.values())?;
             let result = DictionaryArray::try_new(dict.keys().clone(), values)?;
             Ok(Arc::new(result))
         }
         other => exec_err!("Unsupported input type for function 'string_space': {other:?}"),
+    }
+}
+
+fn spark_space_scalar(scalar: &ScalarValue) -> Result<ScalarValue> {
+    match scalar {
+        ScalarValue::Int32(value) => {
+            let result = value.map(|v| {
+                if v <= 0 {
+                    String::new()
+                } else {
+                    " ".repeat(v as usize)
+                }
+            });
+            Ok(ScalarValue::Utf8(result))
+        }
+        other => {
+            exec_err!("Unsupported data type {other:?} for function `space`")
+        }
     }
 }
 
