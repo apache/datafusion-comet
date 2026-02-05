@@ -461,9 +461,16 @@ runs each query through both Spark and Comet, comparing results. This provides a
 way to add expression and operator test coverage without writing Scala test code.</p>
 <section id="running-the-tests">
 <h2>Running the tests<a class="headerlink" href="#running-the-tests" title="Link to this heading">#</a></h2>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>mvn<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-pl<span class="w"> </span>spark<span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">&quot;org.apache.comet.CometSqlFileTestSuite&quot;</span><span class="w"> </span>-Dtest<span class="o">=</span>none
+<p>Run all SQL file tests:</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">&quot;org.apache.comet.CometSqlFileTestSuite&quot;</span><span class="w"> </span>-Dtest<span class="o">=</span>none
 </pre></div>
 </div>
+<p>Run a single test file by adding the file name (without <code class="docutils literal notranslate"><span class="pre">.sql</span></code> extension) after the suite name:</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">&quot;org.apache.comet.CometSqlFileTestSuite create_named_struct&quot;</span><span class="w"> </span>-Dtest<span class="o">=</span>none
+</pre></div>
+</div>
+<p>This uses ScalaTest’s substring matching, so the argument must match part of the test name.
+Test names follow the pattern <code class="docutils literal notranslate"><span class="pre">sql-file:</span> <span class="pre">expressions/&lt;category&gt;/&lt;file&gt;.sql</span> <span class="pre">[&lt;config&gt;]</span></code>.</p>
 </section>
 <section id="test-file-location">
 <h2>Test file location<a class="headerlink" href="#test-file-location" title="Link to this heading">#</a></h2>
@@ -622,7 +629,7 @@ Most expression tests use:</p>
 when you expect Comet to run the expression natively. Use <code class="docutils literal notranslate"><span class="pre">query</span> <span class="pre">spark_answer_only</span></code> when
 native execution is not yet expected.</p></li>
 <li><p>Run the tests to verify:</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>mvn<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-pl<span class="w"> </span>spark<span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">&quot;org.apache.comet.CometSqlFileTestSuite&quot;</span><span class="w"> </span>-Dtest<span class="o">=</span>none
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">&quot;org.apache.comet.CometSqlFileTestSuite&quot;</span><span class="w"> </span>-Dtest<span class="o">=</span>none
 </pre></div>
 </div>
 </li>
