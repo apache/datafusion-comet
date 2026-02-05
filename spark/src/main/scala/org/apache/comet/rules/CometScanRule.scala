@@ -50,7 +50,7 @@ import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.parquet.{CometParquetScan, Native, SupportsComet}
 import org.apache.comet.parquet.CometParquetUtils.{encryptionEnabled, isEncryptionConfigSupported}
 import org.apache.comet.serde.operator.CometNativeScan
-import org.apache.comet.shims.CometTypeShim
+import org.apache.comet.shims.{CometTypeShim, ShimFileFormat}
 
 /**
  * Spark physical optimizer rule for replacing Spark scans with Comet scans.
@@ -191,6 +191,14 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
     }
     if (encryptionEnabled(hadoopConf) && !isEncryptionConfigSupported(hadoopConf)) {
       withInfo(scanExec, s"$SCAN_NATIVE_DATAFUSION does not support encryption")
+      return None
+    }
+    if (scanExec.fileConstantMetadataColumns.nonEmpty) {
+      withInfo(scanExec, "Native DataFusion scan does not support metadata columns")
+      return None
+    }
+    if (ShimFileFormat.findRowIndexColumnIndexInSchema(scanExec.requiredSchema) >= 0) {
+      withInfo(scanExec, "Native DataFusion scan does not support row index generation")
       return None
     }
     if (!isSchemaSupported(scanExec, SCAN_NATIVE_DATAFUSION, r)) {
