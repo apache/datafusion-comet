@@ -27,6 +27,7 @@ pub mod parquet_support;
 pub mod read;
 pub mod schema_adapter;
 
+mod cast_column;
 mod objectstore;
 
 use std::collections::HashMap;
