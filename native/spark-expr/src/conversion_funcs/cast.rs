@@ -24,10 +24,7 @@ use arrow::array::{
     PrimitiveBuilder, StringArray, StructArray, TimestampMicrosecondBuilder,
 };
 use arrow::compute::can_cast_types;
-use arrow::datatypes::{
-    i256, ArrowDictionaryKeyType, ArrowNativeType, DataType, Decimal256Type, GenericBinaryType,
-    Schema,
-};
+use arrow::datatypes::{i256, ArrowDictionaryKeyType, ArrowNativeType, DataType, Decimal256Type, GenericBinaryType, Schema, TimeUnit};
 use arrow::{
     array::{
         cast::AsArray,
@@ -964,8 +961,10 @@ fn cast_array(
     cast_options: &SparkCastOptions,
 ) -> DataFusionResult<ArrayRef> {
     use DataType::*;
-    let array = array_with_timezone(array, cast_options.timezone.clone(), Some(to_type))?;
     let from_type = array.data_type().clone();
+
+    let array = array_with_timezone(array, cast_options.timezone.clone(), Some(to_type))?;
+    let eval_mode = cast_options.eval_mode;
 
     let native_cast_options: CastOptions = CastOptions {
         safe: !matches!(cast_options.eval_mode, EvalMode::Ansi), // take safe mode from cast_options passed
@@ -1015,10 +1014,8 @@ fn cast_array(
             }
         }
     };
-    let from_type = array.data_type();
-    let eval_mode = cast_options.eval_mode;
 
-    let cast_result = match (from_type, to_type) {
+    let cast_result = match (&from_type, to_type) {
         (Utf8, Boolean) => spark_cast_utf8_to_boolean::<i32>(&array, eval_mode),
         (LargeUtf8, Boolean) => spark_cast_utf8_to_boolean::<i64>(&array, eval_mode),
         (Utf8, Timestamp(_, _)) => {
@@ -1044,10 +1041,10 @@ fn cast_array(
         | (Int16, Int8)
             if eval_mode != EvalMode::Try =>
         {
-            spark_cast_int_to_int(&array, eval_mode, from_type, to_type)
+            spark_cast_int_to_int(&array, eval_mode, &from_type, to_type)
         }
         (Int8 | Int16 | Int32 | Int64, Decimal128(precision, scale)) => {
-            cast_int_to_decimal128(&array, eval_mode, from_type, to_type, *precision, *scale)
+            cast_int_to_decimal128(&array, eval_mode, &from_type, to_type, *precision, *scale)
         }
         (Utf8, Int8 | Int16 | Int32 | Int64) => {
             cast_string_to_int::<i32>(to_type, &array, eval_mode)
@@ -1079,19 +1076,19 @@ fn cast_array(
         | (Decimal128(_, _), Int64)
             if eval_mode != EvalMode::Try =>
         {
-            spark_cast_nonintegral_numeric_to_integral(&array, eval_mode, from_type, to_type)
+            spark_cast_nonintegral_numeric_to_integral(&array, eval_mode, &from_type, to_type)
         }
         (Decimal128(_p, _s), Boolean) => spark_cast_decimal_to_boolean(&array),
         (Utf8View, Utf8) => Ok(cast_with_options(&array, to_type, &CAST_OPTIONS)?),
         (Struct(_), Utf8) => Ok(casts_struct_to_string(array.as_struct(), cast_options)?),
         (Struct(_), Struct(_)) => Ok(cast_struct_to_struct(
             array.as_struct(),
-            from_type,
+            &from_type,
             to_type,
             cast_options,
         )?),
         (List(_), Utf8) => Ok(cast_array_to_string(array.as_list(), cast_options)?),
-        (List(_), List(_)) if can_cast_types(from_type, to_type) => {
+        (List(_), List(_)) if can_cast_types(&from_type, to_type) => {
             Ok(cast_with_options(&array, to_type, &CAST_OPTIONS)?)
         }
         (UInt8 | UInt16 | UInt32 | UInt64, Int8 | Int16 | Int32 | Int64)
@@ -1102,7 +1099,7 @@ fn cast_array(
         (Binary, Utf8) => Ok(cast_binary_to_string::<i32>(&array, cast_options)?),
         (Date32, Timestamp(_, tz)) => Ok(cast_date_to_timestamp(&array, cast_options, tz)?),
         _ if cast_options.is_adapting_schema
-            || is_datafusion_spark_compatible(from_type, to_type) =>
+            || is_datafusion_spark_compatible(&from_type, to_type) =>
         {
             // use DataFusion cast only when we know that it is compatible with Spark
             Ok(cast_with_options(&array, to_type, &native_cast_options)?)
@@ -1116,7 +1113,7 @@ fn cast_array(
             )))
         }
     };
-    Ok(spark_cast_postprocess(cast_result?, from_type, to_type))
+    Ok(spark_cast_postprocess(cast_result?, &from_type, to_type))
 }
 
 fn cast_date_to_timestamp(
