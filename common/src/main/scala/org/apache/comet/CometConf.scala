@@ -124,11 +124,8 @@ object CometConf extends ShimCometConf {
   val COMET_NATIVE_SCAN_IMPL: ConfigEntry[String] = conf("spark.comet.scan.impl")
     .category(CATEGORY_SCAN)
     .doc(
-      s"The implementation of Comet Native Scan to use. Available modes are `$SCAN_NATIVE_COMET`," +
+      "The implementation of Comet Native Scan to use. Available modes are " +
         s"`$SCAN_NATIVE_DATAFUSION`, and `$SCAN_NATIVE_ICEBERG_COMPAT`. " +
-        s"`$SCAN_NATIVE_COMET` (DEPRECATED - will be removed in a future release) is for the " +
-        "original Comet native scan which uses a jvm based parquet file reader and native " +
-        "column decoding. Supports simple types only. " +
         s"`$SCAN_NATIVE_DATAFUSION` is a fully native implementation of scan based on " +
         "DataFusion. " +
         s"`$SCAN_NATIVE_ICEBERG_COMPAT` is the recommended native implementation that " +
@@ -137,8 +134,7 @@ object CometConf extends ShimCometConf {
     .internal()
     .stringConf
     .transform(_.toLowerCase(Locale.ROOT))
-    .checkValues(
-      Set(SCAN_NATIVE_COMET, SCAN_NATIVE_DATAFUSION, SCAN_NATIVE_ICEBERG_COMPAT, SCAN_AUTO))
+    .checkValues(Set(SCAN_NATIVE_DATAFUSION, SCAN_NATIVE_ICEBERG_COMPAT, SCAN_AUTO))
     .createWithEnvVarOrDefault("COMET_PARQUET_SCAN_IMPL", SCAN_AUTO)
 
   val COMET_ICEBERG_NATIVE_ENABLED: ConfigEntry[Boolean] =
