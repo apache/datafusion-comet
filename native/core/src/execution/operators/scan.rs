@@ -268,10 +268,10 @@ impl ScanExec {
         // The JVM side exports constant columns (partition/missing) as 1-element arrays
         // to avoid materializing N identical values. We detect and expand them here.
         if actual_num_rows > 1 {
-            for i in 0..inputs.len() {
-                if inputs[i].len() == 1 {
-                    let scalar = ScalarValue::try_from_array(&inputs[i], 0)?;
-                    inputs[i] = scalar.to_array_of_size(actual_num_rows)?;
+            for col in &mut inputs {
+                if col.len() == 1 {
+                    let scalar = ScalarValue::try_from_array(col, 0)?;
+                    *col = scalar.to_array_of_size(actual_num_rows)?;
                 }
             }
         }
