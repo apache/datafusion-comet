@@ -35,6 +35,7 @@ use arrow::{
     array::{as_dictionary_array, Array, ArrayRef, PrimitiveArray},
     temporal_conversions::as_datetime,
 };
+use arrow::array::TimestampMicrosecondArray;
 use chrono::{DateTime, Offset, TimeZone};
 
 /// Preprocesses input arrays to add timezone information from Spark to Arrow array datatype or
@@ -71,6 +72,49 @@ pub fn array_with_timezone(
     to_type: Option<&DataType>,
 ) -> Result<ArrayRef, ArrowError> {
     match array.data_type() {
+        DataType::Timestamp(TimeUnit::Millisecond, None) => {
+            assert!(!timezone.is_empty());
+            match to_type {
+                Some(DataType::Utf8) | Some(DataType::Date32) => Ok(array),
+                Some(DataType::Timestamp(_, Some(_))) => {
+                    timestamp_ntz_to_timestamp(array, timezone.as_str(), Some(timezone.as_str()))
+                }
+                Some(DataType::Timestamp(TimeUnit::Microsecond, None)) => {
+                    // Convert from Timestamp(Millisecond, None) to Timestamp(Microsecond, None)
+                    let millis_array = as_primitive_array::<TimestampMillisecondType>(&array);
+                    let micros_array: TimestampMicrosecondArray = millis_array
+                        .iter()
+                        .map(|opt| opt.map(|v| v * 1000))
+                        .collect();
+                    Ok(Arc::new(micros_array))
+                }
+                _ => {
+                    // Not supported
+                    panic!(
+                        "Cannot convert from {:?} to {:?}",
+                        array.data_type(),
+                        to_type.unwrap()
+                    )
+                }
+            }
+        }
+        DataType::Timestamp(TimeUnit::Microsecond, None) => {
+            assert!(!timezone.is_empty());
+            match to_type {
+                Some(DataType::Utf8) | Some(DataType::Date32) => Ok(array),
+                Some(DataType::Timestamp(_, Some(_))) => {
+                    timestamp_ntz_to_timestamp(array, timezone.as_str(), Some(timezone.as_str()))
+                }
+                _ => {
+                    // Not supported
+                    panic!(
+                        "Cannot convert from {:?} to {:?}",
+                        array.data_type(),
+                        to_type.unwrap()
+                    )
+                }
+            }
+        }
         DataType::Timestamp(_, None) => {
             assert!(!timezone.is_empty());
             match to_type {
