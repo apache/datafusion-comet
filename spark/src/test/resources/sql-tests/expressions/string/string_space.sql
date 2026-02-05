@@ -32,3 +32,6 @@ SELECT concat('[', space(n), ']') FROM test_space WHERE n < 0
 -- literal arguments
 query
 SELECT concat('[', space(5), ']'), concat('[', space(0), ']'), space(-1), space(NULL)
+
+SET spark.sql.optimizer.excludedRules=org.apache.spark.sql.catalyst.optimizer.ConstantFolding;
+SELECT concat('[', space(5), ']');
