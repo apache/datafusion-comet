@@ -620,6 +620,63 @@ class CometReadBaseBenchmark extends CometBenchmarkBase {
     }
   }
 
+  def partitionColumnScanBenchmark(values: Int, numPartitionCols: Int): Unit = {
+    val sqlBenchmark = new Benchmark(
+      s"Partitioned Scan with $numPartitionCols partition column(s)",
+      values,
+      output = output)
+
+    withTempPath { dir =>
+      withTempTable("parquetV1Table") {
+        // Create a table with data columns and partition columns
+        val partCols = (1 to numPartitionCols).map(i => s"'part$i' as p$i").mkString(", ")
+        val partNames = (1 to numPartitionCols).map(i => s"p$i").mkString(", ")
+        prepareTable(dir, spark.sql(s"SELECT value as id, $partCols FROM $tbl"), Some(partNames))
+
+        sqlBenchmark.addCase("SQL Parquet - Spark") { _ =>
+          spark.sql("select sum(id) from parquetV1Table").noop()
+        }
+
+        sqlBenchmark.addCase("SQL Parquet - Comet (Scan Only)") { _ =>
+          withSQLConf(
+            CometConf.COMET_ENABLED.key -> "true",
+            CometConf.COMET_NATIVE_SCAN_IMPL.key -> SCAN_NATIVE_COMET) {
+            spark.sql("select sum(id) from parquetV1Table").noop()
+          }
+        }
+
+        sqlBenchmark.addCase("SQL Parquet - Comet (Scan + Exec)") { _ =>
+          withSQLConf(
+            CometConf.COMET_ENABLED.key -> "true",
+            CometConf.COMET_EXEC_ENABLED.key -> "true",
+            CometConf.COMET_NATIVE_SCAN_IMPL.key -> SCAN_NATIVE_ICEBERG_COMPAT) {
+            spark.sql("select sum(id) from parquetV1Table").noop()
+          }
+        }
+
+        // Also benchmark reading partition columns themselves
+        val partSumExpr = (1 to numPartitionCols)
+          .map(i => s"sum(length(p$i))")
+          .mkString(", ")
+
+        sqlBenchmark.addCase("SQL Parquet - Spark (read partition cols)") { _ =>
+          spark.sql(s"select $partSumExpr from parquetV1Table").noop()
+        }
+
+        sqlBenchmark.addCase("SQL Parquet - Comet (read partition cols)") { _ =>
+          withSQLConf(
+            CometConf.COMET_ENABLED.key -> "true",
+            CometConf.COMET_EXEC_ENABLED.key -> "true",
+            CometConf.COMET_NATIVE_SCAN_IMPL.key -> SCAN_NATIVE_ICEBERG_COMPAT) {
+            spark.sql(s"select $partSumExpr from parquetV1Table").noop()
+          }
+        }
+
+        sqlBenchmark.run()
+      }
+    }
+  }
+
   def sortedLgStrFilterScanBenchmark(values: Int, fractionOfZeros: Double): Unit = {
     val percentageOfZeros = fractionOfZeros * 100
     val benchmark =
@@ -749,6 +806,12 @@ class CometReadBaseBenchmark extends CometBenchmarkBase {
     runBenchmarkWithTable("Sorted Lg Str Filter Scan", 1024 * 1024) { v =>
       for (fractionOfZeros <- List(0.0, 0.50, 0.999)) {
         sortedLgStrFilterScanBenchmark(v, fractionOfZeros)
+      }
+    }
+
+    runBenchmarkWithTable("Partitioned Column Scan", 1024 * 1024 * 15) { v =>
+      for (numPartCols <- List(1, 5)) {
+        partitionColumnScanBenchmark(v, numPartCols)
       }
     }
   }
