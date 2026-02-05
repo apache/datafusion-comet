@@ -20,8 +20,9 @@ use crate::errors::ExpressionError;
 use crate::execution::operators::ExecutionError;
 use arrow::{
     array::ArrayData,
+    datatypes::DataType,
     error::ArrowError,
-    ffi::{from_ffi, FFI_ArrowArray, FFI_ArrowSchema},
+    ffi::{from_ffi, from_ffi_and_data_type, FFI_ArrowArray, FFI_ArrowSchema},
 };
 
 impl From<ArrowError> for ExecutionError {
@@ -46,6 +47,16 @@ pub trait SparkArrowConvert {
     /// Build Arrow Arrays from C data interface passed from Spark.
     /// It accepts a tuple (ArrowArray address, ArrowSchema address).
     fn from_spark(addresses: (i64, i64)) -> Result<Self, ExecutionError>
+    where
+        Self: Sized;
+
+    /// Build Arrow Arrays from C data interface using a previously cached DataType,
+    /// skipping schema parsing. The schema pointer is still consumed (dropped) since
+    /// the JVM allocated it, but its contents are not parsed.
+    fn from_spark_with_datatype(
+        addresses: (i64, i64),
+        data_type: &DataType,
+    ) -> Result<Self, ExecutionError>
     where
         Self: Sized;
 
@@ -76,6 +87,48 @@ impl SparkArrowConvert for ArrayData {
         };
 
         // Align imported buffers from Java.
+        ffi_array.align_buffers();
+
+        Ok(ffi_array)
+    }
+
+    fn from_spark_with_datatype(
+        addresses: (i64, i64),
+        data_type: &DataType,
+    ) -> Result<Self, ExecutionError> {
+        let (array_ptr, schema_ptr) = addresses;
+
+        let array_ptr = array_ptr as *mut FFI_ArrowArray;
+        let schema_ptr = schema_ptr as *mut FFI_ArrowSchema;
+
+        if array_ptr.is_null() || schema_ptr.is_null() {
+            return Err(ExecutionError::ArrowError(
+                "At least one of passed pointers is null".to_string(),
+            ));
+        };
+
+        // Check if the FFI array's dictionary status matches the cached type.
+        // Dictionary encoding can change between Parquet row groups, so a column
+        // may be dictionary-encoded in one batch but plain in the next.
+        let has_ffi_dict = unsafe { (*array_ptr).dictionary().is_some() };
+        let cached_is_dict = matches!(data_type, DataType::Dictionary(_, _));
+
+        let mut ffi_array = if has_ffi_dict != cached_is_dict {
+            // Fall back to full schema parsing when dictionary status changed
+            unsafe {
+                let array_data = std::ptr::replace(array_ptr, FFI_ArrowArray::empty());
+                let schema_data = std::ptr::replace(schema_ptr, FFI_ArrowSchema::empty());
+                from_ffi(array_data, &schema_data)?
+            }
+        } else {
+            unsafe {
+                let array_data = std::ptr::replace(array_ptr, FFI_ArrowArray::empty());
+                // Take ownership of the schema to drop it (JVM allocated it) but don't parse it
+                let _schema_data = std::ptr::replace(schema_ptr, FFI_ArrowSchema::empty());
+                from_ffi_and_data_type(array_data, data_type.clone())?
+            }
+        };
+
         ffi_array.align_buffers();
 
         Ok(ffi_array)

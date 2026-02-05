@@ -79,6 +79,9 @@ pub struct ScanExec {
     baseline_metrics: BaselineMetrics,
     /// Whether native code can assume ownership of batches that it receives
     arrow_ffi_safe: bool,
+    /// Cached Arrow DataTypes from the first batch, used to skip schema parsing on
+    /// subsequent batches via `from_ffi_and_data_type`.
+    cached_arrow_types: Arc<Mutex<Vec<DataType>>>,
 }
 
 impl ScanExec {
@@ -115,6 +118,7 @@ impl ScanExec {
             baseline_metrics,
             schema,
             arrow_ffi_safe,
+            cached_arrow_types: Arc::new(Mutex::new(Vec::new())),
         })
     }
 
@@ -143,11 +147,13 @@ impl ScanExec {
 
         let mut current_batch = self.batch.try_lock().unwrap();
         if current_batch.is_none() {
+            let mut cached_types = self.cached_arrow_types.try_lock().unwrap();
             let next_batch = ScanExec::get_next(
                 self.exec_context_id,
                 self.input_source.as_ref().unwrap().as_obj(),
                 self.data_types.len(),
                 self.arrow_ffi_safe,
+                &mut cached_types,
             )?;
             *current_batch = Some(next_batch);
         }
@@ -163,6 +169,7 @@ impl ScanExec {
         iter: &JObject,
         num_cols: usize,
         arrow_ffi_safe: bool,
+        cached_arrow_types: &mut Vec<DataType>,
     ) -> Result<InputBatch, CometError> {
         if exec_context_id == TEST_EXEC_CONTEXT_ID {
             // This is a unit test. We don't need to call JNI.
@@ -197,12 +204,28 @@ impl ScanExec {
             Self::allocate_and_fetch_batch(&mut env, iter, num_cols)?;
 
         let mut inputs: Vec<ArrayRef> = Vec::with_capacity(num_cols);
+        let is_first_batch = cached_arrow_types.is_empty();
 
         // Process each column
         for i in 0..num_cols {
             let array_ptr = array_addrs[i];
             let schema_ptr = schema_addrs[i];
-            let array_data = ArrayData::from_spark((array_ptr, schema_ptr))?;
+            let array_data = if is_first_batch {
+                let result = ArrayData::from_spark((array_ptr, schema_ptr))?;
+                cached_arrow_types.push(result.data_type().clone());
+                result
+            } else {
+                let result = ArrayData::from_spark_with_datatype(
+                    (array_ptr, schema_ptr),
+                    &cached_arrow_types[i],
+                )?;
+                // Update cache if type changed (e.g., dictionary encoding changed
+                // between Parquet row groups)
+                if result.data_type() != &cached_arrow_types[i] {
+                    cached_arrow_types[i] = result.data_type().clone();
+                }
+                result
+            };
 
             // TODO: validate array input data
             // array_data.validate_full()?;
