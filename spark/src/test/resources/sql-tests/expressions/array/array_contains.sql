@@ -35,5 +35,24 @@ query spark_answer_only
 SELECT array_contains(array(1, 2, 3), val) FROM test_array_contains
 
 -- literal + literal
-query ignore(https://github.com/apache/datafusion-comet/issues/3345)
+-- Note: array_contains(array(), 1) still has a bug (issue #3346) so we use spark_answer_only
+-- The NULL array case (cast(NULL as array<int>)) was fixed in issue #3345
+query spark_answer_only
 SELECT array_contains(array(1, 2, 3), 2), array_contains(array(1, 2, 3), 4), array_contains(array(), 1), array_contains(cast(NULL as array<int>), 1)
+
+-- Additional NULL array tests (issue #3345 fix verification)
+-- NULL array with integer value
+query
+SELECT array_contains(cast(NULL as array<int>), 1)
+
+-- NULL array with string value
+query
+SELECT array_contains(cast(NULL as array<string>), 'test')
+
+-- NULL array with NULL value
+query
+SELECT array_contains(cast(NULL as array<int>), cast(NULL as int))
+
+-- NULL array with column value
+query
+SELECT array_contains(cast(NULL as array<int>), val) FROM test_array_contains

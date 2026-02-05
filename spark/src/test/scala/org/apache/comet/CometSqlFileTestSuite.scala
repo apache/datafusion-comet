@@ -77,39 +77,45 @@ class CometSqlFileTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     "spark.sql.optimizer.excludedRules" ->
       "org.apache.spark.sql.catalyst.optimizer.ConstantFolding")
 
-  private def runTestFile(file: SqlTestFile): Unit = {
+  private def runTestFile(relativePath: String, file: SqlTestFile): Unit = {
     val allConfigs = file.configs ++ constantFoldingExcluded
     withSQLConf(allConfigs: _*) {
       withTable(file.tables: _*) {
         file.records.foreach {
-          case SqlStatement(sql) =>
-            spark.sql(sql)
-          case SqlQuery(sql, mode) =>
-            mode match {
-              case CheckCoverageAndAnswer =>
-                checkSparkAnswerAndOperator(sql)
-              case SparkAnswerOnly =>
-                checkSparkAnswer(sql)
-              case WithTolerance(tol) =>
-                checkSparkAnswerWithTolerance(sql, tol)
-              case ExpectFallback(reason) =>
-                checkSparkAnswerAndFallbackReason(sql, reason)
-              case Ignore(reason) =>
-                logInfo(s"IGNORED query (${reason}): $sql")
-              case ExpectError(pattern) =>
-                val (sparkError, cometError) = checkSparkAnswerMaybeThrows(spark.sql(sql))
-                assert(
-                  sparkError.isDefined,
-                  s"Expected Spark to throw an error matching '$pattern' but query succeeded")
-                assert(
-                  cometError.isDefined,
-                  s"Expected Comet to throw an error matching '$pattern' but query succeeded")
-                assert(
-                  sparkError.get.getMessage.contains(pattern),
-                  s"Spark error '${sparkError.get.getMessage}' does not contain '$pattern'")
-                assert(
-                  cometError.get.getMessage.contains(pattern),
-                  s"Comet error '${cometError.get.getMessage}' does not contain '$pattern'")
+          case SqlStatement(sql, line) =>
+            val location = if (line > 0) s"$relativePath:$line" else relativePath
+            withClue(s"In SQL file $location, executing statement:\n$sql\n") {
+              spark.sql(sql)
+            }
+          case SqlQuery(sql, mode, line) =>
+            val location = if (line > 0) s"$relativePath:$line" else relativePath
+            withClue(s"In SQL file $location, executing query:\n$sql\n") {
+              mode match {
+                case CheckCoverageAndAnswer =>
+                  checkSparkAnswerAndOperator(sql)
+                case SparkAnswerOnly =>
+                  checkSparkAnswer(sql)
+                case WithTolerance(tol) =>
+                  checkSparkAnswerWithTolerance(sql, tol)
+                case ExpectFallback(reason) =>
+                  checkSparkAnswerAndFallbackReason(sql, reason)
+                case Ignore(reason) =>
+                  logInfo(s"IGNORED query (${reason}): $sql")
+                case ExpectError(pattern) =>
+                  val (sparkError, cometError) = checkSparkAnswerMaybeThrows(spark.sql(sql))
+                  assert(
+                    sparkError.isDefined,
+                    s"Expected Spark to throw an error matching '$pattern' but query succeeded")
+                  assert(
+                    cometError.isDefined,
+                    s"Expected Comet to throw an error matching '$pattern' but query succeeded")
+                  assert(
+                    sparkError.get.getMessage.contains(pattern),
+                    s"Spark error '${sparkError.get.getMessage}' does not contain '$pattern'")
+                  assert(
+                    cometError.get.getMessage.contains(pattern),
+                    s"Comet error '${cometError.get.getMessage}' does not contain '$pattern'")
+              }
             }
         }
       }
@@ -132,7 +138,7 @@ class CometSqlFileTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           logInfo(s"SKIPPED (requires Spark ${parsed.minSparkVersion.get}): $relativePath")
         } else {
           val effectiveConfigs = parsed.configs ++ combinations.headOption.getOrElse(Seq.empty)
-          runTestFile(parsed.copy(configs = effectiveConfigs))
+          runTestFile(relativePath, parsed.copy(configs = effectiveConfigs))
         }
       }
     } else {
@@ -143,7 +149,7 @@ class CometSqlFileTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           if (skip) {
             logInfo(s"SKIPPED (requires Spark ${parsed.minSparkVersion.get}): $relativePath")
           } else {
-            runTestFile(parsed.copy(configs = parsed.configs ++ matrixConfigs))
+            runTestFile(relativePath, parsed.copy(configs = parsed.configs ++ matrixConfigs))
           }
         }
       }

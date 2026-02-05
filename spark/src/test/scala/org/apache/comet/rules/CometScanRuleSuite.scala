@@ -101,11 +101,14 @@ class CometScanRuleSuite extends CometTestBase {
     }
   }
 
-  test("CometExecRule should replace BatchScanExec, but only when Comet is enabled") {
+  // ignored: native_comet scan is no longer supported
+  ignore("CometScanRule should replace V2 BatchScanExec, but only when Comet is enabled") {
     withTempPath { path =>
       createTestDataFrame.write.parquet(path.toString)
       withTempView("test_data") {
-        withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> "") {
+        withSQLConf(
+          SQLConf.USE_V1_SOURCE_LIST.key -> "",
+          CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET) {
           spark.read.parquet(path.toString).createOrReplaceTempView("test_data")
 
           val sparkPlan =

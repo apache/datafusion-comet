@@ -83,6 +83,8 @@ jobs:
         run: |
           cd native
           cargo build --profile ci
+        env:
+          RUSTFLAGS: "-Ctarget-cpu=x86-64-v3"
 
       - name: Upload native library
         uses: actions/upload-artifact@v6
@@ -116,15 +118,12 @@ jobs:
           - {name: "sql_hive-3", args1: "", args2: "hive/testOnly * -- -n org.apache.spark.tags.SlowHiveTest"}
         # Test combinations:
         # - auto scan: all Spark versions (3.4, 3.5, 4.0)
-        # - native_comet: Spark 3.4, 3.5
         # - native_iceberg_compat: Spark 3.5 only
         config:
           - {spark-short: '3.4', spark-full: '3.4.3', java: 11, scan-impl: 'auto', scan-env: ''}
           - {spark-short: '3.5', spark-full: '3.5.8', java: 11, scan-impl: 'auto', scan-env: ''}
-          - {spark-short: '4.0', spark-full: '4.0.1', java: 17, scan-impl: 'auto', scan-env: ''}
-          - {spark-short: '3.4', spark-full: '3.4.3', java: 11, scan-impl: 'native_comet', scan-env: 'COMET_PARQUET_SCAN_IMPL=native_comet'}
-          - {spark-short: '3.5', spark-full: '3.5.8', java: 11, scan-impl: 'native_comet', scan-env: 'COMET_PARQUET_SCAN_IMPL=native_comet'}
           - {spark-short: '3.5', spark-full: '3.5.8', java: 11, scan-impl: 'native_iceberg_compat', scan-env: 'COMET_PARQUET_SCAN_IMPL=native_iceberg_compat'}
+          - {spark-short: '4.0', spark-full: '4.0.1', java: 17, scan-impl: 'auto', scan-env: ''}
         # Skip sql_hive-1 for Spark 4.0 due to https://github.com/apache/datafusion-comet/issues/2946
         exclude:
           - config: {spark-short: '4.0', spark-full: '4.0.1', java: 17, scan-impl: 'auto', scan-env: ''}
