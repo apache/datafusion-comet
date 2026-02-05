@@ -83,10 +83,6 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
     } else {
       name
     }
-    val nativeImpl = CometConf.COMET_NATIVE_SCAN_IMPL.get()
-    if (nativeImpl != CometConf.SCAN_AUTO) {
-      goldenFileName = s"$goldenFileName.$nativeImpl"
-    }
     new File(goldenFilePath, goldenFileName)
   }
 
@@ -275,7 +271,9 @@ class CometTPCDSV1_4_PlanStabilitySuite extends CometPlanStabilitySuite {
 
   tpcdsQueries.foreach { q =>
     test(s"check simplified (tpcds-v1.4/$q)") {
-      testQuery("tpcds", q)
+      withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_AUTO) {
+        testQuery("tpcds", q)
+      }
     }
   }
 }
@@ -293,7 +291,9 @@ class CometTPCDSV2_7_PlanStabilitySuite extends CometPlanStabilitySuite {
 
   tpcdsQueriesV2_7_0.foreach { q =>
     test(s"check simplified (tpcds-v2.7.0/$q)") {
-      testQuery("tpcds-v2.7.0", q)
+      withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_AUTO) {
+        testQuery("tpcds-v2.7.0", q)
+      }
     }
   }
 }
