@@ -16,7 +16,6 @@
 // under the License.
 
 use crate::execution::operators::{copy_array, copy_or_unpack_array, CopyMode};
-use crate::parquet::get_batch_context;
 use crate::{
     errors::CometError,
     execution::{
@@ -80,11 +79,6 @@ pub struct ScanExec {
     baseline_metrics: BaselineMetrics,
     /// Whether native code can assume ownership of batches that it receives
     arrow_ffi_safe: bool,
-    /// When true, data columns are read directly from the native reader's
-    /// BatchContext instead of through JVM FFI (zero-copy).
-    native_batch_passthrough: bool,
-    /// Number of data columns from native reader. Remaining are partition columns.
-    num_data_columns: usize,
 }
 
 impl ScanExec {
@@ -94,8 +88,6 @@ impl ScanExec {
         input_source_description: &str,
         data_types: Vec<DataType>,
         arrow_ffi_safe: bool,
-        native_batch_passthrough: bool,
-        num_data_columns: usize,
     ) -> Result<Self, CometError> {
         let metrics_set = ExecutionPlanMetricsSet::default();
         let baseline_metrics = BaselineMetrics::new(&metrics_set, 0);
@@ -123,8 +115,6 @@ impl ScanExec {
             baseline_metrics,
             schema,
             arrow_ffi_safe,
-            native_batch_passthrough,
-            num_data_columns,
         })
     }
 
@@ -153,21 +143,12 @@ impl ScanExec {
 
         let mut current_batch = self.batch.try_lock().unwrap();
         if current_batch.is_none() {
-            let next_batch = if self.native_batch_passthrough {
-                ScanExec::get_next_passthrough(
-                    self.exec_context_id,
-                    self.input_source.as_ref().unwrap().as_obj(),
-                    self.num_data_columns,
-                    self.data_types.len(),
-                )?
-            } else {
-                ScanExec::get_next(
-                    self.exec_context_id,
-                    self.input_source.as_ref().unwrap().as_obj(),
-                    self.data_types.len(),
-                    self.arrow_ffi_safe,
-                )?
-            };
+            let next_batch = ScanExec::get_next(
+                self.exec_context_id,
+                self.input_source.as_ref().unwrap().as_obj(),
+                self.data_types.len(),
+                self.arrow_ffi_safe,
+            )?;
             *current_batch = Some(next_batch);
         }
 
@@ -276,98 +257,6 @@ impl ScanExec {
         };
 
         Ok(InputBatch::new(inputs, Some(actual_num_rows)))
-    }
-
-    /// Passthrough mode: data columns are read directly from native BatchContext
-    /// (zero-copy Arc::clone). Only partition columns are imported from JVM via FFI.
-    fn get_next_passthrough(
-        exec_context_id: i64,
-        iter: &JObject,
-        num_data_cols: usize,
-        num_total_cols: usize,
-    ) -> Result<InputBatch, CometError> {
-        if exec_context_id == TEST_EXEC_CONTEXT_ID {
-            return Ok(InputBatch::EOF);
-        }
-
-        if iter.is_null() {
-            return Err(CometError::from(ExecutionError::GeneralError(format!(
-                "Null batch iterator object. Plan id: {exec_context_id}"
-            ))));
-        }
-
-        let mut env = JVMClasses::get_env()?;
-
-        // 1. Advance reader; get native batch handle (data stays in Rust)
-        let handle: i64 = unsafe {
-            jni_call!(&mut env,
-                comet_batch_iterator(iter).advance_passthrough() -> i64)?
-        };
-        if handle == 0 {
-            return Ok(InputBatch::EOF);
-        }
-
-        // 2. Get data columns from native BatchContext (zero-copy)
-        let context = get_batch_context(handle)?;
-        let batch = context.current_batch.as_ref().ok_or_else(|| {
-            CometError::from(ExecutionError::GeneralError(
-                "No current batch in BatchContext".to_string(),
-            ))
-        })?;
-
-        let num_rows = batch.num_rows();
-        let mut inputs: Vec<ArrayRef> = Vec::with_capacity(num_total_cols);
-
-        for i in 0..num_data_cols {
-            // Zero-copy: just increment the Arc reference count
-            inputs.push(Arc::clone(batch.column(i)));
-        }
-
-        // 3. Import partition columns from JVM FFI (if any)
-        let num_partition_cols = num_total_cols - num_data_cols;
-        if num_partition_cols > 0 {
-            let mut array_addrs = Vec::with_capacity(num_partition_cols);
-            let mut schema_addrs = Vec::with_capacity(num_partition_cols);
-
-            for _ in 0..num_partition_cols {
-                let arrow_array = Rc::new(FFI_ArrowArray::empty());
-                let arrow_schema = Rc::new(FFI_ArrowSchema::empty());
-                array_addrs.push(Rc::into_raw(arrow_array) as i64);
-                schema_addrs.push(Rc::into_raw(arrow_schema) as i64);
-            }
-
-            let long_array_addrs = env.new_long_array(num_partition_cols as jsize)?;
-            let long_schema_addrs = env.new_long_array(num_partition_cols as jsize)?;
-            env.set_long_array_region(&long_array_addrs, 0, &array_addrs)?;
-            env.set_long_array_region(&long_schema_addrs, 0, &schema_addrs)?;
-
-            let array_obj = JObject::from(long_array_addrs);
-            let schema_obj = JObject::from(long_schema_addrs);
-            let num_data_cols_jint = num_data_cols as i32;
-
-            let _part_rows: i32 = unsafe {
-                jni_call!(&mut env,
-                    comet_batch_iterator(iter).next_partition_columns_only(
-                        JValueGen::Object(array_obj.as_ref()),
-                        JValueGen::Object(schema_obj.as_ref()),
-                        JValueGen::Int(num_data_cols_jint)
-                    ) -> i32)?
-            };
-
-            for i in 0..num_partition_cols {
-                let array_data = ArrayData::from_spark((array_addrs[i], schema_addrs[i]))?;
-                let array = make_array(array_data);
-                // Partition columns come from JVM mutable buffers, must copy
-                inputs.push(copy_array(&array));
-
-                unsafe {
-                    Rc::from_raw(array_addrs[i] as *const FFI_ArrowArray);
-                    Rc::from_raw(schema_addrs[i] as *const FFI_ArrowSchema);
-                }
-            }
-        }
-
-        Ok(InputBatch::new(inputs, Some(num_rows)))
     }
 
     /// Allocates Arrow FFI structures and calls JNI to get the next batch data.

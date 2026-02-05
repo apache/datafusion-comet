@@ -23,9 +23,7 @@ import scala.collection.Iterator;
 
 import org.apache.spark.sql.vectorized.ColumnarBatch;
 
-import org.apache.comet.parquet.NativeBatchReader;
 import org.apache.comet.vector.CometSelectionVector;
-import org.apache.comet.vector.CometVector;
 import org.apache.comet.vector.NativeUtil;
 
 /**
@@ -111,46 +109,6 @@ public class CometBatchIterator {
       }
     }
     return true;
-  }
-
-  /**
-   * Advance to next batch in passthrough mode. Data columns stay in native BatchContext; only
-   * partition columns are exported via FFI.
-   *
-   * @return native reader handle, or 0 for EOF
-   */
-  public long advancePassthrough() {
-    previousBatch = null;
-
-    if (currentBatch == null) {
-      if (input.hasNext()) {
-        currentBatch = input.next();
-      }
-    }
-    if (currentBatch == null) {
-      return 0; // EOF
-    }
-    long handle = NativeBatchReader.CURRENT_READER_HANDLE.get();
-    previousBatch = currentBatch;
-    currentBatch = null;
-    return handle;
-  }
-
-  /**
-   * Export only partition columns (columns at indices >= numDataCols).
-   *
-   * @param arrayAddrs The addresses of the ArrowArray structures for partition columns
-   * @param schemaAddrs The addresses of the ArrowSchema structures for partition columns
-   * @param numDataCols Number of data columns to skip
-   * @return the number of rows, or -1 if no batch
-   */
-  public int nextPartitionColumnsOnly(long[] arrayAddrs, long[] schemaAddrs, int numDataCols) {
-    if (previousBatch == null) return -1;
-    for (int i = numDataCols; i < previousBatch.numCols(); i++) {
-      CometVector vec = (CometVector) previousBatch.column(i);
-      nativeUtil.exportSingleVector(vec, arrayAddrs[i - numDataCols], schemaAddrs[i - numDataCols]);
-    }
-    return previousBatch.numRows();
   }
 
   /**

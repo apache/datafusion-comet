@@ -601,16 +601,16 @@ enum ParquetReaderState {
     Complete,
 }
 /// Parquet read context maintained across multiple JNI calls.
-pub struct BatchContext {
+struct BatchContext {
     native_plan: Arc<SparkPlan>,
     metrics_node: Arc<GlobalRef>,
     batch_stream: Option<SendableRecordBatchStream>,
-    pub current_batch: Option<RecordBatch>,
+    current_batch: Option<RecordBatch>,
     reader_state: ParquetReaderState,
 }
 
 #[inline]
-pub fn get_batch_context<'a>(handle: i64) -> Result<&'a mut BatchContext, CometError> {
+fn get_batch_context<'a>(handle: jlong) -> Result<&'a mut BatchContext, CometError> {
     unsafe {
         (handle as *mut BatchContext)
             .as_mut()

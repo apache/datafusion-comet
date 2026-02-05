@@ -1124,8 +1124,6 @@ impl PhysicalPlanner {
                     &scan.source,
                     data_types,
                     scan.arrow_ffi_safe,
-                    scan.native_batch_passthrough,
-                    scan.num_data_columns as usize,
                 )?;
 
                 Ok((
@@ -3475,8 +3473,6 @@ mod tests {
                 }],
                 source: "".to_string(),
                 arrow_ffi_safe: false,
-                native_batch_passthrough: false,
-                num_data_columns: 0,
             })),
         };
 
@@ -3551,8 +3547,6 @@ mod tests {
                 }],
                 source: "".to_string(),
                 arrow_ffi_safe: false,
-                native_batch_passthrough: false,
-                num_data_columns: 0,
             })),
         };
 
@@ -3760,8 +3754,6 @@ mod tests {
                 fields: vec![create_proto_datatype()],
                 source: "".to_string(),
                 arrow_ffi_safe: false,
-                native_batch_passthrough: false,
-                num_data_columns: 0,
             })),
         }
     }
@@ -3805,8 +3797,6 @@ mod tests {
                 ],
                 source: "".to_string(),
                 arrow_ffi_safe: false,
-                native_batch_passthrough: false,
-                num_data_columns: 0,
             })),
         };
 
@@ -3923,8 +3913,6 @@ mod tests {
                 ],
                 source: "".to_string(),
                 arrow_ffi_safe: false,
-                native_batch_passthrough: false,
-                num_data_columns: 0,
             })),
         };
 

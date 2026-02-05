@@ -83,12 +83,6 @@ message Scan {
   string source = 2;
   // Whether native code can assume ownership of batches that it receives
   bool arrow_ffi_safe = 3;
-  // When true, data columns are read directly from the native reader's
-  // BatchContext instead of through JVM FFI. Only partition columns
-  // cross the JVM boundary.
-  bool native_batch_passthrough = 4;
-  // Number of data columns (from native reader). Remaining columns are partition cols.
-  int32 num_data_columns = 5;
 }
 
 message NativeScan {
