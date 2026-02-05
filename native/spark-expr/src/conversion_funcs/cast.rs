@@ -3454,6 +3454,64 @@ mod tests {
     }
 
     #[test]
+    fn test_cast_date_to_timestamp() {
+        use arrow::array::Date32Array;
+
+        // verifying epoch , DST change dates (US) and a null value (comprehensive tests on spark side)
+        let dates: ArrayRef = Arc::new(Date32Array::from(vec![
+            Some(0),
+            Some(19723),
+            Some(19793),
+            None,
+        ]));
+
+        let non_dst_date = 1704067200000000i64;
+        let dst_date = 1710115200000000i64;
+        let seven_hours_ts = 25200000000i64;
+        let eight_hours_ts = 28800000000i64;
+
+        // validate UTC
+        let result = cast_array(
+            Arc::clone(&dates),
+            &DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+            &SparkCastOptions::new(EvalMode::Legacy, "UTC", false),
+        )
+        .unwrap();
+        let ts = result.as_primitive::<TimestampMicrosecondType>();
+        assert_eq!(ts.value(0), 0);
+        assert_eq!(ts.value(1), non_dst_date);
+        assert_eq!(ts.value(2), dst_date);
+        assert!(ts.is_null(3));
+
+        // validate LA timezone (follows Daylight savings)
+        let result = cast_array(
+            Arc::clone(&dates),
+            &DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+            &SparkCastOptions::new(EvalMode::Legacy, "America/Los_Angeles", false),
+        )
+        .unwrap();
+        let ts = result.as_primitive::<TimestampMicrosecondType>();
+        assert_eq!(ts.value(0), eight_hours_ts);
+        assert_eq!(ts.value(1), non_dst_date + eight_hours_ts);
+        // should adjust for DST
+        assert_eq!(ts.value(2), dst_date + seven_hours_ts);
+        assert!(ts.is_null(3));
+
+        // Phoenix timezone (does not follow Daylight savings)
+        let result = cast_array(
+            Arc::clone(&dates),
+            &DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+            &SparkCastOptions::new(EvalMode::Legacy, "America/Phoenix", false),
+        )
+        .unwrap();
+        let ts = result.as_primitive::<TimestampMicrosecondType>();
+        assert_eq!(ts.value(0), seven_hours_ts);
+        assert_eq!(ts.value(1), non_dst_date + seven_hours_ts);
+        assert_eq!(ts.value(2), dst_date + seven_hours_ts);
+        assert!(ts.is_null(3));
+    }
+
+    #[test]
     fn test_cast_struct_to_utf8() {
         let a: ArrayRef = Arc::new(Int32Array::from(vec![
             Some(1),
