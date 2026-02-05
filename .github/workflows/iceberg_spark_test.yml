@@ -77,6 +77,8 @@ jobs:
         # Use CI profile for faster builds (no LTO) and to share cache with pr_build_linux.yml.
         run: |
           cd native && cargo build --profile ci
+        env:
+          RUSTFLAGS: "-Ctarget-cpu=x86-64-v3"
 
       - name: Save Cargo cache
         uses: actions/cache/save@v5

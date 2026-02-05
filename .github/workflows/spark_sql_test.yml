@@ -83,6 +83,8 @@ jobs:
         run: |
           cd native
           cargo build --profile ci
+        env:
+          RUSTFLAGS: "-Ctarget-cpu=x86-64-v3"
 
       - name: Upload native library
         uses: actions/upload-artifact@v6

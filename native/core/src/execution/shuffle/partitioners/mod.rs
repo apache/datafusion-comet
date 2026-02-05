@@ -15,14 +15,21 @@
 // specific language governing permissions and limitations
 // under the License.
 
-pub(crate) mod codec;
-mod comet_partitioning;
-mod metrics;
-mod partitioners;
-mod shuffle_writer;
-pub mod spark_unsafe;
-mod writers;
+mod multi_partition;
+mod partitioned_batch_iterator;
+mod single_partition;
 
-pub use codec::{read_ipc_compressed, CompressionCodec, ShuffleBlockWriter};
-pub use comet_partitioning::CometPartitioning;
-pub use shuffle_writer::ShuffleWriterExec;
+use arrow::record_batch::RecordBatch;
+use datafusion::common::Result;
+
+pub(super) use multi_partition::MultiPartitionShuffleRepartitioner;
+pub(super) use partitioned_batch_iterator::PartitionedBatchIterator;
+pub(super) use single_partition::SinglePartitionShufflePartitioner;
+
+#[async_trait::async_trait]
+pub(super) trait ShufflePartitioner: Send + Sync {
+    /// Insert a batch into the partitioner
+    async fn insert_batch(&mut self, batch: RecordBatch) -> Result<()>;
+    /// Write shuffle data and shuffle index file to disk
+    fn shuffle_write(&mut self) -> Result<()>;
+}
