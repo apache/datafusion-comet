@@ -154,6 +154,13 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
   protected static final BufferAllocator ALLOCATOR = new RootAllocator();
   private NativeUtil nativeUtil = new NativeUtil();
 
+  /**
+   * Thread-local holding the native BatchContext handle of the current reader. Set during
+   * nextBatch() in passthrough mode so that CometBatchIterator.advancePassthrough() can retrieve
+   * it.
+   */
+  public static final ThreadLocal<Long> CURRENT_READER_HANDLE = ThreadLocal.withInitial(() -> 0L);
+
   protected Configuration conf;
   protected int capacity;
   protected boolean isCaseSensitive;
@@ -888,6 +895,10 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
     return false;
   }
 
+  public long getHandle() {
+    return this.handle;
+  }
+
   public void setSparkSchema(StructType schema) {
     this.sparkSchema = schema;
   }
@@ -955,6 +966,11 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
     }
 
     if (batchSize == 0) return false;
+
+    // Set the thread-local handle so CometBatchIterator.advancePassthrough() can retrieve it.
+    // This is always set after a successful loadNextBatch() regardless of whether passthrough
+    // mode will be used — the Rust ScanExec decides whether to use it.
+    CURRENT_READER_HANDLE.set(this.handle);
 
     long totalDecodeTime = 0, totalLoadTime = 0;
     for (int i = 0; i < columnReaders.length; i++) {

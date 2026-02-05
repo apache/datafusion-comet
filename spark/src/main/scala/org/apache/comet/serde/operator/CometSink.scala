@@ -21,9 +21,10 @@ package org.apache.comet.serde.operator
 
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.comet.{CometNativeExec, CometSinkPlaceHolder}
+import org.apache.spark.sql.comet.{CometNativeExec, CometScanExec, CometSinkPlaceHolder}
 import org.apache.spark.sql.execution.SparkPlan
 
+import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.ConfigEntry
 import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass}
@@ -62,6 +63,16 @@ abstract class CometSink[T <: SparkPlan] extends CometOperatorSerde[T] {
       scanBuilder.setSource(source)
     }
     scanBuilder.setArrowFfiSafe(isFfiSafe)
+
+    // Enable native batch passthrough for native_iceberg_compat V1 scans
+    op match {
+      case scan: CometScanExec if scan.scanImpl == CometConf.SCAN_NATIVE_ICEBERG_COMPAT =>
+        scanBuilder.setNativeBatchPassthrough(true)
+        val numDataCols =
+          scan.output.length - scan.relation.partitionSchema.length
+        scanBuilder.setNumDataColumns(numDataCols)
+      case _ =>
+    }
 
     val scanTypes = op.output.flatten { attr =>
       serializeDataType(attr.dataType)
