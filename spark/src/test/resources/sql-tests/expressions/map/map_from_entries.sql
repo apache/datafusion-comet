@@ -32,5 +32,6 @@ SELECT map_from_entries(array(struct(cast('x' as binary), 10)))
 query expect_fallback(Using BinaryType as Map values is not allowed in map_from_entries)
 SELECT map_from_entries(array(struct(10, cast('x' as binary))))
 
+-- literal arguments
 query spark_answer_only
 SELECT map_from_entries(array(struct('x', 10), struct('y', 20), struct('z', 30)))
