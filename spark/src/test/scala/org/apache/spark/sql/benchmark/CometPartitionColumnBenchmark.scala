@@ -21,9 +21,6 @@ package org.apache.spark.sql.benchmark
 
 import org.apache.spark.benchmark.Benchmark
 
-import org.apache.comet.CometConf
-import org.apache.comet.CometConf.{SCAN_NATIVE_DATAFUSION, SCAN_NATIVE_ICEBERG_COMPAT}
-
 /**
  * Benchmark to measure partition column scan performance. This exercises the CometConstantVector
  * path where constant columns are exported as 1-element Arrow arrays and expanded on the native
@@ -59,53 +56,16 @@ object CometPartitionColumnBenchmark extends CometBenchmarkBase {
           .parquet(parquetDir)
         spark.read.parquet(parquetDir).createOrReplaceTempView("parquetV1Table")
 
-        sqlBenchmark.addCase("SQL Parquet - Spark") { _ =>
-          spark.sql("select sum(id) from parquetV1Table").noop()
-        }
-
-        sqlBenchmark.addCase("SQL Parquet - Comet Native DataFusion") { _ =>
-          withSQLConf(
-            CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_NATIVE_SCAN_IMPL.key -> SCAN_NATIVE_DATAFUSION) {
-            spark.sql("select sum(id) from parquetV1Table").noop()
-          }
-        }
-
-        sqlBenchmark.addCase("SQL Parquet - Comet Native Iceberg Compat") { _ =>
-          withSQLConf(
-            CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_NATIVE_SCAN_IMPL.key -> SCAN_NATIVE_ICEBERG_COMPAT) {
-            spark.sql("select sum(id) from parquetV1Table").noop()
-          }
-        }
+        addParquetScanCases(sqlBenchmark, "select sum(id) from parquetV1Table")
 
         // Also benchmark reading partition columns themselves
         val partSumExpr =
           (1 to numPartitionCols).map(i => s"sum(length(p$i))").mkString(", ")
 
-        sqlBenchmark.addCase("SQL Parquet - Spark (read partition cols)") { _ =>
-          spark.sql(s"select $partSumExpr from parquetV1Table").noop()
-        }
-
-        sqlBenchmark.addCase("SQL Parquet - Comet Native DataFusion (partition cols)") { _ =>
-          withSQLConf(
-            CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_NATIVE_SCAN_IMPL.key -> SCAN_NATIVE_DATAFUSION) {
-            spark.sql(s"select $partSumExpr from parquetV1Table").noop()
-          }
-        }
-
-        sqlBenchmark.addCase("SQL Parquet - Comet Native Iceberg Compat (partition cols)") { _ =>
-          withSQLConf(
-            CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_NATIVE_SCAN_IMPL.key -> SCAN_NATIVE_ICEBERG_COMPAT) {
-            spark.sql(s"select $partSumExpr from parquetV1Table").noop()
-          }
-        }
+        addParquetScanCases(
+          sqlBenchmark,
+          s"select $partSumExpr from parquetV1Table",
+          caseSuffix = "partition cols")
 
         sqlBenchmark.run()
       }
