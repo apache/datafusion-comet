@@ -19,9 +19,6 @@
 
 package org.apache.comet.parquet;
 
-import org.apache.arrow.memory.BufferAllocator;
-import org.apache.arrow.memory.RootAllocator;
-import org.apache.arrow.vector.*;
 import org.apache.arrow.vector.types.DateUnit;
 import org.apache.arrow.vector.types.FloatingPointPrecision;
 import org.apache.arrow.vector.types.TimeUnit;
@@ -31,9 +28,8 @@ import org.apache.arrow.vector.types.pojo.FieldType;
 import org.apache.spark.sql.catalyst.InternalRow;
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns;
 import org.apache.spark.sql.types.*;
-import org.apache.spark.unsafe.types.UTF8String;
 
-import org.apache.comet.vector.CometPlainVector;
+import org.apache.comet.vector.CometConstantVector;
 import org.apache.comet.vector.CometVector;
 
 /**
@@ -73,8 +69,6 @@ public class ImmutableConstantColumnReader extends AbstractColumnReader {
     // Complex types (StructType, ArrayType, MapType) and other types are not supported
     return false;
   }
-
-  private final BufferAllocator allocator = new RootAllocator();
 
   /** Whether all the values in this constant column are nulls */
   private boolean isNull;
@@ -143,174 +137,9 @@ public class ImmutableConstantColumnReader extends AbstractColumnReader {
     nativeHandle = 0;
   }
 
-  /** Creates a constant Arrow vector with the specified number of rows. */
+  /** Creates a constant vector with the specified logical row count. */
   private CometVector createConstantVector(int numRows) {
-    ValueVector arrowVector = createArrowVector(numRows);
-    return new CometPlainVector(arrowVector, useDecimal128);
-  }
-
-  /** Creates an Arrow vector filled with constant values. */
-  private ValueVector createArrowVector(int numRows) {
-    if (isNull) {
-      return createNullVector(numRows);
-    }
-
-    if (type == DataTypes.BooleanType) {
-      return createBooleanVector(numRows, (Boolean) value);
-    } else if (type == DataTypes.ByteType) {
-      return createByteVector(numRows, (Byte) value);
-    } else if (type == DataTypes.ShortType) {
-      return createShortVector(numRows, (Short) value);
-    } else if (type == DataTypes.IntegerType) {
-      return createIntVector(numRows, (Integer) value);
-    } else if (type == DataTypes.LongType) {
-      return createLongVector(numRows, (Long) value);
-    } else if (type == DataTypes.FloatType) {
-      return createFloatVector(numRows, (Float) value);
-    } else if (type == DataTypes.DoubleType) {
-      return createDoubleVector(numRows, (Double) value);
-    } else if (type == DataTypes.StringType) {
-      return createStringVector(numRows, (UTF8String) value);
-    } else if (type == DataTypes.BinaryType) {
-      return createBinaryVector(numRows, (byte[]) value);
-    } else if (type == DataTypes.DateType) {
-      return createDateVector(numRows, (Integer) value);
-    } else if (type == DataTypes.TimestampType || type == TimestampNTZType$.MODULE$) {
-      return createTimestampVector(numRows, (Long) value);
-    } else if (type instanceof DecimalType) {
-      return createDecimalVector(numRows, (Decimal) value, (DecimalType) type);
-    } else {
-      throw new UnsupportedOperationException("Unsupported Spark type: " + type);
-    }
-  }
-
-  private ValueVector createNullVector(int numRows) {
-    NullVector vector = new NullVector(arrowField.getName(), numRows);
-    return vector;
-  }
-
-  private ValueVector createBooleanVector(int numRows, boolean value) {
-    BitVector vector = new BitVector(arrowField, allocator);
-    vector.allocateNew(numRows);
-    for (int i = 0; i < numRows; i++) {
-      vector.set(i, value ? 1 : 0);
-    }
-    vector.setValueCount(numRows);
-    return vector;
-  }
-
-  private ValueVector createByteVector(int numRows, byte value) {
-    TinyIntVector vector = new TinyIntVector(arrowField, allocator);
-    vector.allocateNew(numRows);
-    for (int i = 0; i < numRows; i++) {
-      vector.set(i, value);
-    }
-    vector.setValueCount(numRows);
-    return vector;
-  }
-
-  private ValueVector createShortVector(int numRows, short value) {
-    SmallIntVector vector = new SmallIntVector(arrowField, allocator);
-    vector.allocateNew(numRows);
-    for (int i = 0; i < numRows; i++) {
-      vector.set(i, value);
-    }
-    vector.setValueCount(numRows);
-    return vector;
-  }
-
-  private ValueVector createIntVector(int numRows, int value) {
-    IntVector vector = new IntVector(arrowField, allocator);
-    vector.allocateNew(numRows);
-    for (int i = 0; i < numRows; i++) {
-      vector.set(i, value);
-    }
-    vector.setValueCount(numRows);
-    return vector;
-  }
-
-  private ValueVector createLongVector(int numRows, long value) {
-    BigIntVector vector = new BigIntVector(arrowField, allocator);
-    vector.allocateNew(numRows);
-    for (int i = 0; i < numRows; i++) {
-      vector.set(i, value);
-    }
-    vector.setValueCount(numRows);
-    return vector;
-  }
-
-  private ValueVector createFloatVector(int numRows, float value) {
-    Float4Vector vector = new Float4Vector(arrowField, allocator);
-    vector.allocateNew(numRows);
-    for (int i = 0; i < numRows; i++) {
-      vector.set(i, value);
-    }
-    vector.setValueCount(numRows);
-    return vector;
-  }
-
-  private ValueVector createDoubleVector(int numRows, double value) {
-    Float8Vector vector = new Float8Vector(arrowField, allocator);
-    vector.allocateNew(numRows);
-    for (int i = 0; i < numRows; i++) {
-      vector.set(i, value);
-    }
-    vector.setValueCount(numRows);
-    return vector;
-  }
-
-  private ValueVector createStringVector(int numRows, UTF8String value) {
-    VarCharVector vector = new VarCharVector(arrowField, allocator);
-    byte[] bytes = value.getBytes();
-    vector.allocateNew((long) bytes.length * numRows, numRows);
-    for (int i = 0; i < numRows; i++) {
-      vector.set(i, bytes);
-    }
-    vector.setValueCount(numRows);
-    return vector;
-  }
-
-  private ValueVector createBinaryVector(int numRows, byte[] value) {
-    VarBinaryVector vector = new VarBinaryVector(arrowField, allocator);
-    vector.allocateNew((long) value.length * numRows, numRows);
-    for (int i = 0; i < numRows; i++) {
-      vector.set(i, value);
-    }
-    vector.setValueCount(numRows);
-    return vector;
-  }
-
-  private ValueVector createDateVector(int numRows, int value) {
-    DateDayVector vector = new DateDayVector(arrowField, allocator);
-    vector.allocateNew(numRows);
-    for (int i = 0; i < numRows; i++) {
-      vector.set(i, value);
-    }
-    vector.setValueCount(numRows);
-    return vector;
-  }
-
-  private ValueVector createTimestampVector(int numRows, long value) {
-    TimeStampMicroTZVector vector = new TimeStampMicroTZVector(arrowField, allocator);
-    vector.allocateNew(numRows);
-    for (int i = 0; i < numRows; i++) {
-      vector.set(i, value);
-    }
-    vector.setValueCount(numRows);
-    return vector;
-  }
-
-  private ValueVector createDecimalVector(int numRows, Decimal value, DecimalType dt) {
-    DecimalVector vector =
-        new DecimalVector(arrowField.getName(), allocator, dt.precision(), dt.scale());
-    vector.allocateNew(numRows);
-
-    java.math.BigDecimal bigDecimal = value.toJavaBigDecimal();
-    for (int i = 0; i < numRows; i++) {
-      vector.set(i, bigDecimal);
-    }
-    vector.setValueCount(numRows);
-    return vector;
+    return new CometConstantVector(type, arrowField, useDecimal128, value, isNull, numRows);
   }
 
   /** Converts a Spark StructField to an Arrow Field. */

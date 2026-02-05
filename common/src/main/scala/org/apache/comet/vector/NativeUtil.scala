@@ -140,6 +140,20 @@ class NativeUtil {
             provider,
             arrowArray,
             arrowSchema)
+        case constantVector: CometConstantVector =>
+          // Export the 1-element Arrow vector for scalar constant columns.
+          // Skip adding its value count to numRows validation since it's 1, not N.
+          // The native side will detect and expand 1-element arrays to the actual batch size.
+          val valueVector = constantVector.getValueVector
+
+          val arrowSchema = ArrowSchema.wrap(schemaAddrs(index))
+          val arrowArray = ArrowArray.wrap(arrayAddrs(index))
+          Data.exportVector(
+            allocator,
+            getFieldVector(valueVector, "export"),
+            null,
+            arrowArray,
+            arrowSchema)
         case a: CometVector =>
           val valueVector = a.getValueVector
 

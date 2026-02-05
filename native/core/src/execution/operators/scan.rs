@@ -28,6 +28,7 @@ use arrow::compute::{cast_with_options, take, CastOptions};
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use arrow::ffi::FFI_ArrowArray;
 use arrow::ffi::FFI_ArrowSchema;
+use datafusion::common::ScalarValue;
 use datafusion::common::{arrow_datafusion_err, DataFusionError, Result as DataFusionResult};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::metrics::{
@@ -209,16 +210,23 @@ impl ScanExec {
 
             let array = make_array(array_data);
 
-            // Apply selection if selection vectors exist (applies to all columns)
+            // Apply selection if selection vectors exist (applies to all columns).
+            // Skip take() for 1-element scalar constant arrays since they represent
+            // constant values unaffected by row deletion.
             let array = if let Some(ref selection_arrays) = selection_indices_arrays {
-                let indices = &selection_arrays[i];
-                // Apply the selection using Arrow's take kernel
-                match take(&*array, &**indices, None) {
-                    Ok(selected_array) => selected_array,
-                    Err(e) => {
-                        return Err(CometError::from(ExecutionError::ArrowError(format!(
-                            "Failed to apply selection for column {i}: {e}",
-                        ))));
+                if array.len() == 1 {
+                    // Scalar constant column - skip selection, will be expanded later
+                    array
+                } else {
+                    let indices = &selection_arrays[i];
+                    // Apply the selection using Arrow's take kernel
+                    match take(&*array, &**indices, None) {
+                        Ok(selected_array) => selected_array,
+                        Err(e) => {
+                            return Err(CometError::from(ExecutionError::ArrowError(format!(
+                                "Failed to apply selection for column {i}: {e}",
+                            ))));
+                        }
                     }
                 }
             } else {
@@ -255,6 +263,18 @@ impl ScanExec {
         } else {
             num_rows as usize
         };
+
+        // Expand 1-element scalar constant columns to the actual batch size.
+        // The JVM side exports constant columns (partition/missing) as 1-element arrays
+        // to avoid materializing N identical values. We detect and expand them here.
+        if actual_num_rows > 1 {
+            for i in 0..inputs.len() {
+                if inputs[i].len() == 1 {
+                    let scalar = ScalarValue::try_from_array(&inputs[i], 0)?;
+                    inputs[i] = scalar.to_array_of_size(actual_num_rows)?;
+                }
+            }
+        }
 
         Ok(InputBatch::new(inputs, Some(actual_num_rows)))
     }
