@@ -1282,7 +1282,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   private def generateDates(): DataFrame = {
-    // Sample dates: 1st, 10th, 20th of each month from epoch to 2027
+    // add 1st, 10th, 20th of each month from epoch to 2027
     val sampledDates = (1970 to 2027).flatMap { year =>
       (1 to 12).flatMap { month =>
         Seq(1, 10, 20).map(day => f"$year-$month%02d-$day%02d")
