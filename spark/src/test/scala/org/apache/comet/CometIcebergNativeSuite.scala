@@ -25,8 +25,10 @@ import java.nio.file.Files
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.comet.CometIcebergNativeScanExec
 import org.apache.spark.sql.execution.SparkPlan
+import org.apache.spark.sql.types.{StringType, TimestampType}
 
 import org.apache.comet.iceberg.RESTCatalogHelper
+import org.apache.comet.testing.{FuzzDataGenerator, SchemaGenOptions}
 
 /**
  * Test suite for native Iceberg scan using FileScanTasks and iceberg-rust.
@@ -2291,6 +2293,7 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
         }
         file.delete()
       }
+
       deleteRecursively(dir)
     }
   }
@@ -2447,6 +2450,74 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
         assert(numPartitions == 1, s"Expected DPP to prune to 1 partition but got $numPartitions")
 
         spark.sql("DROP TABLE runtime_cat.db.fact_table")
+      }
+    }
+  }
+
+  // Regression test for a user reported issue
+  test("double partitioning with range filter on top-level partition") {
+    assume(icebergAvailable, "Iceberg not available")
+
+    // Generate Iceberg table without Comet enabled
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        "spark.sql.files.maxRecordsPerFile" -> "50") {
+
+        // timestamp + geohash with multi-column partitioning
+        spark.sql("""
+          CREATE TABLE test_cat.db.geolocation_trips (
+            outputTimestamp TIMESTAMP,
+            geohash7 STRING,
+            tripId STRING
+          ) USING iceberg
+          PARTITIONED BY (hours(outputTimestamp), truncate(3, geohash7))
+          TBLPROPERTIES (
+            'format-version' = '2',
+            'write.distribution-mode' = 'range',
+            'write.target-file-size-bytes' = '1073741824'
+          )
+        """)
+        val schema = FuzzDataGenerator.generateSchema(
+          SchemaGenOptions(primitiveTypes = Seq(TimestampType, StringType, StringType)))
+
+        val random = new scala.util.Random(42)
+        // Set baseDate to match our filter range (around 2024-01-01)
+        val options = testing.DataGenOptions(
+          allowNull = false,
+          baseDate = 1704067200000L
+        ) // 2024-01-01 00:00:00
+
+        val df = FuzzDataGenerator
+          .generateDataFrame(random, spark, schema, 1000, options)
+          .toDF("outputTimestamp", "geohash7", "tripId")
+
+        df.writeTo("test_cat.db.geolocation_trips").append()
+      }
+
+      // Query using Comet native Iceberg scan
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        // Filter for a range that does not align with hour boundaries
+        // Partitioning is hours(outputTimestamp), so filter in middle of hours forces residual filter
+        val startMs = 1704067200000L + 30 * 60 * 1000L // 2024-01-01 01:30:00 (30 min into hour)
+        val endMs = 1704078000000L - 15 * 60 * 1000L // 2024-01-01 03:45:00 (15 min before hour)
+
+        checkIcebergNativeScan(s"""
+          SELECT COUNT(DISTINCT(tripId)) FROM test_cat.db.geolocation_trips
+          WHERE timestamp_millis($startMs) <= outputTimestamp
+            AND outputTimestamp < timestamp_millis($endMs)
+        """)
+
+        spark.sql("DROP TABLE test_cat.db.geolocation_trips")
       }
     }
   }
