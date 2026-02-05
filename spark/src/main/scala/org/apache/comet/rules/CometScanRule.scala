@@ -201,6 +201,10 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
       withInfo(scanExec, "Native DataFusion scan does not support row index generation")
       return None
     }
+    if (session.sessionState.conf.getConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED)) {
+      withInfo(scanExec, "Native DataFusion scan does not support Parquet field ID matching")
+      return None
+    }
     if (!isSchemaSupported(scanExec, SCAN_NATIVE_DATAFUSION, r)) {
       return None
     }
