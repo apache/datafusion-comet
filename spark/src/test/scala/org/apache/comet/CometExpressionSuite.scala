@@ -28,7 +28,7 @@ import org.scalatest.Tag
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
-import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, FromUnixTime, Literal, TruncDate, TruncTimestamp}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, FromUnixTime, Literal, TruncDate, TruncTimestamp, Years}
 import org.apache.spark.sql.catalyst.optimizer.SimplifyExtractValueOps
 import org.apache.spark.sql.comet.CometProjectExec
 import org.apache.spark.sql.execution.{ProjectExec, SparkPlan}
@@ -39,6 +39,8 @@ import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.sql.types._
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
+import org.apache.comet.serde.{CometYears, Compatible, Unsupported}
+import org.apache.comet.serde.QueryPlanSerde.exprToProto
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
@@ -3162,4 +3164,38 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("support Years partition transform (serialization only)") {
+    val input = Seq(java.sql.Date.valueOf("2024-01-15")).toDF("col")
+    val inputAttrs = input.queryExecution.analyzed.output
+    val yearsExpr = Years(input.col("col").expr)
+    val proto = exprToProto(yearsExpr, inputAttrs, binding = false)
+
+    assert(proto.isDefined, "Comet failed to serialize the Years expression!")
+
+    val expr = proto.get
+    assert(expr.hasCast, "Expected the result to be a Cast (to Integer)")
+    assert(expr.getCast.getChild.hasScalarFunc, "Expected Cast child to be a Scalar Function")
+    assert(expr.getCast.getChild.getScalarFunc.getFunc == "datepart", "Expected function to be 'datepart'")
+  }
+
+  test("Years support level") {
+    val supportedTypes = Seq(DateType, TimestampType, TimestampNTZType)
+    val unsupportedTypes = Seq(StringType, IntegerType, LongType)
+
+    supportedTypes.foreach { dt =>
+      val child = Literal.default(dt)
+      val expr = Years(child)
+      val result = CometYears.getSupportLevel(expr)
+
+      assert(result.isInstanceOf[Compatible], s"Expected $dt to be Compatible")
+    }
+
+    unsupportedTypes.foreach { dt =>
+      val child = Literal.default(dt)
+      val expr = Years(child)
+      val result = CometYears.getSupportLevel(expr)
+
+      assert(result.isInstanceOf[Unsupported], s"Expected $dt to be Unsupported")
+    }
+  }
 }

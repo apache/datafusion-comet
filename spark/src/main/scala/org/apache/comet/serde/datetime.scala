@@ -20,9 +20,8 @@
 package org.apache.comet.serde
 
 import java.util.Locale
-
-import org.apache.spark.sql.catalyst.expressions.{Attribute, DateAdd, DateDiff, DateFormatClass, DateSub, DayOfMonth, DayOfWeek, DayOfYear, GetDateField, Hour, LastDay, Literal, Minute, Month, Quarter, Second, TruncDate, TruncTimestamp, UnixDate, UnixTimestamp, WeekDay, WeekOfYear, Year}
-import org.apache.spark.sql.types.{DateType, IntegerType, StringType, TimestampType}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, DateAdd, DateDiff, DateFormatClass, DateSub, DayOfMonth, DayOfWeek, DayOfYear, GetDateField, Hour, LastDay, Literal, Minute, Month, Quarter, Second, TruncDate, TruncTimestamp, UnixDate, UnixTimestamp, WeekDay, WeekOfYear, Year, Years}
+import org.apache.spark.sql.types.{DateType, IntegerType, StringType, TimestampNTZType, TimestampType}
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
@@ -535,5 +534,37 @@ object CometDateFormat extends CometExpressionSerde[DateFormatClass] {
         withInfo(expr, expr.left, expr.right)
         None
     }
+  }
+}
+
+object CometYears extends CometExpressionSerde[Years] {
+
+  override def getSupportLevel(expr: Years): SupportLevel = {
+    expr.child.dataType match {
+      case DateType | TimestampType | TimestampNTZType => Compatible()
+      case _ => Unsupported(Some(s"Years does not support type: ${expr.child.dataType}"))
+    }
+  }
+
+  override def convert(expr: Years,
+                       inputs: Seq[Attribute],
+                       binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val periodType = exprToProtoInternal(Literal("year"), inputs, binding)
+    val childExpr = exprToProtoInternal(expr.child, inputs, binding)
+    val optExpr = scalarFunctionExprToProto("datepart", Seq(periodType, childExpr): _*)
+      .map(e => {
+        Expr
+          .newBuilder()
+          .setCast(
+            ExprOuterClass.Cast
+              .newBuilder()
+              .setChild(e)
+              .setDatatype(serializeDataType(IntegerType).get)
+              .setEvalMode(ExprOuterClass.EvalMode.LEGACY)
+              .setAllowIncompat(false)
+              .build())
+          .build()
+      })
+    optExprWithInfo(optExpr, expr, expr.child)
   }
 }
