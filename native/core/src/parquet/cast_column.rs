@@ -23,7 +23,7 @@ use arrow::{
 
 use datafusion::common::format::DEFAULT_CAST_OPTIONS;
 use datafusion::common::Result as DataFusionResult;
-use datafusion::common::{cast_column, ScalarValue};
+use datafusion::common::ScalarValue;
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::physical_expr::PhysicalExpr;
 use std::{
@@ -70,8 +70,7 @@ fn cast_timestamp_micros_to_millis_scalar(
 }
 
 #[derive(Debug, Clone, Eq)]
-pub struct
-CometCastColumnExpr {
+pub struct CometCastColumnExpr {
     /// The physical expression producing the value to cast.
     expr: Arc<dyn PhysicalExpr>,
     /// The physical field of the input column.
@@ -146,8 +145,11 @@ impl PhysicalExpr for CometCastColumnExpr {
     fn evaluate(&self, batch: &RecordBatch) -> DataFusionResult<ColumnarValue> {
         let value = self.expr.evaluate(batch)?;
 
-        if value.data_type().equals_datatype(self.target_field.data_type()) {
-            return Ok(value)
+        if value
+            .data_type()
+            .equals_datatype(self.target_field.data_type())
+        {
+            return Ok(value);
         }
 
         let input_physical_field = self.input_physical_field.data_type();
@@ -214,10 +216,10 @@ mod tests {
     fn test_cast_timestamp_micros_to_millis_array() {
         // Create a TimestampMicrosecond array with some values
         let micros_array: TimestampMicrosecondArray = vec![
-            Some(1_000_000), // 1 second in micros
-            Some(2_500_000), // 2.5 seconds in micros
-            None,            // null value
-            Some(0),         // zero
+            Some(1_000_000),  // 1 second in micros
+            Some(2_500_000),  // 2.5 seconds in micros
+            None,             // null value
+            Some(0),          // zero
             Some(-1_000_000), // negative value (before epoch)
         ]
         .into();
@@ -263,10 +265,7 @@ mod tests {
     fn test_cast_timestamp_micros_to_millis_scalar() {
         // Test with a value
         let result = cast_timestamp_micros_to_millis_scalar(Some(1_500_000), None);
-        assert_eq!(
-            result,
-            ScalarValue::TimestampMillisecond(Some(1500), None)
-        );
+        assert_eq!(result, ScalarValue::TimestampMillisecond(Some(1500), None));
 
         // Test with null
         let null_result = cast_timestamp_micros_to_millis_scalar(None, None);
@@ -305,7 +304,8 @@ mod tests {
         let cast_expr = CometCastColumnExpr::new(col_expr, input_field, target_field, None);
 
         // Create a record batch with TimestampMicrosecond data
-        let micros_array: TimestampMicrosecondArray = vec![Some(1_000_000), Some(2_000_000), None].into();
+        let micros_array: TimestampMicrosecondArray =
+            vec![Some(1_000_000), Some(2_000_000), None].into();
         let batch = RecordBatch::try_new(Arc::new(schema), vec![Arc::new(micros_array)]).unwrap();
 
         // Evaluate

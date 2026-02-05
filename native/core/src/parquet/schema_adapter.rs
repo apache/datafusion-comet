@@ -26,7 +26,7 @@
 use crate::parquet::cast_column::CometCastColumnExpr;
 use crate::parquet::parquet_support::{spark_parquet_convert, SparkParquetOptions};
 use arrow::array::{ArrayRef, RecordBatch, RecordBatchOptions};
-use arrow::datatypes::{Field, Schema, SchemaRef};
+use arrow::datatypes::{Schema, SchemaRef};
 use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNode};
 use datafusion::common::{ColumnStatistics, Result as DataFusionResult};
 use datafusion::datasource::schema_adapter::{SchemaAdapter, SchemaAdapterFactory, SchemaMapper};
@@ -100,6 +100,7 @@ impl PhysicalExprAdapterFactory for SparkPhysicalExprAdapterFactory {
 /// 2. Replace standard DataFusion cast expressions with Spark-compatible casts
 /// 3. Handle case-insensitive column matching
 #[derive(Debug)]
+#[allow(dead_code)]
 struct SparkPhysicalExprAdapter {
     /// The logical schema expected by the query
     logical_file_schema: SchemaRef,
@@ -125,6 +126,7 @@ impl PhysicalExprAdapter for SparkPhysicalExprAdapter {
     }
 }
 
+#[allow(dead_code)]
 impl SparkPhysicalExprAdapter {
     /// Replace CastColumnExpr (DataFusion's cast) with Spark's Cast expression.
     fn replace_with_spark_cast(
@@ -179,7 +181,6 @@ impl SparkPhysicalExprAdapter {
                 // Get the physical datatype (actual file schema)
                 let physical_field = self.physical_file_schema.fields().get(col_idx);
 
-
                 // dbg!(&logical_field, &physical_field);
 
                 if let (Some(logical_field), Some(physical_field)) = (logical_field, physical_field)
@@ -191,8 +192,8 @@ impl SparkPhysicalExprAdapter {
                     if logical_type != physical_type {
                         let cast_expr: Arc<dyn PhysicalExpr> = Arc::new(CometCastColumnExpr::new(
                             Arc::clone(&e),
-                            physical_field.clone(),
-                            logical_field.clone(),
+                            Arc::clone(physical_field),
+                            Arc::clone(logical_field),
                             None,
                         ));
                         // dbg!(&cast_expr);
