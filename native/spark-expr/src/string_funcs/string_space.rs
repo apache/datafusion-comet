@@ -90,7 +90,7 @@ pub fn spark_string_space(args: &[ColumnarValue; 1]) -> Result<ColumnarValue> {
             Ok(ColumnarValue::Array(result))
         }
         [ColumnarValue::Scalar(scalar)] => {
-            let result = spark_space_scalar(scalar)?;
+            let result = string_space_scalar(scalar)?;
             Ok(ColumnarValue::Scalar(result))
         },
     }
@@ -112,7 +112,7 @@ fn string_space_array(length: &dyn Array) -> std::result::Result<ArrayRef, DataF
     }
 }
 
-fn spark_space_scalar(scalar: &ScalarValue) -> Result<ScalarValue> {
+fn string_space_scalar(scalar: &ScalarValue) -> Result<ScalarValue> {
     match scalar {
         ScalarValue::Int32(value) => {
             let result = value.map(|v| {
