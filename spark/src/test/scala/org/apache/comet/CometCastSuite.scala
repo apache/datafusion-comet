@@ -1282,7 +1282,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   private def generateDates(): DataFrame = {
-    // Sample dates: 1st, 10th, 20th of each month from 1970 to 2027
+    // Sample dates: 1st, 10th, 20th of each month from epoch to 2027
     val sampledDates = (1970 to 2027).flatMap { year =>
       (1 to 12).flatMap { month =>
         Seq(1, 10, 20).map(day => f"$year-$month%02d-$day%02d")
@@ -1290,12 +1290,9 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
 
     // DST transition dates (1970-2099) for US, EU, Australia
-    // US: 2nd Sunday March, 1st Sunday November
-    // EU: Last Sunday March, Last Sunday October
-    // Australia: 1st Sunday October, 1st Sunday April
     val dstDates = (1970 to 2099).flatMap { year =>
       Seq(
-        // March (US/EU spring forward)
+        // spring forward
         s"$year-03-08",
         s"$year-03-09",
         s"$year-03-10",
@@ -1315,7 +1312,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         s"$year-04-03",
         s"$year-04-04",
         s"$year-04-05",
-        // October (EU fall back, Australia spring forward)
+        // October (EU fall back and Australia spring forward)
         s"$year-10-01",
         s"$year-10-02",
         s"$year-10-03",
@@ -1328,7 +1325,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         s"$year-10-29",
         s"$year-10-30",
         s"$year-10-31",
-        // November (US fall back)
+        // US fall back
         s"$year-11-01",
         s"$year-11-02",
         s"$year-11-03",
@@ -1340,13 +1337,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
 
     // Edge cases
-    val edgeCases = Seq(
-      "1969-12-31", // pre-epoch
-      "2000-02-29", // leap year
-      "999-01-01", // 3-digit year
-      "12345-01-01" // 5-digit year
-    )
-
+    val edgeCases = Seq("1969-12-31", "2000-02-29", "999-01-01", "12345-01-01")
     val values = (sampledDates ++ dstDates ++ edgeCases).distinct
     withNulls(values).toDF("b").withColumn("a", col("b").cast(DataTypes.DateType)).drop("b")
   }
