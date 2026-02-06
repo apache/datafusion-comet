@@ -966,6 +966,10 @@ fn cast_array(
     use DataType::*;
     let from_type = array.data_type().clone();
 
+    if from_type.equals_datatype(to_type) {
+        return Ok(Arc::new(array));
+    }
+
     let array = array_with_timezone(array, cast_options.timezone.clone(), Some(to_type))?;
     let eval_mode = cast_options.eval_mode;
 
