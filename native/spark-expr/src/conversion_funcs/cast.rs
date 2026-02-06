@@ -24,7 +24,10 @@ use arrow::array::{
     PrimitiveBuilder, StringArray, StructArray, TimestampMicrosecondBuilder,
 };
 use arrow::compute::can_cast_types;
-use arrow::datatypes::{i256, ArrowDictionaryKeyType, ArrowNativeType, DataType, Decimal256Type, GenericBinaryType, Schema, TimeUnit};
+use arrow::datatypes::{
+    i256, ArrowDictionaryKeyType, ArrowNativeType, DataType, Decimal256Type, GenericBinaryType,
+    Schema,
+};
 use arrow::{
     array::{
         cast::AsArray,
