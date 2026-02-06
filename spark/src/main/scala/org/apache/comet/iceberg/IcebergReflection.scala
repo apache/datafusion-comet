@@ -334,32 +334,6 @@ object IcebergReflection extends Logging {
   }
 
   /**
-   * Gets delete files from scan tasks.
-   *
-   * @param tasks
-   *   List of Iceberg FileScanTask objects
-   * @return
-   *   List of all delete files across all tasks
-   * @throws Exception
-   *   if reflection fails (callers must handle appropriately based on context)
-   */
-  def getDeleteFiles(tasks: java.util.List[_]): java.util.List[_] = {
-    import scala.jdk.CollectionConverters._
-    val allDeletes = new java.util.ArrayList[Any]()
-
-    // scalastyle:off classforname
-    val fileScanTaskClass = Class.forName(ClassNames.FILE_SCAN_TASK)
-    // scalastyle:on classforname
-
-    tasks.asScala.foreach { task =>
-      val deletes = getDeleteFilesFromTask(task, fileScanTaskClass)
-      allDeletes.addAll(deletes)
-    }
-
-    allDeletes
-  }
-
-  /**
    * Gets delete files from a single FileScanTask.
    *
    * @param task
@@ -496,91 +470,6 @@ object IcebergReflection extends Logging {
   }
 
   /**
-   * Validates file formats and filesystem schemes for Iceberg tasks.
-   *
-   * Checks that all data files and delete files are Parquet format and use filesystem schemes
-   * supported by iceberg-rust (file, s3, s3a, gs, gcs, oss, abfss, abfs, wasbs, wasb).
-   *
-   * @param tasks
-   *   List of Iceberg FileScanTask objects
-   * @return
-   *   (allParquet, unsupportedSchemes) where: - allParquet: true if all files are Parquet format
-   *   \- unsupportedSchemes: Set of unsupported filesystem schemes found (empty if all supported)
-   */
-  def validateFileFormatsAndSchemes(tasks: java.util.List[_]): (Boolean, Set[String]) = {
-    import scala.jdk.CollectionConverters._
-
-    // scalastyle:off classforname
-    val contentScanTaskClass = Class.forName(ClassNames.CONTENT_SCAN_TASK)
-    val contentFileClass = Class.forName(ClassNames.CONTENT_FILE)
-    // scalastyle:on classforname
-
-    val fileMethod = contentScanTaskClass.getMethod("file")
-    val formatMethod = contentFileClass.getMethod("format")
-    val pathMethod = contentFileClass.getMethod("path")
-
-    // Filesystem schemes supported by iceberg-rust
-    // See: iceberg-rust/crates/iceberg/src/io/storage.rs parse_scheme()
-    val supportedSchemes =
-      Set("file", "s3", "s3a", "gs", "gcs", "oss", "abfss", "abfs", "wasbs", "wasb")
-
-    var allParquet = true
-    val unsupportedSchemes = scala.collection.mutable.Set[String]()
-
-    tasks.asScala.foreach { task =>
-      val dataFile = fileMethod.invoke(task)
-      val fileFormat = formatMethod.invoke(dataFile).toString
-
-      // Check file format
-      if (fileFormat != FileFormats.PARQUET) {
-        allParquet = false
-      } else {
-        // Only check filesystem schemes for Parquet files we'll actually process
-        try {
-          val filePath = pathMethod.invoke(dataFile).toString
-          val uri = new java.net.URI(filePath)
-          val scheme = uri.getScheme
-
-          if (scheme != null && !supportedSchemes.contains(scheme)) {
-            unsupportedSchemes += scheme
-          }
-        } catch {
-          case _: java.net.URISyntaxException =>
-          // Ignore URI parsing errors - file paths may contain special characters
-          // If the path is invalid, we'll fail later during actual file access
-        }
-
-        // Check delete files if they exist
-        try {
-          val deletesMethod = task.getClass.getMethod("deletes")
-          val deleteFiles = deletesMethod.invoke(task).asInstanceOf[java.util.List[_]]
-
-          deleteFiles.asScala.foreach { deleteFile =>
-            extractFileLocation(contentFileClass, deleteFile).foreach { deletePath =>
-              try {
-                val deleteUri = new java.net.URI(deletePath)
-                val deleteScheme = deleteUri.getScheme
-
-                if (deleteScheme != null && !supportedSchemes.contains(deleteScheme)) {
-                  unsupportedSchemes += deleteScheme
-                }
-              } catch {
-                case _: java.net.URISyntaxException =>
-                // Ignore URI parsing errors for delete files too
-              }
-            }
-          }
-        } catch {
-          case _: Exception =>
-          // Ignore errors accessing delete files - they may not be supported
-        }
-      }
-    }
-
-    (allParquet, unsupportedSchemes.toSet)
-  }
-
-  /**
    * Validates partition column types for compatibility with iceberg-rust.
    *
    * iceberg-rust's Literal::try_from_json() has incomplete type support: - Binary/fixed types:
@@ -642,68 +531,6 @@ object IcebergReflection extends Logging {
     }
 
     unsupportedTypes.toList
-  }
-
-  /**
-   * Checks if tasks have non-identity transforms in their residual expressions.
-   *
-   * Residual expressions are filters that must be evaluated after reading data from Parquet.
-   * iceberg-rust can only handle simple column references in residuals, not transformed columns.
-   * Transform functions like truncate, bucket, year, month, day, hour require evaluation by
-   * Spark.
-   *
-   * @param tasks
-   *   List of Iceberg FileScanTask objects
-   * @return
-   *   Some(transformType) if an unsupported transform is found (e.g., "truncate[4]"), None if all
-   *   transforms are identity or no transforms are present
-   * @throws Exception
-   *   if reflection fails - caller must handle appropriately (fallback in planning, fatal in
-   *   serialization)
-   */
-  def findNonIdentityTransformInResiduals(tasks: java.util.List[_]): Option[String] = {
-    import scala.jdk.CollectionConverters._
-
-    // scalastyle:off classforname
-    val fileScanTaskClass = Class.forName(ClassNames.FILE_SCAN_TASK)
-    val contentScanTaskClass = Class.forName(ClassNames.CONTENT_SCAN_TASK)
-    val unboundPredicateClass = Class.forName(ClassNames.UNBOUND_PREDICATE)
-    // scalastyle:on classforname
-
-    tasks.asScala.foreach { task =>
-      if (fileScanTaskClass.isInstance(task)) {
-        try {
-          val residualMethod = contentScanTaskClass.getMethod("residual")
-          val residual = residualMethod.invoke(task)
-
-          // Check if residual is an UnboundPredicate with a transform
-          if (unboundPredicateClass.isInstance(residual)) {
-            val termMethod = unboundPredicateClass.getMethod("term")
-            val term = termMethod.invoke(residual)
-
-            // Check if term has a transform
-            try {
-              val transformMethod = term.getClass.getMethod("transform")
-              transformMethod.setAccessible(true)
-              val transform = transformMethod.invoke(term)
-              val transformStr = transform.toString
-
-              // Only identity transform is supported in residuals
-              if (transformStr != Transforms.IDENTITY) {
-                return Some(transformStr)
-              }
-            } catch {
-              case _: NoSuchMethodException =>
-              // No transform method means it's a simple reference - OK
-            }
-          }
-        } catch {
-          case _: Exception =>
-          // Skip tasks where we can't get residual - they may not have one
-        }
-      }
-    }
-    None
   }
 }
 
@@ -783,10 +610,8 @@ object CometIcebergNativeScanMetadata extends Logging {
       val globalFieldIdMapping = buildFieldIdMapping(scanSchema)
 
       // File format is always PARQUET,
-      // validated in CometScanRule.validateFileFormatsAndSchemes()
+      // validated in CometScanRule.validateIcebergFileScanTasks()
       // Hardcoded here for extensibility (future ORC/Avro support would add logic here)
-      val fileFormat = FileFormats.PARQUET
-
       CometIcebergNativeScanMetadata(
         table = table,
         metadataLocation = metadataLocation,
@@ -796,7 +621,7 @@ object CometIcebergNativeScanMetadata extends Logging {
         tableSchema = tableSchema,
         globalFieldIdMapping = globalFieldIdMapping,
         catalogProperties = catalogProperties,
-        fileFormat = fileFormat)
+        fileFormat = FileFormats.PARQUET)
     }
   }
 }
