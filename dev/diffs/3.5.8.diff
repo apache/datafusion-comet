@@ -1906,7 +1906,7 @@ index 12d5870309f..51429bf4039 100644
  
 -  test("SPARK-33901: ctas should should not change table's schema") {
 +  test("SPARK-33901: ctas should should not change table's schema",
-+    IgnoreComet("comet native writer does not support empty dir / table creation yet")) {
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/3418")) {
      withTable("t1", "t2") {
        sql(s"CREATE TABLE t1(i CHAR(5), c VARCHAR(4)) USING $format")
        sql(s"CREATE TABLE t2 USING $format AS SELECT * FROM t1")
@@ -1916,7 +1916,7 @@ index 12d5870309f..51429bf4039 100644
  
 -  test("SPARK-37160: CREATE TABLE AS SELECT with CHAR_AS_VARCHAR") {
 +  test("SPARK-37160: CREATE TABLE AS SELECT with CHAR_AS_VARCHAR",
-+    IgnoreComet("comet native writer does not support empty dir/table creation yet")) {
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/3419")) {
      withTable("t1", "t2") {
        sql(s"CREATE TABLE t1(col CHAR(5)) USING $format")
        checkTableSchemaTypeStr("t1", Seq(Row("char(5)")))
@@ -1939,7 +1939,7 @@ index 343b59a311e..9d5789c1d91 100644
  
 -  test("empty file should be skipped while write to file") {
 +  test("empty file should be skipped while write to file",
-+    IgnoreComet("comet native writer does not create empty files / dir")) {
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/3417")) {
      withTempPath { path =>
        spark.range(100).repartition(10).where("id = 50").write.parquet(path.toString)
        val partFiles = path.listFiles()
@@ -2177,7 +2177,7 @@ index 4f8a9e39716..5da031994ff 100644
  
 -  test("Write Spark version into Parquet metadata") {
 +  test("Write Spark version into Parquet metadata",
-+    IgnoreComet("comet does not write spark version in parquet metadata")) {
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/3427")) {
      withTempPath { dir =>
        spark.range(1).repartition(1).write.parquet(dir.getAbsolutePath)
        assert(getMetaData(dir)(SPARK_VERSION_METADATA_KEY) === SPARK_VERSION_SHORT)
@@ -2200,7 +2200,7 @@ index 8b386e8f689..67a41628a3b 100644
  
 -  test("parquet timestamp conversion") {
 +  test("parquet timestamp conversion",
-+    IgnoreComet("timestamp96 conversion failed with the native writer")) {
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/3425")) {
      // Make a table with one parquet file written by impala, and one parquet file written by spark.
      // We should only adjust the timestamps in the impala file, and only if the conf is set
      val impalaFile = "test-data/impala_timestamp.parq"
@@ -2734,7 +2734,7 @@ index 7b1a5a32037..f163a9733a5 100644
  
 -  test("INSERT INTO TABLE - complex type but different names") {
 +  test("INSERT INTO TABLE - complex type but different names",
-+    IgnoreComet("comet native writer issue")) {
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/3426")) {
      val tab1 = "tab1"
      val tab2 = "tab2"
      withTable(tab1, tab2) {
@@ -2744,7 +2744,7 @@ index 7b1a5a32037..f163a9733a5 100644
  
 -  test("SPARK-38336 INSERT INTO statements with tables with default columns: positive tests") {
 +  test("SPARK-38336 INSERT INTO statements with tables with default columns: positive tests",
-+    IgnoreComet("comet native writer insert overwrite bug")) {
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/3421")) {
      // When the INSERT INTO statement provides fewer values than expected, NULL values are appended
      // in their place.
      withTable("t") {
@@ -2754,7 +2754,7 @@ index 7b1a5a32037..f163a9733a5 100644
  
 -  test("SPARK-38811 INSERT INTO on columns added with ALTER TABLE ADD COLUMNS: Positive tests") {
 +  test("SPARK-38811 INSERT INTO on columns added with ALTER TABLE ADD COLUMNS: Positive tests",
-+    IgnoreComet("bug with insert overwrite mode comet native writer")) {
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/3422")) {
      // There is a complex expression in the default value.
      val createTableBooleanCol = "create table t(i boolean) using parquet"
      val createTableIntCol = "create table t(i int) using parquet"
@@ -2764,7 +2764,7 @@ index 7b1a5a32037..f163a9733a5 100644
  
 -  test("SPARK-43071: INSERT INTO from queries whose final operators are not projections") {
 +  test("SPARK-43071: INSERT INTO from queries whose final operators are not projections",
-+    IgnoreComet("comet writer issues with insert overwrite")) {
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/3423")) {
      def runTest(insert: String, expected: Seq[Row]): Unit = {
        withTable("t1", "t2") {
          sql("create table t1(i boolean, s bigint default 42) using parquet")
@@ -2774,7 +2774,7 @@ index 7b1a5a32037..f163a9733a5 100644
  
 -  test("SPARK-29174 Support LOCAL in INSERT OVERWRITE DIRECTORY to data source") {
 +  test("SPARK-29174 Support LOCAL in INSERT OVERWRITE DIRECTORY to data source",
-+    IgnoreComet("comet native writer does not support insert overwrite")) {
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/3420")) {
      withTempPath { dir =>
        val path = dir.toURI.getPath
        sql(s"""create table tab1 ( a int) using parquet location '$path'""")
@@ -2945,7 +2945,7 @@ index b40f9210a68..34aa6287eb5 100644
  
 -  test("write path implements onTaskCommit API correctly") {
 +  test("write path implements onTaskCommit API correctly",
-+    IgnoreComet("Comet native writer partial support")) {
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/3428")) {
      withSQLConf(
          SQLConf.FILE_COMMIT_PROTOCOL_CLASS.key ->
            classOf[MessageCapturingCommitProtocol].getCanonicalName) {
@@ -2955,7 +2955,7 @@ index b40f9210a68..34aa6287eb5 100644
  
 -  test("Insert overwrite table command should output correct schema: basic") {
 +  test("Insert overwrite table command should output correct schema: basic",
-+    IgnoreComet("Comet native writer does not supportinsert overwrite mode")) {
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/3424")) {
      withTable("tbl", "tbl2") {
        withView("view1") {
          val df = spark.range(10).toDF("id")
