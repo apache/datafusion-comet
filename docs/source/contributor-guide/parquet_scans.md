@@ -19,30 +19,17 @@ under the License.
 
 # Comet Parquet Scan Implementations
 
-Comet currently has three distinct implementations of the Parquet scan operator. The configuration property
+Comet currently has two distinct implementations of the Parquet scan operator. The configuration property
 `spark.comet.scan.impl` is used to select an implementation. The default setting is `spark.comet.scan.impl=auto`, and
 Comet will choose the most appropriate implementation based on the Parquet schema and other Comet configuration
 settings. Most users should not need to change this setting. However, it is possible to force Comet to try and use
 a particular implementation for all scan operations by setting this configuration property to one of the following
 implementations.
 
-| Implementation          | Description                                                                                                                                                                                                 |
-| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `native_comet`          | **Deprecated.** This implementation provides strong compatibility with Spark but does not support complex types. This is the original scan implementation in Comet and will be removed in a future release. |
-| `native_iceberg_compat` | This implementation delegates to DataFusion's `DataSourceExec` but uses a hybrid approach of JVM and native code. This scan is designed to be integrated with Iceberg in the future.                        |
-| `native_datafusion`     | This experimental implementation delegates to DataFusion's `DataSourceExec` for full native execution. There are known compatibility issues when using this scan.                                           |
-
-The `native_datafusion` and `native_iceberg_compat` scans provide the following benefits over the `native_comet`
-implementation:
-
-- Leverages the DataFusion community's ongoing improvements to `DataSourceExec`
-- Provides support for reading complex types (structs, arrays, and maps)
-- Delegates Parquet decoding to native Rust code rather than JVM-side decoding
-- Improves performance
-
-> **Note on mutable buffers:** Both `native_comet` and `native_iceberg_compat` use reusable mutable buffers
-> when transferring data from JVM to native code via Arrow FFI. The `native_iceberg_compat` implementation uses DataFusion's native Parquet reader for data columns, bypassing Comet's mutable buffer infrastructure entirely. However, partition columns still use `ConstantColumnReader`, which relies on Comet's mutable buffers that are reused across batches. This means native operators that buffer data (such as `SortExec` or `ShuffleWriterExec`) must perform deep copies to avoid data corruption.
-> See the [FFI documentation](ffi.md) for details on the `arrow_ffi_safe` flag and ownership semantics.
+The two implementations are `native_datafusion` and `native_iceberg_compat`. They both delegate to DataFusion's 
+`DataSourceExec`. The main difference between these implementations is that `native_datafusion` runs fully natively, and 
+`native_iceberg_compat` is a hybrid JVM/Rust implementation that can provide support some Spark features that 
+`native_datafusion` can not, but has some performance overhead due to crossing the JVM/Rust boundary. 
 
 The `native_datafusion` and `native_iceberg_compat` scans share the following limitations:
 
@@ -56,34 +43,20 @@ The `native_datafusion` and `native_iceberg_compat` scans share the following li
 - No support for default values that are nested types (e.g., maps, arrays, structs). Literal default values are supported.
 - No support for datetime rebasing detection or the `spark.comet.exceptionOnDatetimeRebase` configuration. When reading
   Parquet files containing dates or timestamps written before Spark 3.0 (which used a hybrid Julian/Gregorian calendar),
-  the `native_comet` implementation can detect these legacy values and either throw an exception or read them without
-  rebasing. The DataFusion-based implementations do not have this detection capability and will read all dates/timestamps
-  as if they were written using the Proleptic Gregorian calendar. This may produce incorrect results for dates before
-  October 15, 1582.
+  dates/timestamps will be read as if they were written using the Proleptic Gregorian calendar. This may produce 
+  incorrect results for dates before October 15, 1582.
 - No support for Spark's Datasource V2 API. When `spark.sql.sources.useV1SourceList` does not include `parquet`,
   Spark uses the V2 API for Parquet scans. The DataFusion-based implementations only support the V1 API, so Comet
-  will fall back to `native_comet` when V2 is enabled.
+  will fall back to Spark when V2 is enabled.
 
 The `native_datafusion` scan has some additional limitations:
 
 - No support for row indexes
-- `PARQUET_FIELD_ID_READ_ENABLED` is not respected [#1758]
-- There are failures in the Spark SQL test suite [#1545]
+- No support for reading Parquet field IDs
 - Setting Spark configs `ignoreMissingFiles` or `ignoreCorruptFiles` to `true` is not compatible with Spark
+- There are failures in the Spark SQL test suite [#1545]
 
 ## S3 Support
-
-There are some differences in S3 support between the scan implementations.
-
-### `native_comet` (Deprecated)
-
-> **Note:** The `native_comet` scan implementation is deprecated and will be removed in a future release.
-
-The `native_comet` Parquet scan implementation reads data from S3 using the [Hadoop-AWS module](https://hadoop.apache.org/docs/stable/hadoop-aws/tools/hadoop-aws/index.html), which
-is identical to the approach commonly used with vanilla Spark. AWS credential configuration and other Hadoop S3A
-configurations works the same way as in vanilla Spark.
-
-### `native_datafusion` and `native_iceberg_compat`
 
 The `native_datafusion` and `native_iceberg_compat` Parquet scan implementations completely offload data loading
 to native code. They use the [`object_store` crate](https://crates.io/crates/object_store) to read data from S3 and
