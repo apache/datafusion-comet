@@ -21,8 +21,8 @@
 //! UnsafeRow data to Arrow arrays, covering primitive, struct (flat/nested),
 //! list, and map types.
 
-use arrow::datatypes::{DataType, Field, Fields};
-use comet::execution::shuffle::row::{
+use arrow::datatypes::{DataType as ArrowDataType, Field, Fields};
+use comet::execution::shuffle::spark_unsafe::row::{
     process_sorted_row_partition, SparkUnsafeObject, SparkUnsafeRow,
 };
 use comet::execution::shuffle::CompressionCodec;
@@ -64,31 +64,31 @@ fn null_bitset_size(n: usize) -> usize {
 /// - depth=1: `Struct<f0: Int64, f1: Int64, …>`
 /// - depth=2: `Struct<nested: Struct<f0: Int64, …>>`
 /// - depth=3: `Struct<nested: Struct<nested: Struct<f0: Int64, …>>>`
-fn make_struct_schema(depth: usize, num_leaf_fields: usize) -> DataType {
+fn make_struct_schema(depth: usize, num_leaf_fields: usize) -> ArrowDataType {
     let leaf_fields: Vec<Field> = (0..num_leaf_fields)
-        .map(|i| Field::new(format!("f{i}"), DataType::Int64, true))
+        .map(|i| Field::new(format!("f{i}"), ArrowDataType::Int64, true))
         .collect();
-    let mut dt = DataType::Struct(Fields::from(leaf_fields));
+    let mut dt = ArrowDataType::Struct(Fields::from(leaf_fields));
     for _ in 0..depth - 1 {
-        dt = DataType::Struct(Fields::from(vec![Field::new("nested", dt, true)]));
+        dt = ArrowDataType::Struct(Fields::from(vec![Field::new("nested", dt, true)]));
     }
     dt
 }
 
-fn make_list_schema() -> DataType {
-    DataType::List(Arc::new(Field::new("item", DataType::Int64, true)))
+fn make_list_schema() -> ArrowDataType {
+    ArrowDataType::List(Arc::new(Field::new("item", ArrowDataType::Int64, true)))
 }
 
-fn make_map_schema() -> DataType {
+fn make_map_schema() -> ArrowDataType {
     let entries = Field::new(
         "entries",
-        DataType::Struct(Fields::from(vec![
-            Field::new("key", DataType::Int64, false),
-            Field::new("value", DataType::Int64, true),
+        ArrowDataType::Struct(Fields::from(vec![
+            Field::new("key", ArrowDataType::Int64, false),
+            Field::new("value", ArrowDataType::Int64, true),
         ])),
         false,
     );
-    DataType::Map(Arc::new(entries), false)
+    ArrowDataType::Map(Arc::new(entries), false)
 }
 
 // ─── Row data builders ──────────────────────────────────────────────────────
@@ -225,7 +225,7 @@ fn run_benchmark(
     group: &mut criterion::BenchmarkGroup<criterion::measurement::WallTime>,
     name: &str,
     param: &str,
-    schema: &[DataType],
+    schema: &[ArrowDataType],
     rows: &[Vec<u8>],
     num_top_level_fields: usize,
 ) {
@@ -285,7 +285,7 @@ fn benchmark_primitive_columns(c: &mut Criterion) {
     let row_size = bitset + NUM_COLS * INT64_SIZE;
 
     for num_rows in [1000, 10000] {
-        let schema = vec![DataType::Int64; NUM_COLS];
+        let schema = vec![ArrowDataType::Int64; NUM_COLS];
         let rows: Vec<Vec<u8>> = (0..num_rows)
             .map(|_| {
                 let mut data = vec![0u8; row_size];

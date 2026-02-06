@@ -19,15 +19,25 @@
 
 package org.apache.spark.sql.comet
 
-import org.apache.spark.TaskContext
+import java.util.UUID
+import java.util.concurrent.{Future, TimeoutException, TimeUnit}
+
+import scala.concurrent.Promise
+import scala.util.control.NonFatal
+
+import org.apache.spark.{broadcast, SparkException, TaskContext}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, SortOrder}
 import org.apache.spark.sql.catalyst.plans.physical.Partitioning
-import org.apache.spark.sql.execution.{ColumnarToRowTransition, SparkPlan}
+import org.apache.spark.sql.comet.util.{Utils => CometUtils}
+import org.apache.spark.sql.errors.QueryExecutionErrors
+import org.apache.spark.sql.execution.{ColumnarToRowTransition, SparkPlan, SQLExecution}
+import org.apache.spark.sql.execution.adaptive.BroadcastQueryStageExec
+import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.types.StructType
-import org.apache.spark.util.Utils
+import org.apache.spark.util.{SparkFatalException, Utils}
 
 import org.apache.comet.{CometConf, NativeColumnarToRowConverter}
 
@@ -64,6 +74,116 @@ case class CometNativeColumnarToRowExec(child: SparkPlan)
     "numInputBatches" -> SQLMetrics.createMetric(sparkContext, "number of input batches"),
     "convertTime" -> SQLMetrics.createNanoTimingMetric(sparkContext, "time in conversion"))
 
+  @transient
+  private lazy val promise = Promise[broadcast.Broadcast[Any]]()
+
+  @transient
+  private val timeout: Long = conf.broadcastTimeout
+
+  private val runId: UUID = UUID.randomUUID
+
+  private lazy val cometBroadcastExchange = findCometBroadcastExchange(child)
+
+  @transient
+  lazy val relationFuture: Future[broadcast.Broadcast[Any]] = {
+    SQLExecution.withThreadLocalCaptured[broadcast.Broadcast[Any]](
+      session,
+      CometBroadcastExchangeExec.executionContext) {
+      try {
+        // Setup a job group here so later it may get cancelled by groupId if necessary.
+        sparkContext.setJobGroup(
+          runId.toString,
+          s"CometNativeColumnarToRow broadcast exchange (runId $runId)",
+          interruptOnCancel = true)
+
+        val numOutputRows = longMetric("numOutputRows")
+        val numInputBatches = longMetric("numInputBatches")
+        val localSchema = this.schema
+        val batchSize = CometConf.COMET_BATCH_SIZE.get()
+        val broadcastColumnar = child.executeBroadcast()
+        val serializedBatches =
+          broadcastColumnar.value.asInstanceOf[Array[org.apache.spark.util.io.ChunkedByteBuffer]]
+
+        // Use native converter to convert columnar data to rows
+        val converter = new NativeColumnarToRowConverter(localSchema, batchSize)
+        try {
+          val rows = serializedBatches.iterator
+            .flatMap(CometUtils.decodeBatches(_, this.getClass.getSimpleName))
+            .flatMap { batch =>
+              numInputBatches += 1
+              numOutputRows += batch.numRows()
+              val result = converter.convert(batch)
+              // Wrap iterator to close batch after consumption
+              new Iterator[InternalRow] {
+                override def hasNext: Boolean = {
+                  val hasMore = result.hasNext
+                  if (!hasMore) {
+                    batch.close()
+                  }
+                  hasMore
+                }
+                override def next(): InternalRow = result.next()
+              }
+            }
+
+          val mode = cometBroadcastExchange.get.mode
+          val relation = mode.transform(rows, Some(numOutputRows.value))
+          val broadcasted = sparkContext.broadcastInternal(relation, serializedOnly = true)
+          val executionId = sparkContext.getLocalProperty(SQLExecution.EXECUTION_ID_KEY)
+          SQLMetrics.postDriverMetricUpdates(sparkContext, executionId, metrics.values.toSeq)
+          promise.trySuccess(broadcasted)
+          broadcasted
+        } finally {
+          converter.close()
+        }
+      } catch {
+        // SPARK-24294: To bypass scala bug: https://github.com/scala/bug/issues/9554, we throw
+        // SparkFatalException, which is a subclass of Exception. ThreadUtils.awaitResult
+        // will catch this exception and re-throw the wrapped fatal throwable.
+        case oe: OutOfMemoryError =>
+          val ex = new SparkFatalException(oe)
+          promise.tryFailure(ex)
+          throw ex
+        case e if !NonFatal(e) =>
+          val ex = new SparkFatalException(e)
+          promise.tryFailure(ex)
+          throw ex
+        case e: Throwable =>
+          promise.tryFailure(e)
+          throw e
+      }
+    }
+  }
+
+  override def doExecuteBroadcast[T](): broadcast.Broadcast[T] = {
+    if (cometBroadcastExchange.isEmpty) {
+      throw new SparkException(
+        "CometNativeColumnarToRowExec only supports doExecuteBroadcast when child contains a " +
+          "CometBroadcastExchange, but got " + child)
+    }
+
+    try {
+      relationFuture.get(timeout, TimeUnit.SECONDS).asInstanceOf[broadcast.Broadcast[T]]
+    } catch {
+      case ex: TimeoutException =>
+        logError(s"Could not execute broadcast in $timeout secs.", ex)
+        if (!relationFuture.isDone) {
+          sparkContext.cancelJobGroup(runId.toString)
+          relationFuture.cancel(true)
+        }
+        throw QueryExecutionErrors.executeBroadcastTimeoutError(timeout, Some(ex))
+    }
+  }
+
+  private def findCometBroadcastExchange(op: SparkPlan): Option[CometBroadcastExchangeExec] = {
+    op match {
+      case b: CometBroadcastExchangeExec => Some(b)
+      case b: BroadcastQueryStageExec => findCometBroadcastExchange(b.plan)
+      case b: ReusedExchangeExec => findCometBroadcastExchange(b.child)
+      case _ => op.children.collectFirst(Function.unlift(findCometBroadcastExchange))
+    }
+  }
+
   override def doExecute(): RDD[InternalRow] = {
     val numOutputRows = longMetric("numOutputRows")
     val numInputBatches = longMetric("numInputBatches")
@@ -91,7 +211,17 @@ case class CometNativeColumnarToRowExec(child: SparkPlan)
         val result = converter.convert(batch)
         convertTime += System.nanoTime() - startTime
 
-        result
+        // Wrap iterator to close batch after consumption
+        new Iterator[InternalRow] {
+          override def hasNext: Boolean = {
+            val hasMore = result.hasNext
+            if (!hasMore) {
+              batch.close()
+            }
+            hasMore
+          }
+          override def next(): InternalRow = result.next()
+        }
       }
     }
   }

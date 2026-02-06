@@ -37,7 +37,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.test.SQLTestUtils
 
 import org.apache.comet.{CometConf, IntegrationTestSuite}
-import org.apache.comet.CometConf.{SCAN_NATIVE_COMET, SCAN_NATIVE_DATAFUSION, SCAN_NATIVE_ICEBERG_COMPAT}
+import org.apache.comet.CometConf.{SCAN_NATIVE_DATAFUSION, SCAN_NATIVE_ICEBERG_COMPAT}
 
 /**
  * A integration test suite that tests parquet modular encryption usage.
@@ -238,12 +238,7 @@ class ParquetEncryptionITCase extends CometTestBase with SQLTestUtils {
 
         // native_datafusion and native_iceberg_compat fall back due to Arrow-rs
         // https://github.com/apache/arrow-rs/blob/da9829728e2a9dffb8d4f47ffe7b103793851724/parquet/src/file/metadata/parser.rs#L494
-        if (CometConf.COMET_ENABLED.get(conf) && CometConf.COMET_NATIVE_SCAN_IMPL.get(
-            conf) == SCAN_NATIVE_COMET) {
-          checkSparkAnswerAndOperator(readDataset)
-        } else {
-          checkAnswer(readDataset, inputDF)
-        }
+        checkAnswer(readDataset, inputDF)
       }
     }
   }
@@ -442,12 +437,7 @@ class ParquetEncryptionITCase extends CometTestBase with SQLTestUtils {
 
         // native_datafusion and native_iceberg_compat fall back due to Arrow-rs not
         // supporting other key lengths
-        if (CometConf.COMET_ENABLED.get(conf) && CometConf.COMET_NATIVE_SCAN_IMPL.get(
-            conf) == SCAN_NATIVE_COMET) {
-          checkSparkAnswerAndOperator(readDataset)
-        } else {
-          checkAnswer(readDataset, inputDF)
-        }
+        checkAnswer(readDataset, inputDF)
       }
     }
   }
@@ -467,17 +457,16 @@ class ParquetEncryptionITCase extends CometTestBase with SQLTestUtils {
 
     Seq("true", "false").foreach { cometEnabled =>
       if (cometEnabled == "true") {
-        Seq(SCAN_NATIVE_COMET, SCAN_NATIVE_DATAFUSION, SCAN_NATIVE_ICEBERG_COMPAT).foreach {
-          scanImpl =>
-            super.test(testName + s" Comet($cometEnabled)" + s" Scan($scanImpl)", testTags: _*) {
-              withSQLConf(
-                CometConf.COMET_ENABLED.key -> cometEnabled,
-                CometConf.COMET_EXEC_ENABLED.key -> "true",
-                SQLConf.ANSI_ENABLED.key -> "false",
-                CometConf.COMET_NATIVE_SCAN_IMPL.key -> scanImpl) {
-                testFun
-              }
+        Seq(SCAN_NATIVE_DATAFUSION, SCAN_NATIVE_ICEBERG_COMPAT).foreach { scanImpl =>
+          super.test(testName + s" Comet($cometEnabled)" + s" Scan($scanImpl)", testTags: _*) {
+            withSQLConf(
+              CometConf.COMET_ENABLED.key -> cometEnabled,
+              CometConf.COMET_EXEC_ENABLED.key -> "true",
+              SQLConf.ANSI_ENABLED.key -> "false",
+              CometConf.COMET_NATIVE_SCAN_IMPL.key -> scanImpl) {
+              testFun
             }
+          }
         }
       } else {
         super.test(testName + s" Comet($cometEnabled)", testTags: _*) {
