@@ -38,7 +38,6 @@ import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.ColumnVector
 
 import org.apache.comet.{CometConf, WithHdfsCluster}
-import org.apache.comet.CometConf.{SCAN_NATIVE_DATAFUSION, SCAN_NATIVE_ICEBERG_COMPAT}
 import org.apache.comet.parquet.BatchReader
 
 /**
@@ -50,7 +49,6 @@ import org.apache.comet.parquet.BatchReader
 class CometReadBaseBenchmark extends CometBenchmarkBase {
 
   def numericScanBenchmark(values: Int, dataType: DataType): Unit = {
-    // Benchmarks running through spark sql.
     val sqlBenchmark =
       new Benchmark(s"SQL Single ${dataType.sql} Column Scan", values, output = output)
 
@@ -63,76 +61,13 @@ class CometReadBaseBenchmark extends CometBenchmarkBase {
           case _ => "sum(id)"
         }
 
-        sqlBenchmark.addCase("SQL Parquet - Spark") { _ =>
-          spark.sql(s"select $query from parquetV1Table").noop()
-        }
-
-        sqlBenchmark.addCase("SQL Parquet - Comet Native DataFusion") { _ =>
-          withSQLConf(
-            CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_NATIVE_SCAN_IMPL.key -> SCAN_NATIVE_DATAFUSION) {
-            spark.sql(s"select $query from parquetV1Table").noop()
-          }
-        }
-
-        sqlBenchmark.addCase("SQL Parquet - Comet Native Iceberg Compat") { _ =>
-          withSQLConf(
-            CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_NATIVE_SCAN_IMPL.key -> SCAN_NATIVE_ICEBERG_COMPAT) {
-            spark.sql(s"select $query from parquetV1Table").noop()
-          }
-        }
-
-        sqlBenchmark.run()
-      }
-    }
-  }
-
-  def icebergScanBenchmark(values: Int, dataType: DataType): Unit = {
-    // Benchmarks running through spark sql.
-    val sqlBenchmark =
-      new Benchmark(s"SQL Single ${dataType.sql} Iceberg Column Scan", values, output = output)
-
-    withTempPath { dir =>
-      withTempTable("icebergTable") {
-        prepareIcebergTable(
-          dir,
-          spark.sql(s"SELECT CAST(value as ${dataType.sql}) id FROM $tbl"),
-          "icebergTable")
-
-        val query = dataType match {
-          case BooleanType => "sum(cast(id as bigint))"
-          case _ => "sum(id)"
-        }
-
-        sqlBenchmark.addCase("SQL Iceberg - Spark") { _ =>
-          withSQLConf(
-            "spark.memory.offHeap.enabled" -> "true",
-            "spark.memory.offHeap.size" -> "10g") {
-            spark.sql(s"select $query from icebergTable").noop()
-          }
-        }
-
-        sqlBenchmark.addCase("SQL Iceberg - Comet Iceberg-Rust") { _ =>
-          withSQLConf(
-            CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ENABLED.key -> "true",
-            "spark.memory.offHeap.enabled" -> "true",
-            "spark.memory.offHeap.size" -> "10g",
-            CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
-            spark.sql(s"select $query from icebergTable").noop()
-          }
-        }
-
+        addParquetScanCases(sqlBenchmark, s"select $query from parquetV1Table")
         sqlBenchmark.run()
       }
     }
   }
 
   def encryptedScanBenchmark(values: Int, dataType: DataType): Unit = {
-    // Benchmarks running through spark sql.
     val sqlBenchmark =
       new Benchmark(s"SQL Single ${dataType.sql} Encrypted Column Scan", values, output = output)
 
@@ -142,6 +77,15 @@ class CometReadBaseBenchmark extends CometBenchmarkBase {
     val key1 = encoder.encodeToString("1234567890123450".getBytes(StandardCharsets.UTF_8))
     val cryptoFactoryClass =
       "org.apache.parquet.crypto.keytools.PropertiesDrivenCryptoFactory"
+
+    val cryptoConf = Map(
+      "spark.memory.offHeap.enabled" -> "true",
+      "spark.memory.offHeap.size" -> "10g",
+      DecryptionPropertiesFactory.CRYPTO_FACTORY_CLASS_PROPERTY_NAME -> cryptoFactoryClass,
+      KeyToolkit.KMS_CLIENT_CLASS_PROPERTY_NAME ->
+        "org.apache.parquet.crypto.keytools.mocks.InMemoryKMS",
+      InMemoryKMS.KEY_LIST_PROPERTY_NAME ->
+        s"footerKey: ${footerKey}, key1: ${key1}")
 
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
@@ -154,51 +98,10 @@ class CometReadBaseBenchmark extends CometBenchmarkBase {
           case _ => "sum(id)"
         }
 
-        sqlBenchmark.addCase("SQL Parquet - Spark") { _ =>
-          withSQLConf(
-            "spark.memory.offHeap.enabled" -> "true",
-            "spark.memory.offHeap.size" -> "10g",
-            DecryptionPropertiesFactory.CRYPTO_FACTORY_CLASS_PROPERTY_NAME -> cryptoFactoryClass,
-            KeyToolkit.KMS_CLIENT_CLASS_PROPERTY_NAME ->
-              "org.apache.parquet.crypto.keytools.mocks.InMemoryKMS",
-            InMemoryKMS.KEY_LIST_PROPERTY_NAME ->
-              s"footerKey: ${footerKey}, key1: ${key1}") {
-            spark.sql(s"select $query from parquetV1Table").noop()
-          }
-        }
-
-        sqlBenchmark.addCase("SQL Parquet - Comet Native DataFusion") { _ =>
-          withSQLConf(
-            "spark.memory.offHeap.enabled" -> "true",
-            "spark.memory.offHeap.size" -> "10g",
-            CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_NATIVE_SCAN_IMPL.key -> SCAN_NATIVE_DATAFUSION,
-            DecryptionPropertiesFactory.CRYPTO_FACTORY_CLASS_PROPERTY_NAME -> cryptoFactoryClass,
-            KeyToolkit.KMS_CLIENT_CLASS_PROPERTY_NAME ->
-              "org.apache.parquet.crypto.keytools.mocks.InMemoryKMS",
-            InMemoryKMS.KEY_LIST_PROPERTY_NAME ->
-              s"footerKey: ${footerKey}, key1: ${key1}") {
-            spark.sql(s"select $query from parquetV1Table").noop()
-          }
-        }
-
-        sqlBenchmark.addCase("SQL Parquet - Comet Native Iceberg Compat") { _ =>
-          withSQLConf(
-            "spark.memory.offHeap.enabled" -> "true",
-            "spark.memory.offHeap.size" -> "10g",
-            CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_NATIVE_SCAN_IMPL.key -> SCAN_NATIVE_ICEBERG_COMPAT,
-            DecryptionPropertiesFactory.CRYPTO_FACTORY_CLASS_PROPERTY_NAME -> cryptoFactoryClass,
-            KeyToolkit.KMS_CLIENT_CLASS_PROPERTY_NAME ->
-              "org.apache.parquet.crypto.keytools.mocks.InMemoryKMS",
-            InMemoryKMS.KEY_LIST_PROPERTY_NAME ->
-              s"footerKey: ${footerKey}, key1: ${key1}") {
-            spark.sql(s"select $query from parquetV1Table").noop()
-          }
-        }
-
+        addParquetScanCases(
+          sqlBenchmark,
+          s"select $query from parquetV1Table",
+          extraConf = cryptoConf)
         sqlBenchmark.run()
       }
     }
@@ -218,28 +121,7 @@ class CometReadBaseBenchmark extends CometBenchmarkBase {
             s"SELECT CAST(value / 10000000.0 as DECIMAL($precision, $scale)) " +
               s"id FROM $tbl"))
 
-        sqlBenchmark.addCase("SQL Parquet - Spark") { _ =>
-          spark.sql("select sum(id) from parquetV1Table").noop()
-        }
-
-        sqlBenchmark.addCase("SQL Parquet - Comet Native DataFusion") { _ =>
-          withSQLConf(
-            CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_NATIVE_SCAN_IMPL.key -> SCAN_NATIVE_DATAFUSION) {
-            spark.sql("select sum(id) from parquetV1Table").noop()
-          }
-        }
-
-        sqlBenchmark.addCase("SQL Parquet - Comet Native Iceberg Compat") { _ =>
-          withSQLConf(
-            CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_NATIVE_SCAN_IMPL.key -> SCAN_NATIVE_ICEBERG_COMPAT) {
-            spark.sql("select sum(id) from parquetV1Table").noop()
-          }
-        }
-
+        addParquetScanCases(sqlBenchmark, "select sum(id) from parquetV1Table")
         sqlBenchmark.run()
       }
     }
@@ -338,28 +220,7 @@ class CometReadBaseBenchmark extends CometBenchmarkBase {
             s"SELECT IF(RAND(1) < $fractionOfZeros, -1, value) AS c1, value AS c2 FROM " +
               s"$tbl"))
 
-        benchmark.addCase("SQL Parquet - Spark") { _ =>
-          spark.sql("select sum(c2) from parquetV1Table where c1 + 1 > 0").noop()
-        }
-
-        benchmark.addCase("SQL Parquet - Comet Native DataFusion") { _ =>
-          withSQLConf(
-            CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_NATIVE_SCAN_IMPL.key -> SCAN_NATIVE_DATAFUSION) {
-            spark.sql("select sum(c2) from parquetV1Table where c1 + 1 > 0").noop()
-          }
-        }
-
-        benchmark.addCase("SQL Parquet - Comet Native Iceberg Compat") { _ =>
-          withSQLConf(
-            CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_NATIVE_SCAN_IMPL.key -> SCAN_NATIVE_ICEBERG_COMPAT) {
-            spark.sql("select sum(c2) from parquetV1Table where c1 + 1 > 0").noop()
-          }
-        }
-
+        addParquetScanCases(benchmark, "select sum(c2) from parquetV1Table where c1 + 1 > 0")
         benchmark.run()
       }
     }
@@ -388,28 +249,7 @@ class CometReadBaseBenchmark extends CometBenchmarkBase {
                        |FROM tmp
                        |""".stripMargin))
 
-        sqlBenchmark.addCase("SQL Parquet - Spark") { _ =>
-          spark.sql("select sum(length(id)) from parquetV1Table").noop()
-        }
-
-        sqlBenchmark.addCase("SQL Parquet - Comet Native DataFusion") { _ =>
-          withSQLConf(
-            CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_NATIVE_SCAN_IMPL.key -> SCAN_NATIVE_DATAFUSION) {
-            spark.sql("select sum(length(id)) from parquetV1Table").noop()
-          }
-        }
-
-        sqlBenchmark.addCase("SQL Parquet - Comet Native Iceberg Compat") { _ =>
-          withSQLConf(
-            CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_NATIVE_SCAN_IMPL.key -> SCAN_NATIVE_ICEBERG_COMPAT) {
-            spark.sql("select sum(length(id)) from parquetV1Table").noop()
-          }
-        }
-
+        addParquetScanCases(sqlBenchmark, "select sum(length(id)) from parquetV1Table")
         sqlBenchmark.run()
       }
     }
@@ -428,37 +268,10 @@ class CometReadBaseBenchmark extends CometBenchmarkBase {
             s"SELECT IF(RAND(1) < $fractionOfNulls, NULL, CAST(value as STRING)) AS c1, " +
               s"IF(RAND(2) < $fractionOfNulls, NULL, CAST(value as STRING)) AS c2 FROM $tbl"))
 
-        benchmark.addCase("SQL Parquet - Spark") { _ =>
-          spark
-            .sql("select sum(length(c2)) from parquetV1Table where c1 is " +
-              "not NULL and c2 is not NULL")
-            .noop()
-        }
-
-        benchmark.addCase("SQL Parquet - Comet Native DataFusion") { _ =>
-          withSQLConf(
-            CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_NATIVE_SCAN_IMPL.key -> SCAN_NATIVE_DATAFUSION) {
-            spark
-              .sql("select sum(length(c2)) from parquetV1Table where c1 is " +
-                "not NULL and c2 is not NULL")
-              .noop()
-          }
-        }
-
-        benchmark.addCase("SQL Parquet - Comet Native Iceberg Compat") { _ =>
-          withSQLConf(
-            CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_NATIVE_SCAN_IMPL.key -> SCAN_NATIVE_ICEBERG_COMPAT) {
-            spark
-              .sql("select sum(length(c2)) from parquetV1Table where c1 is " +
-                "not NULL and c2 is not NULL")
-              .noop()
-          }
-        }
-
+        addParquetScanCases(
+          benchmark,
+          "select sum(length(c2)) from parquetV1Table where c1 is " +
+            "not NULL and c2 is not NULL")
         benchmark.run()
       }
     }
@@ -476,28 +289,7 @@ class CometReadBaseBenchmark extends CometBenchmarkBase {
 
         prepareTable(dir, spark.sql("SELECT * FROM t1"))
 
-        benchmark.addCase("SQL Parquet - Spark") { _ =>
-          spark.sql(s"SELECT sum(c$middle) FROM parquetV1Table").noop()
-        }
-
-        benchmark.addCase("SQL Parquet - Comet Native DataFusion") { _ =>
-          withSQLConf(
-            CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_NATIVE_SCAN_IMPL.key -> SCAN_NATIVE_DATAFUSION) {
-            spark.sql(s"SELECT sum(c$middle) FROM parquetV1Table").noop()
-          }
-        }
-
-        benchmark.addCase("SQL Parquet - Comet Native Iceberg Compat") { _ =>
-          withSQLConf(
-            CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_NATIVE_SCAN_IMPL.key -> SCAN_NATIVE_ICEBERG_COMPAT) {
-            spark.sql(s"SELECT sum(c$middle) FROM parquetV1Table").noop()
-          }
-        }
-
+        addParquetScanCases(benchmark, s"SELECT sum(c$middle) FROM parquetV1Table")
         benchmark.run()
       }
     }
@@ -519,28 +311,7 @@ class CometReadBaseBenchmark extends CometBenchmarkBase {
             s"SELECT IF(RAND(1) < $fractionOfZeros, -1, value) AS c1, " +
               s"REPEAT(CAST(value AS STRING), 100) AS c2 FROM $tbl"))
 
-        benchmark.addCase("SQL Parquet - Spark") { _ =>
-          spark.sql("SELECT * FROM parquetV1Table WHERE c1 + 1 > 0").noop()
-        }
-
-        benchmark.addCase("SQL Parquet - Comet Native DataFusion") { _ =>
-          withSQLConf(
-            CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_NATIVE_SCAN_IMPL.key -> SCAN_NATIVE_DATAFUSION) {
-            spark.sql("SELECT * FROM parquetV1Table WHERE c1 + 1 > 0").noop()
-          }
-        }
-
-        benchmark.addCase("SQL Parquet - Comet Native Iceberg Compat") { _ =>
-          withSQLConf(
-            CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_NATIVE_SCAN_IMPL.key -> SCAN_NATIVE_ICEBERG_COMPAT) {
-            spark.sql("SELECT * FROM parquetV1Table WHERE c1 + 1 > 0").noop()
-          }
-        }
-
+        addParquetScanCases(benchmark, "SELECT * FROM parquetV1Table WHERE c1 + 1 > 0")
         benchmark.run()
       }
     }
@@ -562,28 +333,7 @@ class CometReadBaseBenchmark extends CometBenchmarkBase {
             s"SELECT IF(RAND(1) < $fractionOfZeros, -1, value) AS c1, " +
               s"REPEAT(CAST(value AS STRING), 100) AS c2 FROM $tbl ORDER BY c1, c2"))
 
-        benchmark.addCase("SQL Parquet - Spark") { _ =>
-          spark.sql("SELECT * FROM parquetV1Table WHERE c1 + 1 > 0").noop()
-        }
-
-        benchmark.addCase("SQL Parquet - Comet Native DataFusion") { _ =>
-          withSQLConf(
-            CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_NATIVE_SCAN_IMPL.key -> SCAN_NATIVE_DATAFUSION) {
-            spark.sql("SELECT * FROM parquetV1Table WHERE c1 + 1 > 0").noop()
-          }
-        }
-
-        benchmark.addCase("SQL Parquet - Comet Native Iceberg Compat") { _ =>
-          withSQLConf(
-            CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_NATIVE_SCAN_IMPL.key -> SCAN_NATIVE_ICEBERG_COMPAT) {
-            spark.sql("SELECT * FROM parquetV1Table WHERE c1 + 1 > 0").noop()
-          }
-        }
-
+        addParquetScanCases(benchmark, "SELECT * FROM parquetV1Table WHERE c1 + 1 > 0")
         benchmark.run()
       }
     }
@@ -608,13 +358,6 @@ class CometReadBaseBenchmark extends CometBenchmarkBase {
       Seq(BooleanType, ByteType, ShortType, IntegerType, LongType, FloatType, DoubleType)
         .foreach { dataType =>
           numericScanBenchmark(v, dataType)
-        }
-    }
-
-    runBenchmarkWithTable("SQL Single Numeric Iceberg Column Scan", 1024 * 1024 * 128) { v =>
-      Seq(BooleanType, ByteType, ShortType, IntegerType, LongType, FloatType, DoubleType)
-        .foreach { dataType =>
-          icebergScanBenchmark(v, dataType)
         }
     }
 
