@@ -54,7 +54,6 @@ The `native_datafusion` scan has some additional limitations:
 - No support for row indexes
 - No support for reading Parquet field IDs
 - Setting Spark configs `ignoreMissingFiles` or `ignoreCorruptFiles` to `true` is not compatible with Spark
-- There are failures in the Spark SQL test suite [#1545]
 
 ## S3 Support
 
