@@ -155,7 +155,6 @@ case class EliminateRedundantTransitions(session: SparkSession) extends Rule[Spa
    * with such scans because the buffers may be modified after C2R reads them.
    *
    * This includes:
-   *   - CometScanExec with native_comet scan implementation (V1 path) - uses BatchReader
    *   - CometScanExec with native_iceberg_compat and partition columns - uses
    *     ConstantColumnReader
    *   - CometBatchScanExec with CometParquetScan (V2 Parquet path) - uses BatchReader
@@ -167,9 +166,8 @@ case class EliminateRedundantTransitions(session: SparkSession) extends Rule[Spa
       case _ =>
         op.exists {
           case scan: CometScanExec =>
-            scan.scanImpl == CometConf.SCAN_NATIVE_COMET ||
-            (scan.scanImpl == CometConf.SCAN_NATIVE_ICEBERG_COMPAT &&
-              scan.relation.partitionSchema.nonEmpty)
+            scan.scanImpl == CometConf.SCAN_NATIVE_ICEBERG_COMPAT &&
+            scan.relation.partitionSchema.nonEmpty
           case scan: CometBatchScanExec => scan.scan.isInstanceOf[CometParquetScan]
           case _ => false
         }
