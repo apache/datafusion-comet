@@ -237,7 +237,8 @@ case class CometIcebergNativeScanExec(
     if (originalPlan == null) {
       Seq.empty
     } else {
-      // Trigger serializedPartitionData to ensure Iceberg planning has run and metrics are populated
+      // Trigger serializedPartitionData to ensure Iceberg planning has run and
+      // metrics are populated
       val _ = serializedPartitionData
 
       originalPlan.metrics
@@ -294,7 +295,17 @@ case class CometIcebergNativeScanExec(
   /** Executes using CometExecRDD - planning data is computed lazily on first access. */
   override def doExecuteColumnar(): RDD[ColumnarBatch] = {
     val nativeMetrics = CometMetricNode.fromCometPlan(this)
-    CometExecRDD(sparkContext, commonData, perPartitionData, output.length, nativeMetrics)
+    val serializedPlan = CometExec.serializeNativePlan(nativeOp)
+    CometExecRDD(
+      sparkContext,
+      inputRDDs = Seq.empty,
+      commonByKey = Map(metadataLocation -> commonData),
+      perPartitionByKey = Map(metadataLocation -> perPartitionData),
+      serializedPlan = serializedPlan,
+      numPartitions = perPartitionData.length,
+      numOutputCols = output.length,
+      nativeMetrics = nativeMetrics,
+      subqueries = Seq.empty)
   }
 
   /**

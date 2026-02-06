@@ -153,47 +153,6 @@ private[spark] class CometExecRDD(
 object CometExecRDD {
 
   /**
-   * Creates an RDD for standalone Iceberg scan (no parent native operators).
-   */
-  def apply(
-      sc: SparkContext,
-      commonData: Array[Byte],
-      perPartitionData: Array[Array[Byte]],
-      numOutputCols: Int,
-      nativeMetrics: CometMetricNode): CometExecRDD = {
-
-    // Standalone mode needs a placeholder plan for PlanDataInjector to fill in.
-    // PlanDataInjector correlates common/partition data by key (metadata_location for Iceberg).
-    val common = OperatorOuterClass.IcebergScanCommon.parseFrom(commonData)
-    val metadataLocation = common.getMetadataLocation
-
-    val placeholderCommon = OperatorOuterClass.IcebergScanCommon
-      .newBuilder()
-      .setMetadataLocation(metadataLocation)
-      .build()
-    val placeholderScan = OperatorOuterClass.IcebergScan
-      .newBuilder()
-      .setCommon(placeholderCommon)
-      .build()
-    val placeholderPlan = OperatorOuterClass.Operator
-      .newBuilder()
-      .setIcebergScan(placeholderScan)
-      .build()
-      .toByteArray
-
-    new CometExecRDD(
-      sc,
-      inputRDDs = Seq.empty,
-      commonByKey = Map(metadataLocation -> commonData),
-      perPartitionByKey = Map(metadataLocation -> perPartitionData),
-      serializedPlan = placeholderPlan,
-      defaultNumPartitions = perPartitionData.length,
-      numOutputCols = numOutputCols,
-      nativeMetrics = nativeMetrics,
-      subqueries = Seq.empty)
-  }
-
-  /**
    * Creates an RDD for native execution with optional per-partition planning data.
    */
   // scalastyle:off
