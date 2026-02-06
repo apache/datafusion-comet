@@ -2066,7 +2066,7 @@ index 07e2849ce6f..3e73645b638 100644
        ParquetOutputFormat.WRITER_VERSION -> ParquetProperties.WriterVersion.PARQUET_2_0.toString
      )
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFilterSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFilterSuite.scala
-index 8e88049f51e..49f2001dc6b 100644
+index 8e88049f51e..e21a5797996 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFilterSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFilterSuite.scala
 @@ -1095,7 +1095,11 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
@@ -2155,17 +2155,7 @@ index 8e88049f51e..49f2001dc6b 100644
      val schema = StructType(Seq(
        StructField("a", IntegerType, nullable = false)
      ))
-@@ -1933,7 +1949,8 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
-     }
-   }
- 
--  test("SPARK-25207: exception when duplicate fields in case-insensitive mode") {
-+  test("SPARK-25207: exception when duplicate fields in case-insensitive mode",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3311")) {
-     withTempPath { dir =>
-       val count = 10
-       val tableName = "spark_25207"
-@@ -1984,7 +2001,8 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
+@@ -1984,7 +2000,8 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
      }
    }
  
@@ -2175,7 +2165,7 @@ index 8e88049f51e..49f2001dc6b 100644
      // block 1:
      //                      null count  min                                       max
      // page-0                         0  0                                         99
-@@ -2044,7 +2062,8 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
+@@ -2044,7 +2061,8 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
      }
    }
  
@@ -2185,7 +2175,7 @@ index 8e88049f51e..49f2001dc6b 100644
      withTempPath { dir =>
        val path = dir.getCanonicalPath
        spark.range(100).selectExpr("id * 2 AS id")
-@@ -2276,7 +2295,11 @@ class ParquetV1FilterSuite extends ParquetFilterSuite {
+@@ -2276,7 +2294,11 @@ class ParquetV1FilterSuite extends ParquetFilterSuite {
            assert(pushedParquetFilters.exists(_.getClass === filterClass),
              s"${pushedParquetFilters.map(_.getClass).toList} did not contain ${filterClass}.")
  
@@ -2198,7 +2188,7 @@ index 8e88049f51e..49f2001dc6b 100644
          } else {
            assert(selectedFilters.isEmpty, "There is filter pushed down")
          }
-@@ -2336,7 +2359,11 @@ class ParquetV2FilterSuite extends ParquetFilterSuite {
+@@ -2336,7 +2358,11 @@ class ParquetV2FilterSuite extends ParquetFilterSuite {
            assert(pushedParquetFilters.exists(_.getClass === filterClass),
              s"${pushedParquetFilters.map(_.getClass).toList} did not contain ${filterClass}.")
  
@@ -2212,30 +2202,10 @@ index 8e88049f51e..49f2001dc6b 100644
          case _ =>
            throw new AnalysisException("Can not match ParquetTable in the query.")
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
-index 8ed9ef1630e..f312174b182 100644
+index 8ed9ef1630e..eed2a6f5ad5 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
-@@ -1064,7 +1064,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
-     }
-   }
- 
--  test("SPARK-35640: read binary as timestamp should throw schema incompatible error") {
-+  test("SPARK-35640: read binary as timestamp should throw schema incompatible error",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3311")) {
-     val data = (1 to 4).map(i => Tuple1(i.toString))
-     val readSchema = StructType(Seq(StructField("_1", DataTypes.TimestampType)))
- 
-@@ -1075,7 +1076,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
-     }
-   }
- 
--  test("SPARK-35640: int as long should throw schema incompatible error") {
-+  test("SPARK-35640: int as long should throw schema incompatible error",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3311")) {
-     val data = (1 to 4).map(i => Tuple1(i))
-     val readSchema = StructType(Seq(StructField("_1", DataTypes.LongType)))
- 
-@@ -1345,7 +1347,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
+@@ -1345,7 +1345,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
      }
    }
  
@@ -2246,20 +2216,10 @@ index 8ed9ef1630e..f312174b182 100644
        checkAnswer(
          // "fruit" column in this file is encoded using DELTA_LENGTH_BYTE_ARRAY.
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
-index f6472ba3d9d..ce39ebb52e6 100644
+index f6472ba3d9d..18295e0b0f0 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
-@@ -185,7 +185,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
-     }
-   }
- 
--  test("SPARK-36182: can't read TimestampLTZ as TimestampNTZ") {
-+  test("SPARK-36182: can't read TimestampLTZ as TimestampNTZ",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3311")) {
-     val data = (1 to 1000).map { i =>
-       val ts = new java.sql.Timestamp(i)
-       Row(ts)
-@@ -998,7 +999,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
+@@ -998,7 +998,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
      }
    }
  
@@ -2269,7 +2229,7 @@ index f6472ba3d9d..ce39ebb52e6 100644
      withAllParquetReaders {
        withTempPath { path =>
          // Repeated values for dictionary encoding.
-@@ -1051,7 +1053,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
+@@ -1051,7 +1052,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
      testMigration(fromTsType = "TIMESTAMP_MICROS", toTsType = "INT96")
    }
  
@@ -2279,7 +2239,7 @@ index f6472ba3d9d..ce39ebb52e6 100644
      def readParquet(schema: String, path: File): DataFrame = {
        spark.read.schema(schema).parquet(path.toString)
      }
-@@ -1067,7 +1070,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
+@@ -1067,7 +1069,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
          checkAnswer(readParquet(schema, path), df)
        }
  
@@ -2289,7 +2249,7 @@ index f6472ba3d9d..ce39ebb52e6 100644
          val schema1 = "a DECIMAL(3, 2), b DECIMAL(18, 3), c DECIMAL(37, 3)"
          checkAnswer(readParquet(schema1, path), df)
          val schema2 = "a DECIMAL(3, 0), b DECIMAL(18, 1), c DECIMAL(37, 1)"
-@@ -1089,7 +1093,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
+@@ -1089,7 +1092,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
        val df = sql(s"SELECT 1 a, 123456 b, ${Int.MaxValue.toLong * 10} c, CAST('1.2' AS BINARY) d")
        df.write.parquet(path.toString)
  
@@ -2299,17 +2259,7 @@ index f6472ba3d9d..ce39ebb52e6 100644
          checkAnswer(readParquet("a DECIMAL(3, 2)", path), sql("SELECT 1.00"))
          checkAnswer(readParquet("b DECIMAL(3, 2)", path), Row(null))
          checkAnswer(readParquet("b DECIMAL(11, 1)", path), sql("SELECT 123456.0"))
-@@ -1133,7 +1138,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
-     }
-   }
- 
--  test("row group skipping doesn't overflow when reading into larger type") {
-+  test("row group skipping doesn't overflow when reading into larger type",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3311")) {
-     withTempPath { path =>
-       Seq(0).toDF("a").write.parquet(path.toString)
-       // The vectorized and non-vectorized readers will produce different exceptions, we don't need
-@@ -1148,7 +1154,7 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
+@@ -1148,7 +1152,7 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
              .where(s"a < ${Long.MaxValue}")
              .collect()
          }
