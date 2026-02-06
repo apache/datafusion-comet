@@ -21,7 +21,7 @@ package org.apache.spark.sql.comet
 
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeReference, AttributeSet, CurrentRow, Expression, NamedExpression, RangeFrame, RowFrame, SortOrder, SpecifiedWindowFrame, UnboundedFollowing, UnboundedPreceding, WindowExpression}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeSet, CurrentRow, Expression, NamedExpression, RangeFrame, RowFrame, SortOrder, SpecifiedWindowFrame, UnboundedFollowing, UnboundedPreceding, WindowExpression}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Complete, Count, Max, Min, Sum}
 import org.apache.spark.sql.catalyst.plans.physical.Partitioning
 import org.apache.spark.sql.execution.SparkPlan
@@ -34,7 +34,7 @@ import com.google.common.base.Objects
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.withInfo
-import org.apache.comet.serde.{AggSerde, CometOperatorSerde, Incompatible, OperatorOuterClass, SupportLevel}
+import org.apache.comet.serde.{AggSerde, CometOperatorSerde, Compatible, OperatorOuterClass, SupportLevel, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto}
 
@@ -44,7 +44,17 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
     CometConf.COMET_EXEC_WINDOW_ENABLED)
 
   override def getSupportLevel(op: WindowExec): SupportLevel = {
-    Incompatible(Some("Native WindowExec has known correctness issues"))
+    // DataFusion requires that partition expressions must be part of the sort ordering.
+    // If partition spec and order spec use different columns, we need to fall back to Spark.
+    if (op.partitionSpec.nonEmpty && op.orderSpec.nonEmpty) {
+      val orderExprs = op.orderSpec.map(_.child).toSet
+      val partitionExprsInOrder = op.partitionSpec.forall(orderExprs.contains)
+      if (!partitionExprsInOrder) {
+        return Unsupported(
+          Some("Partition expressions must be a subset of order expressions for native window"))
+      }
+    }
+    Compatible()
   }
 
   override def convert(
@@ -69,11 +79,6 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
 
     if (winExprs.length != op.windowExpression.length) {
       withInfo(op, "Unsupported window expression(s)")
-      return None
-    }
-
-    if (op.partitionSpec.nonEmpty && op.orderSpec.nonEmpty &&
-      !validatePartitionAndSortSpecsForWindowFunc(op.partitionSpec, op.orderSpec, op)) {
       return None
     }
 
@@ -277,40 +282,6 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
       op.orderSpec,
       op.child,
       SerializedPlan(None))
-  }
-
-  private def validatePartitionAndSortSpecsForWindowFunc(
-      partitionSpec: Seq[Expression],
-      orderSpec: Seq[SortOrder],
-      op: SparkPlan): Boolean = {
-    if (partitionSpec.length != orderSpec.length) {
-      return false
-    }
-
-    val partitionColumnNames = partitionSpec.collect {
-      case a: AttributeReference => a.name
-      case other =>
-        withInfo(op, s"Unsupported partition expression: ${other.getClass.getSimpleName}")
-        return false
-    }
-
-    val orderColumnNames = orderSpec.collect { case s: SortOrder =>
-      s.child match {
-        case a: AttributeReference => a.name
-        case other =>
-          withInfo(op, s"Unsupported sort expression: ${other.getClass.getSimpleName}")
-          return false
-      }
-    }
-
-    if (partitionColumnNames.zip(orderColumnNames).exists { case (partCol, orderCol) =>
-        partCol != orderCol
-      }) {
-      withInfo(op, "Partitioning and sorting specifications must be the same.")
-      return false
-    }
-
-    true
   }
 
 }

@@ -206,7 +206,7 @@ class CometWindowExecSuite extends CometTestBase {
     }
   }
 
-  ignore("aggregate window function for all types") {
+  test("aggregate window function for all types") {
     val numValues = 2048
 
     Seq(1, 100, numValues).foreach { numGroups =>
@@ -258,39 +258,76 @@ class CometWindowExecSuite extends CometTestBase {
     }
   }
 
-  ignore("Windows support") {
-    Seq("true", "false").foreach(aqeEnabled =>
+  test("window: PARTITION BY subset of ORDER BY should work natively") {
+    withTempDir { dir =>
+      (0 until 30)
+        .map(i => (i % 3, i % 5, i))
+        .toDF("a", "b", "c")
+        .repartition(3)
+        .write
+        .mode("overwrite")
+        .parquet(dir.toString)
+
+      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
+      // partition by a, order by a, b - partition is subset of order columns
+      val df = sql("""
+        SELECT a, b, c,
+          SUM(c) OVER (PARTITION BY a ORDER BY a, b, c) as sum_c,
+          COUNT(*) OVER (PARTITION BY a ORDER BY a, b, c) as cnt
+        FROM window_test
+      """)
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("window: PARTITION BY not subset of ORDER BY should fall back") {
+    withTempDir { dir =>
+      (0 until 30)
+        .map(i => (i % 3, i % 5, i))
+        .toDF("a", "b", "c")
+        .repartition(3)
+        .write
+        .mode("overwrite")
+        .parquet(dir.toString)
+
+      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
+      // partition by a, order by b - partition is NOT subset of order columns
+      val df = sql("""
+        SELECT a, b, c,
+          SUM(c) OVER (PARTITION BY a ORDER BY b) as sum_c
+        FROM window_test
+      """)
+      checkSparkAnswerAndFallbackReason(
+        df,
+        "Partition expressions must be a subset of order expressions for native window")
+    }
+  }
+
+  test("window: basic aggregate functions with various specs") {
+    Seq("true", "false").foreach { aqeEnabled =>
       withSQLConf(
         CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqeEnabled) {
-        withParquetTable((0 until 10).map(i => (i, 10 - i)), "t1") { // TODO: test nulls
-          val aggregateFunctions =
-            List(
-              "COUNT(_1)",
-              "COUNT(*)",
-              "MAX(_1)",
-              "MIN(_1)",
-              "SUM(_1)"
-            ) // TODO: Test all the aggregates
+        withParquetTable((0 until 10).map(i => (i, 10 - i)), "t1") {
+          val aggregateFunctions = List("COUNT(_1)", "COUNT(*)", "MAX(_1)", "MIN(_1)", "SUM(_1)")
 
           aggregateFunctions.foreach { function =>
-            val queries = Seq(
-              s"SELECT $function OVER() FROM t1",
-              s"SELECT $function OVER(order by _2) FROM t1",
-              s"SELECT $function OVER(order by _2 desc) FROM t1",
-              s"SELECT $function OVER(partition by _2 order by _2) FROM t1",
-              s"SELECT $function OVER(rows between 1 preceding and 1 following) FROM t1",
-              s"SELECT $function OVER(order by _2 rows between 1 preceding and current row) FROM t1",
-              s"SELECT $function OVER(order by _2 rows between current row and 1 following) FROM t1")
-
-            queries.foreach { query =>
-              checkSparkAnswerAndFallbackReason(
-                query,
-                "Native WindowExec has known correctness issues")
-            }
+            // These should all run natively now
+            checkSparkAnswerAndOperator(sql(s"SELECT $function OVER() FROM t1"))
+            checkSparkAnswerAndOperator(sql(s"SELECT $function OVER(order by _2) FROM t1"))
+            checkSparkAnswerAndOperator(sql(s"SELECT $function OVER(order by _2 desc) FROM t1"))
+            checkSparkAnswerAndOperator(
+              sql(s"SELECT $function OVER(partition by _2 order by _2) FROM t1"))
+            checkSparkAnswerAndOperator(
+              sql(s"SELECT $function OVER(rows between 1 preceding and 1 following) FROM t1"))
+            checkSparkAnswerAndOperator(sql(
+              s"SELECT $function OVER(order by _2 rows between 1 preceding and current row) FROM t1"))
+            checkSparkAnswerAndOperator(sql(
+              s"SELECT $function OVER(order by _2 rows between current row and 1 following) FROM t1"))
           }
         }
-      })
+      }
+    }
   }
 
   test("window: simple COUNT(*) without frame") {
@@ -305,7 +342,7 @@ class CometWindowExecSuite extends CometTestBase {
 
       spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
       val df = sql("SELECT a, b, c, COUNT(*) OVER () as cnt FROM window_test")
-      checkSparkAnswerAndFallbackReason(df, "Native WindowExec has known correctness issues")
+      checkSparkAnswerAndOperator(df)
     }
   }
 
@@ -321,7 +358,7 @@ class CometWindowExecSuite extends CometTestBase {
 
       spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
       val df = sql("SELECT a, b, c, SUM(c) OVER (PARTITION BY a) as sum_c FROM window_test")
-      checkSparkAnswerAndFallbackReason(df, "Native WindowExec has known correctness issues")
+      checkSparkAnswerAndOperator(df)
     }
   }
 
@@ -355,13 +392,14 @@ class CometWindowExecSuite extends CometTestBase {
         .parquet(dir.toString)
 
       spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
+      // Use unique tiebreaker column c to ensure deterministic ordering
       val df = sql("""
         SELECT a, b, c,
-          MIN(c) OVER (ORDER BY b) as min_c,
-          MAX(c) OVER (ORDER BY b) as max_c
+          MIN(c) OVER (ORDER BY b, c) as min_c,
+          MAX(c) OVER (ORDER BY b, c) as max_c
         FROM window_test
       """)
-      checkSparkAnswerAndFallbackReason(df, "Native WindowExec has known correctness issues")
+      checkSparkAnswerAndOperator(df)
     }
   }
 

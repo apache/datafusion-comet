@@ -1583,9 +1583,22 @@ impl PhysicalPlanner {
                     })
                     .collect();
 
+                // Ensure input is properly sorted when ORDER BY is present
+                // BoundedWindowAggExec requires InputOrderMode::Sorted
+                let needs_explicit_sort = !sort_exprs.is_empty();
+                let sorted_child: Arc<dyn ExecutionPlan> = if needs_explicit_sort {
+                    // Insert explicit sort to ensure data ordering
+                    Arc::new(SortExec::new(
+                        LexOrdering::new(sort_exprs.to_vec()).unwrap(),
+                        Arc::clone(&child.native_plan),
+                    ))
+                } else {
+                    Arc::clone(&child.native_plan)
+                };
+
                 let window_agg = Arc::new(BoundedWindowAggExec::try_new(
                     window_expr?,
-                    Arc::clone(&child.native_plan),
+                    sorted_child,
                     InputOrderMode::Sorted,
                     !partition_exprs.is_empty(),
                 )?);
