@@ -59,6 +59,48 @@ pub fn spark_aes_encrypt(args: &[ColumnarValue]) -> Result<ColumnarValue> {
     }
 }
 
+/// Extract binary value from ColumnarValue (handles both Scalar and single-element Array)
+fn extract_binary_value(col: &ColumnarValue) -> Result<Option<Vec<u8>>> {
+    match col {
+        ColumnarValue::Scalar(ScalarValue::Binary(opt)) => Ok(opt.clone()),
+        ColumnarValue::Array(array) if array.len() == 1 => {
+            let binary_array = array
+                .as_any()
+                .downcast_ref::<BinaryArray>()
+                .ok_or_else(|| DataFusionError::Execution("Expected binary array".to_string()))?;
+            if binary_array.is_null(0) {
+                Ok(None)
+            } else {
+                Ok(Some(binary_array.value(0).to_vec()))
+            }
+        }
+        _ => Err(DataFusionError::Execution(format!(
+            "Invalid binary input type: expected Binary Scalar or single-element Array, got {:?}",
+            col.data_type()
+        ))),
+    }
+}
+
+/// Extract string value from ColumnarValue (handles both Scalar and single-element Array)
+fn extract_string_value(col: &ColumnarValue, default: &str) -> Result<String> {
+    match col {
+        ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) => Ok(s.clone()),
+        ColumnarValue::Scalar(ScalarValue::Utf8(None)) => Ok(default.to_string()),
+        ColumnarValue::Array(array) if array.len() == 1 => {
+            let string_array = array
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or_else(|| DataFusionError::Execution("Expected string array".to_string()))?;
+            if string_array.is_null(0) {
+                Ok(default.to_string())
+            } else {
+                Ok(string_array.value(0).to_string())
+            }
+        }
+        _ => Ok(default.to_string()),
+    }
+}
+
 fn encrypt_scalar(
     input_arg: &ColumnarValue,
     key_arg: &ColumnarValue,
@@ -67,41 +109,23 @@ fn encrypt_scalar(
     iv_arg: &ColumnarValue,
     aad_arg: &ColumnarValue,
 ) -> Result<ColumnarValue> {
-    let input = match input_arg {
-        ColumnarValue::Scalar(ScalarValue::Binary(opt)) => opt,
-        _ => return Err(DataFusionError::Execution("Invalid input type".to_string())),
-    };
-
-    let key = match key_arg {
-        ColumnarValue::Scalar(ScalarValue::Binary(opt)) => opt,
-        _ => return Err(DataFusionError::Execution("Invalid key type".to_string())),
-    };
+    let input = extract_binary_value(input_arg)?;
+    let key = extract_binary_value(key_arg)?;
 
     if input.is_none() || key.is_none() {
         return Ok(ColumnarValue::Scalar(ScalarValue::Binary(None)));
     }
 
-    let mode = match mode_arg {
-        ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) => s.as_str(),
-        _ => "GCM",
-    };
+    let mode = extract_string_value(mode_arg, "GCM")?;
+    let padding = extract_string_value(padding_arg, "DEFAULT")?;
 
-    let padding = match padding_arg {
-        ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) => s.as_str(),
-        _ => "DEFAULT",
-    };
+    let iv_opt = extract_binary_value(iv_arg)?;
+    let iv = iv_opt.as_ref().filter(|v| !v.is_empty()).map(|v| v.as_slice());
 
-    let iv = match iv_arg {
-        ColumnarValue::Scalar(ScalarValue::Binary(Some(v))) if !v.is_empty() => Some(v.as_slice()),
-        _ => None,
-    };
+    let aad_opt = extract_binary_value(aad_arg)?;
+    let aad = aad_opt.as_ref().filter(|v| !v.is_empty()).map(|v| v.as_slice());
 
-    let aad = match aad_arg {
-        ColumnarValue::Scalar(ScalarValue::Binary(Some(v))) if !v.is_empty() => Some(v.as_slice()),
-        _ => None,
-    };
-
-    let cipher = get_cipher_mode(mode, padding)?;
+    let cipher = get_cipher_mode(&mode, &padding)?;
 
     let encrypted = cipher
         .encrypt(input.as_ref().unwrap(), key.as_ref().unwrap(), iv, aad)
