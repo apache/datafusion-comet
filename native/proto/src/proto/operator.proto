@@ -109,6 +109,8 @@ message NativeScan {
   // the map.
   map<string, string> object_store_options = 13;
   bool encryption_enabled = 14;
+  bool schema_validation_enabled = 15;
+  bool schema_evolution_enabled = 16;
 }
 
 message CsvScan {

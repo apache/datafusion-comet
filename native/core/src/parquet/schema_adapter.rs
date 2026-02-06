@@ -19,7 +19,7 @@
 
 use crate::parquet::parquet_support::{spark_parquet_convert, SparkParquetOptions};
 use arrow::array::{RecordBatch, RecordBatchOptions};
-use arrow::datatypes::{Schema, SchemaRef};
+use arrow::datatypes::{DataType, Schema, SchemaRef};
 use datafusion::common::ColumnStatistics;
 use datafusion::datasource::schema_adapter::{SchemaAdapter, SchemaAdapterFactory, SchemaMapper};
 use datafusion::physical_plan::ColumnarValue;
@@ -135,6 +135,78 @@ impl SchemaAdapter for SparkSchemaAdapter {
             {
                 field_mappings[table_idx] = Some(projection.len());
                 projection.push(file_idx);
+            }
+        }
+
+        if self.parquet_options.schema_validation_enabled {
+            // Case-insensitive duplicate field detection
+            if !self.parquet_options.case_sensitive {
+                for required_field in self.required_schema.fields().iter() {
+                    let required_name_lower = required_field.name().to_lowercase();
+                    let matching_names: Vec<&str> = file_schema
+                        .fields
+                        .iter()
+                        .filter(|f| f.name().to_lowercase() == required_name_lower)
+                        .map(|f| f.name().as_str())
+                        .collect();
+                    if matching_names.len() > 1 {
+                        return Err(datafusion::error::DataFusionError::External(
+                            format!(
+                                "Found duplicate field(s) \"{}\": [{}] in case-insensitive mode",
+                                required_field.name(),
+                                matching_names.join(", ")
+                            )
+                            .into(),
+                        ));
+                    }
+                }
+            }
+
+            // Type coercion validation
+            for (table_idx, file_idx_opt) in field_mappings.iter().enumerate() {
+                if let Some(proj_idx) = file_idx_opt {
+                    let file_field_idx = projection[*proj_idx];
+                    let file_type = file_schema.field(file_field_idx).data_type();
+                    let required_type = self.required_schema.field(table_idx).data_type();
+                    if file_type != required_type
+                        && !is_spark_compatible_parquet_coercion(
+                            file_type,
+                            required_type,
+                            self.parquet_options.schema_evolution_enabled,
+                        )
+                    {
+                        let col_name = self.required_schema.field(table_idx).name();
+                        let required_spark_name = arrow_type_to_spark_name(required_type);
+                        let file_spark_name = arrow_type_to_parquet_physical_name(file_type);
+
+                        // Special error for reading TimestampLTZ as TimestampNTZ
+                        // to match Spark's error message format
+                        if matches!(
+                            (file_type, required_type),
+                            (
+                                DataType::Timestamp(_, Some(_)),
+                                DataType::Timestamp(_, None)
+                            )
+                        ) {
+                            return Err(datafusion::error::DataFusionError::External(
+                                format!(
+                                    "Unable to create Parquet converter for data type \"{}\"",
+                                    required_spark_name
+                                )
+                                .into(),
+                            ));
+                        }
+
+                        return Err(datafusion::error::DataFusionError::External(
+                            format!(
+                                "Parquet column cannot be converted in file. \
+                                 Column: [{}], Expected: {}, Found: {}",
+                                col_name, required_spark_name, file_spark_name
+                            )
+                            .into(),
+                        ));
+                    }
+                }
             }
         }
 
@@ -262,6 +334,122 @@ impl SchemaMapper for SchemaMapping {
         _file_col_statistics: &[ColumnStatistics],
     ) -> datafusion::common::Result<Vec<ColumnStatistics>> {
         Ok(vec![])
+    }
+}
+
+/// Check if a type coercion from a Parquet file type to a required Spark type is allowed.
+/// Returns true if the coercion is compatible, false if Spark's vectorized reader would reject it.
+///
+/// This function rejects specific type conversions that Spark's vectorized reader would reject.
+/// Conversions not explicitly rejected are allowed (Comet's parquet_convert_array or arrow-rs
+/// cast handles them).
+///
+/// When `schema_evolution_enabled` is true, integer and float widening conversions are allowed
+/// (e.g., Int32 → Int64, Float32 → Float64).
+fn is_spark_compatible_parquet_coercion(
+    file_type: &DataType,
+    required_type: &DataType,
+    schema_evolution_enabled: bool,
+) -> bool {
+    use DataType::*;
+    match (file_type, required_type) {
+        // Same type is always OK
+        (a, b) if a == b => true,
+
+        // Spark rejects reading TimestampLTZ as TimestampNTZ (and vice versa)
+        (Timestamp(_, Some(_)), Timestamp(_, None))
+        | (Timestamp(_, None), Timestamp(_, Some(_))) => false,
+
+        // Spark rejects integer type widening in the vectorized reader
+        // (INT32 → LongType, INT32 → DoubleType, etc.)
+        // When schema evolution is enabled, these widenings are allowed.
+        (Int8 | Int16 | Int32, Int64) => schema_evolution_enabled,
+        (Int8 | Int16 | Int32 | Int64, Float32 | Float64) => schema_evolution_enabled,
+        (Float32, Float64) => schema_evolution_enabled,
+
+        // Spark rejects reading string/binary columns as timestamp or other numeric types
+        (Utf8 | LargeUtf8 | Binary | LargeBinary, Timestamp(_, _)) => false,
+        (Utf8 | LargeUtf8 | Binary | LargeBinary, Int8 | Int16 | Int32 | Int64) => false,
+
+        // Reject cross-category conversions between non-matching structural types
+        // e.g., scalar types to list/struct/map types
+        (_, List(_) | LargeList(_) | Struct(_) | Map(_, _))
+            if !matches!(file_type, List(_) | LargeList(_) | Struct(_) | Map(_, _)) =>
+        {
+            false
+        }
+
+        // For struct types, recursively check field conversions
+        (Struct(from_fields), Struct(to_fields)) => {
+            for to_field in to_fields.iter() {
+                if let Some(from_field) = from_fields
+                    .iter()
+                    .find(|f| f.name().to_lowercase() == to_field.name().to_lowercase())
+                {
+                    if from_field.data_type() != to_field.data_type()
+                        && !is_spark_compatible_parquet_coercion(
+                            from_field.data_type(),
+                            to_field.data_type(),
+                            schema_evolution_enabled,
+                        )
+                    {
+                        return false;
+                    }
+                }
+            }
+            true
+        }
+
+        // For list types, check element type conversions
+        (List(from_inner), List(to_inner)) => {
+            from_inner.data_type() == to_inner.data_type()
+                || is_spark_compatible_parquet_coercion(
+                    from_inner.data_type(),
+                    to_inner.data_type(),
+                    schema_evolution_enabled,
+                )
+        }
+
+        // Everything else is allowed (handled by parquet_convert_array or arrow-rs cast)
+        _ => true,
+    }
+}
+
+/// Convert an Arrow DataType to a Spark-style display name for error messages
+fn arrow_type_to_spark_name(dt: &DataType) -> String {
+    use DataType::*;
+    match dt {
+        Boolean => "boolean".to_string(),
+        Int8 => "tinyint".to_string(),
+        Int16 => "smallint".to_string(),
+        Int32 => "int".to_string(),
+        Int64 => "bigint".to_string(),
+        Float32 => "float".to_string(),
+        Float64 => "double".to_string(),
+        Utf8 | LargeUtf8 => "string".to_string(),
+        Binary | LargeBinary => "binary".to_string(),
+        Date32 => "date".to_string(),
+        Timestamp(_, Some(_)) => "timestamp".to_string(),
+        Timestamp(_, None) => "timestamp_ntz".to_string(),
+        Decimal128(p, s) => format!("decimal({},{})", p, s),
+        _ => format!("{}", dt),
+    }
+}
+
+/// Convert an Arrow DataType to a Parquet physical type name for error messages
+fn arrow_type_to_parquet_physical_name(dt: &DataType) -> String {
+    use DataType::*;
+    match dt {
+        Boolean => "BOOLEAN".to_string(),
+        Int8 | Int16 | Int32 | UInt8 | UInt16 => "INT32".to_string(),
+        Int64 | UInt32 | UInt64 => "INT64".to_string(),
+        Float32 => "FLOAT".to_string(),
+        Float64 => "DOUBLE".to_string(),
+        Utf8 | LargeUtf8 | Binary | LargeBinary => "BINARY".to_string(),
+        Date32 => "INT32".to_string(),
+        Timestamp(_, _) => "INT64".to_string(),
+        Decimal128(_, _) => "FIXED_LEN_BYTE_ARRAY".to_string(),
+        _ => format!("{}", dt),
     }
 }
 

@@ -1053,6 +1053,8 @@ impl PhysicalPlanner {
                     default_values,
                     scan.session_timezone.as_str(),
                     scan.case_sensitive,
+                    scan.schema_validation_enabled,
+                    scan.schema_evolution_enabled,
                     self.session_ctx(),
                     scan.encryption_enabled,
                 )?;

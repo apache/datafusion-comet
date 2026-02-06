@@ -76,6 +76,10 @@ pub struct SparkParquetOptions {
     pub use_legacy_date_timestamp_or_ntz: bool,
     // Whether schema field names are case sensitive
     pub case_sensitive: bool,
+    /// Whether to validate schema compatibility (type coercions) in a Spark-compatible way
+    pub schema_validation_enabled: bool,
+    /// Whether schema evolution (type widening) is enabled
+    pub schema_evolution_enabled: bool,
 }
 
 impl SparkParquetOptions {
@@ -88,6 +92,8 @@ impl SparkParquetOptions {
             use_decimal_128: false,
             use_legacy_date_timestamp_or_ntz: false,
             case_sensitive: false,
+            schema_validation_enabled: true,
+            schema_evolution_enabled: false,
         }
     }
 
@@ -100,6 +106,8 @@ impl SparkParquetOptions {
             use_decimal_128: false,
             use_legacy_date_timestamp_or_ntz: false,
             case_sensitive: false,
+            schema_validation_enabled: true,
+            schema_evolution_enabled: false,
         }
     }
 }

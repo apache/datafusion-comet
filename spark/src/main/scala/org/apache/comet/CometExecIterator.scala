@@ -162,7 +162,11 @@ class CometExecIterator(
             """\(os error \d+\)$""").r
         val parquetError: Regex =
           """^Parquet error: (?:.*)$""".r
-        e.getMessage match {
+        // Strip "External error: " prefix that DataFusion adds
+        val msg = e.getMessage
+          .replaceFirst("^External error: ", "")
+          .replaceFirst("^External: ", "")
+        msg match {
           case fileNotFoundPattern(filePath) =>
             // See org.apache.spark.sql.errors.QueryExecutionErrors.readCurrentFileNotFoundError
             throw new SparkException(
@@ -177,6 +181,11 @@ class CometExecIterator(
               errorClass = "_LEGACY_ERROR_TEMP_2254",
               messageParameters = Map("message" -> e.getMessage),
               cause = new SparkException("File is not a Parquet file.", e))
+          case m
+              if m.contains("Parquet column cannot be converted") ||
+                m.contains("Found duplicate field(s)") ||
+                m.contains("Unable to create Parquet converter") =>
+            throw new SparkException(msg, e)
           case _ =>
             throw e
         }

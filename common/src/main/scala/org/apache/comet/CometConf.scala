@@ -157,6 +157,17 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_PARQUET_SCHEMA_VALIDATION_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.parquet.schemaValidation.enabled")
+      .category(CATEGORY_PARQUET)
+      .doc(
+        "Whether to enable Spark-compatible schema validation when reading Parquet files " +
+          "with native_datafusion scan. When enabled, type coercions and column resolutions " +
+          "that Spark's vectorized reader would reject will also be rejected by Comet, " +
+          "throwing SparkException with compatible error messages.")
+      .booleanConf
+      .createWithDefault(true)
+
   val COMET_RESPECT_PARQUET_FILTER_PUSHDOWN: ConfigEntry[Boolean] =
     conf("spark.comet.parquet.respectFilterPushdown")
       .category(CATEGORY_PARQUET)

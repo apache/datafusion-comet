@@ -773,6 +773,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
             None,
             session_timezone.as_str(),
             case_sensitive != JNI_FALSE,
+            false, // schema_validation_enabled - validation is done on the Java side
+            false, // schema_evolution_enabled
             session_ctx,
             encryption_enabled,
         )?;
