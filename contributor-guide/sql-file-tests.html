@@ -608,6 +608,26 @@ link to the tracking GitHub issue.</p>
 </pre></div>
 </div>
 </section>
+<section id="query-expect-error-pattern">
+<h4><code class="docutils literal notranslate"><span class="pre">query</span> <span class="pre">expect_error(&lt;pattern&gt;)</span></code><a class="headerlink" href="#query-expect-error-pattern" title="Link to this heading">#</a></h4>
+<p>Asserts that both Spark and Comet throw an exception containing the given pattern. Use this
+for ANSI mode tests where invalid operations should throw errors.</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="c1">-- Config: spark.sql.ansi.enabled=true</span>
+
+<span class="c1">-- integer overflow should throw in ANSI mode</span>
+<span class="n">query</span><span class="w"> </span><span class="n">expect_error</span><span class="p">(</span><span class="n">ARITHMETIC_OVERFLOW</span><span class="p">)</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="mi">2147483647</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="mi">1</span>
+
+<span class="c1">-- division by zero should throw in ANSI mode</span>
+<span class="n">query</span><span class="w"> </span><span class="n">expect_error</span><span class="p">(</span><span class="n">DIVIDE_BY_ZERO</span><span class="p">)</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="mi">1</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="mi">0</span>
+
+<span class="c1">-- array out of bounds should throw in ANSI mode</span>
+<span class="n">query</span><span class="w"> </span><span class="n">expect_error</span><span class="p">(</span><span class="n">INVALID_ARRAY_INDEX</span><span class="p">)</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="nb">array</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="mi">2</span><span class="p">,</span><span class="w"> </span><span class="mi">3</span><span class="p">)[</span><span class="mi">10</span><span class="p">]</span>
+</pre></div>
+</div>
+</section>
 </section>
 </section>
 <section id="adding-a-new-test">
