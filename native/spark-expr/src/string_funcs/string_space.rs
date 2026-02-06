@@ -92,7 +92,7 @@ pub fn spark_string_space(args: &[ColumnarValue; 1]) -> Result<ColumnarValue> {
         [ColumnarValue::Scalar(scalar)] => {
             let result = string_space_scalar(scalar)?;
             Ok(ColumnarValue::Scalar(result))
-        },
+        }
     }
 }
 
