@@ -24,7 +24,13 @@ query
 select map_contains_key(map_from_arrays(array(1, 2), array('a', 'b')), 5)
 
 query
+select map_contains_key(map_from_arrays(array(1, NULL), array('a', 'b')), 5)
+
+query
 select map_contains_key(map_from_arrays(array(1, 2), array('a', 'b')), 1)
+
+query
+select map_contains_key(map_from_arrays(array('1', '2'), array('a', 'b')), 1)
 
 -- Decimal type coercion tests
 -- TODO: requires map cast to be supported in Comet
