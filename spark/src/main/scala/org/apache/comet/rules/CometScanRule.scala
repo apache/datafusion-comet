@@ -560,28 +560,40 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
             false
           }
 
-        // Check for unsupported transform functions in residual expressions
-        // iceberg-rust can only handle identity transforms in residuals; all other transforms
-        // (truncate, bucket, year, month, day, hour) must fall back to Spark
+        // Check for transform functions in residual expressions
+        // Non-identity transforms (truncate, bucket, year, month, day, hour) in residuals
+        // are now supported - they skip row-group filtering and are handled
+        // post-scan by CometFilter.
+        // This is less optimal than row-group filtering but still allows native execution.
         val transformFunctionsSupported =
           try {
             IcebergReflection.findNonIdentityTransformInResiduals(metadata.tasks) match {
               case Some(transformType) =>
-                // Found unsupported transform
-                fallbackReasons +=
-                  s"Iceberg transform function '$transformType' in residual expression " +
-                    "is not yet supported by iceberg-rust. " +
-                    "Only identity transforms are supported."
-                false
+                val deleteFiles = IcebergReflection.getDeleteFiles(metadata.tasks)
+
+                if (!deleteFiles.isEmpty) {
+                  // Delete operations with non-identity transforms must fall back to Spark.
+                  // convertIcebergExpression() cannot convert BoundTerm with transforms,
+                  // causing residuals to be dropped. This breaks delete operations which
+                  // rely on residuals to identify correct rows.
+                  // Future: Convert transforms to Spark expressions (bucket→pmod, year→Year, etc)
+                  fallbackReasons +=
+                    s"Iceberg transform '$transformType' with delete files present. " +
+                      "Falling back to ensure correct delete operation."
+                  false
+                } else {
+                  // Read-only: Safe to continue natively with post-scan filtering
+                  logInfo(
+                    s"Iceberg residual contains transform '$transformType' - " +
+                      "post-scan filtering will apply.")
+                  true
+                }
               case None =>
-                // No unsupported transforms found - safe to use native execution
                 true
             }
           } catch {
             case e: Exception =>
-              // Reflection failure - cannot verify safety, must fall back
-              fallbackReasons += "Iceberg reflection failure: Could not check for " +
-                s"transform functions in residuals: ${e.getMessage}"
+              fallbackReasons += s"Could not check for transform functions: ${e.getMessage}"
               false
           }
 
