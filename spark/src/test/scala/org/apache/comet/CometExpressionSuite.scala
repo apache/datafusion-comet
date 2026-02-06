@@ -3175,7 +3175,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     val expr = proto.get
     assert(expr.hasCast, "Expected the result to be a Cast (to Integer)")
     assert(expr.getCast.getChild.hasScalarFunc, "Expected Cast child to be a Scalar Function")
-    assert(expr.getCast.getChild.getScalarFunc.getFunc == "datepart", "Expected function to be 'datepart'")
+    assert(
+      expr.getCast.getChild.getScalarFunc.getFunc == "datepart",
+      "Expected function to be 'datepart'")
   }
 
   test("Years support level") {
