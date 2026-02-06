@@ -76,23 +76,35 @@ impl CipherMode for EcbMode {
             return Err(CryptoError::UnsupportedAad("ECB".to_string()));
         }
 
+        // Use encrypt_padded_b2b_mut instead of encrypt_padded_vec_mut to avoid
+        // Miri stacked borrows violations in the inout crate
+        let block_size = 16;
+        let padded_len = ((input.len() / block_size) + 1) * block_size;
+        let mut output = vec![0u8; padded_len];
+
         let encrypted = match key.len() {
             16 => {
                 let cipher = Encryptor::<Aes128>::new(key.into());
-                cipher.encrypt_padded_vec_mut::<Pkcs7>(input)
+                cipher
+                    .encrypt_padded_b2b_mut::<Pkcs7>(input, &mut output)
+                    .map_err(|e| CryptoError::EncryptionFailed(e.to_string()))?
             }
             24 => {
                 let cipher = Encryptor::<Aes192>::new(key.into());
-                cipher.encrypt_padded_vec_mut::<Pkcs7>(input)
+                cipher
+                    .encrypt_padded_b2b_mut::<Pkcs7>(input, &mut output)
+                    .map_err(|e| CryptoError::EncryptionFailed(e.to_string()))?
             }
             32 => {
                 let cipher = Encryptor::<Aes256>::new(key.into());
-                cipher.encrypt_padded_vec_mut::<Pkcs7>(input)
+                cipher
+                    .encrypt_padded_b2b_mut::<Pkcs7>(input, &mut output)
+                    .map_err(|e| CryptoError::EncryptionFailed(e.to_string()))?
             }
             _ => unreachable!("Key length validated above"),
         };
 
-        Ok(encrypted)
+        Ok(encrypted.to_vec())
     }
 }
 
@@ -134,24 +146,36 @@ impl CipherMode for CbcMode {
             None => generate_random_iv(16),
         };
 
+        // Use encrypt_padded_b2b_mut instead of encrypt_padded_vec_mut to avoid
+        // Miri stacked borrows violations in the inout crate
+        let block_size = 16;
+        let padded_len = ((input.len() / block_size) + 1) * block_size;
+        let mut output = vec![0u8; padded_len];
+
         let ciphertext = match key.len() {
             16 => {
                 let cipher = Encryptor::<Aes128>::new(key.into(), iv_bytes.as_slice().into());
-                cipher.encrypt_padded_vec_mut::<Pkcs7>(input)
+                cipher
+                    .encrypt_padded_b2b_mut::<Pkcs7>(input, &mut output)
+                    .map_err(|e| CryptoError::EncryptionFailed(e.to_string()))?
             }
             24 => {
                 let cipher = Encryptor::<Aes192>::new(key.into(), iv_bytes.as_slice().into());
-                cipher.encrypt_padded_vec_mut::<Pkcs7>(input)
+                cipher
+                    .encrypt_padded_b2b_mut::<Pkcs7>(input, &mut output)
+                    .map_err(|e| CryptoError::EncryptionFailed(e.to_string()))?
             }
             32 => {
                 let cipher = Encryptor::<Aes256>::new(key.into(), iv_bytes.as_slice().into());
-                cipher.encrypt_padded_vec_mut::<Pkcs7>(input)
+                cipher
+                    .encrypt_padded_b2b_mut::<Pkcs7>(input, &mut output)
+                    .map_err(|e| CryptoError::EncryptionFailed(e.to_string()))?
             }
             _ => unreachable!("Key length validated above"),
         };
 
         let mut result = iv_bytes;
-        result.extend_from_slice(&ciphertext);
+        result.extend_from_slice(ciphertext);
         Ok(result)
     }
 }
