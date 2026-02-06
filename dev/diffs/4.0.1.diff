@@ -1127,7 +1127,7 @@ index 818c7ec65b1..0d333807b70 100644
    }
  
 -  test("SPARK-48817: test multi inserts") {
-+  test("SPARK-48817: test multi inserts", IgnoreComet("comet parquet native writer bug")) {
++  test("SPARK-48817: test multi inserts", IgnoreComet("https://github.com/apache/datafusion-comet/issues/3430")) {
      withTable("t1", "t2", "t3") {
        createTable("t1", Seq("i"), Seq("int"))
        createTable("t2", Seq("i"), Seq("int"))
@@ -1465,7 +1465,7 @@ index 77ed8b411e3..b82f70c0071 100644
    }
  
 -  test("ctas with union") {
-+  test("ctas with union", IgnoreComet("comet native writer bug when shuffle / AQE enabled")) {
++  test("ctas with union", IgnoreComet("https://github.com/apache/datafusion-comet/issues/3429")) {
      withTable(testTable) {
        sql(s"""
             |CREATE TABLE $testTable USING $dataSource AS
@@ -2623,7 +2623,7 @@ index a5bb3058bed..de51b21f21a 100644
 -  test("SPARK-33901: ctas should should not change table's schema") {
 +//  TODO support CTAS in comet native parquet writer
 +  test("SPARK-33901: ctas should should not change table's schema",
-+    IgnoreComet("comet native writer does not support empty dir / table creation yet")) {
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/3418")) {
      withTable("t1", "t2") {
        sql(s"CREATE TABLE t1(i CHAR(5), c VARCHAR(4)) USING $format")
        sql(s"CREATE TABLE t2 USING $format AS SELECT * FROM t1")
@@ -2633,7 +2633,7 @@ index a5bb3058bed..de51b21f21a 100644
  
 -  test("SPARK-37160: CREATE TABLE AS SELECT with CHAR_AS_VARCHAR") {
 +  test("SPARK-37160: CREATE TABLE AS SELECT with CHAR_AS_VARCHAR",
-+    IgnoreComet("comet native writer does not support empty dir/table creation yet")) {
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/3419")) {
      withTable("t1", "t2") {
        sql(s"CREATE TABLE t1(col CHAR(5)) USING $format")
        checkTableSchemaTypeStr("t1", Seq(Row("char(5)")))
@@ -2657,7 +2657,7 @@ index 343b59a311e..05f3cab13f9 100644
 -  test("empty file should be skipped while write to file") {
 +//  TODO :: comet native write does not write empty files / dirs
 +  test("empty file should be skipped while write to file",
-+    IgnoreComet("comet native writer does not create empty files / dir")) {
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/3417")) {
      withTempPath { path =>
        spark.range(100).repartition(10).where("id = 50").write.parquet(path.toString)
        val partFiles = path.listFiles()
@@ -2909,7 +2909,7 @@ index 4474ec1fd42..d0366be3597 100644
 -  test("Write Spark version into Parquet metadata") {
 +//  TODO : Comet native writer to add spark / comet version into parquet metadata
 +  test("Write Spark version into Parquet metadata",
-+    IgnoreComet("Comet doesn't support DELTA encoding yet")) {
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/3427")) {
      withTempPath { dir =>
        spark.range(1).repartition(1).write.parquet(dir.getAbsolutePath)
        assert(getMetaData(dir)(SPARK_VERSION_METADATA_KEY) === SPARK_VERSION_SHORT)
@@ -2933,7 +2933,7 @@ index baa11df302b..c88f66d5c77 100644
 -  test("parquet timestamp conversion") {
 +//  TODO : Support legacy timestamps conversion /cast in comet native writer
 +  test("parquet timestamp conversion",
-+    IgnoreComet("timestamp96 conversion failed with the native writer")) {
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/3425")) {
      // Make a table with one parquet file written by impala, and one parquet file written by spark.
      // We should only adjust the timestamps in the impala file, and only if the conf is set
      val impalaFile = "test-data/impala_timestamp.parq"
@@ -3485,7 +3485,7 @@ index baf99798965..e23d8223e05 100644
  
 -  test("INSERT INTO TABLE - complex type but different names") {
 +  test("INSERT INTO TABLE - complex type but different names",
-+    IgnoreComet("comet native writer issue")) {
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/3426")) {
      val tab1 = "tab1"
      val tab2 = "tab2"
      withTable(tab1, tab2) {
@@ -3495,7 +3495,7 @@ index baf99798965..e23d8223e05 100644
  
 -  test("SPARK-38336 INSERT INTO statements with tables with default columns: positive tests") {
 +  test("SPARK-38336 INSERT INTO statements with tables with default columns: positive tests",
-+    IgnoreComet("comet native writer insert overwrite bug")) {
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/3421")) {
      // When the INSERT INTO statement provides fewer values than expected, NULL values are appended
      // in their place.
      withTable("t") {
@@ -3505,7 +3505,7 @@ index baf99798965..e23d8223e05 100644
  
 -  test("SPARK-38811 INSERT INTO on columns added with ALTER TABLE ADD COLUMNS: Positive tests") {
 +  test("SPARK-38811 INSERT INTO on columns added with ALTER TABLE ADD COLUMNS: Positive tests",
-+    IgnoreComet("bug with insert overwrite mode comet native writer")) {
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/3422")) {
      // There is a complex expression in the default value.
      val createTableBooleanCol = "create table t(i boolean) using parquet"
      val createTableIntCol = "create table t(i int) using parquet"
@@ -3516,7 +3516,7 @@ index baf99798965..e23d8223e05 100644
 -  test("SPARK-43071: INSERT INTO from queries whose final operators are not projections") {
 +//  TODO : fix overwrite mode issues comet native writer
 +  test("SPARK-43071: INSERT INTO from queries whose final operators are not projections",
-+    IgnoreComet("comet writer issues with insert overwrite")) {
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/3423")) {
      def runTest(insert: String, expected: Seq[Row]): Unit = {
        withTable("t1", "t2") {
          sql("create table t1(i boolean, s bigint default 42) using parquet")
@@ -3527,7 +3527,7 @@ index baf99798965..e23d8223e05 100644
 -  test("SPARK-29174 Support LOCAL in INSERT OVERWRITE DIRECTORY to data source") {
 +//  TODO : Insert overwrite not supported comet native writer
 +  test("SPARK-29174 Support LOCAL in INSERT OVERWRITE DIRECTORY to data source",
-+    IgnoreComet("comet native writer does not support insert overwrite")) {
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/3420")) {
      withTempPath { dir =>
        val path = dir.toURI.getPath
        sql(s"""create table tab1 ( a int) using parquet location '$path'""")
@@ -3723,7 +3723,7 @@ index 300807cf058..8dab4f9a2af 100644
 +
 +//  TODO : fix test for native writer
 +  test("write path implements onTaskCommit API correctly",
-+    IgnoreComet("Comet native writer partial support")) {
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/3428")) {
      withSQLConf(
          SQLConf.FILE_COMMIT_PROTOCOL_CLASS.key ->
            classOf[MessageCapturingCommitProtocol].getCanonicalName) {
@@ -3734,7 +3734,7 @@ index 300807cf058..8dab4f9a2af 100644
 -  test("Insert overwrite table command should output correct schema: basic") {
 +//  TODO : support vairous write modes in comet native writer
 +  test("Insert overwrite table command should output correct schema: basic",
-+    IgnoreComet("Comet native writer does not supportinsert overwrite mode")) {
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/3424")) {
      withTable("tbl", "tbl2") {
        withView("view1") {
          val df = spark.range(10).toDF("id")
