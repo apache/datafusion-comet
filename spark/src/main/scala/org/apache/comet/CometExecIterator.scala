@@ -157,15 +157,15 @@ class CometExecIterator(
         // threw the exception, so we log the exception with taskAttemptId here
         logError(s"Native execution for task $taskAttemptId failed", e)
 
-        val fileNotFoundPattern: Regex =
-          ("""^External: Object at location (.+?) not found: No such file or directory """ +
-            """\(os error \d+\)$""").r
-        val parquetError: Regex =
-          """^Parquet error: (?:.*)$""".r
         // Strip "External error: " prefix that DataFusion adds
         val msg = e.getMessage
           .replaceFirst("^External error: ", "")
           .replaceFirst("^External: ", "")
+        val fileNotFoundPattern: Regex =
+          ("""^Object at location (.+?) not found: No such file or directory """ +
+            """\(os error \d+\)$""").r
+        val parquetError: Regex =
+          """^Parquet error: (?:.*)$""".r
         msg match {
           case fileNotFoundPattern(filePath) =>
             // See org.apache.spark.sql.errors.QueryExecutionErrors.readCurrentFileNotFoundError
