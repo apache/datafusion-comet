@@ -2072,7 +2072,7 @@ index c10e1799702..ba6629abfd9 100644
 @@ -16,7 +16,7 @@
   */
  package org.apache.spark.sql.execution.datasources.parquet
-
+ 
 -import org.apache.spark.sql.{AnalysisException, DataFrame, QueryTest}
 +import org.apache.spark.sql.{AnalysisException, DataFrame, IgnoreCometNativeDataFusion, QueryTest}
  import org.apache.spark.sql.execution.datasources.FileFormat
@@ -2081,7 +2081,7 @@ index c10e1799702..ba6629abfd9 100644
 @@ -154,7 +154,8 @@ class ParquetFileMetadataStructRowIndexSuite extends QueryTest with SharedSparkS
      }
    }
-
+ 
 -  test(s"reading ${ROW_INDEX_TEMPORARY_COLUMN_NAME} - not present in a table") {
 +  test(s"reading ${ROW_INDEX_TEMPORARY_COLUMN_NAME} - not present in a table",
 +    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3317")) {
@@ -2091,7 +2091,7 @@ index c10e1799702..ba6629abfd9 100644
 @@ -172,7 +173,8 @@ class ParquetFileMetadataStructRowIndexSuite extends QueryTest with SharedSparkS
      }
    }
-
+ 
 -  test(s"reading ${ROW_INDEX_TEMPORARY_COLUMN_NAME} - present in a table") {
 +  test(s"reading ${ROW_INDEX_TEMPORARY_COLUMN_NAME} - present in a table",
 +    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3317")) {
@@ -2101,7 +2101,7 @@ index c10e1799702..ba6629abfd9 100644
 @@ -189,7 +191,8 @@ class ParquetFileMetadataStructRowIndexSuite extends QueryTest with SharedSparkS
      }
    }
-
+ 
 -  test(s"reading ${ROW_INDEX_TEMPORARY_COLUMN_NAME} - as partition col") {
 +  test(s"reading ${ROW_INDEX_TEMPORARY_COLUMN_NAME} - as partition col",
 +    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3317")) {
