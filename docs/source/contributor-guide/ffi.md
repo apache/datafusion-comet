@@ -177,8 +177,8 @@ message Scan {
 
 #### When ownership is NOT transferred to native:
 
-If the data originates from a scan that uses mutable buffers (such as `native_iceberg_compat` when reading partition 
-columns or adding missing columns) in some cases, then ownership is not transferred to native and the JVM may 
+If the data originates from a scan that uses mutable buffers (such as `native_iceberg_compat` when reading partition
+columns or adding missing columns) in some cases, then ownership is not transferred to native and the JVM may
 re-use the underlying buffers in the future.
 
 It is critical that the native code performs a deep copy of the arrays if the arrays are to be buffered by

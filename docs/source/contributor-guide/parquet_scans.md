@@ -26,10 +26,10 @@ settings. Most users should not need to change this setting. However, it is poss
 a particular implementation for all scan operations by setting this configuration property to one of the following
 implementations.
 
-The two implementations are `native_datafusion` and `native_iceberg_compat`. They both delegate to DataFusion's 
-`DataSourceExec`. The main difference between these implementations is that `native_datafusion` runs fully natively, and 
-`native_iceberg_compat` is a hybrid JVM/Rust implementation that can provide support some Spark features that 
-`native_datafusion` can not, but has some performance overhead due to crossing the JVM/Rust boundary. 
+The two implementations are `native_datafusion` and `native_iceberg_compat`. They both delegate to DataFusion's
+`DataSourceExec`. The main difference between these implementations is that `native_datafusion` runs fully natively, and
+`native_iceberg_compat` is a hybrid JVM/Rust implementation that can provide support some Spark features that
+`native_datafusion` can not, but has some performance overhead due to crossing the JVM/Rust boundary.
 
 The `native_datafusion` and `native_iceberg_compat` scans share the following limitations:
 
@@ -43,7 +43,7 @@ The `native_datafusion` and `native_iceberg_compat` scans share the following li
 - No support for default values that are nested types (e.g., maps, arrays, structs). Literal default values are supported.
 - No support for datetime rebasing detection or the `spark.comet.exceptionOnDatetimeRebase` configuration. When reading
   Parquet files containing dates or timestamps written before Spark 3.0 (which used a hybrid Julian/Gregorian calendar),
-  dates/timestamps will be read as if they were written using the Proleptic Gregorian calendar. This may produce 
+  dates/timestamps will be read as if they were written using the Proleptic Gregorian calendar. This may produce
   incorrect results for dates before October 15, 1582.
 - No support for Spark's Datasource V2 API. When `spark.sql.sources.useV1SourceList` does not include `parquet`,
   Spark uses the V2 API for Parquet scans. The DataFusion-based implementations only support the V1 API, so Comet
