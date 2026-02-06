@@ -188,9 +188,9 @@ pub fn create_comet_physical_fun_with_eval_mode(
         }
         _ => registry.udf(fun_name).map_err(|e| {
             DataFusionError::Execution(format!(
-                "Function {fun_name} not found in the registry: {e}",
+                "Function '{fun_name}' not found in the registry: {e}",
             ))
-        }),
+        })
     }
 }
 
