@@ -66,8 +66,12 @@ case class CometIcebergNativeScanExec(
   override val nodeName: String = "CometIcebergNativeScan"
 
   /**
-   * Prepare DPP subquery plans. Called by Spark's prepare() before doExecuteColumnar(). Only
-   * kicks off async work - doesn't wait for results (that happens in serializedPartitionData).
+   * Prepare DPP subquery plans. Called by Spark's prepare() before doExecuteColumnar().
+   *
+   * This follows Spark's convention of preparing subqueries in doPrepare() rather than
+   * doExecuteColumnar(). While the actual waiting for DPP results happens later in
+   * serializedPartitionData, calling prepare() here ensures subquery plans are set up before
+   * execution begins.
    */
   override protected def doPrepare(): Unit = {
     originalPlan.runtimeFilters.foreach {
@@ -79,7 +83,11 @@ case class CometIcebergNativeScanExec(
   }
 
   /**
-   * Lazy partition serialization - computed after doPrepare() resolves DPP.
+   * Lazy partition serialization - deferred until execution time for DPP support.
+   *
+   * Entry points: This lazy val may be triggered from either doExecuteColumnar() (via
+   * commonData/perPartitionData) or capturedMetricValues (for Iceberg metrics). Lazy val
+   * semantics ensure single evaluation regardless of entry point.
    *
    * DPP (Dynamic Partition Pruning) Flow:
    *
@@ -92,10 +100,10 @@ case class CometIcebergNativeScanExec(
    * Execution time:
    *   1. Spark calls prepare() on the plan tree
    *        - doPrepare() calls e.plan.prepare() for each DPP filter
-   *        - Broadcast exchange starts materializing
+   *        - Subquery plans are set up (but not yet executed)
    *
-   *   2. Spark calls doExecuteColumnar()
-   *        - Accesses perPartitionData
+   *   2. Spark calls doExecuteColumnar() (or metrics are accessed)
+   *        - Accesses perPartitionData (or capturedMetricValues)
    *        - Forces serializedPartitionData evaluation (here)
    *        - Waits for DPP values (updateResult or reflection)
    *        - Calls serializePartitions with DPP-filtered inputRDD
@@ -216,13 +224,20 @@ case class CometIcebergNativeScanExec(
     }
   }
 
+  /**
+   * Captures Iceberg planning metrics for display in Spark UI.
+   *
+   * This lazy val intentionally triggers serializedPartitionData evaluation because Iceberg
+   * populates metrics during planning (when inputRDD is accessed). Both this and
+   * doExecuteColumnar() may trigger serializedPartitionData, but lazy val semantics ensure it's
+   * evaluated only once.
+   */
   @transient private lazy val capturedMetricValues: Seq[MetricValue] = {
     // Guard against null originalPlan (from doCanonicalize)
     if (originalPlan == null) {
       Seq.empty
     } else {
-      // Force serializedPartitionData evaluation first - this triggers serializePartitions which
-      // accesses inputRDD, which triggers Iceberg planning and populates metrics
+      // Trigger serializedPartitionData to ensure Iceberg planning has run and metrics are populated
       val _ = serializedPartitionData
 
       originalPlan.metrics
