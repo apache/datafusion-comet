@@ -21,6 +21,10 @@ package org.apache.comet
 
 import org.apache.spark.sql.CometTestBase
 
+/**
+ * Test suite for StaticInvoke expressions handled by Comet. This includes functions like
+ * aes_encrypt that use StaticInvoke internally.
+ */
 class CometStaticInvokeSuite extends CometTestBase {
 
   test("aes_encrypt basic - verify native execution") {
@@ -33,7 +37,7 @@ class CometStaticInvokeSuite extends CometTestBase {
       val query = """
         SELECT
           data,
-          hex(aes_encrypt(cast(data as binary), cast(key as binary))) as encrypted
+          hex(aes_encrypt(cast(data as binary), cast(key as binary), 'ECB', 'PKCS')) as encrypted
         FROM t1
       """
 
@@ -47,13 +51,13 @@ class CometStaticInvokeSuite extends CometTestBase {
     }
   }
 
-  test("aes_encrypt with mode") {
+  test("aes_encrypt with mode - ECB") {
     withTable("t1") {
       sql("CREATE TABLE t1(data STRING, key STRING) USING parquet")
       sql("INSERT INTO t1 VALUES ('test', '1234567890123456')")
 
       val query = """
-        SELECT hex(aes_encrypt(cast(data as binary), cast(key as binary), 'GCM'))
+        SELECT hex(aes_encrypt(cast(data as binary), cast(key as binary), 'ECB'))
         FROM t1
       """
 
@@ -61,7 +65,7 @@ class CometStaticInvokeSuite extends CometTestBase {
     }
   }
 
-  test("aes_encrypt with all parameters") {
+  test("aes_encrypt with mode - GCM with fixed IV") {
     withTable("t1") {
       sql("CREATE TABLE t1(data STRING, key STRING) USING parquet")
       sql("INSERT INTO t1 VALUES ('test', '1234567890123456')")
@@ -72,7 +76,27 @@ class CometStaticInvokeSuite extends CometTestBase {
           cast(key as binary),
           'GCM',
           'DEFAULT',
-          cast('initialization' as binary),
+          cast(unhex('000000000000000000000000') as binary)
+        ))
+        FROM t1
+      """
+
+      checkSparkAnswerAndOperator(query)
+    }
+  }
+
+  test("aes_encrypt with all parameters") {
+    withTable("t1") {
+      sql("CREATE TABLE t1(data STRING, key STRING) USING parquet")
+      sql("INSERT INTO t1 VALUES ('test', 'abcdefghijklmnop12345678ABCDEFGH')")
+
+      val query = """
+        SELECT hex(aes_encrypt(
+          cast(data as binary),
+          cast(key as binary),
+          'GCM',
+          'DEFAULT',
+          cast(unhex('000000000000000000000000') as binary),
           cast('additional' as binary)
         ))
         FROM t1
@@ -89,8 +113,8 @@ class CometStaticInvokeSuite extends CometTestBase {
 
       val query = """
         SELECT
-          upper(hex(aes_encrypt(cast(data as binary), cast(key as binary)))) as encrypted,
-          length(hex(aes_encrypt(cast(data as binary), cast(key as binary)))) as len
+          hex(aes_encrypt(cast(data as binary), cast(key as binary), 'ECB')) as encrypted,
+          length(hex(aes_encrypt(cast(data as binary), cast(key as binary), 'ECB'))) as len
         FROM t1
       """
 

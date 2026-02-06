@@ -23,7 +23,8 @@ import org.apache.spark.sql.CometTestBase
 
 class CometEncryptionSuite extends CometTestBase {
 
-  test("aes_encrypt basic") {
+  test("aes_encrypt ECB mode - deterministic") {
+    // ECB mode doesn't use IV, so results are deterministic
     withTable("t1") {
       sql("""
         CREATE TABLE t1(data STRING, key STRING) USING parquet
@@ -37,7 +38,7 @@ class CometEncryptionSuite extends CometTestBase {
       val query = """
         SELECT
           data,
-          hex(aes_encrypt(cast(data as binary), cast(key as binary))) as encrypted
+          hex(aes_encrypt(cast(data as binary), cast(key as binary), 'ECB', 'PKCS')) as encrypted
         FROM t1
       """
 
@@ -45,7 +46,8 @@ class CometEncryptionSuite extends CometTestBase {
     }
   }
 
-  test("aes_encrypt with mode") {
+  test("aes_encrypt CBC mode with fixed IV - deterministic") {
+    // CBC mode with explicit IV is deterministic
     withTable("t1") {
       sql("""
         CREATE TABLE t1(data STRING, key STRING) USING parquet
@@ -55,7 +57,111 @@ class CometEncryptionSuite extends CometTestBase {
       """)
 
       val query = """
-        SELECT hex(aes_encrypt(cast(data as binary), cast(key as binary), 'GCM'))
+        SELECT hex(aes_encrypt(
+          cast(data as binary),
+          cast(key as binary),
+          'CBC',
+          'PKCS',
+          cast(unhex('00000000000000000000000000000000') as binary)
+        ))
+        FROM t1
+      """
+
+      checkSparkAnswerAndOperator(query)
+    }
+  }
+
+  test("aes_encrypt GCM mode with fixed IV - deterministic") {
+    // GCM mode with explicit IV is deterministic
+    withTable("t1") {
+      sql("""
+        CREATE TABLE t1(data STRING, key STRING) USING parquet
+      """)
+      sql("""
+        INSERT INTO t1 VALUES ('Spark', '0000111122223333')
+      """)
+
+      val query = """
+        SELECT hex(aes_encrypt(
+          cast(data as binary),
+          cast(key as binary),
+          'GCM',
+          'DEFAULT',
+          cast(unhex('000000000000000000000000') as binary)
+        ))
+        FROM t1
+      """
+
+      checkSparkAnswerAndOperator(query)
+    }
+  }
+
+  test("aes_encrypt GCM mode with AAD") {
+    withTable("t1") {
+      sql("""
+        CREATE TABLE t1(data STRING, key STRING) USING parquet
+      """)
+      sql("""
+        INSERT INTO t1 VALUES ('Spark', 'abcdefghijklmnop12345678ABCDEFGH')
+      """)
+
+      val query = """
+        SELECT hex(aes_encrypt(
+          cast(data as binary),
+          cast(key as binary),
+          'GCM',
+          'DEFAULT',
+          cast(unhex('000000000000000000000000') as binary),
+          cast('additional authenticated data' as binary)
+        ))
+        FROM t1
+      """
+
+      checkSparkAnswerAndOperator(query)
+    }
+  }
+
+  test("aes_encrypt with multiple rows") {
+    withTable("t1") {
+      sql("""
+        CREATE TABLE t1(data STRING, key STRING) USING parquet
+      """)
+      sql("""
+        INSERT INTO t1 VALUES
+        ('message1', 'key1key1key1key1'),
+        ('message2', 'key2key2key2key2'),
+        ('message3', 'key3key3key3key3')
+      """)
+
+      val query = """
+        SELECT
+          data,
+          hex(aes_encrypt(
+            cast(data as binary),
+            cast(key as binary),
+            'ECB',
+            'PKCS'
+          )) as encrypted
+        FROM t1
+      """
+
+      checkSparkAnswerAndOperator(query)
+    }
+  }
+
+  test("aes_encrypt wrapped in multiple functions") {
+    withTable("t1") {
+      sql("""
+        CREATE TABLE t1(data STRING, key STRING) USING parquet
+      """)
+      sql("""
+        INSERT INTO t1 VALUES ('test', '1234567890123456')
+      """)
+
+      val query = """
+        SELECT
+          hex(aes_encrypt(cast(data as binary), cast(key as binary), 'ECB', 'PKCS')) as encrypted,
+          length(hex(aes_encrypt(cast(data as binary), cast(key as binary), 'ECB', 'PKCS'))) as len
         FROM t1
       """
 
