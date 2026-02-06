@@ -356,9 +356,14 @@ fn is_spark_compatible_parquet_coercion(
         // Same type is always OK
         (a, b) if a == b => true,
 
-        // Spark rejects reading TimestampLTZ as TimestampNTZ (and vice versa)
-        (Timestamp(_, Some(_)), Timestamp(_, None))
-        | (Timestamp(_, None), Timestamp(_, Some(_))) => false,
+        // Spark rejects reading TimestampLTZ as TimestampNTZ
+        (Timestamp(_, Some(_)), Timestamp(_, None)) => false,
+
+        // Allow Timestamp(_, None) → Timestamp(_, Some(_)) because arrow-rs represents
+        // INT96 timestamps (always LTZ in Spark) as Timestamp(Microsecond, None) after
+        // coercion. The downstream parquet_convert_array handles this by reattaching the
+        // session timezone.
+        (Timestamp(_, None), Timestamp(_, Some(_))) => true,
 
         // Spark rejects integer type widening in the vectorized reader
         // (INT32 → LongType, INT32 → DoubleType, etc.)
