@@ -189,6 +189,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[DateAdd] -> CometDateAdd,
     classOf[DateDiff] -> CometDateDiff,
     classOf[DateFormatClass] -> CometDateFormat,
+    classOf[DateFromUnixDate] -> CometDateFromUnixDate,
     classOf[DateSub] -> CometDateSub,
     classOf[UnixDate] -> CometUnixDate,
     classOf[FromUnixTime] -> CometFromUnixTime,
