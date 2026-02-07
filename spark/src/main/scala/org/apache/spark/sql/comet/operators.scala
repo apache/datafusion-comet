@@ -19,6 +19,7 @@
 
 package org.apache.spark.sql.comet
 
+import java.util
 import java.util.Locale
 
 import scala.collection.mutable
@@ -140,13 +141,22 @@ private[comet] object PlanDataInjector {
  */
 private[comet] object IcebergPlanDataInjector extends PlanDataInjector {
   import java.nio.ByteBuffer
-  import java.util.concurrent.ConcurrentHashMap
+  import java.util.{LinkedHashMap, Map => JMap}
 
-  // Cache parsed IcebergScanCommon by content to avoid repeated deserialization
-  // ByteBuffer wrapper provides content-based equality and hashCode
-  // TODO: This is a static singleton on the executor, should we cap the size (proper LRU cache?)
-  private val commonCache =
-    new ConcurrentHashMap[ByteBuffer, OperatorOuterClass.IcebergScanCommon]()
+  private final val maxCacheEntries = 16
+
+  // Cache parsed IcebergScanCommon to avoid reparsing for Iceberg tables with large numbers of
+  // partitions (thousands or more) that may repeatedly parse the same commonBytes.
+  // IcebergPlanDataInjector is a singleton, so we use an LRU cache to eventually evict old
+  // IcebergScanCommon objects. 16 seems like a reasonable starting point since these objects
+  // are not large. Thread-safe LinkedHashMap with accessOrder=true provides LRU ordering.
+  private val commonCache = java.util.Collections.synchronizedMap(
+    new LinkedHashMap[ByteBuffer, OperatorOuterClass.IcebergScanCommon](4, 0.75f, true) {
+      override def removeEldestEntry(
+          eldest: JMap.Entry[ByteBuffer, OperatorOuterClass.IcebergScanCommon]): Boolean = {
+        size() > maxCacheEntries
+      }
+    })
 
   override def canInject(op: Operator): Boolean =
     op.hasIcebergScan &&
@@ -164,9 +174,13 @@ private[comet] object IcebergPlanDataInjector extends PlanDataInjector {
 
     // Cache the parsed common data to avoid deserializing on every partition
     val cacheKey = ByteBuffer.wrap(commonBytes)
-    val common = commonCache.computeIfAbsent(
-      cacheKey,
-      _ => OperatorOuterClass.IcebergScanCommon.parseFrom(commonBytes))
+    val common = commonCache.synchronized {
+      Option(commonCache.get(cacheKey)).getOrElse {
+        val parsed = OperatorOuterClass.IcebergScanCommon.parseFrom(commonBytes)
+        commonCache.put(cacheKey, parsed)
+        parsed
+      }
+    }
 
     val tasksOnly = OperatorOuterClass.IcebergScan.parseFrom(partitionBytes)
 
