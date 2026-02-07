@@ -90,6 +90,23 @@ object CometMapFromArrays extends CometExpressionSerde[MapFromArrays] {
   }
 }
 
+object CometMapContainsKey extends CometExpressionSerde[MapContainsKey] {
+
+  override def convert(
+      expr: MapContainsKey,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    // Replace with array_has(map_keys(map), key)
+    val mapExpr = exprToProtoInternal(expr.left, inputs, binding)
+    val keyExpr = exprToProtoInternal(expr.right, inputs, binding)
+
+    val mapKeysExpr = scalarFunctionExprToProto("map_keys", mapExpr)
+
+    val mapContainsKeyExpr = scalarFunctionExprToProto("array_has", mapKeysExpr, keyExpr)
+    optExprWithInfo(mapContainsKeyExpr, expr, expr.children: _*)
+  }
+}
+
 object CometMapFromEntries extends CometScalarFunction[MapFromEntries]("map_from_entries") {
   val keyUnsupportedReason = "Using BinaryType as Map keys is not allowed in map_from_entries"
   val valueUnsupportedReason = "Using BinaryType as Map values is not allowed in map_from_entries"
