@@ -32,7 +32,7 @@ use datafusion_common::internal_err;
 use std::str::FromStr;
 use std::sync::Arc;
 
-const TO_TIMESTAMP: &str = "custom_to_timestamp";
+const TO_TIMESTAMP: &str = "to_timestamp";
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum FractionPrecision {
@@ -141,11 +141,11 @@ pub fn spark_to_timestamp_parse(
     Ok(local.timestamp_micros())
 }
 
-pub fn custom_to_timestamp(args: &[ColumnarValue]) -> Result<ColumnarValue> {
-    make_scalar_function(spark_custom_to_timestamp, vec![])(&args)
+pub fn to_timestamp(args: &[ColumnarValue]) -> Result<ColumnarValue> {
+    make_scalar_function(spark_to_timestamp, vec![])(&args)
 }
 
-pub fn spark_custom_to_timestamp(args: &[ArrayRef]) -> Result<ArrayRef> {
+pub fn spark_to_timestamp(args: &[ArrayRef]) -> Result<ArrayRef> {
     if args.len() < 2 || args.len() > 3 {
         return internal_err!(
             "`{}` function requires 2 or 3 arguments, got {} arguments",

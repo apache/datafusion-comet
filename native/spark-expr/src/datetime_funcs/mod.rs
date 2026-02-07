@@ -28,5 +28,5 @@ pub use extract_date_part::SparkHour;
 pub use extract_date_part::SparkMinute;
 pub use extract_date_part::SparkSecond;
 pub use timestamp_trunc::TimestampTruncExpr;
-pub use to_timestamp::custom_to_timestamp;
+pub use to_timestamp::to_timestamp;
 pub use unix_timestamp::SparkUnixTimestamp;

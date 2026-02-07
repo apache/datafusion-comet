@@ -203,7 +203,7 @@ object CometGetTimestamp extends CometExpressionSerde[GetTimestamp] {
     val tZ: Option[Expr] =
       expr.timeZoneId.flatMap(tz => exprToProtoInternal(Literal(tz), inputs, binding))
     scalarFunctionExprToProtoWithReturnType(
-      "custom_to_timestamp",
+      "to_timestamp",
       expr.dataType,
       failOnError = expr.failOnError,
       args = leftExpr,
