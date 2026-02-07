@@ -119,6 +119,38 @@ abstract class ParquetDatetimeRebaseSuite extends CometTestBase {
     }
   }
 
+  test("datediff works with dictionary-encoded timestamp columns") {
+    withSQLConf(
+      "spark.sql.parquet.enableDictionary" -> "true",
+      CometConf.COMET_ENABLED.key -> "true") {
+      val df = spark
+        .createDataFrame(
+          Seq(
+            ("a", java.sql.Timestamp.valueOf("2024-01-02 10:00:00")),
+            ("b", java.sql.Timestamp.valueOf("2024-01-03 11:00:00"))))
+        .toDF("id", "ts")
+
+      withTempPath { path =>
+        df.write.mode("overwrite").parquet(path.getAbsolutePath)
+
+        val readDf = spark.read.parquet(path.getAbsolutePath)
+
+        val result = readDf
+          .selectExpr("datediff(current_date(), ts)")
+          .collect()
+
+        assert(result.length == 2)
+      }
+
+      // This used to fail due to array length mismatch
+      val result = readDf
+        .selectExpr("datediff(current_date(), ts)")
+        .collect()
+
+      assert(result.length == 2)
+    }
+  }
+
   private def checkSparkNoRebaseAnswer(df: => DataFrame): Unit = {
     var expected: Array[Row] = Array.empty
 

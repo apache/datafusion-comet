@@ -15,7 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::utils::array_with_timezone;
 use arrow::compute::{date_part, DatePart};
 use arrow::datatypes::{DataType, TimeUnit::Microsecond};
 use datafusion::common::{internal_datafusion_err, DataFusionError};
@@ -23,6 +22,8 @@ use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };
 use std::{any::Any, fmt::Debug};
+
+use crate::utils::array_with_timezone;
 
 macro_rules! extract_date_part {
     ($struct_name:ident, $fn_name:expr, $date_part_variant:ident) => {
@@ -75,14 +76,28 @@ macro_rules! extract_date_part {
 
                 match args {
                     [ColumnarValue::Array(array)] => {
-                        let array = array_with_timezone(
-                            array,
-                            self.timezone.clone(),
-                            Some(&DataType::Timestamp(
-                                Microsecond,
-                                Some(self.timezone.clone().into()),
-                            )),
-                        )?;
+                        let array = match array.data_type() {
+                            // TimestampNTZ → DO NOT apply timezone conversion
+                            DataType::Timestamp(_, None) => array.clone(),
+
+                            // Timestamp with timezone → convert from UTC to session timezone
+                            DataType::Timestamp(_, Some(_)) => array_with_timezone(
+                                array,
+                                self.timezone.clone(),
+                                Some(&DataType::Timestamp(
+                                    Microsecond,
+                                    Some(self.timezone.clone().into()),
+                                )),
+                            )?,
+
+                            other => {
+                                return Err(DataFusionError::Execution(format!(
+                                    "extract_date_part expects a Timestamp input, got {:?}",
+                                    other
+                                )));
+                            }
+                        };
+
                         let result = date_part(&array, DatePart::$date_part_variant)?;
                         Ok(ColumnarValue::Array(result))
                     }
