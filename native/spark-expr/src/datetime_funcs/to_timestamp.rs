@@ -17,7 +17,7 @@
 
 //! Define JNI APIs which can be called from Java/Scala.
 
-use arrow::array::{ArrayRef, Int32Array, StringArray};
+use arrow::array::{ArrayRef, StringArray};
 use arrow::datatypes::DataType::Timestamp;
 use arrow::datatypes::TimeUnit::Microsecond;
 use chrono::{DateTime, NaiveDate, NaiveDateTime, TimeZone, Timelike};
@@ -34,8 +34,7 @@ use std::sync::Arc;
 
 const TO_TIMESTAMP: &str = "custom_to_timestamp";
 
-#[derive(Debug, Clone, Copy)]
-#[derive(PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 enum FractionPrecision {
     Millis,
     Micros,
@@ -189,8 +188,6 @@ macro_rules! opt_downcast_arg {
 
 pub(crate) use opt_downcast_arg;
 
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -203,10 +200,7 @@ mod tests {
 
     #[test]
     fn detects_no_fraction() {
-        assert_eq!(
-            detect_fraction_precision("yyyy-MM-dd HH:mm:ss"),
-            None
-        );
+        assert_eq!(detect_fraction_precision("yyyy-MM-dd HH:mm:ss"), None);
     }
 
     #[test]
@@ -246,8 +240,7 @@ mod tests {
 
     #[test]
     fn converts_timestamp_with_millis() {
-        let (fmt, precision) =
-            spark_to_chrono("yyyy-MM-dd HH:mm:ss.SSS");
+        let (fmt, precision) = spark_to_chrono("yyyy-MM-dd HH:mm:ss.SSS");
 
         assert_eq!(fmt, "%Y-%m-%d %H:%M:%S%.f");
         assert_eq!(precision, Some(FractionPrecision::Millis));
@@ -255,8 +248,7 @@ mod tests {
 
     #[test]
     fn converts_timestamp_with_timezone() {
-        let (fmt, _) =
-            spark_to_chrono("yyyy-MM-dd HH:mm:ssXXX");
+        let (fmt, _) = spark_to_chrono("yyyy-MM-dd HH:mm:ssXXX");
 
         assert_eq!(fmt, "%Y-%m-%d %H:%M:%S%:z");
     }
@@ -281,28 +273,20 @@ mod tests {
 
     #[test]
     fn parses_date_as_midnight_timestamp() {
-        let (ts, _) = parse_spark_naive(
-            "2026-01-30",
-            "yyyy-MM-dd",
-        )
-            .unwrap();
+        let (ts, _) = parse_spark_naive("2026-01-30", "yyyy-MM-dd").unwrap();
 
-        let expected =
-            NaiveDate::from_ymd_opt(2026, 1, 30)
-                .unwrap()
-                .and_hms_opt(0, 0, 0)
-                .unwrap();
+        let expected = NaiveDate::from_ymd_opt(2026, 1, 30)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap();
 
         assert_eq!(ts, expected);
     }
 
     #[test]
     fn parses_timestamp_with_millis() {
-        let (ts, precision) = parse_spark_naive(
-            "2026-01-30 10:30:52.123",
-            "yyyy-MM-dd HH:mm:ss.SSS",
-        )
-            .unwrap();
+        let (ts, precision) =
+            parse_spark_naive("2026-01-30 10:30:52.123", "yyyy-MM-dd HH:mm:ss.SSS").unwrap();
 
         assert_eq!(precision, Some(FractionPrecision::Millis));
         assert_eq!(ts.and_utc().timestamp_subsec_millis(), 123);
@@ -314,38 +298,24 @@ mod tests {
 
     #[test]
     fn normalizes_millis_precision() {
-        let ts = NaiveDateTime::parse_from_str(
-            "2026-01-30 10:30:52.123456",
-            "%Y-%m-%d %H:%M:%S%.6f",
-        )
-            .unwrap();
-
-        let normalized =
-            normalize_fraction(ts, Some(FractionPrecision::Millis))
+        let ts =
+            NaiveDateTime::parse_from_str("2026-01-30 10:30:52.123456", "%Y-%m-%d %H:%M:%S%.6f")
                 .unwrap();
 
-        assert_eq!(
-            normalized.and_utc().timestamp_subsec_nanos(),
-            123_000_000
-        );
+        let normalized = normalize_fraction(ts, Some(FractionPrecision::Millis)).unwrap();
+
+        assert_eq!(normalized.and_utc().timestamp_subsec_nanos(), 123_000_000);
     }
 
     #[test]
     fn normalizes_micros_precision() {
-        let ts = NaiveDateTime::parse_from_str(
-            "2026-01-30 10:30:52.123456",
-            "%Y-%m-%d %H:%M:%S%.6f",
-        )
-            .unwrap();
-
-        let normalized =
-            normalize_fraction(ts, Some(FractionPrecision::Micros))
+        let ts =
+            NaiveDateTime::parse_from_str("2026-01-30 10:30:52.123456", "%Y-%m-%d %H:%M:%S%.6f")
                 .unwrap();
 
-        assert_eq!(
-            normalized.and_utc().timestamp_subsec_nanos(),
-            123_456_000
-        );
+        let normalized = normalize_fraction(ts, Some(FractionPrecision::Micros)).unwrap();
+
+        assert_eq!(normalized.and_utc().timestamp_subsec_nanos(), 123_456_000);
     }
 
     // ----------------------------
@@ -354,32 +324,22 @@ mod tests {
 
     #[test]
     fn parses_timestamp_and_preserves_millis() {
-        let micros = spark_to_timestamp_parse(
-            "2026-01-30 10:30:52.123",
-            "yyyy-MM-dd HH:mm:ss.SSS",
-            UTC,
-        )
-            .unwrap();
+        let micros =
+            spark_to_timestamp_parse("2026-01-30 10:30:52.123", "yyyy-MM-dd HH:mm:ss.SSS", UTC)
+                .unwrap();
 
-        let expected = NaiveDateTime::parse_from_str(
-            "2026-01-30 10:30:52.123",
-            "%Y-%m-%d %H:%M:%S%.3f",
-        )
-            .unwrap()
-            .and_utc()
-            .timestamp_micros();
+        let expected =
+            NaiveDateTime::parse_from_str("2026-01-30 10:30:52.123", "%Y-%m-%d %H:%M:%S%.3f")
+                .unwrap()
+                .and_utc()
+                .timestamp_micros();
 
         assert_eq!(micros, expected);
     }
 
     #[test]
     fn parses_date_literal_as_midnight() {
-        let micros = spark_to_timestamp_parse(
-            "2026-01-30",
-            "yyyy-MM-dd",
-            UTC,
-        )
-            .unwrap();
+        let micros = spark_to_timestamp_parse("2026-01-30", "yyyy-MM-dd", UTC).unwrap();
 
         let expected = NaiveDate::from_ymd_opt(2026, 1, 30)
             .unwrap()
