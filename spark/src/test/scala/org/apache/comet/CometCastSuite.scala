@@ -1067,6 +1067,41 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateTimestamps(), DataTypes.DateType)
   }
 
+  // CAST from TimestampNTZType
+
+  test("cast TimestampNTZType to StringType") {
+    castTest(generateTimestampNTZs(), DataTypes.StringType)
+  }
+
+  test("cast TimestampNTZType to DateType") {
+    castTest(generateTimestampNTZs(), DataTypes.DateType)
+  }
+
+  test("cast TimestampNTZType to TimestampType") {
+    castTest(generateTimestampNTZs(), DataTypes.TimestampType)
+  }
+
+  // CAST to TimestampNTZType
+  // Note: Spark does not support casting numeric types (Byte, Short, Int, Long, Float, Double,
+  // Decimal) or BinaryType to TimestampNTZType, so those tests are not included here.
+
+  ignore("cast StringType to TimestampNTZType") {
+    // Not yet implemented
+    castTest(
+      gen.generateStrings(dataSize, timestampPattern, 8).toDF("a"),
+      DataTypes.TimestampNTZType)
+  }
+
+  ignore("cast DateType to TimestampNTZType") {
+    // Not yet implemented
+    castTest(generateDates(), DataTypes.TimestampNTZType)
+  }
+
+  ignore("cast TimestampType to TimestampNTZType") {
+    // Not yet implemented
+    castTest(generateTimestamps(), DataTypes.TimestampNTZType)
+  }
+
   // Complex Types
 
   test("cast StructType to StringType") {
@@ -1360,6 +1395,20 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     withNulls(values)
       .toDF("str")
       .withColumn("a", col("str").cast(DataTypes.TimestampType))
+      .drop("str")
+  }
+
+  private def generateTimestampNTZs(): DataFrame = {
+    val values =
+      Seq(
+        "2024-01-01T12:34:56.123456",
+        "2024-01-01T01:00:00",
+        "9999-12-31T23:59:59.999999",
+        "1970-01-01T00:00:00",
+        "2024-12-31T01:00:00")
+    withNulls(values)
+      .toDF("str")
+      .withColumn("a", col("str").cast(DataTypes.TimestampNTZType))
       .drop("str")
   }
 

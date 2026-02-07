@@ -268,17 +268,15 @@ fn can_cast_to_string(from_type: &DataType, _options: &SparkCastOptions) -> bool
     }
 }
 
-fn can_cast_from_timestamp_ntz(to_type: &DataType, options: &SparkCastOptions) -> bool {
+fn can_cast_from_timestamp_ntz(to_type: &DataType, _options: &SparkCastOptions) -> bool {
     use DataType::*;
     match to_type {
-        Timestamp(_, _) | Date32 | Date64 | Utf8 => {
-            // incompatible
-            options.allow_incompat
-        }
-        _ => {
-            // unsupported
-            false
-        }
+        // TimestampNTZ -> Timestamp with timezone (interpret as UTC)
+        // TimestampNTZ -> Date (simple truncation, no timezone adjustment)
+        // TimestampNTZ -> String (format as local datetime)
+        // TimestampNTZ -> Long (extract microseconds directly)
+        Timestamp(_, Some(_)) | Date32 | Date64 | Utf8 | Int64 => true,
+        _ => false,
     }
 }
 
