@@ -19,7 +19,6 @@
 
 package org.apache.spark.sql.comet
 
-import java.util
 import java.util.Locale
 
 import scala.collection.mutable
