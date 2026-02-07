@@ -1918,6 +1918,7 @@ dependencies = [
  "chrono-tz",
  "criterion",
  "datafusion",
+ "datafusion-common",
  "futures",
  "hex",
  "num",
