@@ -133,17 +133,6 @@ index db587dd9868..aac7295a53d 100644
        case _ => Map[String, String]()
      }
      new SparkPlanInfo(
-diff --git a/sql/core/src/test/resources/sql-tests/inputs/charvarchar.sql b/sql/core/src/test/resources/sql-tests/inputs/charvarchar.sql
-index b62cbf64323..8d1f0cb7d20 100644
---- a/sql/core/src/test/resources/sql-tests/inputs/charvarchar.sql
-+++ b/sql/core/src/test/resources/sql-tests/inputs/charvarchar.sql
-@@ -1,3 +1,6 @@
-+-- TODO: support empty table write / CTAS in native parquet writer
-+--SET spark.comet.parquet.write.enabled = false
-+
- create table char_tbl(c char(5), v varchar(6)) using parquet;
- desc formatted char_tbl;
- desc formatted char_tbl c;
 diff --git a/sql/core/src/test/resources/sql-tests/inputs/explain-aqe.sql b/sql/core/src/test/resources/sql-tests/inputs/explain-aqe.sql
 index 7aef901da4f..f3d6e18926d 100644
 --- a/sql/core/src/test/resources/sql-tests/inputs/explain-aqe.sql
@@ -1883,62 +1872,6 @@ index 593bd7bb4ba..32af28b0238 100644
          }
          assert(shuffles2.size == 4)
          val smj2 = findTopLevelSortMergeJoin(adaptive2)
-diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/command/CharVarcharDDLTestBase.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/command/CharVarcharDDLTestBase.scala
-index f77b6336b81..b703603d26b 100644
---- a/sql/core/src/test/scala/org/apache/spark/sql/execution/command/CharVarcharDDLTestBase.scala
-+++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/command/CharVarcharDDLTestBase.scala
-@@ -18,7 +18,7 @@
- package org.apache.spark.sql.execution.command
- 
- import org.apache.spark.SparkConf
--import org.apache.spark.sql.{AnalysisException, QueryTest, Row}
-+import org.apache.spark.sql.{AnalysisException, IgnoreComet, QueryTest, Row}
- import org.apache.spark.sql.catalyst.util.CharVarcharUtils
- import org.apache.spark.sql.connector.catalog.InMemoryPartitionTableCatalog
- import org.apache.spark.sql.internal.SQLConf
-@@ -112,7 +112,8 @@ trait CharVarcharDDLTestBase extends QueryTest with SQLTestUtils {
-     }
-   }
- 
--  test("SPARK-33901: ctas should should not change table's schema") {
-+  test("SPARK-33901: ctas should should not change table's schema",
-+    IgnoreComet("https://github.com/apache/datafusion-comet/issues/3418")) {
-     withTable("t1", "t2") {
-       sql(s"CREATE TABLE t1(i CHAR(5), c VARCHAR(4)) USING $format")
-       sql(s"CREATE TABLE t2 USING $format AS SELECT * FROM t1")
-@@ -129,7 +130,8 @@ trait CharVarcharDDLTestBase extends QueryTest with SQLTestUtils {
-     }
-   }
- 
--  test("SPARK-37160: CREATE TABLE AS SELECT with CHAR_AS_VARCHAR") {
-+  test("SPARK-37160: CREATE TABLE AS SELECT with CHAR_AS_VARCHAR",
-+    IgnoreComet("https://github.com/apache/datafusion-comet/issues/3419")) {
-     withTable("t1", "t2") {
-       sql(s"CREATE TABLE t1(col CHAR(5)) USING $format")
-       checkTableSchemaTypeStr("t1", Seq(Row("char(5)")))
-diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/FileFormatWriterSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/FileFormatWriterSuite.scala
-index 343b59a311e..9d5789c1d91 100644
---- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/FileFormatWriterSuite.scala
-+++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/FileFormatWriterSuite.scala
-@@ -17,7 +17,7 @@
- 
- package org.apache.spark.sql.execution.datasources
- 
--import org.apache.spark.sql.{QueryTest, Row}
-+import org.apache.spark.sql.{IgnoreComet, QueryTest, Row}
- import org.apache.spark.sql.catalyst.plans.CodegenInterpretedPlanTest
- import org.apache.spark.sql.test.SharedSparkSession
- 
-@@ -28,7 +28,8 @@ class FileFormatWriterSuite
- 
-   import testImplicits._
- 
--  test("empty file should be skipped while write to file") {
-+  test("empty file should be skipped while write to file",
-+    IgnoreComet("https://github.com/apache/datafusion-comet/issues/3417")) {
-     withTempPath { path =>
-       spark.range(100).repartition(10).where("id = 50").write.parquet(path.toString)
-       val partFiles = path.listFiles()
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/SchemaPruningSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/SchemaPruningSuite.scala
 index bd9c79e5b96..2ada8c28842 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/SchemaPruningSuite.scala
@@ -2159,7 +2092,7 @@ index 104b4e416cd..37ea65081e4 100644
          case _ =>
            throw new AnalysisException("Can not match ParquetTable in the query.")
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
-index 8670d95c65e..3fe49802309 100644
+index 8670d95c65e..b624c3811dd 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
 @@ -1335,7 +1335,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
@@ -2172,41 +2105,6 @@ index 8670d95c65e..3fe49802309 100644
      withAllParquetReaders {
        checkAnswer(
          // "fruit" column in this file is encoded using DELTA_LENGTH_BYTE_ARRAY.
-@@ -1541,7 +1542,9 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
-     }
-   }
- 
--  test("Write Spark version into Parquet metadata") {
-+//  TODO : Comet native writer to add spark / comet version into parquet metadata
-+  test("Write Spark version into Parquet metadata",
-+    IgnoreComet("https://github.com/apache/datafusion-comet/issues/3427")) {
-     withTempPath { dir =>
-       spark.range(1).repartition(1).write.parquet(dir.getAbsolutePath)
-       assert(getMetaData(dir)(SPARK_VERSION_METADATA_KEY) === SPARK_VERSION_SHORT)
-diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetInteroperabilitySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetInteroperabilitySuite.scala
-index 8b386e8f689..28ced6209e0 100644
---- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetInteroperabilitySuite.scala
-+++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetInteroperabilitySuite.scala
-@@ -25,7 +25,7 @@ import org.apache.hadoop.fs.{Path, PathFilter}
- import org.apache.parquet.format.converter.ParquetMetadataConverter.NO_FILTER
- import org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName
- 
--import org.apache.spark.sql.Row
-+import org.apache.spark.sql.{IgnoreComet, Row}
- import org.apache.spark.sql.catalyst.util.DateTimeUtils
- import org.apache.spark.sql.internal.SQLConf
- import org.apache.spark.sql.test.SharedSparkSession
-@@ -153,7 +153,9 @@ class ParquetInteroperabilitySuite extends ParquetCompatibilityTest with SharedS
-     }
-   }
- 
--  test("parquet timestamp conversion") {
-+  //  TODO : Support legacy timestamps conversion /cast in comet native writer
-+  test("parquet timestamp conversion",
-+    IgnoreComet("https://github.com/apache/datafusion-comet/issues/3425")) {
-     // Make a table with one parquet file written by impala, and one parquet file written by spark.
-     // We should only adjust the timestamps in the impala file, and only if the conf is set
-     val impalaFile = "test-data/impala_timestamp.parq"
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
 index 29cb224c878..44837aa953b 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
@@ -2735,60 +2633,6 @@ index 1f55742cd67..f20129d9dd8 100644
        assert(bucketedScan.length == expectedNumBucketedScan)
      }
  
-diff --git a/sql/core/src/test/scala/org/apache/spark/sql/sources/InsertSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/sources/InsertSuite.scala
-index 2207661478d..dc4e4b4240c 100644
---- a/sql/core/src/test/scala/org/apache/spark/sql/sources/InsertSuite.scala
-+++ b/sql/core/src/test/scala/org/apache/spark/sql/sources/InsertSuite.scala
-@@ -237,7 +237,8 @@ class InsertSuite extends DataSourceTest with SharedSparkSession {
-     }
-   }
- 
--  test("INSERT INTO TABLE - complex type but different names") {
-+  test("INSERT INTO TABLE - complex type but different names",
-+    IgnoreComet("https://github.com/apache/datafusion-comet/issues/3426")) {
-     val tab1 = "tab1"
-     val tab2 = "tab2"
-     withTable(tab1, tab2) {
-@@ -889,7 +890,8 @@ class InsertSuite extends DataSourceTest with SharedSparkSession {
-     assert(message.contains("target table has 2 column(s) but the inserted data has 1 column(s)"))
-   }
- 
--  test("SPARK-38336 INSERT INTO statements with tables with default columns: positive tests") {
-+  test("SPARK-38336 INSERT INTO statements with tables with default columns: positive tests",
-+    IgnoreComet("https://github.com/apache/datafusion-comet/issues/3421")) {
-     // When the USE_NULLS_FOR_MISSING_DEFAULT_COLUMN_VALUES configuration is enabled, and no
-     // explicit DEFAULT value is available when the INSERT INTO statement provides fewer
-     // values than expected, NULL values are appended in their place.
-@@ -1286,7 +1288,8 @@ class InsertSuite extends DataSourceTest with SharedSparkSession {
-     }
-   }
- 
--  test("SPARK-38811 INSERT INTO on columns added with ALTER TABLE ADD COLUMNS: Positive tests") {
-+  test("SPARK-38811 INSERT INTO on columns added with ALTER TABLE ADD COLUMNS: Positive tests",
-+    IgnoreComet("https://github.com/apache/datafusion-comet/issues/3422")) {
-     // There is a complex expression in the default value.
-     val createTableBooleanCol = "create table t(i boolean) using parquet"
-     val createTableIntCol = "create table t(i int) using parquet"
-@@ -1984,7 +1987,8 @@ class InsertSuite extends DataSourceTest with SharedSparkSession {
-     }
-   }
- 
--  test("SPARK-43071: INSERT INTO from queries whose final operators are not projections") {
-+  test("SPARK-43071: INSERT INTO from queries whose final operators are not projections",
-+    IgnoreComet("https://github.com/apache/datafusion-comet/issues/3423")) {
-     def runTest(insert: String, expected: Seq[Row]): Unit = {
-       withTable("t1", "t2") {
-         sql("create table t1(i boolean, s bigint default 42) using parquet")
-@@ -2052,7 +2056,8 @@ class InsertSuite extends DataSourceTest with SharedSparkSession {
-     }
-   }
- 
--  test("SPARK-29174 Support LOCAL in INSERT OVERWRITE DIRECTORY to data source") {
-+  test("SPARK-29174 Support LOCAL in INSERT OVERWRITE DIRECTORY to data source",
-+    IgnoreComet("https://github.com/apache/datafusion-comet/issues/3420")) {
-     withTempPath { dir =>
-       val path = dir.toURI.getPath
-       sql(s"""create table tab1 ( a int) using parquet location '$path'""")
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/streaming/FileStreamSinkSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/streaming/FileStreamSinkSuite.scala
 index 75f440caefc..36b1146bc3a 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/streaming/FileStreamSinkSuite.scala
@@ -2959,32 +2803,8 @@ index abe606ad9c1..2d930b64cca 100644
      val tblSourceName = "tbl_src"
      val tblTargetName = "tbl_target"
      val tblSourceQualified = s"default.$tblSourceName"
-diff --git a/sql/core/src/test/scala/org/apache/spark/sql/test/DataFrameReaderWriterSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/test/DataFrameReaderWriterSuite.scala
-index 44c9fbadfac..5f98bb9be17 100644
---- a/sql/core/src/test/scala/org/apache/spark/sql/test/DataFrameReaderWriterSuite.scala
-+++ b/sql/core/src/test/scala/org/apache/spark/sql/test/DataFrameReaderWriterSuite.scala
-@@ -519,7 +519,8 @@ class DataFrameReaderWriterSuite extends QueryTest with SharedSparkSession with
-     Option(dir).map(spark.read.format("org.apache.spark.sql.test").load)
-   }
- 
--  test("write path implements onTaskCommit API correctly") {
-+  test("write path implements onTaskCommit API correctly",
-+    IgnoreComet("https://github.com/apache/datafusion-comet/issues/3428")) {
-     withSQLConf(
-         SQLConf.FILE_COMMIT_PROTOCOL_CLASS.key ->
-           classOf[MessageCapturingCommitProtocol].getCanonicalName) {
-@@ -1069,7 +1070,8 @@ class DataFrameReaderWriterSuite extends QueryTest with SharedSparkSession with
-     }
-   }
- 
--  test("Insert overwrite table command should output correct schema: basic") {
-+  test("Insert overwrite table command should output correct schema: basic",
-+    IgnoreComet("https://github.com/apache/datafusion-comet/issues/3424")) {
-     withTable("tbl", "tbl2") {
-       withView("view1") {
-         val df = spark.range(10).toDF("id")
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala b/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
-index dd55fcfe42c..e898fc33bab 100644
+index dd55fcfe42c..a1d390c93d0 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
 @@ -27,6 +27,7 @@ import scala.concurrent.duration._
@@ -3042,7 +2862,7 @@ index dd55fcfe42c..e898fc33bab 100644
      }
    }
  
-@@ -242,6 +265,34 @@ private[sql] trait SQLTestUtilsBase
+@@ -242,6 +265,29 @@ private[sql] trait SQLTestUtilsBase
      protected override def _sqlContext: SQLContext = self.spark.sqlContext
    }
  
@@ -3069,15 +2889,10 @@ index dd55fcfe42c..e898fc33bab 100644
 +    v != null && v.toBoolean
 +  }
 +
-+  protected def isCometWriterEnabled: Boolean = {
-+    val v = System.getenv("ENABLE_COMET_WRITER")
-+    v != null && v.toBoolean
-+  }
-+
    protected override def withSQLConf(pairs: (String, String)*)(f: => Unit): Unit = {
      SparkSession.setActiveSession(spark)
      super.withSQLConf(pairs: _*)(f)
-@@ -434,6 +485,8 @@ private[sql] trait SQLTestUtilsBase
+@@ -434,6 +480,8 @@ private[sql] trait SQLTestUtilsBase
      val schema = df.schema
      val withoutFilters = df.queryExecution.executedPlan.transform {
        case FilterExec(_, child) => child
@@ -3087,10 +2902,10 @@ index dd55fcfe42c..e898fc33bab 100644
  
      spark.internalCreateDataFrame(withoutFilters.execute(), schema)
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala b/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
-index ed2e309fa07..9c5c393ad14 100644
+index ed2e309fa07..a5ea58146ad 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
-@@ -74,6 +74,36 @@ trait SharedSparkSessionBase
+@@ -74,6 +74,31 @@ trait SharedSparkSessionBase
        // this rule may potentially block testing of other optimization rules such as
        // ConstantPropagation etc.
        .set(SQLConf.OPTIMIZER_EXCLUDED_RULES.key, ConvertToLocalRelation.ruleName)
@@ -3117,11 +2932,6 @@ index ed2e309fa07..9c5c393ad14 100644
 +      if (enableCometAnsiMode) {
 +        conf
 +          .set("spark.sql.ansi.enabled", "true")
-+      }
-+
-+      if (isCometWriterEnabled) {
-+        conf.set("spark.comet.parquet.write.enabled", "true")
-+        conf.set("spark.comet.operator.DataWritingCommandExec.allowIncompatible", "true")
 +      }
 +    }
      conf.set(
