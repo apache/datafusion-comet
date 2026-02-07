@@ -27,7 +27,6 @@ use datafusion::functions::downcast_named_arg;
 use datafusion::functions::utils::make_scalar_function;
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::scalar::ScalarValue;
-use datafusion_common;
 use datafusion_common::internal_err;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -142,7 +141,7 @@ pub fn spark_to_timestamp_parse(
 }
 
 pub fn to_timestamp(args: &[ColumnarValue]) -> Result<ColumnarValue> {
-    make_scalar_function(spark_to_timestamp, vec![])(&args)
+    make_scalar_function(spark_to_timestamp, vec![])(args)
 }
 
 pub fn spark_to_timestamp(args: &[ArrayRef]) -> Result<ArrayRef> {
@@ -164,12 +163,14 @@ pub fn spark_to_timestamp(args: &[ArrayRef]) -> Result<ArrayRef> {
     let values: Result<Vec<ScalarValue>> = dates
         .iter()
         .map(|value| match value {
-            None => ScalarValue::Int64(None).cast_to(&Timestamp(Microsecond, Some(utc_tz.clone()))),
+            None => {
+                ScalarValue::Int64(None).cast_to(&Timestamp(Microsecond, Some(Arc::clone(&utc_tz))))
+            }
             Some(date_raw) => {
-                let parsed_value: Result<i64> = spark_to_timestamp_parse(date_raw, &format, tz);
+                let parsed_value: Result<i64> = spark_to_timestamp_parse(date_raw, format, tz);
 
                 ScalarValue::Int64(Some(parsed_value?))
-                    .cast_to(&Timestamp(Microsecond, Some(utc_tz.clone())))
+                    .cast_to(&Timestamp(Microsecond, Some(Arc::clone(&utc_tz))))
             }
         })
         .collect::<Result<Vec<ScalarValue>>>();
