@@ -174,108 +174,188 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
   }
 
   test("to_date parses date literal") {
-    withSQLConf(
-      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
-        "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
-      checkSparkAnswer(
-        "SELECT to_date('2026-01-30')"
-      )
+    withoutConstantFolding {
+      checkSparkAnswer("SELECT to_date('2026-01-30')")
     }
   }
 
   test("to_date parses date literal with explicit format") {
-    withSQLConf(
-      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
-        "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
-      checkSparkAnswer(
-        "SELECT to_date('2026/01/30', 'yyyy/MM/dd')"
-      )
+    withoutConstantFolding {
+      checkSparkAnswer("SELECT to_date('2026/01/30', 'yyyy/MM/dd')")
     }
   }
 
   test("to_date parses date string column") {
     withTempView("string_tbl") {
-      val schema = StructType(
-        Seq(StructField("dt_str", DataTypes.StringType, nullable = true))
-      )
+      val schema = StructType(Seq(StructField("dt_str", DataTypes.StringType, nullable = true)))
 
-      val data = Seq(
-        Row("2026-01-30"),
-        Row("2026-03-10"),
-        Row("2026-10-10"),
-        Row(null)
-      )
+      val data = Seq(Row("2026-01-30"), Row("2026-03-10"), Row("2026-10-10"), Row(null))
 
       spark
         .createDataFrame(spark.sparkContext.parallelize(data), schema)
         .createOrReplaceTempView("string_tbl")
 
-      checkSparkAnswer(
-        "SELECT dt_str, to_date(dt_str) FROM string_tbl"
-      )
+      checkSparkAnswer("SELECT dt_str, to_date(dt_str) FROM string_tbl")
     }
   }
 
   test("to_date parses date string column with explicit format") {
-    withSQLConf(
-      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
-        "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+    withoutConstantFolding {
       withTempView("string_tbl") {
-        val schema = StructType(
-          Seq(StructField("dt_str", DataTypes.StringType, nullable = true))
-        )
+        val schema = StructType(Seq(StructField("dt_str", DataTypes.StringType, nullable = true)))
+
+        val data = Seq(Row("2026/01/30"), Row("2026/03/10"), Row("2026/10/10"), Row(null))
+
+        spark
+          .createDataFrame(spark.sparkContext.parallelize(data), schema)
+          .createOrReplaceTempView("string_tbl")
+
+        checkSparkAnswer("SELECT dt_str, to_date(dt_str, 'yyyy/MM/dd') FROM string_tbl")
+      }
+    }
+  }
+
+  test("to_date parses timestamp literal string") {
+    withoutConstantFolding {
+      checkSparkAnswer("SELECT to_date('2026-01-30 04:17:52')")
+    }
+  }
+
+  test("to_date parses timestamp string column") {
+    withTempView("string_tbl") {
+      val schema = StructType(Seq(StructField("dt_str", DataTypes.StringType, nullable = true)))
+
+      val data = Seq(
+        Row("2026-01-30 04:17:52"),
+        Row("2026-03-10 04:17:52"),
+        Row("2026-10-10 04:17:52"),
+        Row(null))
+
+      spark
+        .createDataFrame(spark.sparkContext.parallelize(data), schema)
+        .createOrReplaceTempView("string_tbl")
+
+      checkSparkAnswer("SELECT dt_str, to_date(dt_str) FROM string_tbl")
+    }
+  }
+
+  test("to_timestamp parses date literal as midnight timestamp") {
+    withoutConstantFolding {
+      checkSparkAnswer("SELECT to_timestamp('2026-01-30')")
+    }
+  }
+
+  test("to_timestamp parses timestamp literal with default format") {
+    withoutConstantFolding {
+      checkSparkAnswer("SELECT to_timestamp('2026-01-30 10:30:52')")
+    }
+  }
+
+  test("to_timestamp parses date literal using explicit date format") {
+    withoutConstantFolding {
+      checkSparkAnswer("SELECT to_timestamp('2026/01/30', 'yyyy/MM/dd')")
+    }
+  }
+
+  test("to_timestamp parses timestamp literal using explicit timestamp format") {
+    withoutConstantFolding {
+      checkSparkAnswer("SELECT to_timestamp('2026/01/30 10:30:52', 'yyyy/MM/dd HH:mm:ss')")
+    }
+  }
+
+  test("to_timestamp parses date string column as midnight timestamp") {
+    withTempView("string_tbl") {
+      val schema = StructType(Seq(StructField("ts_str", DataTypes.StringType, nullable = true)))
+
+      val data = Seq(Row("2026-01-30"), Row("2026-03-10"), Row("2026-10-10"), Row(null))
+
+      spark
+        .createDataFrame(spark.sparkContext.parallelize(data), schema)
+        .createOrReplaceTempView("string_tbl")
+
+      checkSparkAnswer("SELECT ts_str, to_timestamp(ts_str) FROM string_tbl")
+    }
+  }
+
+  test("to_timestamp parses date string column using explicit date format") {
+    withoutConstantFolding {
+      withTempView("string_tbl") {
+        val schema = StructType(Seq(StructField("ts_str", DataTypes.StringType, nullable = true)))
+
+        val data = Seq(Row("2026/01/30"), Row("2026/03/10"), Row("2026/10/10"), Row(null))
+
+        spark
+          .createDataFrame(spark.sparkContext.parallelize(data), schema)
+          .createOrReplaceTempView("string_tbl")
+
+        checkSparkAnswer("SELECT ts_str, to_timestamp(ts_str, 'yyyy/MM/dd') FROM string_tbl")
+      }
+    }
+  }
+
+  test("to_timestamp parses timestamp string column with default format") {
+    withTempView("string_tbl") {
+      val schema = StructType(Seq(StructField("ts_str", DataTypes.StringType, nullable = true)))
+
+      val data = Seq(
+        Row("2026-01-30 04:17:52"),
+        Row("2026-03-10 04:17:52"),
+        Row("2026-10-10 04:17:52"),
+        Row(null))
+
+      spark
+        .createDataFrame(spark.sparkContext.parallelize(data), schema)
+        .createOrReplaceTempView("string_tbl")
+
+      checkSparkAnswer("SELECT ts_str, to_timestamp(ts_str) FROM string_tbl")
+    }
+  }
+
+  test("to_timestamp parses timestamp string column using explicit timestamp format") {
+    withoutConstantFolding {
+      withTempView("string_tbl") {
+        val schema = StructType(Seq(StructField("ts_str", DataTypes.StringType, nullable = true)))
 
         val data = Seq(
-          Row("2026/01/30"),
-          Row("2026/03/10"),
-          Row("2026/10/10"),
-          Row(null)
-        )
+          Row("2026/01/30 04:17:52"),
+          Row("2026/03/10 04:17:52"),
+          Row("2026/10/10 04:17:52"),
+          Row(null))
 
         spark
           .createDataFrame(spark.sparkContext.parallelize(data), schema)
           .createOrReplaceTempView("string_tbl")
 
         checkSparkAnswer(
-          "SELECT dt_str, to_date(dt_str, 'yyyy/MM/dd') FROM string_tbl"
-        )
+          "SELECT ts_str, to_timestamp(ts_str, 'yyyy/MM/dd HH:mm:ss') FROM string_tbl")
       }
     }
   }
-
-  test("to_date parses timestamp literal string") {
-    withSQLConf(
-      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
-        "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+  test("to_timestamp parses timestamp literal with milliseconds") {
+    withoutConstantFolding {
       checkSparkAnswer(
-        "SELECT to_date('2026-01-30 04:17:52')"
-      )
+        "SELECT to_timestamp('2026-01-30 10:30:52.123', 'yyyy-MM-dd HH:mm:ss.SSS')")
     }
   }
 
-  test("to_date parses timestamp string column") {
+  test("to_timestamp parses timestamp string column with milliseconds") {
     withTempView("string_tbl") {
-      val schema = StructType(
-        Seq(StructField("dt_str", DataTypes.StringType, nullable = true))
-      )
+      val schema = StructType(Seq(StructField("ts_str", DataTypes.StringType, nullable = true)))
 
       val data = Seq(
-        Row("2026-01-30 04:17:52"),
-        Row("2026-03-10 04:17:52"),
-        Row("2026-10-10 04:17:52"),
-        Row(null)
-      )
+        Row("2026-01-30 10:30:52.123"),
+        Row("2026-03-10 10:30:52.999"),
+        Row("2026-10-10 10:30:52.000"),
+        Row(null))
 
       spark
         .createDataFrame(spark.sparkContext.parallelize(data), schema)
         .createOrReplaceTempView("string_tbl")
 
       checkSparkAnswer(
-        "SELECT dt_str, to_date(dt_str) FROM string_tbl"
-      )
+        "SELECT ts_str, to_timestamp(ts_str, 'yyyy-MM-dd HH:mm:ss.SSS') FROM string_tbl")
     }
   }
-
 
   private def createTimestampTestData = {
     val r = new Random(42)
@@ -499,4 +579,9 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
     // Test null handling
     checkSparkAnswerAndOperator("SELECT unix_date(NULL)")
   }
+
+  private def withoutConstantFolding[A](f: => A): Unit =
+    withSQLConf(
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+        "org.apache.spark.sql.catalyst.optimizer.ConstantFolding")(f)
 }
