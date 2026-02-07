@@ -239,7 +239,7 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
     }
   }
 
-  test("to_timestamp parses date literal as midnight timestamp") {
+  test("to_timestamp parses date literal as 00:00:00 timestamp") {
     withoutConstantFolding {
       checkSparkAnswer("SELECT to_timestamp('2026-01-30')")
     }
