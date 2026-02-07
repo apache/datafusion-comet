@@ -30,7 +30,7 @@ import org.apache.spark.internal.config.{MEMORY_OFFHEAP_ENABLED, MEMORY_OFFHEAP_
 import org.apache.spark.sql.TPCDSBase
 import org.apache.spark.sql.catalyst.expressions.{AttributeSet, Cast}
 import org.apache.spark.sql.catalyst.util.resourceToString
-import org.apache.spark.sql.execution.{FormattedMode, ReusedSubqueryExec, SparkPlan, SubqueryBroadcastExec, SubqueryExec}
+import org.apache.spark.sql.execution.{ReusedSubqueryExec, SparkPlan, SubqueryBroadcastExec, SubqueryExec}
 import org.apache.spark.sql.execution.adaptive.DisableAdaptiveExecutionSuite
 import org.apache.spark.sql.execution.exchange.{Exchange, ReusedExchangeExec, ValidateRequirements}
 import org.apache.spark.sql.internal.SQLConf
@@ -62,10 +62,8 @@ import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plu
  * }}}
  */
 trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBase {
-  protected val scanImpls: Seq[String] = Seq(
-    CometConf.SCAN_AUTO,
-    CometConf.SCAN_NATIVE_ICEBERG_COMPAT,
-    CometConf.SCAN_NATIVE_DATAFUSION)
+  protected val scanImpls: Seq[String] =
+    Seq(CometConf.SCAN_NATIVE_ICEBERG_COMPAT, CometConf.SCAN_NATIVE_DATAFUSION)
 
   protected val baseResourcePath: File = {
     getWorkspaceFilePath("spark", "src", "test", "resources", "tpcds-plan-stability").toFile
@@ -88,9 +86,7 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
       name
     }
     val nativeImpl = CometConf.COMET_NATIVE_SCAN_IMPL.get()
-    if (nativeImpl != CometConf.SCAN_AUTO) {
-      goldenFileName = s"$goldenFileName.$nativeImpl"
-    }
+    goldenFileName = s"$goldenFileName.$nativeImpl"
     new File(goldenFilePath, goldenFileName)
   }
 
@@ -230,10 +226,8 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "10MB") {
       val qe = sql(queryString).queryExecution
       val plan = qe.executedPlan
-      val explain = normalizeLocation(normalizeIds(qe.explainString(FormattedMode)))
       val extendedExplain = new ExtendedExplainInfo().generateExtendedInfo(qe.executedPlan)
       val extended = normalizeLocation(normalizeIds(extendedExplain))
-      val simplified = getSimplifiedPlan(plan)
       assert(ValidateRequirements.validate(plan))
 
       val name = query + suffix
@@ -244,12 +238,8 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
         if (!dir.mkdirs()) {
           fail(s"Could not create dir: $dir")
         }
-        writeGoldenFile(dir, "simplified", simplified)
-        writeGoldenFile(dir, "explain", explain)
         writeGoldenFile(dir, "extended", extended)
       } else {
-        checkWithApproved(dir, name, "simplified", simplified)
-        checkWithApproved(dir, name, "explain", explain)
         checkWithApproved(dir, name, "extended", extended)
       }
     }

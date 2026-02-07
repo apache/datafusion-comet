@@ -37,7 +37,8 @@ abstract class ParquetDatetimeRebaseSuite extends CometTestBase {
   // visible under package `spark`.
   val SPARK_TESTING: String = "spark.testing"
 
-  test("reading ancient dates before 1582") {
+  // ignored: native_comet scan is no longer supported
+  ignore("reading ancient dates before 1582") {
     Seq(true, false).foreach { exceptionOnRebase =>
       withSQLConf(
         CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET,
@@ -62,7 +63,8 @@ abstract class ParquetDatetimeRebaseSuite extends CometTestBase {
     }
   }
 
-  test("reading ancient timestamps before 1582") {
+  // ignored: native_comet scan is no longer supported
+  ignore("reading ancient timestamps before 1582") {
     assume(usingLegacyNativeCometScan(conf))
     Seq(true, false).foreach { exceptionOnRebase =>
       withSQLConf(
@@ -89,7 +91,8 @@ abstract class ParquetDatetimeRebaseSuite extends CometTestBase {
     }
   }
 
-  test("reading ancient int96 timestamps before 1582") {
+  // ignored: native_comet scan is no longer supported
+  ignore("reading ancient int96 timestamps before 1582") {
     assume(usingLegacyNativeCometScan(conf))
     Seq(true, false).foreach { exceptionOnRebase =>
       withSQLConf(
@@ -147,12 +150,11 @@ class ParquetDatetimeRebaseV1Suite extends ParquetDatetimeRebaseSuite {
   }
 }
 
+// ignored: native_comet scan is no longer supported
 class ParquetDatetimeRebaseV2Suite extends ParquetDatetimeRebaseSuite {
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
       pos: Position): Unit = {
-    // Datasource V2 is not supported by the native (datafusion based) readers so force
-    // the scan impl back to 'native_comet'
-    super.test(testName, testTags: _*)(
+    super.ignore(testName, testTags: _*)(
       withSQLConf(
         SQLConf.USE_V1_SOURCE_LIST.key -> "",
         CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET) {

@@ -25,9 +25,20 @@ way to add expression and operator test coverage without writing Scala test code
 
 ## Running the tests
 
+Run all SQL file tests:
+
 ```shell
-mvn test -pl spark -Dsuites="org.apache.comet.CometSqlFileTestSuite" -Dtest=none
+./mvnw test -Dsuites="org.apache.comet.CometSqlFileTestSuite" -Dtest=none
 ```
+
+Run a single test file by adding the file name (without `.sql` extension) after the suite name:
+
+```shell
+./mvnw test -Dsuites="org.apache.comet.CometSqlFileTestSuite create_named_struct" -Dtest=none
+```
+
+This uses ScalaTest's substring matching, so the argument must match part of the test name.
+Test names follow the pattern `sql-file: expressions/<category>/<file>.sql [<config>]`.
 
 ## Test file location
 
@@ -183,6 +194,27 @@ query ignore(https://github.com/apache/datafusion-comet/issues/3326)
 SELECT space(n) FROM test_space WHERE n < 0
 ```
 
+#### `query expect_error(<pattern>)`
+
+Asserts that both Spark and Comet throw an exception containing the given pattern. Use this
+for ANSI mode tests where invalid operations should throw errors.
+
+```sql
+-- Config: spark.sql.ansi.enabled=true
+
+-- integer overflow should throw in ANSI mode
+query expect_error(ARITHMETIC_OVERFLOW)
+SELECT 2147483647 + 1
+
+-- division by zero should throw in ANSI mode
+query expect_error(DIVIDE_BY_ZERO)
+SELECT 1 / 0
+
+-- array out of bounds should throw in ANSI mode
+query expect_error(INVALID_ARRAY_INDEX)
+SELECT array(1, 2, 3)[10]
+```
+
 ## Adding a new test
 
 1. Create a `.sql` file under the appropriate subdirectory in
@@ -208,7 +240,7 @@ SELECT space(n) FROM test_space WHERE n < 0
 6. Run the tests to verify:
 
    ```shell
-   mvn test -pl spark -Dsuites="org.apache.comet.CometSqlFileTestSuite" -Dtest=none
+   ./mvnw test -Dsuites="org.apache.comet.CometSqlFileTestSuite" -Dtest=none
    ```
 
 ### Tips for writing thorough tests

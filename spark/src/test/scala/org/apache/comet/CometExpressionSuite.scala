@@ -185,7 +185,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("basic data type support") {
+  // ignored: native_comet scan is no longer supported
+  ignore("basic data type support") {
     // this test requires native_comet scan due to unsigned u8/u16 issue
     withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET) {
       Seq(true, false).foreach { dictionaryEnabled =>
@@ -216,7 +217,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("uint data type support") {
+  // ignored: native_comet scan is no longer supported
+  ignore("uint data type support") {
     // this test requires native_comet scan due to unsigned u8/u16 issue
     withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET) {
       Seq(true, false).foreach { dictionaryEnabled =>
@@ -1503,7 +1505,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("round") {
+  // ignored: native_comet scan is no longer supported
+  ignore("round") {
     // https://github.com/apache/datafusion-comet/issues/1441
     assume(usingLegacyNativeCometScan)
     Seq(true, false).foreach { dictionaryEnabled =>
@@ -1567,7 +1570,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("hex") {
+  // ignored: native_comet scan is no longer supported
+  ignore("hex") {
     // https://github.com/apache/datafusion-comet/issues/1441
     assume(usingLegacyNativeCometScan)
     Seq(true, false).foreach { dictionaryEnabled =>
@@ -2781,7 +2785,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("test integral divide") {
+  // ignored: native_comet scan is no longer supported
+  ignore("test integral divide") {
     // this test requires native_comet scan due to unsigned u8/u16 issue
     withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET) {
       Seq(true, false).foreach { dictionaryEnabled =>

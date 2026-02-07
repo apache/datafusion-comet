@@ -101,7 +101,8 @@ class CometScanRuleSuite extends CometTestBase {
     }
   }
 
-  test("CometScanRule should replace V2 BatchScanExec, but only when Comet is enabled") {
+  // ignored: native_comet scan is no longer supported
+  ignore("CometScanRule should replace V2 BatchScanExec, but only when Comet is enabled") {
     withTempPath { path =>
       createTestDataFrame.write.parquet(path.toString)
       withTempView("test_data") {
