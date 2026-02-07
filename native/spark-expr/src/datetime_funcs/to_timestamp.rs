@@ -17,10 +17,10 @@
 
 //! Define JNI APIs which can be called from Java/Scala.
 
-use arrow::array::{ArrayRef, StringArray};
+use arrow::array::{ArrayRef, Int32Array, StringArray};
 use arrow::datatypes::DataType::Timestamp;
 use arrow::datatypes::TimeUnit::Microsecond;
-use chrono::{DateTime, NaiveDate, NaiveDateTime, TimeZone};
+use chrono::{DateTime, NaiveDate, NaiveDateTime, TimeZone, Timelike};
 use chrono_tz::Tz;
 use datafusion::common::{DataFusionError, Result};
 use datafusion::functions::downcast_named_arg;
@@ -34,40 +34,112 @@ use std::sync::Arc;
 
 const TO_TIMESTAMP: &str = "custom_to_timestamp";
 
-/// VERY SMALL subset Spark → chrono
-fn spark_to_chrono(fmt: &str) -> String {
-    fmt.replace("yyyy", "%Y")
-        .replace("MM", "%m")
-        .replace("dd", "%d")
-        .replace("HH", "%H")
-        .replace("mm", "%M")
-        .replace("ss", "%S")
+#[derive(Debug, Clone, Copy)]
+#[derive(PartialEq)]
+enum FractionPrecision {
+    Millis,
+    Micros,
+    Nanos,
 }
 
-fn format_has_time(fmt: &str) -> bool {
-    fmt.contains("%H") || fmt.contains("%M") || fmt.contains("%S")
-}
-
-fn parse_date_or_timestamp(value: &str, format: &str) -> Result<NaiveDateTime, chrono::ParseError> {
-    if format_has_time(format) {
-        NaiveDateTime::parse_from_str(value, format)
-    } else {
-        let date: NaiveDate = NaiveDate::parse_from_str(value, format)?;
-        Ok(date.and_hms_opt(0, 0, 0).unwrap())
+/// Detect Spark fractional precision
+fn detect_fraction_precision(fmt: &str) -> Option<FractionPrecision> {
+    let count = fmt.chars().filter(|&c| c == 'S').count();
+    match count {
+        0 => None,
+        1..=3 => Some(FractionPrecision::Millis),
+        4..=6 => Some(FractionPrecision::Micros),
+        _ => Some(FractionPrecision::Nanos),
     }
 }
 
-fn to_utc_micros(naive: NaiveDateTime, tz: Tz) -> Option<i64> {
-    let local: DateTime<Tz> = tz.from_local_datetime(&naive).single()?;
-    Some(local.with_timezone(&tz).timestamp_micros())
+/// Convert Spark → Chrono format
+fn spark_to_chrono(fmt: &str) -> (String, Option<FractionPrecision>) {
+    let precision = detect_fraction_precision(fmt);
+
+    let mut out = fmt.to_string();
+
+    // Date
+    out = out.replace("yyyy", "%Y");
+    out = out.replace("MM", "%m");
+    out = out.replace("dd", "%d");
+
+    // Time
+    out = out.replace("HH", "%H");
+    out = out.replace("mm", "%M");
+    out = out.replace("ss", "%S");
+
+    // Fractions
+    out = out
+        .replace(".SSSSSSSSS", "%.f")
+        .replace(".SSSSSS", "%.f")
+        .replace(".SSS", "%.f");
+
+    // Timezones
+    out = out.replace("XXX", "%:z");
+    out = out.replace("Z", "%z");
+
+    (out, precision)
 }
 
-fn spark_to_timestamp_parse(value: &str, format: &str, tz: Tz) -> Result<i64> {
-    let result: NaiveDateTime = parse_date_or_timestamp(value, format).map_err(|_| {
-        DataFusionError::Plan(format!("Error parsing '{value}' with format'{format}'."))
+/// Detect if Spark format contains time
+fn spark_format_has_time(fmt: &str) -> bool {
+    fmt.contains("HH") || fmt.contains("mm") || fmt.contains("ss")
+}
+
+/// Parse Spark date or timestamp
+fn parse_spark_naive(
+    value: &str,
+    spark_fmt: &str,
+) -> Result<(NaiveDateTime, Option<FractionPrecision>), chrono::ParseError> {
+    let (chrono_fmt, precision) = spark_to_chrono(spark_fmt);
+
+    if spark_format_has_time(spark_fmt) {
+        let ts = NaiveDateTime::parse_from_str(value, &chrono_fmt)?;
+        Ok((ts, precision))
+    } else {
+        let date = NaiveDate::parse_from_str(value, &chrono_fmt)?;
+        Ok((date.and_hms_opt(0, 0, 0).unwrap(), precision))
+    }
+}
+
+/// Normalize fractional seconds
+fn normalize_fraction(
+    mut ts: NaiveDateTime,
+    precision: Option<FractionPrecision>,
+) -> Option<NaiveDateTime> {
+    match precision {
+        Some(FractionPrecision::Millis) => {
+            let ms = ts.and_utc().timestamp_subsec_millis();
+            ts = ts.with_nanosecond(ms * 1_000_000)?;
+        }
+        Some(FractionPrecision::Micros) => {
+            let us = ts.and_utc().timestamp_subsec_micros();
+            ts = ts.with_nanosecond(us * 1_000)?;
+        }
+        Some(FractionPrecision::Nanos) | None => {}
+    }
+    Some(ts)
+}
+
+/// Final Spark-like timestamp parse → UTC micros
+pub fn spark_to_timestamp_parse(
+    value: &str,
+    spark_fmt: &str,
+    tz: Tz,
+) -> Result<i64, DataFusionError> {
+    let (naive, precision) = parse_spark_naive(value, spark_fmt).map_err(|_| {
+        DataFusionError::Plan(format!("Error parsing '{value}' with format '{spark_fmt}'"))
     })?;
-    to_utc_micros(result, tz)
-        .ok_or_else(|| DataFusionError::Plan(format!("Error using the timezone {tz}.")))
+
+    let naive = normalize_fraction(naive, precision)
+        .ok_or_else(|| DataFusionError::Plan("Invalid fractional timestamp".into()))?;
+
+    let local: DateTime<Tz> = tz.from_local_datetime(&naive).single().ok_or_else(|| {
+        DataFusionError::Plan(format!("Ambiguous or invalid datetime in timezone {tz}"))
+    })?;
+
+    Ok(local.timestamp_micros())
 }
 
 pub fn custom_to_timestamp(args: &[ColumnarValue]) -> Result<ColumnarValue> {
@@ -84,7 +156,6 @@ pub fn spark_custom_to_timestamp(args: &[ArrayRef]) -> Result<ArrayRef> {
     }
     let dates: &StringArray = downcast_named_arg!(&args[0], "date", StringArray);
     let format: &str = downcast_named_arg!(&args[1], "format", StringArray).value(0);
-    let format: String = spark_to_chrono(format);
     let tz: Tz = opt_downcast_arg!(&args[2], StringArray)
         .and_then(|v| Tz::from_str(v.value(0)).ok())
         .unwrap_or(Tz::UTC);
@@ -117,3 +188,206 @@ macro_rules! opt_downcast_arg {
 }
 
 pub(crate) use opt_downcast_arg;
+
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{NaiveDate, NaiveDateTime};
+    use chrono_tz::UTC;
+
+    // ----------------------------
+    // detect_fraction_precision
+    // ----------------------------
+
+    #[test]
+    fn detects_no_fraction() {
+        assert_eq!(
+            detect_fraction_precision("yyyy-MM-dd HH:mm:ss"),
+            None
+        );
+    }
+
+    #[test]
+    fn detects_millis_precision() {
+        assert_eq!(
+            detect_fraction_precision("yyyy-MM-dd HH:mm:ss.SSS"),
+            Some(FractionPrecision::Millis)
+        );
+    }
+
+    #[test]
+    fn detects_micros_precision() {
+        assert_eq!(
+            detect_fraction_precision("yyyy-MM-dd HH:mm:ss.SSSSSS"),
+            Some(FractionPrecision::Micros)
+        );
+    }
+
+    #[test]
+    fn detects_nanos_precision() {
+        assert_eq!(
+            detect_fraction_precision("yyyy-MM-dd HH:mm:ss.SSSSSSSSS"),
+            Some(FractionPrecision::Nanos)
+        );
+    }
+
+    // ----------------------------
+    // spark_to_chrono
+    // ----------------------------
+
+    #[test]
+    fn converts_basic_date_format() {
+        let (fmt, precision) = spark_to_chrono("yyyy-MM-dd");
+        assert_eq!(fmt, "%Y-%m-%d");
+        assert_eq!(precision, None);
+    }
+
+    #[test]
+    fn converts_timestamp_with_millis() {
+        let (fmt, precision) =
+            spark_to_chrono("yyyy-MM-dd HH:mm:ss.SSS");
+
+        assert_eq!(fmt, "%Y-%m-%d %H:%M:%S%.f");
+        assert_eq!(precision, Some(FractionPrecision::Millis));
+    }
+
+    #[test]
+    fn converts_timestamp_with_timezone() {
+        let (fmt, _) =
+            spark_to_chrono("yyyy-MM-dd HH:mm:ssXXX");
+
+        assert_eq!(fmt, "%Y-%m-%d %H:%M:%S%:z");
+    }
+
+    // ----------------------------
+    // spark_format_has_time
+    // ----------------------------
+
+    #[test]
+    fn detects_date_only_format() {
+        assert!(!spark_format_has_time("yyyy-MM-dd"));
+    }
+
+    #[test]
+    fn detects_timestamp_format() {
+        assert!(spark_format_has_time("yyyy-MM-dd HH:mm:ss"));
+    }
+
+    // ----------------------------
+    // parse_spark_naive
+    // ----------------------------
+
+    #[test]
+    fn parses_date_as_midnight_timestamp() {
+        let (ts, _) = parse_spark_naive(
+            "2026-01-30",
+            "yyyy-MM-dd",
+        )
+            .unwrap();
+
+        let expected =
+            NaiveDate::from_ymd_opt(2026, 1, 30)
+                .unwrap()
+                .and_hms_opt(0, 0, 0)
+                .unwrap();
+
+        assert_eq!(ts, expected);
+    }
+
+    #[test]
+    fn parses_timestamp_with_millis() {
+        let (ts, precision) = parse_spark_naive(
+            "2026-01-30 10:30:52.123",
+            "yyyy-MM-dd HH:mm:ss.SSS",
+        )
+            .unwrap();
+
+        assert_eq!(precision, Some(FractionPrecision::Millis));
+        assert_eq!(ts.and_utc().timestamp_subsec_millis(), 123);
+    }
+
+    // ----------------------------
+    // normalize_fraction
+    // ----------------------------
+
+    #[test]
+    fn normalizes_millis_precision() {
+        let ts = NaiveDateTime::parse_from_str(
+            "2026-01-30 10:30:52.123456",
+            "%Y-%m-%d %H:%M:%S%.6f",
+        )
+            .unwrap();
+
+        let normalized =
+            normalize_fraction(ts, Some(FractionPrecision::Millis))
+                .unwrap();
+
+        assert_eq!(
+            normalized.and_utc().timestamp_subsec_nanos(),
+            123_000_000
+        );
+    }
+
+    #[test]
+    fn normalizes_micros_precision() {
+        let ts = NaiveDateTime::parse_from_str(
+            "2026-01-30 10:30:52.123456",
+            "%Y-%m-%d %H:%M:%S%.6f",
+        )
+            .unwrap();
+
+        let normalized =
+            normalize_fraction(ts, Some(FractionPrecision::Micros))
+                .unwrap();
+
+        assert_eq!(
+            normalized.and_utc().timestamp_subsec_nanos(),
+            123_456_000
+        );
+    }
+
+    // ----------------------------
+    // spark_to_timestamp_parse (end-to-end)
+    // ----------------------------
+
+    #[test]
+    fn parses_timestamp_and_preserves_millis() {
+        let micros = spark_to_timestamp_parse(
+            "2026-01-30 10:30:52.123",
+            "yyyy-MM-dd HH:mm:ss.SSS",
+            UTC,
+        )
+            .unwrap();
+
+        let expected = NaiveDateTime::parse_from_str(
+            "2026-01-30 10:30:52.123",
+            "%Y-%m-%d %H:%M:%S%.3f",
+        )
+            .unwrap()
+            .and_utc()
+            .timestamp_micros();
+
+        assert_eq!(micros, expected);
+    }
+
+    #[test]
+    fn parses_date_literal_as_midnight() {
+        let micros = spark_to_timestamp_parse(
+            "2026-01-30",
+            "yyyy-MM-dd",
+            UTC,
+        )
+            .unwrap();
+
+        let expected = NaiveDate::from_ymd_opt(2026, 1, 30)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap()
+            .and_utc()
+            .timestamp_micros();
+
+        assert_eq!(micros, expected);
+    }
+}
