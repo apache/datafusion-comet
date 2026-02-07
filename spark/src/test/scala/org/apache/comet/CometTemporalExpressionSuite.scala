@@ -173,53 +173,108 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
     }
   }
 
-  test("to_date - string input") {
+  test("to_date parses date literal") {
+    withSQLConf(
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+        "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+      checkSparkAnswer(
+        "SELECT to_date('2026-01-30')"
+      )
+    }
+  }
+
+  test("to_date parses date literal with explicit format") {
+    withSQLConf(
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+        "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+      checkSparkAnswer(
+        "SELECT to_date('2026/01/30', 'yyyy/MM/dd')"
+      )
+    }
+  }
+
+  test("to_date parses date string column") {
     withTempView("string_tbl") {
-      // Create test data with timestamp strings
-      val schema = StructType(Seq(StructField("dt_str", DataTypes.StringType, true)))
-      val data = Seq(Row("2020-01-01"), Row("2021-06-15"), Row("2022-12-31"), Row(null))
+      val schema = StructType(
+        Seq(StructField("dt_str", DataTypes.StringType, nullable = true))
+      )
+
+      val data = Seq(
+        Row("2026-01-30"),
+        Row("2026-03-10"),
+        Row("2026-10-10"),
+        Row(null)
+      )
+
       spark
         .createDataFrame(spark.sparkContext.parallelize(data), schema)
         .createOrReplaceTempView("string_tbl")
 
-      spark.sql("SELECT dt_str, to_date(dt_str, 'yyyy-MM-dd') from string_tbl").show(20, false)
-      // String input with custom format should also fall back
-      checkSparkAnswer("SELECT dt_str, to_date(dt_str, 'yyyy-MM-dd') from string_tbl")
+      checkSparkAnswer(
+        "SELECT dt_str, to_date(dt_str) FROM string_tbl"
+      )
     }
   }
 
-  test("to_date - string input - 2") {
-    withSQLConf(SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
-      "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+  test("to_date parses date string column with explicit format") {
+    withSQLConf(
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+        "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
       withTempView("string_tbl") {
-        // Create test data with timestamp strings
-        val schema = StructType(Seq(StructField("dt_str", DataTypes.StringType, true)))
-        val data = Seq(Row("2020-01-01"), Row("2021-06-15"), Row("2022-12-31"), Row(null))
+        val schema = StructType(
+          Seq(StructField("dt_str", DataTypes.StringType, nullable = true))
+        )
+
+        val data = Seq(
+          Row("2026/01/30"),
+          Row("2026/03/10"),
+          Row("2026/10/10"),
+          Row(null)
+        )
+
         spark
           .createDataFrame(spark.sparkContext.parallelize(data), schema)
           .createOrReplaceTempView("string_tbl")
 
-        // String input with custom format should also fall back
-        checkSparkAnswer("SELECT to_date('2020-01-01', 'yyyy-MM-dd') from string_tbl")
+        checkSparkAnswer(
+          "SELECT dt_str, to_date(dt_str, 'yyyy/MM/dd') FROM string_tbl"
+        )
       }
     }
   }
 
-  test("to_date - string input - 3") {
+  test("to_date parses timestamp literal string") {
+    withSQLConf(
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+        "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+      checkSparkAnswer(
+        "SELECT to_date('2026-01-30 04:17:52')"
+      )
+    }
+  }
+
+  test("to_date parses timestamp string column") {
     withTempView("string_tbl") {
-      // Create test data with timestamp strings
-      val schema = StructType(Seq(StructField("dt_str", DataTypes.StringType, true)))
-      val data = Seq(Row("2020/01/01"), Row("2021/06/15"), Row("2022/12/31"), Row(null))
+      val schema = StructType(
+        Seq(StructField("dt_str", DataTypes.StringType, nullable = true))
+      )
+
+      val data = Seq(
+        Row("2026-01-30 04:17:52"),
+        Row("2026-03-10 04:17:52"),
+        Row("2026-10-10 04:17:52"),
+        Row(null)
+      )
+
       spark
         .createDataFrame(spark.sparkContext.parallelize(data), schema)
         .createOrReplaceTempView("string_tbl")
 
-      spark.sql("SELECT dt_str, to_date(dt_str, 'yyyy/MM/dd') from string_tbl").show(20, false)
-      // String input with custom format should also fall back
-      checkSparkAnswer("SELECT dt_str, to_date(dt_str, 'yyyy/MM/dd') from string_tbl")
+      checkSparkAnswer(
+        "SELECT dt_str, to_date(dt_str) FROM string_tbl"
+      )
     }
   }
-
 
 
   private def createTimestampTestData = {
