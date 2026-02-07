@@ -138,9 +138,7 @@ class CometBitwiseExpressionSuite extends CometTestBase with AdaptiveSparkPlanHe
 
   test("bitwise_count - min/max values") {
     Seq(false, true).foreach { dictionary =>
-      withSQLConf(
-        "parquet.enable.dictionary" -> dictionary.toString,
-        "spark.sql.optimizer.excludedRules" -> "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+      withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
         val table = "bitwise_count_test"
         withTable(table) {
           sql(s"create table $table(col1 long, col2 int, col3 short, col4 byte) using parquet")
