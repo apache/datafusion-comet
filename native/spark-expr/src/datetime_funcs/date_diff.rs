@@ -71,9 +71,18 @@ impl ScalarUDFImpl for SparkDateDiff {
     fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
         let [end_date, start_date] = take_function_args(self.name(), args.args)?;
 
-        // Convert scalars to arrays for uniform processing
-        let end_arr = end_date.into_array(1)?;
-        let start_arr = start_date.into_array(1)?;
+        // Determine the batch size from array arguments (scalars have no inherent size)
+        let num_rows = [&end_date, &start_date]
+            .iter()
+            .find_map(|arg| match arg {
+                ColumnarValue::Array(array) => Some(array.len()),
+                ColumnarValue::Scalar(_) => None,
+            })
+            .unwrap_or(1);
+
+        // Convert scalars to arrays for uniform processing, using the correct batch size
+        let end_arr = end_date.into_array(num_rows)?;
+        let start_arr = start_date.into_array(num_rows)?;
 
         let end_date_array = end_arr
             .as_any()
