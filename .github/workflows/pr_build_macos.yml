@@ -94,6 +94,8 @@ jobs:
           # CI profile: same overflow behavior as release, but faster compilation
           # (no LTO, parallel codegen)
           cargo build --profile ci
+        env:
+          RUSTFLAGS: "-Ctarget-cpu=apple-m1"
 
       - name: Upload native library
         uses: actions/upload-artifact@v6
@@ -204,6 +206,7 @@ jobs:
               org.apache.comet.CometBitwiseExpressionSuite
               org.apache.comet.CometMapExpressionSuite
               org.apache.comet.CometJsonExpressionSuite
+              org.apache.comet.CometCsvExpressionSuite
               org.apache.comet.expressions.conditional.CometIfSuite
               org.apache.comet.expressions.conditional.CometCoalesceSuite
               org.apache.comet.expressions.conditional.CometCaseWhenSuite

@@ -101,6 +101,20 @@ class CometSqlFileTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                   checkSparkAnswerAndFallbackReason(sql, reason)
                 case Ignore(reason) =>
                   logInfo(s"IGNORED query (${reason}): $sql")
+                case ExpectError(pattern) =>
+                  val (sparkError, cometError) = checkSparkAnswerMaybeThrows(spark.sql(sql))
+                  assert(
+                    sparkError.isDefined,
+                    s"Expected Spark to throw an error matching '$pattern' but query succeeded")
+                  assert(
+                    cometError.isDefined,
+                    s"Expected Comet to throw an error matching '$pattern' but query succeeded")
+                  assert(
+                    sparkError.get.getMessage.contains(pattern),
+                    s"Spark error '${sparkError.get.getMessage}' does not contain '$pattern'")
+                  assert(
+                    cometError.get.getMessage.contains(pattern),
+                    s"Comet error '${cometError.get.getMessage}' does not contain '$pattern'")
               }
             }
         }
