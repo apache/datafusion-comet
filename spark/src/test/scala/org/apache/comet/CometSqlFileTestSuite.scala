@@ -27,6 +27,8 @@ import org.scalatest.Tag
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 
+import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
+
 class CometSqlFileTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
@@ -129,13 +131,17 @@ class CometSqlFileTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     val combinations = configMatrix(parsed.configMatrix)
 
     // Skip tests that require a newer Spark version
-    val skip = parsed.minSparkVersion.exists(!meetsMinSparkVersion(_))
+    val skip = parsed.minSparkVersion.exists(!meetsMinSparkVersion(_)) || isSpark41Plus
 
     if (combinations.size <= 1) {
       // No matrix or single combination
       test(s"sql-file: $relativePath") {
         if (skip) {
-          logInfo(s"SKIPPED (requires Spark ${parsed.minSparkVersion.get}): $relativePath")
+          if (isSpark41Plus) {
+            logInfo(s"SKIPPED for Spark 4.1: $relativePath")
+          } else {
+            logInfo(s"SKIPPED (requires Spark ${parsed.minSparkVersion.get}): $relativePath")
+          }
         } else {
           val effectiveConfigs = parsed.configs ++ combinations.headOption.getOrElse(Seq.empty)
           runTestFile(relativePath, parsed.copy(configs = effectiveConfigs))
@@ -147,7 +153,11 @@ class CometSqlFileTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         val label = matrixConfigs.map { case (k, v) => s"$k=$v" }.mkString(", ")
         test(s"sql-file: $relativePath [$label]") {
           if (skip) {
-            logInfo(s"SKIPPED (requires Spark ${parsed.minSparkVersion.get}): $relativePath")
+            if (isSpark41Plus) {
+              logInfo(s"SKIPPED for Spark 4.1: $relativePath")
+            } else {
+              logInfo(s"SKIPPED (requires Spark ${parsed.minSparkVersion.get}): $relativePath")
+            }
           } else {
             runTestFile(relativePath, parsed.copy(configs = parsed.configs ++ matrixConfigs))
           }

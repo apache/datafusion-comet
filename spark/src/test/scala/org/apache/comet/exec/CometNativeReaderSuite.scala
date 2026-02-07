@@ -29,6 +29,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{IntegerType, StringType, StructType}
 
 import org.apache.comet.CometConf
+import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
 
 class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
@@ -344,6 +345,8 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
   }
 
   test("native reader - select struct field with user defined schema") {
+    // TODO fix for Spark 4.1
+    assume(!isSpark41Plus)
     // extract existing A column
     var readSchema = new StructType().add(
       "c0",

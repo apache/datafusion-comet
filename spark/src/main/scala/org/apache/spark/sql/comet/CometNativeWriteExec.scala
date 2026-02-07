@@ -24,7 +24,7 @@ import scala.jdk.CollectionConverters._
 import org.apache.hadoop.fs.Path
 import org.apache.hadoop.mapreduce.{Job, TaskAttemptContext, TaskAttemptID, TaskID, TaskType}
 import org.apache.hadoop.mapreduce.task.TaskAttemptContextImpl
-import org.apache.spark.internal.io.FileCommitProtocol
+import org.apache.spark.internal.io.{FileCommitProtocol, FileNameSpec}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.execution.{SparkPlan, UnaryExecNode}
@@ -176,7 +176,7 @@ case class CometNativeWriteExec(
           committer.setupTask(taskContext)
 
           // Get the work directory for temp files
-          val workPath = committer.newTaskTempFile(taskContext, None, "")
+          val workPath = committer.newTaskTempFile(taskContext, None, FileNameSpec("", ""))
           val workDir = new Path(workPath).getParent.toString
 
           (Some(workDir), Some((committer, taskContext)), null)
