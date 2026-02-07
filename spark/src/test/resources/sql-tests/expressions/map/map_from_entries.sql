@@ -18,17 +18,20 @@
 -- ConfigMatrix: parquet.enable.dictionary=false,true
 
 statement
-CREATE TABLE test_space(n int) USING parquet
+CREATE TABLE test_map_from_entries(entries array<struct<key:string, value:int>>) USING parquet
 
 statement
-INSERT INTO test_space VALUES (0), (1), (5), (NULL), (-1)
+INSERT INTO test_map_from_entries VALUES (array(struct('a', 1), struct('b', 2), struct('c', 3))), (array()), (NULL)
 
 query
-SELECT concat('[', space(n), ']') FROM test_space WHERE n >= 0 OR n IS NULL
+SELECT map_from_entries(entries) FROM test_map_from_entries
 
-query
-SELECT concat('[', space(n), ']') FROM test_space WHERE n < 0
+query expect_fallback(Using BinaryType as Map keys is not allowed in map_from_entries)
+SELECT map_from_entries(array(struct(cast('x' as binary), 10)))
+
+query expect_fallback(Using BinaryType as Map values is not allowed in map_from_entries)
+SELECT map_from_entries(array(struct(10, cast('x' as binary))))
 
 -- literal arguments
-query
-SELECT concat('[', space(5), ']'), concat('[', space(0), ']'), space(-1), space(NULL)
+query spark_answer_only
+SELECT map_from_entries(array(struct('x', 10), struct('y', 20), struct('z', 30)))

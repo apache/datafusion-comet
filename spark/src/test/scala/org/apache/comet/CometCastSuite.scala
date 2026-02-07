@@ -989,9 +989,27 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateDates(), DataTypes.StringType)
   }
 
-  ignore("cast DateType to TimestampType") {
-    // Arrow error: Cast error: Casting from Date32 to Timestamp(Microsecond, Some("UTC")) not supported
-    castTest(generateDates(), DataTypes.TimestampType)
+  test("cast DateType to TimestampType") {
+    val compatibleTimezones = Seq(
+      "UTC",
+      "America/New_York",
+      "America/Chicago",
+      "America/Denver",
+      "America/Los_Angeles",
+      "Europe/London",
+      "Europe/Paris",
+      "Europe/Berlin",
+      "Asia/Tokyo",
+      "Asia/Shanghai",
+      "Asia/Singapore",
+      "Asia/Kolkata",
+      "Australia/Sydney",
+      "Pacific/Auckland")
+    compatibleTimezones.map { tz =>
+      withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
+        castTest(generateDates(), DataTypes.TimestampType)
+      }
+    }
   }
 
   // CAST from TimestampType
@@ -1264,7 +1282,63 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   private def generateDates(): DataFrame = {
-    val values = Seq("2024-01-01", "999-01-01", "12345-01-01")
+    // add 1st, 10th, 20th of each month from epoch to 2027
+    val sampledDates = (1970 to 2027).flatMap { year =>
+      (1 to 12).flatMap { month =>
+        Seq(1, 10, 20).map(day => f"$year-$month%02d-$day%02d")
+      }
+    }
+
+    // DST transition dates (1970-2099) for US, EU, Australia
+    val dstDates = (1970 to 2099).flatMap { year =>
+      Seq(
+        // spring forward
+        s"$year-03-08",
+        s"$year-03-09",
+        s"$year-03-10",
+        s"$year-03-11",
+        s"$year-03-14",
+        s"$year-03-15",
+        s"$year-03-25",
+        s"$year-03-26",
+        s"$year-03-27",
+        s"$year-03-28",
+        s"$year-03-29",
+        s"$year-03-30",
+        s"$year-03-31",
+        // April (Australia fall back)
+        s"$year-04-01",
+        s"$year-04-02",
+        s"$year-04-03",
+        s"$year-04-04",
+        s"$year-04-05",
+        // October (EU fall back and Australia spring forward)
+        s"$year-10-01",
+        s"$year-10-02",
+        s"$year-10-03",
+        s"$year-10-04",
+        s"$year-10-05",
+        s"$year-10-25",
+        s"$year-10-26",
+        s"$year-10-27",
+        s"$year-10-28",
+        s"$year-10-29",
+        s"$year-10-30",
+        s"$year-10-31",
+        // US fall back
+        s"$year-11-01",
+        s"$year-11-02",
+        s"$year-11-03",
+        s"$year-11-04",
+        s"$year-11-05",
+        s"$year-11-06",
+        s"$year-11-07",
+        s"$year-11-08")
+    }
+
+    // Edge cases
+    val edgeCases = Seq("1969-12-31", "2000-02-29", "999-01-01", "12345-01-01")
+    val values = (sampledDates ++ dstDates ++ edgeCases).distinct
     withNulls(values).toDF("b").withColumn("a", col("b").cast(DataTypes.DateType)).drop("b")
   }
 
