@@ -85,7 +85,8 @@ message Scan {
   bool arrow_ffi_safe = 3;
 }
 
-message NativeScan {
+// Common data shared across all partitions for NativeScan (sent once via commonBytes)
+message NativeScanCommon {
   repeated spark.spark_expression.DataType fields = 1;
   // The source of the scan (e.g. file scan, broadcast exchange, shuffle, etc). This
   // is purely for informational purposes when viewing native query plans in
@@ -95,20 +96,30 @@ message NativeScan {
   repeated SparkStructField data_schema = 4;
   repeated SparkStructField partition_schema = 5;
   repeated spark.spark_expression.Expr data_filters = 6;
-  repeated SparkFilePartition file_partitions = 7;
-  repeated int64 projection_vector = 8;
-  string session_timezone = 9;
-  repeated spark.spark_expression.Expr default_values = 10;
-  repeated int64 default_values_indexes = 11;
-  bool case_sensitive = 12;
+  repeated int64 projection_vector = 7;
+  string session_timezone = 8;
+  repeated spark.spark_expression.Expr default_values = 9;
+  repeated int64 default_values_indexes = 10;
+  bool case_sensitive = 11;
   // Options for configuring object stores such as AWS S3, GCS, etc. The key-value pairs are taken
   // from Hadoop configuration for compatibility with Hadoop FileSystem implementations of object
   // stores.
   // The configuration values have hadoop. or spark.hadoop. prefix trimmed. For instance, the
   // configuration value "spark.hadoop.fs.s3a.access.key" will be stored as "fs.s3a.access.key" in
   // the map.
-  map<string, string> object_store_options = 13;
-  bool encryption_enabled = 14;
+  map<string, string> object_store_options = 12;
+  bool encryption_enabled = 13;
+
+  // Unique identifier for this scan, used to match planning data at execution time
+  string scan_id = 14;
+}
+
+message NativeScan {
+  // Common data shared across partitions
+  NativeScanCommon common = 1;
+
+  // This partition's files only (injected at execution time by NativePlanDataInjector)
+  SparkFilePartition file_partition = 2;
 }
 
 message CsvScan {

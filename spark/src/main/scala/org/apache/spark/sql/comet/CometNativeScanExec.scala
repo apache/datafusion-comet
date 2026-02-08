@@ -19,29 +19,32 @@
 
 package org.apache.spark.sql.comet
 
-import scala.reflect.ClassTag
-
+import org.apache.hadoop.fs.Path
 import org.apache.spark.rdd.RDD
-import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.catalyst._
+import org.apache.spark.sql.catalyst.{InternalRow, TableIdentifier}
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.plans.physical.{Partitioning, UnknownPartitioning}
-import org.apache.spark.sql.comet.shims.ShimStreamSourceAwareSparkPlan
+import org.apache.spark.sql.comet.shims.ShimCometScanExec
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.types._
+import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.collection._
 
 import com.google.common.base.Objects
 
-import org.apache.comet.CometConf
-import org.apache.comet.parquet.CometParquetFileFormat
 import org.apache.comet.serde.OperatorOuterClass.Operator
+import org.apache.comet.serde.operator.CometNativeScan
+import org.apache.comet.shims.ShimSubqueryBroadcast
 
 /**
  * Comet fully native scan node for DataSource V1 that delegates to DataFusion's DataSourceExec.
+ *
+ * Wraps FileSourceScanExec directly (similar to CometIcebergNativeScanExec wrapping
+ * BatchScanExec). Supports Dynamic Partition Pruning (DPP) by deferring partition serialization
+ * to execution time.
  */
 case class CometNativeScanExec(
     override val nativeOp: Operator,
@@ -54,13 +57,17 @@ case class CometNativeScanExec(
     dataFilters: Seq[Expression],
     tableIdentifier: Option[TableIdentifier],
     disableBucketedScan: Boolean = false,
-    originalPlan: FileSourceScanExec,
+    @transient originalPlan: FileSourceScanExec,
     override val serializedPlanOpt: SerializedPlan)
     extends CometLeafExec
     with DataSourceScanExec
-    with ShimStreamSourceAwareSparkPlan {
+    with ShimCometScanExec
+    with ShimSubqueryBroadcast {
 
   override lazy val metadata: Map[String, String] = originalPlan.metadata
+
+  // Required by ShimCometScanExec for shim-compatible file splitting methods
+  override def wrapped: FileSourceScanExec = originalPlan
 
   override val nodeName: String =
     s"CometNativeScan $relation ${tableIdentifier.map(_.unquotedString).getOrElse("")}"
@@ -68,15 +75,144 @@ case class CometNativeScanExec(
   // exposed for testing
   lazy val bucketedScan: Boolean = originalPlan.bucketedScan && !disableBucketedScan
 
+  /** Unique identifier for this scan, used to match planning data at execution time. */
+  def scanId: String = {
+    relation.location.rootPaths.headOption
+      .map(_.toString)
+      .getOrElse(originalPlan.simpleStringWithNodeId())
+  }
+
+  /**
+   * Prepare DPP subquery plans. Called by Spark's prepare() before doExecuteColumnar().
+   */
+  override protected def doPrepare(): Unit = {
+    partitionFilters.foreach {
+      case DynamicPruningExpression(e: InSubqueryExec) =>
+        e.plan.prepare()
+      case _ =>
+    }
+    super.doPrepare()
+  }
+
+  /**
+   * Lazy partition serialization - deferred until execution time for DPP support.
+   */
+  @transient private lazy val serializedPartitionData: (Array[Byte], Array[Array[Byte]]) = {
+    // Wait for DPP subqueries to resolve before accessing partitions
+    partitionFilters.foreach {
+      case DynamicPruningExpression(e: InSubqueryExec) if e.values().isEmpty =>
+        e.plan match {
+          case sab: SubqueryAdaptiveBroadcastExec =>
+            resolveSubqueryAdaptiveBroadcast(sab, e)
+          case _: SubqueryBroadcastExec =>
+            e.updateResult()
+          case other =>
+            throw new IllegalStateException(
+              s"Unexpected subquery plan type: ${other.getClass.getName}")
+        }
+      case _ =>
+    }
+
+    val filePartitions = getFilePartitions()
+    CometNativeScan.serializePartitions(this, filePartitions)
+  }
+
+  /** Get file partitions with DPP filtering applied. */
+  private def getFilePartitions(): Seq[FilePartition] = {
+    val selectedPartitions = originalPlan.selectedPartitions
+
+    val dynamicPartitionFilters = partitionFilters.filter(isDynamicPruningFilter)
+    val dynamicallySelectedPartitions = if (dynamicPartitionFilters.nonEmpty) {
+      val predicate = dynamicPartitionFilters.reduce(And)
+      val partitionColumns = relation.partitionSchema
+      val boundPredicate = Predicate.create(
+        predicate.transform { case a: AttributeReference =>
+          val index = partitionColumns.indexWhere(a.name == _.name)
+          BoundReference(index, partitionColumns(index).dataType, nullable = true)
+        },
+        Nil)
+      selectedPartitions.filter(p => boundPredicate.eval(p.values))
+    } else {
+      selectedPartitions
+    }
+
+    createFilePartitionsForNonBucketedScan(dynamicallySelectedPartitions)
+  }
+
+  private def isDynamicPruningFilter(e: Expression): Boolean =
+    e.exists(_.isInstanceOf[PlanExpression[_]])
+
+  private def createFilePartitionsForNonBucketedScan(
+      selectedPartitions: Array[PartitionDirectory]): Seq[FilePartition] = {
+    val maxSplitBytes =
+      FilePartition.maxSplitBytes(relation.sparkSession, selectedPartitions)
+
+    // Filter files with bucket pruning if possible
+    val bucketingEnabled = relation.sparkSession.sessionState.conf.bucketingEnabled
+    val shouldProcess: Path => Boolean = optionalBucketSet match {
+      case Some(bucketSet) if bucketingEnabled =>
+        filePath => BucketingUtils.getBucketId(filePath.getName).forall(bucketSet.get)
+      case _ =>
+        _ => true
+    }
+
+    val splitFilesList = selectedPartitions
+      .flatMap { partition =>
+        partition.files.flatMap { file =>
+          val filePath = file.getPath
+
+          if (shouldProcess(filePath)) {
+            val isSplitable = relation.fileFormat.isSplitable(
+              relation.sparkSession,
+              relation.options,
+              filePath) &&
+              file.getLen > maxSplitBytes
+
+            splitFiles(
+              relation.sparkSession,
+              file,
+              filePath,
+              isSplitable,
+              maxSplitBytes,
+              partition.values)
+          } else {
+            Seq.empty
+          }
+        }
+      }
+      .sortBy(_.length)(implicitly[Ordering[Long]].reverse)
+
+    FilePartition.getFilePartitions(relation.sparkSession, splitFilesList, maxSplitBytes)
+  }
+
+  def commonData: Array[Byte] = serializedPartitionData._1
+  def perPartitionData: Array[Array[Byte]] = serializedPartitionData._2
+
   override lazy val outputPartitioning: Partitioning = {
     if (bucketedScan) {
       originalPlan.outputPartitioning
     } else {
-      UnknownPartitioning(originalPlan.inputRDD.getNumPartitions)
+      UnknownPartitioning(perPartitionData.length)
     }
   }
 
   override lazy val outputOrdering: Seq[SortOrder] = originalPlan.outputOrdering
+
+  /** Executes using CometExecRDD - planning data is computed lazily on first access. */
+  override def doExecuteColumnar(): RDD[ColumnarBatch] = {
+    val nativeMetrics = CometMetricNode.fromCometPlan(this)
+    val serializedPlan = CometExec.serializeNativePlan(nativeOp)
+    CometExecRDD(
+      sparkContext,
+      inputRDDs = Seq.empty,
+      commonByKey = Map(scanId -> commonData),
+      perPartitionByKey = Map(scanId -> perPartitionData),
+      serializedPlan = serializedPlan,
+      numPartitions = perPartitionData.length,
+      numOutputCols = output.length,
+      nativeMetrics = nativeMetrics,
+      subqueries = Seq.empty)
+  }
 
   override def doCanonicalize(): CometNativeScanExec = {
     CometNativeScanExec(
@@ -92,7 +228,7 @@ case class CometNativeScanExec(
       QueryPlan.normalizePredicates(dataFilters, output),
       None,
       disableBucketedScan,
-      originalPlan.doCanonicalize(),
+      null, // Don't need originalPlan for canonicalization
       SerializedPlan(None))
   }
 
@@ -111,7 +247,7 @@ case class CometNativeScanExec(
   override def hashCode(): Int = Objects.hashCode(originalPlan, serializedPlanOpt)
 
   override lazy val metrics: Map[String, SQLMetric] =
-    CometMetricNode.nativeScanMetrics(session.sparkContext)
+    CometMetricNode.nativeScanMetrics(sparkContext)
 
   /**
    * See [[org.apache.spark.sql.execution.DataSourceScanExec.inputRDDs]]. Only used for tests.
@@ -120,49 +256,25 @@ case class CometNativeScanExec(
 }
 
 object CometNativeScanExec {
-  def apply(
-      nativeOp: Operator,
-      scanExec: FileSourceScanExec,
-      session: SparkSession): CometNativeScanExec = {
-    // TreeNode.mapProductIterator is protected method.
-    def mapProductIterator[B: ClassTag](product: Product, f: Any => B): Array[B] = {
-      val arr = Array.ofDim[B](product.productArity)
-      var i = 0
-      while (i < arr.length) {
-        arr(i) = f(product.productElement(i))
-        i += 1
-      }
-      arr
-    }
 
-    // Replacing the relation in FileSourceScanExec by `copy` seems causing some issues
-    // on other Spark distributions if FileSourceScanExec constructor is changed.
-    // Using `makeCopy` to avoid the issue.
-    // https://github.com/apache/arrow-datafusion-comet/issues/190
-    def transform(arg: Any): AnyRef = arg match {
-      case _: HadoopFsRelation =>
-        scanExec.relation.copy(fileFormat =
-          new CometParquetFileFormat(session, CometConf.SCAN_NATIVE_DATAFUSION))(session)
-      case other: AnyRef => other
-      case null => null
-    }
-
-    val newArgs = mapProductIterator(scanExec, transform)
-    val wrapped = scanExec.makeCopy(newArgs).asInstanceOf[FileSourceScanExec]
-    val batchScanExec = CometNativeScanExec(
+  /**
+   * Create CometNativeScanExec from a FileSourceScanExec.
+   */
+  def apply(nativeOp: Operator, scanExec: FileSourceScanExec): CometNativeScanExec = {
+    val exec = CometNativeScanExec(
       nativeOp,
-      wrapped.relation,
-      wrapped.output,
-      wrapped.requiredSchema,
-      wrapped.partitionFilters,
-      wrapped.optionalBucketSet,
-      wrapped.optionalNumCoalescedBuckets,
-      wrapped.dataFilters,
-      wrapped.tableIdentifier,
-      wrapped.disableBucketedScan,
-      wrapped,
+      scanExec.relation,
+      scanExec.output,
+      scanExec.requiredSchema,
+      scanExec.partitionFilters,
+      scanExec.optionalBucketSet,
+      scanExec.optionalNumCoalescedBuckets,
+      scanExec.dataFilters,
+      scanExec.tableIdentifier,
+      scanExec.disableBucketedScan,
+      scanExec,
       SerializedPlan(None))
-    scanExec.logicalLink.foreach(batchScanExec.setLogicalLink)
-    batchScanExec
+    scanExec.logicalLink.foreach(exec.setLogicalLink)
+    exec
   }
 }

@@ -23,10 +23,10 @@ import scala.jdk.CollectionConverters._
 
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, DynamicPruningExpression, SortOrder}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, DynamicPruningExpression, SortOrder}
 import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.plans.physical.{Partitioning, UnknownPartitioning}
-import org.apache.spark.sql.execution.{InSubqueryExec, SubqueryAdaptiveBroadcastExec}
+import org.apache.spark.sql.execution.{InSubqueryExec, SubqueryAdaptiveBroadcastExec, SubqueryBroadcastExec}
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -116,67 +116,17 @@ case class CometIcebergNativeScanExec(
       case DynamicPruningExpression(e: InSubqueryExec) if e.values().isEmpty =>
         e.plan match {
           case sab: SubqueryAdaptiveBroadcastExec =>
-            // SubqueryAdaptiveBroadcastExec.executeCollect() throws, so we call
-            // child.executeCollect() directly. We use the index from SAB to find the
-            // right buildKey, then locate that key's column in child.output.
-            val rows = sab.child.executeCollect()
-            val indices = getSubqueryBroadcastIndices(sab)
-
-            // SPARK-46946 changed index: Int to indices: Seq[Int] as a preparatory refactor
-            // for future features (Null Safe Equality DPP, multiple equality predicates).
-            // Currently indices always has one element. CometScanRule checks for multi-index
-            // DPP and falls back, so this assertion should never fail.
-            assert(
-              indices.length == 1,
-              s"Multi-index DPP not supported: indices=$indices. See SPARK-46946.")
-            val buildKeyIndex = indices.head
-            val buildKey = sab.buildKeys(buildKeyIndex)
-
-            // Find column index in child.output by matching buildKey's exprId
-            val colIndex = buildKey match {
-              case attr: Attribute =>
-                sab.child.output.indexWhere(_.exprId == attr.exprId)
-              // DPP may cast partition column to match join key type
-              case Cast(attr: Attribute, _, _, _) =>
-                sab.child.output.indexWhere(_.exprId == attr.exprId)
-              case _ => buildKeyIndex
-            }
-            if (colIndex < 0) {
-              throw new IllegalStateException(
-                s"DPP build key '$buildKey' not found in ${sab.child.output.map(_.name)}")
-            }
-
-            setInSubqueryResult(e, rows.map(_.get(colIndex, e.child.dataType)))
-          case _ =>
+            resolveSubqueryAdaptiveBroadcast(sab, e)
+          case _: SubqueryBroadcastExec =>
             e.updateResult()
+          case other =>
+            throw new IllegalStateException(
+              s"Unexpected subquery plan type: ${other.getClass.getName}")
         }
       case _ =>
     }
 
     CometIcebergNativeScan.serializePartitions(originalPlan, output, nativeIcebergScanMetadata)
-  }
-
-  /**
-   * Sets InSubqueryExec's private result field via reflection.
-   *
-   * Reflection is required because:
-   *   - SubqueryAdaptiveBroadcastExec.executeCollect() throws UnsupportedOperationException
-   *   - InSubqueryExec has no public setter for result, only updateResult() which calls
-   *     executeCollect()
-   *   - We can't replace e.plan since it's a val
-   */
-  private def setInSubqueryResult(e: InSubqueryExec, result: Array[_]): Unit = {
-    val fields = e.getClass.getDeclaredFields
-    // Field name is mangled by Scala compiler, e.g. "org$apache$...$InSubqueryExec$$result"
-    val resultField = fields
-      .find(f => f.getName.endsWith("$result") && !f.getName.contains("Broadcast"))
-      .getOrElse {
-        throw new IllegalStateException(
-          s"Cannot find 'result' field in ${e.getClass.getName}. " +
-            "Spark version may be incompatible with Comet's DPP implementation.")
-      }
-    resultField.setAccessible(true)
-    resultField.set(e, result)
   }
 
   def commonData: Array[Byte] = serializedPartitionData._1

@@ -32,7 +32,7 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, DynamicPruningExpre
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.{sideBySide, ArrayBasedMapData, GenericArrayData, MetadataColumnHelper}
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
-import org.apache.spark.sql.comet.{CometBatchScanExec, CometScanExec}
+import org.apache.spark.sql.comet.{CometBatchScanExec, CometNativeScanExec, CometScanExec}
 import org.apache.spark.sql.execution.{FileSourceScanExec, InSubqueryExec, SparkPlan, SubqueryAdaptiveBroadcastExec}
 import org.apache.spark.sql.execution.datasources.HadoopFsRelation
 import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
@@ -50,6 +50,7 @@ import org.apache.comet.iceberg.{CometIcebergNativeScanMetadata, IcebergReflecti
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.parquet.{CometParquetScan, Native, SupportsComet}
 import org.apache.comet.parquet.CometParquetUtils.{encryptionEnabled, isEncryptionConfigSupported}
+import org.apache.comet.serde.OperatorOuterClass
 import org.apache.comet.serde.operator.CometNativeScan
 import org.apache.comet.shims.{CometTypeShim, ShimFileFormat, ShimSubqueryBroadcast}
 
@@ -140,10 +141,9 @@ case class CometScanRule(session: SparkSession)
 
   private def transformV1Scan(scanExec: FileSourceScanExec): SparkPlan = {
 
-    if (COMET_DPP_FALLBACK_ENABLED.get() &&
-      scanExec.partitionFilters.exists(isDynamicPruningFilter)) {
-      return withInfo(scanExec, "Dynamic Partition Pruning is not supported")
-    }
+    // Check for DPP - only some scan implementations support it
+    val dppFilters = scanExec.partitionFilters.filter(isDynamicPruningFilter)
+    val hasDPP = dppFilters.nonEmpty
 
     scanExec.relation match {
       case r: HadoopFsRelation =>
@@ -170,13 +170,23 @@ case class CometScanRule(session: SparkSession)
         COMET_NATIVE_SCAN_IMPL.get() match {
           case SCAN_AUTO =>
             // TODO add support for native_datafusion in the future
+            if (hasDPP) {
+              return withInfo(scanExec, "Dynamic Partition Pruning is not supported")
+            }
             nativeIcebergCompatScan(session, scanExec, r, hadoopConf)
               .getOrElse(scanExec)
           case SCAN_NATIVE_DATAFUSION =>
+            // native_datafusion supports DPP
             nativeDataFusionScan(session, scanExec, r, hadoopConf).getOrElse(scanExec)
           case SCAN_NATIVE_ICEBERG_COMPAT =>
+            if (hasDPP) {
+              return withInfo(scanExec, "Dynamic Partition Pruning is not supported")
+            }
             nativeIcebergCompatScan(session, scanExec, r, hadoopConf).getOrElse(scanExec)
           case SCAN_NATIVE_COMET =>
+            if (hasDPP) {
+              return withInfo(scanExec, "Dynamic Partition Pruning is not supported")
+            }
             nativeCometScan(session, scanExec, r, hadoopConf).getOrElse(scanExec)
         }
 
@@ -213,7 +223,12 @@ case class CometScanRule(session: SparkSession)
     if (!isSchemaSupported(scanExec, SCAN_NATIVE_DATAFUSION, r)) {
       return None
     }
-    Some(CometScanExec(scanExec, session, SCAN_NATIVE_DATAFUSION))
+
+    // Create placeholder NativeScan operator
+    val builder = OperatorOuterClass.Operator.newBuilder()
+    CometNativeScan.convert(scanExec, builder).map { nativeOp =>
+      CometNativeScanExec(nativeOp, scanExec)
+    }
   }
 
   private def nativeIcebergCompatScan(

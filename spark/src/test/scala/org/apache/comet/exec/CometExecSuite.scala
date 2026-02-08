@@ -128,9 +128,7 @@ class CometExecSuite extends CometTestBase {
 
       // note that this test does not trigger DPP with v2 data source
       Seq("parquet").foreach { v1List =>
-        withSQLConf(
-          SQLConf.USE_V1_SOURCE_LIST.key -> v1List,
-          CometConf.COMET_DPP_FALLBACK_ENABLED.key -> "true") {
+        withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> v1List) {
           spark.read.parquet(factPath).createOrReplaceTempView("dpp_fact")
           spark.read.parquet(dimPath).createOrReplaceTempView("dpp_dim")
           val df =
@@ -142,6 +140,143 @@ class CometExecSuite extends CometTestBase {
 
           assert(infos.contains("Comet accelerated"))
         }
+      }
+    }
+  }
+
+  test("DPP with native_datafusion scan - join with dynamic partition pruning") {
+    withTempDir { path =>
+      val factPath = s"${path.getAbsolutePath}/fact_native"
+      val dimPath = s"${path.getAbsolutePath}/dim_native"
+
+      withSQLConf(CometConf.COMET_EXEC_ENABLED.key -> "false") {
+        // Create fact table partitioned by date with 3 partitions
+        spark
+          .createDataFrame(Seq(
+            (1L, "a", java.sql.Date.valueOf("1970-01-01")),
+            (2L, "b", java.sql.Date.valueOf("1970-01-02")),
+            (3L, "c", java.sql.Date.valueOf("1970-01-02")),
+            (4L, "d", java.sql.Date.valueOf("1970-01-03")),
+            (5L, "e", java.sql.Date.valueOf("1970-01-01")),
+            (6L, "f", java.sql.Date.valueOf("1970-01-02")),
+            (7L, "g", java.sql.Date.valueOf("1970-01-03")),
+            (8L, "h", java.sql.Date.valueOf("1970-01-01"))))
+          .toDF("id", "data", "date")
+          .write
+          .partitionBy("date")
+          .parquet(factPath)
+
+        // Create dimension table (small, to be broadcast)
+        spark
+          .createDataFrame(Seq((1L, java.sql.Date.valueOf("1970-01-02"))))
+          .toDF("id", "date")
+          .write
+          .parquet(dimPath)
+      }
+
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
+        // Prevent fact table from being broadcast (force dimension to be broadcast)
+        "spark.sql.autoBroadcastJoinThreshold" -> "1KB",
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true") {
+
+        spark.read.parquet(factPath).createOrReplaceTempView("fact")
+        spark.read.parquet(dimPath).createOrReplaceTempView("dim")
+
+        val query =
+          """SELECT /*+ BROADCAST(d) */ f.* FROM fact f
+            |JOIN dim d ON f.date = d.date AND d.id = 1
+            |ORDER BY f.id""".stripMargin
+
+        // Verify the plan contains dynamic pruning expression
+        val df = spark.sql(query)
+        val planStr = df.queryExecution.executedPlan.toString
+        assert(
+          planStr.contains("dynamicpruning"),
+          s"Expected dynamic pruning in plan but got:\n$planStr")
+
+        // Verify native scan is used and DPP actually pruned partitions
+        val (_, cometPlan) = checkSparkAnswer(query)
+        val nativeScans = collect(cometPlan) { case s: CometNativeScanExec => s }
+        assert(
+          nativeScans.nonEmpty,
+          s"Expected CometNativeScanExec but found none. Plan:\n$cometPlan")
+        // DPP should reduce from 3 partition directories. File splitting may create
+        // multiple file partitions from one directory, so we check < 3 not == 1.
+        val numPartitions = nativeScans.head.perPartitionData.length
+        assert(numPartitions < 3, s"Expected DPP to prune partitions but got $numPartitions")
+      }
+    }
+  }
+
+  test("DPP with native_datafusion scan - multiple partition columns") {
+    withTempDir { path =>
+      val factPath = s"${path.getAbsolutePath}/fact_multi_part"
+      val dimPath = s"${path.getAbsolutePath}/dim_multi_part"
+
+      withSQLConf(CometConf.COMET_EXEC_ENABLED.key -> "false") {
+        // Create fact table partitioned by TWO columns: region and category
+        val factData = Seq(
+          (1L, "data1", "US", "A"),
+          (2L, "data2", "US", "B"),
+          (3L, "data3", "US", "A"),
+          (4L, "data4", "EU", "A"),
+          (5L, "data5", "EU", "B"),
+          (6L, "data6", "EU", "A"),
+          (7L, "data7", "APAC", "A"),
+          (8L, "data8", "APAC", "B"))
+        spark
+          .createDataFrame(factData)
+          .toDF("id", "data", "region", "category")
+          .write
+          .partitionBy("region", "category")
+          .parquet(factPath)
+
+        // Create dimension table
+        spark
+          .createDataFrame(Seq((1L, "US", "A")))
+          .toDF("dim_id", "region", "category")
+          .write
+          .parquet(dimPath)
+      }
+
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
+        "spark.sql.autoBroadcastJoinThreshold" -> "1KB",
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true") {
+
+        spark.read.parquet(factPath).createOrReplaceTempView("fact")
+        spark.read.parquet(dimPath).createOrReplaceTempView("dim")
+
+        // Join on both partition columns - creates two DPP filters
+        val query =
+          """SELECT /*+ BROADCAST(d) */ f.*
+            |FROM fact f
+            |JOIN dim d ON f.region = d.region AND f.category = d.category
+            |WHERE d.dim_id = 1
+            |ORDER BY f.id""".stripMargin
+
+        // Verify plan has dynamic pruning expressions
+        val df = spark.sql(query)
+        val planStr = df.queryExecution.executedPlan.toString
+        assert(
+          planStr.contains("dynamicpruning"),
+          s"Expected dynamic pruning in plan but got:\n$planStr")
+
+        // Verify native scan is used and DPP actually pruned partitions
+        val (_, cometPlan) = checkSparkAnswer(query)
+        val nativeScans = collect(cometPlan) { case s: CometNativeScanExec => s }
+        assert(
+          nativeScans.nonEmpty,
+          s"Expected CometNativeScanExec but found none. Plan:\n$cometPlan")
+        // With 6 partition combinations (3 regions x 2 categories), DPP should prune.
+        // We're filtering to region=US, category=A which is 1 partition.
+        val numPartitions = nativeScans.head.perPartitionData.length
+        assert(numPartitions < 6, s"Expected DPP to prune partitions but got $numPartitions")
       }
     }
   }

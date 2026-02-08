@@ -25,25 +25,25 @@ import scala.jdk.CollectionConverters._
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions.{Expression, Literal, PlanExpression}
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
-import org.apache.spark.sql.comet.{CometNativeExec, CometNativeScanExec, CometScanExec}
+import org.apache.spark.sql.comet.CometNativeScanExec
 import org.apache.spark.sql.execution.FileSourceScanExec
-import org.apache.spark.sql.execution.datasources.PartitionedFile
+import org.apache.spark.sql.execution.datasources.FilePartition
 import org.apache.spark.sql.internal.SQLConf
 
-import org.apache.comet.{CometConf, ConfigEntry}
+import org.apache.comet.CometConf
 import org.apache.comet.CometConf.COMET_EXEC_ENABLED
 import org.apache.comet.CometSparkSessionExtensions.{hasExplainInfo, withInfo}
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.parquet.CometParquetUtils
-import org.apache.comet.serde.{CometOperatorSerde, Compatible, OperatorOuterClass, SupportLevel}
 import org.apache.comet.serde.ExprOuterClass.Expr
+import org.apache.comet.serde.OperatorOuterClass
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType}
 
 /**
  * Validation and serde logic for `native_datafusion` scans.
  */
-object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
+object CometNativeScan extends Logging {
 
   /** Determine whether the scan is supported and tag the Spark plan with any fallback reasons */
   def isSupported(scanExec: FileSourceScanExec): Boolean = {
@@ -55,11 +55,6 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
 
     if (!COMET_EXEC_ENABLED.get()) {
       withInfo(scanExec, s"Full native scan disabled because ${COMET_EXEC_ENABLED.key} disabled")
-    }
-
-    // Native DataFusion doesn't support subqueries/dynamic pruning
-    if (scanExec.partitionFilters.exists(isDynamicPruningFilter)) {
-      withInfo(scanExec, "Native DataFusion scan does not support subqueries/dynamic pruning")
     }
 
     if (SQLConf.get.ignoreCorruptFiles ||
@@ -81,129 +76,151 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
     !hasExplainInfo(scanExec)
   }
 
-  private def isDynamicPruningFilter(e: Expression): Boolean =
+  private[comet] def isDynamicPruningFilter(e: Expression): Boolean =
     e.exists(_.isInstanceOf[PlanExpression[_]])
 
-  override def enabledConfig: Option[ConfigEntry[Boolean]] = None
+  /**
+   * Convert FileSourceScanExec to a placeholder NativeScan operator. The actual partition data is
+   * populated at execution time by serializePartitions().
+   */
+  def convert(
+      scanExec: FileSourceScanExec,
+      builder: Operator.Builder): Option[OperatorOuterClass.Operator] = {
 
-  override def getSupportLevel(operator: CometScanExec): SupportLevel = {
-    // all checks happen in CometScanRule before ScanExec is converted to CometScanExec, so
-    // we always report compatible here because this serde object is for the converted CometScanExec
-    Compatible()
-  }
-
-  override def convert(
-      scan: CometScanExec,
-      builder: Operator.Builder,
-      childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
-    val nativeScanBuilder = OperatorOuterClass.NativeScan.newBuilder()
-    nativeScanBuilder.setSource(scan.simpleStringWithNodeId())
-
-    val scanTypes = scan.output.flatten { attr =>
+    val scanTypes = scanExec.output.flatten { attr =>
       serializeDataType(attr.dataType)
     }
 
-    if (scanTypes.length == scan.output.length) {
-      nativeScanBuilder.addAllFields(scanTypes.asJava)
-
-      // Sink operators don't have children
-      builder.clearChildren()
-
-      if (scan.conf.getConf(SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED) &&
-        CometConf.COMET_RESPECT_PARQUET_FILTER_PUSHDOWN.get(scan.conf)) {
-
-        val dataFilters = new ListBuffer[Expr]()
-        for (filter <- scan.supportedDataFilters) {
-          exprToProto(filter, scan.output) match {
-            case Some(proto) => dataFilters += proto
-            case _ =>
-              logWarning(s"Unsupported data filter $filter")
-          }
-        }
-        nativeScanBuilder.addAllDataFilters(dataFilters.asJava)
-      }
-
-      val possibleDefaultValues = getExistenceDefaultValues(scan.requiredSchema)
-      if (possibleDefaultValues.exists(_ != null)) {
-        // Our schema has default values. Serialize two lists, one with the default values
-        // and another with the indexes in the schema so the native side can map missing
-        // columns to these default values.
-        val (defaultValues, indexes) = possibleDefaultValues.zipWithIndex
-          .filter { case (expr, _) => expr != null }
-          .map { case (expr, index) =>
-            // ResolveDefaultColumnsUtil.getExistenceDefaultValues has evaluated these
-            // expressions and they should now just be literals.
-            (Literal(expr), index.toLong.asInstanceOf[java.lang.Long])
-          }
-          .unzip
-        nativeScanBuilder.addAllDefaultValues(
-          defaultValues.flatMap(exprToProto(_, scan.output)).toIterable.asJava)
-        nativeScanBuilder.addAllDefaultValuesIndexes(indexes.toIterable.asJava)
-      }
-
-      var firstPartition: Option[PartitionedFile] = None
-      val filePartitions = scan.getFilePartitions()
-      val filePartitionsProto = filePartitions.map { partition =>
-        if (firstPartition.isEmpty) {
-          firstPartition = partition.files.headOption
-        }
-        partition2Proto(partition, scan.relation.partitionSchema)
-      }
-      nativeScanBuilder.addAllFilePartitions(filePartitionsProto.asJava)
-
-      val partitionSchema = schema2Proto(scan.relation.partitionSchema.fields)
-      val requiredSchema = schema2Proto(scan.requiredSchema.fields)
-      val dataSchema = schema2Proto(scan.relation.dataSchema.fields)
-
-      val dataSchemaIndexes = scan.requiredSchema.fields.map(field => {
-        scan.relation.dataSchema.fieldIndex(field.name)
-      })
-      val partitionSchemaIndexes = Array
-        .range(
-          scan.relation.dataSchema.fields.length,
-          scan.relation.dataSchema.length + scan.relation.partitionSchema.fields.length)
-
-      val projectionVector = (dataSchemaIndexes ++ partitionSchemaIndexes).map(idx =>
-        idx.toLong.asInstanceOf[java.lang.Long])
-
-      nativeScanBuilder.addAllProjectionVector(projectionVector.toIterable.asJava)
-
-      // In `CometScanRule`, we ensure partitionSchema is supported.
-      assert(partitionSchema.length == scan.relation.partitionSchema.fields.length)
-
-      nativeScanBuilder.addAllDataSchema(dataSchema.toIterable.asJava)
-      nativeScanBuilder.addAllRequiredSchema(requiredSchema.toIterable.asJava)
-      nativeScanBuilder.addAllPartitionSchema(partitionSchema.toIterable.asJava)
-      nativeScanBuilder.setSessionTimezone(scan.conf.getConfString("spark.sql.session.timeZone"))
-      nativeScanBuilder.setCaseSensitive(scan.conf.getConf[Boolean](SQLConf.CASE_SENSITIVE))
-
-      // Collect S3/cloud storage configurations
-      val hadoopConf = scan.relation.sparkSession.sessionState
-        .newHadoopConfWithOptions(scan.relation.options)
-
-      nativeScanBuilder.setEncryptionEnabled(CometParquetUtils.encryptionEnabled(hadoopConf))
-
-      firstPartition.foreach { partitionFile =>
-        val objectStoreOptions =
-          NativeConfig.extractObjectStoreOptions(hadoopConf, partitionFile.pathUri)
-        objectStoreOptions.foreach { case (key, value) =>
-          nativeScanBuilder.putObjectStoreOptions(key, value)
-        }
-      }
-
-      Some(builder.setNativeScan(nativeScanBuilder).build())
-
-    } else {
-      // There are unsupported scan type
+    if (scanTypes.length != scanExec.output.length) {
       withInfo(
-        scan,
-        s"unsupported Comet operator: ${scan.nodeName}, due to unsupported data types above")
-      None
+        scanExec,
+        s"unsupported Comet operator: ${scanExec.nodeName}, due to unsupported data types above")
+      return None
     }
 
+    // Build placeholder NativeScan with just scan_id for matching at execution time.
+    // All other fields are populated by serializePartitions() at execution time.
+    val commonBuilder = OperatorOuterClass.NativeScanCommon.newBuilder()
+    commonBuilder.setScanId(getScanId(scanExec))
+
+    val nativeScanBuilder = OperatorOuterClass.NativeScan.newBuilder()
+    nativeScanBuilder.setCommon(commonBuilder.build())
+    // file_partition intentionally empty - will be populated at execution time
+
+    builder.clearChildren()
+    Some(builder.setNativeScan(nativeScanBuilder).build())
   }
 
-  override def createExec(nativeOp: Operator, op: CometScanExec): CometNativeExec = {
-    CometNativeScanExec(nativeOp, op.wrapped, op.session)
+  /** Unique identifier for this scan, used to match planning data at execution time. */
+  def getScanId(scanExec: FileSourceScanExec): String = {
+    scanExec.relation.location.rootPaths.headOption
+      .map(_.toString)
+      .getOrElse(scanExec.simpleStringWithNodeId())
+  }
+
+  /**
+   * Serializes partitions at execution time, after DPP filters have been resolved.
+   *
+   * @param exec
+   *   The CometNativeScanExec with resolved DPP filters
+   * @param filePartitions
+   *   The DPP-filtered file partitions (computed by exec using shim-compatible methods)
+   * @return
+   *   Tuple of (commonBytes, perPartitionBytes) for native execution
+   */
+  def serializePartitions(
+      exec: CometNativeScanExec,
+      filePartitions: Seq[FilePartition]): (Array[Byte], Array[Array[Byte]]) = {
+    val scanExec = exec.originalPlan
+    val relation = exec.relation
+
+    val commonBuilder = OperatorOuterClass.NativeScanCommon.newBuilder()
+    commonBuilder.setSource(scanExec.simpleStringWithNodeId())
+    commonBuilder.setScanId(exec.scanId)
+
+    val scanTypes = exec.output.flatten { attr =>
+      serializeDataType(attr.dataType)
+    }
+    commonBuilder.addAllFields(scanTypes.asJava)
+
+    // Filter out DPP filters from data filters - these are partition filters, not data filters
+    val supportedDataFilters = exec.dataFilters.filterNot(isDynamicPruningFilter)
+
+    val conf = relation.sparkSession.sessionState.conf
+    if (conf.getConf(SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED) &&
+      CometConf.COMET_RESPECT_PARQUET_FILTER_PUSHDOWN.get(conf)) {
+
+      val dataFilters = new ListBuffer[Expr]()
+      for (filter <- supportedDataFilters) {
+        exprToProto(filter, exec.output) match {
+          case Some(proto) => dataFilters += proto
+          case _ =>
+            logWarning(s"Unsupported data filter $filter")
+        }
+      }
+      commonBuilder.addAllDataFilters(dataFilters.asJava)
+    }
+
+    val possibleDefaultValues = getExistenceDefaultValues(exec.requiredSchema)
+    if (possibleDefaultValues.exists(_ != null)) {
+      val (defaultValues, indexes) = possibleDefaultValues.zipWithIndex
+        .filter { case (expr, _) => expr != null }
+        .map { case (expr, index) =>
+          (Literal(expr), index.toLong.asInstanceOf[java.lang.Long])
+        }
+        .unzip
+      commonBuilder.addAllDefaultValues(
+        defaultValues.flatMap(exprToProto(_, exec.output)).toIterable.asJava)
+      commonBuilder.addAllDefaultValuesIndexes(indexes.toIterable.asJava)
+    }
+
+    val partitionSchema = schema2Proto(relation.partitionSchema.fields)
+    val requiredSchema = schema2Proto(exec.requiredSchema.fields)
+    val dataSchema = schema2Proto(relation.dataSchema.fields)
+
+    val dataSchemaIndexes = exec.requiredSchema.fields.map(field => {
+      relation.dataSchema.fieldIndex(field.name)
+    })
+    val partitionSchemaIndexes = Array
+      .range(
+        relation.dataSchema.fields.length,
+        relation.dataSchema.length + relation.partitionSchema.fields.length)
+
+    val projectionVector = (dataSchemaIndexes ++ partitionSchemaIndexes).map(idx =>
+      idx.toLong.asInstanceOf[java.lang.Long])
+
+    commonBuilder.addAllProjectionVector(projectionVector.toIterable.asJava)
+    commonBuilder.addAllDataSchema(dataSchema.toIterable.asJava)
+    commonBuilder.addAllRequiredSchema(requiredSchema.toIterable.asJava)
+    commonBuilder.addAllPartitionSchema(partitionSchema.toIterable.asJava)
+    commonBuilder.setSessionTimezone(conf.getConfString("spark.sql.session.timeZone"))
+    commonBuilder.setCaseSensitive(conf.getConf[Boolean](SQLConf.CASE_SENSITIVE))
+
+    // Collect S3/cloud storage configurations
+    val hadoopConf = relation.sparkSession.sessionState
+      .newHadoopConfWithOptions(relation.options)
+
+    commonBuilder.setEncryptionEnabled(CometParquetUtils.encryptionEnabled(hadoopConf))
+
+    filePartitions.headOption.flatMap(_.files.headOption).foreach { partitionFile =>
+      val objectStoreOptions =
+        NativeConfig.extractObjectStoreOptions(hadoopConf, partitionFile.pathUri)
+      objectStoreOptions.foreach { case (key, value) =>
+        commonBuilder.putObjectStoreOptions(key, value)
+      }
+    }
+
+    val commonBytes = commonBuilder.build().toByteArray
+
+    // Build per-partition data - each partition gets its own SparkFilePartition
+    val perPartitionBytes = filePartitions.map { partition =>
+      val partitionProto = partition2Proto(partition, relation.partitionSchema)
+      val scanBuilder = OperatorOuterClass.NativeScan.newBuilder()
+      scanBuilder.setFilePartition(partitionProto)
+      // common is set at injection time, not here
+      scanBuilder.build().toByteArray
+    }.toArray
+
+    (commonBytes, perPartitionBytes)
   }
 }

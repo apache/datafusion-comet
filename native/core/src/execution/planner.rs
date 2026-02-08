@@ -965,20 +965,29 @@ impl PhysicalPlanner {
                 ))
             }
             OpStruct::NativeScan(scan) => {
-                let data_schema = convert_spark_types_to_arrow_schema(scan.data_schema.as_slice());
+                let common = scan
+                    .common
+                    .as_ref()
+                    .ok_or_else(|| GeneralError("NativeScan missing common data".to_string()))?;
+
+                let data_schema =
+                    convert_spark_types_to_arrow_schema(common.data_schema.as_slice());
                 let required_schema: SchemaRef =
-                    convert_spark_types_to_arrow_schema(scan.required_schema.as_slice());
+                    convert_spark_types_to_arrow_schema(common.required_schema.as_slice());
                 let partition_schema: SchemaRef =
-                    convert_spark_types_to_arrow_schema(scan.partition_schema.as_slice());
-                let projection_vector: Vec<usize> = scan
+                    convert_spark_types_to_arrow_schema(common.partition_schema.as_slice());
+                let projection_vector: Vec<usize> = common
                     .projection_vector
                     .iter()
                     .map(|offset| *offset as usize)
                     .collect();
 
-                // Check if this partition has any files (bucketed scan with bucket pruning may have empty partitions)
-                let partition_files = &scan.file_partitions[self.partition as usize];
+                // Get this partition's files (injected at execution time)
+                let partition_files = scan.file_partition.as_ref().ok_or_else(|| {
+                    GeneralError("NativeScan missing file_partition data".to_string())
+                })?;
 
+                // Check if this partition has any files (bucketed scan with bucket pruning may have empty partitions)
                 if partition_files.partitioned_file.is_empty() {
                     let empty_exec = Arc::new(EmptyExec::new(required_schema));
                     return Ok((
@@ -988,19 +997,19 @@ impl PhysicalPlanner {
                 }
 
                 // Convert the Spark expressions to Physical expressions
-                let data_filters: Result<Vec<Arc<dyn PhysicalExpr>>, ExecutionError> = scan
+                let data_filters: Result<Vec<Arc<dyn PhysicalExpr>>, ExecutionError> = common
                     .data_filters
                     .iter()
                     .map(|expr| self.create_expr(expr, Arc::clone(&required_schema)))
                     .collect();
 
-                let default_values: Option<HashMap<usize, ScalarValue>> = if !scan
+                let default_values: Option<HashMap<usize, ScalarValue>> = if !common
                     .default_values
                     .is_empty()
                 {
                     // We have default values. Extract the two lists (same length) of values and
                     // indexes in the schema, and then create a HashMap to use in the SchemaMapper.
-                    let default_values: Result<Vec<ScalarValue>, DataFusionError> = scan
+                    let default_values: Result<Vec<ScalarValue>, DataFusionError> = common
                         .default_values
                         .iter()
                         .map(|expr| {
@@ -1015,7 +1024,7 @@ impl PhysicalPlanner {
                         })
                         .collect();
                     let default_values = default_values?;
-                    let default_values_indexes: Vec<usize> = scan
+                    let default_values_indexes: Vec<usize> = common
                         .default_values_indexes
                         .iter()
                         .map(|offset| *offset as usize)
@@ -1037,7 +1046,7 @@ impl PhysicalPlanner {
                     .map(|f| f.file_path.clone())
                     .expect("partition should have files after empty check");
 
-                let object_store_options: HashMap<String, String> = scan
+                let object_store_options: HashMap<String, String> = common
                     .object_store_options
                     .iter()
                     .map(|(k, v)| (k.clone(), v.clone()))
@@ -1048,10 +1057,7 @@ impl PhysicalPlanner {
                     &object_store_options,
                 )?;
 
-                // Comet serializes all partitions' PartitionedFiles, but we only want to read this
-                // Spark partition's PartitionedFiles
-                let files =
-                    self.get_partitioned_files(&scan.file_partitions[self.partition as usize])?;
+                let files = self.get_partitioned_files(partition_files)?;
                 let file_groups: Vec<Vec<PartitionedFile>> = vec![files];
                 let partition_fields: Vec<Field> = partition_schema
                     .fields()
@@ -1060,7 +1066,7 @@ impl PhysicalPlanner {
                         Field::new(field.name(), field.data_type().clone(), field.is_nullable())
                     })
                     .collect_vec();
-                let scan = init_datasource_exec(
+                let datasource_exec = init_datasource_exec(
                     required_schema,
                     Some(data_schema),
                     Some(partition_schema),
@@ -1070,14 +1076,14 @@ impl PhysicalPlanner {
                     Some(projection_vector),
                     Some(data_filters?),
                     default_values,
-                    scan.session_timezone.as_str(),
-                    scan.case_sensitive,
+                    common.session_timezone.as_str(),
+                    common.case_sensitive,
                     self.session_ctx(),
-                    scan.encryption_enabled,
+                    common.encryption_enabled,
                 )?;
                 Ok((
                     vec![],
-                    Arc::new(SparkPlan::new(spark_plan.plan_id, scan, vec![])),
+                    Arc::new(SparkPlan::new(spark_plan.plan_id, datasource_exec, vec![])),
                 ))
             }
             OpStruct::CsvScan(scan) => {
