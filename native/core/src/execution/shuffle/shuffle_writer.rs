@@ -585,4 +585,112 @@ mod test {
         let _ = fs::remove_file("/tmp/rr_data_1.out");
         let _ = fs::remove_file("/tmp/rr_index_1.out");
     }
+
+    /// Test that batch coalescing in BufBatchWriter reduces output size by
+    /// writing fewer, larger IPC blocks instead of many small ones.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_batch_coalescing_reduces_size() {
+        use crate::execution::shuffle::writers::BufBatchWriter;
+        use arrow::array::Int32Array;
+
+        // Create a wide schema to amplify per-block schema overhead
+        let fields: Vec<Field> = (0..20)
+            .map(|i| Field::new(format!("col_{i}"), DataType::Int32, false))
+            .collect();
+        let schema = Arc::new(Schema::new(fields));
+
+        // Create many small batches (50 rows each)
+        let small_batches: Vec<RecordBatch> = (0..100)
+            .map(|batch_idx| {
+                let columns: Vec<Arc<dyn Array>> = (0..20)
+                    .map(|col_idx| {
+                        let values: Vec<i32> = (0..50)
+                            .map(|row| batch_idx * 50 + row + col_idx * 1000)
+                            .collect();
+                        Arc::new(Int32Array::from(values)) as Arc<dyn Array>
+                    })
+                    .collect();
+                RecordBatch::try_new(Arc::clone(&schema), columns).unwrap()
+            })
+            .collect();
+
+        let codec = CompressionCodec::Lz4Frame;
+        let encode_time = Time::default();
+        let write_time = Time::default();
+
+        // Write with coalescing (batch_size=8192)
+        let mut coalesced_output = Vec::new();
+        {
+            let mut writer = ShuffleBlockWriter::try_new(schema.as_ref(), codec.clone()).unwrap();
+            let mut buf_writer = BufBatchWriter::new(
+                &mut writer,
+                Cursor::new(&mut coalesced_output),
+                1024 * 1024,
+                8192,
+            );
+            for batch in &small_batches {
+                buf_writer.write(batch, &encode_time, &write_time).unwrap();
+            }
+            buf_writer.flush(&encode_time, &write_time).unwrap();
+        }
+
+        // Write without coalescing (batch_size=1)
+        let mut uncoalesced_output = Vec::new();
+        {
+            let mut writer = ShuffleBlockWriter::try_new(schema.as_ref(), codec.clone()).unwrap();
+            let mut buf_writer = BufBatchWriter::new(
+                &mut writer,
+                Cursor::new(&mut uncoalesced_output),
+                1024 * 1024,
+                1,
+            );
+            for batch in &small_batches {
+                buf_writer.write(batch, &encode_time, &write_time).unwrap();
+            }
+            buf_writer.flush(&encode_time, &write_time).unwrap();
+        }
+
+        // Coalesced output should be smaller due to fewer IPC schema blocks
+        assert!(
+            coalesced_output.len() < uncoalesced_output.len(),
+            "Coalesced output ({} bytes) should be smaller than uncoalesced ({} bytes)",
+            coalesced_output.len(),
+            uncoalesced_output.len()
+        );
+
+        // Verify both roundtrip correctly by reading all IPC blocks
+        let coalesced_rows = read_all_ipc_blocks(&coalesced_output);
+        let uncoalesced_rows = read_all_ipc_blocks(&uncoalesced_output);
+        assert_eq!(
+            coalesced_rows, 5000,
+            "Coalesced should contain all 5000 rows"
+        );
+        assert_eq!(
+            uncoalesced_rows, 5000,
+            "Uncoalesced should contain all 5000 rows"
+        );
+    }
+
+    /// Read all IPC blocks from a byte buffer written by BufBatchWriter/ShuffleBlockWriter,
+    /// returning the total number of rows.
+    fn read_all_ipc_blocks(data: &[u8]) -> usize {
+        let mut offset = 0;
+        let mut total_rows = 0;
+        while offset < data.len() {
+            // First 8 bytes are the IPC length (little-endian u64)
+            let ipc_length =
+                u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap()) as usize;
+            // Skip the 8-byte length prefix; the next 8 bytes are field_count + codec header
+            let block_start = offset + 8;
+            let block_end = block_start + ipc_length;
+            // read_ipc_compressed expects data starting after the 16-byte header
+            // (i.e., after length + field_count), at the codec tag
+            let ipc_data = &data[block_start + 8..block_end];
+            let batch = read_ipc_compressed(ipc_data).unwrap();
+            total_rows += batch.num_rows();
+            offset = block_end;
+        }
+        total_rows
+    }
 }
