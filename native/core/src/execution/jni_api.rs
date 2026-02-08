@@ -519,8 +519,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                     let mut optimized_plan = Arc::clone(&root_op.native_plan);
 
                     if exec_context.explain_native {
-                        let before = DisplayableExecutionPlan::new(optimized_plan.as_ref())
-                            .indent(true);
+                        let before =
+                            DisplayableExecutionPlan::new(optimized_plan.as_ref()).indent(true);
                         info!("Comet native plan before DataFusion optimization:\n{before}");
                     }
 
@@ -529,8 +529,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                     }
 
                     if exec_context.explain_native {
-                        let after = DisplayableExecutionPlan::new(optimized_plan.as_ref())
-                            .indent(true);
+                        let after =
+                            DisplayableExecutionPlan::new(optimized_plan.as_ref()).indent(true);
                         info!("Comet native plan after DataFusion optimization:\n{after}");
                     }
 
