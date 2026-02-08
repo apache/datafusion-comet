@@ -20,6 +20,7 @@
 package org.apache.spark.sql.comet
 
 import org.apache.hadoop.fs.Path
+import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.{InternalRow, TableIdentifier}
 import org.apache.spark.sql.catalyst.expressions._
@@ -31,10 +32,12 @@ import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.ColumnarBatch
+import org.apache.spark.util.SerializableConfiguration
 import org.apache.spark.util.collection._
 
 import com.google.common.base.Objects
 
+import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.operator.CometNativeScan
 import org.apache.comet.shims.ShimSubqueryBroadcast
@@ -202,6 +205,19 @@ case class CometNativeScanExec(
   override def doExecuteColumnar(): RDD[ColumnarBatch] = {
     val nativeMetrics = CometMetricNode.fromCometPlan(this)
     val serializedPlan = CometExec.serializeNativePlan(nativeOp)
+
+    // Handle encryption: broadcast hadoop conf if encryption is enabled
+    val hadoopConf = relation.sparkSession.sessionState
+      .newHadoopConfWithOptions(relation.options)
+    val (broadcastedHadoopConfForEncryption, encryptedFilePaths) =
+      if (CometParquetUtils.encryptionEnabled(hadoopConf)) {
+        val broadcastedConf = relation.sparkSession.sparkContext
+          .broadcast(new SerializableConfiguration(hadoopConf))
+        (Some(broadcastedConf), relation.inputFiles.toSeq)
+      } else {
+        (None, Seq.empty[String])
+      }
+
     CometExecRDD(
       sparkContext,
       inputRDDs = Seq.empty,
@@ -211,7 +227,9 @@ case class CometNativeScanExec(
       numPartitions = perPartitionData.length,
       numOutputCols = output.length,
       nativeMetrics = nativeMetrics,
-      subqueries = Seq.empty)
+      subqueries = Seq.empty,
+      broadcastedHadoopConfForEncryption = broadcastedHadoopConfForEncryption,
+      encryptedFilePaths = encryptedFilePaths)
   }
 
   override def doCanonicalize(): CometNativeScanExec = {
