@@ -554,8 +554,7 @@ object CometConf extends ShimCometConf {
         "When enabled, Comet will run DataFusion's physical optimizer rules on the " +
           "native query plan before execution. This can improve performance through " +
           "additional optimizations such as projection pushdown, coalesce batches, " +
-          "filter pushdown, and limit pushdown. Note: per-operator Spark SQL metrics " +
-          "will not be available when this is enabled. This feature is highly experimental.")
+          "filter pushdown, and limit pushdown. This feature is highly experimental.")
       .booleanConf
       .createWithDefault(true)
 

@@ -558,9 +558,13 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                         info!("Comet native plan after DataFusion optimization:\n{after}");
                     }
 
-                    // Create a flat SparkPlan with no children since the optimizer
-                    // invalidates the SparkPlan-to-ExecutionPlan mapping used for metrics
-                    Arc::new(SparkPlan::new(root_op.plan_id, optimized_plan, vec![]))
+                    // Keep the original SparkPlan tree structure (for metrics)
+                    // but replace the root's native plan with the optimized version
+                    Arc::new(SparkPlan::new(
+                        root_op.plan_id,
+                        optimized_plan,
+                        root_op.children.clone(),
+                    ))
                 } else {
                     root_op
                 };
@@ -687,9 +691,6 @@ pub extern "system" fn Java_org_apache_comet_Native_releasePlan(
 
 /// Updates the metrics of the query plan.
 fn update_metrics(env: &mut JNIEnv, exec_context: &mut ExecutionContext) -> CometResult<()> {
-    if exec_context.native_physical_optimizer_enabled {
-        return Ok(());
-    }
     if let Some(native_query) = &exec_context.root_op {
         let metrics = exec_context.metrics.as_obj();
         update_comet_metric(env, metrics, native_query)
