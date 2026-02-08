@@ -360,6 +360,8 @@ fn prepare_datafusion_session_context(
     };
     use datafusion::execution::SessionStateBuilder;
 
+    use crate::execution::physical_cse::PhysicalCommonSubexprEliminate;
+
     let physical_optimizer_rules: Vec<Arc<dyn PhysicalOptimizerRule + Send + Sync>> = vec![
         Arc::new(AggregateStatistics::new()),
         Arc::new(LimitedDistinctAggregation::new()),
@@ -368,6 +370,7 @@ fn prepare_datafusion_session_context(
         Arc::new(TopKAggregation::new()),
         Arc::new(LimitPushPastWindows::new()),
         Arc::new(LimitPushdown::new()),
+        Arc::new(PhysicalCommonSubexprEliminate::new()),
     ];
 
     let state = SessionStateBuilder::new()

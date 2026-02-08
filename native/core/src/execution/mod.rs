@@ -21,6 +21,7 @@ pub mod expressions;
 pub mod jni_api;
 pub(crate) mod metrics;
 pub mod operators;
+pub(crate) mod physical_cse;
 pub(crate) mod planner;
 pub mod serde;
 pub mod shuffle;
