@@ -22,7 +22,7 @@ package org.apache.spark.sql.comet.shims
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{And, AttributeReference, BasePredicate, BoundReference, Expression, FileSourceConstantMetadataAttribute, Literal, Predicate}
+import org.apache.spark.sql.catalyst.expressions.{And, AttributeReference, BoundReference, Expression, FileSourceConstantMetadataAttribute, Literal, Predicate}
 import org.apache.spark.sql.execution.{FileSourceScanExec, PartitionedFileUtil, ScalarSubquery, ScanFileListing}
 import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.execution.datasources.parquet.ParquetOptions
