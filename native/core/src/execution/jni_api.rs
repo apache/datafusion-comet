@@ -515,7 +515,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                 let root_op = if exec_context.native_physical_optimizer_enabled {
                     let state = exec_context.session_ctx.state();
                     let optimizers = state.physical_optimizers();
-                    let config = state.config_options().clone();
+                    let config = Arc::clone(state.config_options());
                     let mut optimized_plan = Arc::clone(&root_op.native_plan);
 
                     if exec_context.explain_native {
