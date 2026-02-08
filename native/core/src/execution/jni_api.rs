@@ -524,14 +524,29 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                         info!("Comet native plan before DataFusion optimization:\n{before}");
                     }
 
+                    // Skip optimizer rules that are incompatible with Comet's
+                    // execution model where Spark handles distribution/sorting
+                    // via shuffles and Comet always executes partition 0.
+                    let skip_rules = [
+                        // Inserts RepartitionExec which conflicts with Comet
+                        // executing a single partition per Spark task
+                        "EnforceDistribution",
+                        // Adds sorting that Spark already handles externally
+                        "EnforceSorting",
+                        // Bookkeeping for EnforceSorting
+                        "OutputRequirements",
+                        // May change join implementations to types Comet
+                        // doesn't support natively
+                        "JoinSelection",
+                        // Validates distribution/ordering properties that don't
+                        // apply in Comet's Spark-managed execution model
+                        "SanityCheckPlan",
+                        // CooperativeExec uses Tokio's per-task coop budget
+                        // which is never reset in Comet's manual poll!() loop
+                        "EnsureCooperative",
+                    ];
                     for optimizer in optimizers {
-                        // EnsureCooperative inserts CooperativeExec nodes that use
-                        // Tokio's per-task coop budget. This is incompatible with
-                        // Comet's manual poll!() loop: once the budget is exhausted
-                        // (~128 batches), CooperativeExec returns Poll::Pending but
-                        // the budget is never reset (block_on never re-polls the
-                        // top-level future), causing an infinite busy loop.
-                        if optimizer.name() == "EnsureCooperative" {
+                        if skip_rules.contains(&optimizer.name()) {
                             continue;
                         }
                         optimized_plan = optimizer.optimize(optimized_plan, &config)?;
