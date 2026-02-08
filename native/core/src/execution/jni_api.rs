@@ -83,7 +83,7 @@ use crate::execution::tracing::{log_memory_usage, trace_begin, trace_end, with_t
 
 use crate::execution::spark_config::{
     SparkConfig, COMET_DEBUG_ENABLED, COMET_EXPLAIN_NATIVE_ENABLED, COMET_MAX_TEMP_DIRECTORY_SIZE,
-    COMET_TRACING_ENABLED,
+    COMET_NATIVE_PHYSICAL_OPTIMIZER_ENABLED, COMET_TRACING_ENABLED,
 };
 use crate::parquet::encryption_support::{CometEncryptionFactory, ENCRYPTION_FACTORY_ID};
 use datafusion_comet_proto::spark_operator::operator::OpStruct;
@@ -153,6 +153,8 @@ struct ExecutionContext {
     pub memory_pool_config: MemoryPoolConfig,
     /// Whether to log memory usage on each call to execute_plan
     pub tracing_enabled: bool,
+    /// Whether to run DataFusion's physical optimizer on the native plan
+    pub native_physical_optimizer_enabled: bool,
 }
 
 /// Accept serialized query plan and return the address of the native query plan.
@@ -192,6 +194,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
         let tracing_enabled = spark_config.get_bool(COMET_TRACING_ENABLED);
         let max_temp_directory_size =
             spark_config.get_u64(COMET_MAX_TEMP_DIRECTORY_SIZE, 100 * 1024 * 1024 * 1024);
+        let native_physical_optimizer_enabled =
+            spark_config.get_bool(COMET_NATIVE_PHYSICAL_OPTIMIZER_ENABLED);
 
         with_trace("createPlan", tracing_enabled, || {
             // Init JVM classes
@@ -286,6 +290,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 explain_native,
                 memory_pool_config,
                 tracing_enabled,
+                native_physical_optimizer_enabled,
             });
 
             Ok(Box::into_raw(exec_context) as i64)
@@ -495,8 +500,24 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                 let physical_plan_time = start.elapsed();
 
                 exec_context.plan_creation_time += physical_plan_time;
-                exec_context.root_op = Some(Arc::clone(&root_op));
                 exec_context.scans = scans;
+
+                let root_op = if exec_context.native_physical_optimizer_enabled {
+                    let state = exec_context.session_ctx.state();
+                    let optimizers = state.physical_optimizers();
+                    let config = state.config_options().clone();
+                    let mut optimized_plan = Arc::clone(&root_op.native_plan);
+                    for optimizer in optimizers {
+                        optimized_plan = optimizer.optimize(optimized_plan, &config)?;
+                    }
+                    // Create a flat SparkPlan with no children since the optimizer
+                    // invalidates the SparkPlan-to-ExecutionPlan mapping used for metrics
+                    Arc::new(SparkPlan::new(root_op.plan_id, optimized_plan, vec![]))
+                } else {
+                    root_op
+                };
+
+                exec_context.root_op = Some(Arc::clone(&root_op));
 
                 if exec_context.explain_native {
                     let formatted_plan_str =
@@ -618,6 +639,9 @@ pub extern "system" fn Java_org_apache_comet_Native_releasePlan(
 
 /// Updates the metrics of the query plan.
 fn update_metrics(env: &mut JNIEnv, exec_context: &mut ExecutionContext) -> CometResult<()> {
+    if exec_context.native_physical_optimizer_enabled {
+        return Ok(());
+    }
     if let Some(native_query) = &exec_context.root_op {
         let metrics = exec_context.metrics.as_obj();
         update_comet_metric(env, metrics, native_query)

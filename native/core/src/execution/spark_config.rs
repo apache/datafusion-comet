@@ -21,6 +21,8 @@ pub(crate) const COMET_TRACING_ENABLED: &str = "spark.comet.tracing.enabled";
 pub(crate) const COMET_DEBUG_ENABLED: &str = "spark.comet.debug.enabled";
 pub(crate) const COMET_EXPLAIN_NATIVE_ENABLED: &str = "spark.comet.explain.native.enabled";
 pub(crate) const COMET_MAX_TEMP_DIRECTORY_SIZE: &str = "spark.comet.maxTempDirectorySize";
+pub(crate) const COMET_NATIVE_PHYSICAL_OPTIMIZER_ENABLED: &str =
+    "spark.comet.exec.nativePhysicalOptimizer.enabled";
 
 pub(crate) trait SparkConfig {
     fn get_bool(&self, name: &str) -> bool;

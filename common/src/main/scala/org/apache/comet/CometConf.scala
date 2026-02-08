@@ -549,6 +549,18 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_NATIVE_PHYSICAL_OPTIMIZER_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.exec.nativePhysicalOptimizer.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "When enabled, Comet will run DataFusion's physical optimizer rules on the " +
+          "native query plan before execution. This can improve performance through " +
+          "additional optimizations such as projection pushdown, coalesce batches, " +
+          "filter pushdown, and limit pushdown. Note: per-operator Spark SQL metrics " +
+          "will not be available when this is enabled.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_EXTENDED_EXPLAIN_FORMAT_VERBOSE = "verbose"
   val COMET_EXTENDED_EXPLAIN_FORMAT_FALLBACK = "fallback"
 
