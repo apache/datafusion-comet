@@ -468,7 +468,15 @@ case class CometScanRule(session: SparkSession)
         }
 
         // Single-pass validation of all FileScanTasks
-        val taskValidation = CometScanRule.validateIcebergFileScanTasks(metadata.tasks)
+        val taskValidation =
+          try {
+            CometScanRule.validateIcebergFileScanTasks(metadata.tasks)
+          } catch {
+            case e: Exception =>
+              fallbackReasons += "Iceberg reflection failure: Could not validate " +
+                s"FileScanTasks: ${e.getMessage}"
+              return withInfos(scanExec, fallbackReasons.toSet)
+          }
 
         // Check if all files are Parquet format and use supported filesystem schemes
         val allSupportedFilesystems = if (taskValidation.unsupportedSchemes.isEmpty) {
