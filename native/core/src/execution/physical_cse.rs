@@ -29,10 +29,10 @@ use datafusion::common::config::ConfigOptions;
 use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion};
 use datafusion::common::Result;
 use datafusion::physical_expr::expressions::{Column, Literal};
+use datafusion::physical_expr_common::physical_expr::is_volatile;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::projection::{ProjectionExec, ProjectionExpr};
 use datafusion::physical_plan::ExecutionPlan;
-use datafusion::physical_expr_common::physical_expr::is_volatile;
 
 /// A wrapper around `Arc<dyn PhysicalExpr>` that implements `Eq` and `Hash`
 /// by delegating to the trait-object implementations on `dyn PhysicalExpr`.
@@ -70,8 +70,8 @@ impl PhysicalOptimizerRule for PhysicalCommonSubexprEliminate {
         _config: &ConfigOptions,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         plan.transform_up(|node| {
-            if let Some(projection) = node.as_any().downcast_ref::<ProjectionExec>() {
-                try_optimize_projection(projection)
+            if node.as_any().downcast_ref::<ProjectionExec>().is_some() {
+                try_optimize_projection(node)
             } else {
                 Ok(Transformed::no(node))
             }
@@ -155,14 +155,13 @@ fn rewrite_expr(
 /// Attempt to optimize a single `ProjectionExec` by extracting common
 /// subexpressions into an intermediate projection.
 fn try_optimize_projection(
-    projection: &ProjectionExec,
+    node: Arc<dyn ExecutionPlan>,
 ) -> Result<Transformed<Arc<dyn ExecutionPlan>>> {
+    let projection = node.as_any().downcast_ref::<ProjectionExec>().unwrap();
     let proj_exprs = projection.expr();
     let common = find_common_subexprs(proj_exprs);
     if common.is_empty() {
-        return Ok(Transformed::no(
-            Arc::new(projection.clone()) as Arc<dyn ExecutionPlan>
-        ));
+        return Ok(Transformed::no(node));
     }
 
     let input = projection.input();
@@ -191,9 +190,10 @@ fn try_optimize_projection(
         cse_map.insert(ExprKey(Arc::clone(cse_expr)), (cse_name, col_index));
     }
 
-    let intermediate =
-        Arc::new(ProjectionExec::try_new(intermediate_exprs, Arc::clone(input))?)
-            as Arc<dyn ExecutionPlan>;
+    let intermediate = Arc::new(ProjectionExec::try_new(
+        intermediate_exprs,
+        Arc::clone(input),
+    )?) as Arc<dyn ExecutionPlan>;
 
     // Rewrite the top projection expressions to reference the intermediate.
     let mut new_proj_exprs: Vec<ProjectionExpr> = Vec::new();
@@ -215,9 +215,9 @@ fn try_optimize_projection(
 mod tests {
     use super::*;
     use arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::logical_expr::Operator;
     use datafusion::physical_expr::expressions::{binary, col};
     use datafusion::physical_plan::empty::EmptyExec;
-    use datafusion::logical_expr::Operator;
 
     fn test_schema() -> Arc<Schema> {
         Arc::new(Schema::new(vec![
@@ -238,8 +238,12 @@ mod tests {
         let a_plus_b_1 = binary(Arc::clone(&a), Operator::Plus, Arc::clone(&b), &schema)?;
         let a_plus_b_2 = binary(Arc::clone(&a), Operator::Plus, Arc::clone(&b), &schema)?;
 
-        let two = Arc::new(Literal::new(datafusion::common::ScalarValue::Int32(Some(2))));
-        let three = Arc::new(Literal::new(datafusion::common::ScalarValue::Int32(Some(3))));
+        let two = Arc::new(Literal::new(datafusion::common::ScalarValue::Int32(Some(
+            2,
+        ))));
+        let three = Arc::new(Literal::new(datafusion::common::ScalarValue::Int32(Some(
+            3,
+        ))));
 
         let expr_x = binary(a_plus_b_1, Operator::Multiply, two, &schema)?;
         let expr_y = binary(a_plus_b_2, Operator::Multiply, three, &schema)?;

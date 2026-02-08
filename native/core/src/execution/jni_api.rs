@@ -348,6 +348,7 @@ fn prepare_datafusion_session_context(
     // Only include physical optimizer rules that are compatible with
     // Comet's execution model. Spark handles distribution, sorting,
     // filter/projection pushdown, and join selection externally.
+    use datafusion::execution::SessionStateBuilder;
     use datafusion::physical_optimizer::{
         // aggregate_statistics::AggregateStatistics,
         // combine_partial_final_agg::CombinePartialFinalAggregate,
@@ -358,7 +359,6 @@ fn prepare_datafusion_session_context(
         // update_aggr_exprs::OptimizeAggregateOrder,
         PhysicalOptimizerRule,
     };
-    use datafusion::execution::SessionStateBuilder;
 
     use crate::execution::physical_cse::PhysicalCommonSubexprEliminate;
 
