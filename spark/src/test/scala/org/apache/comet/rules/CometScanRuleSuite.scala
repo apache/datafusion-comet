@@ -90,7 +90,12 @@ class CometScanRuleSuite extends CometTestBase {
 
             if (cometEnabled) {
               assert(countOperators(transformedPlan, classOf[FileSourceScanExec]) == 0)
-              assert(countOperators(transformedPlan, classOf[CometScanExec]) == 1)
+              if (CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_DATAFUSION) {
+                assert(countOperators(transformedPlan, classOf[CometScanExec]) == 1)
+              } else {
+                // CometNativeScanExec does not get wrapped in CometScanExec
+                assert(countOperators(transformedPlan, classOf[CometNativeScanExec]) == 1)
+              }
             } else {
               assert(countOperators(transformedPlan, classOf[FileSourceScanExec]) == 1)
               assert(countOperators(transformedPlan, classOf[CometScanExec]) == 0)
