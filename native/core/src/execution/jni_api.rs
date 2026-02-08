@@ -525,6 +525,15 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                     }
 
                     for optimizer in optimizers {
+                        // EnsureCooperative inserts CooperativeExec nodes that use
+                        // Tokio's per-task coop budget. This is incompatible with
+                        // Comet's manual poll!() loop: once the budget is exhausted
+                        // (~128 batches), CooperativeExec returns Poll::Pending but
+                        // the budget is never reset (block_on never re-polls the
+                        // top-level future), causing an infinite busy loop.
+                        if optimizer.name() == "EnsureCooperative" {
+                            continue;
+                        }
                         optimized_plan = optimizer.optimize(optimized_plan, &config)?;
                     }
 
