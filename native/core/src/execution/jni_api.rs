@@ -517,9 +517,23 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                     let optimizers = state.physical_optimizers();
                     let config = state.config_options().clone();
                     let mut optimized_plan = Arc::clone(&root_op.native_plan);
+
+                    if exec_context.explain_native {
+                        let before = DisplayableExecutionPlan::new(optimized_plan.as_ref())
+                            .indent(true);
+                        info!("Comet native plan before DataFusion optimization:\n{before}");
+                    }
+
                     for optimizer in optimizers {
                         optimized_plan = optimizer.optimize(optimized_plan, &config)?;
                     }
+
+                    if exec_context.explain_native {
+                        let after = DisplayableExecutionPlan::new(optimized_plan.as_ref())
+                            .indent(true);
+                        info!("Comet native plan after DataFusion optimization:\n{after}");
+                    }
+
                     // Create a flat SparkPlan with no children since the optimizer
                     // invalidates the SparkPlan-to-ExecutionPlan mapping used for metrics
                     Arc::new(SparkPlan::new(root_op.plan_id, optimized_plan, vec![]))
