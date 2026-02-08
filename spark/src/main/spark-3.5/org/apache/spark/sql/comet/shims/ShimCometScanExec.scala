@@ -25,7 +25,7 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.SPARK_VERSION_SHORT
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Expression}
+import org.apache.spark.sql.catalyst.expressions.{And, AttributeReference, BoundReference, Expression, Predicate}
 import org.apache.spark.sql.execution.{FileSourceScanExec, PartitionedFileUtil}
 import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.execution.datasources.parquet.ParquetOptions
@@ -38,6 +38,58 @@ trait ShimCometScanExec {
 
   lazy val fileConstantMetadataColumns: Seq[AttributeReference] =
     wrapped.fileConstantMetadataColumns
+
+  /**
+   * Returns file partitions after applying DPP filtering. In Spark 3.x, filters
+   * Array[PartitionDirectory] manually.
+   *
+   * Based on FileSourceScanExec.dynamicallySelectedPartitions and
+   * FileSourceScanExec.createNonBucketedReadRDD.
+   */
+  protected def getDppFilteredFilePartitions(
+      relation: HadoopFsRelation,
+      partitionFilters: Seq[Expression],
+      selectedPartitions: Array[PartitionDirectory]): Seq[FilePartition] = {
+    val dynamicPartitionFilters = partitionFilters.filter(isDynamicPruningFilter)
+    val filteredPartitions = if (dynamicPartitionFilters.nonEmpty) {
+      val predicate = dynamicPartitionFilters.reduce(And)
+      val partitionColumns = relation.partitionSchema
+      val boundPredicate = Predicate.create(
+        predicate.transform { case a: AttributeReference =>
+          val index = partitionColumns.indexWhere(a.name == _.name)
+          BoundReference(index, partitionColumns(index).dataType, nullable = true)
+        },
+        Nil)
+      selectedPartitions.filter(p => boundPredicate.eval(p.values))
+    } else {
+      selectedPartitions
+    }
+
+    val maxSplitBytes = FilePartition.maxSplitBytes(relation.sparkSession, filteredPartitions)
+    val splitFilesList = filteredPartitions
+      .flatMap { partition =>
+        partition.files.flatMap { file =>
+          val filePath = file.getPath
+          val isSplitable = relation.fileFormat.isSplitable(
+            relation.sparkSession,
+            relation.options,
+            filePath) && file.getLen > maxSplitBytes
+          splitFiles(
+            relation.sparkSession,
+            file,
+            filePath,
+            isSplitable,
+            maxSplitBytes,
+            partition.values)
+        }
+      }
+      .sortBy(_.length)(implicitly[Ordering[Long]].reverse)
+
+    FilePartition.getFilePartitions(relation.sparkSession, splitFilesList, maxSplitBytes)
+  }
+
+  private def isDynamicPruningFilter(e: Expression): Boolean =
+    e.exists(_.isInstanceOf[org.apache.spark.sql.catalyst.expressions.PlanExpression[_]])
 
   def isSparkVersionAtLeast355: Boolean = {
     VersionUtils.majorMinorPatchVersion(SPARK_VERSION_SHORT) match {

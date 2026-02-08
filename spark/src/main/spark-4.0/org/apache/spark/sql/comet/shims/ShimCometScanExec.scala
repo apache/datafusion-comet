@@ -22,8 +22,8 @@ package org.apache.spark.sql.comet.shims
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Expression, FileSourceConstantMetadataAttribute, Literal}
-import org.apache.spark.sql.execution.{FileSourceScanExec, PartitionedFileUtil, ScalarSubquery}
+import org.apache.spark.sql.catalyst.expressions.{And, AttributeReference, BasePredicate, BoundReference, Expression, FileSourceConstantMetadataAttribute, Literal, Predicate}
+import org.apache.spark.sql.execution.{FileSourceScanExec, PartitionedFileUtil, ScalarSubquery, ScanFileListing}
 import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.execution.datasources.parquet.ParquetOptions
 import org.apache.spark.sql.sources.Filter
@@ -34,6 +34,59 @@ trait ShimCometScanExec extends ShimStreamSourceAwareSparkPlan {
 
   lazy val fileConstantMetadataColumns: Seq[AttributeReference] =
     wrapped.fileConstantMetadataColumns
+
+  /**
+   * Returns file partitions after applying DPP filtering. In Spark 4.0, uses
+   * ScanFileListing.filterAndPruneFiles.
+   *
+   * Based on FileSourceScanExec.dynamicallySelectedPartitions and
+   * FileSourceScanLike.createScanFileSplitsForNonBucketedScan.
+   */
+  protected def getDppFilteredFilePartitions(
+      relation: HadoopFsRelation,
+      partitionFilters: Seq[Expression],
+      selectedPartitions: ScanFileListing): Seq[FilePartition] = {
+    val dynamicPartitionFilters = partitionFilters.filter(isDynamicPruningFilter)
+    val filteredListing = if (dynamicPartitionFilters.nonEmpty) {
+      val predicate = dynamicPartitionFilters.reduce(And)
+      val partitionColumns = relation.partitionSchema
+      val boundPredicate = Predicate.create(
+        predicate.transform { case a: AttributeReference =>
+          val index = partitionColumns.indexWhere(a.name == _.name)
+          BoundReference(index, partitionColumns(index).dataType, nullable = true)
+        },
+        Nil)
+      selectedPartitions.filterAndPruneFiles(boundPredicate, Seq.empty)
+    } else {
+      selectedPartitions
+    }
+
+    val maxSplitBytes = FilePartition.maxSplitBytes(relation.sparkSession, filteredListing)
+    val splitFiles = filteredListing.filePartitionIterator
+      .flatMap { partition =>
+        partition.files.flatMap { file =>
+          val filePath = file.getPath
+          val isSplitable = relation.fileFormat.isSplitable(
+            relation.sparkSession,
+            relation.options,
+            filePath) && file.getLen > maxSplitBytes
+          splitFiles(
+            relation.sparkSession,
+            file,
+            filePath,
+            isSplitable,
+            maxSplitBytes,
+            partition.values)
+        }
+      }
+      .toSeq
+      .sortBy(_.length)(implicitly[Ordering[Long]].reverse)
+
+    FilePartition.getFilePartitions(relation.sparkSession, splitFiles, maxSplitBytes)
+  }
+
+  private def isDynamicPruningFilter(e: Expression): Boolean =
+    e.exists(_.isInstanceOf[org.apache.spark.sql.catalyst.expressions.PlanExpression[_]])
 
   protected def newFileScanRDD(
       fsRelation: HadoopFsRelation,

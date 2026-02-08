@@ -19,7 +19,6 @@
 
 package org.apache.spark.sql.comet
 
-import org.apache.hadoop.fs.Path
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.{InternalRow, TableIdentifier}
 import org.apache.spark.sql.catalyst.expressions._
@@ -121,70 +120,7 @@ case class CometNativeScanExec(
 
   /** Get file partitions with DPP filtering applied. */
   private def getFilePartitions(): Seq[FilePartition] = {
-    val selectedPartitions = originalPlan.selectedPartitions
-
-    val dynamicPartitionFilters = partitionFilters.filter(isDynamicPruningFilter)
-    val dynamicallySelectedPartitions = if (dynamicPartitionFilters.nonEmpty) {
-      val predicate = dynamicPartitionFilters.reduce(And)
-      val partitionColumns = relation.partitionSchema
-      val boundPredicate = Predicate.create(
-        predicate.transform { case a: AttributeReference =>
-          val index = partitionColumns.indexWhere(a.name == _.name)
-          BoundReference(index, partitionColumns(index).dataType, nullable = true)
-        },
-        Nil)
-      selectedPartitions.filter(p => boundPredicate.eval(p.values))
-    } else {
-      selectedPartitions
-    }
-
-    createFilePartitionsForNonBucketedScan(dynamicallySelectedPartitions)
-  }
-
-  private def isDynamicPruningFilter(e: Expression): Boolean =
-    e.exists(_.isInstanceOf[PlanExpression[_]])
-
-  private def createFilePartitionsForNonBucketedScan(
-      selectedPartitions: Array[PartitionDirectory]): Seq[FilePartition] = {
-    val maxSplitBytes =
-      FilePartition.maxSplitBytes(relation.sparkSession, selectedPartitions)
-
-    // Filter files with bucket pruning if possible
-    val bucketingEnabled = relation.sparkSession.sessionState.conf.bucketingEnabled
-    val shouldProcess: Path => Boolean = optionalBucketSet match {
-      case Some(bucketSet) if bucketingEnabled =>
-        filePath => BucketingUtils.getBucketId(filePath.getName).forall(bucketSet.get)
-      case _ =>
-        _ => true
-    }
-
-    val splitFilesList = selectedPartitions
-      .flatMap { partition =>
-        partition.files.flatMap { file =>
-          val filePath = file.getPath
-
-          if (shouldProcess(filePath)) {
-            val isSplitable = relation.fileFormat.isSplitable(
-              relation.sparkSession,
-              relation.options,
-              filePath) &&
-              file.getLen > maxSplitBytes
-
-            splitFiles(
-              relation.sparkSession,
-              file,
-              filePath,
-              isSplitable,
-              maxSplitBytes,
-              partition.values)
-          } else {
-            Seq.empty
-          }
-        }
-      }
-      .sortBy(_.length)(implicitly[Ordering[Long]].reverse)
-
-    FilePartition.getFilePartitions(relation.sparkSession, splitFilesList, maxSplitBytes)
+    getDppFilteredFilePartitions(relation, partitionFilters, originalPlan.selectedPartitions)
   }
 
   def commonData: Array[Byte] = serializedPartitionData._1
