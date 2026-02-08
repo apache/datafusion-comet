@@ -349,13 +349,13 @@ fn prepare_datafusion_session_context(
     // Comet's execution model. Spark handles distribution, sorting,
     // filter/projection pushdown, and join selection externally.
     use datafusion::physical_optimizer::{
-        aggregate_statistics::AggregateStatistics,
-        combine_partial_final_agg::CombinePartialFinalAggregate,
-        limit_pushdown::LimitPushdown,
-        limit_pushdown_past_window::LimitPushPastWindows,
-        limited_distinct_aggregation::LimitedDistinctAggregation,
-        topk_aggregation::TopKAggregation,
-        update_aggr_exprs::OptimizeAggregateOrder,
+        // aggregate_statistics::AggregateStatistics,
+        // combine_partial_final_agg::CombinePartialFinalAggregate,
+        // limit_pushdown::LimitPushdown,
+        // limit_pushdown_past_window::LimitPushPastWindows,
+        // limited_distinct_aggregation::LimitedDistinctAggregation,
+        // topk_aggregation::TopKAggregation,
+        // update_aggr_exprs::OptimizeAggregateOrder,
         PhysicalOptimizerRule,
     };
     use datafusion::execution::SessionStateBuilder;
@@ -363,13 +363,13 @@ fn prepare_datafusion_session_context(
     use crate::execution::physical_cse::PhysicalCommonSubexprEliminate;
 
     let physical_optimizer_rules: Vec<Arc<dyn PhysicalOptimizerRule + Send + Sync>> = vec![
-        Arc::new(AggregateStatistics::new()),
-        Arc::new(LimitedDistinctAggregation::new()),
-        Arc::new(CombinePartialFinalAggregate::new()),
-        Arc::new(OptimizeAggregateOrder::new()),
-        Arc::new(TopKAggregation::new()),
-        Arc::new(LimitPushPastWindows::new()),
-        Arc::new(LimitPushdown::new()),
+        // Arc::new(AggregateStatistics::new()),
+        // Arc::new(LimitedDistinctAggregation::new()),
+        // Arc::new(CombinePartialFinalAggregate::new()),
+        // Arc::new(OptimizeAggregateOrder::new()),
+        // Arc::new(TopKAggregation::new()),
+        // Arc::new(LimitPushPastWindows::new()),
+        // Arc::new(LimitPushdown::new()),
         Arc::new(PhysicalCommonSubexprEliminate::new()),
     ];
 
@@ -563,8 +563,14 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                         let before_plan = Arc::clone(&optimized_plan);
                         optimized_plan = optimizer.optimize(optimized_plan, &config)?;
                         if !Arc::ptr_eq(&before_plan, &optimized_plan) {
+                            let before_display =
+                                DisplayableExecutionPlan::new(before_plan.as_ref()).indent(true);
+                            let after_display =
+                                DisplayableExecutionPlan::new(optimized_plan.as_ref()).indent(true);
                             info!(
-                                "Physical optimizer rule '{}' changed the plan",
+                                "Physical optimizer rule '{}' changed the plan\n\
+                                 BEFORE:\n{before_display}\n\
+                                 AFTER:\n{after_display}",
                                 optimizer.name()
                             );
                         }
