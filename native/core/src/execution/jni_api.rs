@@ -544,9 +544,19 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                         // CooperativeExec uses Tokio's per-task coop budget
                         // which is never reset in Comet's manual poll!() loop
                         "EnsureCooperative",
+                        // Filter pushdown into parquet scans can cause
+                        // performance regressions
+                        "FilterPushdown",
+                        "CoalesceBatches",
+                        // Spark already handles projection pushdown at the
+                        // logical level
+                        "ProjectionPushdown",
                     ];
                     for optimizer in optimizers {
-                        if skip_rules.contains(&optimizer.name()) {
+                        if skip_rules
+                            .iter()
+                            .any(|r| optimizer.name().starts_with(r))
+                        {
                             continue;
                         }
                         optimized_plan = optimizer.optimize(optimized_plan, &config)?;
