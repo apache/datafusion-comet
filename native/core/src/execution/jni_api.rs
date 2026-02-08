@@ -345,7 +345,39 @@ fn prepare_datafusion_session_context(
 
     let runtime = rt_config.build()?;
 
-    let mut session_ctx = SessionContext::new_with_config_rt(session_config, Arc::new(runtime));
+    // Only include physical optimizer rules that are compatible with
+    // Comet's execution model. Spark handles distribution, sorting,
+    // filter/projection pushdown, and join selection externally.
+    use datafusion::physical_optimizer::{
+        aggregate_statistics::AggregateStatistics,
+        combine_partial_final_agg::CombinePartialFinalAggregate,
+        limit_pushdown::LimitPushdown,
+        limit_pushdown_past_window::LimitPushPastWindows,
+        limited_distinct_aggregation::LimitedDistinctAggregation,
+        topk_aggregation::TopKAggregation,
+        update_aggr_exprs::OptimizeAggregateOrder,
+        PhysicalOptimizerRule,
+    };
+    use datafusion::execution::SessionStateBuilder;
+
+    let physical_optimizer_rules: Vec<Arc<dyn PhysicalOptimizerRule + Send + Sync>> = vec![
+        Arc::new(AggregateStatistics::new()),
+        Arc::new(LimitedDistinctAggregation::new()),
+        Arc::new(CombinePartialFinalAggregate::new()),
+        Arc::new(OptimizeAggregateOrder::new()),
+        Arc::new(TopKAggregation::new()),
+        Arc::new(LimitPushPastWindows::new()),
+        Arc::new(LimitPushdown::new()),
+    ];
+
+    let state = SessionStateBuilder::new()
+        .with_config(session_config)
+        .with_runtime_env(Arc::new(runtime))
+        .with_default_features()
+        .with_physical_optimizer_rules(physical_optimizer_rules)
+        .build();
+
+    let mut session_ctx = SessionContext::new_with_state(state);
 
     datafusion::functions_nested::register_all(&mut session_ctx)?;
     register_datafusion_spark_function(&session_ctx);
@@ -524,42 +556,15 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                         info!("Comet native plan before DataFusion optimization:\n{before}");
                     }
 
-                    // Skip optimizer rules that are incompatible with Comet's
-                    // execution model where Spark handles distribution/sorting
-                    // via shuffles and Comet always executes partition 0.
-                    let skip_rules = [
-                        // Inserts RepartitionExec which conflicts with Comet
-                        // executing a single partition per Spark task
-                        "EnforceDistribution",
-                        // Adds sorting that Spark already handles externally
-                        "EnforceSorting",
-                        // Bookkeeping for EnforceSorting
-                        "OutputRequirements",
-                        // May change join implementations to types Comet
-                        // doesn't support natively
-                        "JoinSelection",
-                        // Validates distribution/ordering properties that don't
-                        // apply in Comet's Spark-managed execution model
-                        "SanityCheckPlan",
-                        // CooperativeExec uses Tokio's per-task coop budget
-                        // which is never reset in Comet's manual poll!() loop
-                        "EnsureCooperative",
-                        // Filter pushdown into parquet scans can cause
-                        // performance regressions
-                        "FilterPushdown",
-                        "CoalesceBatches",
-                        // Spark already handles projection pushdown at the
-                        // logical level
-                        "ProjectionPushdown",
-                    ];
                     for optimizer in optimizers {
-                        if skip_rules
-                            .iter()
-                            .any(|r| optimizer.name().starts_with(r))
-                        {
-                            continue;
-                        }
+                        let before_plan = Arc::clone(&optimized_plan);
                         optimized_plan = optimizer.optimize(optimized_plan, &config)?;
+                        if !Arc::ptr_eq(&before_plan, &optimized_plan) {
+                            info!(
+                                "Physical optimizer rule '{}' changed the plan",
+                                optimizer.name()
+                            );
+                        }
                     }
 
                     if exec_context.explain_native {
