@@ -6,32 +6,36 @@ CometColumnarToRow
             +- CometSortMergeJoin
                :- CometSort
                :  +- CometHashAggregate
-               :     +- CometExchange
-               :        +- CometHashAggregate
-               :           +- CometProject
-               :              +- CometBroadcastHashJoin
-               :                 :- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
-               :                 :     +- SubqueryBroadcast
-               :                 :        +- BroadcastExchange
-               :                 :           +- CometColumnarToRow
-               :                 :              +- CometProject
-               :                 :                 +- CometFilter
-               :                 :                    +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
-               :                 +- CometBroadcastExchange
-               :                    +- CometProject
-               :                       +- CometFilter
-               :                          +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+               :     +- CometColumnarExchange
+               :        +- HashAggregate
+               :           +- Project
+               :              +- BroadcastHashJoin
+               :                 :- ColumnarToRow
+               :                 :  +-  Scan parquet spark_catalog.default.store_sales [COMET: Dynamic Partition Pruning is not supported]
+               :                 :        +- SubqueryBroadcast
+               :                 :           +- BroadcastExchange
+               :                 :              +- CometColumnarToRow
+               :                 :                 +- CometProject
+               :                 :                    +- CometFilter
+               :                 :                       +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+               :                 +- BroadcastExchange
+               :                    +- CometColumnarToRow
+               :                       +- CometProject
+               :                          +- CometFilter
+               :                             +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
                +- CometSort
                   +- CometHashAggregate
-                     +- CometExchange
-                        +- CometHashAggregate
-                           +- CometProject
-                              +- CometBroadcastHashJoin
-                                 :- CometScan [native_iceberg_compat] parquet spark_catalog.default.catalog_sales
-                                 :     +- ReusedSubquery
-                                 +- CometBroadcastExchange
-                                    +- CometProject
-                                       +- CometFilter
-                                          +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+                     +- CometColumnarExchange
+                        +- HashAggregate
+                           +- Project
+                              +- BroadcastHashJoin
+                                 :- ColumnarToRow
+                                 :  +-  Scan parquet spark_catalog.default.catalog_sales [COMET: Dynamic Partition Pruning is not supported]
+                                 :        +- ReusedSubquery
+                                 +- BroadcastExchange
+                                    +- CometColumnarToRow
+                                       +- CometProject
+                                          +- CometFilter
+                                             +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
 
-Comet accelerated 30 out of 33 eligible operators (90%). Final plan contains 2 transitions between Spark and Comet.
+Comet accelerated 20 out of 33 eligible operators (60%). Final plan contains 6 transitions between Spark and Comet.

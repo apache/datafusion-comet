@@ -1,32 +1,36 @@
-CometColumnarToRow
-+- CometTakeOrderedAndProject
-   +- CometHashAggregate
-      +- CometExchange
-         +- CometHashAggregate
-            +- CometProject
-               +- CometBroadcastHashJoin
-                  :- CometProject
-                  :  +- CometBroadcastHashJoin
-                  :     :- CometProject
-                  :     :  +- CometBroadcastHashJoin
-                  :     :     :- CometFilter
-                  :     :     :  +- CometScan [native_iceberg_compat] parquet spark_catalog.default.catalog_sales
-                  :     :     :        +- SubqueryBroadcast
-                  :     :     :           +- BroadcastExchange
-                  :     :     :              +- CometColumnarToRow
-                  :     :     :                 +- CometProject
-                  :     :     :                    +- CometFilter
-                  :     :     :                       +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
-                  :     :     +- CometBroadcastExchange
-                  :     :        +- CometFilter
-                  :     :           +- CometScan [native_iceberg_compat] parquet spark_catalog.default.customer
-                  :     +- CometBroadcastExchange
-                  :        +- CometProject
-                  :           +- CometFilter
-                  :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.customer_address
-                  +- CometBroadcastExchange
-                     +- CometProject
-                        +- CometFilter
-                           +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+TakeOrderedAndProject
++- HashAggregate
+   +- CometColumnarToRow
+      +- CometColumnarExchange
+         +- HashAggregate
+            +- Project
+               +- BroadcastHashJoin
+                  :- Project
+                  :  +- BroadcastHashJoin
+                  :     :- Project
+                  :     :  +- BroadcastHashJoin
+                  :     :     :- Filter
+                  :     :     :  +- ColumnarToRow
+                  :     :     :     +-  Scan parquet spark_catalog.default.catalog_sales [COMET: Dynamic Partition Pruning is not supported]
+                  :     :     :           +- SubqueryBroadcast
+                  :     :     :              +- BroadcastExchange
+                  :     :     :                 +- CometColumnarToRow
+                  :     :     :                    +- CometProject
+                  :     :     :                       +- CometFilter
+                  :     :     :                          +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+                  :     :     +- BroadcastExchange
+                  :     :        +- CometColumnarToRow
+                  :     :           +- CometFilter
+                  :     :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.customer
+                  :     +- BroadcastExchange
+                  :        +- CometColumnarToRow
+                  :           +- CometProject
+                  :              +- CometFilter
+                  :                 +- CometScan [native_iceberg_compat] parquet spark_catalog.default.customer_address
+                  +- BroadcastExchange
+                     +- CometColumnarToRow
+                        +- CometProject
+                           +- CometFilter
+                              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
 
-Comet accelerated 26 out of 28 eligible operators (92%). Final plan contains 2 transitions between Spark and Comet.
+Comet accelerated 12 out of 28 eligible operators (42%). Final plan contains 6 transitions between Spark and Comet.

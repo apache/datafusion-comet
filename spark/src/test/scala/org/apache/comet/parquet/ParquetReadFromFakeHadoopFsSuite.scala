@@ -66,11 +66,7 @@ class ParquetReadFromFakeHadoopFsSuite extends CometTestBase with AdaptiveSparkP
       p
     }
     assert(scans.size == 1)
-    // Access selected partitions through originalPlan (FileSourceScanExec)
-    val selectedPartitions = scans.head.originalPlan.selectedPartitions
-    assert(
-      selectedPartitions.head.files.head.getPath.toString
-        .startsWith(FakeHDFSFileSystem.PREFIX))
+    assert(scans.head.relation.inputFiles.head.startsWith(FakeHDFSFileSystem.PREFIX))
   }
 
   // This test fails for 'hdfs' but succeeds for 'open-dal'. 'hdfs' requires this fix

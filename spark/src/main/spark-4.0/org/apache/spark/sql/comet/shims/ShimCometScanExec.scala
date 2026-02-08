@@ -62,7 +62,7 @@ trait ShimCometScanExec extends ShimStreamSourceAwareSparkPlan {
     }
 
     val maxSplitBytes = FilePartition.maxSplitBytes(relation.sparkSession, filteredListing)
-    val splitFiles = filteredListing.filePartitionIterator
+    val splitFilesList = filteredListing.filePartitionIterator
       .flatMap { partition =>
         partition.files.flatMap { file =>
           val filePath = file.getPath
@@ -82,7 +82,7 @@ trait ShimCometScanExec extends ShimStreamSourceAwareSparkPlan {
       .toSeq
       .sortBy(_.length)(implicitly[Ordering[Long]].reverse)
 
-    FilePartition.getFilePartitions(relation.sparkSession, splitFiles, maxSplitBytes)
+    FilePartition.getFilePartitions(relation.sparkSession, splitFilesList, maxSplitBytes)
   }
 
   private def isDynamicPruningFilter(e: Expression): Boolean =
