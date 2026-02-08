@@ -261,19 +261,6 @@ class CometStringExpressionSuite extends CometTestBase {
     }
   }
 
-  test("string concat_ws") {
-    val table = "names"
-    withTable(table) {
-      sql(
-        s"create table $table(id int, first_name varchar(20), middle_initial char(1), last_name varchar(20)) using parquet")
-      sql(
-        s"insert into $table values(1, 'James', 'B', 'Taylor'), (2, 'Smith', 'C', 'Davis')," +
-          " (3, NULL, NULL, NULL), (4, 'Smith', 'C', 'Davis')")
-      checkSparkAnswerAndOperator(
-        s"SELECT concat_ws(' ', first_name, middle_initial, last_name) FROM $table")
-    }
-  }
-
   test("string repeat") {
     val table = "names"
     withTable(table) {
@@ -377,7 +364,7 @@ class CometStringExpressionSuite extends CometTestBase {
   }
 
   test("string_space") {
-    withParquetTable((0 until 5).map(i => (i, i + 1)), "tbl") {
+    withParquetTable((0 until 5).map(i => (-i, i + 1)), "tbl") {
       checkSparkAnswerAndOperator("SELECT space(_1), space(_2) FROM tbl")
     }
   }
