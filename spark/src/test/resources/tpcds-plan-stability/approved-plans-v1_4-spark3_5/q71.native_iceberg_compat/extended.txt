@@ -19,7 +19,7 @@ CometColumnarToRow
                         :        :  +- BroadcastHashJoin
                         :        :     :- Filter
                         :        :     :  +- ColumnarToRow
-                        :        :     :     +-  Scan parquet spark_catalog.default.web_sales [COMET: Dynamic Partition Pruning is not supported]
+                        :        :     :     +-  Scan parquet spark_catalog.default.web_sales [COMET: Dynamic Partition Pruning is not supported with spark.comet.scan.impl=native_iceberg_compat.]
                         :        :     :           +- SubqueryBroadcast
                         :        :     :              +- BroadcastExchange
                         :        :     :                 +- CometColumnarToRow
@@ -35,7 +35,7 @@ CometColumnarToRow
                         :        :  +- BroadcastHashJoin
                         :        :     :- Filter
                         :        :     :  +- ColumnarToRow
-                        :        :     :     +-  Scan parquet spark_catalog.default.catalog_sales [COMET: Dynamic Partition Pruning is not supported]
+                        :        :     :     +-  Scan parquet spark_catalog.default.catalog_sales [COMET: Dynamic Partition Pruning is not supported with spark.comet.scan.impl=native_iceberg_compat.]
                         :        :     :           +- ReusedSubquery
                         :        :     +- BroadcastExchange
                         :        :        +- CometColumnarToRow
@@ -46,7 +46,7 @@ CometColumnarToRow
                         :           +- BroadcastHashJoin
                         :              :- Filter
                         :              :  +- ColumnarToRow
-                        :              :     +-  Scan parquet spark_catalog.default.store_sales [COMET: Dynamic Partition Pruning is not supported]
+                        :              :     +-  Scan parquet spark_catalog.default.store_sales [COMET: Dynamic Partition Pruning is not supported with spark.comet.scan.impl=native_iceberg_compat.]
                         :              :           +- ReusedSubquery
                         :              +- BroadcastExchange
                         :                 +- CometColumnarToRow
