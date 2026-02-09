@@ -559,20 +559,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                         info!("Comet native plan before DataFusion optimization:\n{before}");
                     }
 
-                    if partition == 0 {
-                        let before_display =
-                            DisplayableExecutionPlan::new(optimized_plan.as_ref()).indent(true);
-                        info!("Native plan BEFORE physical optimization:\n{before_display}");
-                    }
-
                     for optimizer in optimizers {
                         optimized_plan = optimizer.optimize(optimized_plan, &config)?;
-                    }
-
-                    if partition == 0 {
-                        let after_display =
-                            DisplayableExecutionPlan::new(optimized_plan.as_ref()).indent(true);
-                        info!("Native plan AFTER physical optimization:\n{after_display}");
                     }
 
                     if exec_context.explain_native {

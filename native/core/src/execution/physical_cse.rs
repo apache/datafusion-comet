@@ -33,6 +33,7 @@ use datafusion::physical_expr_common::physical_expr::is_volatile;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::projection::{ProjectionExec, ProjectionExpr};
 use datafusion::physical_plan::ExecutionPlan;
+use log::info;
 
 /// A wrapper around `Arc<dyn PhysicalExpr>` that implements `Eq` and `Hash`
 /// by delegating to the trait-object implementations on `dyn PhysicalExpr`.
@@ -69,8 +70,17 @@ impl PhysicalOptimizerRule for PhysicalCommonSubexprEliminate {
         plan: Arc<dyn ExecutionPlan>,
         _config: &ConfigOptions,
     ) -> Result<Arc<dyn ExecutionPlan>> {
+        // Log the full plan tree with node types
+        log_plan_nodes(&plan, 0);
+
         plan.transform_up(|node| {
-            if node.as_any().downcast_ref::<ProjectionExec>().is_some() {
+            let node_name = node.name();
+            let is_proj = node.as_any().downcast_ref::<ProjectionExec>().is_some();
+            info!(
+                "CSE visiting node: {node_name} (is_projection={is_proj})"
+            );
+
+            if is_proj {
                 try_optimize_projection(node)
             } else {
                 Ok(Transformed::no(node))
@@ -85,6 +95,15 @@ impl PhysicalOptimizerRule for PhysicalCommonSubexprEliminate {
 
     fn schema_check(&self) -> bool {
         true
+    }
+}
+
+/// Log the plan tree with indentation showing node types.
+fn log_plan_nodes(plan: &Arc<dyn ExecutionPlan>, depth: usize) {
+    let indent = "  ".repeat(depth);
+    info!("{indent}{}", plan.name());
+    for child in plan.children() {
+        log_plan_nodes(child, depth + 1);
     }
 }
 
@@ -159,7 +178,21 @@ fn try_optimize_projection(
 ) -> Result<Transformed<Arc<dyn ExecutionPlan>>> {
     let projection = node.as_any().downcast_ref::<ProjectionExec>().unwrap();
     let proj_exprs = projection.expr();
+
+    info!(
+        "CSE analyzing ProjectionExec with {} expressions:",
+        proj_exprs.len()
+    );
+    for (i, pe) in proj_exprs.iter().enumerate() {
+        info!("  expr[{i}]: {} AS {}", pe.expr, pe.alias);
+    }
+
     let common = find_common_subexprs(proj_exprs);
+    info!("CSE found {} common subexpressions", common.len());
+    for (i, cse) in common.iter().enumerate() {
+        info!("  common[{i}]: {cse}");
+    }
+
     if common.is_empty() {
         return Ok(Transformed::no(node));
     }
