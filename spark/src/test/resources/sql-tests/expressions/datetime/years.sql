@@ -53,4 +53,4 @@ query
 SELECT year(event_date) as yr, COUNT(*) as cnt FROM test_cat.db.test_years_iceberg GROUP BY year(event_date) ORDER BY yr
 
 statement
-DROP TABLE test_cat.db.test_years_iceberg
+DROP TABLE test_cat.db.test_years_iceberg PURGE
