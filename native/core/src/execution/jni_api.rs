@@ -559,21 +559,20 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                         info!("Comet native plan before DataFusion optimization:\n{before}");
                     }
 
+                    if partition == 0 {
+                        let before_display =
+                            DisplayableExecutionPlan::new(optimized_plan.as_ref()).indent(true);
+                        info!("Native plan BEFORE physical optimization:\n{before_display}");
+                    }
+
                     for optimizer in optimizers {
-                        let before_plan = Arc::clone(&optimized_plan);
                         optimized_plan = optimizer.optimize(optimized_plan, &config)?;
-                        if !Arc::ptr_eq(&before_plan, &optimized_plan) {
-                            let before_display =
-                                DisplayableExecutionPlan::new(before_plan.as_ref()).indent(true);
-                            let after_display =
-                                DisplayableExecutionPlan::new(optimized_plan.as_ref()).indent(true);
-                            info!(
-                                "Physical optimizer rule '{}' changed the plan\n\
-                                 BEFORE:\n{before_display}\n\
-                                 AFTER:\n{after_display}",
-                                optimizer.name()
-                            );
-                        }
+                    }
+
+                    if partition == 0 {
+                        let after_display =
+                            DisplayableExecutionPlan::new(optimized_plan.as_ref()).indent(true);
+                        info!("Native plan AFTER physical optimization:\n{after_display}");
                     }
 
                     if exec_context.explain_native {
