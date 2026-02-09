@@ -171,21 +171,33 @@ case class CometScanRule(session: SparkSession)
           case SCAN_AUTO =>
             // TODO add support for native_datafusion in the future
             if (hasDPP) {
-              return withInfo(scanExec, "Dynamic Partition Pruning is not supported")
+              return withInfo(
+                scanExec,
+                "Dynamic Partition Pruning is not supported with " +
+                  "spark.comet.scan.impl=auto.")
             }
             nativeIcebergCompatScan(session, scanExec, r, hadoopConf)
               .getOrElse(scanExec)
           case SCAN_NATIVE_DATAFUSION =>
-            // native_datafusion supports DPP
+            // native_datafusion supports DPP via CometNativeScanExec when enabled
+            if (hasDPP && !CometConf.COMET_DPP_ENABLED.get()) {
+              return withInfo(scanExec, "Dynamic Partition Pruning is not enabled.")
+            }
             nativeDataFusionScan(session, scanExec, r, hadoopConf).getOrElse(scanExec)
           case SCAN_NATIVE_ICEBERG_COMPAT =>
             if (hasDPP) {
-              return withInfo(scanExec, "Dynamic Partition Pruning is not supported")
+              return withInfo(
+                scanExec,
+                "Dynamic Partition Pruning is not supported with " +
+                  "spark.comet.scan.impl=native_iceberg_compat.")
             }
             nativeIcebergCompatScan(session, scanExec, r, hadoopConf).getOrElse(scanExec)
           case SCAN_NATIVE_COMET =>
             if (hasDPP) {
-              return withInfo(scanExec, "Dynamic Partition Pruning is not supported")
+              return withInfo(
+                scanExec,
+                "Dynamic Partition Pruning is not supported with " +
+                  "spark.comet.scan.impl=native_comet.")
             }
             nativeCometScan(session, scanExec, r, hadoopConf).getOrElse(scanExec)
         }
@@ -649,40 +661,50 @@ case class CometScanRule(session: SparkSession)
           !hasUnsupportedDeletes
         }
 
-        // Check that all DPP subqueries use InSubqueryExec which we know how to handle.
-        // Future Spark versions might introduce new subquery types we haven't tested.
+        // Check DPP support - controlled by COMET_DPP_ENABLED config
+        val hasDppFilters = scanExec.runtimeFilters.exists {
+          case DynamicPruningExpression(_) => true
+          case _ => false
+        }
         val dppSubqueriesSupported = {
-          val unsupportedSubqueries = scanExec.runtimeFilters.collect {
-            case DynamicPruningExpression(e) if !e.isInstanceOf[InSubqueryExec] =>
-              e.getClass.getSimpleName
-          }
-          // Check for multi-index DPP which we don't support yet.
-          // SPARK-46946 changed SubqueryAdaptiveBroadcastExec from index: Int to indices: Seq[Int]
-          // as a preparatory refactor for future features (Null Safe Equality DPP, multiple
-          // equality predicates). Currently indices always has one element, but future Spark
-          // versions might use multiple indices.
-          val multiIndexDpp = scanExec.runtimeFilters.exists {
-            case DynamicPruningExpression(e: InSubqueryExec) =>
-              e.plan match {
-                case sab: SubqueryAdaptiveBroadcastExec =>
-                  getSubqueryBroadcastIndices(sab).length > 1
-                case _ => false
-              }
-            case _ => false
-          }
-          if (unsupportedSubqueries.nonEmpty) {
-            fallbackReasons +=
-              s"Unsupported DPP subquery types: ${unsupportedSubqueries.mkString(", ")}. " +
-                "CometIcebergNativeScanExec only supports InSubqueryExec for DPP"
-            false
-          } else if (multiIndexDpp) {
-            // See SPARK-46946 for context on multi-index DPP
-            fallbackReasons +=
-              "Multi-index DPP (indices.length > 1) is not yet supported. " +
-                "See SPARK-46946 for context."
+          if (hasDppFilters && !CometConf.COMET_DPP_ENABLED.get()) {
+            fallbackReasons += "Dynamic Partition Pruning is disabled"
             false
           } else {
-            true
+            // Check that all DPP subqueries use InSubqueryExec which we know how to handle.
+            // Future Spark versions might introduce new subquery types we haven't tested.
+            val unsupportedSubqueries = scanExec.runtimeFilters.collect {
+              case DynamicPruningExpression(e) if !e.isInstanceOf[InSubqueryExec] =>
+                e.getClass.getSimpleName
+            }
+            // Check for multi-index DPP which we don't support yet.
+            // SPARK-46946 changed SubqueryAdaptiveBroadcastExec from index: Int to
+            // indices: Seq[Int] as a preparatory refactor for future features (Null Safe
+            // Equality DPP, multiple equality predicates). Currently indices always has
+            // one element, but future Spark versions might use multiple indices.
+            val multiIndexDpp = scanExec.runtimeFilters.exists {
+              case DynamicPruningExpression(e: InSubqueryExec) =>
+                e.plan match {
+                  case sab: SubqueryAdaptiveBroadcastExec =>
+                    getSubqueryBroadcastIndices(sab).length > 1
+                  case _ => false
+                }
+              case _ => false
+            }
+            if (unsupportedSubqueries.nonEmpty) {
+              fallbackReasons +=
+                s"Unsupported DPP subquery types: ${unsupportedSubqueries.mkString(", ")}. " +
+                  "CometIcebergNativeScanExec only supports InSubqueryExec for DPP"
+              false
+            } else if (multiIndexDpp) {
+              // See SPARK-46946 for context on multi-index DPP
+              fallbackReasons +=
+                "Multi-index DPP (indices.length > 1) is not yet supported. " +
+                  "See SPARK-46946 for context."
+              false
+            } else {
+              true
+            }
           }
         }
 

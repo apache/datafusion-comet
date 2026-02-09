@@ -137,6 +137,18 @@ object CometConf extends ShimCometConf {
     .checkValues(Set(SCAN_NATIVE_DATAFUSION, SCAN_NATIVE_ICEBERG_COMPAT, SCAN_AUTO))
     .createWithEnvVarOrDefault("COMET_PARQUET_SCAN_IMPL", SCAN_AUTO)
 
+  val COMET_DPP_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.scan.dpp.enabled")
+      .category(CATEGORY_SCAN)
+      .doc(
+        "Whether to enable Dynamic Partition Pruning (DPP) for native_datafusion scans. " +
+          "When enabled, queries with DPP use CometNativeScanExec which supports runtime " +
+          "partition filtering. When disabled, DPP queries fall back to Spark. " +
+          "This config only affects native_datafusion scans; other scan modes always " +
+          "fall back to Spark for DPP queries.")
+      .booleanConf
+      .createWithDefault(true)
+
   val COMET_ICEBERG_NATIVE_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.scan.icebergNative.enabled")
       .category(CATEGORY_SCAN)
