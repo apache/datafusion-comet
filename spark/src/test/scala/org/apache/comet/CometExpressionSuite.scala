@@ -1163,7 +1163,24 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
       // Filter rows that contains 'rose' in 'name' column
       val queryContains = sql(s"select id from $table where contains (name, 'rose')")
-      checkAnswer(queryContains, Row(5) :: Nil)
+      checkSparkAnswerAndOperator(queryContains)
+
+      // Additional test cases for optimized contains implementation
+      // Test with empty pattern (should match all non-null rows)
+      val queryEmptyPattern = sql(s"select id from $table where contains (name, '')")
+      checkSparkAnswerAndOperator(queryEmptyPattern)
+
+      // Test with pattern not found
+      val queryNotFound = sql(s"select id from $table where contains (name, 'xyz')")
+      checkSparkAnswerAndOperator(queryNotFound)
+
+      // Test with pattern at start
+      val queryStart = sql(s"select id from $table where contains (name, 'James')")
+      checkSparkAnswerAndOperator(queryStart)
+
+      // Test with pattern at end
+      val queryEnd = sql(s"select id from $table where contains (name, 'Smith')")
+      checkSparkAnswerAndOperator(queryEnd)
     }
   }
 
