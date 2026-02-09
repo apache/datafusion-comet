@@ -207,6 +207,9 @@ class CometExecSuite extends CometTestBase {
         // multiple file partitions from one directory, so we check < 3 not == 1.
         val numPartitions = nativeScans.head.perPartitionData.length
         assert(numPartitions < 3, s"Expected DPP to prune partitions but got $numPartitions")
+
+        spark.catalog.dropTempView("fact")
+        spark.catalog.dropTempView("dim")
       }
     }
   }
@@ -277,6 +280,9 @@ class CometExecSuite extends CometTestBase {
         // We're filtering to region=US, category=A which is 1 partition.
         val numPartitions = nativeScans.head.perPartitionData.length
         assert(numPartitions < 6, s"Expected DPP to prune partitions but got $numPartitions")
+
+        spark.catalog.dropTempView("fact")
+        spark.catalog.dropTempView("dim")
       }
     }
   }
