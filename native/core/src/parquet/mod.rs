@@ -45,7 +45,6 @@ use jni::{
     sys::{jboolean, jbyte, jdouble, jfloat, jint, jlong, jshort},
 };
 
-
 use self::util::jni::TypePromotionInfo;
 use crate::execution::jni_api::get_runtime;
 use crate::execution::metrics::utils::update_comet_metric;
