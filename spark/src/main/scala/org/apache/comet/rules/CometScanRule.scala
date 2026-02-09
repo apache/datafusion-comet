@@ -189,14 +189,6 @@ case class CometScanRule(session: SparkSession)
                   "spark.comet.scan.impl=native_iceberg_compat.")
             }
             nativeIcebergCompatScan(session, scanExec, r, hadoopConf).getOrElse(scanExec)
-          case SCAN_NATIVE_COMET =>
-            if (hasDPP) {
-              return withInfo(
-                scanExec,
-                "Dynamic Partition Pruning is not supported with " +
-                  "spark.comet.scan.impl=native_comet.")
-            }
-            nativeCometScan(session, scanExec, r, hadoopConf).getOrElse(scanExec)
         }
 
       case _ =>
