@@ -26,7 +26,7 @@ import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{Attribute, DynamicPruningExpression, SortOrder}
 import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.plans.physical.{Partitioning, UnknownPartitioning}
-import org.apache.spark.sql.execution.{InSubqueryExec, SubqueryAdaptiveBroadcastExec, SubqueryBroadcastExec}
+import org.apache.spark.sql.execution.{InSubqueryExec, SubqueryAdaptiveBroadcastExec, SubqueryBroadcastExec, SubqueryExec}
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -117,7 +117,7 @@ case class CometIcebergNativeScanExec(
         e.plan match {
           case sab: SubqueryAdaptiveBroadcastExec =>
             resolveSubqueryAdaptiveBroadcast(sab, e)
-          case _: SubqueryBroadcastExec =>
+          case _: SubqueryBroadcastExec | _: SubqueryExec =>
             e.updateResult()
           case other =>
             throw new IllegalStateException(
