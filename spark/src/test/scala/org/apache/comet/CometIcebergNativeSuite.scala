@@ -25,6 +25,7 @@ import java.nio.file.Files
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.comet.CometIcebergNativeScanExec
 import org.apache.spark.sql.execution.SparkPlan
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{StringType, TimestampType}
 
 import org.apache.comet.iceberg.RESTCatalogHelper
@@ -2450,6 +2451,78 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
         assert(numPartitions == 1, s"Expected DPP to prune to 1 partition but got $numPartitions")
 
         spark.sql("DROP TABLE runtime_cat.db.fact_table")
+      }
+    }
+  }
+
+  test("runtime filtering - DPP with SubqueryExec (non-broadcast)") {
+    // This test triggers SubqueryExec instead of SubqueryBroadcastExec.
+    // Reproduces the failure pattern from Spark's DynamicPartitionPruningV1SuiteAEOff.
+    assume(icebergAvailable, "Iceberg not available")
+    withTempIcebergDir { warehouseDir =>
+      val dimDir = new File(warehouseDir, "dim_parquet_subquery")
+      withSQLConf(
+        "spark.sql.catalog.subquery_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.subquery_cat.type" -> "hadoop",
+        "spark.sql.catalog.subquery_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        // Must disable AQE (like DynamicPartitionPruningV1SuiteAEOff)
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true",
+        // Key configs to trigger SubqueryExec instead of SubqueryBroadcastExec
+        SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "false",
+        SQLConf.EXCHANGE_REUSE_ENABLED.key -> "false",
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        // Create partitioned Iceberg table (fact table)
+        spark.sql("""
+          CREATE TABLE subquery_cat.db.fact_table (
+            id BIGINT,
+            data STRING,
+            date DATE
+          ) USING iceberg
+          PARTITIONED BY (date)
+        """)
+
+        // Insert data across multiple partitions
+        spark.sql("""
+          INSERT INTO subquery_cat.db.fact_table VALUES
+          (1, 'a', DATE '1970-01-01'),
+          (2, 'b', DATE '1970-01-02'),
+          (3, 'c', DATE '1970-01-02'),
+          (4, 'd', DATE '1970-01-03'),
+          (5, 'e', DATE '1970-01-01'),
+          (6, 'f', DATE '1970-01-02'),
+          (7, 'g', DATE '1970-01-03'),
+          (8, 'h', DATE '1970-01-01')
+        """)
+
+        // Create dimension table and analyze it (like Spark's DPP test suite)
+        spark
+          .createDataFrame(Seq((1L, java.sql.Date.valueOf("1970-01-02"))))
+          .toDF("id", "date")
+          .write
+          .parquet(dimDir.getAbsolutePath)
+        spark.read.parquet(dimDir.getAbsolutePath).createOrReplaceTempView("dim_subquery")
+        spark.catalog.cacheTable("dim_subquery")
+        sql("ANALYZE TABLE dim_subquery COMPUTE STATISTICS FOR COLUMNS id, date")
+
+        // NO broadcast hint - allows SubqueryExec to be used
+        val query =
+          """SELECT f.* FROM subquery_cat.db.fact_table f
+            |JOIN dim_subquery d ON f.date = d.date AND d.id = 1
+            |ORDER BY f.id""".stripMargin
+
+        val df = spark.sql(query)
+        val planStr = df.queryExecution.executedPlan.toString
+        assert(
+          planStr.contains("dynamicpruning"),
+          s"Expected dynamic pruning in plan but got:\n$planStr")
+
+        checkSparkAnswer(df)
+
+        spark.sql("DROP TABLE subquery_cat.db.fact_table")
       }
     }
   }
