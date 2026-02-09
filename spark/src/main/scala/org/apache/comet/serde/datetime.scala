@@ -551,7 +551,8 @@ object CometYears extends CometExpressionSerde[Years] {
       expr: Years,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val periodType = exprToProtoInternal(Literal("year"), inputs, binding)
+    val periodType =
+      exprToProtoInternal(Literal(CometGetDateField.Year.toString), inputs, binding)
     val childExpr = exprToProtoInternal(expr.child, inputs, binding)
     val optExpr = scalarFunctionExprToProto("datepart", Seq(periodType, childExpr): _*)
       .map(e => {
