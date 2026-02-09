@@ -76,7 +76,8 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
     StringExprConfig("substring", "select substring(c1, 1, 100) from parquetV1Table"),
     StringExprConfig("translate", "select translate(c1, '123456', 'aBcDeF') from parquetV1Table"),
     StringExprConfig("trim", "select trim(c1) from parquetV1Table"),
-    StringExprConfig("upper", "select upper(c1) from parquetV1Table"))
+    StringExprConfig("upper", "select upper(c1) from parquetV1Table"),
+    StringExprConfig("elt", "select elt(2, c1, c1) from parquetV1Table"))
 
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
     runBenchmarkWithTable("String expressions", 1024) { v =>
