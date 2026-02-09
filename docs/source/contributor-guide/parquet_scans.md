@@ -28,7 +28,7 @@ implementations.
 
 The two implementations are `native_datafusion` and `native_iceberg_compat`. They both delegate to DataFusion's
 `DataSourceExec`. The main difference between these implementations is that `native_datafusion` runs fully natively, and
-`native_iceberg_compat` is a hybrid JVM/Rust implementation that can provide support some Spark features that
+`native_iceberg_compat` is a hybrid JVM/Rust implementation that can support some Spark features that
 `native_datafusion` can not, but has some performance overhead due to crossing the JVM/Rust boundary.
 
 The `native_datafusion` and `native_iceberg_compat` scans share the following limitations:
@@ -48,12 +48,22 @@ The `native_datafusion` and `native_iceberg_compat` scans share the following li
 - No support for Spark's Datasource V2 API. When `spark.sql.sources.useV1SourceList` does not include `parquet`,
   Spark uses the V2 API for Parquet scans. The DataFusion-based implementations only support the V1 API, so Comet
   will fall back to Spark when V2 is enabled.
+- No support for Parquet encryption. When Parquet encryption is enabled (i.e., `parquet.crypto.factory.class` is
+  set), Comet will fall back to Spark.
 
 The `native_datafusion` scan has some additional limitations:
 
 - No support for row indexes
 - No support for reading Parquet field IDs
 - Setting Spark configs `ignoreMissingFiles` or `ignoreCorruptFiles` to `true` is not compatible with Spark
+
+The `native_iceberg_compat` scan has some additional limitations:
+
+- Some Spark configuration values are hard-coded to their defaults rather than respecting user-specified values.
+  The affected configurations are `spark.sql.parquet.binaryAsString`, `spark.sql.parquet.int96AsTimestamp`,
+  `spark.sql.caseSensitive`, `spark.sql.parquet.inferTimestampNTZ.enabled`, and
+  `spark.sql.legacy.parquet.nanosAsLong`. See [issue #1816](https://github.com/apache/datafusion-comet/issues/1816)
+  for more details.
 
 ## S3 Support
 
@@ -67,7 +77,8 @@ continue to work as long as the configurations are supported and can be translat
 
 #### Additional S3 Configuration Options
 
-Beyond credential providers, the `native_datafusion` implementation supports additional S3 configuration options:
+Beyond credential providers, the `native_datafusion` and `native_iceberg_compat` implementations support additional
+S3 configuration options:
 
 | Option                          | Description                                                                                        |
 | ------------------------------- | -------------------------------------------------------------------------------------------------- |
@@ -80,7 +91,8 @@ All configuration options support bucket-specific overrides using the pattern `f
 
 #### Examples
 
-The following examples demonstrate how to configure S3 access with the `native_datafusion` Parquet scan implementation using different authentication methods.
+The following examples demonstrate how to configure S3 access with the `native_datafusion` and `native_iceberg_compat`
+Parquet scan implementations using different authentication methods.
 
 **Example 1: Simple Credentials**
 
@@ -112,11 +124,9 @@ $SPARK_HOME/bin/spark-shell \
 
 #### Limitations
 
-The S3 support of `native_datafusion` has the following limitations:
+The S3 support of `native_datafusion` and `native_iceberg_compat` has the following limitations:
 
 1. **Partial Hadoop S3A configuration support**: Not all Hadoop S3A configurations are currently supported. Only the configurations listed in the tables above are translated and applied to the underlying `object_store` crate.
 
 2. **Custom credential providers**: Custom implementations of AWS credential providers are not supported. The implementation only supports the standard credential providers listed in the table above. We are planning to add support for custom credential providers through a JNI-based adapter that will allow calling Java credential providers from native code. See [issue #1829](https://github.com/apache/datafusion-comet/issues/1829) for more details.
 
-[#1545]: https://github.com/apache/datafusion-comet/issues/1545
-[#1758]: https://github.com/apache/datafusion-comet/issues/1758
