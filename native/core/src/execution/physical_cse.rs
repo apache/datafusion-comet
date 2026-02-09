@@ -35,6 +35,7 @@ use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::aggregates::{AggregateExec, PhysicalGroupBy};
 use datafusion::physical_plan::projection::{ProjectionExec, ProjectionExpr};
 use datafusion::physical_plan::ExecutionPlan;
+use log::info;
 
 /// A wrapper around `Arc<dyn PhysicalExpr>` that implements `Eq` and `Hash`
 /// by delegating to the trait-object implementations on `dyn PhysicalExpr`.
@@ -71,16 +72,21 @@ impl PhysicalOptimizerRule for PhysicalCommonSubexprEliminate {
         plan: Arc<dyn ExecutionPlan>,
         _config: &ConfigOptions,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        plan.transform_up(|node| {
-            if node.as_any().downcast_ref::<ProjectionExec>().is_some() {
-                try_optimize_projection(node)
-            } else if node.as_any().downcast_ref::<AggregateExec>().is_some() {
-                try_optimize_aggregate(node)
-            } else {
-                Ok(Transformed::no(node))
-            }
-        })
-        .data()
+        let start = std::time::Instant::now();
+        let result = plan
+            .transform_up(|node| {
+                if node.as_any().downcast_ref::<ProjectionExec>().is_some() {
+                    try_optimize_projection(node)
+                } else if node.as_any().downcast_ref::<AggregateExec>().is_some() {
+                    try_optimize_aggregate(node)
+                } else {
+                    Ok(Transformed::no(node))
+                }
+            })
+            .data();
+        let elapsed = start.elapsed();
+        info!("Physical CSE optimizer completed in {elapsed:?}");
+        result
     }
 
     fn name(&self) -> &str {
@@ -116,7 +122,9 @@ fn collect_subexprs(
 }
 
 /// Identify sub-expressions that appear 2+ times across the given
-/// expression list. Returns a deduplicated vec.
+/// expression list. Returns a deduplicated vec containing only the
+/// largest common subexpressions (sub-expressions of an already-extracted
+/// CSE are removed since they would be unreferenced after rewriting).
 fn find_common_subexprs(
     exprs: &[Arc<dyn datafusion::physical_plan::PhysicalExpr>],
 ) -> Vec<Arc<dyn datafusion::physical_plan::PhysicalExpr>> {
@@ -124,13 +132,49 @@ fn find_common_subexprs(
     for expr in exprs {
         collect_subexprs(expr, &mut counts);
     }
-    // Collect expressions with count >= 2, preserving insertion order is not
-    // required since we assign deterministic names based on index.
-    counts
+    let common: Vec<Arc<dyn datafusion::physical_plan::PhysicalExpr>> = counts
         .into_iter()
         .filter(|(_, count)| *count >= 2)
         .map(|(key, _)| key.0)
+        .collect();
+
+    // Filter out any CSE that is a strict sub-expression of another CSE,
+    // since after rewriting the larger CSE to a column reference its
+    // children will no longer be evaluated and the smaller CSE column
+    // would go unused.
+    let common_set: std::collections::HashSet<ExprKey> =
+        common.iter().map(|e| ExprKey(Arc::clone(e))).collect();
+
+    common
+        .into_iter()
+        .filter(|expr| {
+            // Check if any OTHER common subexpression contains this one
+            // as a descendant.  If so, drop it.
+            !common_set.iter().any(|other| {
+                // skip self
+                if other.0.as_ref() == expr.as_ref() {
+                    return false;
+                }
+                contains_subexpr(&other.0, expr)
+            })
+        })
         .collect()
+}
+
+/// Returns true if `haystack` contains `needle` as a strict descendant.
+fn contains_subexpr(
+    haystack: &Arc<dyn datafusion::physical_plan::PhysicalExpr>,
+    needle: &Arc<dyn datafusion::physical_plan::PhysicalExpr>,
+) -> bool {
+    for child in haystack.children() {
+        if child.as_ref() == needle.as_ref() {
+            return true;
+        }
+        if contains_subexpr(child, needle) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Replace occurrences of any common subexpression in `expr` with a `Column`
@@ -215,6 +259,12 @@ fn try_optimize_projection(
 
     let new_projection =
         Arc::new(ProjectionExec::try_new(new_proj_exprs, intermediate)?) as Arc<dyn ExecutionPlan>;
+
+    info!(
+        "Physical CSE: rewrote ProjectionExec, extracted {} common subexpression(s): [{}]",
+        common.len(),
+        common.iter().map(|e| e.to_string()).collect::<Vec<_>>().join(", ")
+    );
 
     Ok(Transformed::yes(new_projection))
 }
@@ -340,6 +390,13 @@ fn try_optimize_aggregate(
         intermediate,
         intermediate_schema,
     )?;
+
+    info!(
+        "Physical CSE: rewrote AggregateExec ({:?} mode), extracted {} common subexpression(s): [{}]",
+        agg_exec.mode(),
+        common.len(),
+        common.iter().map(|e| e.to_string()).collect::<Vec<_>>().join(", ")
+    );
 
     Ok(Transformed::yes(Arc::new(new_agg) as Arc<dyn ExecutionPlan>))
 }

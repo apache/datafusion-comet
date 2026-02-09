@@ -559,9 +559,12 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                         info!("Comet native plan before DataFusion optimization:\n{before}");
                     }
 
+                    let opt_start = std::time::Instant::now();
                     for optimizer in optimizers {
                         optimized_plan = optimizer.optimize(optimized_plan, &config)?;
                     }
+                    let opt_elapsed = opt_start.elapsed();
+                    info!("Comet physical optimization completed in {opt_elapsed:?}");
 
                     if exec_context.explain_native {
                         let after =
