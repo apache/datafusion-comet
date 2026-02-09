@@ -2526,7 +2526,7 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
         val dppFilters = scan.originalPlan.runtimeFilters.collect {
           case DynamicPruningExpression(e: InSubqueryExec) => e.plan
         }
-        assert(dppFilters.nonEmpty, s"Expected DPP filters but found none")
+        assert(dppFilters.nonEmpty, "Expected DPP filters but found none")
         val hasSubqueryExec = dppFilters.exists(_.isInstanceOf[SubqueryExec])
         assert(
           hasSubqueryExec,
