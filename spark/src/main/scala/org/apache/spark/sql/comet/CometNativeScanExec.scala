@@ -105,7 +105,7 @@ case class CometNativeScanExec(
         e.plan match {
           case sab: SubqueryAdaptiveBroadcastExec =>
             resolveSubqueryAdaptiveBroadcast(sab, e)
-          case _: SubqueryBroadcastExec | _: SubqueryExec =>
+          case _: SubqueryBroadcastExec | _: SubqueryExec | _: ReusedSubqueryExec =>
             e.updateResult()
           case other =>
             throw new IllegalStateException(

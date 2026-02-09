@@ -23,8 +23,9 @@ import java.io.File
 import java.nio.file.Files
 
 import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.catalyst.expressions.DynamicPruningExpression
 import org.apache.spark.sql.comet.CometIcebergNativeScanExec
-import org.apache.spark.sql.execution.SparkPlan
+import org.apache.spark.sql.execution.{InSubqueryExec, SparkPlan, SubqueryExec}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{StringType, TimestampType}
 
@@ -2455,9 +2456,8 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
     }
   }
 
-  test("runtime filtering - DPP with SubqueryExec (non-broadcast)") {
-    // This test triggers SubqueryExec instead of SubqueryBroadcastExec.
-    // Reproduces the failure pattern from Spark's DynamicPartitionPruningV1SuiteAEOff.
+  test("runtime filtering - DPP with non-broadcast join") {
+    // Verifies DPP works when broadcast is disabled, triggering SubqueryExec.
     assume(icebergAvailable, "Iceberg not available")
     withTempIcebergDir { warehouseDir =>
       val dimDir = new File(warehouseDir, "dim_parquet_subquery")
@@ -2465,12 +2465,11 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
         "spark.sql.catalog.subquery_cat" -> "org.apache.iceberg.spark.SparkCatalog",
         "spark.sql.catalog.subquery_cat.type" -> "hadoop",
         "spark.sql.catalog.subquery_cat.warehouse" -> warehouseDir.getAbsolutePath,
-        // Must disable AQE (like DynamicPartitionPruningV1SuiteAEOff)
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
         SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true",
-        // Key configs to trigger SubqueryExec instead of SubqueryBroadcastExec
         SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "false",
         SQLConf.EXCHANGE_REUSE_ENABLED.key -> "false",
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
         CometConf.COMET_ENABLED.key -> "true",
         CometConf.COMET_EXEC_ENABLED.key -> "true",
         CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
@@ -2508,17 +2507,30 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
         spark.catalog.cacheTable("dim_subquery")
         sql("ANALYZE TABLE dim_subquery COMPUTE STATISTICS FOR COLUMNS id, date")
 
-        // NO broadcast hint - allows SubqueryExec to be used
         val query =
           """SELECT f.* FROM subquery_cat.db.fact_table f
             |JOIN dim_subquery d ON f.date = d.date AND d.id = 1
             |ORDER BY f.id""".stripMargin
 
         val df = spark.sql(query)
-        val planStr = df.queryExecution.executedPlan.toString
+        val plan = df.queryExecution.executedPlan
+        val planStr = plan.toString
         assert(
           planStr.contains("dynamicpruning"),
           s"Expected dynamic pruning in plan but got:\n$planStr")
+
+        // Verify SubqueryExec is used in runtimeFilters (not SubqueryBroadcastExec)
+        val icebergScans = collect(plan) { case s: CometIcebergNativeScanExec => s }
+        assert(icebergScans.nonEmpty, "Expected CometIcebergNativeScanExec in plan")
+        val scan = icebergScans.head
+        val dppFilters = scan.originalPlan.runtimeFilters.collect {
+          case DynamicPruningExpression(e: InSubqueryExec) => e.plan
+        }
+        assert(dppFilters.nonEmpty, s"Expected DPP filters but found none")
+        val hasSubqueryExec = dppFilters.exists(_.isInstanceOf[SubqueryExec])
+        assert(
+          hasSubqueryExec,
+          s"Expected SubqueryExec in DPP filters but got: ${dppFilters.map(_.getClass.getSimpleName)}")
 
         checkSparkAnswer(df)
 

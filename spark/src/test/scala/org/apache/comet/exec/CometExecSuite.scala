@@ -35,7 +35,7 @@ import org.apache.spark.sql.catalyst.expressions.{Expression, ExpressionInfo, He
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, BloomFilterAggregate}
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
-import org.apache.spark.sql.execution.{CollectLimitExec, ProjectExec, SparkPlan, SQLExecution, UnionExec}
+import org.apache.spark.sql.execution.{CollectLimitExec, ProjectExec, ReusedSubqueryExec, SparkPlan, SQLExecution, SubqueryExec, UnionExec}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, BroadcastQueryStageExec}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
@@ -367,6 +367,69 @@ class CometExecSuite extends CometTestBase {
           assert(
             planStr.contains("dynamicpruning"),
             s"Expected dynamic pruning in plan but got:\n$planStr")
+
+          // Verify SubqueryExec is in the plan
+          val plan = df.queryExecution.executedPlan
+          val subqueries = plan.collectWithSubqueries { case s: SubqueryExec => s }
+          assert(subqueries.nonEmpty, s"Expected SubqueryExec in plan but found none:\n$plan")
+
+          checkSparkAnswer(df)
+        }
+      }
+    }
+  }
+
+  test("DPP with native_datafusion scan - ReusedSubqueryExec (subquery reuse)") {
+    // Reproduces "Subquery reuse across the whole plan" from DynamicPartitionPruningSuite.
+    // When the same subquery is used multiple times, Spark wraps it in ReusedSubqueryExec.
+    withSQLConf(
+      SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+      CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_ENABLED.key -> "true") {
+      withTable("df1", "df2") {
+        spark
+          .range(100)
+          .select(col("id"), col("id").as("k"))
+          .write
+          .partitionBy("k")
+          .format("parquet")
+          .saveAsTable("df1")
+
+        spark
+          .range(10)
+          .select(col("id"), col("id").as("k"))
+          .write
+          .partitionBy("k")
+          .format("parquet")
+          .saveAsTable("df2")
+
+        withSQLConf(
+          SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true",
+          SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "false",
+          SQLConf.EXCHANGE_REUSE_ENABLED.key -> "false") {
+
+          // Query with scalar subquery + DPP join triggers ReusedSubqueryExec
+          val query =
+            """SELECT df1.id, df2.k
+              |FROM df1 JOIN df2 ON df1.k = df2.k
+              |WHERE df2.id < (SELECT max(id) FROM df2 WHERE id <= 2)""".stripMargin
+
+          val df = sql(query)
+          val planStr = df.queryExecution.executedPlan.toString
+          assert(
+            planStr.contains("dynamicpruning"),
+            s"Expected dynamic pruning in plan but got:\n$planStr")
+
+          // Verify ReusedSubqueryExec is in the plan
+          val plan = df.queryExecution.executedPlan
+          val reusedSubqueries = plan.collectWithSubqueries { case rs: ReusedSubqueryExec =>
+            rs
+          }
+          assert(
+            reusedSubqueries.nonEmpty,
+            s"Expected ReusedSubqueryExec in plan but found none:\n$plan")
 
           checkSparkAnswer(df)
         }
