@@ -16,10 +16,10 @@
 // under the License.
 
 use crate::utils::array_with_timezone;
-use arrow::array::{Array, AsArray, PrimitiveArray};
+use arrow::array::{Array, AsArray, Int64Array, PrimitiveArray};
 use arrow::compute::cast;
 use arrow::datatypes::{DataType, Int64Type, TimeUnit::Microsecond};
-use datafusion::common::{internal_datafusion_err, DataFusionError};
+use datafusion::common::{internal_datafusion_err, DataFusionError, ScalarValue};
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };
@@ -77,84 +77,121 @@ impl ScalarUDFImpl for SparkUnixTimestamp {
             .map_err(|_| internal_datafusion_err!("unix_timestamp expects exactly one argument"))?;
 
         match args {
-            [ColumnarValue::Array(array)] => match array.data_type() {
-                DataType::Timestamp(_, _) => {
-                    let is_utc = self.timezone == "UTC";
-                    let array = if is_utc
-                        && matches!(array.data_type(), DataType::Timestamp(Microsecond, Some(tz)) if tz.as_ref() == "UTC")
-                    {
-                        array
-                    } else {
-                        array_with_timezone(
-                            array,
-                            self.timezone.clone(),
-                            Some(&DataType::Timestamp(Microsecond, Some("UTC".into()))),
-                        )?
-                    };
+            [ColumnarValue::Array(array)] => self.eval_array(&array),
+            [ColumnarValue::Scalar(scalar)] => {
+                // When Spark's ConstantFolding is disabled, literal-only expressions like
+                // unix_timestamp can reach the native engine
+                // as scalar inputs. Evaluate the scalar natively by broadcasting it to a
+                // single-element array and converting the result back to a scalar.
+                let array = scalar.clone().to_array_of_size(1)?;
+                let result = self.eval_array(&array)?;
 
-                    let timestamp_array =
-                        array.as_primitive::<arrow::datatypes::TimestampMicrosecondType>();
+                let result_array = match result {
+                    ColumnarValue::Array(array) => array,
+                    ColumnarValue::Scalar(_) => {
+                        return Err(DataFusionError::Internal(
+                            "unix_timestamp: expected array result from eval_array".to_string(),
+                        ))
+                    }
+                };
 
-                    let result: PrimitiveArray<Int64Type> = if timestamp_array.null_count() == 0 {
-                        timestamp_array
-                            .values()
-                            .iter()
-                            .map(|&micros| micros / MICROS_PER_SECOND)
-                            .collect()
-                    } else {
-                        timestamp_array
-                            .iter()
-                            .map(|v| v.map(|micros| div_floor(micros, MICROS_PER_SECOND)))
-                            .collect()
-                    };
+                let int64_array = result_array
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .expect("unix_timestamp should return Int64Array");
 
-                    Ok(ColumnarValue::Array(Arc::new(result)))
-                }
-                DataType::Date32 => {
-                    let timestamp_array = cast(&array, &DataType::Timestamp(Microsecond, None))?;
+                let scalar_result = if int64_array.is_null(0) {
+                    ScalarValue::Int64(None)
+                } else {
+                    ScalarValue::Int64(Some(int64_array.value(0)))
+                };
 
-                    let is_utc = self.timezone == "UTC";
-                    let array = if is_utc {
-                        timestamp_array
-                    } else {
-                        array_with_timezone(
-                            timestamp_array,
-                            self.timezone.clone(),
-                            Some(&DataType::Timestamp(Microsecond, Some("UTC".into()))),
-                        )?
-                    };
-
-                    let timestamp_array =
-                        array.as_primitive::<arrow::datatypes::TimestampMicrosecondType>();
-
-                    let result: PrimitiveArray<Int64Type> = if timestamp_array.null_count() == 0 {
-                        timestamp_array
-                            .values()
-                            .iter()
-                            .map(|&micros| micros / MICROS_PER_SECOND)
-                            .collect()
-                    } else {
-                        timestamp_array
-                            .iter()
-                            .map(|v| v.map(|micros| div_floor(micros, MICROS_PER_SECOND)))
-                            .collect()
-                    };
-
-                    Ok(ColumnarValue::Array(Arc::new(result)))
-                }
-                _ => Err(DataFusionError::Execution(format!(
-                    "unix_timestamp does not support input type: {:?}",
-                    array.data_type()
-                ))),
-            },
-            _ => Err(DataFusionError::Execution(
-                "unix_timestamp(scalar) should be fold in Spark JVM side.".to_string(),
-            )),
+                Ok(ColumnarValue::Scalar(scalar_result))
+            }
         }
     }
 
     fn aliases(&self) -> &[String] {
         &self.aliases
+    }
+}
+
+impl SparkUnixTimestamp {
+    fn eval_array(
+        &self,
+        array: &Arc<dyn Array>,
+    ) -> datafusion::common::Result<ColumnarValue> {
+        match array.data_type() {
+            DataType::Timestamp(_, _) => {
+                let is_utc = self.timezone == "UTC";
+                let array = if is_utc
+                    && matches!(array.data_type(), DataType::Timestamp(Microsecond, Some(tz)) if tz.as_ref() == "UTC")
+                {
+                    Arc::clone(array)
+                } else {
+                    array_with_timezone(
+                        Arc::clone(array),
+                        self.timezone.clone(),
+                        Some(&DataType::Timestamp(Microsecond, Some("UTC".into()))),
+                    )?
+                };
+
+                let timestamp_array =
+                    array.as_primitive::<arrow::datatypes::TimestampMicrosecondType>();
+
+                let result: PrimitiveArray<Int64Type> = if timestamp_array.null_count() == 0 {
+                    timestamp_array
+                        .values()
+                        .iter()
+                        .map(|&micros| micros / MICROS_PER_SECOND)
+                        .collect()
+                } else {
+                    timestamp_array
+                        .iter()
+                        .map(|v| v.map(|micros| div_floor(micros, MICROS_PER_SECOND)))
+                        .collect()
+                };
+
+                Ok(ColumnarValue::Array(Arc::new(result)))
+            }
+            DataType::Date32 => {
+                let timestamp_array =
+                    cast(array.as_ref(), &DataType::Timestamp(Microsecond, None))?;
+
+                let is_utc = self.timezone == "UTC";
+                let array = if is_utc {
+                    timestamp_array
+                } else {
+                    array_with_timezone(
+                        timestamp_array,
+                        self.timezone.clone(),
+                        Some(&DataType::Timestamp(Microsecond, Some("UTC".into()))),
+                    )?
+                };
+
+                let timestamp_array =
+                    array.as_primitive::<arrow::datatypes::TimestampMicrosecondType>();
+
+                let result: PrimitiveArray<Int64Type> = if timestamp_array.null_count() == 0 {
+                    timestamp_array
+                        .values()
+                        .iter()
+                        .map(|&micros| micros / MICROS_PER_SECOND)
+                        .collect()
+                } else {
+                    timestamp_array
+                        .iter()
+                        .map(|v| v.map(|micros| div_floor(micros, MICROS_PER_SECOND)))
+                        .collect()
+                };
+
+                Ok(ColumnarValue::Array(Arc::new(result)))
+            }
+            _ => Err(DataFusionError::Execution(format!(
+                "unix_timestamp does not support input type: {:?}",
+                array.data_type()
+            ))),
+        }
     }
 }
 

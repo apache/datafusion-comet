@@ -16,9 +16,10 @@
 // under the License.
 
 use crate::utils::array_with_timezone;
+use arrow::array::{Array, Int32Array};
 use arrow::compute::{date_part, DatePart};
 use arrow::datatypes::{DataType, TimeUnit::Microsecond};
-use datafusion::common::{internal_datafusion_err, DataFusionError};
+use datafusion::common::{internal_datafusion_err, DataFusionError, ScalarValue};
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };
@@ -86,9 +87,32 @@ macro_rules! extract_date_part {
                         let result = date_part(&array, DatePart::$date_part_variant)?;
                         Ok(ColumnarValue::Array(result))
                     }
-                    _ => Err(DataFusionError::Execution(
-                        concat!($fn_name, "(scalar) should be fold in Spark JVM side.").to_string(),
-                    )),
+                    [ColumnarValue::Scalar(scalar)] => {
+                        // When Spark's ConstantFolding is disabled, literal-only expressions like
+                        // hour can reach the native engine as scalar inputs.
+                        // Instead of failing and requiring JVM folding, we evaluate the scalar
+                        // natively by broadcasting it to a single-element array and then
+                        // converting the result back to a scalar.
+                        let array = scalar.clone().to_array_of_size(1)?;
+                        let array = array_with_timezone(
+                            array,
+                            self.timezone.clone(),
+                            Some(&DataType::Timestamp(
+                                Microsecond,
+                                Some(self.timezone.clone().into()),
+                            )),
+                        )?;
+                        let result = date_part(&array, DatePart::$date_part_variant)?;
+                        let result_arr = result
+                            .as_any()
+                            .downcast_ref::<Int32Array>()
+                            .expect("date_part should return Int32Array");
+
+                        let scalar_result =
+                            ScalarValue::try_from_array(result_arr, 0).map_err(DataFusionError::from)?;
+
+                        Ok(ColumnarValue::Scalar(scalar_result))
+                    }
                 }
             }
 
