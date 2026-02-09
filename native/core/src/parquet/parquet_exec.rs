@@ -27,9 +27,11 @@ use datafusion::datasource::physical_plan::{
 };
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::execution::object_store::ObjectStoreUrl;
+use datafusion::execution::SendableRecordBatchStream;
 use datafusion::physical_expr::expressions::BinaryExpr;
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr_adapter::PhysicalExprAdapterFactory;
+use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::prelude::SessionContext;
 use datafusion::scalar::ScalarValue;
 use datafusion_comet_spark_expr::EvalMode;
@@ -149,22 +151,6 @@ pub(crate) fn init_datasource_exec(
 
     let data_source_exec = Arc::new(DataSourceExec::new(Arc::new(file_scan_config)));
 
-    // Debug: Execute the plan and print output RecordBatches
-    // let debug_ctx = SessionContext::default();
-    // let task_ctx = debug_ctx.task_ctx();
-    // if let Ok(stream) = data_source_exec.execute(0, task_ctx) {
-    //     let rt = tokio::runtime::Runtime::new().unwrap();
-    //     rt.block_on(async {
-    //         let batches: Vec<_> = stream.collect::<Vec<_>>().await;
-    //         let record_batches: Vec<_> = batches.into_iter().filter_map(|r| r.ok()).collect();
-    //         println!("=== DataSourceExec output RecordBatches ===");
-    //         if let Err(e) = print_batches(&record_batches) {
-    //             println!("Error printing batches: {:?}", e);
-    //         }
-    //         println!("=== End of DataSourceExec output ===");
-    //     });
-    // }
-
     Ok(data_source_exec)
 }
 
@@ -193,4 +179,26 @@ fn get_options(
     }
 
     (table_parquet_options, spark_parquet_options)
+}
+
+/// Wraps a `SendableRecordBatchStream` to print each batch as it flows through.
+/// Returns a new `SendableRecordBatchStream` that yields the same batches.
+pub fn dbg_batch_stream(stream: SendableRecordBatchStream) -> SendableRecordBatchStream {
+    use futures::StreamExt;
+    let schema = stream.schema();
+    let printing_stream = stream.map(|batch_result| {
+        match &batch_result {
+            Ok(batch) => {
+                dbg!(batch, batch.schema());
+                for (col_idx, column) in batch.columns().iter().enumerate() {
+                    dbg!(col_idx, column, column.nulls());
+                }
+            }
+            Err(e) => {
+                println!("batch error: {:?}", e);
+            }
+        }
+        batch_result
+    });
+    Box::pin(RecordBatchStreamAdapter::new(schema, printing_stream))
 }

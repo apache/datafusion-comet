@@ -45,6 +45,7 @@ use jni::{
     sys::{jboolean, jbyte, jdouble, jfloat, jint, jlong, jshort},
 };
 
+
 use self::util::jni::TypePromotionInfo;
 use crate::execution::jni_api::get_runtime;
 use crate::execution::metrics::utils::update_comet_metric;
@@ -781,12 +782,12 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
         // dbg!(&scan);
 
         let partition_index: usize = 0;
-        let batch_stream = Some(scan.execute(partition_index, session_ctx.task_ctx())?);
+        let batch_stream = scan.execute(partition_index, session_ctx.task_ctx())?;
 
         let ctx = BatchContext {
             native_plan: Arc::new(SparkPlan::new(0, scan, vec![])),
             metrics_node: Arc::new(jni_new_global_ref!(env, metrics_node)?),
-            batch_stream,
+            batch_stream: Some(batch_stream),
             current_batch: None,
             reader_state: ParquetReaderState::Init,
         };

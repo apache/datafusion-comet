@@ -966,6 +966,8 @@ fn cast_array(
     use DataType::*;
     let from_type = array.data_type().clone();
 
+    // dbg!(&array, &array.nulls());
+
     if from_type.equals_datatype(to_type) {
         return Ok(Arc::new(array));
     }

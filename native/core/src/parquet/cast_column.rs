@@ -155,7 +155,7 @@ impl PhysicalExpr for CometCastColumnExpr {
         let input_physical_field = self.input_physical_field.data_type();
         let target_field = self.target_field.data_type();
 
-        dbg!(&input_physical_field, &target_field, &value);
+        //dbg!(&input_physical_field, &target_field, &value);
 
         // Handle specific type conversions with custom casts
         match (input_physical_field, target_field) {

@@ -23,7 +23,7 @@ use crate::{
     },
     jvm_bridge::{jni_call, JVMClasses},
 };
-use arrow::array::{make_array, ArrayData, ArrayRef, RecordBatch, RecordBatchOptions};
+use arrow::array::{make_array, Array, ArrayData, ArrayRef, RecordBatch, RecordBatchOptions};
 use arrow::compute::{cast_with_options, take, CastOptions};
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use arrow::ffi::FFI_ArrowArray;

@@ -71,6 +71,7 @@ pub fn array_with_timezone(
     timezone: String,
     to_type: Option<&DataType>,
 ) -> Result<ArrayRef, ArrowError> {
+    // dbg!(&array, &timezone, to_type, &array.data_type());
     match array.data_type() {
         DataType::Timestamp(TimeUnit::Millisecond, None) => {
             assert!(!timezone.is_empty());
@@ -171,6 +172,7 @@ pub fn array_with_timezone(
 }
 
 fn datetime_cast_err(value: i64) -> ArrowError {
+    println!("{}", std::backtrace::Backtrace::force_capture());
     ArrowError::CastError(format!(
         "Cannot convert TimestampMicrosecondType {value} to datetime. Comet only supports dates between Jan 1, 262145 BCE and Dec 31, 262143 CE",
     ))
@@ -193,6 +195,7 @@ fn timestamp_ntz_to_timestamp(
     match array.data_type() {
         DataType::Timestamp(TimeUnit::Microsecond, None) => {
             let array = as_primitive_array::<TimestampMicrosecondType>(&array);
+            // dbg!(&array, &array.nulls());
             let tz: Tz = tz.parse()?;
             let array: PrimitiveArray<TimestampMicrosecondType> = array.try_unary(|value| {
                 as_datetime::<TimestampMicrosecondType>(value)
