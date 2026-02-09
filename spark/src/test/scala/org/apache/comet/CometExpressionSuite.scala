@@ -618,23 +618,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("MinutesOfTime expression support") {
-    // MinutesOfTime is only available in Spark 4.0+
-    assume(isSpark40Plus, "MinutesOfTime is only available in Spark 4.0+")
-    Seq(true, false).foreach { dictionaryEnabled =>
-      withTempDir { dir =>
-        val path = new Path(dir.toURI.toString, "part-r-0.parquet")
-        makeRawTimeParquetFile(path, dictionaryEnabled = dictionaryEnabled, 10000)
-        readParquetFile(path.toString) { df =>
-          // Test that MinutesOfTime (via minute() function) works correctly
-          val query = df.select(expr("minute(_1)"))
-
-          checkSparkAnswerAndOperator(query)
-        }
-      }
-    }
-  }
-
   test("hour on int96 timestamp column") {
     import testImplicits._
 

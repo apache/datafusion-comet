@@ -19,7 +19,7 @@
 
 package org.apache.comet.shims
 
-import org.apache.spark.sql.catalyst.expressions.{Expression, MinutesOfTime}
+import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.types.StringTypeWithCollation
@@ -107,26 +107,6 @@ trait CometExprShim extends CommonStringExprs {
         val childExprs = wb.children.map(exprToProtoInternal(_, inputs, binding))
         val optExpr = scalarFunctionExprToProto("width_bucket", childExprs: _*)
         optExprWithInfo(optExpr, wb, wb.children: _*)
-
-      case mot: MinutesOfTime =>
-        // MinutesOfTime is a RuntimeReplaceable expression that delegates to DateTimeUtils.getMinutesOfTime.
-        // It has the same functionality as Minute, so we convert it to the same protobuf Minute message.
-        val childExpr = exprToProtoInternal(mot.children.head, inputs, binding)
-        childExpr match {
-          case Some(child) =>
-            val builder = ExprOuterClass.Minute.newBuilder()
-            builder.setChild(child)
-            // RuntimeReplaceable expressions typically don't have timeZoneId, default to UTC
-            builder.setTimezone("UTC")
-            Some(
-              ExprOuterClass.Expr
-                .newBuilder()
-                .setMinute(builder)
-                .build())
-          case None =>
-            withInfo(mot, mot.children.head)
-            None
-        }
 
       case _ => None
     }
