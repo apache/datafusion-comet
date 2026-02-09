@@ -1181,6 +1181,21 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       // Test with pattern at end
       val queryEnd = sql(s"select id from $table where contains (name, 'Smith')")
       checkSparkAnswerAndOperator(queryEnd)
+
+      // Test with null haystack
+      sql(s"insert into $table values(6, null)")
+      checkSparkAnswerAndOperator(sql(s"select id, contains(name, 'Rose') from $table"))
+
+      // Test case sensitivity (should not match)
+      checkSparkAnswerAndOperator(sql(s"select id from $table where contains(name, 'james')"))
+    }
+  }
+
+  test("contains with both columns") {
+    withParquetTable(
+      Seq(("hello world", "world"), ("foo bar", "baz"), ("abc", ""), (null, "x"), ("test", null)),
+      "tbl") {
+      checkSparkAnswerAndOperator(sql("select contains(_1, _2) from tbl"))
     }
   }
 
