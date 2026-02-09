@@ -35,10 +35,10 @@ use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::aggregates::{AggregateExec, PhysicalGroupBy};
 use datafusion::physical_plan::projection::{ProjectionExec, ProjectionExpr};
 use datafusion::physical_plan::ExecutionPlan;
-use log::info;
+use log::debug;
 
-/// A wrapper around `Arc<dyn PhysicalExpr>` that implements `Eq` and `Hash`
-/// by delegating to the trait-object implementations on `dyn PhysicalExpr`.
+/// Needed because `Arc<dyn PhysicalExpr>` doesn't implement `Eq`/`Hash`
+/// directly — this delegates to the trait-object implementations.
 struct ExprKey(Arc<dyn datafusion::physical_plan::PhysicalExpr>);
 
 impl PartialEq for ExprKey {
@@ -84,8 +84,7 @@ impl PhysicalOptimizerRule for PhysicalCommonSubexprEliminate {
                 }
             })
             .data();
-        let elapsed = start.elapsed();
-        info!("Physical CSE optimizer completed in {elapsed:?}");
+        debug!("Physical CSE optimizer completed in {:?}", start.elapsed());
         result
     }
 
@@ -98,15 +97,12 @@ impl PhysicalOptimizerRule for PhysicalCommonSubexprEliminate {
     }
 }
 
-/// Returns `true` if the expression is trivial (a `Column` or `Literal`)
-/// and therefore not worth extracting as a common subexpression.
+/// Columns and literals are too cheap to be worth extracting.
 fn is_trivial(expr: &Arc<dyn datafusion::physical_plan::PhysicalExpr>) -> bool {
     expr.as_any().downcast_ref::<Column>().is_some()
         || expr.as_any().downcast_ref::<Literal>().is_some()
 }
 
-/// Recursively collect all sub-expressions from `expr` and increment their
-/// occurrence count in `counts`.
 fn collect_subexprs(
     expr: &Arc<dyn datafusion::physical_plan::PhysicalExpr>,
     counts: &mut HashMap<ExprKey, usize>,
@@ -121,10 +117,6 @@ fn collect_subexprs(
     }
 }
 
-/// Identify sub-expressions that appear 2+ times across the given
-/// expression list. Returns a deduplicated vec containing only the
-/// largest common subexpressions (sub-expressions of an already-extracted
-/// CSE are removed since they would be unreferenced after rewriting).
 fn find_common_subexprs(
     exprs: &[Arc<dyn datafusion::physical_plan::PhysicalExpr>],
 ) -> Vec<Arc<dyn datafusion::physical_plan::PhysicalExpr>> {
@@ -138,20 +130,16 @@ fn find_common_subexprs(
         .map(|(key, _)| key.0)
         .collect();
 
-    // Filter out any CSE that is a strict sub-expression of another CSE,
-    // since after rewriting the larger CSE to a column reference its
-    // children will no longer be evaluated and the smaller CSE column
-    // would go unused.
+    // After rewriting the larger CSE to a column reference, its children
+    // are no longer evaluated, so any smaller CSE nested inside it would
+    // produce an unused column in the intermediate projection.
     let common_set: std::collections::HashSet<ExprKey> =
         common.iter().map(|e| ExprKey(Arc::clone(e))).collect();
 
     common
         .into_iter()
         .filter(|expr| {
-            // Check if any OTHER common subexpression contains this one
-            // as a descendant.  If so, drop it.
             !common_set.iter().any(|other| {
-                // skip self
                 if other.0.as_ref() == expr.as_ref() {
                     return false;
                 }
@@ -161,7 +149,6 @@ fn find_common_subexprs(
         .collect()
 }
 
-/// Returns true if `haystack` contains `needle` as a strict descendant.
 fn contains_subexpr(
     haystack: &Arc<dyn datafusion::physical_plan::PhysicalExpr>,
     needle: &Arc<dyn datafusion::physical_plan::PhysicalExpr>,
@@ -177,8 +164,8 @@ fn contains_subexpr(
     false
 }
 
-/// Replace occurrences of any common subexpression in `expr` with a `Column`
-/// reference into the intermediate projection's schema.
+/// Replaces occurrences of any common subexpression in `expr` with a
+/// `Column` reference into the intermediate projection's schema.
 fn rewrite_expr(
     expr: Arc<dyn datafusion::physical_plan::PhysicalExpr>,
     cse_map: &HashMap<ExprKey, (String, usize)>,
@@ -189,9 +176,9 @@ fn rewrite_expr(
         }
         let lookup = ExprKey(Arc::clone(&node));
         if let Some((name, index)) = cse_map.get(&lookup) {
-            // Replace with a column reference and skip recursing into children
             let col = Arc::new(Column::new(name, *index))
                 as Arc<dyn datafusion::physical_plan::PhysicalExpr>;
+            // Jump skips recursing into children that are now behind a column ref
             Ok(Transformed::new(col, true, TreeNodeRecursion::Jump))
         } else {
             Ok(Transformed::no(node))
@@ -200,8 +187,6 @@ fn rewrite_expr(
     .data()
 }
 
-/// Attempt to optimize a single `ProjectionExec` by extracting common
-/// subexpressions into an intermediate projection.
 fn try_optimize_projection(
     node: Arc<dyn ExecutionPlan>,
 ) -> Result<Transformed<Arc<dyn ExecutionPlan>>> {
@@ -220,8 +205,6 @@ fn try_optimize_projection(
     let input_schema = input.schema();
     let num_input_cols = input_schema.fields().len();
 
-    // Build the intermediate projection: pass through all input columns, then
-    // append one column per common subexpression.
     let mut intermediate_exprs: Vec<ProjectionExpr> = Vec::new();
     for (i, field) in input_schema.fields().iter().enumerate() {
         intermediate_exprs.push(ProjectionExpr {
@@ -230,7 +213,6 @@ fn try_optimize_projection(
         });
     }
 
-    // Map from common subexpression -> (cse_name, column_index_in_intermediate)
     let mut cse_map: HashMap<ExprKey, (String, usize)> = HashMap::new();
     for (idx, cse_expr) in common.iter().enumerate() {
         let cse_name = format!("__cse_{idx}");
@@ -247,7 +229,6 @@ fn try_optimize_projection(
         Arc::clone(input),
     )?) as Arc<dyn ExecutionPlan>;
 
-    // Rewrite the top projection expressions to reference the intermediate.
     let mut new_proj_exprs: Vec<ProjectionExpr> = Vec::new();
     for proj_expr in proj_exprs {
         let rewritten = rewrite_expr(Arc::clone(&proj_expr.expr), &cse_map)?;
@@ -260,7 +241,7 @@ fn try_optimize_projection(
     let new_projection =
         Arc::new(ProjectionExec::try_new(new_proj_exprs, intermediate)?) as Arc<dyn ExecutionPlan>;
 
-    info!(
+    debug!(
         "Physical CSE: rewrote ProjectionExec, extracted {} common subexpression(s): [{}]",
         common.len(),
         common.iter().map(|e| e.to_string()).collect::<Vec<_>>().join(", ")
@@ -269,21 +250,17 @@ fn try_optimize_projection(
     Ok(Transformed::yes(new_projection))
 }
 
-/// Attempt to optimize a single `AggregateExec` by extracting common
-/// subexpressions from aggregate function arguments into an intermediate
-/// projection.
 fn try_optimize_aggregate(
     node: Arc<dyn ExecutionPlan>,
 ) -> Result<Transformed<Arc<dyn ExecutionPlan>>> {
     let agg_exec = node.as_any().downcast_ref::<AggregateExec>().unwrap();
 
-    // Only optimize first-stage aggregates where original column expressions
-    // are present. Final/FinalPartitioned reference partial outputs.
+    // Final/FinalPartitioned aggregates reference partial outputs, not
+    // the original column expressions, so CSE doesn't apply.
     if !agg_exec.mode().is_first_stage() {
         return Ok(Transformed::no(node));
     }
 
-    // Collect all sub-expressions from aggregate function arguments.
     let aggr_exprs = agg_exec.aggr_expr();
     let all_args: Vec<Arc<dyn datafusion::physical_plan::PhysicalExpr>> = aggr_exprs
         .iter()
@@ -299,8 +276,6 @@ fn try_optimize_aggregate(
     let input_schema = input.schema();
     let num_input_cols = input_schema.fields().len();
 
-    // Build an intermediate projection: pass through all input columns, then
-    // append one column per common subexpression.
     let mut intermediate_exprs: Vec<ProjectionExpr> = Vec::new();
     for (i, field) in input_schema.fields().iter().enumerate() {
         intermediate_exprs.push(ProjectionExpr {
@@ -309,7 +284,6 @@ fn try_optimize_aggregate(
         });
     }
 
-    // Map from common subexpression -> (cse_name, column_index_in_intermediate)
     let mut cse_map: HashMap<ExprKey, (String, usize)> = HashMap::new();
     for (idx, cse_expr) in common.iter().enumerate() {
         let cse_name = format!("__cse_{idx}");
@@ -327,7 +301,6 @@ fn try_optimize_aggregate(
     )?) as Arc<dyn ExecutionPlan>;
     let intermediate_schema = intermediate.schema();
 
-    // Rewrite each aggregate function's arguments to reference CSE columns.
     let mut new_aggr_exprs: Vec<Arc<AggregateFunctionExpr>> = Vec::new();
     for agg_fn in aggr_exprs {
         let old_args = agg_fn.expressions();
@@ -351,7 +324,6 @@ fn try_optimize_aggregate(
         new_aggr_exprs.push(Arc::new(new_agg_fn));
     }
 
-    // Rewrite filter expressions if they reference common subexpressions.
     let new_filters: Vec<Option<Arc<dyn datafusion::physical_plan::PhysicalExpr>>> = agg_exec
         .filter_expr()
         .iter()
@@ -363,7 +335,6 @@ fn try_optimize_aggregate(
         })
         .collect::<Result<_>>()?;
 
-    // Rewrite group-by expressions to reference CSE columns.
     let old_group_by = agg_exec.group_expr();
     let new_group_exprs: Vec<(Arc<dyn datafusion::physical_plan::PhysicalExpr>, String)> =
         old_group_by
@@ -391,7 +362,7 @@ fn try_optimize_aggregate(
         intermediate_schema,
     )?;
 
-    info!(
+    debug!(
         "Physical CSE: rewrote AggregateExec ({:?} mode), extracted {} common subexpression(s): [{}]",
         agg_exec.mode(),
         common.len(),
@@ -460,7 +431,6 @@ mod tests {
         let rule = PhysicalCommonSubexprEliminate::new();
         let optimized = rule.optimize(plan, &config)?;
 
-        // The optimized plan should be a ProjectionExec wrapping another ProjectionExec
         let top = optimized
             .as_any()
             .downcast_ref::<ProjectionExec>()
@@ -471,14 +441,8 @@ mod tests {
             .downcast_ref::<ProjectionExec>()
             .expect("intermediate should be ProjectionExec");
 
-        // Intermediate should have input columns + 1 CSE column
         assert_eq!(intermediate.expr().len(), 3); // a, b, __cse_0
-
-        // The CSE column should be named __cse_0
-        let cse_alias = &intermediate.expr()[2].alias;
-        assert_eq!(cse_alias, "__cse_0");
-
-        // Top projection should still produce 2 output columns
+        assert_eq!(intermediate.expr()[2].alias, "__cse_0");
         assert_eq!(top.expr().len(), 2);
         assert_eq!(top.expr()[0].alias, "x");
         assert_eq!(top.expr()[1].alias, "y");
@@ -513,12 +477,10 @@ mod tests {
         let rule = PhysicalCommonSubexprEliminate::new();
         let optimized = rule.optimize(Arc::clone(&plan), &config)?;
 
-        // No intermediate projection should be inserted
         let top = optimized
             .as_any()
             .downcast_ref::<ProjectionExec>()
             .expect("should be ProjectionExec");
-        // Input should be EmptyExec, not another ProjectionExec
         assert!(top
             .input()
             .as_any()
@@ -530,7 +492,6 @@ mod tests {
 
     #[test]
     fn test_aggregate_cse_extracts_common_subexpr() -> Result<()> {
-        // Schema: a INT64, b INT64, c INT64
         let schema = Arc::new(Schema::new(vec![
             Field::new("a", DataType::Int64, false),
             Field::new("b", DataType::Int64, false),
@@ -542,7 +503,6 @@ mod tests {
         let b = col("b", &schema)?;
         let c = col("c", &schema)?;
 
-        // Common subexpression: a + b
         let a_plus_b_1 = binary(Arc::clone(&a), Operator::Plus, Arc::clone(&b), &schema)?;
         let a_plus_b_2 = binary(Arc::clone(&a), Operator::Plus, Arc::clone(&b), &schema)?;
 
@@ -577,7 +537,6 @@ mod tests {
         let rule = PhysicalCommonSubexprEliminate::new();
         let optimized = rule.optimize(plan, &config)?;
 
-        // The optimized plan should be an AggregateExec wrapping a ProjectionExec
         let top_agg = optimized
             .as_any()
             .downcast_ref::<AggregateExec>()
@@ -588,14 +547,8 @@ mod tests {
             .downcast_ref::<ProjectionExec>()
             .expect("intermediate should be ProjectionExec");
 
-        // Intermediate should have input columns (a, b, c) + 1 CSE column
         assert_eq!(intermediate.expr().len(), 4); // a, b, c, __cse_0
-
-        // The CSE column should be named __cse_0
-        let cse_alias = &intermediate.expr()[3].alias;
-        assert_eq!(cse_alias, "__cse_0");
-
-        // Aggregate should still produce 2 aggregate expressions
+        assert_eq!(intermediate.expr()[3].alias, "__cse_0");
         assert_eq!(top_agg.aggr_expr().len(), 2);
 
         Ok(())
@@ -603,7 +556,6 @@ mod tests {
 
     #[test]
     fn test_aggregate_cse_skips_final_mode() -> Result<()> {
-        // Final-mode aggregates should not be optimized
         let schema = Arc::new(Schema::new(vec![
             Field::new("a", DataType::Int64, false),
             Field::new("b", DataType::Int64, false),
@@ -641,7 +593,6 @@ mod tests {
         let rule = PhysicalCommonSubexprEliminate::new();
         let optimized = rule.optimize(plan, &config)?;
 
-        // Should still be an AggregateExec with no intermediate ProjectionExec
         let top_agg = optimized
             .as_any()
             .downcast_ref::<AggregateExec>()

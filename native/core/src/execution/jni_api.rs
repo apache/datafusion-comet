@@ -87,7 +87,7 @@ use crate::execution::spark_config::{
 };
 use crate::parquet::encryption_support::{CometEncryptionFactory, ENCRYPTION_FACTORY_ID};
 use datafusion_comet_proto::spark_operator::operator::OpStruct;
-use log::info;
+use log::{debug, info};
 use once_cell::sync::Lazy;
 #[cfg(feature = "jemalloc")]
 use tikv_jemalloc_ctl::{epoch, stats};
@@ -563,8 +563,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                     for optimizer in optimizers {
                         optimized_plan = optimizer.optimize(optimized_plan, &config)?;
                     }
-                    let opt_elapsed = opt_start.elapsed();
-                    info!("Comet physical optimization completed in {opt_elapsed:?}");
+                    debug!("Comet physical optimization completed in {:?}", opt_start.elapsed());
 
                     if exec_context.explain_native {
                         let after =
