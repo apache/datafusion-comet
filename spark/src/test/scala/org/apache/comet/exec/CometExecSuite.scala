@@ -281,6 +281,71 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("DPP with native_datafusion scan - SubqueryExec (non-broadcast DPP)") {
+    // This test triggers SubqueryExec instead of SubqueryBroadcastExec.
+    // Reproduces the failure in Spark's DynamicPartitionPruningV1SuiteAEOff.
+    // Setup matches DynamicPartitionPruningSuiteBase.beforeAll exactly.
+    withSQLConf(
+      SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+      CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
+      // Must disable AQE (like DynamicPartitionPruningV1SuiteAEOff)
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_ENABLED.key -> "true") {
+      withTable("fact_sk", "dim_store") {
+        // Exact data from DynamicPartitionPruningSuiteBase
+        val factData = Seq(
+          (1000, 1, 1, 10), (1010, 2, 1, 10), (1020, 2, 1, 10), (1030, 3, 2, 10),
+          (1040, 3, 2, 50), (1050, 3, 2, 50), (1060, 3, 2, 50), (1070, 4, 2, 10),
+          (1080, 4, 3, 20), (1090, 4, 3, 10), (1100, 4, 3, 10), (1110, 5, 3, 10),
+          (1120, 6, 4, 10), (1130, 7, 4, 50), (1140, 8, 4, 50), (1150, 9, 1, 20),
+          (1160, 10, 1, 20), (1170, 11, 1, 30), (1180, 12, 2, 20), (1190, 13, 2, 20),
+          (1200, 14, 3, 40), (1200, 15, 3, 70), (1210, 16, 4, 10), (1220, 17, 4, 20),
+          (1230, 18, 4, 20), (1240, 19, 5, 40), (1250, 20, 5, 40), (1260, 21, 5, 40),
+          (1270, 22, 5, 50), (1280, 23, 1, 50), (1290, 24, 1, 50), (1300, 25, 1, 50))
+        spark
+          .createDataFrame(factData)
+          .toDF("date_id", "store_id", "product_id", "units_sold")
+          .write
+          .partitionBy("store_id")
+          .format("parquet")
+          .saveAsTable("fact_sk")
+
+        val storeData = Seq(
+          (1, "North-Holland", "NL"), (2, "South-Holland", "NL"), (3, "Bavaria", "DE"),
+          (4, "California", "US"), (5, "Texas", "US"), (6, "Texas", "US"))
+        spark
+          .createDataFrame(storeData)
+          .toDF("store_id", "state_province", "country")
+          .write
+          .format("parquet")
+          .saveAsTable("dim_store")
+
+        // Only analyze dim_store (like the Spark test)
+        sql("ANALYZE TABLE dim_store COMPUTE STATISTICS FOR COLUMNS store_id")
+
+        // Exact test from "simple inner join triggers DPP with mock-up tables"
+        withSQLConf(
+          SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true",
+          SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "false",
+          SQLConf.EXCHANGE_REUSE_ENABLED.key -> "false") {
+
+          val query =
+            """SELECT f.date_id, f.store_id FROM fact_sk f
+              |JOIN dim_store s ON f.store_id = s.store_id AND s.country = 'NL'""".stripMargin
+
+          val df = sql(query)
+          val planStr = df.queryExecution.executedPlan.toString
+          assert(
+            planStr.contains("dynamicpruning"),
+            s"Expected dynamic pruning in plan but got:\n$planStr")
+
+          checkSparkAnswer(df)
+        }
+      }
+    }
+  }
+
   test("ShuffleQueryStageExec could be direct child node of CometBroadcastExchangeExec") {
     withSQLConf(CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
       val table = "src"
