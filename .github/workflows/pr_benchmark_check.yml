@@ -25,11 +25,11 @@ concurrency:
   cancel-in-progress: true
 
 on:
-  push:
-    paths:
-      - "native/core/benches/**"
-      - "native/spark-expr/benches/**"
-      - "spark/src/test/scala/org/apache/spark/sql/benchmark/**"
+  # push:
+  #   paths:
+  #     - "native/core/benches/**"
+  #     - "native/spark-expr/benches/**"
+  #     - "spark/src/test/scala/org/apache/spark/sql/benchmark/**"
   pull_request:
     paths:
       - "native/core/benches/**"
