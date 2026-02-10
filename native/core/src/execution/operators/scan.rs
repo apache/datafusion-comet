@@ -23,9 +23,11 @@ use crate::{
     },
     jvm_bridge::{jni_call, JVMClasses},
 };
-use arrow::array::{make_array, Array, ArrayData, ArrayRef, RecordBatch, RecordBatchOptions};
+use arrow::array::{
+    make_array, Array, ArrayData, ArrayRef, MapArray, RecordBatch, RecordBatchOptions, StructArray,
+};
 use arrow::compute::{cast_with_options, take, CastOptions};
-use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+use arrow::datatypes::{DataType, Field, Fields, Schema, SchemaRef};
 use arrow::ffi::FFI_ArrowArray;
 use arrow::ffi::FFI_ArrowSchema;
 use datafusion::common::{arrow_datafusion_err, DataFusionError, Result as DataFusionResult};
@@ -490,16 +492,20 @@ impl ScanStream<'_> {
     ) -> DataFusionResult<RecordBatch, DataFusionError> {
         let schema_fields = self.schema.fields();
         assert_eq!(columns.len(), schema_fields.len());
-        // dbg!(&columns, &self.schema);
         // Cast dictionary-encoded primitive arrays to regular arrays and cast
         // Utf8/LargeUtf8/Binary arrays to dictionary-encoded if the schema is
         // defined as dictionary-encoded and the data in this batch is not
         // dictionary-encoded (could also be the other way around)
+        // Also handle Map type field name differences (e.g., "key_value" vs "entries")
         let new_columns: Vec<ArrayRef> = columns
             .iter()
             .zip(schema_fields.iter())
             .map(|(column, f)| {
                 if column.data_type() != f.data_type() {
+                    // Try to adapt Map types with different field names first
+                    if let Some(adapted) = adapt_map_to_schema(column, f.data_type()) {
+                        return Ok(adapted);
+                    }
                     let mut timer = self.cast_time.timer();
                     let cast_array = cast_with_options(column, f.data_type(), &self.cast_options);
                     timer.stop();
@@ -510,7 +516,6 @@ impl ScanStream<'_> {
             })
             .collect::<Result<Vec<_>, _>>()?;
         let options = RecordBatchOptions::new().with_row_count(Some(num_rows));
-        // dbg!(&new_columns, &self.schema);
         RecordBatch::try_new_with_options(Arc::clone(&self.schema), new_columns, &options)
             .map_err(|e| arrow_datafusion_err!(e))
     }
@@ -585,5 +590,79 @@ impl InputBatch {
         });
 
         InputBatch::Batch(columns, num_rows)
+    }
+}
+
+/// Adapts a Map array to match a target schema's Map type.
+/// This handles the common case where the field names differ (e.g., Parquet uses "key_value"
+/// while Spark uses "entries") but the key/value types are the same.
+/// Returns None if the types are not compatible or not Map types.
+fn adapt_map_to_schema(column: &ArrayRef, target_type: &DataType) -> Option<ArrayRef> {
+    let from_type = column.data_type();
+
+    match (from_type, target_type) {
+        (
+            DataType::Map(from_entries_field, from_sorted),
+            DataType::Map(to_entries_field, _to_sorted),
+        ) => {
+            let from_struct_type = from_entries_field.data_type();
+            let to_struct_type = to_entries_field.data_type();
+
+            match (from_struct_type, to_struct_type) {
+                (DataType::Struct(from_fields), DataType::Struct(to_fields)) => {
+                    // Check if key and value types match (we only handle field name differences)
+                    let from_key_type = from_fields[0].data_type();
+                    let from_value_type = from_fields[1].data_type();
+                    let to_key_type = to_fields[0].data_type();
+                    let to_value_type = to_fields[1].data_type();
+
+                    // Only adapt if the underlying types are the same
+                    if from_key_type != to_key_type || from_value_type != to_value_type {
+                        return None;
+                    }
+
+                    let map_array = column.as_any().downcast_ref::<MapArray>()?;
+
+                    // Build the new entries struct with the target field names
+                    let new_key_field = Arc::new(Field::new(
+                        to_fields[0].name(),
+                        to_key_type.clone(),
+                        to_fields[0].is_nullable(),
+                    ));
+                    let new_value_field = Arc::new(Field::new(
+                        to_fields[1].name(),
+                        to_value_type.clone(),
+                        to_fields[1].is_nullable(),
+                    ));
+
+                    let struct_fields = Fields::from(vec![new_key_field, new_value_field]);
+                    let entries_struct = StructArray::new(
+                        struct_fields,
+                        vec![Arc::clone(map_array.keys()), Arc::clone(map_array.values())],
+                        None,
+                    );
+
+                    // Create the new map field with the target name
+                    let new_entries_field = Arc::new(Field::new(
+                        to_entries_field.name(),
+                        DataType::Struct(entries_struct.fields().clone()),
+                        to_entries_field.is_nullable(),
+                    ));
+
+                    // Build the new MapArray
+                    let new_map = MapArray::new(
+                        new_entries_field,
+                        map_array.offsets().clone(),
+                        entries_struct,
+                        map_array.nulls().cloned(),
+                        *from_sorted,
+                    );
+
+                    Some(Arc::new(new_map))
+                }
+                _ => None,
+            }
+        }
+        _ => None,
     }
 }
