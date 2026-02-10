@@ -43,6 +43,7 @@ mod agg_funcs;
 mod array_funcs;
 mod bitwise_funcs;
 mod comet_scalar_funcs;
+pub mod encryption_funcs;
 pub mod hash_funcs;
 
 mod string_funcs;

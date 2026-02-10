@@ -40,6 +40,11 @@ twox-hash = "2.1.2"
 rand = { workspace = true }
 hex = "0.4.3"
 base64 = "0.22.1"
+aes = "0.8"
+aes-gcm = "0.10"
+cbc = { version = "0.1", features = ["alloc"] }
+cipher = "0.4"
+ecb = "0.1"
 
 [dev-dependencies]
 arrow = {workspace = true}
