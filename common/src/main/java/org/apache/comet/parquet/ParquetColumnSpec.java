@@ -21,12 +21,15 @@ package org.apache.comet.parquet;
 
 import java.util.Map;
 
+import org.apache.comet.IcebergApi;
+
 /**
  * Parquet ColumnSpec encapsulates the information withing a Parquet ColumnDescriptor. Utility
  * methods can convert from and to a ColumnDescriptor The only purpose of this class is to allow
  * passing of Column descriptors between Comet and Iceberg. This is required because Iceberg shades
  * Parquet, changing the package of Parquet classes and making then incompatible with Comet.
  */
+@IcebergApi
 public class ParquetColumnSpec {
 
   private final int fieldId;
@@ -41,6 +44,7 @@ public class ParquetColumnSpec {
   private String logicalTypeName;
   private Map<String, String> logicalTypeParams;
 
+  @IcebergApi
   public ParquetColumnSpec(
       int fieldId,
       String[] path,
@@ -62,18 +66,22 @@ public class ParquetColumnSpec {
     this.logicalTypeParams = logicalTypeParams;
   }
 
+  @IcebergApi
   public int getFieldId() {
     return fieldId;
   }
 
+  @IcebergApi
   public String[] getPath() {
     return path;
   }
 
+  @IcebergApi
   public String getPhysicalType() {
     return physicalType;
   }
 
+  @IcebergApi
   public int getTypeLength() {
     return typeLength;
   }
@@ -82,18 +90,22 @@ public class ParquetColumnSpec {
     return isRepeated;
   }
 
+  @IcebergApi
   public int getMaxRepetitionLevel() {
     return maxRepetitionLevel;
   }
 
+  @IcebergApi
   public int getMaxDefinitionLevel() {
     return maxDefinitionLevel;
   }
 
+  @IcebergApi
   public String getLogicalTypeName() {
     return logicalTypeName;
   }
 
+  @IcebergApi
   public Map<String, String> getLogicalTypeParams() {
     return logicalTypeParams;
   }
