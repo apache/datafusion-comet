@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::SparkError;
 use arrow::array::{
     Array, ArrayRef, ArrowPrimitiveType, AsArray, GenericStringArray, PrimitiveArray,
 };
@@ -111,4 +112,22 @@ fn trim_end(s: &str) -> &str {
 #[inline]
 pub fn is_identity_cast(from_type: &DataType, to_type: &DataType) -> bool {
     from_type == to_type
+}
+
+#[inline]
+pub fn cast_overflow(value: &str, from_type: &str, to_type: &str) -> SparkError {
+    SparkError::CastOverFlow {
+        value: value.to_string(),
+        from_type: from_type.to_string(),
+        to_type: to_type.to_string(),
+    }
+}
+
+#[inline]
+pub fn invalid_value(value: &str, from_type: &str, to_type: &str) -> SparkError {
+    SparkError::CastInvalidValue {
+        value: value.to_string(),
+        from_type: from_type.to_string(),
+        to_type: to_type.to_string(),
+    }
 }

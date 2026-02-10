@@ -16,6 +16,7 @@
 // under the License.
 
 use crate::conversion_funcs::boolean::can_cast_from_boolean;
+use crate::conversion_funcs::utils::{cast_overflow, invalid_value};
 use crate::conversion_funcs::utils::{is_identity_cast, spark_cast_postprocess};
 use crate::utils::array_with_timezone;
 use crate::EvalMode::Legacy;
@@ -2377,24 +2378,6 @@ fn parse_decimal_str(
     // For example : "1.23E-5" has fractional_scale=2, exponent=-5, so scale = 2 - (-5) = 7
     let final_scale = fractional_scale - exponent;
     Ok((final_mantissa, final_scale))
-}
-
-#[inline]
-fn invalid_value(value: &str, from_type: &str, to_type: &str) -> SparkError {
-    SparkError::CastInvalidValue {
-        value: value.to_string(),
-        from_type: from_type.to_string(),
-        to_type: to_type.to_string(),
-    }
-}
-
-#[inline]
-fn cast_overflow(value: &str, from_type: &str, to_type: &str) -> SparkError {
-    SparkError::CastOverFlow {
-        value: value.to_string(),
-        from_type: from_type.to_string(),
-        to_type: to_type.to_string(),
-    }
 }
 
 impl Display for Cast {
