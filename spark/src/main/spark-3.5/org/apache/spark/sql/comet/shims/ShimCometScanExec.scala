@@ -144,12 +144,17 @@ trait ShimCometScanExec {
         val coalescedBuckets = prunedFilesGroupedToBuckets.groupBy(_._1 % numCoalescedBuckets)
         Seq.tabulate(numCoalescedBuckets) { bucketId =>
           val files =
-            coalescedBuckets.get(bucketId).map(_.values.flatten.toArray).getOrElse(Array.empty)
+            coalescedBuckets
+              .get(bucketId)
+              .map(_.values.flatten.toArray)
+              .getOrElse(Array.empty[PartitionedFile])
           FilePartition(bucketId, files)
         }
       case None =>
         Seq.tabulate(bucketSpec.numBuckets) { bucketId =>
-          FilePartition(bucketId, prunedFilesGroupedToBuckets.getOrElse(bucketId, Array.empty))
+          FilePartition(
+            bucketId,
+            prunedFilesGroupedToBuckets.getOrElse(bucketId, Seq.empty).toArray)
         }
     }
   }
