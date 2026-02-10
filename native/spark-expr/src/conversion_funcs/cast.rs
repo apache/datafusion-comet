@@ -26,8 +26,8 @@ use arrow::array::{
 };
 use arrow::compute::can_cast_types;
 use arrow::datatypes::{
-    i256, ArrowDictionaryKeyType, ArrowNativeType, DataType, Decimal256Type, GenericBinaryType,
-    Schema,
+    i256, ArrowDictionaryKeyType, ArrowNativeType, DataType, Decimal256Type, Field, Fields,
+    GenericBinaryType, Schema,
 };
 use arrow::{
     array::{
@@ -707,12 +707,16 @@ pub fn spark_cast(
     data_type: &DataType,
     cast_options: &SparkCastOptions,
 ) -> DataFusionResult<ColumnarValue> {
-    match arg {
-        ColumnarValue::Array(array) => Ok(ColumnarValue::Array(cast_array(
-            array,
-            data_type,
-            cast_options,
-        )?)),
+    let input_type = match &arg {
+        ColumnarValue::Array(array) => array.data_type().clone(),
+        ColumnarValue::Scalar(scalar) => scalar.data_type(),
+    };
+
+    let result = match arg {
+        ColumnarValue::Array(array) => {
+            let result_array = cast_array(array, data_type, cast_options)?;
+            ColumnarValue::Array(result_array)
+        }
         ColumnarValue::Scalar(scalar) => {
             // Note that normally CAST(scalar) should be fold in Spark JVM side. However, for
             // some cases e.g., scalar subquery, Spark will not fold it, so we need to handle it
@@ -720,9 +724,21 @@ pub fn spark_cast(
             let array = scalar.to_array()?;
             let scalar =
                 ScalarValue::try_from_array(&cast_array(array, data_type, cast_options)?, 0)?;
-            Ok(ColumnarValue::Scalar(scalar))
+            ColumnarValue::Scalar(scalar)
         }
-    }
+    };
+
+    let result_type = match &result {
+        ColumnarValue::Array(array) => array.data_type().clone(),
+        ColumnarValue::Scalar(scalar) => scalar.data_type(),
+    };
+
+    // println!(
+    //     "spark_cast: {} -> {} (requested: {})",
+    //     input_type, result_type, data_type
+    // );
+
+    Ok(result)
 }
 
 // copied from datafusion common scalar/mod.rs
@@ -765,8 +781,16 @@ fn cast_array(
     cast_options: &SparkCastOptions,
 ) -> DataFusionResult<ArrayRef> {
     use DataType::*;
-    let array = array_with_timezone(array, cast_options.timezone.clone(), Some(to_type))?;
     let from_type = array.data_type().clone();
+
+    // dbg!(&from_type, &to_type);
+
+    if &from_type == to_type {
+        return Ok(Arc::new(array));
+    }
+
+    let array = array_with_timezone(array, cast_options.timezone.clone(), Some(to_type))?;
+    let eval_mode = cast_options.eval_mode;
 
     let native_cast_options: CastOptions = CastOptions {
         safe: !matches!(cast_options.eval_mode, EvalMode::Ansi), // take safe mode from cast_options passed
@@ -774,6 +798,8 @@ fn cast_array(
             .with_timestamp_tz_format(TIMESTAMP_FORMAT)
             .with_timestamp_format(TIMESTAMP_FORMAT),
     };
+
+    // dbg!(&from_type, &to_type);
 
     let array = match &from_type {
         Dictionary(key_type, value_type)
@@ -816,10 +842,10 @@ fn cast_array(
             }
         }
     };
-    let from_type = array.data_type();
-    let eval_mode = cast_options.eval_mode;
 
-    let cast_result = match (from_type, to_type) {
+    // dbg!(&from_type, &to_type);
+
+    let cast_result = match (&from_type, to_type) {
         (Utf8, Boolean) => spark_cast_utf8_to_boolean::<i32>(&array, eval_mode),
         (LargeUtf8, Boolean) => spark_cast_utf8_to_boolean::<i64>(&array, eval_mode),
         (Utf8, Timestamp(_, _)) => {
@@ -845,10 +871,10 @@ fn cast_array(
         | (Int16, Int8)
             if eval_mode != EvalMode::Try =>
         {
-            spark_cast_int_to_int(&array, eval_mode, from_type, to_type)
+            spark_cast_int_to_int(&array, eval_mode, &from_type, to_type)
         }
         (Int8 | Int16 | Int32 | Int64, Decimal128(precision, scale)) => {
-            cast_int_to_decimal128(&array, eval_mode, from_type, to_type, *precision, *scale)
+            cast_int_to_decimal128(&array, eval_mode, &from_type, to_type, *precision, *scale)
         }
         (Utf8, Int8 | Int16 | Int32 | Int64) => {
             cast_string_to_int::<i32>(to_type, &array, eval_mode)
@@ -880,21 +906,22 @@ fn cast_array(
         | (Decimal128(_, _), Int64)
             if eval_mode != EvalMode::Try =>
         {
-            spark_cast_nonintegral_numeric_to_integral(&array, eval_mode, from_type, to_type)
+            spark_cast_nonintegral_numeric_to_integral(&array, eval_mode, &from_type, to_type)
         }
         (Decimal128(_p, _s), Boolean) => spark_cast_decimal_to_boolean(&array),
         (Utf8View, Utf8) => Ok(cast_with_options(&array, to_type, &CAST_OPTIONS)?),
         (Struct(_), Utf8) => Ok(casts_struct_to_string(array.as_struct(), cast_options)?),
         (Struct(_), Struct(_)) => Ok(cast_struct_to_struct(
             array.as_struct(),
-            from_type,
+            &from_type,
             to_type,
             cast_options,
         )?),
         (List(_), Utf8) => Ok(cast_array_to_string(array.as_list(), cast_options)?),
-        (List(_), List(_)) if can_cast_types(from_type, to_type) => {
+        (List(_), List(_)) if can_cast_types(&from_type, to_type) => {
             Ok(cast_with_options(&array, to_type, &CAST_OPTIONS)?)
         }
+        (Map(_, _), Map(_, _)) => Ok(cast_map_to_map(&array, &from_type, to_type, cast_options)?),
         (UInt8 | UInt16 | UInt32 | UInt64, Int8 | Int16 | Int32 | Int64)
             if cast_options.allow_cast_unsigned_ints =>
         {
@@ -916,7 +943,7 @@ fn cast_array(
             cast_boolean_to_decimal(&array, *precision, *scale)
         }
         _ if cast_options.is_adapting_schema
-            || is_datafusion_spark_compatible(from_type, to_type) =>
+            || is_datafusion_spark_compatible(&from_type, to_type) =>
         {
             // use DataFusion cast only when we know that it is compatible with Spark
             Ok(cast_with_options(&array, to_type, &native_cast_options)?)
@@ -930,7 +957,19 @@ fn cast_array(
             )))
         }
     };
-    Ok(spark_cast_postprocess(cast_result?, from_type, to_type))
+    let x = cast_result?;
+    // println!("cast_array BEFORE postprocess:");
+    // println!("  from_type: {}", from_type);
+    // println!("  to_type: {}", to_type);
+    // println!("  intermediate data_type: {}", x.data_type());
+
+    let result = spark_cast_postprocess(x, &from_type, to_type);
+    //
+    // println!("cast_array AFTER postprocess:");
+    // println!("  result data_type: {}", result.data_type());
+    // println!("  backtrace:\n{}", std::backtrace::Backtrace::force_capture());
+
+    Ok(result)
 }
 
 fn cast_date_to_timestamp(
@@ -1241,6 +1280,96 @@ fn cast_struct_to_struct(
             )))
         }
         _ => unreachable!(),
+    }
+}
+
+/// Cast between map types, handling field name differences between Parquet ("key_value")
+/// and Spark ("entries") while preserving the map's structure.
+fn cast_map_to_map(
+    array: &ArrayRef,
+    from_type: &DataType,
+    to_type: &DataType,
+    cast_options: &SparkCastOptions,
+) -> DataFusionResult<ArrayRef> {
+    let map_array = array
+        .as_any()
+        .downcast_ref::<MapArray>()
+        .expect("Expected a MapArray");
+
+    match (from_type, to_type) {
+        (
+            DataType::Map(from_entries_field, from_sorted),
+            DataType::Map(to_entries_field, _to_sorted),
+        ) => {
+            // Get the struct types for entries
+            let from_struct_type = from_entries_field.data_type();
+            let to_struct_type = to_entries_field.data_type();
+
+            match (from_struct_type, to_struct_type) {
+                (DataType::Struct(from_fields), DataType::Struct(to_fields)) => {
+                    // Get the key and value types
+                    let from_key_type = from_fields[0].data_type();
+                    let from_value_type = from_fields[1].data_type();
+                    let to_key_type = to_fields[0].data_type();
+                    let to_value_type = to_fields[1].data_type();
+
+                    // Cast keys if needed
+                    let keys = map_array.keys();
+                    let cast_keys = if from_key_type != to_key_type {
+                        cast_array(Arc::clone(keys), to_key_type, cast_options)?
+                    } else {
+                        Arc::clone(keys)
+                    };
+
+                    // Cast values if needed
+                    let values = map_array.values();
+                    let cast_values = if from_value_type != to_value_type {
+                        cast_array(Arc::clone(values), to_value_type, cast_options)?
+                    } else {
+                        Arc::clone(values)
+                    };
+
+                    // Build the new entries struct with the target field names
+                    let new_key_field = Arc::new(Field::new(
+                        to_fields[0].name(),
+                        to_key_type.clone(),
+                        to_fields[0].is_nullable(),
+                    ));
+                    let new_value_field = Arc::new(Field::new(
+                        to_fields[1].name(),
+                        to_value_type.clone(),
+                        to_fields[1].is_nullable(),
+                    ));
+
+                    let struct_fields = Fields::from(vec![new_key_field, new_value_field]);
+                    let entries_struct =
+                        StructArray::new(struct_fields, vec![cast_keys, cast_values], None);
+
+                    // Create the new map field with the target name
+                    let new_entries_field = Arc::new(Field::new(
+                        to_entries_field.name(),
+                        DataType::Struct(entries_struct.fields().clone()),
+                        to_entries_field.is_nullable(),
+                    ));
+
+                    // Build the new MapArray
+                    let new_map = MapArray::new(
+                        new_entries_field,
+                        map_array.offsets().clone(),
+                        entries_struct,
+                        map_array.nulls().cloned(),
+                        *from_sorted,
+                    );
+
+                    Ok(Arc::new(new_map))
+                }
+                _ => Err(DataFusionError::Internal(format!(
+                    "Map entries must be structs, got {:?} and {:?}",
+                    from_struct_type, to_struct_type
+                ))),
+            }
+        }
+        _ => unreachable!("cast_map_to_map called with non-Map types"),
     }
 }
 
@@ -2429,8 +2558,8 @@ impl PhysicalExpr for Cast {
         self
     }
 
-    fn fmt_sql(&self, _: &mut Formatter<'_>) -> std::fmt::Result {
-        unimplemented!()
+    fn fmt_sql(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        Display::fmt(self, f)
     }
 
     fn data_type(&self, _: &Schema) -> DataFusionResult<DataType> {

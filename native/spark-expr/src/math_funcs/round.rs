@@ -19,10 +19,13 @@ use crate::arithmetic_overflow_error;
 use crate::math_funcs::utils::{get_precision_scale, make_decimal_array, make_decimal_scalar};
 use arrow::array::{Array, ArrowNativeTypeOp};
 use arrow::array::{Int16Array, Int32Array, Int64Array, Int8Array};
-use arrow::datatypes::DataType;
+use arrow::datatypes::{DataType, Field};
 use arrow::error::ArrowError;
+use datafusion::common::config::ConfigOptions;
 use datafusion::common::{exec_err, internal_err, DataFusionError, ScalarValue};
-use datafusion::{functions::math::round::round, physical_plan::ColumnarValue};
+use datafusion::functions::math::round::RoundFunc;
+use datafusion::logical_expr::{ScalarFunctionArgs, ScalarUDFImpl};
+use datafusion::physical_plan::ColumnarValue;
 use std::{cmp::min, sync::Arc};
 
 macro_rules! integer_round {
@@ -126,10 +129,18 @@ pub fn spark_round(
                 let (precision, scale) = get_precision_scale(data_type);
                 make_decimal_array(array, precision, scale, &f)
             }
-            DataType::Float32 | DataType::Float64 => Ok(ColumnarValue::Array(round(&[
-                Arc::clone(array),
-                args[1].to_array(array.len())?,
-            ])?)),
+            DataType::Float32 | DataType::Float64 => {
+                let round_udf = RoundFunc::new();
+                let return_field = Arc::new(Field::new("round", array.data_type().clone(), true));
+                let args_for_round = ScalarFunctionArgs {
+                    args: vec![ColumnarValue::Array(Arc::clone(array)), args[1].clone()],
+                    number_rows: array.len(),
+                    return_field,
+                    arg_fields: vec![],
+                    config_options: Arc::new(ConfigOptions::default()),
+                };
+                round_udf.invoke_with_args(args_for_round)
+            }
             dt => exec_err!("Not supported datatype for ROUND: {dt}"),
         },
         ColumnarValue::Scalar(a) => match a {
@@ -150,9 +161,19 @@ pub fn spark_round(
                 let (precision, scale) = get_precision_scale(data_type);
                 make_decimal_scalar(a, precision, scale, &f)
             }
-            ScalarValue::Float32(_) | ScalarValue::Float64(_) => Ok(ColumnarValue::Scalar(
-                ScalarValue::try_from_array(&round(&[a.to_array()?, args[1].to_array(1)?])?, 0)?,
-            )),
+            ScalarValue::Float32(_) | ScalarValue::Float64(_) => {
+                let round_udf = RoundFunc::new();
+                let data_type = a.data_type();
+                let return_field = Arc::new(Field::new("round", data_type, true));
+                let args_for_round = ScalarFunctionArgs {
+                    args: vec![ColumnarValue::Scalar(a.clone()), args[1].clone()],
+                    number_rows: 1,
+                    return_field,
+                    arg_fields: vec![],
+                    config_options: Arc::new(ConfigOptions::default()),
+                };
+                round_udf.invoke_with_args(args_for_round)
+            }
             dt => exec_err!("Not supported datatype for ROUND: {dt}"),
         },
     }

@@ -27,7 +27,7 @@ use datafusion::{
     logical_expr::{interval_arithmetic::Interval, ColumnarValue},
     physical_expr::PhysicalExpr,
 };
-use std::fmt::Formatter;
+use std::fmt::{Display, Formatter};
 use std::hash::Hash;
 use std::{any::Any, sync::Arc};
 
@@ -260,7 +260,7 @@ impl PhysicalExpr for NegativeExpr {
         Ok(properties)
     }
 
-    fn fmt_sql(&self, _: &mut Formatter<'_>) -> std::fmt::Result {
-        unimplemented!()
+    fn fmt_sql(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        Display::fmt(self, f)
     }
 }
