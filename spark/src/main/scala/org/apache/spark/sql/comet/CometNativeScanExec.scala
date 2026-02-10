@@ -34,7 +34,6 @@ import org.apache.spark.util.SerializableConfiguration
 import org.apache.spark.util.collection._
 
 import org.apache.comet.parquet.CometParquetUtils
-import org.apache.comet.serde.OperatorOuterClass
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.operator.CometNativeScan
 import org.apache.comet.shims.ShimSubqueryBroadcast
@@ -177,20 +176,8 @@ case class CometNativeScanExec(
   }
 
   override def doCanonicalize(): CometNativeScanExec = {
-    // Create minimal canonical nativeOp with just scanId for consistent comparison.
-    // This matches CometIcebergNativeScanExec's approach of setting originalPlan=null
-    // and relying on case class field comparison (output, requiredSchema, relation, etc.)
-    // to distinguish scans. The scanId ensures different tables don't incorrectly match.
-    val canonicalNativeOp = {
-      val commonBuilder = OperatorOuterClass.NativeScanCommon.newBuilder()
-      commonBuilder.setScanId(scanId)
-      val nativeScanBuilder = OperatorOuterClass.NativeScan.newBuilder()
-      nativeScanBuilder.setCommon(commonBuilder.build())
-      OperatorOuterClass.Operator.newBuilder().setNativeScan(nativeScanBuilder).build()
-    }
-
     CometNativeScanExec(
-      canonicalNativeOp,
+      nativeOp,
       relation,
       output.map(QueryPlan.normalizeExpressions(_, output)),
       requiredSchema,
