@@ -191,7 +191,7 @@ case class CometNativeScanExec(
       QueryPlan.normalizePredicates(dataFilters, output),
       None,
       disableBucketedScan,
-      null, // Don't need originalPlan for canonicalization
+      originalPlan.doCanonicalize(),
       SerializedPlan(None))
   }
 
