@@ -2129,6 +2129,8 @@ case class CometSortMergeJoinExec(
 }
 
 object CometScanWrapper extends CometSink[SparkPlan] {
+  override def isFfiSafe: Boolean = true
+
   override def createExec(nativeOp: Operator, op: SparkPlan): CometNativeExec = {
     CometScanWrapper(nativeOp, op)
   }
