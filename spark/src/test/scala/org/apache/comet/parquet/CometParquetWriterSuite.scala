@@ -377,6 +377,121 @@ class CometParquetWriterSuite extends CometTestBase {
     }
   }
 
+  private def withNativeWriteConf(f: => Unit): Unit = {
+    withSQLConf(
+      CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_ENABLED.key -> "true",
+      CometConf.getOperatorAllowIncompatConfigKey(classOf[DataWritingCommandExec]) -> "true") {
+      f
+    }
+  }
+
+  // SPARK-38811 INSERT INTO on columns added with ALTER TABLE ADD COLUMNS: Positive tests
+  // Mirrors the Spark InsertSuite test to validate Comet native writer compatibility.
+
+  test("SPARK-38811: simple default value with concat expression") {
+    withNativeWriteConf {
+      withTable("t") {
+        sql("create table t(i boolean) using parquet")
+        sql("alter table t add column s string default concat('abc', 'def')")
+        sql("insert into t values(true, default)")
+        checkAnswer(spark.table("t"), Row(true, "abcdef"))
+      }
+    }
+  }
+
+  test("SPARK-38811: multiple trailing default values") {
+    withNativeWriteConf {
+      withTable("t") {
+        sql("create table t(i int) using parquet")
+        sql("alter table t add column s bigint default 42")
+        sql("alter table t add column x bigint default 43")
+        sql("insert into t(i) values(1)")
+        checkAnswer(spark.table("t"), Row(1, 42, 43))
+      }
+    }
+  }
+
+  test("SPARK-38811: multiple trailing defaults via add columns") {
+    withNativeWriteConf {
+      withTable("t") {
+        sql("create table t(i int) using parquet")
+        sql("alter table t add columns s bigint default 42, x bigint default 43")
+        sql("insert into t(i) values(1)")
+        checkAnswer(spark.table("t"), Row(1, 42, 43))
+      }
+    }
+  }
+
+  test("SPARK-38811: default with nullable column (no default)") {
+    withNativeWriteConf {
+      withTable("t") {
+        sql("create table t(i int) using parquet")
+        sql("alter table t add column s bigint default 42")
+        sql("alter table t add column x bigint")
+        sql("insert into t(i) values(1)")
+        checkAnswer(spark.table("t"), Row(1, 42, null))
+      }
+    }
+  }
+
+  test("SPARK-38811: expression default (41 + 1)") {
+    withNativeWriteConf {
+      withTable("t") {
+        sql("create table t(i boolean) using parquet")
+        sql("alter table t add column s bigint default 41 + 1")
+        sql("insert into t(i) values(default)")
+        checkAnswer(spark.table("t"), Row(null, 42))
+      }
+    }
+  }
+
+  test("SPARK-38811: explicit defaults in multiple positions") {
+    withNativeWriteConf {
+      withTable("t") {
+        sql("create table t(i boolean default false) using parquet")
+        sql("alter table t add column s bigint default 42")
+        sql("insert into t values(false, default), (default, 42)")
+        checkAnswer(spark.table("t"), Seq(Row(false, 42), Row(false, 42)))
+      }
+    }
+  }
+
+  test("SPARK-38811: default with alias over VALUES") {
+    withNativeWriteConf {
+      withTable("t") {
+        sql("create table t(i boolean) using parquet")
+        sql("alter table t add column s bigint default 42")
+        sql("insert into t select * from values (false, default) as tab(col, other)")
+        checkAnswer(spark.table("t"), Row(false, 42))
+      }
+    }
+  }
+
+  test("SPARK-38811: default value in wrong order evaluates to NULL") {
+    withNativeWriteConf {
+      withTable("t") {
+        sql("create table t(i boolean) using parquet")
+        sql("alter table t add column s bigint default 42")
+        sql("insert into t values (default, 43)")
+        checkAnswer(spark.table("t"), Row(null, 43))
+      }
+    }
+  }
+
+  // INSERT INTO ... SELECT with native write config fails due to pre-existing
+  // catalog refresh issue tracked separately. Skipping these variants.
+  ignore("SPARK-38811: default via SELECT statement") {
+    withNativeWriteConf {
+      withTable("t") {
+        sql("create table t(i boolean) using parquet")
+        sql("alter table t add column s bigint default 42")
+        sql("insert into t select false, default")
+        checkAnswer(spark.table("t"), Row(false, 42))
+      }
+    }
+  }
+
   private def createTestData(inputDir: File): String = {
     val inputPath = new File(inputDir, "input.parquet").getAbsolutePath
     val schema = FuzzDataGenerator.generateSchema(
