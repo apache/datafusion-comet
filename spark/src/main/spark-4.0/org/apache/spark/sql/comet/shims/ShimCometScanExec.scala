@@ -117,9 +117,11 @@ trait ShimCometScanExec extends ShimStreamSourceAwareSparkPlan {
     }
 
     // Group files by bucket ID
+    // Note: filePartitionIterator returns ListingPartition in Spark 4.0, so we inline
+    // the PartitionedFile creation instead of using getPartitionedFile(f, PartitionDirectory)
     val filesGroupedToBuckets = filteredListing.filePartitionIterator
       .flatMap { p =>
-        p.files.map(f => getPartitionedFile(f, p))
+        p.files.map(f => PartitionedFileUtil.getPartitionedFile(f, f.getPath, p.values, 0, f.getLen))
       }
       .toSeq
       .groupBy { f =>
