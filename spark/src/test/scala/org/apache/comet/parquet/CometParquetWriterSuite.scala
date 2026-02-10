@@ -310,7 +310,8 @@ class CometParquetWriterSuite extends CometTestBase {
     }
   }
 
-  test("native write falls back when scan produces non-Arrow data") {
+  // ignored: native_comet scan is no longer supported
+  ignore("native write falls back when scan produces non-Arrow data") {
     // This test verifies that when a native scan (like native_comet) doesn't support
     // certain data types (complex types), the native write correctly falls back to Spark
     // instead of failing at runtime with "Comet execution only takes Arrow Arrays" error.
