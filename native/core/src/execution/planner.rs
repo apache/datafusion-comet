@@ -987,7 +987,7 @@ impl PhysicalPlanner {
                     GeneralError("NativeScan missing file_partition data".to_string())
                 })?;
 
-                // Check if this partition has any files (bucketed scan with bucket pruning may have empty partitions)
+                // Bucketed scan with bucket pruning may produce empty partitions
                 if partition_files.partitioned_file.is_empty() {
                     let empty_exec = Arc::new(EmptyExec::new(required_schema));
                     return Ok((

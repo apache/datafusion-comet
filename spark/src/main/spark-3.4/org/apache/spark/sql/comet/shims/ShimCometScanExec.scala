@@ -23,7 +23,7 @@ import org.apache.hadoop.fs.{FileStatus, Path}
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.catalog.BucketSpec
-import org.apache.spark.sql.catalyst.expressions.{And, AttributeReference, BoundReference, Expression, Predicate}
+import org.apache.spark.sql.catalyst.expressions.{And, AttributeReference, BoundReference, Expression, PlanExpression, Predicate}
 import org.apache.spark.sql.errors.QueryExecutionErrors
 import org.apache.spark.sql.execution.{FileSourceScanExec, PartitionedFileUtil}
 import org.apache.spark.sql.execution.datasources._
@@ -159,7 +159,7 @@ trait ShimCometScanExec {
   }
 
   private def isDynamicPruningFilter(e: Expression): Boolean =
-    e.exists(_.isInstanceOf[org.apache.spark.sql.catalyst.expressions.PlanExpression[_]])
+    e.exists(_.isInstanceOf[PlanExpression[_]])
 
   protected def newFileScanRDD(
       fsRelation: HadoopFsRelation,
