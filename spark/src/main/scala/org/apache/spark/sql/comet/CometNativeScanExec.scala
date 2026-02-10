@@ -22,6 +22,7 @@ package org.apache.spark.sql.comet
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.{InternalRow, TableIdentifier}
 import org.apache.spark.sql.catalyst.expressions._
+import org.apache.spark.sql.catalyst.expressions.DynamicPruningExpression
 import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.plans.physical.{Partitioning, UnknownPartitioning}
 import org.apache.spark.sql.comet.shims.ShimCometScanExec
@@ -85,7 +86,11 @@ case class CometNativeScanExec(
    * Prepare DPP subquery plans. Called by Spark's prepare() before doExecuteColumnar().
    */
   override protected def doPrepare(): Unit = {
-    partitionFilters.foreach {
+    // Use originalPlan.partitionFilters (not partitionFilters) because AQE's
+    // PlanDynamicPruningFilters may transform InSubqueryExec → Literal.TrueLiteral
+    // via makeCopy, but originalPlan is not in the active plan tree so it retains
+    // the original InSubqueryExec needed for DPP preparation.
+    originalPlan.partitionFilters.foreach {
       case DynamicPruningExpression(e: InSubqueryExec) =>
         e.plan.prepare()
       case _ =>
@@ -97,8 +102,12 @@ case class CometNativeScanExec(
    * Lazy partition serialization - deferred until execution time for DPP support.
    */
   @transient private lazy val serializedPartitionData: (Array[Byte], Array[Array[Byte]]) = {
-    // Wait for DPP subqueries to resolve before accessing partitions
-    partitionFilters.foreach {
+    // Wait for DPP subqueries to resolve before accessing partitions.
+    // Use originalPlan.partitionFilters (not partitionFilters) because AQE's
+    // PlanDynamicPruningFilters may transform InSubqueryExec → Literal.TrueLiteral
+    // via makeCopy, but originalPlan is not in the active plan tree so it retains
+    // the original InSubqueryExec needed for DPP resolution.
+    originalPlan.partitionFilters.foreach {
       case DynamicPruningExpression(e: InSubqueryExec) if e.values().isEmpty =>
         e.plan match {
           case sab: SubqueryAdaptiveBroadcastExec =>
@@ -118,16 +127,22 @@ case class CometNativeScanExec(
 
   /** Get file partitions with DPP filtering applied. */
   private def getFilePartitions(): Seq[FilePartition] = {
+    // Use originalPlan.partitionFilters (not partitionFilters) because AQE's
+    // PlanDynamicPruningFilters may transform InSubqueryExec → Literal.TrueLiteral
+    // via makeCopy, but originalPlan is not in the active plan tree so it retains
+    // the original InSubqueryExec needed for DPP filtering.
+    val dppFilters = originalPlan.partitionFilters
+
     if (bucketedScan) {
       getDppFilteredBucketedFilePartitions(
         relation,
-        partitionFilters,
+        dppFilters,
         originalPlan.selectedPartitions,
         relation.bucketSpec.get,
         optionalBucketSet,
         optionalNumCoalescedBuckets)
     } else {
-      getDppFilteredFilePartitions(relation, partitionFilters, originalPlan.selectedPartitions)
+      getDppFilteredFilePartitions(relation, dppFilters, originalPlan.selectedPartitions)
     }
   }
 
