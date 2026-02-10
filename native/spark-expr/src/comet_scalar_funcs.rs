@@ -197,6 +197,7 @@ fn all_scalar_functions() -> Vec<Arc<ScalarUDF>> {
         Arc::new(ScalarUDF::new_from_impl(SparkDateTrunc::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkStringSpace::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkSizeFunc::default())),
+        Arc::new(ScalarUDF::new_from_impl(SparkSha2::default())),
     ]
 }
 
