@@ -932,10 +932,10 @@ pub fn spark_cast(
         ColumnarValue::Scalar(scalar) => scalar.data_type(),
     };
 
-    println!(
-        "spark_cast: {} -> {} (requested: {})",
-        input_type, result_type, data_type
-    );
+    // println!(
+    //     "spark_cast: {} -> {} (requested: {})",
+    //     input_type, result_type, data_type
+    // );
 
     Ok(result)
 }
