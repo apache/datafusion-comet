@@ -59,8 +59,12 @@ impl SinglePartitionShufflePartitioner {
             .truncate(true)
             .open(output_data_path)?;
 
-        let output_data_writer =
-            BufBatchWriter::new(shuffle_block_writer, output_data_file, write_buffer_size);
+        let output_data_writer = BufBatchWriter::new(
+            shuffle_block_writer,
+            output_data_file,
+            write_buffer_size,
+            batch_size,
+        );
 
         Ok(Self {
             output_data_writer,
@@ -162,7 +166,8 @@ impl ShufflePartitioner for SinglePartitionShufflePartitioner {
                 &self.metrics.write_time,
             )?;
         }
-        self.output_data_writer.flush(&self.metrics.write_time)?;
+        self.output_data_writer
+            .flush(&self.metrics.encode_time, &self.metrics.write_time)?;
 
         // Write index file. It should only contain 2 entries: 0 and the total number of bytes written
         let index_file = OpenOptions::new()
