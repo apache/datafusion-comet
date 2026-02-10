@@ -118,7 +118,7 @@ message NativeScan {
   // Common data shared across partitions
   NativeScanCommon common = 1;
 
-  // This partition's files only (injected at execution time by NativePlanDataInjector)
+  // This partition's files only (injected at execution time by NativeScanDataInjector)
   SparkFilePartition file_partition = 2;
 }
 

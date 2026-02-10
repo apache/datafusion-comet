@@ -82,7 +82,7 @@ private[comet] object PlanDataInjector {
 
   // Registry of injectors for different operator types
   private val injectors: Seq[PlanDataInjector] =
-    Seq(IcebergPlanDataInjector, NativePlanDataInjector)
+    Seq(IcebergPlanDataInjector, NativeScanDataInjector)
 
   /**
    * Injects planning data into an Operator tree by finding nodes that need injection and applying
@@ -192,7 +192,7 @@ private[comet] object IcebergPlanDataInjector extends PlanDataInjector {
 /**
  * Injector for NativeScan operators.
  */
-private[comet] object NativePlanDataInjector extends PlanDataInjector {
+private[comet] object NativeScanDataInjector extends PlanDataInjector {
   import java.nio.ByteBuffer
   import java.util.{LinkedHashMap, Map => JMap}
 
