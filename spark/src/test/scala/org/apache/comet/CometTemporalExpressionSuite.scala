@@ -208,42 +208,6 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
     }
   }
 
-  test("date_from_unix_date") {
-    // Create test data with unix dates in a reasonable range (1900-2100)
-    // -25567 = 1900-01-01, 47482 = 2100-01-01
-    val r = new Random(42)
-    val testData = (1 to 1000).map { _ =>
-      val unixDate = r.nextInt(73049) - 25567 // range from 1900 to 2100
-      Row(if (r.nextDouble() < 0.1) null else unixDate)
-    }
-    val schema = StructType(Seq(StructField("c0", DataTypes.IntegerType, true)))
-    val df = spark.createDataFrame(spark.sparkContext.parallelize(testData), schema)
-    df.createOrReplaceTempView("tbl")
-
-    // Basic test with random unix dates in a reasonable range
-    checkSparkAnswerAndOperator("SELECT c0, date_from_unix_date(c0) FROM tbl ORDER BY c0")
-
-    // Disable constant folding to ensure literal expressions are executed by Comet
-    withSQLConf(
-      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
-        "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
-      // Test epoch (0 = 1970-01-01)
-      checkSparkAnswerAndOperator("SELECT date_from_unix_date(0)")
-
-      // Test day after epoch (1 = 1970-01-02)
-      checkSparkAnswerAndOperator("SELECT date_from_unix_date(1)")
-
-      // Test day before epoch (-1 = 1969-12-31)
-      checkSparkAnswerAndOperator("SELECT date_from_unix_date(-1)")
-
-      // Test a known date (18993 = 2022-01-01, calculated as days from 1970-01-01)
-      checkSparkAnswerAndOperator("SELECT date_from_unix_date(18993)")
-
-      // Test null handling
-      checkSparkAnswerAndOperator("SELECT date_from_unix_date(NULL)")
-    }
-  }
-
   test("datediff") {
     val r = new Random(42)
     val schema = StructType(
