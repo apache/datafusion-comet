@@ -22,12 +22,14 @@ package org.apache.spark.sql.comet.shims
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.catalyst.catalog.BucketSpec
 import org.apache.spark.sql.catalyst.expressions.{And, AttributeReference, BoundReference, Expression, FileSourceConstantMetadataAttribute, Literal, Predicate}
 import org.apache.spark.sql.execution.{FileSourceScanExec, PartitionedFileUtil, ScalarSubquery, ScanFileListing}
 import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.execution.datasources.parquet.ParquetOptions
 import org.apache.spark.sql.sources.Filter
 import org.apache.spark.sql.types.StructType
+import org.apache.spark.util.collection.BitSet
 
 trait ShimCometScanExec extends ShimStreamSourceAwareSparkPlan {
   def wrapped: FileSourceScanExec
@@ -83,6 +85,71 @@ trait ShimCometScanExec extends ShimStreamSourceAwareSparkPlan {
       .sortBy(_.length)(implicitly[Ordering[Long]].reverse)
 
     FilePartition.getFilePartitions(relation.sparkSession, splitFilesList, maxSplitBytes)
+  }
+
+  /**
+   * Returns file partitions for bucketed tables after applying DPP filtering. Groups files by
+   * bucket ID to preserve bucket boundaries.
+   *
+   * Based on FileSourceScanExec.createBucketedReadRDD.
+   */
+  protected def getDppFilteredBucketedFilePartitions(
+      relation: HadoopFsRelation,
+      partitionFilters: Seq[Expression],
+      selectedPartitions: ScanFileListing,
+      bucketSpec: BucketSpec,
+      optionalBucketSet: Option[BitSet],
+      optionalNumCoalescedBuckets: Option[Int]): Seq[FilePartition] = {
+    // First apply DPP filtering
+    val dynamicPartitionFilters = partitionFilters.filter(isDynamicPruningFilter)
+    val filteredListing = if (dynamicPartitionFilters.nonEmpty) {
+      val predicate = dynamicPartitionFilters.reduce(And)
+      val partitionColumns = relation.partitionSchema
+      val boundPredicate = Predicate.create(
+        predicate.transform { case a: AttributeReference =>
+          val index = partitionColumns.indexWhere(a.name == _.name)
+          BoundReference(index, partitionColumns(index).dataType, nullable = true)
+        },
+        Nil)
+      selectedPartitions.filterAndPruneFiles(boundPredicate, Seq.empty)
+    } else {
+      selectedPartitions
+    }
+
+    // Group files by bucket ID
+    val filesGroupedToBuckets = filteredListing.filePartitionIterator
+      .flatMap { p =>
+        p.files.map(f => getPartitionedFile(f, p))
+      }
+      .toSeq
+      .groupBy { f =>
+        BucketingUtils
+          .getBucketId(f.toPath.getName)
+          .getOrElse(throw new IllegalStateException(s"Invalid bucket file: ${f.toPath}"))
+      }
+
+    // Apply bucket pruning
+    val prunedFilesGroupedToBuckets = optionalBucketSet match {
+      case Some(bucketSet) =>
+        filesGroupedToBuckets.filter { case (bucketId, _) => bucketSet.get(bucketId) }
+      case None =>
+        filesGroupedToBuckets
+    }
+
+    // Create file partitions - either coalesced or one per bucket
+    optionalNumCoalescedBuckets match {
+      case Some(numCoalescedBuckets) =>
+        val coalescedBuckets = prunedFilesGroupedToBuckets.groupBy(_._1 % numCoalescedBuckets)
+        Seq.tabulate(numCoalescedBuckets) { bucketId =>
+          val files =
+            coalescedBuckets.get(bucketId).map(_.values.flatten.toArray).getOrElse(Array.empty)
+          FilePartition(bucketId, files)
+        }
+      case None =>
+        Seq.tabulate(bucketSpec.numBuckets) { bucketId =>
+          FilePartition(bucketId, prunedFilesGroupedToBuckets.getOrElse(bucketId, Array.empty))
+        }
+    }
   }
 
   private def isDynamicPruningFilter(e: Expression): Boolean =

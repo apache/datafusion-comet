@@ -120,7 +120,17 @@ case class CometNativeScanExec(
 
   /** Get file partitions with DPP filtering applied. */
   private def getFilePartitions(): Seq[FilePartition] = {
-    getDppFilteredFilePartitions(relation, partitionFilters, originalPlan.selectedPartitions)
+    if (bucketedScan) {
+      getDppFilteredBucketedFilePartitions(
+        relation,
+        partitionFilters,
+        originalPlan.selectedPartitions,
+        relation.bucketSpec.get,
+        optionalBucketSet,
+        optionalNumCoalescedBuckets)
+    } else {
+      getDppFilteredFilePartitions(relation, partitionFilters, originalPlan.selectedPartitions)
+    }
   }
 
   def commonData: Array[Byte] = serializedPartitionData._1
