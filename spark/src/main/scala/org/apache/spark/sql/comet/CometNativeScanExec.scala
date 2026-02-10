@@ -33,9 +33,8 @@ import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.SerializableConfiguration
 import org.apache.spark.util.collection._
 
-import com.google.common.base.Objects
-
 import org.apache.comet.parquet.CometParquetUtils
+import org.apache.comet.serde.OperatorOuterClass
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.operator.CometNativeScan
 import org.apache.comet.shims.ShimSubqueryBroadcast
@@ -178,8 +177,20 @@ case class CometNativeScanExec(
   }
 
   override def doCanonicalize(): CometNativeScanExec = {
+    // Create minimal canonical nativeOp with just scanId for consistent comparison.
+    // This matches CometIcebergNativeScanExec's approach of setting originalPlan=null
+    // and relying on case class field comparison (output, requiredSchema, relation, etc.)
+    // to distinguish scans. The scanId ensures different tables don't incorrectly match.
+    val canonicalNativeOp = {
+      val commonBuilder = OperatorOuterClass.NativeScanCommon.newBuilder()
+      commonBuilder.setScanId(scanId)
+      val nativeScanBuilder = OperatorOuterClass.NativeScan.newBuilder()
+      nativeScanBuilder.setCommon(commonBuilder.build())
+      OperatorOuterClass.Operator.newBuilder().setNativeScan(nativeScanBuilder).build()
+    }
+
     CometNativeScanExec(
-      nativeOp,
+      canonicalNativeOp,
       relation,
       output.map(QueryPlan.normalizeExpressions(_, output)),
       requiredSchema,
@@ -191,23 +202,16 @@ case class CometNativeScanExec(
       QueryPlan.normalizePredicates(dataFilters, output),
       None,
       disableBucketedScan,
-      originalPlan.doCanonicalize(),
+      null,
       SerializedPlan(None))
   }
 
   override def stringArgs: Iterator[Any] = Iterator(output)
 
-  override def equals(obj: Any): Boolean = {
-    obj match {
-      case other: CometNativeScanExec =>
-        this.originalPlan == other.originalPlan &&
-        this.serializedPlanOpt == other.serializedPlanOpt
-      case _ =>
-        false
-    }
-  }
-
-  override def hashCode(): Int = Objects.hashCode(originalPlan, serializedPlanOpt)
+  // Note: We intentionally use case class default equals/hashCode rather than custom
+  // implementations. This ensures canonical form comparison considers all fields
+  // (output, requiredSchema, relation, filters, etc.) - not just originalPlan.
+  // This prevents incorrect AQE exchange reuse between scans with different projections.
 
   override lazy val metrics: Map[String, SQLMetric] =
     CometMetricNode.nativeScanMetrics(sparkContext)
