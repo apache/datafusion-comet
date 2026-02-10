@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import java.util.Locale
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, DateAdd, DateDiff, DateFormatClass, DateSub, DayOfMonth, DayOfWeek, DayOfYear, GetDateField, Hour, LastDay, Literal, Minute, Month, Quarter, Second, TruncDate, TruncTimestamp, UnixDate, UnixTimestamp, WeekDay, WeekOfYear, Year}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, DateAdd, DateDiff, DateFormatClass, DateSub, DayOfMonth, DayOfWeek, DayOfYear, GetDateField, Hour, LastDay, Literal, Minute, MinutesOfTime, Month, Quarter, Second, TruncDate, TruncTimestamp, UnixDate, UnixTimestamp, WeekDay, WeekOfYear, Year}
 import org.apache.spark.sql.types.{DateType, IntegerType, StringType, TimestampType}
 import org.apache.spark.unsafe.types.UTF8String
 
@@ -223,6 +223,32 @@ object CometMinute extends CometExpressionSerde[Minute] {
           .build())
     } else {
       withInfo(expr, expr.child)
+      None
+    }
+  }
+}
+
+object CometMinutesOfTime extends CometExpressionSerde[MinutesOfTime] {
+  override def convert(
+      expr: MinutesOfTime,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val childExpr = exprToProtoInternal(expr.children.head, inputs, binding)
+
+    if (childExpr.isDefined) {
+      val builder = ExprOuterClass.Minute.newBuilder()
+      builder.setChild(childExpr.get)
+
+      // MinutesOfTime is a RuntimeReplaceable expression and doesn't have timeZoneId property.
+      builder.setTimezone("UTC")
+
+      Some(
+        ExprOuterClass.Expr
+          .newBuilder()
+          .setMinute(builder)
+          .build())
+    } else {
+      withInfo(expr, expr.children.head)
       None
     }
   }
