@@ -22,7 +22,7 @@ use crate::{
     errors::{try_unwrap_or_throw, CometError, CometResult},
     execution::{
         metrics::utils::update_comet_metric, planner::PhysicalPlanner, serde::to_arrow_datatype,
-        shuffle::row::process_sorted_row_partition, sort::RdxSort,
+        shuffle::spark_unsafe::row::process_sorted_row_partition, sort::RdxSort,
     },
     jvm_bridge::{jni_new_global_ref, JVMClasses},
 };
@@ -47,6 +47,7 @@ use datafusion_spark::function::datetime::date_sub::SparkDateSub;
 use datafusion_spark::function::datetime::last_day::SparkLastDay;
 use datafusion_spark::function::hash::sha1::SparkSha1;
 use datafusion_spark::function::hash::sha2::SparkSha2;
+use datafusion_spark::function::map::map_from_entries::MapFromEntries;
 use datafusion_spark::function::math::expm1::SparkExpm1;
 use datafusion_spark::function::math::hex::SparkHex;
 use datafusion_spark::function::math::width_bucket::SparkWidthBucket;
@@ -353,6 +354,7 @@ fn register_datafusion_spark_function(session_ctx: &SessionContext) {
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitwiseNot::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkHex::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkWidthBucket::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(MapFromEntries::default()));
 }
 
 /// Prepares arrow arrays for output.

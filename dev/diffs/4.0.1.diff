@@ -1436,14 +1436,14 @@ index 3eeed2e4175..9f21d547c1c 100644
                }
              }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/connector/FileDataSourceV2FallBackSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/connector/FileDataSourceV2FallBackSuite.scala
-index 2a0ab21ddb0..e8a5a891105 100644
+index 2a0ab21ddb0..6030e7c2b9b 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/connector/FileDataSourceV2FallBackSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/connector/FileDataSourceV2FallBackSuite.scala
 @@ -21,6 +21,7 @@ import scala.collection.mutable.ArrayBuffer
  import org.apache.spark.{SparkConf, SparkException}
  import org.apache.spark.sql.QueryTest
  import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
-+import org.apache.spark.sql.comet.CometScanExec
++import org.apache.spark.sql.comet.{CometNativeScanExec, CometScanExec}
  import org.apache.spark.sql.connector.catalog.{SupportsRead, SupportsWrite, Table, TableCapability}
  import org.apache.spark.sql.connector.read.ScanBuilder
  import org.apache.spark.sql.connector.write.{LogicalWriteInfo, WriteBuilder}
@@ -1453,7 +1453,7 @@ index 2a0ab21ddb0..e8a5a891105 100644
              assert(
 -              df.queryExecution.executedPlan.exists(_.isInstanceOf[FileSourceScanExec]))
 +              df.queryExecution.executedPlan.exists {
-+                case _: FileSourceScanExec | _: CometScanExec => true
++                case _: FileSourceScanExec | _: CometScanExec | _: CometNativeScanExec => true
 +                case _ => false
 +              }
 +            )
@@ -3080,7 +3080,7 @@ index 7838e62013d..8fa09652921 100644
    import testImplicits._
  
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala
-index c4b09c4b289..dd5763e8405 100644
+index c4b09c4b289..75c3437788e 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala
 @@ -26,10 +26,11 @@ import org.apache.spark.sql.catalyst.expressions
@@ -3097,7 +3097,7 @@ index c4b09c4b289..dd5763e8405 100644
  import org.apache.spark.sql.execution.joins.SortMergeJoinExec
  import org.apache.spark.sql.functions._
  import org.apache.spark.sql.internal.SQLConf
-@@ -103,12 +104,20 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
+@@ -103,12 +104,22 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
      }
    }
  
@@ -3107,6 +3107,7 @@ index c4b09c4b289..dd5763e8405 100644
 +    val fileScan = collect(plan) {
 +      case f: FileSourceScanExec => f
 +      case f: CometScanExec => f
++      case f: CometNativeScanExec => f
 +    }
      assert(fileScan.nonEmpty, plan)
      fileScan.head
@@ -3115,12 +3116,13 @@ index c4b09c4b289..dd5763e8405 100644
 +  private def getBucketScan(plan: SparkPlan): Boolean = getFileScan(plan) match {
 +    case fs: FileSourceScanExec => fs.bucketedScan
 +    case bs: CometScanExec => bs.bucketedScan
++    case ns: CometNativeScanExec => ns.bucketedScan
 +  }
 +
    // To verify if the bucket pruning works, this function checks two conditions:
    //   1) Check if the pruned buckets (before filtering) are empty.
    //   2) Verify the final result is the same as the expected one
-@@ -157,7 +166,8 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
+@@ -157,7 +168,8 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
            val planWithoutBucketedScan = bucketedDataFrame.filter(filterCondition)
              .queryExecution.executedPlan
            val fileScan = getFileScan(planWithoutBucketedScan)
@@ -3130,7 +3132,7 @@ index c4b09c4b289..dd5763e8405 100644
  
            val bucketColumnType = bucketedDataFrame.schema.apply(bucketColumnIndex).dataType
            val rowsWithInvalidBuckets = fileScan.execute().filter(row => {
-@@ -454,28 +464,54 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
+@@ -454,28 +466,54 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
          val joinOperator = if (joined.sparkSession.sessionState.conf.adaptiveExecutionEnabled) {
            val executedPlan =
              joined.queryExecution.executedPlan.asInstanceOf[AdaptiveSparkPlanExec].executedPlan
@@ -3193,7 +3195,7 @@ index c4b09c4b289..dd5763e8405 100644
            s"expected sort in the right child to be $sortRight but found\n${joinOperator.right}")
  
          // check the output partitioning
-@@ -838,11 +874,11 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
+@@ -838,11 +876,11 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
        df1.write.format("parquet").bucketBy(8, "i").saveAsTable("bucketed_table")
  
        val scanDF = spark.table("bucketed_table").select("j")
@@ -3207,7 +3209,7 @@ index c4b09c4b289..dd5763e8405 100644
        checkAnswer(aggDF, df1.groupBy("j").agg(max("k")))
      }
    }
-@@ -1031,15 +1067,21 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
+@@ -1031,15 +1069,24 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
            Seq(true, false).foreach { aqeEnabled =>
              withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqeEnabled.toString) {
                val plan = sql(query).queryExecution.executedPlan
@@ -3218,6 +3220,7 @@ index c4b09c4b289..dd5763e8405 100644
                val scans = collect(plan) {
                  case f: FileSourceScanExec if f.optionalNumCoalescedBuckets.isDefined => f
 +                case b: CometScanExec if b.optionalNumCoalescedBuckets.isDefined => b
++                case b: CometNativeScanExec if b.optionalNumCoalescedBuckets.isDefined => b
                }
                if (expectedCoalescedNumBuckets.isDefined) {
                  assert(scans.length == 1)
@@ -3226,6 +3229,8 @@ index c4b09c4b289..dd5763e8405 100644
 +                  case f: FileSourceScanExec =>
 +                    assert(f.optionalNumCoalescedBuckets == expectedCoalescedNumBuckets)
 +                  case b: CometScanExec =>
++                    assert(b.optionalNumCoalescedBuckets == expectedCoalescedNumBuckets)
++                  case b: CometNativeScanExec =>
 +                    assert(b.optionalNumCoalescedBuckets == expectedCoalescedNumBuckets)
 +                }
                } else {
@@ -3256,18 +3261,18 @@ index 95c2fcbd7b5..e2d4a20c5d9 100644
  
    protected override lazy val sql = spark.sql _
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/sources/DisableUnnecessaryBucketedScanSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/sources/DisableUnnecessaryBucketedScanSuite.scala
-index c5c56f081d8..197cd241f48 100644
+index c5c56f081d8..6cc51f93b4f 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/sources/DisableUnnecessaryBucketedScanSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/sources/DisableUnnecessaryBucketedScanSuite.scala
 @@ -18,6 +18,7 @@
  package org.apache.spark.sql.sources
  
  import org.apache.spark.sql.QueryTest
-+import org.apache.spark.sql.comet.CometScanExec
++import org.apache.spark.sql.comet.{CometNativeScanExec, CometScanExec}
  import org.apache.spark.sql.execution.FileSourceScanExec
  import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanHelper, DisableAdaptiveExecutionSuite, EnableAdaptiveExecutionSuite}
  import org.apache.spark.sql.internal.SQLConf
-@@ -68,7 +69,10 @@ abstract class DisableUnnecessaryBucketedScanSuite
+@@ -68,7 +69,11 @@ abstract class DisableUnnecessaryBucketedScanSuite
  
      def checkNumBucketedScan(query: String, expectedNumBucketedScan: Int): Unit = {
        val plan = sql(query).queryExecution.executedPlan
@@ -3275,6 +3280,7 @@ index c5c56f081d8..197cd241f48 100644
 +      val bucketedScan = collect(plan) {
 +        case s: FileSourceScanExec if s.bucketedScan => s
 +        case s: CometScanExec if s.bucketedScan => s
++        case s: CometNativeScanExec if s.bucketedScan => s
 +      }
        assert(bucketedScan.length == expectedNumBucketedScan)
      }
