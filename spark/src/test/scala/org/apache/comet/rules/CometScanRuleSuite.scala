@@ -101,11 +101,14 @@ class CometScanRuleSuite extends CometTestBase {
     }
   }
 
-  test("CometExecRule should replace BatchScanExec, but only when Comet is enabled") {
+  // ignored: native_comet scan is no longer supported
+  ignore("CometScanRule should replace V2 BatchScanExec, but only when Comet is enabled") {
     withTempPath { path =>
       createTestDataFrame.write.parquet(path.toString)
       withTempView("test_data") {
-        withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> "") {
+        withSQLConf(
+          SQLConf.USE_V1_SOURCE_LIST.key -> "",
+          CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET) {
           spark.read.parquet(path.toString).createOrReplaceTempView("test_data")
 
           val sparkPlan =
@@ -140,21 +143,21 @@ class CometScanRuleSuite extends CometTestBase {
     }
   }
 
-  test("CometScanRule should fallback to Spark for unsupported data types in v1 scan") {
+  test("CometScanRule should fallback to Spark for ShortType when safety check enabled") {
     withTempPath { path =>
-      // Create test data with unsupported types (e.g., BinaryType, CalendarIntervalType)
+      // Create test data with ShortType which may be from unsigned UINT_8
       import org.apache.spark.sql.types._
       val unsupportedSchema = new StructType(
         Array(
           StructField("id", DataTypes.IntegerType, nullable = true),
           StructField(
             "value",
-            DataTypes.ByteType,
+            DataTypes.ShortType,
             nullable = true
-          ), // Unsupported in some scan modes
+          ), // May be from unsigned UINT_8
           StructField("name", DataTypes.StringType, nullable = true)))
 
-      val testData = Seq(Row(1, 1.toByte, "test1"), Row(2, -1.toByte, "test2"))
+      val testData = Seq(Row(1, 1.toShort, "test1"), Row(2, -1.toShort, "test2"))
 
       val df = spark.createDataFrame(spark.sparkContext.parallelize(testData), unsupportedSchema)
       df.write.parquet(path.toString)
@@ -167,10 +170,10 @@ class CometScanRuleSuite extends CometTestBase {
 
         withSQLConf(
           CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_ICEBERG_COMPAT,
-          CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "false") {
+          CometConf.COMET_PARQUET_UNSIGNED_SMALL_INT_CHECK.key -> "true") {
           val transformedPlan = applyCometScanRule(sparkPlan)
 
-          // Should fallback to Spark due to unsupported ByteType in schema
+          // Should fallback to Spark due to ShortType (may be from unsigned UINT_8)
           assert(countOperators(transformedPlan, classOf[FileSourceScanExec]) == 1)
           assert(countOperators(transformedPlan, classOf[CometScanExec]) == 0)
         }
