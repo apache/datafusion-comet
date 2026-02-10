@@ -83,11 +83,15 @@ pub(crate) fn init_datasource_exec(
     // dbg!(&required_schema, &data_schema);
 
     // Determine the schema to use for ParquetSource
-    // Use data_schema only if both data_schema and data_filters are set
-    let base_schema = match (&data_schema, &data_filters) {
-        (Some(schema), Some(_)) => Arc::clone(schema),
-        _ => Arc::clone(&required_schema),
-    };
+    // // Use data_schema only if both data_schema and data_filters are set
+    // let base_schema = match (&data_schema, &data_filters) {
+    //     (Some(schema), Some(_)) => Arc::clone(schema),
+    //     _ => Arc::clone(&required_schema),
+    // };
+    let base_schema = required_schema;
+    // dbg!(&base_schema);
+    // dbg!(&data_schema);
+    // dbg!(&data_filters);
     let partition_fields: Vec<_> = partition_schema
         .iter()
         .flat_map(|s| s.fields().iter())
