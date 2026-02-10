@@ -296,6 +296,9 @@ object CometRegExpReplace extends CometExpressionSerde[RegExpReplace] {
  */
 object CometStringSplit extends CometExpressionSerde[StringSplit] {
 
+  override def getSupportLevel(expr: StringSplit): SupportLevel =
+    Incompatible(Some("Regex engine differences between Java and Rust"))
+
   override def convert(
       expr: StringSplit,
       inputs: Seq[Attribute],
