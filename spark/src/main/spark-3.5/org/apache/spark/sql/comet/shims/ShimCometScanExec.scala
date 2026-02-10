@@ -154,7 +154,7 @@ trait ShimCometScanExec {
         Seq.tabulate(bucketSpec.numBuckets) { bucketId =>
           FilePartition(
             bucketId,
-            prunedFilesGroupedToBuckets.getOrElse(bucketId, Seq.empty).toArray)
+            prunedFilesGroupedToBuckets.getOrElse(bucketId, Array.empty[PartitionedFile]))
         }
     }
   }
