@@ -26,7 +26,7 @@ under the License.
   <parent>
     <groupId>org.apache.datafusion</groupId>
     <artifactId>comet-parent-spark${spark.version.short}_${scala.binary.version}</artifactId>
-    <version>0.11.0-SNAPSHOT</version>
+    <version>0.14.0-SNAPSHOT</version>
     <relativePath>../pom.xml</relativePath>
   </parent>
 
@@ -173,7 +173,118 @@ under the License.
       <groupId>software.amazon.awssdk</groupId>
       <artifactId>s3</artifactId>
     </dependency>
+    <!-- Jetty and Iceberg dependencies for testing native Iceberg scan -->
+    <!-- Note: The specific versions are defined in profiles below based on Spark version -->
   </dependencies>
+
+  <profiles>
+    <!-- Iceberg dependencies vary by Spark version (Iceberg 1.8.1 for Spark 3.x, 1.10.0 for Spark 4.0) -->
+    <profile>
+      <id>spark-3.4</id>
+      <dependencies>
+        <dependency>
+          <groupId>org.apache.iceberg</groupId>
+          <artifactId>iceberg-spark-runtime-${spark.version.short}_${scala.binary.version}</artifactId>
+          <version>1.5.2</version>
+          <scope>test</scope>
+        </dependency>
+        <!-- Jetty 9.4.x for Spark 3.4 (JDK 11, javax.* packages) -->
+        <dependency>
+          <groupId>org.eclipse.jetty</groupId>
+          <artifactId>jetty-server</artifactId>
+          <version>9.4.53.v20231009</version>
+          <scope>test</scope>
+        </dependency>
+        <dependency>
+          <groupId>org.eclipse.jetty</groupId>
+          <artifactId>jetty-servlet</artifactId>
+          <version>9.4.53.v20231009</version>
+          <scope>test</scope>
+        </dependency>
+      </dependencies>
+    </profile>
+
+    <profile>
+      <id>spark-3.5</id>
+      <activation>
+        <activeByDefault>true</activeByDefault>
+      </activation>
+      <dependencies>
+        <dependency>
+          <groupId>org.apache.iceberg</groupId>
+          <artifactId>iceberg-spark-runtime-${spark.version.short}_${scala.binary.version}</artifactId>
+          <version>1.8.1</version>
+          <scope>test</scope>
+        </dependency>
+        <!-- Jetty 9.4.x for Spark 3.5 (JDK 11, javax.* packages) -->
+        <dependency>
+          <groupId>org.eclipse.jetty</groupId>
+          <artifactId>jetty-server</artifactId>
+          <version>9.4.53.v20231009</version>
+          <scope>test</scope>
+        </dependency>
+        <dependency>
+          <groupId>org.eclipse.jetty</groupId>
+          <artifactId>jetty-servlet</artifactId>
+          <version>9.4.53.v20231009</version>
+          <scope>test</scope>
+        </dependency>
+      </dependencies>
+    </profile>
+
+    <profile>
+      <id>spark-4.0</id>
+      <dependencies>
+        <dependency>
+          <groupId>org.apache.iceberg</groupId>
+          <artifactId>iceberg-spark-runtime-${spark.version.short}_${scala.binary.version}</artifactId>
+          <version>1.10.0</version>
+          <scope>test</scope>
+        </dependency>
+        <!-- Jetty 11.x for Spark 4.0 (jakarta.servlet) -->
+        <dependency>
+          <groupId>org.eclipse.jetty</groupId>
+          <artifactId>jetty-server</artifactId>
+          <version>11.0.24</version>
+          <scope>test</scope>
+        </dependency>
+        <dependency>
+          <groupId>org.eclipse.jetty</groupId>
+          <artifactId>jetty-servlet</artifactId>
+          <version>11.0.24</version>
+          <scope>test</scope>
+        </dependency>
+      </dependencies>
+    </profile>
+    <profile>
+      <id>generate-docs</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.codehaus.mojo</groupId>
+            <artifactId>exec-maven-plugin</artifactId>
+            <version>${exec-maven-plugin.version}</version>
+            <executions>
+              <execution>
+                <id>generate-user-guide-reference-docs</id>
+                <phase>package</phase>
+                <goals>
+                  <goal>java</goal>
+                </goals>
+                <configuration>
+                  <mainClass>org.apache.comet.GenerateDocs</mainClass>
+                  <arguments>
+                    <argument>${project.parent.basedir}/docs/source/user-guide/latest/</argument>
+                  </arguments>
+                  <classpathScope>compile</classpathScope>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
 
   <build>
     <plugins>
@@ -309,24 +420,6 @@ under the License.
                 <source>src/main/${shims.majorVerSrc}</source>
                 <source>src/main/${shims.minorVerSrc}</source>
               </sources>
-            </configuration>
-          </execution>
-        </executions>
-      </plugin>
-      <plugin>
-        <groupId>org.codehaus.mojo</groupId>
-        <artifactId>exec-maven-plugin</artifactId>
-        <version>${exec-maven-plugin.version}</version>
-        <executions>
-          <execution>
-            <id>generate-user-guide-reference-docs</id>
-            <phase>package</phase>
-            <goals>
-              <goal>java</goal>
-            </goals>
-            <configuration>
-              <mainClass>org.apache.comet.GenerateDocs</mainClass>
-              <classpathScope>compile</classpathScope>
             </configuration>
           </execution>
         </executions>

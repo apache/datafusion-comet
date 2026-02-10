@@ -21,7 +21,7 @@ use arrow::array::{
 };
 use arrow::buffer::MutableBuffer;
 use arrow::datatypes::{DataType, Int32Type};
-use datafusion::common::{exec_err, internal_datafusion_err, DataFusionError, Result};
+use datafusion::common::{exec_err, internal_datafusion_err, DataFusionError, Result, ScalarValue};
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };
@@ -86,15 +86,17 @@ impl ScalarUDFImpl for SparkStringSpace {
 pub fn spark_string_space(args: &[ColumnarValue; 1]) -> Result<ColumnarValue> {
     match args {
         [ColumnarValue::Array(array)] => {
-            let result = string_space(&array)?;
-
+            let result = string_space_array(&array)?;
             Ok(ColumnarValue::Array(result))
         }
-        _ => exec_err!("StringSpace(scalar) should be fold in Spark JVM side."),
+        [ColumnarValue::Scalar(scalar)] => {
+            let result = string_space_scalar(scalar)?;
+            Ok(ColumnarValue::Scalar(result))
+        }
     }
 }
 
-fn string_space(length: &dyn Array) -> std::result::Result<ArrayRef, DataFusionError> {
+fn string_space_array(length: &dyn Array) -> std::result::Result<ArrayRef, DataFusionError> {
     match length.data_type() {
         DataType::Int32 => {
             let array = length.as_any().downcast_ref::<Int32Array>().unwrap();
@@ -102,11 +104,29 @@ fn string_space(length: &dyn Array) -> std::result::Result<ArrayRef, DataFusionE
         }
         DataType::Dictionary(_, _) => {
             let dict = as_dictionary_array::<Int32Type>(length);
-            let values = string_space(dict.values())?;
+            let values = string_space_array(dict.values())?;
             let result = DictionaryArray::try_new(dict.keys().clone(), values)?;
             Ok(Arc::new(result))
         }
         other => exec_err!("Unsupported input type for function 'string_space': {other:?}"),
+    }
+}
+
+fn string_space_scalar(scalar: &ScalarValue) -> Result<ScalarValue> {
+    match scalar {
+        ScalarValue::Int32(value) => {
+            let result = value.map(|v| {
+                if v <= 0 {
+                    String::new()
+                } else {
+                    " ".repeat(v as usize)
+                }
+            });
+            Ok(ScalarValue::Utf8(result))
+        }
+        other => {
+            exec_err!("Unsupported data type {other:?} for function `space`")
+        }
     }
 }
 
@@ -119,9 +139,14 @@ fn generic_string_space<OffsetSize: OffsetSizeTrait>(length: &Int32Array) -> Arr
     let null_bit_buffer = length.to_data().nulls().map(|b| b.buffer().clone());
 
     // Gets slice of length array to access it directly for performance.
+    // Negative length values are set to zero to match Spark behavior
     let length_data = length.to_data();
-    let lengths = length_data.buffers()[0].typed_data::<i32>();
-    let total = lengths.iter().map(|l| *l as usize).sum::<usize>();
+    let lengths: Vec<_> = length_data.buffers()[0]
+        .typed_data::<i32>()
+        .iter()
+        .map(|l| (*l).max(0) as usize)
+        .collect();
+    let total = lengths.iter().sum::<usize>();
     let mut values = MutableBuffer::new(total);
 
     offsets.push(length_so_far);
@@ -130,7 +155,7 @@ fn generic_string_space<OffsetSize: OffsetSizeTrait>(length: &Int32Array) -> Arr
     values.resize(total, blank);
 
     (0..array_len).for_each(|i| {
-        let current_len = lengths[i] as usize;
+        let current_len = lengths[i];
 
         length_so_far += OffsetSize::from_usize(current_len).unwrap();
         offsets.push(length_so_far);
@@ -148,4 +173,25 @@ fn generic_string_space<OffsetSize: OffsetSizeTrait>(length: &Int32Array) -> Arr
         )
     };
     make_array(data)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::array::StringArray;
+    use datafusion::common::cast::as_string_array;
+
+    #[test]
+    fn test_negative_length() {
+        let input = Int32Array::from(vec![Some(-1), Some(-2), None]);
+        let args = ColumnarValue::Array(Arc::new(input));
+        match spark_string_space(&[args]) {
+            Ok(ColumnarValue::Array(result)) => {
+                let actual = as_string_array(&result).unwrap();
+                let expected = StringArray::from(vec![Some(""), Some(""), None]);
+                assert_eq!(actual, &expected)
+            }
+            _ => unreachable!(),
+        }
+    }
 }

@@ -1,328 +1,330 @@
 {
     "engine": "datafusion-comet",
     "benchmark": "tpcds",
-    "data_path": "/mnt/bigdata/tpcds/sf100",
-    "query_path": "/mnt/bigdata/tpcds/queries",
+    "data_path": "/mnt/bigdata/tpcds/sf100/",
+    "query_path": "/mnt/bigdata/tpcds/queries/",
     "spark_conf": {
         "spark.eventLog.enabled": "true",
         "spark.driver.extraJavaOptions": "-Djava.net.preferIPv6Addresses=false -XX:+IgnoreUnrecognizedVMOptions --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/jdk.internal.ref=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.security.action=ALL-UNNAMED --add-opens=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED -Djdk.reflect.useDirectMethodHandle=false",
-        "spark.driver.port": "41589",
         "spark.cores.max": "16",
-        "spark.executor.id": "driver",
+        "spark.app.submitTime": "1760657346549",
+        "spark.app.startTime": "1760657346845",
+        "spark.hadoop.fs.s3a.aws.credentials.provider": "com.amazonaws.auth.DefaultAWSCredentialsProviderChain",
+        "spark.driver.port": "41151",
         "spark.master": "spark://woody:7077",
-        "spark.driver.memory": "8G",
+        "spark.executor.id": "driver",
         "spark.memory.offHeap.enabled": "true",
+        "spark.driver.memory": "8G",
         "spark.executor.memory": "16g",
-        "spark.app.startTime": "1753657567308",
-        "spark.app.submitTime": "1753657567009",
+        "spark.hadoop.fs.s3a.impl": "org.apache.hadoop.fs.s3a.S3AFileSystem",
+        "spark.app.id": "app-20251016172907-0000",
         "spark.rdd.compress": "True",
         "spark.executor.instances": "2",
         "spark.executor.extraJavaOptions": "-Djava.net.preferIPv6Addresses=false -XX:+IgnoreUnrecognizedVMOptions --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/jdk.internal.ref=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.security.action=ALL-UNNAMED --add-opens=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED -Djdk.reflect.useDirectMethodHandle=false",
         "spark.serializer.objectStreamReset": "100",
-        "spark.driver.host": "10.0.0.118",
         "spark.submit.pyFiles": "",
         "spark.submit.deployMode": "client",
-        "spark.app.name": "spark benchmark derived from tpcds",
         "spark.sql.warehouse.dir": "file:/home/andy/git/apache/datafusion-comet/dev/benchmarks/spark-warehouse",
-        "spark.app.id": "app-20250727170607-0000",
+        "spark.app.name": "spark benchmark derived from tpcds",
         "spark.executor.cores": "8",
+        "spark.driver.host": "woody.lan",
         "spark.memory.offHeap.size": "16g"
     },
     "1": [
-        4.558772087097168
+        4.523299217224121
     ],
     "2": [
-        3.0657687187194824
+        3.061577081680298
     ],
     "3": [
-        1.6489298343658447
+        1.5242812633514404
     ],
     "4": [
-        51.772645235061646
+        50.726277589797974
     ],
     "5": [
-        13.418050050735474
+        12.996135711669922
     ],
     "6": [
-        2.0457170009613037
+        1.9649882316589355
     ],
     "7": [
-        3.4888548851013184
+        3.0779569149017334
     ],
     "8": [
-        2.198824644088745
+        2.091928720474243
     ],
     "9": [
-        5.4978766441345215
+        5.696160078048706
     ],
     "10": [
-        2.44783616065979
+        2.6276841163635254
     ],
     "11": [
-        15.305821895599365
+        14.976734399795532
     ],
     "12": [
-        1.153568983078003
+        1.0809345245361328
     ],
     "13": [
-        3.763806104660034
+        3.9019551277160645
     ],
     "14": [
-        40.21370220184326
+        40.51576566696167
     ],
     "15": [
-        3.3088858127593994
+        3.2053213119506836
     ],
     "16": [
-        12.713771104812622
+        12.394548416137695
     ],
     "17": [
-        4.360794544219971
+        4.5201404094696045
     ],
     "18": [
-        3.5356786251068115
+        3.710134506225586
     ],
     "19": [
-        2.3798322677612305
+        2.388089895248413
     ],
     "20": [
-        1.0938637256622314
+        1.1710665225982666
     ],
     "21": [
-        2.455582618713379
+        1.8241875171661377
     ],
     "22": [
-        20.456819772720337
+        22.95406436920166
     ],
     "23": [
-        90.78599667549133
+        91.60468244552612
     ],
     "24": [
-        14.599116802215576
+        14.566667556762695
     ],
     "25": [
-        3.914447784423828
+        4.0827412605285645
     ],
     "26": [
-        1.8908452987670898
+        1.9840991497039795
     ],
     "27": [
-        2.4267418384552
+        2.4599902629852295
     ],
     "28": [
-        8.265856981277466
+        8.550125122070312
     ],
     "29": [
-        4.682234525680542
+        4.786677122116089
     ],
     "30": [
-        2.059946060180664
+        1.974135398864746
     ],
     "31": [
-        5.506787061691284
+        5.949168920516968
     ],
     "32": [
-        1.7487893104553223
+        1.8300220966339111
     ],
     "33": [
-        2.982879161834717
+        3.0961456298828125
     ],
     "34": [
-        1.6298549175262451
+        1.5340814590454102
     ],
     "35": [
-        3.688725233078003
+        4.07404637336731
     ],
     "36": [
-        2.250793695449829
+        2.289029121398926
     ],
     "37": [
-        4.441803932189941
+        4.415144681930542
     ],
     "38": [
-        7.015878677368164
+        7.2151618003845215
     ],
     "39": [
-        8.630785465240479
+        8.983118057250977
     ],
     "40": [
-        7.836863279342651
+        8.090219020843506
     ],
     "41": [
-        0.2727854251861572
+        0.2758638858795166
     ],
     "42": [
-        1.2575969696044922
+        1.4861207008361816
     ],
     "43": [
-        1.3630707263946533
+        1.4047019481658936
     ],
     "44": [
-        1.0747966766357422
+        1.1311781406402588
     ],
     "45": [
-        1.630786418914795
+        1.7742793560028076
     ],
     "46": [
-        2.8388638496398926
+        2.6378352642059326
     ],
     "47": [
-        5.072808504104614
+        5.033041954040527
     ],
     "48": [
-        6.931813478469849
+        7.473065137863159
     ],
     "49": [
-        7.037808656692505
+        7.34236478805542
     ],
     "50": [
-        10.887813806533813
+        10.566041946411133
     ],
     "51": [
-        13.686826944351196
+        13.90496039390564
     ],
     "52": [
-        1.5512869358062744
+        1.2180531024932861
     ],
     "53": [
-        1.7634241580963135
+        1.8595950603485107
     ],
     "54": [
-        2.8929245471954346
+        2.967790365219116
     ],
     "55": [
-        1.6210839748382568
+        1.1428017616271973
     ],
     "56": [
-        2.6715617179870605
+        2.6576313972473145
     ],
     "57": [
-        2.955833911895752
+        3.1256778240203857
     ],
     "58": [
-        2.9878156185150146
+        3.110593795776367
     ],
     "59": [
-        3.676787853240967
+        3.6817147731781006
     ],
     "60": [
-        2.4198226928710938
+        2.342132568359375
     ],
     "61": [
-        3.431835889816284
+        3.5699379444122314
     ],
     "62": [
-        0.9687931537628174
+        1.0830762386322021
     ],
     "63": [
-        1.647820234298706
+        1.5091686248779297
     ],
     "64": [
-        20.87097954750061
+        21.24241876602173
     ],
     "65": [
-        11.047605752944946
+        11.174801588058472
     ],
     "66": [
-        2.8968875408172607
+        2.968890428543091
     ],
     "67": [
-        56.53068017959595
+        56.65302085876465
     ],
     "68": [
-        2.691868305206299
+        2.7817704677581787
     ],
     "69": [
-        2.155856132507324
+        2.238774061203003
     ],
     "70": [
-        2.8758456707000732
+        2.8807759284973145
     ],
     "71": [
-        2.8918395042419434
+        2.878760576248169
     ],
     "72": [
-        88.95688486099243
+        87.73793363571167
     ],
     "73": [
-        1.368774652481079
+        1.3357255458831787
     ],
     "74": [
-        18.52296209335327
+        17.069884300231934
     ],
     "75": [
-        12.25266432762146
+        12.418950080871582
     ],
     "76": [
-        2.7685928344726562
+        2.7246549129486084
     ],
     "77": [
-        3.4068973064422607
+        3.2758727073669434
     ],
     "78": [
-        30.724844694137573
+        31.570815801620483
     ],
     "79": [
-        2.1735546588897705
+        2.1316466331481934
     ],
     "80": [
-        25.517992734909058
+        25.685710191726685
     ],
     "81": [
-        2.2336103916168213
+        2.383108615875244
     ],
     "82": [
-        2.1868607997894287
+        2.1166131496429443
     ],
     "83": [
-        1.8758370876312256
+        1.825127124786377
     ],
     "84": [
-        1.3947536945343018
+        1.4185044765472412
     ],
     "85": [
-        4.5268638134002686
+        4.894887924194336
     ],
     "86": [
-        0.9667923450469971
+        0.9917283058166504
     ],
     "87": [
-        7.034852981567383
+        7.2068891525268555
     ],
     "88": [
-        5.289006948471069
+        5.049949645996094
     ],
     "89": [
-        1.889719009399414
+        1.8566343784332275
     ],
     "90": [
-        0.7625589370727539
+        0.8218870162963867
     ],
     "91": [
-        0.9487571716308594
+        1.0735762119293213
     ],
     "92": [
-        1.3118672370910645
+        1.3357479572296143
     ],
     "93": [
-        22.160874128341675
+        21.765851259231567
     ],
     "94": [
-        6.66074013710022
+        6.729715585708618
     ],
     "95": [
-        22.501967906951904
+        23.40083408355713
     ],
     "96": [
-        0.720137357711792
+        0.6852657794952393
     ],
     "97": [
-        10.971328973770142
+        11.261420965194702
     ],
     "98": [
-        2.08882737159729
+        2.003811836242676
     ],
     "99": [
-        1.4558563232421875
+        1.5077838897705078
     ]
 }

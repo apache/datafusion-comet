@@ -19,8 +19,8 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, Murmur3Hash, Sha2, XxHash64}
-import org.apache.spark.sql.types.{DecimalType, IntegerType, LongType, StringType}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, Murmur3Hash, Sha1, Sha2, XxHash64}
+import org.apache.spark.sql.types.{ArrayType, DataType, DecimalType, IntegerType, LongType, MapType, StringType, StructType}
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, scalarFunctionExprToProtoWithReturnType, serializeDataType, supportedDataType}
@@ -40,7 +40,7 @@ object CometXxHash64 extends CometExpressionSerde[XxHash64] {
       .setLongVal(expr.seed)
     val seedExpr = Some(ExprOuterClass.Expr.newBuilder().setLiteral(seedBuilder).build())
     // the seed is put at the end of the arguments
-    scalarFunctionExprToProtoWithReturnType("xxhash64", LongType, exprs :+ seedExpr: _*)
+    scalarFunctionExprToProtoWithReturnType("xxhash64", LongType, false, exprs :+ seedExpr: _*)
   }
 }
 
@@ -59,7 +59,11 @@ object CometMurmur3Hash extends CometExpressionSerde[Murmur3Hash] {
       .setIntVal(expr.seed)
     val seedExpr = Some(ExprOuterClass.Expr.newBuilder().setLiteral(seedBuilder).build())
     // the seed is put at the end of the arguments
-    scalarFunctionExprToProtoWithReturnType("murmur3_hash", IntegerType, exprs :+ seedExpr: _*)
+    scalarFunctionExprToProtoWithReturnType(
+      "murmur3_hash",
+      IntegerType,
+      false,
+      exprs :+ seedExpr: _*)
   }
 }
 
@@ -81,25 +85,52 @@ object CometSha2 extends CometExpressionSerde[Sha2] {
 
     val leftExpr = exprToProtoInternal(expr.left, inputs, binding)
     val numBitsExpr = exprToProtoInternal(expr.right, inputs, binding)
-    scalarFunctionExprToProtoWithReturnType("sha2", StringType, leftExpr, numBitsExpr)
+    scalarFunctionExprToProtoWithReturnType("sha2", StringType, false, leftExpr, numBitsExpr)
+  }
+}
+
+object CometSha1 extends CometExpressionSerde[Sha1] {
+  override def convert(
+      expr: Sha1,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    if (!HashUtils.isSupportedType(expr)) {
+      withInfo(expr, s"HashUtils doesn't support dataType: ${expr.child.dataType}")
+      return None
+    }
+    val childExpr = exprToProtoInternal(expr.child, inputs, binding)
+    scalarFunctionExprToProtoWithReturnType("sha1", StringType, false, childExpr)
   }
 }
 
 private object HashUtils {
   def isSupportedType(expr: Expression): Boolean = {
     for (child <- expr.children) {
-      child.dataType match {
-        case dt: DecimalType if dt.precision > 18 =>
-          // Spark converts decimals with precision > 18 into
-          // Java BigDecimal before hashing
-          withInfo(expr, s"Unsupported datatype: $dt (precision > 18)")
-          return false
-        case dt if !supportedDataType(dt) =>
-          withInfo(expr, s"Unsupported datatype $dt")
-          return false
-        case _ =>
+      if (!isSupportedDataType(expr, child.dataType)) {
+        return false
       }
     }
     true
+  }
+
+  private def isSupportedDataType(expr: Expression, dt: DataType): Boolean = {
+    dt match {
+      case d: DecimalType if d.precision > 18 =>
+        // Spark converts decimals with precision > 18 into
+        // Java BigDecimal before hashing
+        withInfo(expr, s"Unsupported datatype: $dt (precision > 18)")
+        false
+      case s: StructType =>
+        s.fields.forall(f => isSupportedDataType(expr, f.dataType))
+      case a: ArrayType =>
+        isSupportedDataType(expr, a.elementType)
+      case m: MapType =>
+        isSupportedDataType(expr, m.keyType) && isSupportedDataType(expr, m.valueType)
+      case _ if !supportedDataType(dt, allowComplex = true) =>
+        withInfo(expr, s"Unsupported datatype $dt")
+        false
+      case _ =>
+        true
+    }
   }
 }

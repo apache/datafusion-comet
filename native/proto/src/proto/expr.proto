@@ -70,7 +70,6 @@ message Expr {
     IfExpr if = 44;
     NormalizeNaNAndZero normalize_nan_and_zero = 45;
     TruncTimestamp truncTimestamp = 47;
-    Abs abs = 49;
     Subquery subquery = 50;
     UnboundReference unbound = 51;
     BloomFilterMightContain bloom_filter_might_contain = 52;
@@ -86,6 +85,9 @@ message Expr {
     Rand randn = 62;
     EmptyExpr spark_partition_id = 63;
     EmptyExpr monotonically_increasing_id = 64;
+    UnixTimestamp unix_timestamp = 65;
+    FromJson from_json = 66;
+    ToCsv to_csv = 67;
   }
 }
 
@@ -121,7 +123,7 @@ message Count {
 message Sum {
   Expr child = 1;
   DataType datatype = 2;
-  bool fail_on_error = 3;
+  EvalMode eval_mode = 3;
 }
 
 message Min {
@@ -138,7 +140,7 @@ message Avg {
   Expr child = 1;
   DataType datatype = 2;
   DataType sum_datatype = 3;
-  bool fail_on_error = 4; // currently unused (useful for deciding Ansi vs Legacy mode)
+  EvalMode eval_mode = 4;
 }
 
 message First {
@@ -269,6 +271,28 @@ message ToJson {
   bool ignore_null_fields = 6;
 }
 
+message FromJson {
+  Expr child = 1;
+  DataType schema = 2;
+  string timezone = 3;
+}
+
+message ToCsv {
+  Expr child = 1;
+  CsvWriteOptions options = 2;
+}
+
+message CsvWriteOptions {
+  string delimiter = 1;
+  string quote = 2;
+  string escape = 3;
+  string null_value = 4;
+  bool quote_all = 5;
+  bool ignore_leading_white_space = 6;
+  bool ignore_trailing_white_space = 7;
+  string timezone = 8;
+}
+
 enum BinaryOutputStyle {
   UTF8 = 0;
   BASIC = 1;
@@ -298,6 +322,11 @@ message Second {
   string timezone = 2;
 }
 
+message UnixTimestamp {
+  Expr child = 1;
+  string timezone = 2;
+}
+
 message CheckOverflow {
   Expr child = 1;
   DataType datatype = 2;
@@ -308,6 +337,7 @@ message ScalarFunc {
   string func = 1;
   repeated Expr args = 2;
   DataType return_type = 3;
+  bool fail_on_error = 4;
 }
 
 message CaseWhen {
@@ -348,11 +378,6 @@ message TruncTimestamp {
   Expr format = 1;
   Expr child = 2;
   string timezone = 3;
-}
-
-message Abs {
-  Expr child = 1;
-  EvalMode eval_mode = 2;
 }
 
 message Subquery {

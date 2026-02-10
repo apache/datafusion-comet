@@ -155,16 +155,21 @@ case class CometScanExec(
     }
   }
 
-  @transient
-  private lazy val pushedDownFilters = {
-    val supportedFilters = if (scanImpl == CometConf.SCAN_NATIVE_DATAFUSION) {
-      // `native_datafusion` scan does not support subquery pushdown filters,
-      // see: https://github.com/apache/datafusion-comet/issues/2424
+  /**
+   * Returns the data filters that are supported for this scan implementation. For
+   * native_datafusion scans, this excludes dynamic pruning filters (subqueries)
+   */
+  lazy val supportedDataFilters: Seq[Expression] = {
+    if (scanImpl == CometConf.SCAN_NATIVE_DATAFUSION) {
       dataFilters.filterNot(isDynamicPruningFilter)
     } else {
       dataFilters
     }
-    getPushedDownFilters(relation, supportedFilters)
+  }
+
+  @transient
+  private lazy val pushedDownFilters = {
+    getPushedDownFilters(relation, supportedDataFilters)
   }
 
   override lazy val metadata: Map[String, String] =
@@ -246,32 +251,25 @@ case class CometScanExec(
     }
   }
 
-  override lazy val metrics: Map[String, SQLMetric] = wrapped.metrics ++ {
-    // Tracking scan time has overhead, we can't afford to do it for each row, and can only do
-    // it for each batch.
-    if (supportsColumnar) {
-      Map(
-        "scanTime" -> SQLMetrics.createNanoTimingMetric(
-          sparkContext,
-          "scan time")) ++ CometMetricNode.scanMetrics(sparkContext)
-    } else {
-      Map.empty
-    }
-  } ++ {
-    relation.fileFormat match {
-      case f: MetricsSupport => f.initMetrics(sparkContext)
+  override lazy val metrics: Map[String, SQLMetric] =
+    wrapped.driverMetrics ++ CometMetricNode.baseScanMetrics(
+      session.sparkContext) ++ (relation.fileFormat match {
+      case m: MetricsSupport => m.getMetrics
       case _ => Map.empty
-    }
-  }
+    })
 
   protected override def doExecute(): RDD[InternalRow] = {
     ColumnarToRowExec(this).doExecute()
   }
 
   protected override def doExecuteColumnar(): RDD[ColumnarBatch] = {
+    val rdd = inputRDD.asInstanceOf[RDD[ColumnarBatch]]
+
+    // These metrics are important for streaming solutions.
+    // despite there being similar metrics published by the native reader.
     val numOutputRows = longMetric("numOutputRows")
     val scanTime = longMetric("scanTime")
-    inputRDD.asInstanceOf[RDD[ColumnarBatch]].mapPartitionsInternal { batches =>
+    rdd.mapPartitionsInternal { batches =>
       new Iterator[ColumnarBatch] {
 
         override def hasNext: Boolean = {
@@ -296,26 +294,36 @@ case class CometScanExec(
   }
 
   /**
-   * Create an RDD for bucketed reads. The non-bucketed variant of this function is
-   * [[createReadRDD]].
-   *
-   * The algorithm is pretty simple: each RDD partition being returned should include all the
-   * files with the same bucket id from all the given Hive partitions.
+   * Get the file partitions for this scan without instantiating readers or RDD. This is useful
+   * for native scans that only need partition metadata.
+   */
+  def getFilePartitions(): Seq[FilePartition] = {
+    val filePartitions = if (bucketedScan) {
+      createFilePartitionsForBucketedScan(
+        relation.bucketSpec.get,
+        dynamicallySelectedPartitions,
+        relation)
+    } else {
+      createFilePartitionsForNonBucketedScan(dynamicallySelectedPartitions, relation)
+    }
+    sendDriverMetrics()
+    filePartitions
+  }
+
+  /**
+   * Create file partitions for bucketed scans without instantiating readers.
    *
    * @param bucketSpec
    *   the bucketing spec.
-   * @param readFile
-   *   a function to read each (part of a) file.
    * @param selectedPartitions
    *   Hive-style partition that are part of the read.
    * @param fsRelation
    *   [[HadoopFsRelation]] associated with the read.
    */
-  private def createBucketedReadRDD(
+  private def createFilePartitionsForBucketedScan(
       bucketSpec: BucketSpec,
-      readFile: (PartitionedFile) => Iterator[InternalRow],
       selectedPartitions: Array[PartitionDirectory],
-      fsRelation: HadoopFsRelation): RDD[InternalRow] = {
+      fsRelation: HadoopFsRelation): Seq[FilePartition] = {
     logInfo(s"Planning with ${bucketSpec.numBuckets} buckets")
     val filesGroupedToBuckets =
       selectedPartitions
@@ -339,7 +347,7 @@ case class CometScanExec(
       filesGroupedToBuckets
     }
 
-    val filePartitions = optionalNumCoalescedBuckets
+    optionalNumCoalescedBuckets
       .map { numCoalescedBuckets =>
         logInfo(s"Coalescing to ${numCoalescedBuckets} buckets")
         val coalescedBuckets = prunedFilesGroupedToBuckets.groupBy(_._1 % numCoalescedBuckets)
@@ -358,25 +366,19 @@ case class CometScanExec(
           FilePartition(bucketId, prunedFilesGroupedToBuckets.getOrElse(bucketId, Array.empty))
         }
       }
-
-    prepareRDD(fsRelation, readFile, filePartitions)
   }
 
   /**
-   * Create an RDD for non-bucketed reads. The bucketed variant of this function is
-   * [[createBucketedReadRDD]].
+   * Create file partitions for non-bucketed scans without instantiating readers.
    *
-   * @param readFile
-   *   a function to read each (part of a) file.
    * @param selectedPartitions
    *   Hive-style partition that are part of the read.
    * @param fsRelation
    *   [[HadoopFsRelation]] associated with the read.
    */
-  private def createReadRDD(
-      readFile: (PartitionedFile) => Iterator[InternalRow],
+  private def createFilePartitionsForNonBucketedScan(
       selectedPartitions: Array[PartitionDirectory],
-      fsRelation: HadoopFsRelation): RDD[InternalRow] = {
+      fsRelation: HadoopFsRelation): Seq[FilePartition] = {
     val openCostInBytes = fsRelation.sparkSession.sessionState.conf.filesOpenCostInBytes
     val maxSplitBytes =
       FilePartition.maxSplitBytes(fsRelation.sparkSession, selectedPartitions)
@@ -422,10 +424,52 @@ case class CometScanExec(
       }
       .sortBy(_.length)(implicitly[Ordering[Long]].reverse)
 
-    prepareRDD(
-      fsRelation,
-      readFile,
-      FilePartition.getFilePartitions(relation.sparkSession, splitFiles, maxSplitBytes))
+    FilePartition.getFilePartitions(relation.sparkSession, splitFiles, maxSplitBytes)
+  }
+
+  /**
+   * Create an RDD for bucketed reads. The non-bucketed variant of this function is
+   * [[createReadRDD]].
+   *
+   * Each RDD partition being returned should include all the files with the same bucket id from
+   * all the given Hive partitions.
+   *
+   * @param bucketSpec
+   *   the bucketing spec.
+   * @param readFile
+   *   a function to read each (part of a) file.
+   * @param selectedPartitions
+   *   Hive-style partition that are part of the read.
+   * @param fsRelation
+   *   [[HadoopFsRelation]] associated with the read.
+   */
+  private def createBucketedReadRDD(
+      bucketSpec: BucketSpec,
+      readFile: (PartitionedFile) => Iterator[InternalRow],
+      selectedPartitions: Array[PartitionDirectory],
+      fsRelation: HadoopFsRelation): RDD[InternalRow] = {
+    val filePartitions =
+      createFilePartitionsForBucketedScan(bucketSpec, selectedPartitions, fsRelation)
+    prepareRDD(fsRelation, readFile, filePartitions)
+  }
+
+  /**
+   * Create an RDD for non-bucketed reads. The bucketed variant of this function is
+   * [[createBucketedReadRDD]].
+   *
+   * @param readFile
+   *   a function to read each (part of a) file.
+   * @param selectedPartitions
+   *   Hive-style partition that are part of the read.
+   * @param fsRelation
+   *   [[HadoopFsRelation]] associated with the read.
+   */
+  private def createReadRDD(
+      readFile: (PartitionedFile) => Iterator[InternalRow],
+      selectedPartitions: Array[PartitionDirectory],
+      fsRelation: HadoopFsRelation): RDD[InternalRow] = {
+    val filePartitions = createFilePartitionsForNonBucketedScan(selectedPartitions, fsRelation)
+    prepareRDD(fsRelation, readFile, filePartitions)
   }
 
   private def prepareRDD(
@@ -512,10 +556,12 @@ object CometScanExec {
     // https://github.com/apache/arrow-datafusion-comet/issues/190
     def transform(arg: Any): AnyRef = arg match {
       case _: HadoopFsRelation =>
-        scanExec.relation.copy(fileFormat = new CometParquetFileFormat(scanImpl))(session)
+        scanExec.relation.copy(fileFormat = new CometParquetFileFormat(session, scanImpl))(
+          session)
       case other: AnyRef => other
       case null => null
     }
+
     val newArgs = mapProductIterator(scanExec, transform)
     val wrapped = scanExec.makeCopy(newArgs).asInstanceOf[FileSourceScanExec]
     val batchScanExec = CometScanExec(

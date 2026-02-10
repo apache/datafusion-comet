@@ -28,9 +28,11 @@ import org.apache.spark.sql.types.DataType;
 import org.apache.spark.sql.types.TimestampNTZType$;
 
 import org.apache.comet.CometConf;
+import org.apache.comet.IcebergApi;
 import org.apache.comet.vector.CometVector;
 
 /** Base class for Comet Parquet column reader implementations. */
+@IcebergApi
 public abstract class AbstractColumnReader implements AutoCloseable {
   protected static final Logger LOG = LoggerFactory.getLogger(AbstractColumnReader.class);
 
@@ -61,7 +63,7 @@ public abstract class AbstractColumnReader implements AutoCloseable {
   protected int batchSize;
 
   /** A pointer to the native implementation of ColumnReader. */
-  protected long nativeHandle;
+  @IcebergApi protected long nativeHandle;
 
   AbstractColumnReader(
       DataType type,
@@ -89,9 +91,14 @@ public abstract class AbstractColumnReader implements AutoCloseable {
     return descriptor;
   }
 
+  String getPath() {
+    return String.join(".", this.descriptor.getPath());
+  }
+
   /**
    * Set the batch size of this reader to be 'batchSize'. Also initializes the native column reader.
    */
+  @IcebergApi
   public void setBatchSize(int batchSize) {
     assert nativeHandle == 0
         : "Native column reader shouldn't be initialized before " + "'setBatchSize' is called";
@@ -109,6 +116,7 @@ public abstract class AbstractColumnReader implements AutoCloseable {
   /** Returns the {@link CometVector} read by this reader. */
   public abstract CometVector currentBatch();
 
+  @IcebergApi
   @Override
   public void close() {
     if (nativeHandle != 0) {

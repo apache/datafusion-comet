@@ -85,14 +85,15 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
-  test("unsupported Spark types") {
+  // ignored: native_comet scan is no longer supported
+  ignore("unsupported Spark types") {
     // TODO this test is not correctly implemented for scan implementations other than SCAN_NATIVE_COMET
     // https://github.com/apache/datafusion-comet/issues/2188
     withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET) {
       // for native iceberg compat, CometScanExec supports some types that native_comet does not.
       // note that native_datafusion does not use CometScanExec so we need not include that in
       // the check
-      val isDataFusionScan = usingDataSourceExec(conf)
+      val isDataFusionScan = !usingLegacyNativeCometScan(conf)
       Seq(
         NullType -> false,
         BooleanType -> true,
@@ -130,7 +131,8 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
-  test("unsupported Spark schema") {
+  // ignored: native_comet scan is no longer supported
+  ignore("unsupported Spark schema") {
     // TODO this test is not correctly implemented for scan implementations other than SCAN_NATIVE_COMET
     // https://github.com/apache/datafusion-comet/issues/2188
     withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET) {
@@ -143,7 +145,7 @@ abstract class ParquetReadSuite extends CometTestBase {
 
       // Arrays support for iceberg compat native and for Parquet V1
       val cometScanExecSupported =
-        if (usingDataSourceExec(conf) && this.isInstanceOf[ParquetReadV1Suite])
+        if (!usingLegacyNativeCometScan(conf) && this.isInstanceOf[ParquetReadV1Suite])
           Seq(true, true, true)
         else Seq(true, false, false)
 
@@ -185,7 +187,7 @@ abstract class ParquetReadSuite extends CometTestBase {
             i.toDouble,
             DateTimeUtils.toJavaDate(i))
         }
-        if (!usingDataSourceExecWithIncompatTypes(conf)) {
+        if (!hasUnsignedSmallIntSafetyCheck(conf)) {
           checkParquetScan(data)
         }
         checkParquetFile(data)
@@ -207,7 +209,7 @@ abstract class ParquetReadSuite extends CometTestBase {
             i.toDouble,
             DateTimeUtils.toJavaDate(i))
         }
-        if (!usingDataSourceExecWithIncompatTypes(conf)) {
+        if (!hasUnsignedSmallIntSafetyCheck(conf)) {
           checkParquetScan(data)
         }
         checkParquetFile(data)
@@ -228,7 +230,7 @@ abstract class ParquetReadSuite extends CometTestBase {
         DateTimeUtils.toJavaDate(i))
     }
     val filter = (row: Row) => row.getBoolean(0)
-    if (!usingDataSourceExecWithIncompatTypes(conf)) {
+    if (!hasUnsignedSmallIntSafetyCheck(conf)) {
       checkParquetScan(data, filter)
     }
     checkParquetFile(data, filter)
@@ -348,7 +350,7 @@ abstract class ParquetReadSuite extends CometTestBase {
   }
 
   test("mixed nulls and non-nulls") {
-    val rand = scala.util.Random
+    val rand = new scala.util.Random(42)
     val data = (0 to 100).map { i =>
       val row: (Boolean, Integer, java.lang.Long, java.lang.Float, java.lang.Double, String) = {
         if (rand.nextBoolean()) {
@@ -368,7 +370,8 @@ abstract class ParquetReadSuite extends CometTestBase {
     checkParquetFile(data)
   }
 
-  test("test multiple pages with different sizes and nulls") {
+  // ignored: native_comet scan is no longer supported
+  ignore("test multiple pages with different sizes and nulls") {
     def makeRawParquetFile(
         path: Path,
         dictionaryEnabled: Boolean,
@@ -403,7 +406,7 @@ abstract class ParquetReadSuite extends CometTestBase {
         pageSize = pageSize,
         dictionaryPageSize = pageSize)
 
-      val rand = scala.util.Random
+      val rand = new scala.util.Random(42)
       val expected = (0 until n).map { i =>
         if (rand.nextBoolean()) {
           None
@@ -626,7 +629,7 @@ abstract class ParquetReadSuite extends CometTestBase {
         dictionaryPageSize = dictionaryPageSize,
         pageRowCountLimit = pageRowCount)
 
-      val rand = scala.util.Random
+      val rand = new scala.util.Random(42)
       val expected = (0 until n).map { i =>
         // use a single value for the first page, to make sure dictionary encoding kicks in
         val value = if (i < pageRowCount) i % 8 else i
@@ -814,7 +817,7 @@ abstract class ParquetReadSuite extends CometTestBase {
         dictionaryPageSize = pageSize,
         rowGroupSize = 1024 * 128)
 
-      val rand = scala.util.Random
+      val rand = new scala.util.Random(42)
       val expected = (0 until n).map { i =>
         if (rand.nextBoolean()) {
           None
@@ -1344,7 +1347,8 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
-  test("scan metrics") {
+  // ignored: native_comet scan is no longer supported
+  ignore("scan metrics") {
 
     val cometScanMetricNames = Seq(
       "ParquetRowGroups",
@@ -1378,6 +1382,8 @@ abstract class ParquetReadSuite extends CometTestBase {
 
         val metricNames = scans.head match {
           case _: CometNativeScanExec => cometNativeScanMetricNames
+          case s: CometScanExec if s.scanImpl == CometConf.SCAN_NATIVE_ICEBERG_COMPAT =>
+            cometNativeScanMetricNames
           case _ => cometScanMetricNames
         }
 
@@ -1513,7 +1519,7 @@ abstract class ParquetReadSuite extends CometTestBase {
   test("row group skipping doesn't overflow when reading into larger type") {
     // Spark 4.0 no longer fails for widening types SPARK-40876
     // https://github.com/apache/spark/commit/3361f25dc0ff6e5233903c26ee105711b79ba967
-    assume(!isSpark40Plus && !usingDataSourceExec(conf))
+    assume(!isSpark40Plus && usingLegacyNativeCometScan(conf))
     withTempPath { path =>
       Seq(0).toDF("a").write.parquet(path.toString)
       // Reading integer 'a' as a long isn't supported. Check that an exception is raised instead
@@ -1562,7 +1568,7 @@ abstract class ParquetReadSuite extends CometTestBase {
         pageSize = pageSize,
         dictionaryPageSize = pageSize)
 
-      val rand = scala.util.Random
+      val rand = new scala.util.Random(42)
       val expected = (0 until n).map { i =>
         if (rand.nextBoolean()) {
           None
@@ -1660,7 +1666,7 @@ abstract class ParquetReadSuite extends CometTestBase {
         dictionaryPageSize = dictionaryPageSize,
         pageRowCountLimit = pageRowCount)
 
-      val rand = scala.util.Random
+      val rand = new scala.util.Random(42)
       val expected = (0 until n).map { i =>
         // use a single value for the first page, to make sure dictionary encoding kicks in
         val value = if (i < pageRowCount) i % 8 else i
@@ -1864,8 +1870,7 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
 
   test("Test V1 parquet scan uses respective scanner") {
     Seq(
-      ("false", CometConf.SCAN_NATIVE_COMET, "FileScan parquet"),
-      ("true", CometConf.SCAN_NATIVE_COMET, "CometScan [native_comet] parquet"),
+      ("false", CometConf.SCAN_NATIVE_DATAFUSION, "FileScan parquet"),
       ("true", CometConf.SCAN_NATIVE_DATAFUSION, "CometNativeScan"),
       ("true", CometConf.SCAN_NATIVE_ICEBERG_COMPAT, "CometScan [native_iceberg_compat] parquet"))
       .foreach { case (cometEnabled, cometNativeScanImpl, expectedScanner) =>
@@ -1902,7 +1907,7 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
       val rows = 1000
       withSQLConf(
         CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_ICEBERG_COMPAT,
-        CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "false") {
+        CometConf.COMET_PARQUET_UNSIGNED_SMALL_INT_CHECK.key -> "true") {
         makeParquetFileAllPrimitiveTypes(
           path,
           dictionaryEnabled = false,
@@ -1910,10 +1915,8 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
           rows,
           nullEnabled = false)
       }
-      Seq(
-        (CometConf.SCAN_NATIVE_DATAFUSION, "output_rows"),
-        (CometConf.SCAN_NATIVE_ICEBERG_COMPAT, "numOutputRows")).foreach {
-        case (scanMode, metricKey) =>
+      Seq(CometConf.SCAN_NATIVE_DATAFUSION, CometConf.SCAN_NATIVE_ICEBERG_COMPAT).foreach {
+        scanMode =>
           Seq(true, false).foreach { pushDown =>
             breakable {
               withSQLConf(
@@ -1953,9 +1956,9 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
                   assert(scan.size == 1)
 
                   if (pushDown) {
-                    assert(scan.head.metrics(metricKey).value == expectedRows)
+                    assert(scan.head.metrics("output_rows").value == expectedRows)
                   } else {
-                    assert(scan.head.metrics(metricKey).value == rows)
+                    assert(scan.head.metrics("output_rows").value == rows)
                   }
                 }
               }
@@ -2014,10 +2017,11 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
 
 }
 
+// ignored: native_comet scan is no longer supported
 class ParquetReadV2Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
       pos: Position): Unit = {
-    super.test(testName, testTags: _*)(
+    super.ignore(testName, testTags: _*)(
       withSQLConf(
         SQLConf.USE_V1_SOURCE_LIST.key -> "",
         CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET) {
@@ -2040,12 +2044,13 @@ class ParquetReadV2Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("Test V2 parquet scan uses respective scanner") {
+  // ignored: native_comet scan is no longer supported
+  ignore("Test V2 parquet scan uses respective scanner") {
     Seq(("false", "BatchScan"), ("true", "CometBatchScan")).foreach {
       case (cometEnabled, expectedScanner) =>
         testScanner(
           cometEnabled,
-          CometConf.SCAN_NATIVE_DATAFUSION,
+          CometConf.SCAN_NATIVE_COMET,
           scanner = expectedScanner,
           v1 = None)
     }

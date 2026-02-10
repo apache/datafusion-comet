@@ -19,5 +19,5 @@ under the License.
 
 # Apache DataFusion Comet: Intermediate Representation of Query Plan
 
-This crate contains the protocol buffer definitions of Spark physical query plans 
+This crate contains the protocol buffer definitions of Spark physical query plans
 and is intended to be used as part of the Apache DataFusion Comet project.

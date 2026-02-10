@@ -23,7 +23,7 @@ import scala.collection.mutable
 
 import org.apache.spark.sql.ExtendedExplainGenerator
 import org.apache.spark.sql.catalyst.trees.{TreeNode, TreeNodeTag}
-import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometPlan, CometSparkToColumnarExec}
+import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometNativeColumnarToRowExec, CometPlan, CometSparkToColumnarExec}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, InputAdapter, RowToColumnarExec, SparkPlan, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, QueryStageExec}
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
@@ -34,13 +34,23 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
 
   override def title: String = "Comet"
 
-  override def generateExtendedInfo(plan: SparkPlan): String = {
-    if (CometConf.COMET_EXPLAIN_VERBOSE_ENABLED.get()) {
-      generateVerboseExtendedInfo(plan)
-    } else {
-      val info = extensionInfo(plan)
-      info.toSeq.sorted.mkString("\n").trim
+  def generateExtendedInfo(plan: SparkPlan): String = {
+    CometConf.COMET_EXTENDED_EXPLAIN_FORMAT.get() match {
+      case CometConf.COMET_EXTENDED_EXPLAIN_FORMAT_VERBOSE =>
+        // Generates the extended info in a verbose manner, printing each node along with the
+        // extended information in a tree display.
+        val planStats = new CometCoverageStats()
+        val outString = new StringBuilder()
+        generateTreeString(getActualPlan(plan), 0, Seq(), 0, outString, planStats)
+        s"${outString.toString()}\n$planStats"
+      case CometConf.COMET_EXTENDED_EXPLAIN_FORMAT_FALLBACK =>
+        // Generates the extended info as a list of fallback reasons
+        getFallbackReasons(plan).mkString("\n").trim
     }
+  }
+
+  def getFallbackReasons(plan: SparkPlan): Seq[String] = {
+    extensionInfo(plan).toSeq.sorted
   }
 
   private[comet] def extensionInfo(node: TreeNode[_]): Set[String] = {
@@ -80,23 +90,6 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
     ordered.reverse
   }
 
-  // generates the extended info in a verbose manner, printing each node along with the
-  // extended information in a tree display
-  def generateVerboseExtendedInfo(plan: SparkPlan): String = {
-    val planStats = new CometCoverageStats()
-    val outString = new StringBuilder()
-    generateTreeString(getActualPlan(plan), 0, Seq(), 0, outString, planStats)
-    s"${outString.toString()}\n$planStats"
-  }
-
-  /** Get the coverage statistics without the full plan */
-  def generateCoverageInfo(plan: SparkPlan): String = {
-    val planStats = new CometCoverageStats()
-    val outString = new StringBuilder()
-    generateTreeString(getActualPlan(plan), 0, Seq(), 0, outString, planStats)
-    planStats.toString()
-  }
-
   // Simplified generateTreeString from Spark TreeNode. Appends explain info to the node if any
   def generateTreeString(
       node: TreeNode[_],
@@ -111,7 +104,7 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
           _: WholeStageCodegenExec | _: ReusedExchangeExec | _: AQEShuffleReadExec =>
       // ignore
       case _: RowToColumnarExec | _: ColumnarToRowExec | _: CometColumnarToRowExec |
-          _: CometSparkToColumnarExec =>
+          _: CometNativeColumnarToRowExec | _: CometSparkToColumnarExec =>
         planStats.transitions += 1
       case _: CometPlan =>
         planStats.cometOperators += 1

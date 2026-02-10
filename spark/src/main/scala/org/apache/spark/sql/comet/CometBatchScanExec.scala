@@ -36,8 +36,12 @@ import org.apache.spark.sql.vectorized._
 import com.google.common.base.Objects
 
 import org.apache.comet.{DataTypeSupport, MetricsSupport}
+import org.apache.comet.iceberg.CometIcebergNativeScanMetadata
 
-case class CometBatchScanExec(wrapped: BatchScanExec, runtimeFilters: Seq[Expression])
+case class CometBatchScanExec(
+    wrapped: BatchScanExec,
+    runtimeFilters: Seq[Expression],
+    @transient nativeIcebergScanMetadata: Option[CometIcebergNativeScanMetadata] = None)
     extends DataSourceV2ScanExecBase
     with CometPlan {
   def ordering: Option[Seq[SortOrder]] = wrapped.ordering
@@ -51,9 +55,13 @@ case class CometBatchScanExec(wrapped: BatchScanExec, runtimeFilters: Seq[Expres
   override lazy val inputRDD: RDD[InternalRow] = wrappedScan.inputRDD
 
   override def doExecuteColumnar(): RDD[ColumnarBatch] = {
+    val rdd = inputRDD.asInstanceOf[RDD[ColumnarBatch]]
+
+    // These metrics are important for streaming solutions.
+    // despite there being similar metrics published by the native reader.
     val numOutputRows = longMetric("numOutputRows")
     val scanTime = longMetric("scanTime")
-    inputRDD.asInstanceOf[RDD[ColumnarBatch]].mapPartitionsInternal { batches =>
+    rdd.mapPartitionsInternal { batches =>
       new Iterator[ColumnarBatch] {
 
         override def hasNext: Boolean = {
@@ -91,7 +99,7 @@ case class CometBatchScanExec(wrapped: BatchScanExec, runtimeFilters: Seq[Expres
   override def equals(other: Any): Boolean = other match {
     case other: CometBatchScanExec =>
       // `wrapped` in `this` and `other` could reference to the same `BatchScanExec` object,
-      // therefore we need to also check `runtimeFilters` equality here.
+      // check `runtimeFilters` equality too.
       this.wrappedScan == other.wrappedScan && this.runtimeFilters == other.runtimeFilters
     case _ =>
       false
@@ -106,7 +114,8 @@ case class CometBatchScanExec(wrapped: BatchScanExec, runtimeFilters: Seq[Expres
       wrapped = wrappedScan.doCanonicalize(),
       runtimeFilters = QueryPlan.normalizePredicates(
         runtimeFilters.filterNot(_ == DynamicPruningExpression(Literal.TrueLiteral)),
-        output))
+        output),
+      nativeIcebergScanMetadata = None)
   }
 
   override def nodeName: String = {
@@ -137,16 +146,12 @@ case class CometBatchScanExec(wrapped: BatchScanExec, runtimeFilters: Seq[Expres
     wrapped
   }
 
-  override lazy val metrics: Map[String, SQLMetric] = Map(
-    "numOutputRows" -> SQLMetrics.createMetric(sparkContext, "number of output rows"),
-    "scanTime" -> SQLMetrics.createNanoTimingMetric(
-      sparkContext,
-      "scan time")) ++ wrapped.customMetrics ++ {
-    wrapped.scan match {
-      case s: MetricsSupport => s.initMetrics(sparkContext)
+  override lazy val metrics: Map[String, SQLMetric] =
+    wrappedScan.customMetrics ++ CometMetricNode.baseScanMetrics(
+      session.sparkContext) ++ (scan match {
+      case s: MetricsSupport => s.getMetrics
       case _ => Map.empty
-    }
-  }
+    })
 
   @transient override lazy val partitions: Seq[Seq[InputPartition]] = wrappedScan.partitions
 

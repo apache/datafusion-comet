@@ -22,12 +22,19 @@ use std::fmt::Debug;
 use jni::objects::GlobalRef;
 
 pub use copy::*;
+pub use iceberg_scan::*;
 pub use scan::*;
 
 mod copy;
 mod expand;
 pub use expand::ExpandExec;
+mod iceberg_scan;
+mod parquet_writer;
+pub use parquet_writer::ParquetWriterExec;
+mod csv_scan;
+pub mod projection;
 mod scan;
+pub use csv_scan::init_csv_datasource_exec;
 
 /// Error returned during executing operators.
 #[derive(thiserror::Error, Debug)]

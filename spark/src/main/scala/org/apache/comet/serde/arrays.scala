@@ -21,7 +21,8 @@ package org.apache.comet.serde
 
 import scala.annotation.tailrec
 
-import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayFilter, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayRemove, ArrayRepeat, ArraysOverlap, ArrayUnion, Attribute, CreateArray, ElementAt, Expression, Flatten, GetArrayItem, IsNotNull, Literal, Reverse}
+import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayFilter, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayRemove, ArrayRepeat, ArraysOverlap, ArrayUnion, Attribute, CreateArray, ElementAt, Expression, Flatten, GetArrayItem, IsNotNull, Literal, Reverse, Size}
+import org.apache.spark.sql.catalyst.util.GenericArrayData
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
@@ -134,7 +135,34 @@ object CometArrayContains extends CometExpressionSerde[ArrayContains] {
 
     val arrayContainsScalarExpr =
       scalarFunctionExprToProto("array_has", arrayExprProto, keyExprProto)
-    optExprWithInfo(arrayContainsScalarExpr, expr, expr.children: _*)
+
+    // Handle NULL array input - return NULL if array is NULL (matching Spark's behavior)
+    val isNotNullExpr = createUnaryExpr(
+      expr,
+      expr.children.head,
+      inputs,
+      binding,
+      (builder, unaryExpr) => builder.setIsNotNull(unaryExpr))
+
+    val nullLiteralProto = exprToProto(Literal(null, BooleanType), Seq.empty)
+
+    if (arrayContainsScalarExpr.isDefined && isNotNullExpr.isDefined &&
+      nullLiteralProto.isDefined) {
+      val caseWhenExpr = ExprOuterClass.CaseWhen
+        .newBuilder()
+        .addWhen(isNotNullExpr.get)
+        .addThen(arrayContainsScalarExpr.get)
+        .setElseExpr(nullLiteralProto.get)
+        .build()
+      Some(
+        ExprOuterClass.Expr
+          .newBuilder()
+          .setCaseWhen(caseWhenExpr)
+          .build())
+    } else {
+      withInfo(expr, expr.children: _*)
+      None
+    }
   }
 }
 
@@ -210,6 +238,7 @@ object CometArraysOverlap extends CometExpressionSerde[ArraysOverlap] {
     val arraysOverlapScalarExpr = scalarFunctionExprToProtoWithReturnType(
       "array_has_any",
       BooleanType,
+      false,
       leftArrayExprProto,
       rightArrayExprProto)
     optExprWithInfo(arraysOverlapScalarExpr, expr, expr.children: _*)
@@ -250,6 +279,7 @@ object CometArrayCompact extends CometExpressionSerde[Expression] {
     val arrayCompactScalarExpr = scalarFunctionExprToProtoWithReturnType(
       "array_remove_all",
       ArrayType(elementType = elementType),
+      false,
       arrayExprProto,
       nullLiteralProto)
     optExprWithInfo(arrayCompactScalarExpr, expr, expr.children: _*)
@@ -393,6 +423,15 @@ object CometCreateArray extends CometExpressionSerde[CreateArray] {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val children = expr.children
+
+    // Handle empty array: return literal directly to avoid DataFusion coerce_types bug
+    // when make_array is called with 0 arguments (issue #3338)
+    if (children.isEmpty) {
+      val emptyArrayLiteral =
+        Literal.create(new GenericArrayData(Array.empty[Any]), expr.dataType)
+      return exprToProtoInternal(emptyArrayLiteral, inputs, binding)
+    }
+
     val childExprs = children.map(exprToProtoInternal(_, inputs, binding))
 
     if (childExprs.forall(_.isDefined)) {
@@ -433,6 +472,25 @@ object CometGetArrayItem extends CometExpressionSerde[GetArrayItem] {
 }
 
 object CometArrayReverse extends CometExpressionSerde[Reverse] with ArraysBase {
+  val unsupportedReason = "reverse on array containing binary is not supported"
+
+  @tailrec
+  private def containsBinary(dt: DataType): Boolean = {
+    dt match {
+      case BinaryType => true
+      case ArrayType(elementType, _) => containsBinary(elementType)
+      case _ => false
+    }
+  }
+
+  override def getSupportLevel(expr: Reverse): SupportLevel = {
+    if (containsBinary(expr.child.dataType)) {
+      Incompatible(Some(unsupportedReason))
+    } else {
+      Compatible(None)
+    }
+  }
+
   override def convert(
       expr: Reverse,
       inputs: Seq[Attribute],
@@ -472,7 +530,7 @@ object CometElementAt extends CometExpressionSerde[ElementAt] {
         .setOneBased(true)
         .setFailOnError(expr.failOnError)
 
-      defaultExpr.foreach(arrayExtractBuilder.setDefaultValue(_))
+      defaultExpr.foreach(arrayExtractBuilder.setDefaultValue)
 
       Some(
         ExprOuterClass.Expr
@@ -520,6 +578,60 @@ object CometArrayFilter extends CometExpressionSerde[ArrayFilter] {
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     CometArrayCompact.convert(expr, inputs, binding)
   }
+}
+
+object CometSize extends CometExpressionSerde[Size] {
+
+  override def getSupportLevel(expr: Size): SupportLevel = {
+    expr.child.dataType match {
+      case _: ArrayType => Compatible()
+      case _: MapType => Unsupported(Some("size does not support map inputs"))
+      case other =>
+        // this should be unreachable because Spark only supports map and array inputs
+        Unsupported(Some(s"Unsupported child data type: $other"))
+    }
+  }
+
+  override def convert(
+      expr: Size,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val arrayExprProto = exprToProto(expr.child, inputs, binding)
+    for {
+      isNotNullExprProto <- createIsNotNullExprProto(expr, inputs, binding)
+      sizeScalarExprProto <- scalarFunctionExprToProto("size", arrayExprProto)
+      emptyLiteralExprProto <- createLiteralExprProto(SQLConf.get.legacySizeOfNull)
+    } yield {
+      val caseWhenExpr = ExprOuterClass.CaseWhen
+        .newBuilder()
+        .addWhen(isNotNullExprProto)
+        .addThen(sizeScalarExprProto)
+        .setElseExpr(emptyLiteralExprProto)
+        .build()
+      ExprOuterClass.Expr
+        .newBuilder()
+        .setCaseWhen(caseWhenExpr)
+        .build()
+    }
+  }
+
+  private def createIsNotNullExprProto(
+      expr: Size,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    createUnaryExpr(
+      expr,
+      expr.child,
+      inputs,
+      binding,
+      (builder, unaryExpr) => builder.setIsNotNull(unaryExpr))
+  }
+
+  private def createLiteralExprProto(legacySizeOfNull: Boolean): Option[ExprOuterClass.Expr] = {
+    val value = if (legacySizeOfNull) -1 else null
+    exprToProto(Literal(value, IntegerType), Seq.empty)
+  }
+
 }
 
 trait ArraysBase {

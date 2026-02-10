@@ -27,11 +27,17 @@ on:
       - "doc/**"
       - "docs/**"
       - "**.md"
+      - "native/core/benches/**"
+      - "native/spark-expr/benches/**"
+      - "spark/src/test/scala/org/apache/spark/sql/benchmark/**"
   pull_request:
     paths-ignore:
       - "doc/**"
       - "docs/**"
       - "**.md"
+      - "native/core/benches/**"
+      - "native/spark-expr/benches/**"
+      - "spark/src/test/scala/org/apache/spark/sql/benchmark/**"
   # manual trigger
   # https://docs.github.com/en/actions/managing-workflow-runs/manually-running-a-workflow
   workflow_dispatch:
@@ -40,14 +46,66 @@ env:
   RUST_VERSION: stable
 
 jobs:
+  # Build native library once and share with all test jobs
+  build-native:
+    if: contains(github.event.pull_request.title, '[iceberg]')
+    name: Build Native Library
+    runs-on: ubuntu-24.04
+    container:
+      image: amd64/rust
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Rust & Java toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: ${{ env.RUST_VERSION }}
+          jdk-version: 17
+
+      - name: Restore Cargo cache
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/target
+          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-
+
+      - name: Build native library
+        # Use CI profile for faster builds (no LTO) and to share cache with pr_build_linux.yml.
+        run: |
+          cd native && cargo build --profile ci
+        env:
+          RUSTFLAGS: "-Ctarget-cpu=x86-64-v3"
+
+      - name: Save Cargo cache
+        uses: actions/cache/save@v5
+        if: github.ref == 'refs/heads/main'
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/target
+          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
+
+      - name: Upload native library
+        uses: actions/upload-artifact@v6
+        with:
+          name: native-lib-iceberg
+          path: native/target/ci/libcomet.so
+          retention-days: 1
+
   iceberg-spark:
+    needs: build-native
     if: contains(github.event.pull_request.title, '[iceberg]')
     strategy:
       matrix:
         os: [ubuntu-24.04]
         java-version: [11, 17]
-        iceberg-version: [{short: '1.8', full: '1.8.1'}, {short: '1.9', full: '1.9.1'}]
-        spark-version: [{short: '3.5', full: '3.5.6'}]
+        iceberg-version: [{short: '1.8', full: '1.8.1'}, {short: '1.9', full: '1.9.1'}, {short: '1.10', full: '1.10.0'}]
+        spark-version: [{short: '3.5', full: '3.5.8'}]
         scala-version: ['2.13']
       fail-fast: false
     name: iceberg-spark/${{ matrix.os }}/iceberg-${{ matrix.iceberg-version.full }}/spark-${{ matrix.spark-version.full }}/scala-${{ matrix.scala-version }}/java-${{ matrix.java-version }}
@@ -57,16 +115,20 @@ jobs:
     env:
       SPARK_LOCAL_IP: localhost
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - name: Setup Rust & Java toolchain
         uses: ./.github/actions/setup-builder
         with:
           rust-version: ${{env.RUST_VERSION}}
           jdk-version: ${{ matrix.java-version }}
+      - name: Download native library
+        uses: actions/download-artifact@v7
+        with:
+          name: native-lib-iceberg
+          path: native/target/release/
       - name: Build Comet
-        shell: bash
         run: |
-          PROFILES="-Pspark-${{matrix.spark-version.short}} -Pscala-${{matrix.scala-version}}" make release
+          ./mvnw install -Prelease -DskipTests -Pspark-${{ matrix.spark-version.short }} -Pscala-${{ matrix.scala-version }}
       - name: Setup Iceberg
         uses: ./.github/actions/setup-iceberg-builder
         with:
@@ -75,18 +137,19 @@ jobs:
         run: |
           cd apache-iceberg
           rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups
-          ENABLE_COMET=true ./gradlew -DsparkVersions=${{ matrix.spark-version.short }} -DscalaVersion=${{ matrix.scala-version }} -DflinkVersions= -DkafkaVersions= \
+          ENABLE_COMET=true ENABLE_COMET_ONHEAP=true ./gradlew -DsparkVersions=${{ matrix.spark-version.short }} -DscalaVersion=${{ matrix.scala-version }} -DflinkVersions= -DkafkaVersions= \
             :iceberg-spark:iceberg-spark-${{ matrix.spark-version.short }}_${{ matrix.scala-version }}:test \
             -Pquick=true -x javadoc
 
   iceberg-spark-extensions:
+    needs: build-native
     if: contains(github.event.pull_request.title, '[iceberg]')
     strategy:
       matrix:
         os: [ubuntu-24.04]
         java-version: [11, 17]
-        iceberg-version: [{short: '1.8', full: '1.8.1'}, {short: '1.9', full: '1.9.1'}]
-        spark-version: [{short: '3.5', full: '3.5.6'}]
+        iceberg-version: [{short: '1.8', full: '1.8.1'}, {short: '1.9', full: '1.9.1'}, {short: '1.10', full: '1.10.0'}]
+        spark-version: [{short: '3.5', full: '3.5.8'}]
         scala-version: ['2.13']
       fail-fast: false
     name: iceberg-spark-extensions/${{ matrix.os }}/iceberg-${{ matrix.iceberg-version.full }}/spark-${{ matrix.spark-version.full }}/scala-${{ matrix.scala-version }}/java-${{ matrix.java-version }}
@@ -96,16 +159,20 @@ jobs:
     env:
       SPARK_LOCAL_IP: localhost
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - name: Setup Rust & Java toolchain
         uses: ./.github/actions/setup-builder
         with:
           rust-version: ${{env.RUST_VERSION}}
           jdk-version: ${{ matrix.java-version }}
+      - name: Download native library
+        uses: actions/download-artifact@v7
+        with:
+          name: native-lib-iceberg
+          path: native/target/release/
       - name: Build Comet
-        shell: bash
         run: |
-          PROFILES="-Pspark-${{matrix.spark-version.short}} -Pscala-${{matrix.scala-version}}" make release
+          ./mvnw install -Prelease -DskipTests -Pspark-${{ matrix.spark-version.short }} -Pscala-${{ matrix.scala-version }}
       - name: Setup Iceberg
         uses: ./.github/actions/setup-iceberg-builder
         with:
@@ -114,18 +181,19 @@ jobs:
         run: |
           cd apache-iceberg
           rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups
-          ENABLE_COMET=true ./gradlew -DsparkVersions=${{ matrix.spark-version.short }} -DscalaVersion=${{ matrix.scala-version }} -DflinkVersions= -DkafkaVersions= \
+          ENABLE_COMET=true ENABLE_COMET_ONHEAP=true ./gradlew -DsparkVersions=${{ matrix.spark-version.short }} -DscalaVersion=${{ matrix.scala-version }} -DflinkVersions= -DkafkaVersions= \
             :iceberg-spark:iceberg-spark-extensions-${{ matrix.spark-version.short }}_${{ matrix.scala-version }}:test \
             -Pquick=true -x javadoc
 
   iceberg-spark-runtime:
+    needs: build-native
     if: contains(github.event.pull_request.title, '[iceberg]')
     strategy:
       matrix:
         os: [ubuntu-24.04]
         java-version: [11, 17]
-        iceberg-version: [{short: '1.8', full: '1.8.1'}, {short: '1.9', full: '1.9.1'}]
-        spark-version: [{short: '3.5', full: '3.5.6'}]
+        iceberg-version: [{short: '1.8', full: '1.8.1'}, {short: '1.9', full: '1.9.1'}, {short: '1.10', full: '1.10.0'}]
+        spark-version: [{short: '3.5', full: '3.5.8'}]
         scala-version: ['2.13']
       fail-fast: false
     name: iceberg-spark-runtime/${{ matrix.os }}/iceberg-${{ matrix.iceberg-version.full }}/spark-${{ matrix.spark-version.full }}/scala-${{ matrix.scala-version }}/java-${{ matrix.java-version }}
@@ -135,16 +203,20 @@ jobs:
     env:
       SPARK_LOCAL_IP: localhost
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - name: Setup Rust & Java toolchain
         uses: ./.github/actions/setup-builder
         with:
           rust-version: ${{env.RUST_VERSION}}
           jdk-version: ${{ matrix.java-version }}
+      - name: Download native library
+        uses: actions/download-artifact@v7
+        with:
+          name: native-lib-iceberg
+          path: native/target/release/
       - name: Build Comet
-        shell: bash
         run: |
-          PROFILES="-Pspark-${{matrix.spark-version.short}} -Pscala-${{matrix.scala-version}}" make release
+          ./mvnw install -Prelease -DskipTests -Pspark-${{ matrix.spark-version.short }} -Pscala-${{ matrix.scala-version }}
       - name: Setup Iceberg
         uses: ./.github/actions/setup-iceberg-builder
         with:
@@ -153,6 +225,138 @@ jobs:
         run: |
           cd apache-iceberg
           rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups
-          ENABLE_COMET=true ./gradlew -DsparkVersions=${{ matrix.spark-version.short }} -DscalaVersion=${{ matrix.scala-version }} -DflinkVersions= -DkafkaVersions= \
+          ENABLE_COMET=true ENABLE_COMET_ONHEAP=true ./gradlew -DsparkVersions=${{ matrix.spark-version.short }} -DscalaVersion=${{ matrix.scala-version }} -DflinkVersions= -DkafkaVersions= \
+            :iceberg-spark:iceberg-spark-runtime-${{ matrix.spark-version.short }}_${{ matrix.scala-version }}:integrationTest \
+            -Pquick=true -x javadoc
+
+  iceberg-spark-rust:
+    needs: build-native
+    if: contains(github.event.pull_request.title, '[iceberg]')
+    strategy:
+      matrix:
+        os: [ubuntu-24.04]
+        java-version: [11, 17]
+        iceberg-version: [{short: '1.8', full: '1.8.1'}, {short: '1.9', full: '1.9.1'}, {short: '1.10', full: '1.10.0'}]
+        spark-version: [{short: '3.4', full: '3.4.3'}, {short: '3.5', full: '3.5.8'}]
+        scala-version: ['2.13']
+      fail-fast: false
+    name: iceberg-spark-rust/${{ matrix.os }}/iceberg-${{ matrix.iceberg-version.full }}/spark-${{ matrix.spark-version.full }}/scala-${{ matrix.scala-version }}/java-${{ matrix.java-version }}
+    runs-on: ${{ matrix.os }}
+    container:
+      image: amd64/rust
+    env:
+      SPARK_LOCAL_IP: localhost
+    steps:
+      - uses: actions/checkout@v6
+      - name: Setup Rust & Java toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: ${{env.RUST_VERSION}}
+          jdk-version: ${{ matrix.java-version }}
+      - name: Download native library
+        uses: actions/download-artifact@v7
+        with:
+          name: native-lib-iceberg
+          path: native/target/release/
+      - name: Build Comet
+        run: |
+          ./mvnw install -Prelease -DskipTests -Pspark-${{ matrix.spark-version.short }} -Pscala-${{ matrix.scala-version }}
+      - name: Setup Iceberg
+        uses: ./.github/actions/setup-iceberg-rust-builder
+        with:
+          iceberg-version: ${{ matrix.iceberg-version.full }}
+      - name: Run Iceberg Spark tests (Rust)
+        run: |
+          cd apache-iceberg
+          rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups
+          ENABLE_COMET=true ENABLE_COMET_ONHEAP=true ./gradlew -DsparkVersions=${{ matrix.spark-version.short }} -DscalaVersion=${{ matrix.scala-version }} -DflinkVersions= -DkafkaVersions= \
+            :iceberg-spark:iceberg-spark-${{ matrix.spark-version.short }}_${{ matrix.scala-version }}:test \
+            -Pquick=true -x javadoc
+
+  iceberg-spark-extensions-rust:
+    needs: build-native
+    if: contains(github.event.pull_request.title, '[iceberg]')
+    strategy:
+      matrix:
+        os: [ubuntu-24.04]
+        java-version: [11, 17]
+        iceberg-version: [{short: '1.8', full: '1.8.1'}, {short: '1.9', full: '1.9.1'}, {short: '1.10', full: '1.10.0'}]
+        spark-version: [{short: '3.4', full: '3.4.3'}, {short: '3.5', full: '3.5.8'}]
+        scala-version: ['2.13']
+      fail-fast: false
+    name: iceberg-spark-extensions-rust/${{ matrix.os }}/iceberg-${{ matrix.iceberg-version.full }}/spark-${{ matrix.spark-version.full }}/scala-${{ matrix.scala-version }}/java-${{ matrix.java-version }}
+    runs-on: ${{ matrix.os }}
+    container:
+      image: amd64/rust
+    env:
+      SPARK_LOCAL_IP: localhost
+    steps:
+      - uses: actions/checkout@v6
+      - name: Setup Rust & Java toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: ${{env.RUST_VERSION}}
+          jdk-version: ${{ matrix.java-version }}
+      - name: Download native library
+        uses: actions/download-artifact@v7
+        with:
+          name: native-lib-iceberg
+          path: native/target/release/
+      - name: Build Comet
+        run: |
+          ./mvnw install -Prelease -DskipTests -Pspark-${{ matrix.spark-version.short }} -Pscala-${{ matrix.scala-version }}
+      - name: Setup Iceberg
+        uses: ./.github/actions/setup-iceberg-rust-builder
+        with:
+          iceberg-version: ${{ matrix.iceberg-version.full }}
+      - name: Run Iceberg Spark extensions tests (Rust)
+        run: |
+          cd apache-iceberg
+          rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups
+          ENABLE_COMET=true ENABLE_COMET_ONHEAP=true ./gradlew -DsparkVersions=${{ matrix.spark-version.short }} -DscalaVersion=${{ matrix.scala-version }} -DflinkVersions= -DkafkaVersions= \
+            :iceberg-spark:iceberg-spark-extensions-${{ matrix.spark-version.short }}_${{ matrix.scala-version }}:test \
+            -Pquick=true -x javadoc
+
+  iceberg-spark-runtime-rust:
+    needs: build-native
+    if: contains(github.event.pull_request.title, '[iceberg]')
+    strategy:
+      matrix:
+        os: [ubuntu-24.04]
+        java-version: [11, 17]
+        iceberg-version: [{short: '1.8', full: '1.8.1'}, {short: '1.9', full: '1.9.1'}, {short: '1.10', full: '1.10.0'}]
+        spark-version: [{short: '3.4', full: '3.4.3'}, {short: '3.5', full: '3.5.8'}]
+        scala-version: ['2.13']
+      fail-fast: false
+    name: iceberg-spark-runtime-rust/${{ matrix.os }}/iceberg-${{ matrix.iceberg-version.full }}/spark-${{ matrix.spark-version.full }}/scala-${{ matrix.scala-version }}/java-${{ matrix.java-version }}
+    runs-on: ${{ matrix.os }}
+    container:
+      image: amd64/rust
+    env:
+      SPARK_LOCAL_IP: localhost
+    steps:
+      - uses: actions/checkout@v6
+      - name: Setup Rust & Java toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: ${{env.RUST_VERSION}}
+          jdk-version: ${{ matrix.java-version }}
+      - name: Download native library
+        uses: actions/download-artifact@v7
+        with:
+          name: native-lib-iceberg
+          path: native/target/release/
+      - name: Build Comet
+        run: |
+          ./mvnw install -Prelease -DskipTests -Pspark-${{ matrix.spark-version.short }} -Pscala-${{ matrix.scala-version }}
+      - name: Setup Iceberg
+        uses: ./.github/actions/setup-iceberg-rust-builder
+        with:
+          iceberg-version: ${{ matrix.iceberg-version.full }}
+      - name: Run Iceberg Spark runtime tests (Rust)
+        run: |
+          cd apache-iceberg
+          rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups
+          ENABLE_COMET=true ENABLE_COMET_ONHEAP=true ./gradlew -DsparkVersions=${{ matrix.spark-version.short }} -DscalaVersion=${{ matrix.scala-version }} -DflinkVersions= -DkafkaVersions= \
             :iceberg-spark:iceberg-spark-runtime-${{ matrix.spark-version.short }}_${{ matrix.scala-version }}:integrationTest \
             -Pquick=true -x javadoc

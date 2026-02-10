@@ -20,11 +20,13 @@ use crate::{timezone, BinaryOutputStyle};
 use crate::{EvalMode, SparkError, SparkResult};
 use arrow::array::builder::StringBuilder;
 use arrow::array::{
-    Decimal128Builder, DictionaryArray, GenericByteArray, StringArray, StructArray,
+    BooleanBuilder, Decimal128Builder, DictionaryArray, GenericByteArray, ListArray,
+    PrimitiveBuilder, StringArray, StructArray, TimestampMicrosecondBuilder,
 };
 use arrow::compute::can_cast_types;
 use arrow::datatypes::{
-    ArrowDictionaryKeyType, ArrowNativeType, DataType, GenericBinaryType, Schema,
+    i256, ArrowDictionaryKeyType, ArrowNativeType, DataType, Decimal256Type, GenericBinaryType,
+    Schema,
 };
 use arrow::{
     array::{
@@ -43,6 +45,7 @@ use arrow::{
     record_batch::RecordBatch,
     util::display::FormatOptions,
 };
+use base64::prelude::*;
 use chrono::{DateTime, NaiveDate, TimeZone, Timelike};
 use datafusion::common::{
     cast::as_generic_string_array, internal_err, DataFusionError, Result as DataFusionResult,
@@ -51,8 +54,8 @@ use datafusion::common::{
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ColumnarValue;
 use num::{
-    cast::AsPrimitive, integer::div_floor, traits::CheckedNeg, CheckedSub, Integer, Num,
-    ToPrimitive,
+    cast::AsPrimitive, integer::div_floor, traits::CheckedNeg, CheckedSub, Integer, ToPrimitive,
+    Zero,
 };
 use regex::Regex;
 use std::str::FromStr;
@@ -63,8 +66,6 @@ use std::{
     num::Wrapping,
     sync::Arc,
 };
-
-use base64::prelude::*;
 
 static TIMESTAMP_FORMAT: Option<&str> = Some("%Y-%m-%d %H:%M:%S%.f");
 
@@ -215,17 +216,10 @@ fn can_cast_from_string(to_type: &DataType, options: &SparkCastOptions) -> bool 
     use DataType::*;
     match to_type {
         Boolean | Int8 | Int16 | Int32 | Int64 | Binary => true,
-        Float32 | Float64 => {
-            // https://github.com/apache/datafusion-comet/issues/326
-            // Does not support inputs ending with 'd' or 'f'. Does not support 'inf'.
-            // Does not support ANSI mode.
-            options.allow_incompat
-        }
+        Float32 | Float64 => true,
         Decimal128(_, _) => {
             // https://github.com/apache/datafusion-comet/issues/325
-            // Does not support inputs ending with 'd' or 'f'. Does not support 'inf'.
-            // Does not support ANSI mode. Returns 0.0 instead of null if input contains no digits
-
+            // Does not support fullwidth digits and null byte handling.
             options.allow_incompat
         }
         Date32 | Date64 => {
@@ -392,16 +386,27 @@ fn can_cast_from_decimal(
 }
 
 macro_rules! cast_utf8_to_int {
-    ($array:expr, $eval_mode:expr, $array_type:ty, $cast_method:ident) => {{
+    ($array:expr, $array_type:ty, $parse_fn:expr) => {{
         let len = $array.len();
         let mut cast_array = PrimitiveArray::<$array_type>::builder(len);
-        for i in 0..len {
-            if $array.is_null(i) {
-                cast_array.append_null()
-            } else if let Some(cast_value) = $cast_method($array.value(i), $eval_mode)? {
-                cast_array.append_value(cast_value);
-            } else {
-                cast_array.append_null()
+        let parse_fn = $parse_fn;
+        if $array.null_count() == 0 {
+            for i in 0..len {
+                if let Some(cast_value) = parse_fn($array.value(i))? {
+                    cast_array.append_value(cast_value);
+                } else {
+                    cast_array.append_null()
+                }
+            }
+        } else {
+            for i in 0..len {
+                if $array.is_null(i) {
+                    cast_array.append_null()
+                } else if let Some(cast_value) = parse_fn($array.value(i))? {
+                    cast_array.append_value(cast_value);
+                } else {
+                    cast_array.append_null()
+                }
             }
         }
         let result: SparkResult<ArrayRef> = Ok(Arc::new(cast_array.finish()) as ArrayRef);
@@ -691,11 +696,18 @@ macro_rules! cast_decimal_to_int16_down {
                 .map(|value| match value {
                     Some(value) => {
                         let divisor = 10_i128.pow($scale as u32);
-                        let (truncated, decimal) = (value / divisor, (value % divisor).abs());
+                        let truncated = value / divisor;
                         let is_overflow = truncated.abs() > i32::MAX.into();
                         if is_overflow {
                             return Err(cast_overflow(
-                                &format!("{}.{}BD", truncated, decimal),
+                                &format!(
+                                    "{}BD",
+                                    format_decimal_str(
+                                        &value.to_string(),
+                                        $precision as usize,
+                                        $scale
+                                    )
+                                ),
                                 &format!("DECIMAL({},{})", $precision, $scale),
                                 $dest_type_str,
                             ));
@@ -704,7 +716,14 @@ macro_rules! cast_decimal_to_int16_down {
                         <$rust_dest_type>::try_from(i32_value)
                             .map_err(|_| {
                                 cast_overflow(
-                                    &format!("{}.{}BD", truncated, decimal),
+                                    &format!(
+                                        "{}BD",
+                                        format_decimal_str(
+                                            &value.to_string(),
+                                            $precision as usize,
+                                            $scale
+                                        )
+                                    ),
                                     &format!("DECIMAL({},{})", $precision, $scale),
                                     $dest_type_str,
                                 )
@@ -754,11 +773,18 @@ macro_rules! cast_decimal_to_int32_up {
                 .map(|value| match value {
                     Some(value) => {
                         let divisor = 10_i128.pow($scale as u32);
-                        let (truncated, decimal) = (value / divisor, (value % divisor).abs());
+                        let truncated = value / divisor;
                         let is_overflow = truncated.abs() > $max_dest_val.into();
                         if is_overflow {
                             return Err(cast_overflow(
-                                &format!("{}.{}BD", truncated, decimal),
+                                &format!(
+                                    "{}BD",
+                                    format_decimal_str(
+                                        &value.to_string(),
+                                        $precision as usize,
+                                        $scale
+                                    )
+                                ),
                                 &format!("DECIMAL({},{})", $precision, $scale),
                                 $dest_type_str,
                             ));
@@ -784,6 +810,30 @@ macro_rules! cast_decimal_to_int32_up {
         };
         Ok(Arc::new(output_array) as ArrayRef)
     }};
+}
+
+// copied from arrow::dataTypes::Decimal128Type since Decimal128Type::format_decimal can't be called directly
+fn format_decimal_str(value_str: &str, precision: usize, scale: i8) -> String {
+    let (sign, rest) = match value_str.strip_prefix('-') {
+        Some(stripped) => ("-", stripped),
+        None => ("", value_str),
+    };
+    let bound = precision.min(rest.len()) + sign.len();
+    let value_str = &value_str[0..bound];
+
+    if scale == 0 {
+        value_str.to_string()
+    } else if scale < 0 {
+        let padding = value_str.len() + scale.unsigned_abs() as usize;
+        format!("{value_str:0<padding$}")
+    } else if rest.len() > scale as usize {
+        // Decimal separator is in the middle of the string
+        let (whole, decimal) = value_str.split_at(value_str.len() - scale as usize);
+        format!("{whole}.{decimal}")
+    } else {
+        // String has to be padded
+        format!("{}0.{:0>width$}", sign, rest, width = scale as usize)
+    }
 }
 
 impl Cast {
@@ -975,6 +1025,17 @@ fn cast_array(
             cast_string_to_timestamp(&array, to_type, eval_mode, &cast_options.timezone)
         }
         (Utf8, Date32) => cast_string_to_date(&array, to_type, eval_mode),
+        (Date32, Int32) => {
+            // Date32 is stored as days since epoch (i32), so this is a simple reinterpret cast
+            Ok(cast_with_options(&array, to_type, &CAST_OPTIONS)?)
+        }
+        (Utf8, Float32 | Float64) => cast_string_to_float(&array, to_type, eval_mode),
+        (Utf8 | LargeUtf8, Decimal128(precision, scale)) => {
+            cast_string_to_decimal(&array, to_type, precision, scale, eval_mode)
+        }
+        (Utf8 | LargeUtf8, Decimal256(precision, scale)) => {
+            cast_string_to_decimal(&array, to_type, precision, scale, eval_mode)
+        }
         (Int64, Int32)
         | (Int64, Int16)
         | (Int64, Int8)
@@ -1020,6 +1081,7 @@ fn cast_array(
         {
             spark_cast_nonintegral_numeric_to_integral(&array, eval_mode, from_type, to_type)
         }
+        (Decimal128(_p, _s), Boolean) => spark_cast_decimal_to_boolean(&array),
         (Utf8View, Utf8) => Ok(cast_with_options(&array, to_type, &CAST_OPTIONS)?),
         (Struct(_), Utf8) => Ok(casts_struct_to_string(array.as_struct(), cast_options)?),
         (Struct(_), Struct(_)) => Ok(cast_struct_to_struct(
@@ -1028,6 +1090,7 @@ fn cast_array(
             to_type,
             cast_options,
         )?),
+        (List(_), Utf8) => Ok(cast_array_to_string(array.as_list(), cast_options)?),
         (List(_), List(_)) if can_cast_types(from_type, to_type) => {
             Ok(cast_with_options(&array, to_type, &CAST_OPTIONS)?)
         }
@@ -1037,8 +1100,9 @@ fn cast_array(
             Ok(cast_with_options(&array, to_type, &CAST_OPTIONS)?)
         }
         (Binary, Utf8) => Ok(cast_binary_to_string::<i32>(&array, cast_options)?),
+        (Date32, Timestamp(_, tz)) => Ok(cast_date_to_timestamp(&array, cast_options, tz)?),
         _ if cast_options.is_adapting_schema
-            || is_datafusion_spark_compatible(from_type, to_type, cast_options.allow_incompat) =>
+            || is_datafusion_spark_compatible(from_type, to_type) =>
         {
             // use DataFusion cast only when we know that it is compatible with Spark
             Ok(cast_with_options(&array, to_type, &native_cast_options)?)
@@ -1053,6 +1117,130 @@ fn cast_array(
         }
     };
     Ok(spark_cast_postprocess(cast_result?, from_type, to_type))
+}
+
+fn cast_date_to_timestamp(
+    array_ref: &ArrayRef,
+    cast_options: &SparkCastOptions,
+    target_tz: &Option<Arc<str>>,
+) -> SparkResult<ArrayRef> {
+    let tz_str = if cast_options.timezone.is_empty() {
+        "UTC"
+    } else {
+        cast_options.timezone.as_str()
+    };
+    // safe to unwrap since we are falling back to UTC above
+    let tz = timezone::Tz::from_str(tz_str)?;
+    let epoch = NaiveDate::from_ymd_opt(1970, 1, 1).unwrap();
+    let date_array = array_ref.as_primitive::<Date32Type>();
+
+    let mut builder = TimestampMicrosecondBuilder::with_capacity(date_array.len());
+
+    for date in date_array.iter() {
+        match date {
+            Some(date) => {
+                // safe to unwrap since chrono's range ( 262,143 yrs) is higher than
+                // number of years possible with days as i32 (~ 6 mil yrs)
+                // convert date in session timezone to timestamp in UTC
+                let naive_date = epoch + chrono::Duration::days(date as i64);
+                let local_midnight = naive_date.and_hms_opt(0, 0, 0).unwrap();
+                let local_midnight_in_microsec = tz
+                    .from_local_datetime(&local_midnight)
+                    // return earliest possible time (edge case with spring / fall DST changes)
+                    .earliest()
+                    .map(|dt| dt.timestamp_micros())
+                    // in case there is an issue with DST and returns None , we fall back to UTC
+                    .unwrap_or((date as i64) * 86_400 * 1_000_000);
+                builder.append_value(local_midnight_in_microsec);
+            }
+            None => {
+                builder.append_null();
+            }
+        }
+    }
+    Ok(Arc::new(
+        builder.finish().with_timezone_opt(target_tz.clone()),
+    ))
+}
+
+fn cast_string_to_float(
+    array: &ArrayRef,
+    to_type: &DataType,
+    eval_mode: EvalMode,
+) -> SparkResult<ArrayRef> {
+    match to_type {
+        DataType::Float32 => cast_string_to_float_impl::<Float32Type>(array, eval_mode, "FLOAT"),
+        DataType::Float64 => cast_string_to_float_impl::<Float64Type>(array, eval_mode, "DOUBLE"),
+        _ => Err(SparkError::Internal(format!(
+            "Unsupported cast to float type: {:?}",
+            to_type
+        ))),
+    }
+}
+
+fn cast_string_to_float_impl<T: ArrowPrimitiveType>(
+    array: &ArrayRef,
+    eval_mode: EvalMode,
+    type_name: &str,
+) -> SparkResult<ArrayRef>
+where
+    T::Native: FromStr + num::Float,
+{
+    let arr = array
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .ok_or_else(|| SparkError::Internal("Expected string array".to_string()))?;
+
+    let mut builder = PrimitiveBuilder::<T>::with_capacity(arr.len());
+
+    for i in 0..arr.len() {
+        if arr.is_null(i) {
+            builder.append_null();
+        } else {
+            let str_value = arr.value(i).trim();
+            match parse_string_to_float(str_value) {
+                Some(v) => builder.append_value(v),
+                None => {
+                    if eval_mode == EvalMode::Ansi {
+                        return Err(invalid_value(arr.value(i), "STRING", type_name));
+                    }
+                    builder.append_null();
+                }
+            }
+        }
+    }
+
+    Ok(Arc::new(builder.finish()))
+}
+
+/// helper to parse floats from string inputs
+fn parse_string_to_float<F>(s: &str) -> Option<F>
+where
+    F: FromStr + num::Float,
+{
+    // Handle +inf / -inf
+    if s.eq_ignore_ascii_case("inf")
+        || s.eq_ignore_ascii_case("+inf")
+        || s.eq_ignore_ascii_case("infinity")
+        || s.eq_ignore_ascii_case("+infinity")
+    {
+        return Some(F::infinity());
+    }
+    if s.eq_ignore_ascii_case("-inf") || s.eq_ignore_ascii_case("-infinity") {
+        return Some(F::neg_infinity());
+    }
+    if s.eq_ignore_ascii_case("nan") {
+        return Some(F::nan());
+    }
+    // Remove D/F suffix if present
+    let pruned_float_str =
+        if s.ends_with("d") || s.ends_with("D") || s.ends_with('f') || s.ends_with('F') {
+            &s[..s.len() - 1]
+        } else {
+            s
+        };
+    // Rust's parse logic already handles scientific notations so we just rely on it
+    pruned_float_str.parse::<F>().ok()
 }
 
 fn cast_binary_to_string<O: OffsetSizeTrait>(
@@ -1125,11 +1313,7 @@ fn cast_binary_formatter(value: &[u8]) -> String {
 
 /// Determines if DataFusion supports the given cast in a way that is
 /// compatible with Spark
-fn is_datafusion_spark_compatible(
-    from_type: &DataType,
-    to_type: &DataType,
-    allow_incompat: bool,
-) -> bool {
+fn is_datafusion_spark_compatible(from_type: &DataType, to_type: &DataType) -> bool {
     if from_type == to_type {
         return true;
     }
@@ -1182,12 +1366,8 @@ fn is_datafusion_spark_compatible(
                 | DataType::Decimal256(_, _)
                 | DataType::Utf8 // note that there can be formatting differences
         ),
-        DataType::Utf8 if allow_incompat => matches!(
-            to_type,
-            DataType::Binary | DataType::Float32 | DataType::Float64 | DataType::Decimal128(_, _)
-        ),
         DataType::Utf8 => matches!(to_type, DataType::Binary),
-        DataType::Date32 => matches!(to_type, DataType::Utf8),
+        DataType::Date32 => matches!(to_type, DataType::Int32 | DataType::Utf8),
         DataType::Timestamp(_, _) => {
             matches!(
                 to_type,
@@ -1238,6 +1418,52 @@ fn cast_struct_to_struct(
         }
         _ => unreachable!(),
     }
+}
+
+fn cast_array_to_string(
+    array: &ListArray,
+    spark_cast_options: &SparkCastOptions,
+) -> DataFusionResult<ArrayRef> {
+    let mut builder = StringBuilder::with_capacity(array.len(), array.len() * 16);
+    let mut str = String::with_capacity(array.len() * 16);
+
+    let casted_values = cast_array(
+        Arc::clone(array.values()),
+        &DataType::Utf8,
+        spark_cast_options,
+    )?;
+    let string_values = casted_values
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("Casted values should be StringArray");
+
+    let offsets = array.offsets();
+    for row_index in 0..array.len() {
+        if array.is_null(row_index) {
+            builder.append_null();
+        } else {
+            str.clear();
+            let start = offsets[row_index] as usize;
+            let end = offsets[row_index + 1] as usize;
+
+            str.push('[');
+            let mut first = true;
+            for idx in start..end {
+                if !first {
+                    str.push_str(", ");
+                }
+                if string_values.is_null(idx) {
+                    str.push_str(&spark_cast_options.null_string);
+                } else {
+                    str.push_str(string_values.value(idx));
+                }
+                first = false;
+            }
+            str.push(']');
+            builder.append_value(&str);
+        }
+    }
+    Ok(Arc::new(builder.finish()))
 }
 
 fn casts_struct_to_string(
@@ -1297,22 +1523,70 @@ fn cast_string_to_int<OffsetSize: OffsetSizeTrait>(
         .downcast_ref::<GenericStringArray<OffsetSize>>()
         .expect("cast_string_to_int expected a string array");
 
-    let cast_array: ArrayRef = match to_type {
-        DataType::Int8 => cast_utf8_to_int!(string_array, eval_mode, Int8Type, cast_string_to_i8)?,
-        DataType::Int16 => {
-            cast_utf8_to_int!(string_array, eval_mode, Int16Type, cast_string_to_i16)?
-        }
-        DataType::Int32 => {
-            cast_utf8_to_int!(string_array, eval_mode, Int32Type, cast_string_to_i32)?
-        }
-        DataType::Int64 => {
-            cast_utf8_to_int!(string_array, eval_mode, Int64Type, cast_string_to_i64)?
-        }
-        dt => unreachable!(
-            "{}",
-            format!("invalid integer type {dt} in cast from string")
-        ),
-    };
+    // Select parse function once per batch based on eval_mode
+    let cast_array: ArrayRef =
+        match (to_type, eval_mode) {
+            (DataType::Int8, EvalMode::Legacy) => {
+                cast_utf8_to_int!(string_array, Int8Type, parse_string_to_i8_legacy)?
+            }
+            (DataType::Int8, EvalMode::Ansi) => {
+                cast_utf8_to_int!(string_array, Int8Type, parse_string_to_i8_ansi)?
+            }
+            (DataType::Int8, EvalMode::Try) => {
+                cast_utf8_to_int!(string_array, Int8Type, parse_string_to_i8_try)?
+            }
+            (DataType::Int16, EvalMode::Legacy) => {
+                cast_utf8_to_int!(string_array, Int16Type, parse_string_to_i16_legacy)?
+            }
+            (DataType::Int16, EvalMode::Ansi) => {
+                cast_utf8_to_int!(string_array, Int16Type, parse_string_to_i16_ansi)?
+            }
+            (DataType::Int16, EvalMode::Try) => {
+                cast_utf8_to_int!(string_array, Int16Type, parse_string_to_i16_try)?
+            }
+            (DataType::Int32, EvalMode::Legacy) => cast_utf8_to_int!(
+                string_array,
+                Int32Type,
+                |s| do_parse_string_to_int_legacy::<i32>(s, i32::MIN)
+            )?,
+            (DataType::Int32, EvalMode::Ansi) => {
+                cast_utf8_to_int!(string_array, Int32Type, |s| do_parse_string_to_int_ansi::<
+                    i32,
+                >(
+                    s, "INT", i32::MIN
+                ))?
+            }
+            (DataType::Int32, EvalMode::Try) => {
+                cast_utf8_to_int!(
+                    string_array,
+                    Int32Type,
+                    |s| do_parse_string_to_int_try::<i32>(s, i32::MIN)
+                )?
+            }
+            (DataType::Int64, EvalMode::Legacy) => cast_utf8_to_int!(
+                string_array,
+                Int64Type,
+                |s| do_parse_string_to_int_legacy::<i64>(s, i64::MIN)
+            )?,
+            (DataType::Int64, EvalMode::Ansi) => {
+                cast_utf8_to_int!(string_array, Int64Type, |s| do_parse_string_to_int_ansi::<
+                    i64,
+                >(
+                    s, "BIGINT", i64::MIN
+                ))?
+            }
+            (DataType::Int64, EvalMode::Try) => {
+                cast_utf8_to_int!(
+                    string_array,
+                    Int64Type,
+                    |s| do_parse_string_to_int_try::<i64>(s, i64::MIN)
+                )?
+            }
+            (dt, _) => unreachable!(
+                "{}",
+                format!("invalid integer type {dt} in cast from string")
+            ),
+        };
     Ok(cast_array)
 }
 
@@ -1631,6 +1905,19 @@ where
     Ok(Arc::new(output_array))
 }
 
+fn spark_cast_decimal_to_boolean(array: &dyn Array) -> SparkResult<ArrayRef> {
+    let decimal_array = array.as_primitive::<Decimal128Type>();
+    let mut result = BooleanBuilder::with_capacity(decimal_array.len());
+    for i in 0..decimal_array.len() {
+        if decimal_array.is_null(i) {
+            result.append_null()
+        } else {
+            result.append_value(!decimal_array.value(i).is_zero());
+        }
+    }
+    Ok(Arc::new(result.finish()))
+}
+
 fn spark_cast_nonintegral_numeric_to_integral(
     array: &dyn Array,
     eval_mode: EvalMode,
@@ -1732,12 +2019,12 @@ fn spark_cast_nonintegral_numeric_to_integral(
         ),
         (DataType::Decimal128(precision, scale), DataType::Int8) => {
             cast_decimal_to_int16_down!(
-                array, eval_mode, Int8Array, i8, "TINYINT", precision, *scale
+                array, eval_mode, Int8Array, i8, "TINYINT", *precision, *scale
             )
         }
         (DataType::Decimal128(precision, scale), DataType::Int16) => {
             cast_decimal_to_int16_down!(
-                array, eval_mode, Int16Array, i16, "SMALLINT", precision, *scale
+                array, eval_mode, Int16Array, i16, "SMALLINT", *precision, *scale
             )
         }
         (DataType::Decimal128(precision, scale), DataType::Int32) => {
@@ -1771,156 +2058,518 @@ fn spark_cast_nonintegral_numeric_to_integral(
     }
 }
 
-/// Equivalent to org.apache.spark.unsafe.types.UTF8String.toByte
-fn cast_string_to_i8(str: &str, eval_mode: EvalMode) -> SparkResult<Option<i8>> {
-    Ok(cast_string_to_int_with_range_check(
-        str,
-        eval_mode,
-        "TINYINT",
-        i8::MIN as i32,
-        i8::MAX as i32,
-    )?
-    .map(|v| v as i8))
-}
-
-/// Equivalent to org.apache.spark.unsafe.types.UTF8String.toShort
-fn cast_string_to_i16(str: &str, eval_mode: EvalMode) -> SparkResult<Option<i16>> {
-    Ok(cast_string_to_int_with_range_check(
-        str,
-        eval_mode,
-        "SMALLINT",
-        i16::MIN as i32,
-        i16::MAX as i32,
-    )?
-    .map(|v| v as i16))
-}
-
-/// Equivalent to org.apache.spark.unsafe.types.UTF8String.toInt(IntWrapper intWrapper)
-fn cast_string_to_i32(str: &str, eval_mode: EvalMode) -> SparkResult<Option<i32>> {
-    do_cast_string_to_int::<i32>(str, eval_mode, "INT", i32::MIN)
-}
-
-/// Equivalent to org.apache.spark.unsafe.types.UTF8String.toLong(LongWrapper intWrapper)
-fn cast_string_to_i64(str: &str, eval_mode: EvalMode) -> SparkResult<Option<i64>> {
-    do_cast_string_to_int::<i64>(str, eval_mode, "BIGINT", i64::MIN)
-}
-
-fn cast_string_to_int_with_range_check(
-    str: &str,
-    eval_mode: EvalMode,
-    type_name: &str,
-    min: i32,
-    max: i32,
-) -> SparkResult<Option<i32>> {
-    match do_cast_string_to_int(str, eval_mode, type_name, i32::MIN)? {
-        None => Ok(None),
-        Some(v) if v >= min && v <= max => Ok(Some(v)),
-        _ if eval_mode == EvalMode::Ansi => Err(invalid_value(str, "STRING", type_name)),
+fn parse_string_to_i8_legacy(str: &str) -> SparkResult<Option<i8>> {
+    match do_parse_string_to_int_legacy::<i32>(str, i32::MIN)? {
+        Some(v) if v >= i8::MIN as i32 && v <= i8::MAX as i32 => Ok(Some(v as i8)),
         _ => Ok(None),
+    }
+}
+
+fn parse_string_to_i8_ansi(str: &str) -> SparkResult<Option<i8>> {
+    match do_parse_string_to_int_ansi::<i32>(str, "TINYINT", i32::MIN)? {
+        Some(v) if v >= i8::MIN as i32 && v <= i8::MAX as i32 => Ok(Some(v as i8)),
+        _ => Err(invalid_value(str, "STRING", "TINYINT")),
+    }
+}
+
+fn parse_string_to_i8_try(str: &str) -> SparkResult<Option<i8>> {
+    match do_parse_string_to_int_try::<i32>(str, i32::MIN)? {
+        Some(v) if v >= i8::MIN as i32 && v <= i8::MAX as i32 => Ok(Some(v as i8)),
+        _ => Ok(None),
+    }
+}
+
+fn parse_string_to_i16_legacy(str: &str) -> SparkResult<Option<i16>> {
+    match do_parse_string_to_int_legacy::<i32>(str, i32::MIN)? {
+        Some(v) if v >= i16::MIN as i32 && v <= i16::MAX as i32 => Ok(Some(v as i16)),
+        _ => Ok(None),
+    }
+}
+
+fn parse_string_to_i16_ansi(str: &str) -> SparkResult<Option<i16>> {
+    match do_parse_string_to_int_ansi::<i32>(str, "SMALLINT", i32::MIN)? {
+        Some(v) if v >= i16::MIN as i32 && v <= i16::MAX as i32 => Ok(Some(v as i16)),
+        _ => Err(invalid_value(str, "STRING", "SMALLINT")),
+    }
+}
+
+fn parse_string_to_i16_try(str: &str) -> SparkResult<Option<i16>> {
+    match do_parse_string_to_int_try::<i32>(str, i32::MIN)? {
+        Some(v) if v >= i16::MIN as i32 && v <= i16::MAX as i32 => Ok(Some(v as i16)),
+        _ => Ok(None),
+    }
+}
+
+/// Parses sign and returns (is_negative, remaining_bytes after sign)
+/// Returns None if invalid (empty input, or just "+" or "-")
+fn parse_sign(bytes: &[u8]) -> Option<(bool, &[u8])> {
+    let (&first, rest) = bytes.split_first()?;
+    match first {
+        b'-' if !rest.is_empty() => Some((true, rest)),
+        b'+' if !rest.is_empty() => Some((false, rest)),
+        _ => Some((false, bytes)),
+    }
+}
+
+/// Finalizes the result by applying the sign. Returns None if overflow would occur.
+fn finalize_int_result<T: Integer + CheckedNeg + Copy>(result: T, negative: bool) -> Option<T> {
+    if negative {
+        Some(result)
+    } else {
+        result.checked_neg().filter(|&n| n >= T::zero())
     }
 }
 
 /// Equivalent to
 /// - org.apache.spark.unsafe.types.UTF8String.toInt(IntWrapper intWrapper, boolean allowDecimal)
 /// - org.apache.spark.unsafe.types.UTF8String.toLong(LongWrapper longWrapper, boolean allowDecimal)
-fn do_cast_string_to_int<
-    T: Num + PartialOrd + Integer + CheckedSub + CheckedNeg + From<i32> + Copy,
->(
+fn do_parse_string_to_int_legacy<T: Integer + CheckedSub + CheckedNeg + From<u8> + Copy>(
     str: &str,
-    eval_mode: EvalMode,
+    min_value: T,
+) -> SparkResult<Option<T>> {
+    let trimmed_bytes = str.as_bytes().trim_ascii();
+
+    let (negative, digits) = match parse_sign(trimmed_bytes) {
+        Some(result) => result,
+        None => return Ok(None),
+    };
+
+    let mut result: T = T::zero();
+    let radix = T::from(10_u8);
+    let stop_value = min_value / radix;
+
+    let mut iter = digits.iter();
+
+    // Parse integer portion until '.' or end
+    for &ch in iter.by_ref() {
+        if ch == b'.' {
+            break;
+        }
+
+        if !ch.is_ascii_digit() {
+            return Ok(None);
+        }
+
+        if result < stop_value {
+            return Ok(None);
+        }
+        let v = result * radix;
+        let digit: T = T::from(ch - b'0');
+        match v.checked_sub(&digit) {
+            Some(x) if x <= T::zero() => result = x,
+            _ => return Ok(None),
+        }
+    }
+
+    // Validate decimal portion (digits only, values ignored)
+    for &ch in iter {
+        if !ch.is_ascii_digit() {
+            return Ok(None);
+        }
+    }
+
+    Ok(finalize_int_result(result, negative))
+}
+
+fn do_parse_string_to_int_ansi<T: Integer + CheckedSub + CheckedNeg + From<u8> + Copy>(
+    str: &str,
     type_name: &str,
     min_value: T,
 ) -> SparkResult<Option<T>> {
-    let trimmed_str = str.trim();
-    if trimmed_str.is_empty() {
-        return none_or_err(eval_mode, type_name, str);
-    }
-    let len = trimmed_str.len();
+    let error = || Err(invalid_value(str, "STRING", type_name));
+
+    let trimmed_bytes = str.as_bytes().trim_ascii();
+
+    let (negative, digits) = match parse_sign(trimmed_bytes) {
+        Some(result) => result,
+        None => return error(),
+    };
+
     let mut result: T = T::zero();
-    let mut negative = false;
-    let radix = T::from(10);
+    let radix = T::from(10_u8);
     let stop_value = min_value / radix;
-    let mut parse_sign_and_digits = true;
 
-    for (i, ch) in trimmed_str.char_indices() {
-        if parse_sign_and_digits {
-            if i == 0 {
-                negative = ch == '-';
-                let positive = ch == '+';
-                if negative || positive {
-                    if i + 1 == len {
-                        // input string is just "+" or "-"
-                        return none_or_err(eval_mode, type_name, str);
-                    }
-                    // consume this char
-                    continue;
-                }
-            }
+    for &ch in digits {
+        if ch == b'.' || !ch.is_ascii_digit() {
+            return error();
+        }
 
-            if ch == '.' {
-                if eval_mode == EvalMode::Legacy {
-                    // truncate decimal in legacy mode
-                    parse_sign_and_digits = false;
-                    continue;
-                } else {
-                    return none_or_err(eval_mode, type_name, str);
-                }
-            }
-
-            let digit = if ch.is_ascii_digit() {
-                (ch as u32) - ('0' as u32)
-            } else {
-                return none_or_err(eval_mode, type_name, str);
-            };
-
-            // We are going to process the new digit and accumulate the result. However, before
-            // doing this, if the result is already smaller than the
-            // stopValue(Integer.MIN_VALUE / radix), then result * 10 will definitely be
-            // smaller than minValue, and we can stop
-            if result < stop_value {
-                return none_or_err(eval_mode, type_name, str);
-            }
-
-            // Since the previous result is greater than or equal to stopValue(Integer.MIN_VALUE /
-            // radix), we can just use `result > 0` to check overflow. If result
-            // overflows, we should stop
-            let v = result * radix;
-            let digit = (digit as i32).into();
-            match v.checked_sub(&digit) {
-                Some(x) if x <= T::zero() => result = x,
-                _ => {
-                    return none_or_err(eval_mode, type_name, str);
-                }
-            }
-        } else {
-            // make sure fractional digits are valid digits but ignore them
-            if !ch.is_ascii_digit() {
-                return none_or_err(eval_mode, type_name, str);
-            }
+        if result < stop_value {
+            return error();
+        }
+        let v = result * radix;
+        let digit: T = T::from(ch - b'0');
+        match v.checked_sub(&digit) {
+            Some(x) if x <= T::zero() => result = x,
+            _ => return error(),
         }
     }
 
-    if !negative {
-        if let Some(neg) = result.checked_neg() {
-            if neg < T::zero() {
-                return none_or_err(eval_mode, type_name, str);
-            }
-            result = neg;
-        } else {
-            return none_or_err(eval_mode, type_name, str);
-        }
-    }
-
-    Ok(Some(result))
+    finalize_int_result(result, negative)
+        .map(Some)
+        .ok_or_else(|| invalid_value(str, "STRING", type_name))
 }
 
-/// Either return Ok(None) or Err(SparkError::CastInvalidValue) depending on the evaluation mode
-#[inline]
-fn none_or_err<T>(eval_mode: EvalMode, type_name: &str, str: &str) -> SparkResult<Option<T>> {
-    match eval_mode {
-        EvalMode::Ansi => Err(invalid_value(str, "STRING", type_name)),
-        _ => Ok(None),
+fn do_parse_string_to_int_try<T: Integer + CheckedSub + CheckedNeg + From<u8> + Copy>(
+    str: &str,
+    min_value: T,
+) -> SparkResult<Option<T>> {
+    let trimmed_bytes = str.as_bytes().trim_ascii();
+
+    let (negative, digits) = match parse_sign(trimmed_bytes) {
+        Some(result) => result,
+        None => return Ok(None),
+    };
+
+    let mut result: T = T::zero();
+    let radix = T::from(10_u8);
+    let stop_value = min_value / radix;
+
+    for &ch in digits {
+        if ch == b'.' || !ch.is_ascii_digit() {
+            return Ok(None);
+        }
+
+        if result < stop_value {
+            return Ok(None);
+        }
+        let v = result * radix;
+        let digit: T = T::from(ch - b'0');
+        match v.checked_sub(&digit) {
+            Some(x) if x <= T::zero() => result = x,
+            _ => return Ok(None),
+        }
     }
+
+    Ok(finalize_int_result(result, negative))
+}
+
+fn cast_string_to_decimal(
+    array: &ArrayRef,
+    to_type: &DataType,
+    precision: &u8,
+    scale: &i8,
+    eval_mode: EvalMode,
+) -> SparkResult<ArrayRef> {
+    match to_type {
+        DataType::Decimal128(_, _) => {
+            cast_string_to_decimal128_impl(array, eval_mode, *precision, *scale)
+        }
+        DataType::Decimal256(_, _) => {
+            cast_string_to_decimal256_impl(array, eval_mode, *precision, *scale)
+        }
+        _ => Err(SparkError::Internal(format!(
+            "Unexpected type in cast_string_to_decimal: {:?}",
+            to_type
+        ))),
+    }
+}
+
+fn cast_string_to_decimal128_impl(
+    array: &ArrayRef,
+    eval_mode: EvalMode,
+    precision: u8,
+    scale: i8,
+) -> SparkResult<ArrayRef> {
+    let string_array = array
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .ok_or_else(|| SparkError::Internal("Expected string array".to_string()))?;
+
+    let mut decimal_builder = Decimal128Builder::with_capacity(string_array.len());
+
+    for i in 0..string_array.len() {
+        if string_array.is_null(i) {
+            decimal_builder.append_null();
+        } else {
+            let str_value = string_array.value(i);
+            match parse_string_to_decimal(str_value, precision, scale) {
+                Ok(Some(decimal_value)) => {
+                    decimal_builder.append_value(decimal_value);
+                }
+                Ok(None) => {
+                    if eval_mode == EvalMode::Ansi {
+                        return Err(invalid_value(
+                            string_array.value(i),
+                            "STRING",
+                            &format!("DECIMAL({},{})", precision, scale),
+                        ));
+                    }
+                    decimal_builder.append_null();
+                }
+                Err(e) => {
+                    if eval_mode == EvalMode::Ansi {
+                        return Err(e);
+                    }
+                    decimal_builder.append_null();
+                }
+            }
+        }
+    }
+
+    Ok(Arc::new(
+        decimal_builder
+            .with_precision_and_scale(precision, scale)?
+            .finish(),
+    ))
+}
+
+fn cast_string_to_decimal256_impl(
+    array: &ArrayRef,
+    eval_mode: EvalMode,
+    precision: u8,
+    scale: i8,
+) -> SparkResult<ArrayRef> {
+    let string_array = array
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .ok_or_else(|| SparkError::Internal("Expected string array".to_string()))?;
+
+    let mut decimal_builder = PrimitiveBuilder::<Decimal256Type>::with_capacity(string_array.len());
+
+    for i in 0..string_array.len() {
+        if string_array.is_null(i) {
+            decimal_builder.append_null();
+        } else {
+            let str_value = string_array.value(i);
+            match parse_string_to_decimal(str_value, precision, scale) {
+                Ok(Some(decimal_value)) => {
+                    // Convert i128 to i256
+                    let i256_value = i256::from_i128(decimal_value);
+                    decimal_builder.append_value(i256_value);
+                }
+                Ok(None) => {
+                    if eval_mode == EvalMode::Ansi {
+                        return Err(invalid_value(
+                            str_value,
+                            "STRING",
+                            &format!("DECIMAL({},{})", precision, scale),
+                        ));
+                    }
+                    decimal_builder.append_null();
+                }
+                Err(e) => {
+                    if eval_mode == EvalMode::Ansi {
+                        return Err(e);
+                    }
+                    decimal_builder.append_null();
+                }
+            }
+        }
+    }
+
+    Ok(Arc::new(
+        decimal_builder
+            .with_precision_and_scale(precision, scale)?
+            .finish(),
+    ))
+}
+
+/// Parse a string to decimal following Spark's behavior
+fn parse_string_to_decimal(input_str: &str, precision: u8, scale: i8) -> SparkResult<Option<i128>> {
+    let string_bytes = input_str.as_bytes();
+    let mut start = 0;
+    let mut end = string_bytes.len();
+
+    // trim whitespaces
+    while start < end && string_bytes[start].is_ascii_whitespace() {
+        start += 1;
+    }
+    while end > start && string_bytes[end - 1].is_ascii_whitespace() {
+        end -= 1;
+    }
+
+    let trimmed = &input_str[start..end];
+
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    // Handle special values (inf, nan, etc.)
+    if trimmed.eq_ignore_ascii_case("inf")
+        || trimmed.eq_ignore_ascii_case("+inf")
+        || trimmed.eq_ignore_ascii_case("infinity")
+        || trimmed.eq_ignore_ascii_case("+infinity")
+        || trimmed.eq_ignore_ascii_case("-inf")
+        || trimmed.eq_ignore_ascii_case("-infinity")
+        || trimmed.eq_ignore_ascii_case("nan")
+    {
+        return Ok(None);
+    }
+
+    // validate and parse mantissa and exponent or bubble up the error
+    let (mantissa, exponent) = parse_decimal_str(trimmed, input_str, precision, scale)?;
+
+    // Early return mantissa 0, Spark checks if it fits digits and throw error in ansi
+    if mantissa == 0 {
+        if exponent < -37 {
+            return Err(SparkError::NumericOutOfRange {
+                value: input_str.to_string(),
+            });
+        }
+        return Ok(Some(0));
+    }
+
+    // scale adjustment
+    let target_scale = scale as i32;
+    let scale_adjustment = target_scale - exponent;
+
+    let scaled_value = if scale_adjustment >= 0 {
+        // Need to multiply (increase scale) but return None if scale is too high to fit i128
+        if scale_adjustment > 38 {
+            return Ok(None);
+        }
+        mantissa.checked_mul(10_i128.pow(scale_adjustment as u32))
+    } else {
+        // Need to divide (decrease scale)
+        let abs_scale_adjustment = (-scale_adjustment) as u32;
+        if abs_scale_adjustment > 38 {
+            return Ok(Some(0));
+        }
+
+        let divisor = 10_i128.pow(abs_scale_adjustment);
+        let quotient_opt = mantissa.checked_div(divisor);
+        // Check if divisor is 0
+        if quotient_opt.is_none() {
+            return Ok(None);
+        }
+        let quotient = quotient_opt.unwrap();
+        let remainder = mantissa % divisor;
+
+        // Round half up: if abs(remainder) >= divisor/2, round away from zero
+        let half_divisor = divisor / 2;
+        let rounded = if remainder.abs() >= half_divisor {
+            if mantissa >= 0 {
+                quotient + 1
+            } else {
+                quotient - 1
+            }
+        } else {
+            quotient
+        };
+        Some(rounded)
+    };
+
+    match scaled_value {
+        Some(value) => {
+            if is_validate_decimal_precision(value, precision) {
+                Ok(Some(value))
+            } else {
+                // Value ok but exceeds precision mentioned . THrow error
+                Err(SparkError::NumericValueOutOfRange {
+                    value: trimmed.to_string(),
+                    precision,
+                    scale,
+                })
+            }
+        }
+        None => {
+            // Overflow when scaling raise exception
+            Err(SparkError::NumericValueOutOfRange {
+                value: trimmed.to_string(),
+                precision,
+                scale,
+            })
+        }
+    }
+}
+
+fn invalid_decimal_cast(value: &str, precision: u8, scale: i8) -> SparkError {
+    invalid_value(
+        value,
+        "STRING",
+        &format!("DECIMAL({},{})", precision, scale),
+    )
+}
+
+/// Parse a decimal string into mantissa and scale
+/// e.g., "123.45" -> (12345, 2), "-0.001" -> (-1, 3) , 0e50 -> (0,50) etc
+fn parse_decimal_str(
+    s: &str,
+    original_str: &str,
+    precision: u8,
+    scale: i8,
+) -> SparkResult<(i128, i32)> {
+    if s.is_empty() {
+        return Err(invalid_decimal_cast(original_str, precision, scale));
+    }
+
+    let (mantissa_str, exponent) = if let Some(e_pos) = s.find(|c| ['e', 'E'].contains(&c)) {
+        let mantissa_part = &s[..e_pos];
+        let exponent_part = &s[e_pos + 1..];
+        // Parse exponent
+        let exp: i32 = exponent_part
+            .parse()
+            .map_err(|_| invalid_decimal_cast(original_str, precision, scale))?;
+
+        (mantissa_part, exp)
+    } else {
+        (s, 0)
+    };
+
+    let negative = mantissa_str.starts_with('-');
+    let mantissa_str = if negative || mantissa_str.starts_with('+') {
+        &mantissa_str[1..]
+    } else {
+        mantissa_str
+    };
+
+    if mantissa_str.starts_with('+') || mantissa_str.starts_with('-') {
+        return Err(invalid_decimal_cast(original_str, precision, scale));
+    }
+
+    let (integral_part, fractional_part) = match mantissa_str.find('.') {
+        Some(dot_pos) => {
+            if mantissa_str[dot_pos + 1..].contains('.') {
+                return Err(invalid_decimal_cast(original_str, precision, scale));
+            }
+            (&mantissa_str[..dot_pos], &mantissa_str[dot_pos + 1..])
+        }
+        None => (mantissa_str, ""),
+    };
+
+    if integral_part.is_empty() && fractional_part.is_empty() {
+        return Err(invalid_decimal_cast(original_str, precision, scale));
+    }
+
+    if !integral_part.is_empty() && !integral_part.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(invalid_decimal_cast(original_str, precision, scale));
+    }
+
+    if !fractional_part.is_empty() && !fractional_part.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(invalid_decimal_cast(original_str, precision, scale));
+    }
+
+    // Parse integral part
+    let integral_value: i128 = if integral_part.is_empty() {
+        // Empty integral part is valid (e.g., ".5" or "-.7e9")
+        0
+    } else {
+        integral_part
+            .parse()
+            .map_err(|_| invalid_decimal_cast(original_str, precision, scale))?
+    };
+
+    // Parse fractional part
+    let fractional_scale = fractional_part.len() as i32;
+    let fractional_value: i128 = if fractional_part.is_empty() {
+        0
+    } else {
+        fractional_part
+            .parse()
+            .map_err(|_| invalid_decimal_cast(original_str, precision, scale))?
+    };
+
+    // Combine: value = integral * 10^fractional_scale + fractional
+    let mantissa = integral_value
+        .checked_mul(10_i128.pow(fractional_scale as u32))
+        .and_then(|v| v.checked_add(fractional_value))
+        .ok_or_else(|| invalid_decimal_cast(original_str, precision, scale))?;
+
+    let final_mantissa = if negative { -mantissa } else { mantissa };
+    // final scale = fractional_scale - exponent
+    // For example : "1.23E-5" has fractional_scale=2, exponent=-5, so scale = 2 - (-5) = 7
+    let final_scale = fractional_scale - exponent;
+    Ok((final_mantissa, final_scale))
 }
 
 #[inline]
@@ -2426,6 +3075,15 @@ mod tests {
 
     use super::*;
 
+    /// Test helper that wraps the mode-specific parse functions
+    fn cast_string_to_i8(str: &str, eval_mode: EvalMode) -> SparkResult<Option<i8>> {
+        match eval_mode {
+            EvalMode::Legacy => parse_string_to_i8_legacy(str),
+            EvalMode::Ansi => parse_string_to_i8_ansi(str),
+            EvalMode::Try => parse_string_to_i8_try(str),
+        }
+    }
+
     #[test]
     #[cfg_attr(miri, ignore)] // test takes too long with miri
     fn timestamp_parser_test() {
@@ -2796,6 +3454,64 @@ mod tests {
     }
 
     #[test]
+    fn test_cast_date_to_timestamp() {
+        use arrow::array::Date32Array;
+
+        // verifying epoch , DST change dates (US) and a null value (comprehensive tests on spark side)
+        let dates: ArrayRef = Arc::new(Date32Array::from(vec![
+            Some(0),
+            Some(19723),
+            Some(19793),
+            None,
+        ]));
+
+        let non_dst_date = 1704067200000000i64;
+        let dst_date = 1710115200000000i64;
+        let seven_hours_ts = 25200000000i64;
+        let eight_hours_ts = 28800000000i64;
+
+        // validate UTC
+        let result = cast_array(
+            Arc::clone(&dates),
+            &DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+            &SparkCastOptions::new(EvalMode::Legacy, "UTC", false),
+        )
+        .unwrap();
+        let ts = result.as_primitive::<TimestampMicrosecondType>();
+        assert_eq!(ts.value(0), 0);
+        assert_eq!(ts.value(1), non_dst_date);
+        assert_eq!(ts.value(2), dst_date);
+        assert!(ts.is_null(3));
+
+        // validate LA timezone (follows Daylight savings)
+        let result = cast_array(
+            Arc::clone(&dates),
+            &DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+            &SparkCastOptions::new(EvalMode::Legacy, "America/Los_Angeles", false),
+        )
+        .unwrap();
+        let ts = result.as_primitive::<TimestampMicrosecondType>();
+        assert_eq!(ts.value(0), eight_hours_ts);
+        assert_eq!(ts.value(1), non_dst_date + eight_hours_ts);
+        // should adjust for DST
+        assert_eq!(ts.value(2), dst_date + seven_hours_ts);
+        assert!(ts.is_null(3));
+
+        // Phoenix timezone (does not follow Daylight savings)
+        let result = cast_array(
+            Arc::clone(&dates),
+            &DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+            &SparkCastOptions::new(EvalMode::Legacy, "America/Phoenix", false),
+        )
+        .unwrap();
+        let ts = result.as_primitive::<TimestampMicrosecondType>();
+        assert_eq!(ts.value(0), seven_hours_ts);
+        assert_eq!(ts.value(1), non_dst_date + seven_hours_ts);
+        assert_eq!(ts.value(2), dst_date + seven_hours_ts);
+        assert!(ts.is_null(3));
+    }
+
+    #[test]
     fn test_cast_struct_to_utf8() {
         let a: ArrayRef = Arc::new(Int32Array::from(vec![
             Some(1),
@@ -2927,5 +3643,56 @@ mod tests {
         assert!(casted.is_null(7));
         assert!(casted.is_null(8));
         assert!(casted.is_null(9));
+    }
+
+    #[test]
+    fn test_cast_string_array_to_string() {
+        use arrow::array::ListArray;
+        use arrow::buffer::OffsetBuffer;
+        let values_array =
+            StringArray::from(vec![Some("a"), Some("b"), Some("c"), Some("a"), None, None]);
+        let offsets_buffer = OffsetBuffer::<i32>::new(vec![0, 3, 5, 6, 6].into());
+        let item_field = Arc::new(Field::new("item", DataType::Utf8, true));
+        let list_array = Arc::new(ListArray::new(
+            item_field,
+            offsets_buffer,
+            Arc::new(values_array),
+            None,
+        ));
+        let string_array = cast_array_to_string(
+            &list_array,
+            &SparkCastOptions::new(EvalMode::Legacy, "UTC", false),
+        )
+        .unwrap();
+        let string_array = string_array.as_string::<i32>();
+        assert_eq!(r#"[a, b, c]"#, string_array.value(0));
+        assert_eq!(r#"[a, null]"#, string_array.value(1));
+        assert_eq!(r#"[null]"#, string_array.value(2));
+        assert_eq!(r#"[]"#, string_array.value(3));
+    }
+
+    #[test]
+    fn test_cast_i32_array_to_string() {
+        use arrow::array::ListArray;
+        use arrow::buffer::OffsetBuffer;
+        let values_array = Int32Array::from(vec![Some(1), Some(2), Some(3), Some(1), None, None]);
+        let offsets_buffer = OffsetBuffer::<i32>::new(vec![0, 3, 5, 6, 6].into());
+        let item_field = Arc::new(Field::new("item", DataType::Int32, true));
+        let list_array = Arc::new(ListArray::new(
+            item_field,
+            offsets_buffer,
+            Arc::new(values_array),
+            None,
+        ));
+        let string_array = cast_array_to_string(
+            &list_array,
+            &SparkCastOptions::new(EvalMode::Legacy, "UTC", false),
+        )
+        .unwrap();
+        let string_array = string_array.as_string::<i32>();
+        assert_eq!(r#"[1, 2, 3]"#, string_array.value(0));
+        assert_eq!(r#"[1, null]"#, string_array.value(1));
+        assert_eq!(r#"[null]"#, string_array.value(2));
+        assert_eq!(r#"[]"#, string_array.value(3));
     }
 }

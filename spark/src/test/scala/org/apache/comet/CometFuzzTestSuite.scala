@@ -29,6 +29,7 @@ import org.apache.spark.sql.types._
 
 import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
+import org.apache.comet.testing.FuzzDataGenerator.{doubleNaNLiteral, floatNaNLiteral}
 
 class CometFuzzTestSuite extends CometFuzzTestBase {
 
@@ -36,7 +37,18 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
     val df = spark.read.parquet(filename)
     df.createOrReplaceTempView("t1")
     val sql = "SELECT * FROM t1"
-    if (usingDataSourceExec) {
+    if (!usingLegacyNativeCometScan) {
+      checkSparkAnswerAndOperator(sql)
+    } else {
+      checkSparkAnswer(sql)
+    }
+  }
+
+  test("select * with deeply nested complex types") {
+    val df = spark.read.parquet(complexTypesFilename)
+    df.createOrReplaceTempView("t1")
+    val sql = "SELECT * FROM t1"
+    if (CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_COMET) {
       checkSparkAnswerAndOperator(sql)
     } else {
       checkSparkAnswer(sql)
@@ -47,7 +59,7 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
     val df = spark.read.parquet(filename)
     df.createOrReplaceTempView("t1")
     val sql = "SELECT * FROM t1 LIMIT 500"
-    if (usingDataSourceExec) {
+    if (!usingLegacyNativeCometScan) {
       checkSparkAnswerAndOperator(sql)
     } else {
       checkSparkAnswer(sql)
@@ -71,8 +83,20 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
         // Construct the string for the default value based on the column type.
         val defaultValueString = defaultValueType match {
           // These explicit type definitions for TINYINT, SMALLINT, FLOAT, DOUBLE, and DATE are only needed for 3.4.
-          case "TINYINT" | "SMALLINT" | "FLOAT" | "DOUBLE" =>
+          case "TINYINT" | "SMALLINT" =>
             s"$defaultValueType(${defaultValueRow.get(0)})"
+          case "FLOAT" =>
+            if (Float.NaN.equals(defaultValueRow.get(0))) {
+              floatNaNLiteral
+            } else {
+              s"$defaultValueType(${defaultValueRow.get(0)})"
+            }
+          case "DOUBLE" =>
+            if (Double.NaN.equals(defaultValueRow.get(0))) {
+              doubleNaNLiteral
+            } else {
+              s"$defaultValueType(${defaultValueRow.get(0)})"
+            }
           case "DATE" => s"$defaultValueType('${defaultValueRow.get(0)}')"
           case "STRING" => s"'${defaultValueRow.get(0)}'"
           case "TIMESTAMP" | "TIMESTAMP_NTZ" => s"TIMESTAMP '${defaultValueRow.get(0)}'"
@@ -88,7 +112,7 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
             s"alter table t2 add column col2 $defaultValueType default $defaultValueString")
           // Verify that our default value matches Spark's answer
           val sql = "select col2 from t2"
-          if (usingDataSourceExec) {
+          if (!usingLegacyNativeCometScan) {
             checkSparkAnswerAndOperator(sql)
           } else {
             checkSparkAnswer(sql)
@@ -101,7 +125,7 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
                 .asInstanceOf[Array[Byte]]
                 .sameElements(spark.sql(sql).collect()(0).get(0).asInstanceOf[Array[Byte]]))
           } else {
-            assert(defaultValueRow.get(0) == spark.sql(sql).collect()(0).get(0))
+            assert(defaultValueRow.get(0).equals(spark.sql(sql).collect()(0).get(0)))
           }
         }
       }
@@ -115,7 +139,7 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
       val sql = s"SELECT $col FROM t1 ORDER BY $col"
       // cannot run fully natively due to range partitioning and sort
       val (_, cometPlan) = checkSparkAnswer(sql)
-      if (usingDataSourceExec) {
+      if (!usingLegacyNativeCometScan) {
         assert(1 == collectNativeScans(cometPlan).length)
       }
     }
@@ -128,7 +152,7 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
     val sql = s"SELECT $allCols FROM t1 ORDER BY $allCols"
     // cannot run fully natively due to range partitioning and sort
     val (_, cometPlan) = checkSparkAnswer(sql)
-    if (usingDataSourceExec) {
+    if (!usingLegacyNativeCometScan) {
       assert(1 == collectNativeScans(cometPlan).length)
     }
   }
@@ -140,7 +164,9 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
     for (_ <- 1 to 10) {
       // We only do order by permutations of primitive types to exercise native shuffle's
       // RangePartitioning which only supports those types.
-      val shuffledPrimitiveCols = Random.shuffle(df.columns.slice(0, 14).toList)
+      val primitiveColumns =
+        df.schema.fields.filterNot(f => isComplexType(f.dataType)).map(_.name)
+      val shuffledPrimitiveCols = Random.shuffle(primitiveColumns.toList)
       val randomSize = Random.nextInt(shuffledPrimitiveCols.length) + 1
       val randomColsSubset = shuffledPrimitiveCols.take(randomSize).toArray.mkString(",")
       val sql = s"SELECT $randomColsSubset FROM t1 ORDER BY $randomColsSubset"
@@ -164,7 +190,7 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
         case CometConf.SCAN_NATIVE_COMET =>
           // native_comet does not support reading complex types
           0
-        case CometConf.SCAN_NATIVE_ICEBERG_COMPAT | CometConf.SCAN_NATIVE_DATAFUSION =>
+        case _ =>
           CometConf.COMET_SHUFFLE_MODE.get() match {
             case "jvm" =>
               1
@@ -181,13 +207,13 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
     val df = spark.read.parquet(filename)
     val df2 = df.repartition(8, df.col("c0")).sort("c1")
     df2.collect()
-    if (usingDataSourceExec) {
+    if (!usingLegacyNativeCometScan) {
       val cometShuffles = collectCometShuffleExchanges(df2.queryExecution.executedPlan)
       val expectedNumCometShuffles = CometConf.COMET_NATIVE_SCAN_IMPL.get() match {
         case CometConf.SCAN_NATIVE_COMET =>
           // native_comet does not support reading complex types
           0
-        case CometConf.SCAN_NATIVE_ICEBERG_COMPAT | CometConf.SCAN_NATIVE_DATAFUSION =>
+        case _ =>
           CometConf.COMET_SHUFFLE_MODE.get() match {
             case "jvm" =>
               1
@@ -207,7 +233,7 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
       // cannot run fully native due to HashAggregate
       val sql = s"SELECT count(*) FROM t1 JOIN t2 ON t1.$col = t2.$col"
       val (_, cometPlan) = checkSparkAnswer(sql)
-      if (usingDataSourceExec) {
+      if (!usingLegacyNativeCometScan) {
         assert(2 == collectNativeScans(cometPlan).length)
       }
     }
@@ -257,15 +283,9 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
   }
 
   private def testParquetTemporalTypes(
-      outputTimestampType: ParquetOutputTimestampType.Value,
-      generateArray: Boolean = true,
-      generateStruct: Boolean = true): Unit = {
+      outputTimestampType: ParquetOutputTimestampType.Value): Unit = {
 
-    val options =
-      DataGenOptions(
-        generateArray = generateArray,
-        generateStruct = generateStruct,
-        generateNegativeZero = false)
+    val dataGenOptions = DataGenOptions(generateNegativeZero = false)
 
     withTempPath { filename =>
       val random = new Random(42)
@@ -273,7 +293,24 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
         CometConf.COMET_ENABLED.key -> "false",
         SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> outputTimestampType.toString,
         SQLConf.SESSION_LOCAL_TIMEZONE.key -> defaultTimezone) {
-        ParquetGenerator.makeParquetFile(random, spark, filename.toString, 100, options)
+
+        // TODO test with MapType
+        // https://github.com/apache/datafusion-comet/issues/2945
+        val schema = StructType(
+          Seq(
+            StructField("c0", DataTypes.DateType),
+            StructField("c1", DataTypes.createArrayType(DataTypes.DateType)),
+            StructField(
+              "c2",
+              DataTypes.createStructType(Array(StructField("c3", DataTypes.DateType))))))
+
+        ParquetGenerator.makeParquetFile(
+          random,
+          spark,
+          filename.toString,
+          schema,
+          100,
+          dataGenOptions)
       }
 
       Seq(defaultTimezone, "UTC", "America/Denver").foreach { tz =>
@@ -289,18 +326,10 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
 
                 val df = spark.read.parquet(filename.toString)
                 df.createOrReplaceTempView("t1")
-
-                def hasTemporalType(t: DataType): Boolean = t match {
-                  case DataTypes.DateType | DataTypes.TimestampType |
-                      DataTypes.TimestampNTZType =>
-                    true
-                  case t: StructType => t.exists(f => hasTemporalType(f.dataType))
-                  case t: ArrayType => hasTemporalType(t.elementType)
-                  case _ => false
-                }
-
                 val columns =
-                  df.schema.fields.filter(f => hasTemporalType(f.dataType)).map(_.name)
+                  df.schema.fields
+                    .filter(f => DataTypeSupport.hasTemporalType(f.dataType))
+                    .map(_.name)
 
                 for (col <- columns) {
                   checkSparkAnswer(s"SELECT $col FROM t1 ORDER BY $col")

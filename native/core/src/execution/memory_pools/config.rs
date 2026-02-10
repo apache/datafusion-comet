@@ -62,9 +62,7 @@ pub(crate) fn parse_memory_pool_config(
     let pool_size = memory_limit as usize;
     let memory_pool_config = if off_heap_mode {
         match memory_pool_type.as_str() {
-            "default" | "fair_unified" => {
-                MemoryPoolConfig::new(MemoryPoolType::FairUnified, pool_size)
-            }
+            "fair_unified" => MemoryPoolConfig::new(MemoryPoolType::FairUnified, pool_size),
             "greedy_unified" => {
                 // the `unified` memory pool interacts with Spark's memory pool to allocate
                 // memory therefore does not need a size to be explicitly set. The pool size
@@ -84,7 +82,7 @@ pub(crate) fn parse_memory_pool_config(
             "fair_spill_task_shared" => {
                 MemoryPoolConfig::new(MemoryPoolType::FairSpillTaskShared, pool_size_per_task)
             }
-            "default" | "greedy_task_shared" => {
+            "greedy_task_shared" => {
                 MemoryPoolConfig::new(MemoryPoolType::GreedyTaskShared, pool_size_per_task)
             }
             "fair_spill_global" => {

@@ -20,7 +20,7 @@ use std::sync::Arc;
 use jni::{
     errors::Result as JNIResult,
     objects::{JObjectArray, JString},
-    sys::{jboolean, jint, jobjectArray},
+    sys::{jboolean, jint},
     JNIEnv,
 };
 
@@ -30,7 +30,6 @@ use datafusion::execution::object_store::ObjectStoreUrl;
 use object_store::path::Path;
 use parquet::{
     basic::{Encoding, LogicalType, TimeUnit, Type as PhysicalType},
-    format::{MicroSeconds, MilliSeconds, NanoSeconds},
     schema::types::{ColumnDescriptor, ColumnPath, PrimitiveTypeBuilder},
 };
 use url::{ParseError, Url};
@@ -50,7 +49,7 @@ pub fn convert_column_descriptor(
     scale: jint,
     time_unit: jint,
     is_adjusted_utc: jboolean,
-    jni_path: jobjectArray,
+    jni_path: JObjectArray,
 ) -> JNIResult<ColumnDescriptor> {
     let physical_type = convert_physical_type(physical_type_id);
     let type_length = fix_type_length(&physical_type, type_length);
@@ -132,8 +131,7 @@ impl TypePromotionInfo {
     }
 }
 
-fn convert_column_path(env: &mut JNIEnv, path: jobjectArray) -> JNIResult<ColumnPath> {
-    let path_array = unsafe { JObjectArray::from_raw(path) };
+fn convert_column_path(env: &mut JNIEnv, path_array: JObjectArray) -> JNIResult<ColumnPath> {
     let array_len = env.get_array_length(&path_array)?;
     let mut res: Vec<String> = Vec::new();
     for i in 0..array_len {
@@ -186,9 +184,9 @@ fn convert_logical_type(
 
 fn convert_time_unit(time_unit: jint) -> TimeUnit {
     match time_unit {
-        0 => TimeUnit::MILLIS(MilliSeconds::new()),
-        1 => TimeUnit::MICROS(MicroSeconds::new()),
-        2 => TimeUnit::NANOS(NanoSeconds::new()),
+        0 => TimeUnit::MILLIS,
+        1 => TimeUnit::MICROS,
+        2 => TimeUnit::NANOS,
         _ => panic!("Invalid time unit id for Parquet: {time_unit}"),
     }
 }

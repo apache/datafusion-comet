@@ -46,7 +46,7 @@ object CometBitwiseNot extends CometExpressionSerde[BitwiseNot] {
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val childProto = exprToProto(expr.child, inputs, binding)
     val bitNotScalarExpr =
-      scalarFunctionExprToProto("bit_not", childProto)
+      scalarFunctionExprToProto("bitwise_not", childProto)
     optExprWithInfo(bitNotScalarExpr, expr, expr.children: _*)
   }
 }
@@ -135,7 +135,7 @@ object CometBitwiseGet extends CometExpressionSerde[BitwiseGet] {
     val argProto = exprToProto(expr.left, inputs, binding)
     val posProto = exprToProto(expr.right, inputs, binding)
     val bitGetScalarExpr =
-      scalarFunctionExprToProtoWithReturnType("bit_get", ByteType, argProto, posProto)
+      scalarFunctionExprToProtoWithReturnType("bit_get", ByteType, false, argProto, posProto)
     optExprWithInfo(bitGetScalarExpr, expr, expr.children: _*)
   }
 }
@@ -147,7 +147,7 @@ object CometBitwiseCount extends CometExpressionSerde[BitwiseCount] {
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val childProto = exprToProto(expr.child, inputs, binding)
     val bitCountScalarExpr =
-      scalarFunctionExprToProtoWithReturnType("bit_count", IntegerType, childProto)
+      scalarFunctionExprToProtoWithReturnType("bit_count", IntegerType, false, childProto)
     optExprWithInfo(bitCountScalarExpr, expr, expr.children: _*)
   }
 }

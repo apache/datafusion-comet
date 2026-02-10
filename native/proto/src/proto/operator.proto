@@ -48,6 +48,10 @@ message Operator {
     HashJoin hash_join = 109;
     Window window = 110;
     NativeScan native_scan = 111;
+    IcebergScan iceberg_scan = 112;
+    ParquetWriter parquet_writer = 113;
+    Explode explode = 114;
+    CsvScan csv_scan = 115;
   }
 }
 
@@ -107,14 +111,137 @@ message NativeScan {
   bool encryption_enabled = 14;
 }
 
+message CsvScan {
+  repeated SparkStructField data_schema = 1;
+  repeated SparkStructField partition_schema = 2;
+  repeated int32 projection_vector = 3;
+  repeated SparkFilePartition file_partitions = 4;
+  map<string, string> object_store_options = 5;
+  CsvOptions csv_options = 6;
+}
+
+message CsvOptions {
+  bool has_header = 1;
+  string delimiter = 2;
+  string quote = 3;
+  string escape = 4;
+  optional string comment = 5;
+  string terminator = 7;
+  bool truncated_rows = 8;
+}
+
+// Partition value for Iceberg partition data
+message PartitionValue {
+  int32 field_id = 1;
+  oneof value {
+    int32 int_val = 2;
+    int64 long_val = 3;
+    int64 date_val = 4;           // days since epoch
+    int64 timestamp_val = 5;       // microseconds since epoch
+    int64 timestamp_tz_val = 6;    // microseconds with timezone
+    string string_val = 7;
+    double double_val = 8;
+    float float_val = 9;
+    bytes decimal_val = 10;        // unscaled BigInteger bytes
+    bool bool_val = 11;
+    bytes uuid_val = 12;
+    bytes fixed_val = 13;
+    bytes binary_val = 14;
+  }
+  bool is_null = 15;
+}
+
+// Collection of partition values for a single partition
+message PartitionData {
+  repeated PartitionValue values = 1;
+}
+
+// Common data shared by all partitions in split mode (sent once, captured in closure)
+message IcebergScanCommon {
+  // Catalog-specific configuration for FileIO (credentials, S3/GCS config, etc.)
+  map<string, string> catalog_properties = 1;
+
+  // Table metadata file path for FileIO initialization
+  string metadata_location = 2;
+
+  // Schema to read
+  repeated SparkStructField required_schema = 3;
+
+  // Deduplication pools (must contain all entries for cross-partition deduplication)
+  repeated string schema_pool = 4;
+  repeated string partition_type_pool = 5;
+  repeated string partition_spec_pool = 6;
+  repeated string name_mapping_pool = 7;
+  repeated ProjectFieldIdList project_field_ids_pool = 8;
+  repeated PartitionData partition_data_pool = 9;
+  repeated DeleteFileList delete_files_pool = 10;
+  repeated spark.spark_expression.Expr residual_pool = 11;
+}
+
+message IcebergScan {
+  // Common data shared across partitions (pools, metadata, catalog props)
+  IcebergScanCommon common = 1;
+
+  // Single partition's file scan tasks
+  repeated IcebergFileScanTask file_scan_tasks = 2;
+}
+
+// Helper message for deduplicating field ID lists
+message ProjectFieldIdList {
+  repeated int32 field_ids = 1;
+}
+
+// Helper message for deduplicating delete file lists
+message DeleteFileList {
+  repeated IcebergDeleteFile delete_files = 1;
+}
+
+// Iceberg FileScanTask containing data file, delete files, and residual filter
+message IcebergFileScanTask {
+  // Data file path (e.g., s3://bucket/warehouse/db/table/data/00000-0-abc.parquet)
+  string data_file_path = 1;
+
+  // Byte range to read (for split files)
+  uint64 start = 2;
+  uint64 length = 3;
+
+  // Record count if reading entire file
+  optional uint64 record_count = 4;
+
+  // Indices into IcebergScan deduplication pools
+  uint32 schema_idx = 15;
+  optional uint32 partition_type_idx = 16;
+  optional uint32 partition_spec_idx = 17;
+  optional uint32 name_mapping_idx = 18;
+  uint32 project_field_ids_idx = 19;
+  optional uint32 partition_data_idx = 20;
+  optional uint32 delete_files_idx = 21;
+  optional uint32 residual_idx = 22;
+}
+
+// Iceberg delete file for MOR tables (positional or equality deletes)
+// Positional: (file_path, row_position) pairs to skip
+// Equality: Column values to filter out (specified by equality_ids)
+message IcebergDeleteFile {
+  // Delete file path
+  string file_path = 1;
+
+  // POSITION_DELETES or EQUALITY_DELETES
+  string content_type = 2;
+
+  // Partition spec ID
+  int32 partition_spec_id = 3;
+
+  // Equality field IDs (empty for positional deletes)
+  repeated int32 equality_ids = 4;
+}
+
 message Projection {
   repeated spark.spark_expression.Expr project_list = 1;
 }
 
 message Filter {
   spark.spark_expression.Expr predicate = 1;
-  // Some expressions don't support dictionary arrays, so may need to wrap the child in a CopyExec
-  bool wrap_child_in_copy_exec = 3;
 }
 
 message Sort {
@@ -149,6 +276,29 @@ message ShuffleWriter {
   CompressionCodec codec = 5;
   int32 compression_level = 6;
   bool tracing_enabled = 7;
+  // Size of the write buffer in bytes used when writing shuffle data to disk.
+  // Larger values may improve write performance but use more memory.
+  int32 write_buffer_size = 8;
+}
+
+message ParquetWriter {
+  string output_path = 1;
+  CompressionCodec compression = 2;
+  repeated string column_names = 4;
+  // Working directory for temporary files (used by FileCommitProtocol)
+  // If not set, files are written directly to output_path
+  optional string work_dir = 5;
+  // Job ID for tracking this write operation
+  optional string job_id = 6;
+  // Task attempt ID for this specific task
+  optional int32 task_attempt_id = 7;
+  // Options for configuring object stores such as AWS S3, GCS, etc. The key-value pairs are taken
+  // from Hadoop configuration for compatibility with Hadoop FileSystem implementations of object
+  // stores.
+  // The configuration values have hadoop. or spark.hadoop. prefix trimmed. For instance, the
+  // configuration value "spark.hadoop.fs.s3a.access.key" will be stored as "fs.s3a.access.key" in
+  // the map.
+  map<string, string> object_store_options = 8;
 }
 
 enum AggregateMode {
@@ -159,6 +309,15 @@ enum AggregateMode {
 message Expand {
   repeated spark.spark_expression.Expr project_list = 1;
   int32 num_expr_per_project = 3;
+}
+
+message Explode {
+  // The array expression to explode into multiple rows
+  spark.spark_expression.Expr child = 1;
+  // Whether this is explode_outer (produces null row for empty/null arrays)
+  bool outer = 2;
+  // Expressions for other columns to project alongside the exploded values
+  repeated spark.spark_expression.Expr project_list = 3;
 }
 
 message HashJoin {

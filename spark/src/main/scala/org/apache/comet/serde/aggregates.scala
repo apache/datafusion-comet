@@ -21,14 +21,16 @@ package org.apache.comet.serde
 
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, EvalMode}
+import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, Corr, Count, Covariance, CovPopulation, CovSample, First, Last, Max, Min, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ByteType, DecimalType, IntegerType, LongType, ShortType, StringType}
+import org.apache.spark.sql.types.{ByteType, DataTypes, DecimalType, IntegerType, LongType, ShortType, StringType}
 
 import org.apache.comet.CometConf
+import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
 import org.apache.comet.CometSparkSessionExtensions.withInfo
-import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType}
+import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProto, serializeDataType}
+import org.apache.comet.shims.CometEvalModeUtil
 
 object CometMin extends CometAggregateExpressionSerde[Min] {
 
@@ -42,6 +44,17 @@ object CometMin extends CometAggregateExpressionSerde[Min] {
       withInfo(aggExpr, s"Unsupported data type: ${expr.dataType}")
       return None
     }
+
+    if (expr.dataType == DataTypes.FloatType || expr.dataType == DataTypes.DoubleType) {
+      if (CometConf.COMET_EXEC_STRICT_FLOATING_POINT.get()) {
+        // https://github.com/apache/datafusion-comet/issues/2448
+        withInfo(
+          aggExpr,
+          s"floating-point not supported when ${COMET_EXEC_STRICT_FLOATING_POINT.key}=true")
+        return None
+      }
+    }
+
     val child = expr.children.head
     val childExpr = exprToProto(child, inputs, binding)
     val dataType = serializeDataType(expr.dataType)
@@ -78,6 +91,17 @@ object CometMax extends CometAggregateExpressionSerde[Max] {
       withInfo(aggExpr, s"Unsupported data type: ${expr.dataType}")
       return None
     }
+
+    if (expr.dataType == DataTypes.FloatType || expr.dataType == DataTypes.DoubleType) {
+      if (CometConf.COMET_EXEC_STRICT_FLOATING_POINT.get()) {
+        // https://github.com/apache/datafusion-comet/issues/2448
+        withInfo(
+          aggExpr,
+          s"floating-point not supported when ${COMET_EXEC_STRICT_FLOATING_POINT.key}=true")
+        return None
+      }
+    }
+
     val child = expr.children.head
     val childExpr = exprToProto(child, inputs, binding)
     val dataType = serializeDataType(expr.dataType)
@@ -126,6 +150,7 @@ object CometCount extends CometAggregateExpressionSerde[Count] {
 }
 
 object CometAverage extends CometAggregateExpressionSerde[Average] {
+
   override def convert(
       aggExpr: AggregateExpression,
       avg: Average,
@@ -136,20 +161,6 @@ object CometAverage extends CometAggregateExpressionSerde[Average] {
     if (!AggSerde.avgDataTypeSupported(avg.dataType)) {
       withInfo(aggExpr, s"Unsupported data type: ${avg.dataType}")
       return None
-    }
-
-    avg.evalMode match {
-      case EvalMode.ANSI if !CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.get() =>
-        withInfo(
-          aggExpr,
-          "ANSI mode is not supported. Set " +
-            s"${CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key}=true to allow it anyway")
-        return None
-      case EvalMode.TRY =>
-        withInfo(aggExpr, "TRY mode is not supported")
-        return None
-      case _ =>
-      // supported
     }
 
     val child = avg.child
@@ -171,7 +182,7 @@ object CometAverage extends CometAggregateExpressionSerde[Average] {
       val builder = ExprOuterClass.Avg.newBuilder()
       builder.setChild(childExpr.get)
       builder.setDatatype(dataType.get)
-      builder.setFailOnError(avg.evalMode == EvalMode.ANSI)
+      builder.setEvalMode(evalModeToProto(CometEvalModeUtil.fromSparkEvalMode(avg.evalMode)))
       builder.setSumDatatype(sumDataType.get)
 
       Some(
@@ -188,7 +199,9 @@ object CometAverage extends CometAggregateExpressionSerde[Average] {
     }
   }
 }
+
 object CometSum extends CometAggregateExpressionSerde[Sum] {
+
   override def convert(
       aggExpr: AggregateExpression,
       sum: Sum,
@@ -201,19 +214,7 @@ object CometSum extends CometAggregateExpressionSerde[Sum] {
       return None
     }
 
-    sum.evalMode match {
-      case EvalMode.ANSI if !CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.get() =>
-        withInfo(
-          aggExpr,
-          "ANSI mode is not supported. Set " +
-            s"${CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key}=true to allow it anyway")
-        return None
-      case EvalMode.TRY =>
-        withInfo(aggExpr, "TRY mode is not supported")
-        return None
-      case _ =>
-      // supported
-    }
+    val evalMode = sum.evalMode
 
     val childExpr = exprToProto(sum.child, inputs, binding)
     val dataType = serializeDataType(sum.dataType)
@@ -222,7 +223,7 @@ object CometSum extends CometAggregateExpressionSerde[Sum] {
       val builder = ExprOuterClass.Sum.newBuilder()
       builder.setChild(childExpr.get)
       builder.setDatatype(dataType.get)
-      builder.setFailOnError(sum.evalMode == EvalMode.ANSI)
+      builder.setEvalMode(evalModeToProto(CometEvalModeUtil.fromSparkEvalMode(evalMode)))
 
       Some(
         ExprOuterClass.AggExpr
@@ -538,32 +539,23 @@ trait CometStddev {
       binding: Boolean,
       conf: SQLConf): Option[ExprOuterClass.AggExpr] = {
     val child = stddev.child
-    if (CometConf.COMET_EXPR_STDDEV_ENABLED.get(conf)) {
-      val childExpr = exprToProto(child, inputs, binding)
-      val dataType = serializeDataType(stddev.dataType)
+    val childExpr = exprToProto(child, inputs, binding)
+    val dataType = serializeDataType(stddev.dataType)
 
-      if (childExpr.isDefined && dataType.isDefined) {
-        val builder = ExprOuterClass.Stddev.newBuilder()
-        builder.setChild(childExpr.get)
-        builder.setNullOnDivideByZero(nullOnDivideByZero)
-        builder.setDatatype(dataType.get)
-        builder.setStatsTypeValue(statsType)
+    if (childExpr.isDefined && dataType.isDefined) {
+      val builder = ExprOuterClass.Stddev.newBuilder()
+      builder.setChild(childExpr.get)
+      builder.setNullOnDivideByZero(nullOnDivideByZero)
+      builder.setDatatype(dataType.get)
+      builder.setStatsTypeValue(statsType)
 
-        Some(
-          ExprOuterClass.AggExpr
-            .newBuilder()
-            .setStddev(builder)
-            .build())
-      } else {
-        withInfo(aggExpr, child)
-        None
-      }
+      Some(
+        ExprOuterClass.AggExpr
+          .newBuilder()
+          .setStddev(builder)
+          .build())
     } else {
-      withInfo(
-        aggExpr,
-        "stddev disabled by default because it can be slower than Spark. " +
-          s"Set ${CometConf.COMET_EXPR_STDDEV_ENABLED}=true to enable it.",
-        child)
+      withInfo(aggExpr, child)
       None
     }
   }

@@ -32,9 +32,13 @@ inputs:
   scan_impl:
     description: 'The default Parquet scan implementation'
     required: false
-    default: 'native_comet'
+    default: 'auto'
   upload-test-reports:
     description: 'Whether to upload test results including coverage to GitHub'
+    required: false
+    default: 'false'
+  skip-native-build:
+    description: 'Skip native build (when using pre-built artifact)'
     required: false
     default: 'false'
 
@@ -42,6 +46,7 @@ runs:
   using: "composite"
   steps:
     - name: Run Cargo release build
+      if: ${{ inputs.skip-native-build != 'true' }}
       shell: bash
       # it is important that we run the Scala tests against a release build rather than a debug build
       # to make sure that no tests are relying on overflow checks that are present only in debug builds
@@ -50,6 +55,10 @@ runs:
         cargo build --release
 
     - name: Cache Maven dependencies
+      # TODO: remove next line after working again
+      #  temporarily work around https://github.com/actions/runner-images/issues/13341
+      #  by disabling caching for macOS
+      if: ${{ runner.os != 'macOS' }}
       uses: actions/cache@v4
       with:
         path: |
@@ -62,7 +71,32 @@ runs:
     - name: Run Maven compile
       shell: bash
       run: |
-        ./mvnw -B compile test-compile scalafix:scalafix -Dscalafix.mode=CHECK -Psemanticdb ${{ inputs.maven_opts }}
+        ./mvnw -B package -DskipTests scalafix:scalafix -Dscalafix.mode=CHECK -Psemanticdb ${{ inputs.maven_opts }}
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v6
+      with:
+        node-version: '24'
+
+    - name: Install prettier
+      shell: bash
+      run: |
+        npm install -g prettier
+
+    - name: Run prettier
+      shell: bash
+      run: |
+        npx prettier "**/*.md" --write
+
+    - name: Mark workspace as safe for git
+      shell: bash
+      run: |
+        git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+    - name: Check for any local git changes (such as generated docs)
+      shell: bash
+      run: |
+        ./dev/ci/check-working-tree-clean.sh
 
     - name: Run all tests
       shell: bash
@@ -112,7 +146,3 @@ runs:
          path: "**/target/surefire-reports/*.txt"
          retention-days: 7 # 1 week for test reports
          overwrite: true
-
-    - name: Upload coverage results
-      if: ${{ inputs.upload-test-reports == 'true' }}
-      uses: codecov/codecov-action@v5

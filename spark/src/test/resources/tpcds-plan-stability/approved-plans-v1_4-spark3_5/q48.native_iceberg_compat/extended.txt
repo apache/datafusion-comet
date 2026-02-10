@@ -1,0 +1,37 @@
+CometColumnarToRow
++- CometHashAggregate
+   +- CometExchange
+      +- CometHashAggregate
+         +- CometProject
+            +- CometBroadcastHashJoin
+               :- CometProject
+               :  +- CometBroadcastHashJoin
+               :     :- CometProject
+               :     :  +- CometBroadcastHashJoin
+               :     :     :- CometProject
+               :     :     :  +- CometBroadcastHashJoin
+               :     :     :     :- CometFilter
+               :     :     :     :  +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
+               :     :     :     :        +- SubqueryBroadcast
+               :     :     :     :           +- BroadcastExchange
+               :     :     :     :              +- CometColumnarToRow
+               :     :     :     :                 +- CometProject
+               :     :     :     :                    +- CometFilter
+               :     :     :     :                       +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+               :     :     :     +- CometBroadcastExchange
+               :     :     :        +- CometFilter
+               :     :     :           +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store
+               :     :     +- CometBroadcastExchange
+               :     :        +- CometProject
+               :     :           +- CometFilter
+               :     :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.customer_demographics
+               :     +- CometBroadcastExchange
+               :        +- CometProject
+               :           +- CometFilter
+               :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.customer_address
+               +- CometBroadcastExchange
+                  +- CometProject
+                     +- CometFilter
+                        +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+
+Comet accelerated 31 out of 33 eligible operators (93%). Final plan contains 2 transitions between Spark and Comet.

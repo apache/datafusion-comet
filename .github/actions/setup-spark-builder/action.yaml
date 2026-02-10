@@ -22,13 +22,17 @@ inputs:
     description: 'The Apache Spark short version (e.g., 3.5) to build'
     required: true
   spark-version:
-    description: 'The Apache Spark version (e.g., 3.5.6) to build'
+    description: 'The Apache Spark version (e.g., 3.5.8) to build'
     required: true
+  skip-native-build:
+    description: 'Skip native build (when using pre-built artifact)'
+    required: false
+    default: 'false'
 runs:
   using: "composite"
   steps:
     - name: Clone Spark repo
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
       with:
         repository: apache/spark
         path: apache-spark
@@ -51,7 +55,15 @@ runs:
         restore-keys: |
           ${{ runner.os }}-spark-sql-
 
-    - name: Build Comet
+    - name: Build Comet (with native)
+      if: ${{ inputs.skip-native-build != 'true' }}
       shell: bash
       run: |
         PROFILES="-Pspark-${{inputs.spark-short-version}}" make release
+
+    - name: Build Comet (Maven only, skip native)
+      if: ${{ inputs.skip-native-build == 'true' }}
+      shell: bash
+      run: |
+        # Native library should already be in native/target/release/
+        ./mvnw install -Prelease -DskipTests -Pspark-${{inputs.spark-short-version}}

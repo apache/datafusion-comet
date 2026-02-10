@@ -28,15 +28,15 @@ import org.apache.commons.io.FileUtils
 import org.apache.spark.SparkContext
 import org.apache.spark.internal.config.{MEMORY_OFFHEAP_ENABLED, MEMORY_OFFHEAP_SIZE}
 import org.apache.spark.sql.TPCDSBase
-import org.apache.spark.sql.catalyst.expressions.AttributeSet
+import org.apache.spark.sql.catalyst.expressions.{AttributeSet, Cast}
 import org.apache.spark.sql.catalyst.util.resourceToString
-import org.apache.spark.sql.execution.{FormattedMode, ReusedSubqueryExec, SparkPlan, SubqueryBroadcastExec, SubqueryExec}
+import org.apache.spark.sql.execution.{ReusedSubqueryExec, SparkPlan, SubqueryBroadcastExec, SubqueryExec}
 import org.apache.spark.sql.execution.adaptive.DisableAdaptiveExecutionSuite
 import org.apache.spark.sql.execution.exchange.{Exchange, ReusedExchangeExec, ValidateRequirements}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.test.TestSparkSession
 
-import org.apache.comet.CometConf
+import org.apache.comet.{CometConf, ExtendedExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
 
 /**
@@ -63,7 +63,7 @@ import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plu
  */
 trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBase {
   protected val scanImpls: Seq[String] =
-    Seq(CometConf.SCAN_AUTO, CometConf.SCAN_NATIVE_ICEBERG_COMPAT)
+    Seq(CometConf.SCAN_NATIVE_ICEBERG_COMPAT, CometConf.SCAN_NATIVE_DATAFUSION)
 
   protected val baseResourcePath: File = {
     getWorkspaceFilePath("spark", "src", "test", "resources", "tpcds-plan-stability").toFile
@@ -86,55 +86,21 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
       name
     }
     val nativeImpl = CometConf.COMET_NATIVE_SCAN_IMPL.get()
-    if (nativeImpl != CometConf.SCAN_AUTO) {
-      goldenFileName = s"$goldenFileName.$nativeImpl"
-    }
+    goldenFileName = s"$goldenFileName.$nativeImpl"
     new File(goldenFilePath, goldenFileName)
   }
 
-  /**
-   * Serialize and save this SparkPlan. The resulting file is used by [[checkWithApproved]] to
-   * check stability.
-   *
-   * @param dir
-   *   the directory to write to
-   * @param simplified
-   *   the simplified plan
-   * @param explain
-   *   the full explain output; this is saved to help debug later as the simplified plan is not
-   *   too useful for debugging
-   */
-  private def generateGoldenFile(dir: File, simplified: String, explain: String): Unit = {
-    FileUtils.deleteDirectory(dir)
-    if (!dir.mkdirs()) {
-      fail(s"Could not create dir: $dir")
-    }
-
-    val file = new File(dir, "simplified.txt")
-    FileUtils.writeStringToFile(file, simplified, StandardCharsets.UTF_8)
-    val fileOriginalPlan = new File(dir, "explain.txt")
-    FileUtils.writeStringToFile(fileOriginalPlan, explain, StandardCharsets.UTF_8)
-    logDebug(s"APPROVED: $file $fileOriginalPlan")
+  private def writeGoldenFile(dir: File, filename: String, plan: String): Unit = {
+    FileUtils.writeStringToFile(new File(dir, s"$filename.txt"), plan, StandardCharsets.UTF_8)
+    logDebug(s"APPROVED: $filename")
   }
 
-  private def checkWithApproved(
-      dir: File,
-      name: String,
-      simplified: String,
-      explain: String): Unit = {
-
-    val approvedSimplifiedFile = new File(dir, "simplified.txt")
-    val approvedExplainFile = new File(dir, "explain.txt")
-
-    // write actual files out for debugging
+  private def checkWithApproved(dir: File, name: String, filename: String, plan: String): Unit = {
     val tempDir = FileUtils.getTempDirectory
-    val actualSimplifiedFile = new File(tempDir, s"$name.actual.simplified.txt")
-    val actualExplainFile = new File(tempDir, s"$name.actual.explain.txt")
-    FileUtils.writeStringToFile(actualSimplifiedFile, simplified, StandardCharsets.UTF_8)
-    FileUtils.writeStringToFile(actualExplainFile, explain, StandardCharsets.UTF_8)
-
-    comparePlans("simplified", approvedSimplifiedFile, actualSimplifiedFile)
-    comparePlans("explain", approvedExplainFile, actualExplainFile)
+    val approvedFile = new File(dir, s"$filename.txt")
+    val actualFile = new File(tempDir, s"$name.actual.$filename.txt")
+    FileUtils.writeStringToFile(actualFile, plan, StandardCharsets.UTF_8)
+    comparePlans(filename, approvedFile, actualFile)
   }
 
   private def comparePlans(planType: String, expectedFile: File, actualFile: File): Unit = {
@@ -255,23 +221,26 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
       CometConf.COMET_DPP_FALLBACK_ENABLED.key -> "false",
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED.key -> "true",
-      // COMET_EXPR_ALLOW_INCOMPATIBLE is needed for Spark 4.0.0 / ANSI support
       // as well as for v1.4/q9, v1.4/q44, v2.7.0/q6, v2.7.0/q64
-      CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true",
+      CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true",
       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "10MB") {
       val qe = sql(queryString).queryExecution
       val plan = qe.executedPlan
-      val explain = normalizeLocation(normalizeIds(qe.explainString(FormattedMode)))
-      val simplified = getSimplifiedPlan(plan)
+      val extendedExplain = new ExtendedExplainInfo().generateExtendedInfo(qe.executedPlan)
+      val extended = normalizeLocation(normalizeIds(extendedExplain))
       assert(ValidateRequirements.validate(plan))
 
       val name = query + suffix
       val dir = getDirForTest(name)
 
       if (regenerateGoldenFiles) {
-        generateGoldenFile(dir, simplified, explain)
+        FileUtils.deleteDirectory(dir)
+        if (!dir.mkdirs()) {
+          fail(s"Could not create dir: $dir")
+        }
+        writeGoldenFile(dir, "extended", extended)
       } else {
-        checkWithApproved(dir, name, simplified, explain)
+        checkWithApproved(dir, name, "extended", extended)
       }
     }
   }
@@ -286,7 +255,7 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
     conf.set(MEMORY_OFFHEAP_SIZE.key, "2g")
     conf.set(CometConf.COMET_ENABLED.key, "true")
     conf.set(CometConf.COMET_EXEC_ENABLED.key, "true")
-    conf.set(CometConf.COMET_MEMORY_OVERHEAD.key, "1g")
+    conf.set(CometConf.COMET_ONHEAP_MEMORY_OVERHEAD.key, "1g")
     conf.set(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key, "true")
 
     new TestSparkSession(new SparkContext("local[1]", this.getClass.getCanonicalName, conf))

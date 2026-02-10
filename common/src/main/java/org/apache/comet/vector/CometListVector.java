@@ -45,6 +45,7 @@ public class CometListVector extends CometDecodedVector {
 
   @Override
   public ColumnarArray getArray(int i) {
+    if (isNullAt(i)) return null;
     int start = listVector.getOffsetBuffer().getInt(i * ListVector.OFFSET_WIDTH);
     int end = listVector.getOffsetBuffer().getInt((i + 1) * ListVector.OFFSET_WIDTH);
 

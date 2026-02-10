@@ -22,7 +22,7 @@ use crate::{
     errors::{try_unwrap_or_throw, CometError, CometResult},
     execution::{
         metrics::utils::update_comet_metric, planner::PhysicalPlanner, serde::to_arrow_datatype,
-        shuffle::row::process_sorted_row_partition, sort::RdxSort,
+        shuffle::spark_unsafe::row::process_sorted_row_partition, sort::RdxSort,
     },
     jvm_bridge::{jni_new_global_ref, JVMClasses},
 };
@@ -41,27 +41,30 @@ use datafusion::{
 };
 use datafusion_comet_proto::spark_operator::Operator;
 use datafusion_spark::function::bitwise::bit_get::SparkBitGet;
+use datafusion_spark::function::bitwise::bitwise_not::SparkBitwiseNot;
 use datafusion_spark::function::datetime::date_add::SparkDateAdd;
 use datafusion_spark::function::datetime::date_sub::SparkDateSub;
+use datafusion_spark::function::datetime::last_day::SparkLastDay;
+use datafusion_spark::function::hash::sha1::SparkSha1;
 use datafusion_spark::function::hash::sha2::SparkSha2;
+use datafusion_spark::function::map::map_from_entries::MapFromEntries;
 use datafusion_spark::function::math::expm1::SparkExpm1;
+use datafusion_spark::function::math::hex::SparkHex;
+use datafusion_spark::function::math::width_bucket::SparkWidthBucket;
 use datafusion_spark::function::string::char::CharFunc;
+use datafusion_spark::function::string::concat::SparkConcat;
 use futures::poll;
 use futures::stream::StreamExt;
 use jni::objects::JByteBuffer;
-use jni::sys::JNI_FALSE;
+use jni::sys::{jlongArray, JNI_FALSE};
 use jni::{
     errors::Result as JNIResult,
     objects::{
-        JByteArray, JClass, JIntArray, JLongArray, JObject, JObjectArray, JPrimitiveArray, JString,
+        GlobalRef, JByteArray, JClass, JIntArray, JLongArray, JObject, JObjectArray, JString,
         ReleaseMode,
     },
-    sys::{jbyteArray, jint, jlong, jlongArray},
+    sys::{jboolean, jdouble, jint, jlong},
     JNIEnv,
-};
-use jni::{
-    objects::GlobalRef,
-    sys::{jboolean, jdouble, jintArray, jobjectArray, jstring},
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -137,6 +140,8 @@ struct ExecutionContext {
     pub metrics_update_interval: Option<Duration>,
     // The last update time of metrics
     pub metrics_last_update_time: Instant,
+    /// Counter to avoid checking time on every poll iteration (reduces syscalls)
+    pub poll_count_since_metrics_check: u32,
     /// The time it took to create the native plan and configure the context
     pub plan_creation_time: Duration,
     /// DataFusion SessionContext
@@ -159,26 +164,26 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     e: JNIEnv,
     _class: JClass,
     id: jlong,
-    iterators: jobjectArray,
-    serialized_query: jbyteArray,
-    serialized_spark_configs: jbyteArray,
+    iterators: JObjectArray,
+    serialized_query: JByteArray,
+    serialized_spark_configs: JByteArray,
     partition_count: jint,
     metrics_node: JObject,
     metrics_update_interval: jlong,
     comet_task_memory_manager_obj: JObject,
-    local_dirs: jobjectArray,
+    local_dirs: JObjectArray,
     batch_size: jint,
     off_heap_mode: jboolean,
-    memory_pool_type: jstring,
+    memory_pool_type: JString,
     memory_limit: jlong,
     memory_limit_per_task: jlong,
     task_attempt_id: jlong,
+    task_cpus: jlong,
     key_unwrapper_obj: JObject,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| {
         // Deserialize Spark configs
-        let array = unsafe { JPrimitiveArray::from_raw(serialized_spark_configs) };
-        let bytes = env.convert_byte_array(array)?;
+        let bytes = env.convert_byte_array(serialized_spark_configs)?;
         let spark_configs = serde::deserialize_config(bytes.as_slice())?;
         let spark_config: HashMap<String, String> = spark_configs.entries.into_iter().collect();
 
@@ -197,18 +202,16 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             let start = Instant::now();
 
             // Deserialize query plan
-            let array = unsafe { JPrimitiveArray::from_raw(serialized_query) };
-            let bytes = env.convert_byte_array(array)?;
+            let bytes = env.convert_byte_array(serialized_query)?;
             let spark_plan = serde::deserialize_op(bytes.as_slice())?;
 
             let metrics = Arc::new(jni_new_global_ref!(env, metrics_node)?);
 
             // Get the global references of input sources
             let mut input_sources = vec![];
-            let iter_array = JObjectArray::from_raw(iterators);
-            let num_inputs = env.get_array_length(&iter_array)?;
+            let num_inputs = env.get_array_length(&iterators)?;
             for i in 0..num_inputs {
-                let input_source = env.get_object_array_element(&iter_array, i)?;
+                let input_source = env.get_object_array_element(&iterators, i)?;
                 let input_source = Arc::new(jni_new_global_ref!(env, input_source)?);
                 input_sources.push(input_source);
             }
@@ -217,7 +220,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             let task_memory_manager =
                 Arc::new(jni_new_global_ref!(env, comet_task_memory_manager_obj)?);
 
-            let memory_pool_type = env.get_string(&JString::from_raw(memory_pool_type))?.into();
+            let memory_pool_type = env.get_string(&memory_pool_type)?.into();
             let memory_pool_config = parse_memory_pool_config(
                 off_heap_mode != JNI_FALSE,
                 memory_pool_type,
@@ -234,13 +237,12 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             };
 
             // Get local directories for storing spill files
-            let local_dirs_array = JObjectArray::from_raw(local_dirs);
-            let num_local_dirs = env.get_array_length(&local_dirs_array)?;
-            let mut local_dirs = vec![];
+            let num_local_dirs = env.get_array_length(&local_dirs)?;
+            let mut local_dirs_vec = vec![];
             for i in 0..num_local_dirs {
-                let local_dir: JString = env.get_object_array_element(&local_dirs_array, i)?.into();
+                let local_dir: JString = env.get_object_array_element(&local_dirs, i)?.into();
                 let local_dir = env.get_string(&local_dir)?;
-                local_dirs.push(local_dir.into());
+                local_dirs_vec.push(local_dir.into());
             }
 
             // We need to keep the session context alive. Some session state like temporary
@@ -249,8 +251,9 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             let session = prepare_datafusion_session_context(
                 batch_size as usize,
                 memory_pool,
-                local_dirs,
+                local_dirs_vec,
                 max_temp_directory_size,
+                task_cpus as usize,
             )?;
 
             let plan_creation_time = start.elapsed();
@@ -284,6 +287,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 metrics,
                 metrics_update_interval,
                 metrics_last_update_time: Instant::now(),
+                poll_count_since_metrics_check: 0,
                 plan_creation_time,
                 session_ctx: Arc::new(session),
                 debug_native,
@@ -303,6 +307,7 @@ fn prepare_datafusion_session_context(
     memory_pool: Arc<dyn MemoryPool>,
     local_dirs: Vec<String>,
     max_temp_directory_size: u64,
+    task_cpus: usize,
 ) -> CometResult<SessionContext> {
     let paths = local_dirs.into_iter().map(PathBuf::from).collect();
     let disk_manager = DiskManagerBuilder::default()
@@ -315,6 +320,10 @@ fn prepare_datafusion_session_context(
     // can be configured in Comet Spark JVM using Spark --conf parameters
     // e.g: spark-shell --conf spark.datafusion.sql_parser.parse_float_as_decimal=true
     let session_config = SessionConfig::new()
+        .with_target_partitions(task_cpus)
+        // This DataFusion context is within the scope of an executing Spark Task. We want to set
+        // its internal parallelism to the number of CPUs allocated to Spark Tasks. This can be
+        // modified by changing spark.task.cpus in the Spark config.
         .with_batch_size(batch_size)
         // DataFusion partial aggregates can emit duplicate rows so we disable the
         // skip partial aggregation feature because this is not compatible with Spark's
@@ -332,39 +341,44 @@ fn prepare_datafusion_session_context(
     let mut session_ctx = SessionContext::new_with_config_rt(session_config, Arc::new(runtime));
 
     datafusion::functions_nested::register_all(&mut session_ctx)?;
-
-    // register UDFs from datafusion-spark crate
-    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkExpm1::default()));
-    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSha2::default()));
-    session_ctx.register_udf(ScalarUDF::new_from_impl(CharFunc::default()));
-    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitGet::default()));
-    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkDateAdd::default()));
-    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkDateSub::default()));
-
+    register_datafusion_spark_function(&session_ctx);
     // Must be the last one to override existing functions with the same name
     datafusion_comet_spark_expr::register_all_comet_functions(&mut session_ctx)?;
 
     Ok(session_ctx)
 }
 
+// register UDFs from datafusion-spark crate
+fn register_datafusion_spark_function(session_ctx: &SessionContext) {
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkExpm1::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSha2::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(CharFunc::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitGet::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkDateAdd::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkDateSub::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkLastDay::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSha1::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkConcat::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitwiseNot::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkHex::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkWidthBucket::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(MapFromEntries::default()));
+}
+
 /// Prepares arrow arrays for output.
 fn prepare_output(
     env: &mut JNIEnv,
-    array_addrs: jlongArray,
-    schema_addrs: jlongArray,
+    array_addrs: JLongArray,
+    schema_addrs: JLongArray,
     output_batch: RecordBatch,
     validate: bool,
 ) -> CometResult<jlong> {
-    let array_address_array = unsafe { JLongArray::from_raw(array_addrs) };
-    let num_cols = env.get_array_length(&array_address_array)? as usize;
+    let num_cols = env.get_array_length(&array_addrs)? as usize;
 
-    let array_addrs =
-        unsafe { env.get_array_elements(&array_address_array, ReleaseMode::NoCopyBack)? };
+    let array_addrs = unsafe { env.get_array_elements(&array_addrs, ReleaseMode::NoCopyBack)? };
     let array_addrs = &*array_addrs;
 
-    let schema_address_array = unsafe { JLongArray::from_raw(schema_addrs) };
-    let schema_addrs =
-        unsafe { env.get_array_elements(&schema_address_array, ReleaseMode::NoCopyBack)? };
+    let schema_addrs = unsafe { env.get_array_elements(&schema_addrs, ReleaseMode::NoCopyBack)? };
     let schema_addrs = &*schema_addrs;
 
     let results = output_batch.columns();
@@ -447,8 +461,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
     stage_id: jint,
     partition: jint,
     exec_context: jlong,
-    array_addrs: jlongArray,
-    schema_addrs: jlongArray,
+    array_addrs: JLongArray,
+    schema_addrs: JLongArray,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| {
         // Retrieve the query
@@ -499,72 +513,90 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                 }
 
                 let task_ctx = exec_context.session_ctx.task_ctx();
-                let stream = exec_context
-                    .root_op
-                    .as_ref()
-                    .unwrap()
-                    .native_plan
-                    .execute(partition as usize, task_ctx)?;
+                // Each Comet native execution corresponds to a single Spark partition,
+                // so we should always execute partition 0.
+                let stream = root_op.native_plan.execute(0, task_ctx)?;
                 exec_context.stream = Some(stream);
             } else {
                 // Pull input batches
                 pull_input_batches(exec_context)?;
             }
 
-            loop {
-                // Polling the stream.
-                let next_item = exec_context.stream.as_mut().unwrap().next();
-                let poll_output = get_runtime().block_on(async { poll!(next_item) });
+            // Enter the runtime once for the entire polling loop to avoid repeated
+            // Runtime::enter() overhead
+            get_runtime().block_on(async {
+                loop {
+                    // Polling the stream.
+                    let next_item = exec_context.stream.as_mut().unwrap().next();
+                    let poll_output = poll!(next_item);
 
-                // update metrics at interval
-                if let Some(interval) = exec_context.metrics_update_interval {
-                    let now = Instant::now();
-                    if now - exec_context.metrics_last_update_time >= interval {
-                        update_metrics(&mut env, exec_context)?;
-                        exec_context.metrics_last_update_time = now;
-                    }
-                }
-
-                match poll_output {
-                    Poll::Ready(Some(output)) => {
-                        // prepare output for FFI transfer
-                        return prepare_output(
-                            &mut env,
-                            array_addrs,
-                            schema_addrs,
-                            output?,
-                            exec_context.debug_native,
-                        );
-                    }
-                    Poll::Ready(None) => {
-                        // Reaches EOF of output.
-                        if exec_context.explain_native {
-                            if let Some(plan) = &exec_context.root_op {
-                                let formatted_plan_str = DisplayableExecutionPlan::with_metrics(
-                                    plan.native_plan.as_ref(),
-                                )
-                                .indent(true);
-                                info!(
-                                    "Comet native query plan with metrics (Plan #{} Stage {} Partition {}):\
-                                \n plan creation (including CometScans fetching first batches) took {:?}:\
-                                \n{formatted_plan_str:}",
-                                    plan.plan_id, stage_id, partition, exec_context.plan_creation_time
-                                );
+                    // update metrics at interval
+                    // Only check time every 100 polls to reduce syscall overhead
+                    if let Some(interval) = exec_context.metrics_update_interval {
+                        exec_context.poll_count_since_metrics_check += 1;
+                        if exec_context.poll_count_since_metrics_check >= 100 {
+                            let now = Instant::now();
+                            if now - exec_context.metrics_last_update_time >= interval {
+                                update_metrics(&mut env, exec_context)?;
+                                exec_context.metrics_last_update_time = now;
                             }
+                            exec_context.poll_count_since_metrics_check = 0;
                         }
-                        return Ok(-1);
                     }
-                    // A poll pending means there are more than one blocking operators,
-                    // we don't need go back-forth between JVM/Native. Just keeping polling.
-                    Poll::Pending => {
-                        // Pull input batches
-                        pull_input_batches(exec_context)?;
 
-                        // Output not ready yet
-                        continue;
+                    match poll_output {
+                        Poll::Ready(Some(output)) => {
+                            // prepare output for FFI transfer
+                            return prepare_output(
+                                &mut env,
+                                array_addrs,
+                                schema_addrs,
+                                output?,
+                                exec_context.debug_native,
+                            );
+                        }
+                        Poll::Ready(None) => {
+                            // Reaches EOF of output.
+                            if exec_context.explain_native {
+                                if let Some(plan) = &exec_context.root_op {
+                                    let formatted_plan_str = DisplayableExecutionPlan::with_metrics(
+                                        plan.native_plan.as_ref(),
+                                    )
+                                    .indent(true);
+                                    info!(
+                                        "Comet native query plan with metrics (Plan #{} Stage {} Partition {}):\
+                                    \n plan creation took {:?}:\
+                                    \n{formatted_plan_str:}",
+                                        plan.plan_id, stage_id, partition, exec_context.plan_creation_time
+                                    );
+                                }
+                            }
+                            return Ok(-1);
+                        }
+                        // A poll pending means the stream is not ready yet.
+                        Poll::Pending => {
+                            if exec_context.scans.is_empty() {
+                                // Pure async I/O (e.g., IcebergScanExec, DataSourceExec)
+                                // Yield to let the executor drive I/O instead of busy-polling
+                                tokio::task::yield_now().await;
+                            } else {
+                                // Has ScanExec operators
+                                // Busy-poll to pull batches from JVM
+                                // TODO: Investigate if JNI calls are safe without block_in_place.
+                                // block_in_place prevents Tokio from migrating this task to another thread,
+                                // which is necessary because JNI env is thread-local. If we can guarantee
+                                // thread safety another way, we could remove this wrapper for better perf.
+                                tokio::task::block_in_place(|| {
+                                    pull_input_batches(exec_context)
+                                })?;
+                            }
+
+                            // Output not ready yet
+                            continue;
+                        }
                     }
                 }
-            }
+            })
         })
     })
 }
@@ -594,8 +626,7 @@ pub extern "system" fn Java_org_apache_comet_Native_releasePlan(
 
 /// Updates the metrics of the query plan.
 fn update_metrics(env: &mut JNIEnv, exec_context: &mut ExecutionContext) -> CometResult<()> {
-    if exec_context.root_op.is_some() {
-        let native_query = exec_context.root_op.as_ref().unwrap();
+    if let Some(native_query) = &exec_context.root_op {
         let metrics = exec_context.metrics.as_obj();
         update_comet_metric(env, metrics, native_query)
     } else {
@@ -605,24 +636,21 @@ fn update_metrics(env: &mut JNIEnv, exec_context: &mut ExecutionContext) -> Come
 
 fn convert_datatype_arrays(
     env: &'_ mut JNIEnv<'_>,
-    serialized_datatypes: jobjectArray,
+    serialized_datatypes: JObjectArray,
 ) -> JNIResult<Vec<ArrowDataType>> {
-    unsafe {
-        let obj_array = JObjectArray::from_raw(serialized_datatypes);
-        let array_len = env.get_array_length(&obj_array)?;
-        let mut res: Vec<ArrowDataType> = Vec::new();
+    let array_len = env.get_array_length(&serialized_datatypes)?;
+    let mut res: Vec<ArrowDataType> = Vec::new();
 
-        for i in 0..array_len {
-            let inner_array = env.get_object_array_element(&obj_array, i)?;
-            let inner_array: JByteArray = inner_array.into();
-            let bytes = env.convert_byte_array(inner_array)?;
-            let data_type = serde::deserialize_data_type(bytes.as_slice()).unwrap();
-            let arrow_dt = to_arrow_datatype(&data_type);
-            res.push(arrow_dt);
-        }
-
-        Ok(res)
+    for i in 0..array_len {
+        let inner_array = env.get_object_array_element(&serialized_datatypes, i)?;
+        let inner_array: JByteArray = inner_array.into();
+        let bytes = env.convert_byte_array(inner_array)?;
+        let data_type = serde::deserialize_data_type(bytes.as_slice()).unwrap();
+        let arrow_dt = to_arrow_datatype(&data_type);
+        res.push(arrow_dt);
     }
+
+    Ok(res)
 }
 
 fn get_execution_context<'a>(id: i64) -> &'a mut ExecutionContext {
@@ -640,16 +668,16 @@ fn get_execution_context<'a>(id: i64) -> &'a mut ExecutionContext {
 pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative(
     e: JNIEnv,
     _class: JClass,
-    row_addresses: jlongArray,
-    row_sizes: jintArray,
-    serialized_datatypes: jobjectArray,
-    file_path: jstring,
+    row_addresses: JLongArray,
+    row_sizes: JIntArray,
+    serialized_datatypes: JObjectArray,
+    file_path: JString,
     prefer_dictionary_ratio: jdouble,
     batch_size: jlong,
     checksum_enabled: jboolean,
     checksum_algo: jint,
     current_checksum: jlong,
-    compression_codec: jstring,
+    compression_codec: JString,
     compression_level: jint,
     tracing_enabled: jboolean,
 ) -> jlongArray {
@@ -660,21 +688,16 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative
             || {
                 let data_types = convert_datatype_arrays(&mut env, serialized_datatypes)?;
 
-                let row_address_array = JLongArray::from_raw(row_addresses);
-                let row_num = env.get_array_length(&row_address_array)? as usize;
+                let row_num = env.get_array_length(&row_addresses)? as usize;
                 let row_addresses =
-                    env.get_array_elements(&row_address_array, ReleaseMode::NoCopyBack)?;
+                    env.get_array_elements(&row_addresses, ReleaseMode::NoCopyBack)?;
 
-                let row_size_array = JIntArray::from_raw(row_sizes);
-                let row_sizes = env.get_array_elements(&row_size_array, ReleaseMode::NoCopyBack)?;
+                let row_sizes = env.get_array_elements(&row_sizes, ReleaseMode::NoCopyBack)?;
 
                 let row_addresses_ptr = row_addresses.as_ptr();
                 let row_sizes_ptr = row_sizes.as_ptr();
 
-                let output_path: String = env
-                    .get_string(&JString::from_raw(file_path))
-                    .unwrap()
-                    .into();
+                let output_path: String = env.get_string(&file_path).unwrap().into();
 
                 let checksum_enabled = checksum_enabled == 1;
                 let current_checksum = if current_checksum == i64::MIN {
@@ -684,10 +707,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative
                     Some(current_checksum as u32)
                 };
 
-                let compression_codec: String = env
-                    .get_string(&JString::from_raw(compression_codec))
-                    .unwrap()
-                    .into();
+                let compression_codec: String = env.get_string(&compression_codec).unwrap().into();
 
                 let compression_codec = match compression_codec.as_str() {
                     "zstd" => CompressionCodec::Zstd(compression_level),
@@ -760,8 +780,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlock(
     _class: JClass,
     byte_buffer: JByteBuffer,
     length: jint,
-    array_addrs: jlongArray,
-    schema_addrs: jlongArray,
+    array_addrs: JLongArray,
+    schema_addrs: JLongArray,
     tracing_enabled: jboolean,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| {
@@ -781,10 +801,10 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlock(
 pub unsafe extern "system" fn Java_org_apache_comet_Native_traceBegin(
     e: JNIEnv,
     _class: JClass,
-    event: jstring,
+    event: JString,
 ) {
     try_unwrap_or_throw(&e, |mut env| {
-        let name: String = env.get_string(&JString::from_raw(event)).unwrap().into();
+        let name: String = env.get_string(&event).unwrap().into();
         trace_begin(&name);
         Ok(())
     })
@@ -796,10 +816,10 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_traceBegin(
 pub unsafe extern "system" fn Java_org_apache_comet_Native_traceEnd(
     e: JNIEnv,
     _class: JClass,
-    event: jstring,
+    event: JString,
 ) {
     try_unwrap_or_throw(&e, |mut env| {
-        let name: String = env.get_string(&JString::from_raw(event)).unwrap().into();
+        let name: String = env.get_string(&event).unwrap().into();
         trace_end(&name);
         Ok(())
     })
@@ -811,12 +831,130 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_traceEnd(
 pub unsafe extern "system" fn Java_org_apache_comet_Native_logMemoryUsage(
     e: JNIEnv,
     _class: JClass,
-    name: jstring,
+    name: JString,
     value: jlong,
 ) {
     try_unwrap_or_throw(&e, |mut env| {
-        let name: String = env.get_string(&JString::from_raw(name)).unwrap().into();
+        let name: String = env.get_string(&name).unwrap().into();
         log_memory_usage(&name, value as u64);
+        Ok(())
+    })
+}
+
+// ============================================================================
+// Native Columnar to Row Conversion
+// ============================================================================
+
+use crate::execution::columnar_to_row::ColumnarToRowContext;
+use arrow::ffi::{from_ffi, FFI_ArrowArray, FFI_ArrowSchema};
+
+/// Initialize a native columnar to row converter.
+///
+/// # Safety
+/// This function is inherently unsafe since it deals with raw pointers passed from JNI.
+#[no_mangle]
+pub unsafe extern "system" fn Java_org_apache_comet_Native_columnarToRowInit(
+    e: JNIEnv,
+    _class: JClass,
+    serialized_schema: JObjectArray,
+    batch_size: jint,
+) -> jlong {
+    try_unwrap_or_throw(&e, |mut env| {
+        // Deserialize the schema
+        let schema = convert_datatype_arrays(&mut env, serialized_schema)?;
+
+        // Create the context
+        let ctx = Box::new(ColumnarToRowContext::new(schema, batch_size as usize));
+
+        Ok(Box::into_raw(ctx) as jlong)
+    })
+}
+
+/// Convert Arrow columnar data to Spark UnsafeRow format.
+///
+/// # Safety
+/// This function is inherently unsafe since it deals with raw pointers passed from JNI.
+#[no_mangle]
+pub unsafe extern "system" fn Java_org_apache_comet_Native_columnarToRowConvert(
+    e: JNIEnv,
+    _class: JClass,
+    c2r_handle: jlong,
+    array_addrs: JLongArray,
+    schema_addrs: JLongArray,
+    num_rows: jint,
+) -> jni::sys::jobject {
+    try_unwrap_or_throw(&e, |mut env| {
+        // Get the context
+        let ctx = (c2r_handle as *mut ColumnarToRowContext)
+            .as_mut()
+            .ok_or_else(|| CometError::Internal("Null columnar to row context".to_string()))?;
+
+        let num_cols = env.get_array_length(&array_addrs)? as usize;
+
+        // Get array and schema addresses
+        let array_addrs_elements = env.get_array_elements(&array_addrs, ReleaseMode::NoCopyBack)?;
+        let schema_addrs_elements =
+            env.get_array_elements(&schema_addrs, ReleaseMode::NoCopyBack)?;
+
+        // Import Arrow arrays from FFI
+        let mut arrays = Vec::with_capacity(num_cols);
+        for i in 0..num_cols {
+            let array_ptr = array_addrs_elements[i] as *mut FFI_ArrowArray;
+            let schema_ptr = schema_addrs_elements[i] as *mut FFI_ArrowSchema;
+
+            // Take ownership of the FFI structures
+            let ffi_array = std::ptr::read(array_ptr);
+            let ffi_schema = std::ptr::read(schema_ptr);
+
+            // Convert to Arrow ArrayData
+            let array_data = from_ffi(ffi_array, &ffi_schema)
+                .map_err(|e| CometError::Internal(format!("Failed to import array: {}", e)))?;
+
+            arrays.push(arrow::array::make_array(array_data));
+        }
+
+        // Convert columnar to row
+        let (buffer_ptr, offsets, lengths) = ctx.convert(&arrays, num_rows as usize)?;
+
+        // Create Java int arrays for offsets and lengths
+        let offsets_array = env.new_int_array(offsets.len() as i32)?;
+        env.set_int_array_region(&offsets_array, 0, offsets)?;
+
+        let lengths_array = env.new_int_array(lengths.len() as i32)?;
+        env.set_int_array_region(&lengths_array, 0, lengths)?;
+
+        // Create the NativeColumnarToRowInfo object
+        let info_class = env.find_class("org/apache/comet/NativeColumnarToRowInfo")?;
+        let info_obj = env.new_object(
+            info_class,
+            "(J[I[I)V",
+            &[
+                jni::objects::JValue::Long(buffer_ptr as jlong),
+                jni::objects::JValue::Object(&offsets_array),
+                jni::objects::JValue::Object(&lengths_array),
+            ],
+        )?;
+
+        Ok(info_obj.into_raw())
+    })
+}
+
+/// Close and release the native columnar to row converter.
+///
+/// # Safety
+/// This function is inherently unsafe since it deals with raw pointers passed from JNI.
+#[no_mangle]
+pub unsafe extern "system" fn Java_org_apache_comet_Native_columnarToRowClose(
+    e: JNIEnv,
+    _class: JClass,
+    c2r_handle: jlong,
+) {
+    try_unwrap_or_throw(&e, |_env| {
+        if c2r_handle != 0 {
+            let _ctx: Box<ColumnarToRowContext> =
+                Box::from_raw(c2r_handle as *mut ColumnarToRowContext);
+            // ctx is dropped here, freeing the buffer
+        }
         Ok(())
     })
 }

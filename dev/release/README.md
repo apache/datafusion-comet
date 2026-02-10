@@ -42,12 +42,28 @@ origin	git@github.com:yourgithubid/datafusion-comet.git (push)
 Create a release branch from the latest commit in main and push to the `apache` repo:
 
 ```shell
-get fetch apache
+git fetch apache
 git checkout main
 git reset --hard apache/main
 git checkout -b branch-0.1
 git push apache branch-0.1
 ```
+
+### Generate Release Documentation
+
+Generate the documentation content for this release. The docs on `main` contain only template markers,
+so we need to generate the actual content (config tables, compatibility matrices) for the release branch:
+
+```shell
+./dev/generate-release-docs.sh
+git add docs/source/user-guide/latest/
+git commit -m "Generate docs for 0.1.0 release"
+git push apache branch-0.1
+```
+
+This freezes the documentation to reflect the configs and expressions available in this release.
+
+### Update Maven Version
 
 Update the `pom.xml` files in the release branch to update the Maven version from `0.1.0-SNAPSHOT` to `0.1.0`.
 
@@ -150,6 +166,24 @@ git push apache 0.1.0-rc1
 Note that pushing a release candidate tag will trigger a GitHub workflow that will build a Docker image and publish
 it to GitHub Container Registry at https://github.com/apache/datafusion-comet/pkgs/container/datafusion-comet
 
+### Publishing Documentation
+
+In `docs` directory:
+
+- Update `docs/source/index.rst` and add a new navigation menu link for the new release in the section `_toc.user-guide-links-versioned`
+- Add a new line to `build.sh` to delete the locally cloned `comet-*` branch for the new release e.g. `comet-0.11`
+- Update the main method in `generate-versions.py`:
+
+```python
+    latest_released_version = "0.11.0"
+    previous_versions = ["0.8.0", "0.9.1", "0.10.1"]
+```
+
+Test the documentation build locally, following the instructions in `docs/README.md`.
+
+Note that the download links in the installation guide will not work until the release is finalized, but having the
+documentation available could be useful for anyone testing out the release candidate during the voting period.
+
 ## Publishing the Release Candidate
 
 This part of the process can mostly only be performed by a PMC member.
@@ -242,7 +276,7 @@ Run the release-tarball script to move the tarball to the release subversion rep
 
 ### Create a release in the GitHub repository
 
-Go to https://github.com/apache/datafusion-comet/releases and create a release for the release tag, and paste the 
+Go to https://github.com/apache/datafusion-comet/releases and create a release for the release tag, and paste the
 changelog in the description.
 
 ### Publishing Maven Artifacts

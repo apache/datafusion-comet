@@ -70,7 +70,7 @@ mkdir /tmp/spark-events
 Set `SPARK_MASTER` env var (IP address will need to be edited):
 
 ```shell
-export SPARK_MASTER=spark://172.31.34.87:7077 
+export SPARK_MASTER=spark://172.31.34.87:7077
 ```
 
 Set `SPARK_LOCAL_DIRS` to point to EBS volume
@@ -104,7 +104,7 @@ make release
 Set `COMET_JAR` environment variable.
 
 ```shell
-export COMET_JAR=/home/ec2-user/datafusion-comet/spark/target/comet-spark-spark3.5_2.12-0.11.0-SNAPSHOT.jar
+export COMET_JAR=/home/ec2-user/datafusion-comet/spark/target/comet-spark-spark3.5_2.12-$COMET_VERSION.jar
 ```
 
 ## Run Benchmarks

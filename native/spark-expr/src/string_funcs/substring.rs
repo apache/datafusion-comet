@@ -61,7 +61,7 @@ impl Display for SubstringExpr {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "StringSpace [start: {}, len: {}, child: {}]",
+            "Substring [start: {}, len: {}, child: {}]",
             self.start, self.len, self.child
         )
     }
