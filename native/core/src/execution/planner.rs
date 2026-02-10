@@ -730,6 +730,41 @@ impl PhysicalPlanner {
                     Arc::new(ConfigOptions::default()),
                 )))
             }
+            // Date +/- Int8/Int16/Int32: DataFusion 52's arrow-arith kernels only
+            // support Date32 +/- Interval types, not raw integers. Use the Spark
+            // date_add / date_sub UDFs which handle Int8/Int16/Int32 directly.
+            (
+                DataFusionOperator::Plus,
+                Ok(DataType::Date32),
+                Ok(DataType::Int8 | DataType::Int16 | DataType::Int32),
+            ) => {
+                let udf = Arc::new(ScalarUDF::new_from_impl(
+                    datafusion_spark::function::datetime::date_add::SparkDateAdd::new(),
+                ));
+                Ok(Arc::new(ScalarFunctionExpr::new(
+                    "date_add",
+                    udf,
+                    vec![left, right],
+                    Arc::new(Field::new("date_add", DataType::Date32, true)),
+                    Arc::new(ConfigOptions::default()),
+                )))
+            }
+            (
+                DataFusionOperator::Minus,
+                Ok(DataType::Date32),
+                Ok(DataType::Int8 | DataType::Int16 | DataType::Int32),
+            ) => {
+                let udf = Arc::new(ScalarUDF::new_from_impl(
+                    datafusion_spark::function::datetime::date_sub::SparkDateSub::new(),
+                ));
+                Ok(Arc::new(ScalarFunctionExpr::new(
+                    "date_sub",
+                    udf,
+                    vec![left, right],
+                    Arc::new(Field::new("date_sub", DataType::Date32, true)),
+                    Arc::new(ConfigOptions::default()),
+                )))
+            }
             _ => {
                 let data_type = return_type.map(to_arrow_datatype).unwrap();
                 if [EvalMode::Try, EvalMode::Ansi].contains(&eval_mode)
