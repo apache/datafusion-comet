@@ -79,6 +79,65 @@ class CometSqlFileTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     "spark.sql.optimizer.excludedRules" ->
       "org.apache.spark.sql.catalyst.optimizer.ConstantFolding")
 
+  // TODO: https://github.com/apache/datafusion-comet/issues/3384
+  // Skipped for first stage of 4.1 support
+  private val excludedInSpark41 = Set(
+    "expressions/string/string_lpad.sql",
+    "expressions/string/concat.sql",
+    "expressions/string/string_repeat.sql",
+    "expressions/string/length.sql",
+    "expressions/string/string_trim.sql",
+    "expressions/string/ends_with.sql",
+    "expressions/string/init_cap_enabled.sql",
+    "expressions/string/lower.sql",
+    "expressions/string/string_space.sql",
+    "expressions/string/bit_length.sql",
+    "expressions/string/unhex.sql",
+    "expressions/string/upper.sql",
+    "expressions/string/string_replace.sql",
+    "expressions/string/starts_with.sql",
+    "expressions/string/string_rpad.sql",
+    "expressions/string/hex.sql",
+    "expressions/string/regexp_replace_enabled.sql",
+    "expressions/string/chr.sql",
+    "expressions/string/octet_length.sql",
+    "expressions/string/like.sql",
+    "expressions/string/ascii.sql",
+    "expressions/string/string_instr.sql",
+    "expressions/string/string_translate.sql",
+    "expressions/string/reverse.sql",
+    "expressions/string/contains.sql",
+    "expressions/decimal/decimal_ops.sql",
+    "expressions/datetime/last_day.sql",
+    "expressions/datetime/date_format.sql",
+    "expressions/datetime/date_format_enabled.sql",
+    "expressions/datetime/date_diff.sql",
+    "expressions/datetime/date_add.sql",
+    "expressions/datetime/date_sub.sql",
+    "expressions/datetime/from_unix_time.sql",
+    "expressions/datetime/make_date.sql",
+    "expressions/datetime/next_day.sql",
+    "expressions/map/map_from_entries.sql",
+    "expressions/map/map_contains_key.sql",
+    "expressions/math/arithmetic.sql",
+    "expressions/math/floor.sql",
+    "expressions/math/ceil.sql",
+    "expressions/math/isnan.sql",
+    "expressions/math/abs.sql",
+    "expressions/math/signum.sql",
+    "expressions/math/round.sql",
+    "expressions/math/arithmetic_ansi.sql",
+    "expressions/struct/create_named_struct.sql",
+    "expressions/bitwise/bitwise.sql",
+    "expressions/cast/cast.sql",
+    "expressions/hash/crc32.sql",
+    "expressions/array/array_contains.sql",
+    "expressions/array/array_repeat.sql",
+    "expressions/array/create_array.sql",
+    "expressions/conditional/coalesce.sql",
+    "expressions/conditional/predicates.sql",
+    "expressions/conditional/if_expr.sql")
+
   private def runTestFile(relativePath: String, file: SqlTestFile): Unit = {
     val allConfigs = file.configs ++ constantFoldingExcluded
     withSQLConf(allConfigs: _*) {
@@ -131,7 +190,8 @@ class CometSqlFileTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     val combinations = configMatrix(parsed.configMatrix)
 
     // Skip tests that require a newer Spark version
-    val skip = parsed.minSparkVersion.exists(!meetsMinSparkVersion(_)) || isSpark41Plus
+    val skip = parsed.minSparkVersion.exists(!meetsMinSparkVersion(_)) ||
+      (isSpark41Plus && excludedInSpark41.contains(relativePath))
 
     if (combinations.size <= 1) {
       // No matrix or single combination
