@@ -17,7 +17,7 @@
 
 use std::{mem::size_of, time::Duration};
 
-use rand::{rng, Rng};
+use rand::{rng, RngExt};
 
 use arrow::buffer::Buffer;
 use comet::common::bit::{

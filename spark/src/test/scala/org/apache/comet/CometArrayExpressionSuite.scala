@@ -325,6 +325,38 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
+  test("array_contains - NULL array returns NULL") {
+    // Test that array_contains returns NULL when the array argument is NULL
+    // This matches Spark's SQL three-valued logic behavior
+    withTempDir { dir =>
+      withTempView("t1") {
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = false, n = 100)
+        spark.read.parquet(path.toString).createOrReplaceTempView("t1")
+
+        // Test NULL array with non-null value
+        checkSparkAnswerAndOperator(
+          sql("SELECT array_contains(cast(null as array<int>), 1) FROM t1"))
+        checkSparkAnswerAndOperator(
+          sql("SELECT array_contains(cast(null as array<string>), 'test') FROM t1"))
+        checkSparkAnswerAndOperator(
+          sql("SELECT array_contains(cast(null as array<double>), 1.5) FROM t1"))
+
+        // Test NULL array with NULL value
+        checkSparkAnswerAndOperator(
+          sql("SELECT array_contains(cast(null as array<int>), cast(null as int)) FROM t1"))
+
+        // Test NULL array with column value
+        checkSparkAnswerAndOperator(
+          sql("SELECT array_contains(cast(null as array<int>), _2) FROM t1"))
+
+        // Test non-null array with values (to ensure fix doesn't break normal operation)
+        checkSparkAnswerAndOperator(sql("SELECT array_contains(array(1, 2, 3), 2) FROM t1"))
+        checkSparkAnswerAndOperator(sql("SELECT array_contains(array(1, 2, 3), 5) FROM t1"))
+      }
+    }
+  }
+
   test("array_contains - test all types (convert from Parquet)") {
     withTempDir { dir =>
       val path = new Path(dir.toURI.toString, "test.parquet")

@@ -25,8 +25,10 @@ import java.nio.file.Files
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.comet.CometIcebergNativeScanExec
 import org.apache.spark.sql.execution.SparkPlan
+import org.apache.spark.sql.types.{StringType, TimestampType}
 
 import org.apache.comet.iceberg.RESTCatalogHelper
+import org.apache.comet.testing.{FuzzDataGenerator, SchemaGenOptions}
 
 /**
  * Test suite for native Iceberg scan using FileScanTasks and iceberg-rust.
@@ -2291,7 +2293,232 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
         }
         file.delete()
       }
+
       deleteRecursively(dir)
+    }
+  }
+
+  test("runtime filtering - multiple DPP filters on two partition columns") {
+    assume(icebergAvailable, "Iceberg not available")
+    withTempIcebergDir { warehouseDir =>
+      val dimDir = new File(warehouseDir, "dim_parquet")
+      withSQLConf(
+        "spark.sql.catalog.runtime_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.runtime_cat.type" -> "hadoop",
+        "spark.sql.catalog.runtime_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        "spark.sql.autoBroadcastJoinThreshold" -> "1KB",
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        // Create table partitioned by TWO columns: (data, bucket(8, id))
+        // This mimics Iceberg's testMultipleRuntimeFilters
+        spark.sql("""
+          CREATE TABLE runtime_cat.db.multi_dpp_fact (
+            id BIGINT,
+            data STRING,
+            date DATE,
+            ts TIMESTAMP
+          ) USING iceberg
+          PARTITIONED BY (data, bucket(8, id))
+        """)
+
+        // Insert data - 99 rows with varying data and id values
+        val df = spark
+          .range(1, 100)
+          .selectExpr(
+            "id",
+            "CAST(DATE_ADD(DATE '1970-01-01', CAST(id % 4 AS INT)) AS STRING) as data",
+            "DATE_ADD(DATE '1970-01-01', CAST(id % 4 AS INT)) as date",
+            "CAST(DATE_ADD(DATE '1970-01-01', CAST(id % 4 AS INT)) AS TIMESTAMP) as ts")
+        df.coalesce(1)
+          .write
+          .format("iceberg")
+          .option("fanout-enabled", "true")
+          .mode("append")
+          .saveAsTable("runtime_cat.db.multi_dpp_fact")
+
+        // Create dimension table with specific id=1, data='1970-01-02'
+        spark
+          .createDataFrame(Seq((1L, java.sql.Date.valueOf("1970-01-02"), "1970-01-02")))
+          .toDF("id", "date", "data")
+          .write
+          .parquet(dimDir.getAbsolutePath)
+        spark.read.parquet(dimDir.getAbsolutePath).createOrReplaceTempView("dim")
+
+        // Join on BOTH partition columns - this creates TWO DPP filters
+        val query =
+          """SELECT /*+ BROADCAST(d) */ f.*
+            |FROM runtime_cat.db.multi_dpp_fact f
+            |JOIN dim d ON f.id = d.id AND f.data = d.data
+            |WHERE d.date = DATE '1970-01-02'""".stripMargin
+
+        // Verify plan has 2 dynamic pruning expressions
+        val df2 = spark.sql(query)
+        val planStr = df2.queryExecution.executedPlan.toString
+        // Count "dynamicpruningexpression(" to avoid matching "dynamicpruning#N" references
+        val dppCount = "dynamicpruningexpression\\(".r.findAllIn(planStr).length
+        assert(dppCount == 2, s"Expected 2 DPP expressions but found $dppCount in:\n$planStr")
+
+        // Verify native Iceberg scan is used and DPP actually pruned partitions
+        val (_, cometPlan) = checkSparkAnswer(query)
+        val icebergScans = collectIcebergNativeScans(cometPlan)
+        assert(
+          icebergScans.nonEmpty,
+          s"Expected CometIcebergNativeScanExec but found none. Plan:\n$cometPlan")
+        // With 4 data values x 8 buckets = up to 32 partitions total
+        // DPP on (data='1970-01-02', bucket(id=1)) should prune to 1
+        val numPartitions = icebergScans.head.numPartitions
+        assert(numPartitions == 1, s"Expected DPP to prune to 1 partition but got $numPartitions")
+
+        spark.sql("DROP TABLE runtime_cat.db.multi_dpp_fact")
+      }
+    }
+  }
+
+  test("runtime filtering - join with dynamic partition pruning") {
+    assume(icebergAvailable, "Iceberg not available")
+    withTempIcebergDir { warehouseDir =>
+      val dimDir = new File(warehouseDir, "dim_parquet")
+      withSQLConf(
+        "spark.sql.catalog.runtime_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.runtime_cat.type" -> "hadoop",
+        "spark.sql.catalog.runtime_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        // Prevent fact table from being broadcast (force dimension to be broadcast)
+        "spark.sql.autoBroadcastJoinThreshold" -> "1KB",
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        // Create partitioned Iceberg table (fact table) with 3 partitions
+        // Add enough data to prevent broadcast
+        spark.sql("""
+          CREATE TABLE runtime_cat.db.fact_table (
+            id BIGINT,
+            data STRING,
+            date DATE
+          ) USING iceberg
+          PARTITIONED BY (date)
+        """)
+
+        // Insert data across multiple partitions
+        spark.sql("""
+          INSERT INTO runtime_cat.db.fact_table VALUES
+          (1, 'a', DATE '1970-01-01'),
+          (2, 'b', DATE '1970-01-02'),
+          (3, 'c', DATE '1970-01-02'),
+          (4, 'd', DATE '1970-01-03'),
+          (5, 'e', DATE '1970-01-01'),
+          (6, 'f', DATE '1970-01-02'),
+          (7, 'g', DATE '1970-01-03'),
+          (8, 'h', DATE '1970-01-01')
+        """)
+
+        // Create dimension table (Parquet) in temp directory
+        spark
+          .createDataFrame(Seq((1L, java.sql.Date.valueOf("1970-01-02"))))
+          .toDF("id", "date")
+          .write
+          .parquet(dimDir.getAbsolutePath)
+        spark.read.parquet(dimDir.getAbsolutePath).createOrReplaceTempView("dim")
+
+        // This join should trigger dynamic partition pruning
+        // Use BROADCAST hint to force dimension table to be broadcast
+        val query =
+          """SELECT /*+ BROADCAST(d) */ f.* FROM runtime_cat.db.fact_table f
+            |JOIN dim d ON f.date = d.date AND d.id = 1
+            |ORDER BY f.id""".stripMargin
+
+        // Verify the initial plan contains dynamic pruning expression
+        val df = spark.sql(query)
+        val initialPlan = df.queryExecution.executedPlan
+        val planStr = initialPlan.toString
+        assert(
+          planStr.contains("dynamicpruning"),
+          s"Expected dynamic pruning in plan but got:\n$planStr")
+
+        // Should now use native Iceberg scan with DPP
+        checkIcebergNativeScan(query)
+
+        // Verify DPP actually pruned partitions (should only scan 1 of 3 partitions)
+        val (_, cometPlan) = checkSparkAnswer(query)
+        val icebergScans = collectIcebergNativeScans(cometPlan)
+        assert(
+          icebergScans.nonEmpty,
+          s"Expected CometIcebergNativeScanExec but found none. Plan:\n$cometPlan")
+        val numPartitions = icebergScans.head.numPartitions
+        assert(numPartitions == 1, s"Expected DPP to prune to 1 partition but got $numPartitions")
+
+        spark.sql("DROP TABLE runtime_cat.db.fact_table")
+      }
+    }
+  }
+
+  // Regression test for a user reported issue
+  test("double partitioning with range filter on top-level partition") {
+    assume(icebergAvailable, "Iceberg not available")
+
+    // Generate Iceberg table without Comet enabled
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        "spark.sql.files.maxRecordsPerFile" -> "50") {
+
+        // timestamp + geohash with multi-column partitioning
+        spark.sql("""
+          CREATE TABLE test_cat.db.geolocation_trips (
+            outputTimestamp TIMESTAMP,
+            geohash7 STRING,
+            tripId STRING
+          ) USING iceberg
+          PARTITIONED BY (hours(outputTimestamp), truncate(3, geohash7))
+          TBLPROPERTIES (
+            'format-version' = '2',
+            'write.distribution-mode' = 'range',
+            'write.target-file-size-bytes' = '1073741824'
+          )
+        """)
+        val schema = FuzzDataGenerator.generateSchema(
+          SchemaGenOptions(primitiveTypes = Seq(TimestampType, StringType, StringType)))
+
+        val random = new scala.util.Random(42)
+        // Set baseDate to match our filter range (around 2024-01-01)
+        val options = testing.DataGenOptions(
+          allowNull = false,
+          baseDate = 1704067200000L
+        ) // 2024-01-01 00:00:00
+
+        val df = FuzzDataGenerator
+          .generateDataFrame(random, spark, schema, 1000, options)
+          .toDF("outputTimestamp", "geohash7", "tripId")
+
+        df.writeTo("test_cat.db.geolocation_trips").append()
+      }
+
+      // Query using Comet native Iceberg scan
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        // Filter for a range that does not align with hour boundaries
+        // Partitioning is hours(outputTimestamp), so filter in middle of hours forces residual filter
+        val startMs = 1704067200000L + 30 * 60 * 1000L // 2024-01-01 01:30:00 (30 min into hour)
+        val endMs = 1704078000000L - 15 * 60 * 1000L // 2024-01-01 03:45:00 (15 min before hour)
+
+        checkIcebergNativeScan(s"""
+          SELECT COUNT(DISTINCT(tripId)) FROM test_cat.db.geolocation_trips
+          WHERE timestamp_millis($startMs) <= outputTimestamp
+            AND outputTimestamp < timestamp_millis($endMs)
+        """)
+
+        spark.sql("DROP TABLE test_cat.db.geolocation_trips")
+      }
     }
   }
 }
