@@ -58,7 +58,7 @@ jobs:
   # Build native library once and share with all test jobs
   build-native:
     name: Build Native Library
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest-16-cores
     container:
       image: amd64/rust
     steps:
@@ -109,7 +109,7 @@ jobs:
     needs: build-native
     strategy:
       matrix:
-        os: [ubuntu-24.04]
+        os: [ubuntu-latest-16-cores]
         module:
           - {name: "catalyst", args1: "catalyst/test", args2: ""}
           - {name: "sql_core-1", args1: "", args2: sql/testOnly * -- -l org.apache.spark.tags.ExtendedSQLTest -l org.apache.spark.tags.SlowSQLTest}
@@ -139,7 +139,6 @@ jobs:
     runs-on: ${{ matrix.os }}
     container:
       image: amd64/rust
-      options: --shm-size=8192m
     steps:
       - uses: actions/checkout@v6
       - name: Setup Rust & Java toolchain
