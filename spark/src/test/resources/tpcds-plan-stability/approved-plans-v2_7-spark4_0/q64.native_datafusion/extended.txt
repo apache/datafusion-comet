@@ -1,4 +1,4 @@
-CometColumnarToRow
+CometNativeColumnarToRow
 +- CometSort
    +- CometExchange
       +- CometProject
@@ -49,10 +49,10 @@ CometColumnarToRow
             :                 :     :     :     :     :     :     :     :     :     :     :     :     :     :     :     :           :        +-  Scan parquet spark_catalog.default.store_sales [COMET: Native DataFusion scan does not support subqueries/dynamic pruning]
             :                 :     :     :     :     :     :     :     :     :     :     :     :     :     :     :     :           :              +- SubqueryBroadcast
             :                 :     :     :     :     :     :     :     :     :     :     :     :     :     :     :     :           :                 +- BroadcastExchange
-            :                 :     :     :     :     :     :     :     :     :     :     :     :     :     :     :     :           :                    +- CometColumnarToRow
+            :                 :     :     :     :     :     :     :     :     :     :     :     :     :     :     :     :           :                    +- CometNativeColumnarToRow
             :                 :     :     :     :     :     :     :     :     :     :     :     :     :     :     :     :           :                       +- CometFilter
             :                 :     :     :     :     :     :     :     :     :     :     :     :     :     :     :     :           :                          +- CometNativeScan parquet spark_catalog.default.date_dim
-            :                 :     :     :     :     :     :     :     :     :     :     :     :     :     :     :     :           +- CometColumnarToRow
+            :                 :     :     :     :     :     :     :     :     :     :     :     :     :     :     :     :           +- CometNativeColumnarToRow
             :                 :     :     :     :     :     :     :     :     :     :     :     :     :     :     :     :              +- CometProject
             :                 :     :     :     :     :     :     :     :     :     :     :     :     :     :     :     :                 +- CometFilter
             :                 :     :     :     :     :     :     :     :     :     :     :     :     :     :     :     :                    +- CometNativeScan parquet spark_catalog.default.store_returns
@@ -171,10 +171,10 @@ CometColumnarToRow
                               :     :     :     :     :     :     :     :     :     :     :     :     :     :     :     :           :        +-  Scan parquet spark_catalog.default.store_sales [COMET: Native DataFusion scan does not support subqueries/dynamic pruning]
                               :     :     :     :     :     :     :     :     :     :     :     :     :     :     :     :           :              +- SubqueryBroadcast
                               :     :     :     :     :     :     :     :     :     :     :     :     :     :     :     :           :                 +- BroadcastExchange
-                              :     :     :     :     :     :     :     :     :     :     :     :     :     :     :     :           :                    +- CometColumnarToRow
+                              :     :     :     :     :     :     :     :     :     :     :     :     :     :     :     :           :                    +- CometNativeColumnarToRow
                               :     :     :     :     :     :     :     :     :     :     :     :     :     :     :     :           :                       +- CometFilter
                               :     :     :     :     :     :     :     :     :     :     :     :     :     :     :     :           :                          +- CometNativeScan parquet spark_catalog.default.date_dim
-                              :     :     :     :     :     :     :     :     :     :     :     :     :     :     :     :           +- CometColumnarToRow
+                              :     :     :     :     :     :     :     :     :     :     :     :     :     :     :     :           +- CometNativeColumnarToRow
                               :     :     :     :     :     :     :     :     :     :     :     :     :     :     :     :              +- CometProject
                               :     :     :     :     :     :     :     :     :     :     :     :     :     :     :     :                 +- CometFilter
                               :     :     :     :     :     :     :     :     :     :     :     :     :     :     :     :                    +- CometNativeScan parquet spark_catalog.default.store_returns
