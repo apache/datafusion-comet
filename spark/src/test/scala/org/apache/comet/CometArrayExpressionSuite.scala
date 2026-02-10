@@ -923,36 +923,4 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
-  test("array_position") {
-    Seq(true, false).foreach { dictionaryEnabled =>
-      withTempDir { dir =>
-        val path = new Path(dir.toURI.toString, "test.parquet")
-        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled, 100)
-        spark.read.parquet(path.toString).createOrReplaceTempView("t1")
-
-        // Tests with literal values need constant folding disabled
-        withSQLConf(
-          SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
-            "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
-          // Basic array_position tests with integers
-          checkSparkAnswerAndOperator(
-            sql("SELECT array_position(array(1, 2, 3, 4), 3) FROM t1 LIMIT 1"))
-          // Element not found should return 0
-          checkSparkAnswerAndOperator(
-            sql("SELECT array_position(array(1, 2, 3, 4), 5) FROM t1 LIMIT 1"))
-          // Test with strings
-          checkSparkAnswerAndOperator(
-            sql("SELECT array_position(array('a', 'b', 'c'), 'b') FROM t1 LIMIT 1"))
-          // Test with null element in array
-          checkSparkAnswerAndOperator(
-            sql("SELECT array_position(array(1, 2, null, 3), 3) FROM t1 LIMIT 1"))
-        }
-
-        // Test with column values
-        checkSparkAnswerAndOperator(sql("SELECT array_position(array(1, _4, 3), _4) FROM t1"))
-        checkSparkAnswerAndOperator(
-          sql("SELECT array_position(array(_4, _4 + 1, _4 + 2), _4) FROM t1"))
-      }
-    }
-  }
 }

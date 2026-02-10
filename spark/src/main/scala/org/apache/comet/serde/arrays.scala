@@ -640,6 +640,10 @@ object CometArrayPosition extends CometExpressionSerde[ArrayPosition] with Array
       expr: ArrayPosition,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
+    if (expr.children.forall(_.foldable)) {
+      withInfo(expr, "all arguments are literals, falling back to Spark")
+      return None
+    }
     // Check if input types are supported
     val inputTypes: Set[DataType] = expr.children.map(_.dataType).toSet
     for (dt <- inputTypes) {
