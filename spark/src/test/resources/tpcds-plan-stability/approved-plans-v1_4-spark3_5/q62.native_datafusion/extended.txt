@@ -22,7 +22,7 @@ CometColumnarToRow
                   :     :              +- CometNativeScan parquet spark_catalog.default.ship_mode
                   :     +- CometBroadcastExchange
                   :        +- CometFilter
-                  :           +- CometNativeScan parquet spark_catalog.default.warehouse
+                  :           +- CometNativeScan parquet spark_catalog.default.web_site
                   +- CometBroadcastExchange
                      +- CometProject
                         +- CometFilter

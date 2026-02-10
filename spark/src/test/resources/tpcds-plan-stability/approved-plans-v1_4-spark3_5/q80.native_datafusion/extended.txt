@@ -76,7 +76,7 @@ CometColumnarToRow
                   :              :     :     :     :        +- CometExchange
                   :              :     :     :     :           +- CometProject
                   :              :     :     :     :              +- CometFilter
-                  :              :     :     :     :                 +- CometNativeScan parquet spark_catalog.default.store_returns
+                  :              :     :     :     :                 +- CometNativeScan parquet spark_catalog.default.catalog_returns
                   :              :     :     :     +- CometBroadcastExchange
                   :              :     :     :        +- CometProject
                   :              :     :     :           +- CometFilter
@@ -84,7 +84,7 @@ CometColumnarToRow
                   :              :     :     +- CometBroadcastExchange
                   :              :     :        +- CometProject
                   :              :     :           +- CometFilter
-                  :              :     :              +- CometNativeScan parquet spark_catalog.default.store
+                  :              :     :              +- CometNativeScan parquet spark_catalog.default.catalog_page
                   :              :     +- CometBroadcastExchange
                   :              :        +- CometProject
                   :              :           +- CometFilter
@@ -109,7 +109,7 @@ CometColumnarToRow
                                  :     :     :     :     :- CometSort
                                  :     :     :     :     :  +- CometExchange
                                  :     :     :     :     :     +- CometFilter
-                                 :     :     :     :     :        +- CometNativeScan parquet spark_catalog.default.store_sales
+                                 :     :     :     :     :        +- CometNativeScan parquet spark_catalog.default.web_sales
                                  :     :     :     :     :              +- SubqueryBroadcast
                                  :     :     :     :     :                 +- BroadcastExchange
                                  :     :     :     :     :                    +- CometColumnarToRow
@@ -120,7 +120,7 @@ CometColumnarToRow
                                  :     :     :     :        +- CometExchange
                                  :     :     :     :           +- CometProject
                                  :     :     :     :              +- CometFilter
-                                 :     :     :     :                 +- CometNativeScan parquet spark_catalog.default.store_returns
+                                 :     :     :     :                 +- CometNativeScan parquet spark_catalog.default.web_returns
                                  :     :     :     +- CometBroadcastExchange
                                  :     :     :        +- CometProject
                                  :     :     :           +- CometFilter
@@ -128,7 +128,7 @@ CometColumnarToRow
                                  :     :     +- CometBroadcastExchange
                                  :     :        +- CometProject
                                  :     :           +- CometFilter
-                                 :     :              +- CometNativeScan parquet spark_catalog.default.store
+                                 :     :              +- CometNativeScan parquet spark_catalog.default.web_site
                                  :     +- CometBroadcastExchange
                                  :        +- CometProject
                                  :           +- CometFilter

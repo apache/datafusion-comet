@@ -42,7 +42,7 @@ Project
    :                 :     +- CometBroadcastExchange
    :                 :        +- CometProject
    :                 :           +- CometFilter
-   :                 :              +- CometNativeScan parquet spark_catalog.default.store
+   :                 :              +- CometNativeScan parquet spark_catalog.default.customer_address
    :                 +- CometBroadcastExchange
    :                    +- CometProject
    :                       +- CometFilter
@@ -84,7 +84,7 @@ Project
                         :     +- CometBroadcastExchange
                         :        +- CometProject
                         :           +- CometFilter
-                        :              +- CometNativeScan parquet spark_catalog.default.store
+                        :              +- CometNativeScan parquet spark_catalog.default.customer_address
                         +- CometBroadcastExchange
                            +- CometProject
                               +- CometFilter

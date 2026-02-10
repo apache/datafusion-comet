@@ -47,7 +47,7 @@ TakeOrderedAndProject
                   :     :        +- CometColumnarToRow
                   :     :           +- CometProject
                   :     :              +- CometBroadcastHashJoin
-                  :     :                 :- CometNativeScan parquet spark_catalog.default.web_sales
+                  :     :                 :- CometNativeScan parquet spark_catalog.default.catalog_sales
                   :     :                 :     +- SubqueryBroadcast
                   :     :                 :        +- BroadcastExchange
                   :     :                 :           +- CometColumnarToRow

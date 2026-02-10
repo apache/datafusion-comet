@@ -39,7 +39,7 @@ HashAggregate
                :                       :- CometProject
                :                       :  +- CometBroadcastHashJoin
                :                       :     :- CometFilter
-               :                       :     :  +- CometNativeScan parquet spark_catalog.default.store_sales
+               :                       :     :  +- CometNativeScan parquet spark_catalog.default.catalog_sales
                :                       :     :        +- SubqueryBroadcast
                :                       :     :           +- BroadcastExchange
                :                       :     :              +- CometColumnarToRow
@@ -64,7 +64,7 @@ HashAggregate
                                     :- CometProject
                                     :  +- CometBroadcastHashJoin
                                     :     :- CometFilter
-                                    :     :  +- CometNativeScan parquet spark_catalog.default.store_sales
+                                    :     :  +- CometNativeScan parquet spark_catalog.default.web_sales
                                     :     :        +- SubqueryBroadcast
                                     :     :           +- BroadcastExchange
                                     :     :              +- CometColumnarToRow

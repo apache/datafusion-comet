@@ -63,7 +63,7 @@ CometColumnarToRow
          :                          :     :     +- CometNativeScan parquet spark_catalog.default.customer
          :                          :     +- CometBroadcastExchange
          :                          :        +- CometFilter
-         :                          :           +- CometNativeScan parquet spark_catalog.default.store_sales
+         :                          :           +- CometNativeScan parquet spark_catalog.default.web_sales
          :                          :                 +- SubqueryBroadcast
          :                          :                    +- BroadcastExchange
          :                          :                       +- CometColumnarToRow
@@ -85,7 +85,7 @@ CometColumnarToRow
                            :     :     +- CometNativeScan parquet spark_catalog.default.customer
                            :     +- CometBroadcastExchange
                            :        +- CometFilter
-                           :           +- CometNativeScan parquet spark_catalog.default.store_sales
+                           :           +- CometNativeScan parquet spark_catalog.default.web_sales
                            :                 +- SubqueryBroadcast
                            :                    +- BroadcastExchange
                            :                       +- CometColumnarToRow

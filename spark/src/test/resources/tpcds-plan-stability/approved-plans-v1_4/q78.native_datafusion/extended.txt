@@ -43,7 +43,7 @@ TakeOrderedAndProject
          :                          :        :- CometSort
          :                          :        :  +- CometExchange
          :                          :        :     +- CometFilter
-         :                          :        :        +- CometNativeScan parquet spark_catalog.default.store_sales
+         :                          :        :        +- CometNativeScan parquet spark_catalog.default.web_sales
          :                          :        :              +- SubqueryBroadcast
          :                          :        :                 +- BroadcastExchange
          :                          :        :                    +- CometColumnarToRow
@@ -53,7 +53,7 @@ TakeOrderedAndProject
          :                          :           +- CometExchange
          :                          :              +- CometProject
          :                          :                 +- CometFilter
-         :                          :                    +- CometNativeScan parquet spark_catalog.default.store_returns
+         :                          :                    +- CometNativeScan parquet spark_catalog.default.web_returns
          :                          +- CometBroadcastExchange
          :                             +- CometFilter
          :                                +- CometNativeScan parquet spark_catalog.default.date_dim
@@ -80,7 +80,7 @@ TakeOrderedAndProject
                               :           +- CometExchange
                               :              +- CometProject
                               :                 +- CometFilter
-                              :                    +- CometNativeScan parquet spark_catalog.default.store_returns
+                              :                    +- CometNativeScan parquet spark_catalog.default.catalog_returns
                               +- CometBroadcastExchange
                                  +- CometFilter
                                     +- CometNativeScan parquet spark_catalog.default.date_dim

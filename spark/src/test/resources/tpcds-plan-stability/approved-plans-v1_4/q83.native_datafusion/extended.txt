@@ -96,7 +96,7 @@ CometColumnarToRow
                            :- CometProject
                            :  +- CometBroadcastHashJoin
                            :     :- CometFilter
-                           :     :  +- CometNativeScan parquet spark_catalog.default.catalog_returns
+                           :     :  +- CometNativeScan parquet spark_catalog.default.web_returns
                            :     :        +- SubqueryBroadcast
                            :     :           +- BroadcastExchange
                            :     :              +- CometColumnarToRow

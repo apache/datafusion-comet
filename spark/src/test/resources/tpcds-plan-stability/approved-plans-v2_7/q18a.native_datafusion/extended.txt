@@ -229,6 +229,6 @@ CometColumnarToRow
                      :              +- CometNativeScan parquet spark_catalog.default.date_dim
                      +- CometBroadcastExchange
                         +- CometFilter
-                           +- CometNativeScan parquet spark_catalog.default.customer_demographics
+                           +- CometNativeScan parquet spark_catalog.default.item
 
 Comet accelerated 216 out of 226 eligible operators (95%). Final plan contains 6 transitions between Spark and Comet.

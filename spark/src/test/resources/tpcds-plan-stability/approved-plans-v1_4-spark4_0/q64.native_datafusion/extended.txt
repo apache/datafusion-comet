@@ -115,10 +115,10 @@ CometColumnarToRow
             :                 :     :     :              +- CometNativeScan parquet spark_catalog.default.customer_address
             :                 :     :     +- CometBroadcastExchange
             :                 :     :        +- CometFilter
-            :                 :     :           +- CometNativeScan parquet spark_catalog.default.promotion
+            :                 :     :           +- CometNativeScan parquet spark_catalog.default.income_band
             :                 :     +- CometBroadcastExchange
             :                 :        +- CometFilter
-            :                 :           +- CometNativeScan parquet spark_catalog.default.promotion
+            :                 :           +- CometNativeScan parquet spark_catalog.default.income_band
             :                 +- CometBroadcastExchange
             :                    +- CometProject
             :                       +- CometFilter
@@ -235,10 +235,10 @@ CometColumnarToRow
                               :     :     :              +- CometNativeScan parquet spark_catalog.default.customer_address
                               :     :     +- CometBroadcastExchange
                               :     :        +- CometFilter
-                              :     :           +- CometNativeScan parquet spark_catalog.default.promotion
+                              :     :           +- CometNativeScan parquet spark_catalog.default.income_band
                               :     +- CometBroadcastExchange
                               :        +- CometFilter
-                              :           +- CometNativeScan parquet spark_catalog.default.promotion
+                              :           +- CometNativeScan parquet spark_catalog.default.income_band
                               +- CometBroadcastExchange
                                  +- CometProject
                                     +- CometFilter
