@@ -121,7 +121,8 @@ trait ShimCometScanExec extends ShimStreamSourceAwareSparkPlan {
     // the PartitionedFile creation instead of using getPartitionedFile(f, PartitionDirectory)
     val filesGroupedToBuckets = filteredListing.filePartitionIterator
       .flatMap { p =>
-        p.files.map(f => PartitionedFileUtil.getPartitionedFile(f, f.getPath, p.values, 0, f.getLen))
+        p.files.map(f =>
+          PartitionedFileUtil.getPartitionedFile(f, f.getPath, p.values, 0, f.getLen))
       }
       .toSeq
       .groupBy { f =>
