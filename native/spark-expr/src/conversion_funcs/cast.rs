@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::conversion_funcs::boolean::can_cast_from_boolean;
+use crate::conversion_funcs::utils::spark_cast_postprocess;
 use crate::utils::array_with_timezone;
 use crate::EvalMode::Legacy;
 use crate::{timezone, BinaryOutputStyle};
@@ -37,7 +39,7 @@ use arrow::{
         GenericStringArray, Int16Array, Int32Array, Int64Array, Int8Array, OffsetSizeTrait,
         PrimitiveArray,
     },
-    compute::{cast_with_options, take, unary, CastOptions},
+    compute::{cast_with_options, take, CastOptions},
     datatypes::{
         is_validate_decimal_precision, ArrowPrimitiveType, Decimal128Type, Float32Type,
         Float64Type, Int64Type, TimestampMicrosecondType,
@@ -48,16 +50,10 @@ use arrow::{
 };
 use base64::prelude::*;
 use chrono::{DateTime, NaiveDate, TimeZone, Timelike};
-use datafusion::common::{
-    cast::as_generic_string_array, internal_err, DataFusionError, Result as DataFusionResult,
-    ScalarValue,
-};
+use datafusion::common::{internal_err, DataFusionError, Result as DataFusionResult, ScalarValue};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ColumnarValue;
-use num::{
-    cast::AsPrimitive, integer::div_floor, traits::CheckedNeg, CheckedSub, Integer, ToPrimitive,
-    Zero,
-};
+use num::{cast::AsPrimitive, traits::CheckedNeg, CheckedSub, Integer, ToPrimitive, Zero};
 use regex::Regex;
 use std::str::FromStr;
 use std::{
@@ -69,8 +65,6 @@ use std::{
 };
 
 static TIMESTAMP_FORMAT: Option<&str> = Some("%Y-%m-%d %H:%M:%S%.f");
-
-const MICROS_PER_SECOND: i64 = 1000000;
 
 static CAST_OPTIONS: CastOptions = CastOptions {
     safe: true,
@@ -162,7 +156,6 @@ impl Hash for Cast {
         self.cast_options.hash(state);
     }
 }
-
 macro_rules! cast_utf8_to_int {
     ($array:expr, $array_type:ty, $parse_fn:expr) => {{
         let len = $array.len();
@@ -1145,16 +1138,7 @@ fn is_datafusion_spark_compatible(from_type: &DataType, to_type: &DataType) -> b
         DataType::Null => {
             matches!(to_type, DataType::List(_))
         }
-        DataType::Boolean => matches!(
-            to_type,
-            DataType::Int8
-                | DataType::Int16
-                | DataType::Int32
-                | DataType::Int64
-                | DataType::Float32
-                | DataType::Float64
-                | DataType::Utf8
-        ),
+        DataType::Boolean => can_cast_from_boolean(to_type),
         DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64 => {
             matches!(
                 to_type,
@@ -2808,84 +2792,6 @@ fn date_parser(date_str: &str, eval_mode: EvalMode) -> SparkResult<Option<i32>> 
             Ok(Some(duration_since_epoch.to_i32().unwrap()))
         }
         None => Ok(None),
-    }
-}
-
-/// This takes for special casting cases of Spark. E.g., Timestamp to Long.
-/// This function runs as a post process of the DataFusion cast(). By the time it arrives here,
-/// Dictionary arrays are already unpacked by the DataFusion cast() since Spark cannot specify
-/// Dictionary as to_type. The from_type is taken before the DataFusion cast() runs in
-/// expressions/cast.rs, so it can be still Dictionary.
-fn spark_cast_postprocess(array: ArrayRef, from_type: &DataType, to_type: &DataType) -> ArrayRef {
-    match (from_type, to_type) {
-        (DataType::Timestamp(_, _), DataType::Int64) => {
-            // See Spark's `Cast` expression
-            unary_dyn::<_, Int64Type>(&array, |v| div_floor(v, MICROS_PER_SECOND)).unwrap()
-        }
-        (DataType::Dictionary(_, value_type), DataType::Int64)
-            if matches!(value_type.as_ref(), &DataType::Timestamp(_, _)) =>
-        {
-            // See Spark's `Cast` expression
-            unary_dyn::<_, Int64Type>(&array, |v| div_floor(v, MICROS_PER_SECOND)).unwrap()
-        }
-        (DataType::Timestamp(_, _), DataType::Utf8) => remove_trailing_zeroes(array),
-        (DataType::Dictionary(_, value_type), DataType::Utf8)
-            if matches!(value_type.as_ref(), &DataType::Timestamp(_, _)) =>
-        {
-            remove_trailing_zeroes(array)
-        }
-        _ => array,
-    }
-}
-
-/// A fork & modified version of Arrow's `unary_dyn` which is being deprecated
-fn unary_dyn<F, T>(array: &ArrayRef, op: F) -> Result<ArrayRef, ArrowError>
-where
-    T: ArrowPrimitiveType,
-    F: Fn(T::Native) -> T::Native,
-{
-    if let Some(d) = array.as_any_dictionary_opt() {
-        let new_values = unary_dyn::<F, T>(d.values(), op)?;
-        return Ok(Arc::new(d.with_values(Arc::new(new_values))));
-    }
-
-    match array.as_primitive_opt::<T>() {
-        Some(a) if PrimitiveArray::<T>::is_compatible(a.data_type()) => {
-            Ok(Arc::new(unary::<T, F, T>(
-                array.as_any().downcast_ref::<PrimitiveArray<T>>().unwrap(),
-                op,
-            )))
-        }
-        _ => Err(ArrowError::NotYetImplemented(format!(
-            "Cannot perform unary operation of type {} on array of type {}",
-            T::DATA_TYPE,
-            array.data_type()
-        ))),
-    }
-}
-
-/// Remove any trailing zeroes in the string if they occur after in the fractional seconds,
-/// to match Spark behavior
-/// example:
-/// "1970-01-01 05:29:59.900" => "1970-01-01 05:29:59.9"
-/// "1970-01-01 05:29:59.990" => "1970-01-01 05:29:59.99"
-/// "1970-01-01 05:29:59.999" => "1970-01-01 05:29:59.999"
-/// "1970-01-01 05:30:00"     => "1970-01-01 05:30:00"
-/// "1970-01-01 05:30:00.001" => "1970-01-01 05:30:00.001"
-fn remove_trailing_zeroes(array: ArrayRef) -> ArrayRef {
-    let string_array = as_generic_string_array::<i32>(&array).unwrap();
-    let result = string_array
-        .iter()
-        .map(|s| s.map(trim_end))
-        .collect::<GenericStringArray<i32>>();
-    Arc::new(result) as ArrayRef
-}
-
-fn trim_end(s: &str) -> &str {
-    if s.rfind('.').is_some() {
-        s.trim_end_matches('0')
-    } else {
-        s
     }
 }
 

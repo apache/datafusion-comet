@@ -15,6 +15,12 @@
 // specific language governing permissions and limitations
 // under the License.
 
-mod boolean;
-pub mod cast;
-mod utils;
+use arrow::datatypes::DataType;
+
+pub fn can_cast_from_boolean(to_type: &DataType) -> bool {
+    use DataType::*;
+    matches!(
+        to_type,
+        Int8 | Int16 | Int32 | Int64 | Float32 | Float64 | Utf8
+    )
+}
