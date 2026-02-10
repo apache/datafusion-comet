@@ -21,6 +21,137 @@ pub fn can_cast_from_boolean(to_type: &DataType) -> bool {
     use DataType::*;
     matches!(
         to_type,
-        Int8 | Int16 | Int32 | Int64 | Float32 | Float64 | Utf8
+        Boolean | Int8 | Int16 | Int32 | Int64 | Float32 | Float64 | Utf8
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cast::cast_array;
+    use crate::{EvalMode, SparkCastOptions};
+    use arrow::array::{
+        Array, ArrayRef, BooleanArray, Float32Array, Float64Array, Int16Array, Int32Array,
+        Int64Array, Int8Array, StringArray,
+    };
+    use std::sync::Arc;
+
+    fn test_input_bool_array() -> ArrayRef {
+        Arc::new(BooleanArray::from(vec![Some(true), Some(false), None]))
+    }
+
+    fn test_input_spark_opts() -> SparkCastOptions {
+        SparkCastOptions::new(EvalMode::Legacy, "Asia/Kolkata", false)
+    }
+
+    #[test]
+    fn test_can_cast_from_boolean() {
+        assert!(can_cast_from_boolean(&DataType::Boolean));
+        assert!(can_cast_from_boolean(&DataType::Int8));
+        assert!(can_cast_from_boolean(&DataType::Int16));
+        assert!(can_cast_from_boolean(&DataType::Int32));
+        assert!(can_cast_from_boolean(&DataType::Int64));
+        assert!(can_cast_from_boolean(&DataType::Float32));
+        assert!(can_cast_from_boolean(&DataType::Float64));
+        assert!(can_cast_from_boolean(&DataType::Utf8));
+        assert!(!can_cast_from_boolean(&DataType::Null));
+    }
+
+    #[test]
+    fn test_bool_to_int8_cast() {
+        let result = cast_array(
+            test_input_bool_array(),
+            &DataType::Int8,
+            &test_input_spark_opts(),
+        )
+        .unwrap();
+        let arr = result.as_any().downcast_ref::<Int8Array>().unwrap();
+        assert_eq!(arr.value(0), 1);
+        assert_eq!(arr.value(1), 0);
+        assert!(arr.is_null(2));
+    }
+
+    #[test]
+    fn test_bool_to_int16_cast() {
+        let result = cast_array(
+            test_input_bool_array(),
+            &DataType::Int16,
+            &test_input_spark_opts(),
+        )
+        .unwrap();
+        let arr = result.as_any().downcast_ref::<Int16Array>().unwrap();
+        assert_eq!(arr.value(0), 1);
+        assert_eq!(arr.value(1), 0);
+        assert!(arr.is_null(2));
+    }
+
+    #[test]
+    fn test_bool_to_int32_cast() {
+        let result = cast_array(
+            test_input_bool_array(),
+            &DataType::Int32,
+            &test_input_spark_opts(),
+        )
+        .unwrap();
+        let arr = result.as_any().downcast_ref::<Int32Array>().unwrap();
+        assert_eq!(arr.value(0), 1);
+        assert_eq!(arr.value(1), 0);
+        assert!(arr.is_null(2));
+    }
+
+    #[test]
+    fn test_bool_to_int64_cast() {
+        let result = cast_array(
+            test_input_bool_array(),
+            &DataType::Int64,
+            &test_input_spark_opts(),
+        )
+        .unwrap();
+        let arr = result.as_any().downcast_ref::<Int64Array>().unwrap();
+        assert_eq!(arr.value(0), 1);
+        assert_eq!(arr.value(1), 0);
+        assert!(arr.is_null(2));
+    }
+
+    #[test]
+    fn test_bool_to_float32_cast() {
+        let result = cast_array(
+            test_input_bool_array(),
+            &DataType::Float32,
+            &test_input_spark_opts(),
+        )
+        .unwrap();
+        let arr = result.as_any().downcast_ref::<Float32Array>().unwrap();
+        assert_eq!(arr.value(0), 1.0);
+        assert_eq!(arr.value(1), 0.0);
+        assert!(arr.is_null(2));
+    }
+
+    #[test]
+    fn test_bool_to_float64_cast() {
+        let result = cast_array(
+            test_input_bool_array(),
+            &DataType::Float64,
+            &test_input_spark_opts(),
+        )
+        .unwrap();
+        let arr = result.as_any().downcast_ref::<Float64Array>().unwrap();
+        assert_eq!(arr.value(0), 1.0);
+        assert_eq!(arr.value(1), 0.0);
+        assert!(arr.is_null(2));
+    }
+
+    #[test]
+    fn test_bool_to_string_cast() {
+        let result = cast_array(
+            test_input_bool_array(),
+            &DataType::Utf8,
+            &test_input_spark_opts(),
+        )
+        .unwrap();
+        let arr = result.as_any().downcast_ref::<StringArray>().unwrap();
+        assert_eq!(arr.value(0), "true");
+        assert_eq!(arr.value(1), "false");
+        assert!(arr.is_null(2));
+    }
 }

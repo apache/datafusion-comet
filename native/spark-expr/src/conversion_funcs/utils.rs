@@ -107,3 +107,8 @@ fn trim_end(s: &str) -> &str {
         s
     }
 }
+
+#[inline]
+pub fn is_identity_cast(from_type: &DataType, to_type: &DataType) -> bool {
+    from_type == to_type
+}

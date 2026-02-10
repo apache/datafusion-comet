@@ -16,7 +16,7 @@
 // under the License.
 
 use crate::conversion_funcs::boolean::can_cast_from_boolean;
-use crate::conversion_funcs::utils::spark_cast_postprocess;
+use crate::conversion_funcs::utils::{is_identity_cast, spark_cast_postprocess};
 use crate::utils::array_with_timezone;
 use crate::EvalMode::Legacy;
 use crate::{timezone, BinaryOutputStyle};
@@ -156,6 +156,7 @@ impl Hash for Cast {
         self.cast_options.hash(state);
     }
 }
+
 macro_rules! cast_utf8_to_int {
     ($array:expr, $array_type:ty, $parse_fn:expr) => {{
         let len = $array.len();
@@ -752,7 +753,7 @@ fn dict_from_values<K: ArrowDictionaryKeyType>(
     Ok(Arc::new(dict_array))
 }
 
-fn cast_array(
+pub fn cast_array(
     array: ArrayRef,
     to_type: &DataType,
     cast_options: &SparkCastOptions,
@@ -1131,16 +1132,26 @@ fn cast_binary_formatter(value: &[u8]) -> String {
 /// Determines if DataFusion supports the given cast in a way that is
 /// compatible with Spark
 fn is_datafusion_spark_compatible(from_type: &DataType, to_type: &DataType) -> bool {
-    if from_type == to_type {
-        return true;
-    }
-    match from_type {
-        DataType::Null => {
-            matches!(to_type, DataType::List(_))
-        }
-        DataType::Boolean => can_cast_from_boolean(to_type),
-        DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64 => {
-            matches!(
+    is_identity_cast(from_type, to_type)
+        || match from_type {
+            DataType::Null => {
+                matches!(to_type, DataType::List(_))
+            }
+            DataType::Boolean => can_cast_from_boolean(to_type),
+            DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64 => {
+                matches!(
+                    to_type,
+                    DataType::Boolean
+                        | DataType::Int8
+                        | DataType::Int16
+                        | DataType::Int32
+                        | DataType::Int64
+                        | DataType::Float32
+                        | DataType::Float64
+                        | DataType::Utf8
+                )
+            }
+            DataType::Float32 | DataType::Float64 => matches!(
                 to_type,
                 DataType::Boolean
                     | DataType::Int8
@@ -1149,46 +1160,34 @@ fn is_datafusion_spark_compatible(from_type: &DataType, to_type: &DataType) -> b
                     | DataType::Int64
                     | DataType::Float32
                     | DataType::Float64
-                    | DataType::Utf8
-            )
-        }
-        DataType::Float32 | DataType::Float64 => matches!(
-            to_type,
-            DataType::Boolean
-                | DataType::Int8
-                | DataType::Int16
-                | DataType::Int32
-                | DataType::Int64
-                | DataType::Float32
-                | DataType::Float64
-        ),
-        DataType::Decimal128(_, _) | DataType::Decimal256(_, _) => matches!(
-            to_type,
-            DataType::Int8
-                | DataType::Int16
-                | DataType::Int32
-                | DataType::Int64
-                | DataType::Float32
-                | DataType::Float64
-                | DataType::Decimal128(_, _)
-                | DataType::Decimal256(_, _)
-                | DataType::Utf8 // note that there can be formatting differences
-        ),
-        DataType::Utf8 => matches!(to_type, DataType::Binary),
-        DataType::Date32 => matches!(to_type, DataType::Int32 | DataType::Utf8),
-        DataType::Timestamp(_, _) => {
-            matches!(
+            ),
+            DataType::Decimal128(_, _) | DataType::Decimal256(_, _) => matches!(
                 to_type,
-                DataType::Int64 | DataType::Date32 | DataType::Utf8 | DataType::Timestamp(_, _)
-            )
+                DataType::Int8
+                    | DataType::Int16
+                    | DataType::Int32
+                    | DataType::Int64
+                    | DataType::Float32
+                    | DataType::Float64
+                    | DataType::Decimal128(_, _)
+                    | DataType::Decimal256(_, _)
+                    | DataType::Utf8 // note that there can be formatting differences
+            ),
+            DataType::Utf8 => matches!(to_type, DataType::Binary),
+            DataType::Date32 => matches!(to_type, DataType::Int32 | DataType::Utf8),
+            DataType::Timestamp(_, _) => {
+                matches!(
+                    to_type,
+                    DataType::Int64 | DataType::Date32 | DataType::Utf8 | DataType::Timestamp(_, _)
+                )
+            }
+            DataType::Binary => {
+                // note that this is not completely Spark compatible because
+                // DataFusion only supports binary data containing valid UTF-8 strings
+                matches!(to_type, DataType::Utf8)
+            }
+            _ => false,
         }
-        DataType::Binary => {
-            // note that this is not completely Spark compatible because
-            // DataFusion only supports binary data containing valid UTF-8 strings
-            matches!(to_type, DataType::Utf8)
-        }
-        _ => false,
-    }
 }
 
 /// Cast between struct types based on logic in
