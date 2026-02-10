@@ -19,7 +19,7 @@ use crate::utils::array_with_timezone;
 use arrow::array::Array;
 use arrow::compute::{date_part, DatePart};
 use arrow::datatypes::{DataType, TimeUnit::Microsecond};
-use datafusion::common::{internal_datafusion_err};
+use datafusion::common::internal_datafusion_err;
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };

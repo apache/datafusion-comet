@@ -622,8 +622,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     withSQLConf(
       SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
         "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
-      val df = spark.sql(
-        """
+      val df = spark.sql("""
           |SELECT
           |  hour(timestamp('2026-04-18 04:18:45')) AS h,
           |  minute(timestamp('2026-04-18 04:18:45')) AS m,
@@ -636,7 +635,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       assert(h == 12)
       assert(m == 30)
       assert(s == 45)
-      assert(u == 1577836800L) 
+      assert(u == 1577836800L)
     }
   }
 

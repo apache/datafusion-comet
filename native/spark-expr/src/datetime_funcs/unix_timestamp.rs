@@ -117,10 +117,7 @@ impl ScalarUDFImpl for SparkUnixTimestamp {
 }
 
 impl SparkUnixTimestamp {
-    fn eval_array(
-        &self,
-        array: &Arc<dyn Array>,
-    ) -> datafusion::common::Result<ColumnarValue> {
+    fn eval_array(&self, array: &Arc<dyn Array>) -> datafusion::common::Result<ColumnarValue> {
         match array.data_type() {
             DataType::Timestamp(_, _) => {
                 let is_utc = self.timezone == "UTC";
