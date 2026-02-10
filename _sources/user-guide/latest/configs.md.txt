@@ -275,6 +275,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.Log2.enabled` | Enable Comet acceleration for `Log2` | true |
 | `spark.comet.expression.Lower.enabled` | Enable Comet acceleration for `Lower` | true |
 | `spark.comet.expression.MakeDecimal.enabled` | Enable Comet acceleration for `MakeDecimal` | true |
+| `spark.comet.expression.MapContainsKey.enabled` | Enable Comet acceleration for `MapContainsKey` | true |
 | `spark.comet.expression.MapEntries.enabled` | Enable Comet acceleration for `MapEntries` | true |
 | `spark.comet.expression.MapFromArrays.enabled` | Enable Comet acceleration for `MapFromArrays` | true |
 | `spark.comet.expression.MapFromEntries.enabled` | Enable Comet acceleration for `MapFromEntries` | true |
@@ -297,6 +298,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.RegExpReplace.enabled` | Enable Comet acceleration for `RegExpReplace` | true |
 | `spark.comet.expression.Remainder.enabled` | Enable Comet acceleration for `Remainder` | true |
 | `spark.comet.expression.Reverse.enabled` | Enable Comet acceleration for `Reverse` | true |
+| `spark.comet.expression.Right.enabled` | Enable Comet acceleration for `Right` | true |
 | `spark.comet.expression.Round.enabled` | Enable Comet acceleration for `Round` | true |
 | `spark.comet.expression.ScalarSubquery.enabled` | Enable Comet acceleration for `ScalarSubquery` | true |
 | `spark.comet.expression.Second.enabled` | Enable Comet acceleration for `Second` | true |
@@ -324,6 +326,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.StringTrimBoth.enabled` | Enable Comet acceleration for `StringTrimBoth` | true |
 | `spark.comet.expression.StringTrimLeft.enabled` | Enable Comet acceleration for `StringTrimLeft` | true |
 | `spark.comet.expression.StringTrimRight.enabled` | Enable Comet acceleration for `StringTrimRight` | true |
+| `spark.comet.expression.StructsToCsv.enabled` | Enable Comet acceleration for `StructsToCsv` | true |
 | `spark.comet.expression.StructsToJson.enabled` | Enable Comet acceleration for `StructsToJson` | true |
 | `spark.comet.expression.Substring.enabled` | Enable Comet acceleration for `Substring` | true |
 | `spark.comet.expression.Subtract.enabled` | Enable Comet acceleration for `Subtract` | true |

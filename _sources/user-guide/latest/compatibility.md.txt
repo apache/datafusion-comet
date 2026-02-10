@@ -117,7 +117,7 @@ Cast operations in Comet fall into three levels of support:
 | binary | - | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | C | N/A |
 | boolean | N/A | - | C | N/A | U | C | C | C | C | C | C | U |
 | byte | U | C | - | N/A | C | C | C | C | C | C | C | U |
-| date | N/A | U | U | - | U | U | U | U | U | U | C | U |
+| date | N/A | U | U | - | U | U | U | U | U | U | C | C |
 | decimal | N/A | C | C | N/A | - | C | C | C | C | C | C | U |
 | double | N/A | C | C | N/A | I | - | C | C | C | C | C | U |
 | float | N/A | C | C | N/A | I | C | - | C | C | C | C | U |
@@ -149,7 +149,7 @@ or strings containing null bytes (e.g \\u0000)
 | binary | - | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | C | N/A |
 | boolean | N/A | - | C | N/A | U | C | C | C | C | C | C | U |
 | byte | U | C | - | N/A | C | C | C | C | C | C | C | U |
-| date | N/A | U | U | - | U | U | U | U | U | U | C | U |
+| date | N/A | U | U | - | U | U | U | U | U | U | C | C |
 | decimal | N/A | C | C | N/A | - | C | C | C | C | C | C | U |
 | double | N/A | C | C | N/A | I | - | C | C | C | C | C | U |
 | float | N/A | C | C | N/A | I | C | - | C | C | C | C | U |
@@ -181,7 +181,7 @@ or strings containing null bytes (e.g \\u0000)
 | binary | - | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | C | N/A |
 | boolean | N/A | - | C | N/A | U | C | C | C | C | C | C | U |
 | byte | U | C | - | N/A | C | C | C | C | C | C | C | U |
-| date | N/A | U | U | - | U | U | U | U | U | U | C | U |
+| date | N/A | U | U | - | U | U | U | U | U | U | C | C |
 | decimal | N/A | C | C | N/A | - | C | C | C | C | C | C | U |
 | double | N/A | C | C | N/A | I | - | C | C | C | C | C | U |
 | float | N/A | C | C | N/A | I | C | - | C | C | C | C | U |
