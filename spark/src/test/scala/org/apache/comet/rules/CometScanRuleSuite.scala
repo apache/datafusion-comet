@@ -30,7 +30,6 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 
 import org.apache.comet.CometConf
-import org.apache.comet.parquet.CometParquetScan
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 /**
@@ -127,11 +126,6 @@ class CometScanRuleSuite extends CometTestBase {
               if (cometEnabled) {
                 assert(countOperators(transformedPlan, classOf[BatchScanExec]) == 0)
                 assert(countOperators(transformedPlan, classOf[CometBatchScanExec]) == 1)
-
-                // CometScanRule should have replaced the underlying scan
-                val scan = transformedPlan.collect { case scan: CometBatchScanExec => scan }.head
-                assert(scan.wrapped.scan.isInstanceOf[CometParquetScan])
-
               } else {
                 assert(countOperators(transformedPlan, classOf[BatchScanExec]) == 1)
                 assert(countOperators(transformedPlan, classOf[CometBatchScanExec]) == 0)

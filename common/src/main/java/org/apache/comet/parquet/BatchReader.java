@@ -24,10 +24,6 @@ import java.io.IOException;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.util.*;
-import java.util.concurrent.Callable;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Future;
-import java.util.concurrent.LinkedBlockingQueue;
 
 import scala.Option;
 
@@ -36,9 +32,7 @@ import org.slf4j.LoggerFactory;
 
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.RootAllocator;
-import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.mapreduce.InputSplit;
 import org.apache.hadoop.mapreduce.RecordReader;
@@ -87,7 +81,10 @@ import org.apache.comet.vector.CometVector;
  *     reader.close();
  *   }
  * </pre>
+ *
+ * @deprecated since 0.14.0. This class is kept for Iceberg compatibility only.
  */
+@Deprecated
 @IcebergApi
 public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Closeable {
   private static final Logger LOG = LoggerFactory.getLogger(FileReader.class);
@@ -110,8 +107,6 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
   protected AbstractColumnReader[] columnReaders;
   private CometSchemaImporter importer;
   protected ColumnarBatch currentBatch;
-  private Future<Option<Throwable>> prefetchTask;
-  private LinkedBlockingQueue<Pair<PageReadStore, Long>> prefetchQueue;
   private FileReader fileReader;
   private boolean[] missingColumns;
   protected boolean isInitialized;
@@ -363,26 +358,7 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
       }
     }
 
-    // Pre-fetching
-    boolean preFetchEnabled =
-        conf.getBoolean(
-            CometConf.COMET_SCAN_PREFETCH_ENABLED().key(),
-            (boolean) CometConf.COMET_SCAN_PREFETCH_ENABLED().defaultValue().get());
-
-    if (preFetchEnabled) {
-      LOG.info("Prefetch enabled for BatchReader.");
-      this.prefetchQueue = new LinkedBlockingQueue<>();
-    }
-
     isInitialized = true;
-    synchronized (this) {
-      // if prefetch is enabled, `init()` is called in separate thread. When
-      // `BatchReader.nextBatch()` is called asynchronously, it is possibly that
-      // `init()` is not called or finished. We need to hold on `nextBatch` until
-      // initialization of `BatchReader` is done. Once we are close to finish
-      // initialization, we notify the waiting thread of `nextBatch` to continue.
-      notifyAll();
-    }
   }
 
   /**
@@ -436,51 +412,13 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
     return currentBatch;
   }
 
-  // Only for testing
-  public Future<Option<Throwable>> getPrefetchTask() {
-    return this.prefetchTask;
-  }
-
-  // Only for testing
-  public LinkedBlockingQueue<Pair<PageReadStore, Long>> getPrefetchQueue() {
-    return this.prefetchQueue;
-  }
-
   /**
    * Loads the next batch of rows.
    *
    * @return true if there are no more rows to read, false otherwise.
    */
   public boolean nextBatch() throws IOException {
-    if (this.prefetchTask == null) {
-      Preconditions.checkState(isInitialized, "init() should be called first!");
-    } else {
-      // If prefetch is enabled, this reader will be initialized asynchronously from a
-      // different thread. Wait until it is initialized
-      while (!isInitialized) {
-        synchronized (this) {
-          try {
-            // Wait until initialization of current `BatchReader` is finished (i.e., `init()`),
-            // is done. It is possibly that `init()` is done after entering this while loop,
-            // so a short timeout is given.
-            wait(100);
-
-            // Checks if prefetch task is finished. If so, tries to get exception if any.
-            if (prefetchTask.isDone()) {
-              Option<Throwable> exception = prefetchTask.get();
-              if (exception.isDefined()) {
-                throw exception.get();
-              }
-            }
-          } catch (RuntimeException e) {
-            // Spark will check certain exception e.g. `SchemaColumnConvertNotSupportedException`.
-            throw e;
-          } catch (Throwable e) {
-            throw new IOException(e);
-          }
-        }
-      }
-    }
+    Preconditions.checkState(isInitialized, "init() should be called first!");
 
     if (rowsRead >= totalRowCount) return false;
     boolean hasMore;
@@ -547,7 +485,6 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
     }
   }
 
-  @SuppressWarnings("deprecation")
   private boolean loadNextRowGroupIfNecessary() throws Throwable {
     // More rows can be read from loaded row group. No need to load next one.
     if (rowsRead != totalRowsLoaded) return true;
@@ -556,21 +493,7 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
     SQLMetric numRowGroupsMetric = metrics.get("ParquetRowGroups");
     long startNs = System.nanoTime();
 
-    PageReadStore rowGroupReader = null;
-    if (prefetchTask != null && prefetchQueue != null) {
-      // Wait for pre-fetch task to finish.
-      Pair<PageReadStore, Long> rowGroupReaderPair = prefetchQueue.take();
-      rowGroupReader = rowGroupReaderPair.getLeft();
-
-      // Update incremental byte read metric. Because this metric in Spark is maintained
-      // by thread local variable, we need to manually update it.
-      // TODO: We may expose metrics from `FileReader` and get from it directly.
-      long incBytesRead = rowGroupReaderPair.getRight();
-      FileSystem.getAllStatistics().stream()
-          .forEach(statistic -> statistic.incrementBytesRead(incBytesRead));
-    } else {
-      rowGroupReader = fileReader.readNextRowGroup();
-    }
+    PageReadStore rowGroupReader = fileReader.readNextRowGroup();
 
     if (rowGroupTimeMetric != null) {
       rowGroupTimeMetric.add(System.nanoTime() - startNs);
@@ -607,49 +530,5 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
     }
     totalRowsLoaded += rowGroupReader.getRowCount();
     return true;
-  }
-
-  // Submits a prefetch task for this reader.
-  public void submitPrefetchTask(ExecutorService threadPool) {
-    this.prefetchTask = threadPool.submit(new PrefetchTask());
-  }
-
-  // A task for prefetching parquet row groups.
-  private class PrefetchTask implements Callable<Option<Throwable>> {
-    private long getBytesRead() {
-      return FileSystem.getAllStatistics().stream()
-          .mapToLong(s -> s.getThreadStatistics().getBytesRead())
-          .sum();
-    }
-
-    @Override
-    public Option<Throwable> call() throws Exception {
-      // Gets the bytes read so far.
-      long baseline = getBytesRead();
-
-      try {
-        init();
-
-        while (true) {
-          PageReadStore rowGroupReader = fileReader.readNextRowGroup();
-
-          if (rowGroupReader == null) {
-            // Reaches the end of row groups.
-            return Option.empty();
-          } else {
-            long incBytesRead = getBytesRead() - baseline;
-
-            prefetchQueue.add(Pair.of(rowGroupReader, incBytesRead));
-          }
-        }
-      } catch (Throwable e) {
-        // Returns exception thrown from the reader. The reader will re-throw it.
-        return Option.apply(e);
-      } finally {
-        if (fileReader != null) {
-          fileReader.closeStream();
-        }
-      }
-    }
   }
 }
