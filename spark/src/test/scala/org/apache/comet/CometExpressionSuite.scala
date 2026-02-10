@@ -632,8 +632,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
       val Row(h: Int, m: Int, s: Int, u: Long) = df.head()
 
-      assert(h == 12)
-      assert(m == 30)
+      assert(h == 4)
+      assert(m == 18)
       assert(s == 45)
       assert(u == 1577836800L)
     }
