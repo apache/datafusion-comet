@@ -158,17 +158,18 @@ impl SparkPhysicalExprAdapter {
                 let logical_field = self.logical_file_schema.fields().get(col_idx);
                 let physical_field = self.physical_file_schema.fields().get(col_idx);
 
-                if let (Some(logical_field), Some(physical_field)) =
-                    (logical_field, physical_field)
+                if let (Some(logical_field), Some(physical_field)) = (logical_field, physical_field)
                 {
                     if logical_field.data_type() != physical_field.data_type() {
-                        let cast_expr: Arc<dyn PhysicalExpr> =
-                            Arc::new(CometCastColumnExpr::new(
+                        let cast_expr: Arc<dyn PhysicalExpr> = Arc::new(
+                            CometCastColumnExpr::new(
                                 Arc::clone(&e),
                                 Arc::clone(physical_field),
                                 Arc::clone(logical_field),
                                 None,
-                            ).with_parquet_options(self.parquet_options.clone()));
+                            )
+                            .with_parquet_options(self.parquet_options.clone()),
+                        );
                         return Ok(Transformed::yes(cast_expr));
                     }
                 }
@@ -223,8 +224,7 @@ impl SparkPhysicalExprAdapter {
             cast_options.allow_cast_unsigned_ints = self.parquet_options.allow_cast_unsigned_ints;
             cast_options.is_adapting_schema = true;
 
-            let spark_cast =
-                Arc::new(Cast::new(child, target_type.clone(), cast_options));
+            let spark_cast = Arc::new(Cast::new(child, target_type.clone(), cast_options));
 
             return Ok(Transformed::yes(spark_cast as Arc<dyn PhysicalExpr>));
         }

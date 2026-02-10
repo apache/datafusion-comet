@@ -243,8 +243,7 @@ impl PhysicalExpr for CometCastColumnExpr {
             // "item" vs "element", or Map entries named "key_value" vs "entries").
             // Re-label the array so the DataType metadata matches the logical schema.
             (physical, logical)
-                if physical != logical
-                    && types_differ_only_in_field_names(physical, logical) =>
+                if physical != logical && types_differ_only_in_field_names(physical, logical) =>
             {
                 match value {
                     ColumnarValue::Array(array) => {
@@ -258,8 +257,7 @@ impl PhysicalExpr for CometCastColumnExpr {
             // (e.g., List<Struct{a,b,c}> → List<Struct{a,c}>, Map field selection, etc.)
             _ => {
                 if let Some(parquet_options) = &self.parquet_options {
-                    let converted =
-                        spark_parquet_convert(value, target_field, parquet_options)?;
+                    let converted = spark_parquet_convert(value, target_field, parquet_options)?;
                     Ok(converted)
                 } else {
                     Ok(value)
