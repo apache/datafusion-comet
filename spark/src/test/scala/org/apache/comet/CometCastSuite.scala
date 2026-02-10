@@ -37,6 +37,7 @@ import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.rules.CometScanTypeChecker
 import org.apache.comet.serde.Compatible
 
+// Trigger CI
 class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   import testImplicits._
