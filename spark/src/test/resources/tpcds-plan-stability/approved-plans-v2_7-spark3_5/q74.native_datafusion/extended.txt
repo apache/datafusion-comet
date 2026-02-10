@@ -64,11 +64,7 @@ CometColumnarToRow
          :                          :     +- CometBroadcastExchange
          :                          :        +- CometFilter
          :                          :           +- CometNativeScan parquet spark_catalog.default.web_sales
-         :                          :                 +- SubqueryBroadcast
-         :                          :                    +- BroadcastExchange
-         :                          :                       +- CometColumnarToRow
-         :                          :                          +- CometFilter
-         :                          :                             +- CometNativeScan parquet spark_catalog.default.date_dim
+         :                          :                 +- ReusedSubquery
          :                          +- CometBroadcastExchange
          :                             +- CometFilter
          :                                +- CometNativeScan parquet spark_catalog.default.date_dim
@@ -86,13 +82,9 @@ CometColumnarToRow
                            :     +- CometBroadcastExchange
                            :        +- CometFilter
                            :           +- CometNativeScan parquet spark_catalog.default.web_sales
-                           :                 +- SubqueryBroadcast
-                           :                    +- BroadcastExchange
-                           :                       +- CometColumnarToRow
-                           :                          +- CometFilter
-                           :                             +- CometNativeScan parquet spark_catalog.default.date_dim
+                           :                 +- ReusedSubquery
                            +- CometBroadcastExchange
                               +- CometFilter
                                  +- CometNativeScan parquet spark_catalog.default.date_dim
 
-Comet accelerated 83 out of 91 eligible operators (91%). Final plan contains 5 transitions between Spark and Comet.
+Comet accelerated 79 out of 85 eligible operators (92%). Final plan contains 3 transitions between Spark and Comet.
