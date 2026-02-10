@@ -16,7 +16,6 @@
 // under the License.
 
 use crate::utils::array_with_timezone;
-use arrow::array::Array;
 use arrow::compute::{date_part, DatePart};
 use arrow::datatypes::{DataType, TimeUnit::Microsecond};
 use datafusion::common::internal_datafusion_err;
