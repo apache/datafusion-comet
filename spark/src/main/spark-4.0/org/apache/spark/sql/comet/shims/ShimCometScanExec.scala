@@ -24,6 +24,7 @@ import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.catalog.BucketSpec
 import org.apache.spark.sql.catalyst.expressions.{And, AttributeReference, BoundReference, Expression, FileSourceConstantMetadataAttribute, Literal, Predicate}
+import org.apache.spark.sql.errors.QueryExecutionErrors
 import org.apache.spark.sql.execution.{FileSourceScanExec, PartitionedFileUtil, ScalarSubquery, ScanFileListing}
 import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.execution.datasources.parquet.ParquetOptions
@@ -128,7 +129,7 @@ trait ShimCometScanExec extends ShimStreamSourceAwareSparkPlan {
       .groupBy { f =>
         BucketingUtils
           .getBucketId(f.toPath.getName)
-          .getOrElse(throw new IllegalStateException(s"Invalid bucket file: ${f.toPath}"))
+          .getOrElse(throw QueryExecutionErrors.invalidBucketFile(f.toPath.toString))
       }
 
     // Apply bucket pruning
