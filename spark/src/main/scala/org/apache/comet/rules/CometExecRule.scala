@@ -296,8 +296,76 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         }
     }
 
-    plan.transformUp { case op =>
+    val transformedPlan = plan.transformUp { case op =>
       convertNode(op)
+    }
+
+    // Transform SubqueryBroadcastExec inside expressions to enable broadcast exchange reuse.
+    // SubqueryBroadcast's BroadcastExchange should be transformed to CometBroadcastExchange
+    // so it can be reused with the join's CometBroadcastExchange.
+    transformSubqueryBroadcasts(transformedPlan)
+  }
+
+  /**
+   * Transforms SubqueryBroadcastExec inside expressions to enable broadcast exchange reuse.
+   *
+   * Current structure (doesn't enable reuse): SubqueryBroadcast -> BroadcastExchange ->
+   * CometColumnarToRow -> CometNativeExec
+   *
+   * Transformed structure (enables reuse): SubqueryBroadcast -> CometColumnarToRow ->
+   * CometBroadcastExchange -> CometNativeExec
+   *
+   * The CometBroadcastExchange can then be matched by ReuseExchangeAndSubquery with the join's
+   * CometBroadcastExchange, enabling broadcast reuse.
+   */
+  private def transformSubqueryBroadcasts(plan: SparkPlan): SparkPlan = {
+    plan.transformUpWithSubqueries { case p =>
+      p.transformExpressions { case sub: InSubqueryExec =>
+        sub.plan match {
+          case s: SubqueryBroadcastExec =>
+            transformSubqueryBroadcastExec(s) match {
+              case Some(newSubquery) => sub.withNewPlan(newSubquery)
+              case None => sub
+            }
+          case _ => sub
+        }
+      }
+    }
+  }
+
+  /**
+   * Transforms a SubqueryBroadcastExec to enable broadcast exchange reuse. Returns
+   * Some(transformed) if transformation was applied, None otherwise.
+   */
+  private def transformSubqueryBroadcastExec(
+      subquery: SubqueryBroadcastExec): Option[SubqueryBroadcastExec] = {
+    subquery.child match {
+      // Pattern: BroadcastExchange -> CometColumnarToRow -> CometNativeExec
+      case b: BroadcastExchangeExec =>
+        // Unwrap WholeStageCodegenExec if present
+        val innerChild = b.child match {
+          case wsc: WholeStageCodegenExec => wsc.child
+          case other => other
+        }
+        innerChild match {
+          case c2r: CometColumnarToRowExec =>
+            // Unwrap InputAdapter if present (from WholeStageCodegen)
+            val actualChild = c2r.child match {
+              case ia: InputAdapter => ia.child
+              case other => other
+            }
+            if (actualChild.isInstanceOf[CometNativeExec]) {
+              // Transform to: CometColumnarToRow -> CometBroadcastExchange -> CometNativeExec
+              val nativeChild = actualChild.asInstanceOf[CometNativeExec]
+              val cometBroadcast = CometBroadcastExchangeExec(b, b.output, b.mode, nativeChild)
+              val newC2r = CometColumnarToRowExec(cometBroadcast)
+              Some(subquery.copy(child = newC2r))
+            } else {
+              None
+            }
+          case _ => None
+        }
+      case _ => None
     }
   }
 

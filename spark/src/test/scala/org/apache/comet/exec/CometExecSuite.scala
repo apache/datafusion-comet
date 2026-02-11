@@ -35,10 +35,10 @@ import org.apache.spark.sql.catalyst.expressions.{Expression, ExpressionInfo, He
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, BloomFilterAggregate}
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
-import org.apache.spark.sql.execution.{CollectLimitExec, ProjectExec, ReusedSubqueryExec, SparkPlan, SQLExecution, SubqueryExec, UnionExec}
+import org.apache.spark.sql.execution.{CollectLimitExec, ProjectExec, ReusedSubqueryExec, SparkPlan, SQLExecution, SubqueryBroadcastExec, SubqueryExec, UnionExec}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, BroadcastQueryStageExec}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
-import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
+import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, BroadcastExchangeLike, ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, CartesianProductExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.reuse.ReuseExchangeAndSubquery
 import org.apache.spark.sql.execution.window.WindowExec
@@ -2479,6 +2479,114 @@ class CometExecSuite extends CometTestBase {
         .groupBy(col("id"))
         .agg(count("*"))
       checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("DPP broadcast exchange reuse") {
+    // Reproduces "partition pruning in broadcast hash joins" from DynamicPartitionPruningSuite.
+    // When DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY is true, the SubqueryBroadcast
+    // should reuse the BroadcastExchange from the join via ReusedExchangeExec.
+    val factData = Seq[(Int, Int, Int, Int)](
+      (1030, 3, 2, 10),
+      (1040, 3, 2, 50),
+      (1050, 3, 2, 50),
+      (1060, 3, 2, 50))
+
+    val storeData = Seq[(Int, String, String)](
+      (1, "North-Holland", "NL"),
+      (2, "South-Holland", "NL"),
+      (3, "Bavaria", "DE"))
+
+    withTable("fact_stats", "dim_stats") {
+      factData
+        .toDF("date_id", "store_id", "product_id", "units_sold")
+        .write
+        .partitionBy("store_id")
+        .format("parquet")
+        .saveAsTable("fact_stats")
+
+      storeData
+        .toDF("store_id", "state_province", "country")
+        .write
+        .format("parquet")
+        .saveAsTable("dim_stats")
+
+      // The issue is specific to native_datafusion scan implementation
+      withSQLConf(
+        CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true",
+        SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true",
+        SQLConf.EXCHANGE_REUSE_ENABLED.key -> "true") {
+
+        val df = sql("""
+            |SELECT f.date_id, f.product_id, f.units_sold, f.store_id FROM fact_stats f
+            |JOIN dim_stats s
+            |ON f.store_id = s.store_id WHERE s.country = 'DE'
+          """.stripMargin)
+
+        df.collect()
+
+        val plan = df.queryExecution.executedPlan
+        // scalastyle:off println
+        println(s"=== Executed Plan ===\n$plan")
+        // scalastyle:on println
+
+        // Check that DPP is triggered with SubqueryBroadcast
+        val subqueryBroadcasts = plan.collectWithSubqueries { case s: SubqueryBroadcastExec =>
+          s
+        }
+        assert(
+          subqueryBroadcasts.nonEmpty,
+          s"Expected SubqueryBroadcastExec in plan but found none:\n$plan")
+
+        // Check that the SubqueryBroadcast's child is a ReusedExchangeExec
+        // This is the key assertion - in vanilla Spark this passes, but with Comet it fails
+        // because SubqueryBroadcast uses BroadcastExchange while the join uses
+        // CometBroadcastExchange
+        subqueryBroadcasts.foreach { s =>
+          s.child match {
+            case _: ReusedExchangeExec =>
+            // Good - the broadcast exchange is being reused
+            case _: BroadcastQueryStageExec =>
+            // AQE case - also acceptable
+            case c2r: CometColumnarToRowExec =>
+              // Comet case: SubqueryBroadcast -> CometColumnarToRow -> CometBroadcastExchange
+              // The CometBroadcastExchange should be reused by the join
+              c2r.child match {
+                case cbe: CometBroadcastExchangeExec =>
+                  val hasReuse = plan.exists {
+                    case ReusedExchangeExec(_, e: CometBroadcastExchangeExec) =>
+                      e.canonicalized == cbe.canonicalized
+                    case _ => false
+                  }
+                  assert(
+                    hasReuse,
+                    s"CometBroadcastExchange should be reused.\n" +
+                      s"SubqueryBroadcast structure: ${s.child.getClass.getSimpleName} -> " +
+                      s"${cbe.getClass.getSimpleName}\nFull plan:\n$plan")
+                case other =>
+                  fail(
+                    s"Expected CometBroadcastExchangeExec under CometColumnarToRowExec, " +
+                      s"got ${other.getClass.getSimpleName}\n$plan")
+              }
+            case b: BroadcastExchangeLike =>
+              val hasReuse = plan.exists {
+                case ReusedExchangeExec(_, e) => e eq b
+                case _ => false
+              }
+              assert(
+                hasReuse,
+                s"SubqueryBroadcast's BroadcastExchange should have been reused.\n" +
+                  s"SubqueryBroadcast child: ${s.child.getClass.getSimpleName}\n" +
+                  s"Full plan:\n$plan")
+            case other =>
+              fail(s"Unexpected SubqueryBroadcast child: ${other.getClass.getSimpleName}\n$plan")
+          }
+        }
+
+        checkSparkAnswer(df)
+      }
     }
   }
 
