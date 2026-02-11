@@ -17,10 +17,11 @@
 
 pub(crate) mod codec;
 mod comet_partitioning;
-pub mod list;
-mod map;
-pub mod row;
+mod metrics;
+mod partitioners;
 mod shuffle_writer;
+pub mod spark_unsafe;
+mod writers;
 
 pub use codec::{read_ipc_compressed, CompressionCodec, ShuffleBlockWriter};
 pub use comet_partitioning::CometPartitioning;

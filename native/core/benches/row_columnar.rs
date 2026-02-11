@@ -16,7 +16,7 @@
 // under the License.
 
 use arrow::datatypes::DataType as ArrowDataType;
-use comet::execution::shuffle::row::{
+use comet::execution::shuffle::spark_unsafe::row::{
     process_sorted_row_partition, SparkUnsafeObject, SparkUnsafeRow,
 };
 use comet::execution::shuffle::CompressionCodec;
