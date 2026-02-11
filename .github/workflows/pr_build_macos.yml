@@ -84,9 +84,9 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             native/target
-          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}
+          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-ci-
+            ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-
 
       - name: Build native library (CI profile)
         run: |
@@ -112,7 +112,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             native/target
-          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}
+          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
 
   macos-aarch64-test:
     needs: build-native
@@ -206,6 +206,7 @@ jobs:
               org.apache.comet.CometBitwiseExpressionSuite
               org.apache.comet.CometMapExpressionSuite
               org.apache.comet.CometJsonExpressionSuite
+              org.apache.comet.CometCsvExpressionSuite
               org.apache.comet.expressions.conditional.CometIfSuite
               org.apache.comet.expressions.conditional.CometCoalesceSuite
               org.apache.comet.expressions.conditional.CometCaseWhenSuite
