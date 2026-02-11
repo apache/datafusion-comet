@@ -707,10 +707,10 @@ pub fn spark_cast(
     data_type: &DataType,
     cast_options: &SparkCastOptions,
 ) -> DataFusionResult<ColumnarValue> {
-    let input_type = match &arg {
-        ColumnarValue::Array(array) => array.data_type().clone(),
-        ColumnarValue::Scalar(scalar) => scalar.data_type(),
-    };
+    // let input_type = match &arg {
+    //     ColumnarValue::Array(array) => array.data_type().clone(),
+    //     ColumnarValue::Scalar(scalar) => scalar.data_type(),
+    // };
 
     let result = match arg {
         ColumnarValue::Array(array) => {
@@ -728,10 +728,10 @@ pub fn spark_cast(
         }
     };
 
-    let result_type = match &result {
-        ColumnarValue::Array(array) => array.data_type().clone(),
-        ColumnarValue::Scalar(scalar) => scalar.data_type(),
-    };
+    // let result_type = match &result {
+    //     ColumnarValue::Array(array) => array.data_type().clone(),
+    //     ColumnarValue::Scalar(scalar) => scalar.data_type(),
+    // };
 
     // println!(
     //     "spark_cast: {} -> {} (requested: {})",
