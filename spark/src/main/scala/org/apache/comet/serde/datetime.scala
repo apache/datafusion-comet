@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import java.util.Locale
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, DateAdd, DateDiff, DateFormatClass, DateSub, DayOfMonth, DayOfWeek, DayOfYear, GetDateField, Hour, LastDay, Literal, MakeDate, Minute, Month, Quarter, Second, TruncDate, TruncTimestamp, UnixDate, UnixTimestamp, WeekDay, WeekOfYear, Year}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, DateAdd, DateDiff, DateFormatClass, DateFromUnixDate, DateSub, DayOfMonth, DayOfWeek, DayOfYear, GetDateField, Hour, LastDay, Literal, MakeDate, Minute, Month, Quarter, Second, TruncDate, TruncTimestamp, UnixDate, UnixTimestamp, WeekDay, WeekOfYear, Year}
 import org.apache.spark.sql.types.{DateType, IntegerType, StringType, TimestampType}
 import org.apache.spark.unsafe.types.UTF8String
 
@@ -313,6 +313,8 @@ object CometDateSub extends CometScalarFunction[DateSub]("date_sub")
 object CometMakeDate extends CometScalarFunction[MakeDate]("make_date")
 
 object CometLastDay extends CometScalarFunction[LastDay]("last_day")
+
+object CometDateFromUnixDate extends CometScalarFunction[DateFromUnixDate]("date_from_unix_date")
 
 object CometDateDiff extends CometScalarFunction[DateDiff]("date_diff")
 
