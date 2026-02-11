@@ -26,7 +26,7 @@
 use crate::parquet::cast_column::CometCastColumnExpr;
 use crate::parquet::parquet_support::{spark_parquet_convert, SparkParquetOptions};
 use arrow::array::{ArrayRef, RecordBatch, RecordBatchOptions};
-use arrow::datatypes::{Schema, SchemaRef};
+use arrow::datatypes::{DataType, Schema, SchemaRef};
 use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNode};
 use datafusion::common::{ColumnStatistics, Result as DataFusionResult};
 use datafusion::datasource::schema_adapter::{SchemaAdapter, SchemaAdapterFactory, SchemaMapper};
@@ -116,18 +116,69 @@ struct SparkPhysicalExprAdapter {
 
 impl PhysicalExprAdapter for SparkPhysicalExprAdapter {
     fn rewrite(&self, expr: Arc<dyn PhysicalExpr>) -> DataFusionResult<Arc<dyn PhysicalExpr>> {
-        // dbg!(&expr);
-
-        let expr = self.default_adapter.rewrite(expr)?;
-
-        //self.cast_datafusion_unsupported_expr(expr)
-
-        expr.transform(|e| self.replace_with_spark_cast(e)).data()
+        // First let the default adapter handle column remapping, missing columns,
+        // and simple scalar type casts. Then replace DataFusion's CastColumnExpr
+        // with Spark-compatible equivalents.
+        //
+        // The default adapter may fail for complex nested type casts (List, Map).
+        // In that case, fall back to wrapping everything ourselves.
+        let expr = match self.default_adapter.rewrite(Arc::clone(&expr)) {
+            Ok(rewritten) => {
+                // Replace DataFusion's CastColumnExpr with either:
+                // - CometCastColumnExpr (for Struct/List/Map, uses spark_parquet_convert)
+                // - Spark Cast (for simple scalar types)
+                rewritten
+                    .transform(|e| self.replace_with_spark_cast(e))
+                    .data()?
+            }
+            Err(_) => {
+                // Default adapter failed (likely complex nested type cast).
+                // Handle all type mismatches ourselves using spark_parquet_convert.
+                self.wrap_all_type_mismatches(expr)?
+            }
+        };
+        Ok(expr)
     }
 }
 
 #[allow(dead_code)]
 impl SparkPhysicalExprAdapter {
+    /// Wrap ALL Column expressions that have type mismatches with CometCastColumnExpr.
+    /// This is the fallback path when the default adapter fails (e.g., for complex
+    /// nested type casts like List<Struct> or Map). Uses `spark_parquet_convert`
+    /// under the hood for the actual type conversion.
+    fn wrap_all_type_mismatches(
+        &self,
+        expr: Arc<dyn PhysicalExpr>,
+    ) -> DataFusionResult<Arc<dyn PhysicalExpr>> {
+        expr.transform(|e| {
+            if let Some(column) = e.as_any().downcast_ref::<Column>() {
+                let col_idx = column.index();
+
+                let logical_field = self.logical_file_schema.fields().get(col_idx);
+                let physical_field = self.physical_file_schema.fields().get(col_idx);
+
+                if let (Some(logical_field), Some(physical_field)) = (logical_field, physical_field)
+                {
+                    if logical_field.data_type() != physical_field.data_type() {
+                        let cast_expr: Arc<dyn PhysicalExpr> = Arc::new(
+                            CometCastColumnExpr::new(
+                                Arc::clone(&e),
+                                Arc::clone(physical_field),
+                                Arc::clone(logical_field),
+                                None,
+                            )
+                            .with_parquet_options(self.parquet_options.clone()),
+                        );
+                        return Ok(Transformed::yes(cast_expr));
+                    }
+                }
+            }
+            Ok(Transformed::no(e))
+        })
+        .data()
+    }
+
     /// Replace CastColumnExpr (DataFusion's cast) with Spark's Cast expression.
     fn replace_with_spark_cast(
         &self,
@@ -140,9 +191,31 @@ impl SparkPhysicalExprAdapter {
             .downcast_ref::<datafusion::physical_expr::expressions::CastColumnExpr>()
         {
             let child = Arc::clone(cast.expr());
-            let target_type = cast.target_field().data_type().clone();
+            let physical_type = cast.input_field().data_type();
+            let target_type = cast.target_field().data_type();
 
-            // Create Spark-compatible cast options
+            // For complex nested types (Struct, List, Map), use CometCastColumnExpr
+            // with spark_parquet_convert which handles field-name-based selection,
+            // reordering, and nested type casting correctly.
+            if matches!(
+                (physical_type, target_type),
+                (DataType::Struct(_), DataType::Struct(_))
+                    | (DataType::List(_), DataType::List(_))
+                    | (DataType::Map(_, _), DataType::Map(_, _))
+            ) {
+                let comet_cast: Arc<dyn PhysicalExpr> = Arc::new(
+                    CometCastColumnExpr::new(
+                        child,
+                        Arc::clone(cast.input_field()),
+                        Arc::clone(cast.target_field()),
+                        None,
+                    )
+                    .with_parquet_options(self.parquet_options.clone()),
+                );
+                return Ok(Transformed::yes(comet_cast));
+            }
+
+            // For simple scalar type casts, use Spark-compatible Cast expression
             let mut cast_options = SparkCastOptions::new(
                 self.parquet_options.eval_mode,
                 &self.parquet_options.timezone,
@@ -151,7 +224,7 @@ impl SparkPhysicalExprAdapter {
             cast_options.allow_cast_unsigned_ints = self.parquet_options.allow_cast_unsigned_ints;
             cast_options.is_adapting_schema = true;
 
-            let spark_cast = Arc::new(Cast::new(child, target_type, cast_options));
+            let spark_cast = Arc::new(Cast::new(child, target_type.clone(), cast_options));
 
             return Ok(Transformed::yes(spark_cast as Arc<dyn PhysicalExpr>));
         }
