@@ -22,9 +22,17 @@ concurrency:
   cancel-in-progress: true
 
 on:
-  pull_request:
+  push:
     branches:
       - main
+    paths-ignore:
+      - "doc/**"
+      - "docs/**"
+      - "**.md"
+      - "native/core/benches/**"
+      - "native/spark-expr/benches/**"
+      - "spark/src/test/scala/org/apache/spark/sql/benchmark/**"
+  pull_request:
     paths-ignore:
       - "doc/**"
       - "docs/**"
