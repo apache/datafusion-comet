@@ -18,7 +18,7 @@
 use datafusion::execution::memory_pool::{
     MemoryConsumer, MemoryLimit, MemoryPool, MemoryReservation,
 };
-use log::info;
+use log::{info, warn};
 use std::sync::Arc;
 
 #[derive(Debug)]
@@ -38,10 +38,20 @@ impl LoggingPool {
 
 impl MemoryPool for LoggingPool {
     fn register(&self, consumer: &MemoryConsumer) {
+        info!(
+            "[Task {}] MemoryPool[{}].register()",
+            self.task_attempt_id,
+            consumer.name(),
+        );
         self.pool.register(consumer)
     }
 
     fn unregister(&self, consumer: &MemoryConsumer) {
+        info!(
+            "[Task {}] MemoryPool[{}].unregister()",
+            self.task_attempt_id,
+            consumer.name(),
+        );
         self.pool.unregister(consumer)
     }
 
@@ -81,7 +91,7 @@ impl MemoryPool for LoggingPool {
                 Ok(())
             }
             Err(e) => {
-                info!(
+                warn!(
                     "[Task {}] MemoryPool[{}].try_grow({}) returning Err: {e:?}",
                     self.task_attempt_id,
                     reservation.consumer().name(),
