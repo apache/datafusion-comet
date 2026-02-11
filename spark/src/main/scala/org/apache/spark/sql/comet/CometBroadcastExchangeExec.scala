@@ -271,7 +271,7 @@ object CometBroadcastExchangeExec extends CometSink[BroadcastExchangeExec] {
    *
    * Source of broadcast exchange batches is ArrowStreamReader.
    */
-  override def isFfiSafe: Boolean = true
+  override def isFfiSafe(op: BroadcastExchangeExec): Boolean = true
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
     CometConf.COMET_EXEC_BROADCAST_EXCHANGE_ENABLED)

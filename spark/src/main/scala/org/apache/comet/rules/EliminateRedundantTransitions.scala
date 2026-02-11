@@ -22,7 +22,7 @@ package org.apache.comet.rules
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.sideBySide
-import org.apache.spark.sql.comet.{CometBatchScanExec, CometCollectLimitExec, CometColumnarToRowExec, CometNativeColumnarToRowExec, CometNativeWriteExec, CometPlan, CometScanExec, CometSparkToColumnarExec}
+import org.apache.spark.sql.comet.{CometBatchScanExec, CometCollectLimitExec, CometColumnarToRowExec, CometNativeColumnarToRowExec, CometNativeWriteExec, CometPlan, CometSparkToColumnarExec}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, RowToColumnarExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.QueryStageExec
@@ -155,8 +155,6 @@ case class EliminateRedundantTransitions(session: SparkSession) extends Rule[Spa
    * with such scans because the buffers may be modified after C2R reads them.
    *
    * This includes:
-   *   - CometScanExec with native_iceberg_compat and partition columns - uses
-   *     ConstantColumnReader
    *   - CometBatchScanExec with CometParquetScan (V2 Parquet path) - uses BatchReader
    */
   private def hasScanUsingMutableBuffers(op: SparkPlan): Boolean = {
@@ -165,9 +163,6 @@ case class EliminateRedundantTransitions(session: SparkSession) extends Rule[Spa
       case c: ReusedExchangeExec => hasScanUsingMutableBuffers(c.child)
       case _ =>
         op.exists {
-          case scan: CometScanExec =>
-            scan.scanImpl == CometConf.SCAN_NATIVE_ICEBERG_COMPAT &&
-            scan.relation.partitionSchema.nonEmpty
           case scan: CometBatchScanExec => scan.scan.isInstanceOf[CometParquetScan]
           case _ => false
         }
