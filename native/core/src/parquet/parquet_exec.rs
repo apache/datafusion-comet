@@ -84,11 +84,11 @@ pub(crate) fn init_datasource_exec(
 
     // Determine the schema to use for ParquetSource
     // // Use data_schema only if both data_schema and data_filters are set
-    // let base_schema = match (&data_schema, &data_filters) {
-    //     (Some(schema), Some(_)) => Arc::clone(schema),
-    //     _ => Arc::clone(&required_schema),
-    // };
-    let base_schema = required_schema;
+    let base_schema = match (&data_schema, &projection_vector) {
+        (Some(schema), Some(_)) => Arc::clone(schema),
+        _ => Arc::clone(&required_schema),
+    };
+    //let base_schema = required_schema;
     // dbg!(&base_schema);
     // dbg!(&data_schema);
     // dbg!(&data_filters);
