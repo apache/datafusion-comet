@@ -137,7 +137,7 @@ case class CometBroadcastJoinRule(session: SparkSession) extends Rule[SparkPlan]
         Some(actualChild)
       case n: CometNativeExec =>
         Some(n)
-      case other =>
+      case _ =>
         None
     }
 

@@ -2709,7 +2709,7 @@ class CometExecSuite extends CometTestBase {
         // For AQE, get the actual executed plan
         val actualPlan = plan match {
           case aqe: AdaptiveSparkPlanExec =>
-            println(s"DEBUG: AQE detected, getting executedPlan")
+            println("DEBUG: AQE detected, getting executedPlan")
             aqe.executedPlan
           case other => other
         }
