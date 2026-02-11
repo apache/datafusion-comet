@@ -103,10 +103,8 @@ fn build_struct_row(depth: usize, num_leaf_fields: usize) -> Vec<u8> {
     let inter_level_size = inter_bitset + UNSAFE_ROW_POINTER_SIZE;
     let leaf_level_size = leaf_bitset + num_leaf_fields * INT64_SIZE;
 
-    let total = top_bitset
-        + UNSAFE_ROW_POINTER_SIZE
-        + (depth - 1) * inter_level_size
-        + leaf_level_size;
+    let total =
+        top_bitset + UNSAFE_ROW_POINTER_SIZE + (depth - 1) * inter_level_size + leaf_level_size;
     let mut data = vec![0u8; total];
 
     // Absolute start position of each struct level in the buffer
@@ -248,29 +246,25 @@ fn run_benchmark(
     let addr_ptr = addrs.as_mut_ptr();
     let size_ptr = sizes.as_mut_ptr();
 
-    group.bench_with_input(
-        BenchmarkId::new(name, param),
-        &num_rows,
-        |b, &n| {
-            b.iter(|| {
-                let tmp = Builder::new().tempfile().unwrap();
-                process_sorted_row_partition(
-                    n,
-                    BATCH_SIZE,
-                    addr_ptr,
-                    size_ptr,
-                    schema,
-                    tmp.path().to_str().unwrap().to_string(),
-                    1.0,
-                    false,
-                    0,
-                    None,
-                    &CompressionCodec::Zstd(1),
-                )
-                .unwrap();
-            });
-        },
-    );
+    group.bench_with_input(BenchmarkId::new(name, param), &num_rows, |b, &n| {
+        b.iter(|| {
+            let tmp = Builder::new().tempfile().unwrap();
+            process_sorted_row_partition(
+                n,
+                BATCH_SIZE,
+                addr_ptr,
+                size_ptr,
+                schema,
+                tmp.path().to_str().unwrap().to_string(),
+                1.0,
+                false,
+                0,
+                None,
+                &CompressionCodec::Zstd(1),
+            )
+            .unwrap();
+        });
+    });
 
     drop(spark_rows);
 }
@@ -368,9 +362,7 @@ fn benchmark_map_conversion(c: &mut Criterion) {
     for num_entries in [10, 100] {
         for num_rows in [1000, 10000] {
             let schema = vec![make_map_schema()];
-            let rows: Vec<Vec<u8>> = (0..num_rows)
-                .map(|_| build_map_row(num_entries))
-                .collect();
+            let rows: Vec<Vec<u8>> = (0..num_rows).map(|_| build_map_row(num_entries)).collect();
 
             run_benchmark(
                 &mut group,
