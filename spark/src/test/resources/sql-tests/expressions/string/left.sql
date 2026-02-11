@@ -30,6 +30,17 @@ SELECT left(s, n) FROM test_str_left
 query
 SELECT left(s, 3) FROM test_str_left
 
+-- column + literal: edge cases
+query
+SELECT left(s, 0) FROM test_str_left
+
+query
+SELECT left(s, -1) FROM test_str_left
+
+query
+-- n exceeds length of 'hello' (5 chars)
+SELECT left(s, 10) FROM test_str_left
+
 -- literal + column
 query expect_fallback(Substring pos and len must be literals)
 SELECT left('hello', n) FROM test_str_left
@@ -37,3 +48,19 @@ SELECT left('hello', n) FROM test_str_left
 -- literal + literal
 query ignore(https://github.com/apache/datafusion-comet/issues/3337)
 SELECT left('hello', 3), left('hello', 0), left('hello', -1), left('', 3), left(NULL, 3)
+
+-- unicode
+statement
+CREATE TABLE test_str_left_unicode(s string) USING parquet
+
+statement
+INSERT INTO test_str_left_unicode VALUES ('café'), ('hello世界'), ('😀emoji'), ('తెలుగు'), (NULL)
+
+query
+SELECT s, left(s, 2) FROM test_str_left_unicode
+
+query
+SELECT s, left(s, 4) FROM test_str_left_unicode
+
+query
+SELECT s, left(s, 0) FROM test_str_left_unicode
