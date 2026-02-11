@@ -44,6 +44,7 @@ query spark_answer_only
 SELECT right(s, -1) FROM test_str_right
 
 query spark_answer_only
+-- n exceeds length of 'hello' (5 chars)
 SELECT right(s, 10) FROM test_str_right
 
 -- literal + column: falls back

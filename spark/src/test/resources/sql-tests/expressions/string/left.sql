@@ -38,6 +38,7 @@ query
 SELECT left(s, -1) FROM test_str_left
 
 query
+-- n exceeds length of 'hello' (5 chars)
 SELECT left(s, 10) FROM test_str_left
 
 -- literal + column
