@@ -410,7 +410,7 @@ index c4fb4fa943c..a04b23870a8 100644
      assert(exchanges.size == 2)
    }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala
-index f33432ddb6f..44b59ef70b2 100644
+index f33432ddb6f..4d2db5000bd 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala
 @@ -22,6 +22,7 @@ import org.scalatest.GivenWhenThen
@@ -421,7 +421,7 @@ index f33432ddb6f..44b59ef70b2 100644
  import org.apache.spark.sql.connector.catalog.{InMemoryTableCatalog, InMemoryTableWithV2FilterCatalog}
  import org.apache.spark.sql.execution._
  import org.apache.spark.sql.execution.adaptive._
-@@ -206,6 +207,19 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -206,6 +207,21 @@ abstract class DynamicPartitionPruningSuiteBase
        s.child match {
          case _: ReusedExchangeExec => // reuse check ok.
          case BroadcastQueryStageExec(_, _: ReusedExchangeExec, _) => // reuse check ok.
@@ -435,13 +435,15 @@ index f33432ddb6f..44b59ef70b2 100644
 +                case _ => false
 +              }
 +              assert(hasReuse, s"$s\nshould have been reused in\n$plan")
++            case ReusedExchangeExec(_, _: CometBroadcastExchangeExec) =>
++              // ReusedExchangeExec of CometBroadcastExchangeExec is valid
 +            case _ =>
 +              fail(s"Invalid child node under CometColumnarToRowExec in\n$s")
 +          }
          case b: BroadcastExchangeLike =>
            val hasReuse = plan.exists {
              case ReusedExchangeExec(_, e) => e eq b
-@@ -262,6 +276,12 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -262,6 +278,12 @@ abstract class DynamicPartitionPruningSuiteBase
        case s: BatchScanExec => s.runtimeFilters.collect {
          case d: DynamicPruningExpression => d.child
        }
@@ -454,7 +456,7 @@ index f33432ddb6f..44b59ef70b2 100644
        case _ => Nil
      }
    }
-@@ -1027,7 +1047,8 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -1027,7 +1049,8 @@ abstract class DynamicPartitionPruningSuiteBase
      }
    }
  
@@ -464,7 +466,7 @@ index f33432ddb6f..44b59ef70b2 100644
      withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "false",
        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
        withTable("large", "dimTwo", "dimThree") {
-@@ -1215,7 +1236,8 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -1215,7 +1238,8 @@ abstract class DynamicPartitionPruningSuiteBase
    }
  
    test("SPARK-32509: Unused Dynamic Pruning filter shouldn't affect " +
@@ -474,7 +476,7 @@ index f33432ddb6f..44b59ef70b2 100644
      withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
        withSQLConf(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
          val df = sql(
-@@ -1423,7 +1445,8 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -1423,7 +1447,8 @@ abstract class DynamicPartitionPruningSuiteBase
      }
    }
  
@@ -484,7 +486,7 @@ index f33432ddb6f..44b59ef70b2 100644
      withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
        val df = sql(
          """ WITH v as (
-@@ -1698,7 +1721,8 @@ abstract class DynamicPartitionPruningV1Suite extends DynamicPartitionPruningDat
+@@ -1698,7 +1723,8 @@ abstract class DynamicPartitionPruningV1Suite extends DynamicPartitionPruningDat
     * Check the static scan metrics with and without DPP
     */
    test("static scan metrics",
@@ -494,7 +496,7 @@ index f33432ddb6f..44b59ef70b2 100644
      withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true",
        SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "false",
        SQLConf.EXCHANGE_REUSE_ENABLED.key -> "false") {
-@@ -1729,6 +1753,8 @@ abstract class DynamicPartitionPruningV1Suite extends DynamicPartitionPruningDat
+@@ -1729,6 +1755,8 @@ abstract class DynamicPartitionPruningV1Suite extends DynamicPartitionPruningDat
                case s: BatchScanExec =>
                  // we use f1 col for v2 tables due to schema pruning
                  s.output.exists(_.exists(_.argString(maxFields = 100).contains("f1")))
