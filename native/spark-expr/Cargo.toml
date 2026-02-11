@@ -95,3 +95,7 @@ harness = false
 [[test]]
 name = "test_udf_registration"
 path = "tests/spark_expr_reg.rs"
+
+[[bench]]
+name = "cast_boolean"
+harness = false
