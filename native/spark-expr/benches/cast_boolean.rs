@@ -36,7 +36,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     let cast_to_f64 = Cast::new(expr.clone(), DataType::Float64, spark_cast_options.clone());
     let cast_to_str = Cast::new(expr, DataType::Utf8, spark_cast_options);
 
-    let mut group = c.benchmark_group(format!("cast_bool_to_int"));
+    let mut group = c.benchmark_group("cast_bool_to_int".to_string());
     group.bench_function("i8", |b| {
         b.iter(|| cast_to_i8.evaluate(&boolean_batch).unwrap());
     });
