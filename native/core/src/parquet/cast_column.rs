@@ -104,8 +104,10 @@ fn relabel_array(array: ArrayRef, target_type: &DataType) -> ArrayRef {
         }
         DataType::Map(target_entries_field, sorted) => {
             let map = array.as_any().downcast_ref::<MapArray>().unwrap();
-            let entries =
-                relabel_array(Arc::new(map.entries().clone()), target_entries_field.data_type());
+            let entries = relabel_array(
+                Arc::new(map.entries().clone()),
+                target_entries_field.data_type(),
+            );
             let entries_struct = entries.as_any().downcast_ref::<StructArray>().unwrap();
             Arc::new(MapArray::new(
                 Arc::clone(target_entries_field),
@@ -552,11 +554,7 @@ mod tests {
 
         let keys = StringArray::from(vec!["a", "b"]);
         let values = Int32Array::from(vec![1, 2]);
-        let entries = StructArray::new(
-            struct_fields,
-            vec![Arc::new(keys), Arc::new(values)],
-            None,
-        );
+        let entries = StructArray::new(struct_fields, vec![Arc::new(keys), Arc::new(values)], None);
         let map = MapArray::new(
             physical_entries_field,
             arrow::buffer::OffsetBuffer::new(vec![0, 2].into()),
@@ -622,8 +620,7 @@ mod tests {
         let physical_fields = Fields::from(vec![physical_struct_field]);
         let logical_fields = Fields::from(vec![logical_struct_field]);
 
-        let struct_arr =
-            StructArray::new(physical_fields, vec![Arc::new(list) as ArrayRef], None);
+        let struct_arr = StructArray::new(physical_fields, vec![Arc::new(list) as ArrayRef], None);
         let array: ArrayRef = Arc::new(struct_arr);
 
         let target_type = DataType::Struct(logical_fields);
@@ -632,7 +629,11 @@ mod tests {
 
         // Verify we can access the nested data without panics
         let result_struct = result.as_any().downcast_ref::<StructArray>().unwrap();
-        let result_list = result_struct.column(0).as_any().downcast_ref::<ListArray>().unwrap();
+        let result_list = result_struct
+            .column(0)
+            .as_any()
+            .downcast_ref::<ListArray>()
+            .unwrap();
         assert_eq!(result_list.len(), 2);
     }
 }
