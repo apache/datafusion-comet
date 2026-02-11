@@ -32,7 +32,7 @@ import org.apache.spark.sql.execution._
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf._
-import org.apache.comet.rules.{CometExecRule, CometScanRule, EliminateRedundantTransitions}
+import org.apache.comet.rules.{CometBroadcastJoinRule, CometExecRule, CometScanRule, EliminateRedundantTransitions}
 import org.apache.comet.shims.ShimCometSparkSessionExtensions
 
 /**
@@ -49,6 +49,10 @@ class CometSparkSessionExtensions
     extensions.injectColumnar { session => CometExecColumnar(session) }
     extensions.injectQueryStagePrepRule { session => CometScanRule(session) }
     extensions.injectQueryStagePrepRule { session => CometExecRule(session) }
+    // CometBroadcastJoinRule runs AFTER PlanAdaptiveDynamicPruningFilters in AQE mode,
+    // completing the deferred BroadcastHashJoinExec transformation after DPP is created.
+    // Uses shim because injectQueryStageOptimizerRule doesn't exist in Spark 3.4.
+    injectQueryStageOptimizerRules(extensions, session => CometBroadcastJoinRule(session))
   }
 
   case class CometScanColumnar(session: SparkSession) extends ColumnarRule {

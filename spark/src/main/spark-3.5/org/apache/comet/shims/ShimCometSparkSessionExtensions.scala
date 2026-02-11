@@ -19,6 +19,8 @@
 
 package org.apache.comet.shims
 
+import org.apache.spark.sql.{SparkSession, SparkSessionExtensions}
+import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.execution.{QueryExecution, SparkPlan}
 
 trait ShimCometSparkSessionExtensions {
@@ -42,5 +44,12 @@ trait ShimCometSparkSessionExtensions {
       case _: NoSuchMethodException | _: SecurityException => return false
     }
     true
+  }
+
+  // injectQueryStageOptimizerRule available since Spark 3.5
+  def injectQueryStageOptimizerRules(
+      extensions: SparkSessionExtensions,
+      rule: SparkSession => Rule[SparkPlan]): Unit = {
+    extensions.injectQueryStageOptimizerRule(rule)
   }
 }

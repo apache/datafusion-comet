@@ -149,6 +149,18 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(true)
 
+  val COMET_AQE_DPP_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.scan.aqeDpp.enabled")
+      .category(CATEGORY_SCAN)
+      .doc(
+        "Whether to enable AQE-compatible Dynamic Partition Pruning (DPP) for broadcast joins. " +
+          "When enabled, Comet defers BroadcastHashJoinExec transformation to allow Spark's " +
+          "PlanAdaptiveDynamicPruningFilters to create DPP, then transforms the join afterward. " +
+          "When disabled, broadcast joins are transformed immediately which may prevent DPP " +
+          "from being created in AQE mode. This config only has effect when AQE is enabled.")
+      .booleanConf
+      .createWithDefault(true)
+
   val COMET_ICEBERG_NATIVE_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.scan.icebergNative.enabled")
       .category(CATEGORY_SCAN)

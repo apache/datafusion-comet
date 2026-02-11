@@ -225,6 +225,17 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       // exchange to Comet broadcast exchange if its downstream is a Comet native plan or if the
       // broadcast exchange is forced to be enabled by Comet config.
       case plan if plan.children.exists(_.isInstanceOf[BroadcastExchangeExec]) =>
+        // In AQE mode, defer BroadcastHashJoinExec transformation to CometBroadcastJoinRule
+        // ONLY when DPP applies, AQE DPP is enabled, and using native_datafusion scan.
+        // This allows Spark's PlanAdaptiveDynamicPruningFilters to find the join and create
+        // SubqueryBroadcastExec. Without deferral, Comet transforms the join before DPP runs.
+        if (CometConf.COMET_AQE_DPP_ENABLED.get(conf) &&
+          CometConf.COMET_NATIVE_SCAN_IMPL.get(conf) == CometConf.SCAN_NATIVE_DATAFUSION &&
+          conf.adaptiveExecutionEnabled &&
+          plan.isInstanceOf[BroadcastHashJoinExec] &&
+          hasDynamicPruning(plan)) {
+          return plan
+        }
         val newChildren = plan.children.map {
           case b: BroadcastExchangeExec if b.children.forall(_.isInstanceOf[CometNativeExec]) =>
             convertToComet(b, CometBroadcastExchangeExec).getOrElse(b)
@@ -668,6 +679,26 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       val nodeName = simpleClassName.replaceAll("Exec$", "")
       COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST.get(conf).contains(nodeName)
     }
+  }
+
+  /**
+   * Checks if any descendant scan in the plan has dynamic partition pruning expressions. DPP is
+   * indicated by InSubqueryExec in the scan's partition filters.
+   */
+  private def hasDynamicPruning(plan: SparkPlan): Boolean = {
+    plan.find {
+      case s: CometNativeScanExec =>
+        hasInSubqueryExpr(s.partitionFilters)
+      case s: CometScanExec =>
+        hasInSubqueryExpr(s.partitionFilters)
+      case f: FileSourceScanExec =>
+        hasInSubqueryExpr(f.partitionFilters)
+      case _ => false
+    }.isDefined
+  }
+
+  private def hasInSubqueryExpr(exprs: Seq[Expression]): Boolean = {
+    exprs.exists(_.find(_.isInstanceOf[InSubqueryExec]).isDefined)
   }
 
 }

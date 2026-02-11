@@ -21,21 +21,35 @@ package org.apache.comet.shims
 
 import org.apache.spark.sql.{SparkSession, SparkSessionExtensions}
 import org.apache.spark.sql.catalyst.rules.Rule
-import org.apache.spark.sql.connector.expressions.aggregate.Aggregation
 import org.apache.spark.sql.execution.{QueryExecution, SparkPlan}
-import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
-import org.apache.spark.sql.internal.SQLConf
 
 trait ShimCometSparkSessionExtensions {
-  protected def getPushedAggregate(scan: ParquetScan): Option[Aggregation] = scan.pushedAggregate
 
-  protected def supportsExtendedExplainInfo(qe: QueryExecution): Boolean = true
+  /**
+   * TODO: delete after dropping Spark 3.x support and directly call
+   * SQLConf.EXTENDED_EXPLAIN_PROVIDERS.key
+   */
+  protected val EXTENDED_EXPLAIN_PROVIDERS_KEY = "spark.sql.extendedExplainProviders"
 
-  protected val EXTENDED_EXPLAIN_PROVIDERS_KEY = SQLConf.EXTENDED_EXPLAIN_PROVIDERS.key
+  // Extended info is available only since Spark 4.0.0
+  // (https://issues.apache.org/jira/browse/SPARK-47289)
+  def supportsExtendedExplainInfo(qe: QueryExecution): Boolean = {
+    try {
+      // Look for QueryExecution.extendedExplainInfo(scala.Function1[String, Unit], SparkPlan)
+      qe.getClass.getDeclaredMethod(
+        "extendedExplainInfo",
+        classOf[String => Unit],
+        classOf[SparkPlan])
+    } catch {
+      case _: NoSuchMethodException | _: SecurityException => return false
+    }
+    true
+  }
 
+  // injectQueryStageOptimizerRule doesn't exist in Spark 3.4
   def injectQueryStageOptimizerRules(
       extensions: SparkSessionExtensions,
       rule: SparkSession => Rule[SparkPlan]): Unit = {
-    extensions.injectQueryStageOptimizerRule(rule)
+    // No-op in Spark 3.4
   }
 }

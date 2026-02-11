@@ -2657,6 +2657,94 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("DPP broadcast exchange reuse with AQE") {
+    // This test verifies that DPP works correctly when AQE is enabled.
+    // The fix involves deferring BroadcastHashJoinExec transformation in CometExecRule
+    // to allow PlanAdaptiveDynamicPruningFilters to find the join and create DPP,
+    // then CometBroadcastJoinRule transforms it afterward.
+    val factData = Seq[(Int, Int, Int, Int)](
+      (1030, 3, 2, 10),
+      (1040, 3, 2, 50),
+      (1050, 3, 2, 50),
+      (1060, 3, 2, 50))
+
+    val storeData = Seq[(Int, String, String)](
+      (1, "North-Holland", "NL"),
+      (2, "South-Holland", "NL"),
+      (3, "Bavaria", "DE"))
+
+    withTable("fact_stats_aqe", "dim_stats_aqe") {
+      factData
+        .toDF("date_id", "store_id", "product_id", "units_sold")
+        .write
+        .partitionBy("store_id")
+        .format("parquet")
+        .saveAsTable("fact_stats_aqe")
+
+      storeData
+        .toDF("store_id", "state_province", "country")
+        .write
+        .format("parquet")
+        .saveAsTable("dim_stats_aqe")
+
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+        SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true",
+        SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true",
+        SQLConf.EXCHANGE_REUSE_ENABLED.key -> "true") {
+
+        val df = sql("""
+            |SELECT f.date_id, f.product_id, f.units_sold, f.store_id FROM fact_stats_aqe f
+            |JOIN dim_stats_aqe s
+            |ON f.store_id = s.store_id WHERE s.country = 'DE'
+          """.stripMargin)
+
+        df.collect()
+
+        val plan = df.queryExecution.executedPlan
+        println(s"DEBUG: executedPlan class: ${plan.getClass.getSimpleName}")
+
+        // For AQE, get the actual executed plan
+        val actualPlan = plan match {
+          case aqe: AdaptiveSparkPlanExec =>
+            println(s"DEBUG: AQE detected, getting executedPlan")
+            aqe.executedPlan
+          case other => other
+        }
+        println(s"DEBUG: actualPlan:\n$actualPlan")
+
+        // Check that DPP is triggered - SubqueryBroadcastExec should be present
+        // Before the fix, PlanAdaptiveDynamicPruningFilters couldn't find BroadcastHashJoinExec
+        // (because Comet transformed it to CometBroadcastHashJoinExec first), so DPP was disabled
+        val subqueryBroadcasts = actualPlan.collectWithSubqueries {
+          case s: SubqueryBroadcastExec =>
+            s
+        }
+        println(s"DEBUG: subqueryBroadcasts found: ${subqueryBroadcasts.size}")
+        assert(
+          subqueryBroadcasts.nonEmpty,
+          s"Expected SubqueryBroadcastExec for DPP with AQE but found none:\n$actualPlan")
+
+        // Verify the join was transformed to Comet
+        val cometBroadcastJoins = actualPlan.collect { case j: CometBroadcastHashJoinExec =>
+          j
+        }
+        val sparkBroadcastJoins = actualPlan.collect { case j: BroadcastHashJoinExec =>
+          j
+        }
+        println(s"DEBUG: cometBroadcastJoins found: ${cometBroadcastJoins.size}")
+        println(s"DEBUG: sparkBroadcastJoins found: ${sparkBroadcastJoins.size}")
+        assert(
+          cometBroadcastJoins.nonEmpty,
+          s"Expected CometBroadcastHashJoinExec but found none:\n$actualPlan")
+
+        checkSparkAnswer(df)
+      }
+    }
+  }
+
 }
 case class BucketedTableTestSpec(
     bucketSpec: Option[BucketSpec],
