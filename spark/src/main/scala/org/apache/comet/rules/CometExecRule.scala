@@ -319,7 +319,10 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
    * CometBroadcastExchange, enabling broadcast reuse.
    */
   private def transformSubqueryBroadcasts(plan: SparkPlan): SparkPlan = {
-    plan.transformUpWithSubqueries { case p =>
+    // Use transformUp instead of transformUpWithSubqueries to avoid breaking ReusedSubqueryExec
+    // references. InSubqueryExec (for DPP) only appears at the top level of filter expressions
+    // on scans, not nested inside scalar subqueries, so we don't need to recurse into subqueries.
+    plan.transformUp { case p =>
       p.transformExpressions { case sub: InSubqueryExec =>
         sub.plan match {
           case s: SubqueryBroadcastExec =>

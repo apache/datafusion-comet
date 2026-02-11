@@ -2528,9 +2528,6 @@ class CometExecSuite extends CometTestBase {
         df.collect()
 
         val plan = df.queryExecution.executedPlan
-        // scalastyle:off println
-        println(s"=== Executed Plan ===\n$plan")
-        // scalastyle:on println
 
         // Check that DPP is triggered with SubqueryBroadcast
         val subqueryBroadcasts = plan.collectWithSubqueries { case s: SubqueryBroadcastExec =>
@@ -2562,12 +2559,12 @@ class CometExecSuite extends CometTestBase {
                   }
                   assert(
                     hasReuse,
-                    s"CometBroadcastExchange should be reused.\n" +
+                    "CometBroadcastExchange should be reused.\n" +
                       s"SubqueryBroadcast structure: ${s.child.getClass.getSimpleName} -> " +
                       s"${cbe.getClass.getSimpleName}\nFull plan:\n$plan")
                 case other =>
                   fail(
-                    s"Expected CometBroadcastExchangeExec under CometColumnarToRowExec, " +
+                    "Expected CometBroadcastExchangeExec under CometColumnarToRowExec, " +
                       s"got ${other.getClass.getSimpleName}\n$plan")
               }
             case b: BroadcastExchangeLike =>
@@ -2577,7 +2574,7 @@ class CometExecSuite extends CometTestBase {
               }
               assert(
                 hasReuse,
-                s"SubqueryBroadcast's BroadcastExchange should have been reused.\n" +
+                "SubqueryBroadcast's BroadcastExchange should have been reused.\n" +
                   s"SubqueryBroadcast child: ${s.child.getClass.getSimpleName}\n" +
                   s"Full plan:\n$plan")
             case other =>
@@ -2590,8 +2587,77 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
-}
+  test("SubqueryBroadcast transformation preserves ReusedSubquery") {
+    // This test verifies that when we transform SubqueryBroadcastExec to use
+    // CometBroadcastExchangeExec, we don't break ReusedSubqueryExec references
+    // for scalar subqueries. This pattern appears in TPC-DS queries like q6.
+    withTable("fact_dpp", "dim_dpp") {
+      // Create partitioned fact table - partition on store_id to trigger DPP
+      spark
+        .createDataFrame(
+          Seq((1L, 1, 100), (2L, 1, 200), (3L, 2, 300), (4L, 2, 400), (5L, 3, 500)))
+        .toDF("id", "store_id", "value")
+        .write
+        .partitionBy("store_id")
+        .format("parquet")
+        .saveAsTable("fact_dpp")
 
+      // Create dimension table (small, to be broadcast)
+      spark
+        .createDataFrame(Seq((1, "NL"), (2, "DE")))
+        .toDF("store_id", "country")
+        .write
+        .format("parquet")
+        .saveAsTable("dim_dpp")
+
+      withSQLConf(
+        CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true",
+        SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true",
+        SQLConf.EXCHANGE_REUSE_ENABLED.key -> "true",
+        SQLConf.SUBQUERY_REUSE_ENABLED.key -> "true",
+        "spark.sql.autoBroadcastJoinThreshold" -> "10MB") {
+
+        // Query that triggers:
+        // 1. DPP with SubqueryBroadcast (join on partition column store_id)
+        // 2. Scalar subquery that gets reused (max value used twice)
+        val query =
+          """SELECT f.id, f.value,
+            |       (SELECT max(value) FROM fact_dpp) as max_val
+            |FROM fact_dpp f
+            |JOIN dim_dpp d ON f.store_id = d.store_id
+            |WHERE d.country = 'DE'
+            |  AND f.value > (SELECT max(value) FROM fact_dpp) / 10
+            |""".stripMargin
+
+        val df = sql(query)
+        val plan = df.queryExecution.executedPlan
+
+        // Check for SubqueryBroadcastExec (DPP)
+        val subqueryBroadcasts = plan.collectWithSubqueries { case s: SubqueryBroadcastExec => s }
+
+        // Verify ReusedSubqueryExec is preserved for scalar subqueries
+        val reusedSubqueries = plan.collectWithSubqueries { case rs: ReusedSubqueryExec => rs }
+        val subqueryExecs = plan.collectWithSubqueries { case s: SubqueryExec => s }
+
+        // We should have DPP triggered (SubqueryBroadcastExec present)
+        // and scalar subquery reuse preserved (ReusedSubqueryExec present)
+        assert(
+          subqueryBroadcasts.nonEmpty,
+          s"Expected SubqueryBroadcastExec for DPP but found none.\nPlan:\n$plan")
+
+        assert(
+          reusedSubqueries.nonEmpty || subqueryExecs.length <= 1,
+          "Expected ReusedSubqueryExec to be preserved but found none. " +
+            s"Found ${subqueryExecs.length} SubqueryExec instead.\nPlan:\n$plan")
+
+        checkSparkAnswer(df)
+      }
+    }
+  }
+
+}
 case class BucketedTableTestSpec(
     bucketSpec: Option[BucketSpec],
     numPartitions: Int = 10,

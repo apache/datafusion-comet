@@ -15,8 +15,8 @@ CometColumnarToRow
          :     :                 :     :- CometFilter
          :     :                 :     :  +- CometNativeScan parquet spark_catalog.default.store_sales
          :     :                 :     :        +- SubqueryBroadcast
-         :     :                 :     :           +- BroadcastExchange
-         :     :                 :     :              +- CometColumnarToRow
+         :     :                 :     :           +- CometColumnarToRow
+         :     :                 :     :              +- CometBroadcastExchange
          :     :                 :     :                 +- CometProject
          :     :                 :     :                    +- CometBroadcastHashJoin
          :     :                 :     :                       :- CometFilter
@@ -60,8 +60,8 @@ CometColumnarToRow
          :                          :     :- CometFilter
          :                          :     :  +- CometNativeScan parquet spark_catalog.default.catalog_sales
          :                          :     :        +- SubqueryBroadcast
-         :                          :     :           +- BroadcastExchange
-         :                          :     :              +- CometColumnarToRow
+         :                          :     :           +- CometColumnarToRow
+         :                          :     :              +- CometBroadcastExchange
          :                          :     :                 +- CometProject
          :                          :     :                    +- CometBroadcastHashJoin
          :                          :     :                       :- CometFilter
@@ -112,4 +112,4 @@ CometColumnarToRow
                                                 :  +- ReusedSubquery
                                                 +- CometNativeScan parquet spark_catalog.default.date_dim
 
-Comet accelerated 98 out of 108 eligible operators (90%). Final plan contains 5 transitions between Spark and Comet.
+Comet accelerated 100 out of 108 eligible operators (92%). Final plan contains 5 transitions between Spark and Comet.

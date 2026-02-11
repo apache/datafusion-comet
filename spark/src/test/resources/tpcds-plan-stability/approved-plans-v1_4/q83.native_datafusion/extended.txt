@@ -14,8 +14,8 @@ CometColumnarToRow
          :     :              :     :- CometFilter
          :     :              :     :  +- CometNativeScan parquet spark_catalog.default.store_returns
          :     :              :     :        +- SubqueryBroadcast
-         :     :              :     :           +- BroadcastExchange
-         :     :              :     :              +- CometColumnarToRow
+         :     :              :     :           +- CometColumnarToRow
+         :     :              :     :              +- CometBroadcastExchange
          :     :              :     :                 +- CometProject
          :     :              :     :                    +- CometBroadcastHashJoin
          :     :              :     :                       :- CometFilter
@@ -56,8 +56,8 @@ CometColumnarToRow
          :                       :     :- CometFilter
          :                       :     :  +- CometNativeScan parquet spark_catalog.default.catalog_returns
          :                       :     :        +- SubqueryBroadcast
-         :                       :     :           +- BroadcastExchange
-         :                       :     :              +- CometColumnarToRow
+         :                       :     :           +- CometColumnarToRow
+         :                       :     :              +- CometBroadcastExchange
          :                       :     :                 +- CometProject
          :                       :     :                    +- CometBroadcastHashJoin
          :                       :     :                       :- CometFilter
@@ -116,4 +116,4 @@ CometColumnarToRow
                                                    +- CometFilter
                                                       +- CometNativeScan parquet spark_catalog.default.date_dim
 
-Comet accelerated 109 out of 114 eligible operators (95%). Final plan contains 3 transitions between Spark and Comet.
+Comet accelerated 111 out of 114 eligible operators (97%). Final plan contains 3 transitions between Spark and Comet.

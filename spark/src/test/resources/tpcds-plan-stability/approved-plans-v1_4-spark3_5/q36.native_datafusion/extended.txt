@@ -17,8 +17,8 @@ TakeOrderedAndProject
                                  :     :     :- CometFilter
                                  :     :     :  +- CometNativeScan parquet spark_catalog.default.store_sales
                                  :     :     :        +- SubqueryBroadcast
-                                 :     :     :           +- BroadcastExchange
-                                 :     :     :              +- CometColumnarToRow
+                                 :     :     :           +- CometColumnarToRow
+                                 :     :     :              +- CometBroadcastExchange
                                  :     :     :                 +- CometProject
                                  :     :     :                    +- CometFilter
                                  :     :     :                       +- CometNativeScan parquet spark_catalog.default.date_dim
@@ -35,4 +35,4 @@ TakeOrderedAndProject
                                        +- CometFilter
                                           +- CometNativeScan parquet spark_catalog.default.store
 
-Comet accelerated 29 out of 34 eligible operators (85%). Final plan contains 2 transitions between Spark and Comet.
+Comet accelerated 30 out of 34 eligible operators (88%). Final plan contains 2 transitions between Spark and Comet.

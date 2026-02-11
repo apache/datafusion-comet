@@ -21,8 +21,8 @@ CometColumnarToRow
             :     :  :     :  :                 :     :  +- ColumnarToRow
             :     :  :     :  :                 :     :     +-  Scan parquet spark_catalog.default.store_sales [COMET: Dynamic Partition Pruning is not supported with spark.comet.scan.impl=native_iceberg_compat.]
             :     :  :     :  :                 :     :           +- SubqueryBroadcast
-            :     :  :     :  :                 :     :              +- BroadcastExchange
-            :     :  :     :  :                 :     :                 +- CometColumnarToRow
+            :     :  :     :  :                 :     :              +- CometColumnarToRow
+            :     :  :     :  :                 :     :                 +- CometBroadcastExchange
             :     :  :     :  :                 :     :                    +- CometFilter
             :     :  :     :  :                 :     :                       +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
             :     :  :     :  :                 :     +- BroadcastExchange
@@ -46,8 +46,8 @@ CometColumnarToRow
             :     :  :     :                       :     :  +- ColumnarToRow
             :     :  :     :                       :     :     +-  Scan parquet spark_catalog.default.store_sales [COMET: Dynamic Partition Pruning is not supported with spark.comet.scan.impl=native_iceberg_compat.]
             :     :  :     :                       :     :           +- SubqueryBroadcast
-            :     :  :     :                       :     :              +- BroadcastExchange
-            :     :  :     :                       :     :                 +- CometColumnarToRow
+            :     :  :     :                       :     :              +- CometColumnarToRow
+            :     :  :     :                       :     :                 +- CometBroadcastExchange
             :     :  :     :                       :     :                    +- CometFilter
             :     :  :     :                       :     :                       +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
             :     :  :     :                       :     +- BroadcastExchange
@@ -71,8 +71,8 @@ CometColumnarToRow
             :     :  :                          :     :  +- ColumnarToRow
             :     :  :                          :     :     +-  Scan parquet spark_catalog.default.store_sales [COMET: Dynamic Partition Pruning is not supported with spark.comet.scan.impl=native_iceberg_compat.]
             :     :  :                          :     :           +- SubqueryBroadcast
-            :     :  :                          :     :              +- BroadcastExchange
-            :     :  :                          :     :                 +- CometColumnarToRow
+            :     :  :                          :     :              +- CometColumnarToRow
+            :     :  :                          :     :                 +- CometBroadcastExchange
             :     :  :                          :     :                    +- CometFilter
             :     :  :                          :     :                       +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
             :     :  :                          :     +- BroadcastExchange
@@ -147,4 +147,4 @@ CometColumnarToRow
                                        +- CometFilter
                                           +- CometScan [native_iceberg_compat] parquet spark_catalog.default.customer_address
 
-Comet accelerated 38 out of 120 eligible operators (31%). Final plan contains 28 transitions between Spark and Comet.
+Comet accelerated 41 out of 120 eligible operators (34%). Final plan contains 28 transitions between Spark and Comet.

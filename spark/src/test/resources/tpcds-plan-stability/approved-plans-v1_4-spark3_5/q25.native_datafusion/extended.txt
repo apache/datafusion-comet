@@ -20,8 +20,8 @@ CometColumnarToRow
                   :     :     :     :     :     :     :- CometFilter
                   :     :     :     :     :     :     :  +- CometNativeScan parquet spark_catalog.default.store_sales
                   :     :     :     :     :     :     :        +- SubqueryBroadcast
-                  :     :     :     :     :     :     :           +- BroadcastExchange
-                  :     :     :     :     :     :     :              +- CometColumnarToRow
+                  :     :     :     :     :     :     :           +- CometColumnarToRow
+                  :     :     :     :     :     :     :              +- CometBroadcastExchange
                   :     :     :     :     :     :     :                 +- CometProject
                   :     :     :     :     :     :     :                    +- CometFilter
                   :     :     :     :     :     :     :                       +- CometNativeScan parquet spark_catalog.default.date_dim
@@ -29,8 +29,8 @@ CometColumnarToRow
                   :     :     :     :     :     :        +- CometFilter
                   :     :     :     :     :     :           +- CometNativeScan parquet spark_catalog.default.store_returns
                   :     :     :     :     :     :                 +- SubqueryBroadcast
-                  :     :     :     :     :     :                    +- BroadcastExchange
-                  :     :     :     :     :     :                       +- CometColumnarToRow
+                  :     :     :     :     :     :                    +- CometColumnarToRow
+                  :     :     :     :     :     :                       +- CometBroadcastExchange
                   :     :     :     :     :     :                          +- CometProject
                   :     :     :     :     :     :                             +- CometFilter
                   :     :     :     :     :     :                                +- CometNativeScan parquet spark_catalog.default.date_dim
@@ -59,4 +59,4 @@ CometColumnarToRow
                         +- CometFilter
                            +- CometNativeScan parquet spark_catalog.default.item
 
-Comet accelerated 52 out of 57 eligible operators (91%). Final plan contains 3 transitions between Spark and Comet.
+Comet accelerated 54 out of 57 eligible operators (94%). Final plan contains 3 transitions between Spark and Comet.
