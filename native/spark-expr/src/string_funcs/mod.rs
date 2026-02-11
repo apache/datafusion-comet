@@ -18,7 +18,9 @@
 mod contains;
 mod string_space;
 mod substring;
+mod translate;
 
 pub use contains::SparkContains;
 pub use string_space::SparkStringSpace;
 pub use substring::SubstringExpr;
+pub use translate::spark_translate;
