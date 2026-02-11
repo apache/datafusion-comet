@@ -126,14 +126,17 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[MapKeys] -> CometMapKeys,
     classOf[MapEntries] -> CometMapEntries,
     classOf[MapValues] -> CometMapValues,
-    classOf[MapFromArrays] -> CometMapFromArrays)
+    classOf[MapFromArrays] -> CometMapFromArrays,
+    classOf[MapContainsKey] -> CometMapContainsKey,
+    classOf[MapFromEntries] -> CometMapFromEntries)
 
   private val structExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     classOf[CreateNamedStruct] -> CometCreateNamedStruct,
     classOf[GetArrayStructFields] -> CometGetArrayStructFields,
     classOf[GetStructField] -> CometGetStructField,
     classOf[JsonToStructs] -> CometJsonToStructs,
-    classOf[StructsToJson] -> CometStructsToJson)
+    classOf[StructsToJson] -> CometStructsToJson,
+    classOf[StructsToCsv] -> CometStructsToCsv)
 
   private val hashExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     classOf[Md5] -> CometScalarFunction("md5"),
@@ -170,6 +173,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[StringTrimBoth] -> CometScalarFunction("btrim"),
     classOf[StringTrimLeft] -> CometScalarFunction("ltrim"),
     classOf[StringTrimRight] -> CometScalarFunction("rtrim"),
+    classOf[Left] -> CometLeft,
+    classOf[Right] -> CometRight,
     classOf[Substring] -> CometSubstring,
     classOf[Upper] -> CometUpper)
 
@@ -185,15 +190,20 @@ object QueryPlanSerde extends Logging with CometExprShim {
 
   private val temporalExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     classOf[DateAdd] -> CometDateAdd,
+    classOf[DateDiff] -> CometDateDiff,
     classOf[DateFormatClass] -> CometDateFormat,
     classOf[DateSub] -> CometDateSub,
     classOf[UnixDate] -> CometUnixDate,
     classOf[FromUnixTime] -> CometFromUnixTime,
+    classOf[LastDay] -> CometLastDay,
     classOf[Hour] -> CometHour,
+    classOf[MakeDate] -> CometMakeDate,
     classOf[Minute] -> CometMinute,
+    classOf[NextDay] -> CometNextDay,
     classOf[Second] -> CometSecond,
     classOf[TruncDate] -> CometTruncDate,
     classOf[TruncTimestamp] -> CometTruncTimestamp,
+    classOf[UnixTimestamp] -> CometUnixTimestamp,
     classOf[Year] -> CometYear,
     classOf[Month] -> CometMonth,
     classOf[DayOfMonth] -> CometDayOfMonth,

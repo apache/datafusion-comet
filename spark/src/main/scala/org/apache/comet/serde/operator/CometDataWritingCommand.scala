@@ -49,6 +49,10 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
   override def enabledConfig: Option[ConfigEntry[Boolean]] =
     Some(CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED)
 
+  // Native writes require Arrow-formatted input data. If the scan falls back to Spark
+  // (e.g., due to unsupported complex types), the write must also fall back.
+  override def requiresNativeChildren: Boolean = true
+
   override def getSupportLevel(op: DataWritingCommandExec): SupportLevel = {
     op.cmd match {
       case cmd: InsertIntoHadoopFsRelationCommand =>

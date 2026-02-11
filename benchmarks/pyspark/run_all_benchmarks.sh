@@ -25,7 +25,7 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DATA_PATH="${1:-/tmp/shuffle-benchmark-data}"
-COMET_JAR="${COMET_JAR:-$SCRIPT_DIR/../../spark/target/comet-spark-spark3.5_2.12-0.13.0-SNAPSHOT.jar}"
+COMET_JAR="${COMET_JAR:-$SCRIPT_DIR/../../spark/target/comet-spark-spark3.5_2.12-0.14.0-SNAPSHOT.jar}"
 SPARK_MASTER="${SPARK_MASTER:-local[*]}"
 EXECUTOR_MEMORY="${EXECUTOR_MEMORY:-16g}"
 EVENT_LOG_DIR="${EVENT_LOG_DIR:-/tmp/spark-events}"

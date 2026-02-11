@@ -23,6 +23,8 @@ import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.vector.FieldVector;
 import org.apache.arrow.vector.types.pojo.Field;
 
+import org.apache.comet.IcebergApi;
+
 /** This is a simple wrapper around SchemaImporter to make it accessible from Java Arrow. */
 public abstract class AbstractCometSchemaImporter {
   private final BufferAllocator allocator;
@@ -67,6 +69,7 @@ public abstract class AbstractCometSchemaImporter {
     return vector;
   }
 
+  @IcebergApi
   public void close() {
     provider.close();
   }
