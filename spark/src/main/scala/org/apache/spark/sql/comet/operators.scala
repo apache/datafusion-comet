@@ -19,14 +19,12 @@
 
 package org.apache.spark.sql.comet
 
-import java.io.ByteArrayOutputStream
 import java.util.Locale
 
 import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.TaskContext
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
@@ -50,6 +48,7 @@ import org.apache.spark.util.SerializableConfiguration
 import org.apache.spark.util.io.ChunkedByteBuffer
 
 import com.google.common.base.Objects
+import com.google.protobuf.CodedOutputStream
 
 import org.apache.comet.{CometConf, CometExecIterator, CometRuntimeException, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.{isCometShuffleEnabled, withInfo}
@@ -58,6 +57,139 @@ import org.apache.comet.serde.{CometOperatorSerde, Compatible, Incompatible, Ope
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, Operator}
 import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, supportedSortType}
 import org.apache.comet.serde.operator.CometSink
+
+/**
+ * Trait for injecting per-partition planning data into operator nodes.
+ *
+ * Implementations handle specific operator types (e.g., Iceberg scans, Delta scans).
+ */
+private[comet] trait PlanDataInjector {
+
+  /** Check if this injector can handle the given operator. */
+  def canInject(op: Operator): Boolean
+
+  /** Extract the key used to look up planning data for this operator. */
+  def getKey(op: Operator): Option[String]
+
+  /** Inject common + partition data into the operator node. */
+  def inject(op: Operator, commonBytes: Array[Byte], partitionBytes: Array[Byte]): Operator
+}
+
+/**
+ * Registry and utilities for injecting per-partition planning data into operator trees.
+ */
+private[comet] object PlanDataInjector {
+
+  // Registry of injectors for different operator types
+  private val injectors: Seq[PlanDataInjector] = Seq(
+    IcebergPlanDataInjector
+    // Future: DeltaPlanDataInjector, HudiPlanDataInjector, etc.
+  )
+
+  /**
+   * Injects planning data into an Operator tree by finding nodes that need injection and applying
+   * the appropriate injector.
+   *
+   * Supports joins over multiple tables by matching each operator with its corresponding data
+   * based on a key (e.g., metadata_location for Iceberg).
+   */
+  def injectPlanData(
+      op: Operator,
+      commonByKey: Map[String, Array[Byte]],
+      partitionByKey: Map[String, Array[Byte]]): Operator = {
+    val builder = op.toBuilder
+
+    // Try each injector to see if it can handle this operator
+    for (injector <- injectors if injector.canInject(op)) {
+      injector.getKey(op) match {
+        case Some(key) =>
+          (commonByKey.get(key), partitionByKey.get(key)) match {
+            case (Some(commonBytes), Some(partitionBytes)) =>
+              val injectedOp = injector.inject(op, commonBytes, partitionBytes)
+              // Copy the injected operator's fields to our builder
+              builder.clear()
+              builder.mergeFrom(injectedOp)
+            case _ =>
+              throw new CometRuntimeException(s"Missing planning data for key: $key")
+          }
+        case None => // No key, skip injection
+      }
+    }
+
+    // Recursively process children
+    builder.clearChildren()
+    op.getChildrenList.asScala.foreach { child =>
+      builder.addChildren(injectPlanData(child, commonByKey, partitionByKey))
+    }
+
+    builder.build()
+  }
+
+  def serializeOperator(op: Operator): Array[Byte] = {
+    val size = op.getSerializedSize
+    val bytes = new Array[Byte](size)
+    val codedOutput = CodedOutputStream.newInstance(bytes)
+    op.writeTo(codedOutput)
+    codedOutput.checkNoSpaceLeft()
+    bytes
+  }
+}
+
+/**
+ * Injector for Iceberg scan operators.
+ */
+private[comet] object IcebergPlanDataInjector extends PlanDataInjector {
+  import java.nio.ByteBuffer
+  import java.util.{LinkedHashMap, Map => JMap}
+
+  private final val maxCacheEntries = 16
+
+  // Cache parsed IcebergScanCommon to avoid reparsing for Iceberg tables with large numbers of
+  // partitions (thousands or more) that may repeatedly parse the same commonBytes.
+  // IcebergPlanDataInjector is a singleton, so we use an LRU cache to eventually evict old
+  // IcebergScanCommon objects. 16 seems like a reasonable starting point since these objects
+  // are not large. Thread-safe LinkedHashMap with accessOrder=true provides LRU ordering.
+  private val commonCache = java.util.Collections.synchronizedMap(
+    new LinkedHashMap[ByteBuffer, OperatorOuterClass.IcebergScanCommon](4, 0.75f, true) {
+      override def removeEldestEntry(
+          eldest: JMap.Entry[ByteBuffer, OperatorOuterClass.IcebergScanCommon]): Boolean = {
+        size() > maxCacheEntries
+      }
+    })
+
+  override def canInject(op: Operator): Boolean =
+    op.hasIcebergScan &&
+      op.getIcebergScan.getFileScanTasksCount == 0 &&
+      op.getIcebergScan.hasCommon
+
+  override def getKey(op: Operator): Option[String] =
+    Some(op.getIcebergScan.getCommon.getMetadataLocation)
+
+  override def inject(
+      op: Operator,
+      commonBytes: Array[Byte],
+      partitionBytes: Array[Byte]): Operator = {
+    val scan = op.getIcebergScan
+
+    // Cache the parsed common data to avoid deserializing on every partition
+    val cacheKey = ByteBuffer.wrap(commonBytes)
+    val common = commonCache.synchronized {
+      Option(commonCache.get(cacheKey)).getOrElse {
+        val parsed = OperatorOuterClass.IcebergScanCommon.parseFrom(commonBytes)
+        commonCache.put(cacheKey, parsed)
+        parsed
+      }
+    }
+
+    val tasksOnly = OperatorOuterClass.IcebergScan.parseFrom(partitionBytes)
+
+    val scanBuilder = scan.toBuilder
+    scanBuilder.setCommon(common)
+    scanBuilder.addAllFileScanTasks(tasksOnly.getFileScanTasksList)
+
+    op.toBuilder.setIcebergScan(scanBuilder).build()
+  }
+}
 
 /**
  * A Comet physical operator
@@ -105,6 +237,15 @@ abstract class CometExec extends CometPlan {
       }
     }
   }
+
+  /** Collects all ScalarSubquery expressions from a plan tree. */
+  protected def collectSubqueries(sparkPlan: SparkPlan): Seq[ScalarSubquery] = {
+    val childSubqueries = sparkPlan.children.flatMap(collectSubqueries)
+    val planSubqueries = sparkPlan.expressions.flatMap {
+      _.collect { case sub: ScalarSubquery => sub }
+    }
+    childSubqueries ++ planSubqueries
+  }
 }
 
 object CometExec {
@@ -112,6 +253,19 @@ object CometExec {
   private val curId = new java.util.concurrent.atomic.AtomicLong()
 
   def newIterId: Long = curId.getAndIncrement()
+
+  /**
+   * Serialize a native plan to bytes. Use this method to serialize the plan once before calling
+   * getCometIterator for each partition, avoiding repeated serialization.
+   */
+  def serializeNativePlan(nativePlan: Operator): Array[Byte] = {
+    val size = nativePlan.getSerializedSize
+    val bytes = new Array[Byte](size)
+    val codedOutput = CodedOutputStream.newInstance(bytes)
+    nativePlan.writeTo(codedOutput)
+    codedOutput.checkNoSpaceLeft()
+    bytes
+  }
 
   def getCometIterator(
       inputs: Seq[Iterator[ColumnarBatch]],
@@ -130,6 +284,28 @@ object CometExec {
       encryptedFilePaths = Seq.empty)
   }
 
+  /**
+   * Create a CometExecIterator with a pre-serialized native plan. Use this overload when
+   * executing the same plan across multiple partitions to avoid serializing the plan repeatedly.
+   */
+  def getCometIterator(
+      inputs: Seq[Iterator[ColumnarBatch]],
+      numOutputCols: Int,
+      serializedPlan: Array[Byte],
+      numParts: Int,
+      partitionIdx: Int): CometExecIterator = {
+    new CometExecIterator(
+      newIterId,
+      inputs,
+      numOutputCols,
+      serializedPlan,
+      CometMetricNode(Map.empty),
+      numParts,
+      partitionIdx,
+      broadcastedHadoopConfForEncryption = None,
+      encryptedFilePaths = Seq.empty)
+  }
+
   def getCometIterator(
       inputs: Seq[Iterator[ColumnarBatch]],
       numOutputCols: Int,
@@ -139,10 +315,7 @@ object CometExec {
       partitionIdx: Int,
       broadcastedHadoopConfForEncryption: Option[Broadcast[SerializableConfiguration]],
       encryptedFilePaths: Seq[String]): CometExecIterator = {
-    val outputStream = new ByteArrayOutputStream()
-    nativePlan.writeTo(outputStream)
-    outputStream.close()
-    val bytes = outputStream.toByteArray
+    val bytes = serializeNativePlan(nativePlan)
     new CometExecIterator(
       newIterId,
       inputs,
@@ -258,32 +431,8 @@ abstract class CometNativeExec extends CometExec {
             case None => (None, Seq.empty)
           }
 
-        def createCometExecIter(
-            inputs: Seq[Iterator[ColumnarBatch]],
-            numParts: Int,
-            partitionIndex: Int): CometExecIterator = {
-          val it = new CometExecIterator(
-            CometExec.newIterId,
-            inputs,
-            output.length,
-            serializedPlanCopy,
-            nativeMetrics,
-            numParts,
-            partitionIndex,
-            broadcastedHadoopConfForEncryption,
-            encryptedFilePaths)
-
-          setSubqueries(it.id, this)
-
-          Option(TaskContext.get()).foreach { context =>
-            context.addTaskCompletionListener[Unit] { _ =>
-              it.close()
-              cleanSubqueries(it.id, this)
-            }
-          }
-
-          it
-        }
+        // Find planning data within this stage (stops at shuffle boundaries).
+        val (commonByKey, perPartitionByKey) = findAllPlanData(this)
 
         // Collect the input ColumnarBatches from the child operators and create a CometExecIterator
         // to execute the native plan.
@@ -363,12 +512,20 @@ abstract class CometNativeExec extends CometExec {
           throw new CometRuntimeException(s"No input for CometNativeExec:\n $this")
         }
 
-        if (inputs.nonEmpty) {
-          ZippedPartitionsRDD(sparkContext, inputs.toSeq)(createCometExecIter)
-        } else {
-          val partitionNum = firstNonBroadcastPlanNumPartitions
-          CometExecRDD(sparkContext, partitionNum)(createCometExecIter)
-        }
+        // Unified RDD creation - CometExecRDD handles all cases
+        val subqueries = collectSubqueries(this)
+        CometExecRDD(
+          sparkContext,
+          inputs.toSeq,
+          commonByKey,
+          perPartitionByKey,
+          serializedPlanCopy,
+          firstNonBroadcastPlanNumPartitions,
+          output.length,
+          nativeMetrics,
+          subqueries,
+          broadcastedHadoopConfForEncryption,
+          encryptedFilePaths)
     }
   }
 
@@ -394,10 +551,11 @@ abstract class CometNativeExec extends CometExec {
   def foreachUntilCometInput(plan: SparkPlan)(func: SparkPlan => Unit): Unit = {
     plan match {
       case _: CometNativeScanExec | _: CometScanExec | _: CometBatchScanExec |
-          _: CometIcebergNativeScanExec | _: ShuffleQueryStageExec | _: AQEShuffleReadExec |
-          _: CometShuffleExchangeExec | _: CometUnionExec | _: CometTakeOrderedAndProjectExec |
-          _: CometCoalesceExec | _: ReusedExchangeExec | _: CometBroadcastExchangeExec |
-          _: BroadcastQueryStageExec | _: CometSparkToColumnarExec | _: CometLocalTableScanExec =>
+          _: CometIcebergNativeScanExec | _: CometCsvNativeScanExec | _: ShuffleQueryStageExec |
+          _: AQEShuffleReadExec | _: CometShuffleExchangeExec | _: CometUnionExec |
+          _: CometTakeOrderedAndProjectExec | _: CometCoalesceExec | _: ReusedExchangeExec |
+          _: CometBroadcastExchangeExec | _: BroadcastQueryStageExec |
+          _: CometSparkToColumnarExec | _: CometLocalTableScanExec =>
         func(plan)
       case _: CometPlan =>
         // Other Comet operators, continue to traverse the tree.
@@ -408,16 +566,61 @@ abstract class CometNativeExec extends CometExec {
   }
 
   /**
+   * Find all plan nodes with per-partition planning data in the plan tree. Returns two maps keyed
+   * by a unique identifier: one for common data (shared across partitions) and one for
+   * per-partition data.
+   *
+   * Currently supports Iceberg scans (keyed by metadata_location). Additional scan types can be
+   * added by extending this method.
+   *
+   * Stops at stage boundaries (shuffle exchanges, etc.) because partition indices are only valid
+   * within the same stage.
+   *
+   * @return
+   *   (commonByKey, perPartitionByKey) - common data is shared, per-partition varies
+   */
+  private def findAllPlanData(
+      plan: SparkPlan): (Map[String, Array[Byte]], Map[String, Array[Array[Byte]]]) = {
+    plan match {
+      // Found an Iceberg scan with planning data
+      case iceberg: CometIcebergNativeScanExec
+          if iceberg.commonData.nonEmpty && iceberg.perPartitionData.nonEmpty =>
+        (
+          Map(iceberg.metadataLocation -> iceberg.commonData),
+          Map(iceberg.metadataLocation -> iceberg.perPartitionData))
+
+      // Broadcast stages are boundaries - don't collect per-partition data from inside them.
+      // After DPP filtering, broadcast scans may have different partition counts than the
+      // probe side, causing ArrayIndexOutOfBoundsException in CometExecRDD.getPartitions.
+      case _: BroadcastQueryStageExec | _: CometBroadcastExchangeExec =>
+        (Map.empty, Map.empty)
+
+      // Stage boundaries - stop searching (partition indices won't align after these)
+      case _: ShuffleQueryStageExec | _: AQEShuffleReadExec | _: CometShuffleExchangeExec |
+          _: CometUnionExec | _: CometTakeOrderedAndProjectExec | _: CometCoalesceExec |
+          _: ReusedExchangeExec | _: CometSparkToColumnarExec =>
+        (Map.empty, Map.empty)
+
+      // Continue searching through other operators, combining results from all children
+      case _ =>
+        val results = plan.children.map(findAllPlanData)
+        (results.flatMap(_._1).toMap, results.flatMap(_._2).toMap)
+    }
+  }
+
+  /**
    * Converts this native Comet operator and its children into a native block which can be
    * executed as a whole (i.e., in a single JNI call) from the native side.
    */
   def convertBlock(): CometNativeExec = {
     def transform(arg: Any): AnyRef = arg match {
       case serializedPlan: SerializedPlan if serializedPlan.isEmpty =>
-        val out = new ByteArrayOutputStream()
-        nativeOp.writeTo(out)
-        out.close()
-        SerializedPlan(Some(out.toByteArray))
+        val size = nativeOp.getSerializedSize
+        val bytes = new Array[Byte](size)
+        val codedOutput = CodedOutputStream.newInstance(bytes)
+        nativeOp.writeTo(codedOutput)
+        codedOutput.checkNoSpaceLeft()
+        SerializedPlan(Some(bytes))
       case other: AnyRef => other
       case null => null
     }

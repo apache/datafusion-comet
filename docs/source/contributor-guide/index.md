@@ -26,6 +26,8 @@ under the License.
 Getting Started <contributing>
 Comet Plugin Overview <plugin_overview>
 Arrow FFI <ffi>
+JVM Shuffle <jvm_shuffle>
+Native Shuffle <native_shuffle>
 Parquet Scans <parquet_scans>
 Development Guide <development>
 Debugging Guide <debugging>
@@ -35,6 +37,7 @@ Adding a New Expression <adding_a_new_expression>
 Tracing <tracing>
 Profiling Native Code <profiling_native_code>
 Spark SQL Tests <spark-sql-tests.md>
+SQL File Tests <sql-file-tests.md>
 Roadmap <roadmap.md>
 Github and Issue Tracker <https://github.com/apache/datafusion-comet>
 ```

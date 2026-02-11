@@ -26,9 +26,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
+use fs_hdfs::hdfs::{get_hdfs_by_full_path, FileStatus, HdfsErr, HdfsFile, HdfsFs};
+use fs_hdfs::walkdir::HdfsWalkDir;
 use futures::{stream::BoxStream, StreamExt, TryStreamExt};
-use hdfs::hdfs::{get_hdfs_by_full_path, FileStatus, HdfsErr, HdfsFile, HdfsFs};
-use hdfs::walkdir::HdfsWalkDir;
 use object_store::{
     path::{self, Path},
     Error, GetOptions, GetRange, GetResult, GetResultPayload, ListResult, MultipartUpload,
@@ -422,7 +422,7 @@ impl ObjectStore for HadoopFileSystem {
                 hdfs.delete(&to, false).map_err(to_error)?;
             }
 
-            hdfs::util::HdfsUtil::copy(hdfs.as_ref(), &from, hdfs.as_ref(), &to)
+            fs_hdfs::util::HdfsUtil::copy(hdfs.as_ref(), &from, hdfs.as_ref(), &to)
                 .map_err(to_error)?;
 
             Ok(())
@@ -437,7 +437,7 @@ impl ObjectStore for HadoopFileSystem {
         let to = HadoopFileSystem::path_to_filesystem(to);
 
         maybe_spawn_blocking(move || {
-            hdfs.rename(&from, &to).map_err(to_error)?;
+            hdfs.rename(&from, &to, true).map_err(to_error)?;
 
             Ok(())
         })
@@ -459,7 +459,7 @@ impl ObjectStore for HadoopFileSystem {
                 });
             }
 
-            hdfs::util::HdfsUtil::copy(hdfs.as_ref(), &from, hdfs.as_ref(), &to)
+            fs_hdfs::util::HdfsUtil::copy(hdfs.as_ref(), &from, hdfs.as_ref(), &to)
                 .map_err(to_error)?;
 
             Ok(())

@@ -1,3 +1,4 @@
+CLAUDE.md
 target
 .idea
 *.iml
@@ -19,3 +20,5 @@ venv
 dev/release/comet-rm/workdir
 spark/benchmarks
 .DS_Store
+comet-event-trace.json
+__pycache__

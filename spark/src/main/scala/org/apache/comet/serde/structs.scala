@@ -20,11 +20,13 @@
 package org.apache.comet.serde
 
 import scala.jdk.CollectionConverters._
+import scala.util.Try
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, CreateNamedStruct, GetArrayStructFields, GetStructField, JsonToStructs, StructsToJson}
-import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, MapType, StructType}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, CreateNamedStruct, GetArrayStructFields, GetStructField, JsonToStructs, StructsToCsv, StructsToJson}
+import org.apache.spark.sql.types._
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.DataTypeSupport
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, serializeDataType}
 
 object CometCreateNamedStruct extends CometExpressionSerde[CreateNamedStruct] {
@@ -111,26 +113,6 @@ object CometStructsToJson extends CometExpressionSerde[StructsToJson] {
       withInfo(expr, "StructsToJson with options is not supported")
       None
     } else {
-
-      def isSupportedType(dt: DataType): Boolean = {
-        dt match {
-          case StructType(fields) =>
-            fields.forall(f => isSupportedType(f.dataType))
-          case DataTypes.BooleanType | DataTypes.ByteType | DataTypes.ShortType |
-              DataTypes.IntegerType | DataTypes.LongType | DataTypes.FloatType |
-              DataTypes.DoubleType | DataTypes.StringType =>
-            true
-          case DataTypes.DateType | DataTypes.TimestampType =>
-            // TODO implement these types with tests for formatting options and timezone
-            false
-          case _: MapType | _: ArrayType =>
-            // Spark supports map and array in StructsToJson but this is not yet
-            // implemented in Comet
-            false
-          case _ => false
-        }
-      }
-
       val isSupported = expr.child.dataType match {
         case s: StructType =>
           s.fields.forall(f => isSupportedType(f.dataType))
@@ -164,6 +146,25 @@ object CometStructsToJson extends CometExpressionSerde[StructsToJson] {
         withInfo(expr, "Unsupported data type", expr.child)
         None
       }
+    }
+  }
+
+  def isSupportedType(dt: DataType): Boolean = {
+    dt match {
+      case StructType(fields) =>
+        fields.forall(f => isSupportedType(f.dataType))
+      case DataTypes.BooleanType | DataTypes.ByteType | DataTypes.ShortType |
+          DataTypes.IntegerType | DataTypes.LongType | DataTypes.FloatType |
+          DataTypes.DoubleType | DataTypes.StringType =>
+        true
+      case DataTypes.DateType | DataTypes.TimestampType =>
+        // TODO implement these types with tests for formatting options and timezone
+        false
+      case _: MapType | _: ArrayType =>
+        // Spark supports map and array in StructsToJson but this is not yet
+        // implemented in Comet
+        false
+      case _ => false
     }
   }
 }
@@ -229,5 +230,71 @@ object CometJsonToStructs extends CometExpressionSerde[JsonToStructs] {
         .build()
       ExprOuterClass.Expr.newBuilder().setFromJson(fromJson).build()
     }
+  }
+}
+
+object CometStructsToCsv extends CometExpressionSerde[StructsToCsv] {
+
+  private val incompatibleDataTypes = Seq(DateType, TimestampType, TimestampNTZType, BinaryType)
+
+  override def getSupportLevel(expr: StructsToCsv): SupportLevel = {
+    val dataTypes = expr.inputSchema.fields.map(_.dataType)
+    val containsComplexType = dataTypes.exists(DataTypeSupport.isComplexType)
+    if (containsComplexType) {
+      return Unsupported(
+        Some(
+          s"The schema ${expr.inputSchema} is not supported because it includes a complex type"))
+    }
+    val containsIncompatibleDataTypes = dataTypes.exists(incompatibleDataTypes.contains)
+    if (containsIncompatibleDataTypes) {
+      return Incompatible(
+        Some(
+          s"The schema ${expr.inputSchema} is not supported because " +
+            s"it includes a incompatible data types: $incompatibleDataTypes"))
+    }
+    // https://github.com/apache/datafusion-comet/issues/3232
+    Incompatible()
+  }
+
+  override def convert(
+      expr: StructsToCsv,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    for {
+      childProto <- exprToProtoInternal(expr.child, inputs, binding)
+    } yield {
+      val optionsProto = options2Proto(expr.options, expr.timeZoneId)
+      val toCsv = ExprOuterClass.ToCsv
+        .newBuilder()
+        .setChild(childProto)
+        .setOptions(optionsProto)
+        .build()
+      ExprOuterClass.Expr.newBuilder().setToCsv(toCsv).build()
+    }
+  }
+
+  private def options2Proto(
+      options: Map[String, String],
+      timeZoneId: Option[String]): ExprOuterClass.CsvWriteOptions = {
+    ExprOuterClass.CsvWriteOptions
+      .newBuilder()
+      .setDelimiter(options.getOrElse("delimiter", ","))
+      .setQuote(options.getOrElse("quote", "\""))
+      .setEscape(options.getOrElse("escape", "\\"))
+      .setNullValue(options.getOrElse("nullValue", ""))
+      .setTimezone(timeZoneId.getOrElse("UTC"))
+      .setIgnoreLeadingWhiteSpace(options
+        .get("ignoreLeadingWhiteSpace")
+        .flatMap(ignoreLeadingWhiteSpace => Try(ignoreLeadingWhiteSpace.toBoolean).toOption)
+        .getOrElse(true))
+      .setIgnoreTrailingWhiteSpace(options
+        .get("ignoreTrailingWhiteSpace")
+        .flatMap(ignoreTrailingWhiteSpace => Try(ignoreTrailingWhiteSpace.toBoolean).toOption)
+        .getOrElse(true))
+      .setQuoteAll(options
+        .get("quoteAll")
+        .flatMap(quoteAll => Try(quoteAll.toBoolean).toOption)
+        .getOrElse(false))
+      .build()
   }
 }

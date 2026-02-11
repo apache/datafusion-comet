@@ -27,11 +27,17 @@ on:
       - "doc/**"
       - "docs/**"
       - "**.md"
+      - "native/core/benches/**"
+      - "native/spark-expr/benches/**"
+      - "spark/src/test/scala/org/apache/spark/sql/benchmark/**"
   pull_request:
     paths-ignore:
       - "doc/**"
       - "docs/**"
       - "**.md"
+      - "native/core/benches/**"
+      - "native/spark-expr/benches/**"
+      - "spark/src/test/scala/org/apache/spark/sql/benchmark/**"
   # manual trigger
   # https://docs.github.com/en/actions/managing-workflow-runs/manually-running-a-workflow
   workflow_dispatch:
@@ -46,11 +52,62 @@ env:
   RUST_VERSION: stable
 
 jobs:
-  spark-sql-auto-scan:
+
+  # Build native library once and share with all test jobs
+  build-native:
+    name: Build Native Library
+    runs-on: ubuntu-24.04
+    container:
+      image: amd64/rust
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Rust toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: ${{ env.RUST_VERSION }}
+          jdk-version: 17
+
+      - name: Restore Cargo cache
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/target
+          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-
+
+      - name: Build native library (CI profile)
+        run: |
+          cd native
+          cargo build --profile ci
+        env:
+          RUSTFLAGS: "-Ctarget-cpu=x86-64-v3"
+
+      - name: Upload native library
+        uses: actions/upload-artifact@v6
+        with:
+          name: native-lib-linux
+          path: native/target/ci/libcomet.so
+          retention-days: 1
+
+      - name: Save Cargo cache
+        uses: actions/cache/save@v5
+        if: github.ref == 'refs/heads/main'
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/target
+          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
+
+  spark-sql-test:
+    needs: build-native
     strategy:
       matrix:
         os: [ubuntu-24.04]
-        spark-version: [{short: '3.4', full: '3.4.3', java: 11}, {short: '3.5', full: '3.5.7', java: 11}, {short: '4.0', full: '4.0.1', java: 17}]
         module:
           - {name: "catalyst", args1: "catalyst/test", args2: ""}
           - {name: "sql_core-1", args1: "", args2: sql/testOnly * -- -l org.apache.spark.tags.ExtendedSQLTest -l org.apache.spark.tags.SlowSQLTest}
@@ -59,12 +116,20 @@ jobs:
           - {name: "sql_hive-1", args1: "", args2: "hive/testOnly * -- -l org.apache.spark.tags.ExtendedHiveTest -l org.apache.spark.tags.SlowHiveTest"}
           - {name: "sql_hive-2", args1: "", args2: "hive/testOnly * -- -n org.apache.spark.tags.ExtendedHiveTest"}
           - {name: "sql_hive-3", args1: "", args2: "hive/testOnly * -- -n org.apache.spark.tags.SlowHiveTest"}
+        # Test combinations:
+        # - auto scan: all Spark versions (3.4, 3.5, 4.0)
+        # - native_iceberg_compat: Spark 3.5 only
+        config:
+          - {spark-short: '3.4', spark-full: '3.4.3', java: 11, scan-impl: 'auto'}
+          - {spark-short: '3.5', spark-full: '3.5.8', java: 11, scan-impl: 'auto'}
+          - {spark-short: '3.5', spark-full: '3.5.8', java: 11, scan-impl: 'native_datafusion'}
+          - {spark-short: '4.0', spark-full: '4.0.1', java: 17, scan-impl: 'auto'}
         # Skip sql_hive-1 for Spark 4.0 due to https://github.com/apache/datafusion-comet/issues/2946
         exclude:
-          - spark-version: {short: '4.0', full: '4.0.1', java: 17}
+          - config: {spark-short: '4.0', spark-full: '4.0.1', java: 17, scan-impl: 'auto'}
             module: {name: "sql_hive-1", args1: "", args2: "hive/testOnly * -- -l org.apache.spark.tags.ExtendedHiveTest -l org.apache.spark.tags.SlowHiveTest"}
       fail-fast: false
-    name: spark-sql-${{ matrix.module.name }}/${{ matrix.os }}/spark-${{ matrix.spark-version.full }}/java-${{ matrix.spark-version.java }}
+    name: spark-sql-${{ matrix.config.scan-impl }}-${{ matrix.module.name }}/spark-${{ matrix.config.spark-full }}
     runs-on: ${{ matrix.os }}
     container:
       image: amd64/rust
@@ -74,17 +139,23 @@ jobs:
         uses: ./.github/actions/setup-builder
         with:
           rust-version: ${{env.RUST_VERSION}}
-          jdk-version: ${{ matrix.spark-version.java }}
+          jdk-version: ${{ matrix.config.java }}
+      - name: Download native library
+        uses: actions/download-artifact@v7
+        with:
+          name: native-lib-linux
+          path: native/target/release/
       - name: Setup Spark
         uses: ./.github/actions/setup-spark-builder
         with:
-          spark-version: ${{ matrix.spark-version.full }}
-          spark-short-version: ${{ matrix.spark-version.short }}
+          spark-version: ${{ matrix.config.spark-full }}
+          spark-short-version: ${{ matrix.config.spark-short }}
+          skip-native-build: true
       - name: Run Spark tests
         run: |
           cd apache-spark
           rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups
-          ENABLE_COMET=true ENABLE_COMET_ONHEAP=true ENABLE_COMET_LOG_FALLBACK_REASONS=${{ github.event.inputs.collect-fallback-logs || 'false' }} \
+          NOLINT_ON_COMPILE=true ENABLE_COMET=true ENABLE_COMET_ONHEAP=true COMET_PARQUET_SCAN_IMPL=${{ matrix.config.scan-impl }} ENABLE_COMET_LOG_FALLBACK_REASONS=${{ github.event.inputs.collect-fallback-logs || 'false' }} \
             build/sbt -Dsbt.log.noformat=true ${{ matrix.module.args1 }} "${{ matrix.module.args2 }}"
           if [ "${{ github.event.inputs.collect-fallback-logs }}" = "true" ]; then
             find . -type f -name "unit-tests.log" -print0 | xargs -0 grep -h "Comet cannot accelerate" | sed 's/.*Comet cannot accelerate/Comet cannot accelerate/' | sort -u > fallback.log
@@ -95,111 +166,13 @@ jobs:
         if: ${{ github.event.inputs.collect-fallback-logs == 'true' }}
         uses: actions/upload-artifact@v6
         with:
-          name: fallback-log-spark-sql-${{ matrix.module.name }}-${{ matrix.os }}-spark-${{ matrix.spark-version.full }}-java-${{ matrix.spark-version.java }}
-          path: "**/fallback.log"
-
-  spark-sql-native-native-comet:
-    strategy:
-      matrix:
-        os: [ ubuntu-24.04 ]
-        java-version: [ 11 ]
-        spark-version: [ { short: '3.4', full: '3.4.3' }, { short: '3.5', full: '3.5.7' } ]
-        module:
-          - { name: "catalyst", args1: "catalyst/test", args2: "" }
-          - { name: "sql_core-1", args1: "", args2: sql/testOnly * -- -l org.apache.spark.tags.ExtendedSQLTest -l org.apache.spark.tags.SlowSQLTest }
-          - { name: "sql_core-2", args1: "", args2: "sql/testOnly * -- -n org.apache.spark.tags.ExtendedSQLTest" }
-          - { name: "sql_core-3", args1: "", args2: "sql/testOnly * -- -n org.apache.spark.tags.SlowSQLTest" }
-          - { name: "sql_hive-1", args1: "", args2: "hive/testOnly * -- -l org.apache.spark.tags.ExtendedHiveTest -l org.apache.spark.tags.SlowHiveTest" }
-          - { name: "sql_hive-2", args1: "", args2: "hive/testOnly * -- -n org.apache.spark.tags.ExtendedHiveTest" }
-          - { name: "sql_hive-3", args1: "", args2: "hive/testOnly * -- -n org.apache.spark.tags.SlowHiveTest" }
-      fail-fast: false
-    name: spark-sql-native-comet-${{ matrix.module.name }}/${{ matrix.os }}/spark-${{ matrix.spark-version.full }}/java-${{ matrix.java-version }}
-    runs-on: ${{ matrix.os }}
-    container:
-      image: amd64/rust
-    steps:
-      - uses: actions/checkout@v6
-      - name: Setup Rust & Java toolchain
-        uses: ./.github/actions/setup-builder
-        with:
-          rust-version: ${{env.RUST_VERSION}}
-          jdk-version: ${{ matrix.java-version }}
-      - name: Setup Spark
-        uses: ./.github/actions/setup-spark-builder
-        with:
-          spark-version: ${{ matrix.spark-version.full }}
-          spark-short-version: ${{ matrix.spark-version.short }}
-      - name: Run Spark tests
-        run: |
-          cd apache-spark
-          rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups
-          ENABLE_COMET=true ENABLE_COMET_ONHEAP=true COMET_PARQUET_SCAN_IMPL=native_comet ENABLE_COMET_LOG_FALLBACK_REASONS=${{ github.event.inputs.collect-fallback-logs || 'false' }} \
-            build/sbt -Dsbt.log.noformat=true ${{ matrix.module.args1 }} "${{ matrix.module.args2 }}"
-          if [ "${{ github.event.inputs.collect-fallback-logs }}" = "true" ]; then
-            find . -type f -name "unit-tests.log" -print0 | xargs -0 grep -h "Comet cannot accelerate" | sed 's/.*Comet cannot accelerate/Comet cannot accelerate/' | sort -u > fallback.log
-          fi
-        env:
-          LC_ALL: "C.UTF-8"
-      - name: Upload fallback log
-        if: ${{ github.event.inputs.collect-fallback-logs == 'true' }}
-        uses: actions/upload-artifact@v6
-        with:
-          name: fallback-log-spark-sql-native-comet-${{ matrix.module.name }}-${{ matrix.os }}-spark-${{ matrix.spark-version.full }}-java-${{ matrix.java-version }}
-          path: "**/fallback.log"
-
-  spark-sql-native-iceberg-compat:
-    strategy:
-      matrix:
-        os: [ubuntu-24.04]
-        java-version: [11]
-        spark-version: [{short: '3.4', full: '3.4.3'}, {short: '3.5', full: '3.5.7'}]
-        module:
-          - {name: "catalyst", args1: "catalyst/test", args2: ""}
-          - {name: "sql_core-1", args1: "", args2: sql/testOnly * -- -l org.apache.spark.tags.ExtendedSQLTest -l org.apache.spark.tags.SlowSQLTest}
-          - {name: "sql_core-2", args1: "", args2: "sql/testOnly * -- -n org.apache.spark.tags.ExtendedSQLTest"}
-          - {name: "sql_core-3", args1: "", args2: "sql/testOnly * -- -n org.apache.spark.tags.SlowSQLTest"}
-          - {name: "sql_hive-1", args1: "", args2: "hive/testOnly * -- -l org.apache.spark.tags.ExtendedHiveTest -l org.apache.spark.tags.SlowHiveTest"}
-          - {name: "sql_hive-2", args1: "", args2: "hive/testOnly * -- -n org.apache.spark.tags.ExtendedHiveTest"}
-          - {name: "sql_hive-3", args1: "", args2: "hive/testOnly * -- -n org.apache.spark.tags.SlowHiveTest"}
-      fail-fast: false
-    name: spark-sql-iceberg-compat-${{ matrix.module.name }}/${{ matrix.os }}/spark-${{ matrix.spark-version.full }}/java-${{ matrix.java-version }}
-    runs-on: ${{ matrix.os }}
-    container:
-      image: amd64/rust
-    steps:
-      - uses: actions/checkout@v6
-      - name: Setup Rust & Java toolchain
-        uses: ./.github/actions/setup-builder
-        with:
-          rust-version: ${{env.RUST_VERSION}}
-          jdk-version: ${{ matrix.java-version }}
-      - name: Setup Spark
-        uses: ./.github/actions/setup-spark-builder
-        with:
-          spark-version: ${{ matrix.spark-version.full }}
-          spark-short-version: ${{ matrix.spark-version.short }}
-      - name: Run Spark tests
-        run: |
-          cd apache-spark
-          rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups
-          ENABLE_COMET=true ENABLE_COMET_ONHEAP=true COMET_PARQUET_SCAN_IMPL=native_iceberg_compat ENABLE_COMET_LOG_FALLBACK_REASONS=${{ github.event.inputs.collect-fallback-logs || 'false' }} \
-            build/sbt -Dsbt.log.noformat=true ${{ matrix.module.args1 }} "${{ matrix.module.args2 }}"
-          if [ "${{ github.event.inputs.collect-fallback-logs }}" = "true" ]; then
-            find . -type f -name "unit-tests.log" -print0 | xargs -0 grep -h "Comet cannot accelerate" | sed 's/.*Comet cannot accelerate/Comet cannot accelerate/' | sort -u > fallback.log
-          fi
-        env:
-          LC_ALL: "C.UTF-8"
-      - name: Upload fallback log
-        if: ${{ github.event.inputs.collect-fallback-logs == 'true' }}
-        uses: actions/upload-artifact@v6
-        with:
-          name: fallback-log-spark-sql-iceberg-compat-${{ matrix.module.name }}-${{ matrix.os }}-spark-${{ matrix.spark-version.full }}-java-${{ matrix.java-version }}
+          name: fallback-log-spark-sql-${{ matrix.config.scan-impl }}-${{ matrix.module.name }}-spark-${{ matrix.config.spark-full }}
           path: "**/fallback.log"
 
   merge-fallback-logs:
     if: ${{ github.event.inputs.collect-fallback-logs == 'true' }}
     name: merge-fallback-logs
-    needs: [ spark-sql-auto-scan, spark-sql-native-native-comet, spark-sql-native-iceberg-compat ]
+    needs: [spark-sql-test]
     runs-on: ubuntu-24.04
     steps:
       - name: Download fallback log artifacts
