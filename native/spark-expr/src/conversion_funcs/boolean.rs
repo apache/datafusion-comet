@@ -24,7 +24,7 @@ pub fn can_cast_from_boolean(to_type: &DataType) -> bool {
     use DataType::*;
     matches!(
         to_type,
-        Boolean | Int8 | Int16 | Int32 | Int64 | Float32 | Float64 | Utf8
+        Boolean | Int8 | Int16 | Int32 | Int64 | Float32 | Float64 | Utf8 | Decimal128(_, _)
     )
 }
 
