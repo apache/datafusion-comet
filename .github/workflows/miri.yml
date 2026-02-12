@@ -43,6 +43,9 @@ on:
 jobs:
   miri:
     name: "Miri"
+    # Disabled until Miri compatibility is restored
+    # https://github.com/apache/datafusion-comet/issues/3499
+    if: false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
