@@ -21,8 +21,8 @@ use crate::{timezone, BinaryOutputStyle};
 use crate::{EvalMode, SparkError, SparkResult};
 use arrow::array::builder::StringBuilder;
 use arrow::array::{
-    BinaryBuilder, BooleanBuilder, Decimal128Builder, DictionaryArray, GenericByteArray, ListArray, MapArray,
-    PrimitiveBuilder, StringArray, StructArray, TimestampMicrosecondBuilder,
+    BinaryBuilder, BooleanBuilder, Decimal128Builder, DictionaryArray, GenericByteArray, ListArray,
+    MapArray, PrimitiveBuilder, StringArray, StructArray, TimestampMicrosecondBuilder,
 };
 use arrow::compute::can_cast_types;
 use arrow::datatypes::{
