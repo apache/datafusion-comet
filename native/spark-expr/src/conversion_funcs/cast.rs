@@ -307,7 +307,7 @@ fn can_cast_from_boolean(to_type: &DataType, _: &SparkCastOptions) -> bool {
     use DataType::*;
     matches!(
         to_type,
-        Int8 | Int16 | Int32 | Int64 | Float32 | Float64 | Decimal128(_, _)
+        Int8 | Int16 | Int32 | Int64 | Float32 | Float64 | Decimal128(_, _) | Utf8
     )
 }
 
