@@ -457,11 +457,69 @@ under the License.
 -->
 <section id="apache-datafusion-comet-release-process">
 <h1>Apache DataFusion Comet: Release Process<a class="headerlink" href="#apache-datafusion-comet-release-process" title="Link to this heading">#</a></h1>
-<p>This documentation explains the release process for Apache DataFusion Comet.</p>
+<p>This documentation explains the release process for Apache DataFusion Comet. Some preparation tasks can be
+performed by any contributor, while certain release tasks can only be performed by a DataFusion Project Management
+Committee (PMC) member.</p>
+<section id="checklist">
+<h2>Checklist<a class="headerlink" href="#checklist" title="Link to this heading">#</a></h2>
+<p>The following is a quick-reference checklist for the full release process. See the detailed sections below for
+instructions on each step.</p>
+<ul class="contains-task-list simple">
+<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Release preparation: review expression support status and user guide</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Create release branch</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Generate release documentation</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Update Maven version in release branch</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Update version in main for next development cycle</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Generate the change log and create PR against main</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Cherry-pick the change log commit into the release branch</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Build the jars</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Tag the release candidate</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Update documentation for the new release</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Publish Maven artifacts to staging</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Create the release candidate tarball</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Start the email voting thread</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Once the vote passes:</p>
+<ul class="contains-task-list">
+<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Publish source tarball</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Create GitHub release</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Promote Maven artifacts to production</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Push the release tag</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Close the vote and announce the release</p></li>
+</ul>
+</li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Post release:</p>
+<ul class="contains-task-list">
+<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Register the release with Apache Reporter</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Delete old RCs and releases from SVN</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Write a blog post</p></li>
+</ul>
+</li>
+</ul>
+</section>
+<section id="release-preparation">
+<h2>Release Preparation<a class="headerlink" href="#release-preparation" title="Link to this heading">#</a></h2>
+<p>Before starting the release process, review the user guide to ensure it accurately reflects the current state of the
+project:</p>
+<ul class="simple">
+<li><p>Review the supported expressions and operators lists in the user guide. Verify that any expressions added since
+the last release are included and that their support status is accurate.</p></li>
+<li><p>Spot-check the support status of individual expressions by running tests or queries to confirm they work as
+documented.</p></li>
+<li><p>Look for any expressions that may have regressed or changed behavior since the last release and update the
+documentation accordingly.</p></li>
+</ul>
+<p>It is also recommended to run benchmarks (such as TPC-H and TPC-DS) comparing performance against the previous
+release to check for regressions. See the
+<a class="reference internal" href="benchmarking.html"><span class="std std-doc">Comet Benchmarking Guide</span></a> for instructions.</p>
+<p>These are tasks where agentic coding tools can be particularly helpful — for example, scanning the codebase for
+newly registered expressions and cross-referencing them against the documented list, or generating test queries to
+verify expression support status.</p>
+<p>Any issues found should be addressed before creating the release branch.</p>
+</section>
 <section id="creating-the-release-candidate">
 <h2>Creating the Release Candidate<a class="headerlink" href="#creating-the-release-candidate" title="Link to this heading">#</a></h2>
 <p>This part of the process can be performed by any committer.</p>
-<p>Here are the steps, using the 0.1.0 release as an example.</p>
+<p>Here are the steps, using the 0.13.0 release as an example.</p>
 <section id="create-release-branch">
 <h3>Create Release Branch<a class="headerlink" href="#create-release-branch" title="Link to this heading">#</a></h3>
 <p>This document assumes that GitHub remotes are set up as follows:</p>
@@ -476,8 +534,8 @@ origin<span class="w">	</span>git@github.com:yourgithubid/datafusion-comet.git<s
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>fetch<span class="w"> </span>apache
 git<span class="w"> </span>checkout<span class="w"> </span>main
 git<span class="w"> </span>reset<span class="w"> </span>--hard<span class="w"> </span>apache/main
-git<span class="w"> </span>checkout<span class="w"> </span>-b<span class="w"> </span>branch-0.1
-git<span class="w"> </span>push<span class="w"> </span>apache<span class="w"> </span>branch-0.1
+git<span class="w"> </span>checkout<span class="w"> </span>-b<span class="w"> </span>branch-0.13
+git<span class="w"> </span>push<span class="w"> </span>apache<span class="w"> </span>branch-0.13
 </pre></div>
 </div>
 </section>
@@ -487,23 +545,23 @@ git<span class="w"> </span>push<span class="w"> </span>apache<span class="w"> </
 so we need to generate the actual content (config tables, compatibility matrices) for the release branch:</p>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>./dev/generate-release-docs.sh
 git<span class="w"> </span>add<span class="w"> </span>docs/source/user-guide/latest/
-git<span class="w"> </span>commit<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;Generate docs for 0.1.0 release&quot;</span>
-git<span class="w"> </span>push<span class="w"> </span>apache<span class="w"> </span>branch-0.1
+git<span class="w"> </span>commit<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;Generate docs for 0.13.0 release&quot;</span>
+git<span class="w"> </span>push<span class="w"> </span>apache<span class="w"> </span>branch-0.13
 </pre></div>
 </div>
 <p>This freezes the documentation to reflect the configs and expressions available in this release.</p>
 </section>
 <section id="update-maven-version">
 <h3>Update Maven Version<a class="headerlink" href="#update-maven-version" title="Link to this heading">#</a></h3>
-<p>Update the <code class="docutils literal notranslate"><span class="pre">pom.xml</span></code> files in the release branch to update the Maven version from <code class="docutils literal notranslate"><span class="pre">0.1.0-SNAPSHOT</span></code> to <code class="docutils literal notranslate"><span class="pre">0.1.0</span></code>.</p>
-<p>There is no need to update the Rust crate versions because they will already be <code class="docutils literal notranslate"><span class="pre">0.1.0</span></code>.</p>
+<p>Update the <code class="docutils literal notranslate"><span class="pre">pom.xml</span></code> files in the release branch to update the Maven version from <code class="docutils literal notranslate"><span class="pre">0.13.0-SNAPSHOT</span></code> to <code class="docutils literal notranslate"><span class="pre">0.13.0</span></code>.</p>
+<p>There is no need to update the Rust crate versions because they will already be <code class="docutils literal notranslate"><span class="pre">0.13.0</span></code>.</p>
 </section>
 <section id="update-version-in-main">
 <h3>Update Version in main<a class="headerlink" href="#update-version-in-main" title="Link to this heading">#</a></h3>
 <p>Create a PR against the main branch to prepare for developing the next release:</p>
 <ul class="simple">
-<li><p>Update the Rust crate version to <code class="docutils literal notranslate"><span class="pre">0.2.0</span></code>.</p></li>
-<li><p>Update the Maven version to <code class="docutils literal notranslate"><span class="pre">0.2.0-SNAPSHOT</span></code> (both in the <code class="docutils literal notranslate"><span class="pre">pom.xml</span></code> files and also in the diff files
+<li><p>Update the Rust crate version to <code class="docutils literal notranslate"><span class="pre">0.14.0</span></code>.</p></li>
+<li><p>Update the Maven version to <code class="docutils literal notranslate"><span class="pre">0.14.0-SNAPSHOT</span></code> (both in the <code class="docutils literal notranslate"><span class="pre">pom.xml</span></code> files and also in the diff files
 under <code class="docutils literal notranslate"><span class="pre">dev/diffs</span></code>).</p></li>
 </ul>
 </section>
@@ -522,7 +580,7 @@ pip3<span class="w"> </span>install<span class="w"> </span>-r<span class="w"> </
 providing two commit ids or tags followed by the version number of the release being created. The following
 example generates a change log of all changes between the previous version and the current release branch HEAD revision.</p>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">GITHUB_TOKEN</span><span class="o">=</span>&lt;your-token-here&gt;
-python3<span class="w"> </span>generate-changelog.py<span class="w"> </span><span class="m">0</span>.0.0<span class="w"> </span>HEAD<span class="w"> </span><span class="m">0</span>.1.0<span class="w"> </span>&gt;<span class="w"> </span>../changelog/0.1.0.md
+python3<span class="w"> </span>generate-changelog.py<span class="w"> </span><span class="m">0</span>.12.0<span class="w"> </span>HEAD<span class="w"> </span><span class="m">0</span>.13.0<span class="w"> </span>&gt;<span class="w"> </span>../changelog/0.13.0.md
 </pre></div>
 </div>
 <p>Create a PR against the <em>main</em> branch to add this change log and once this is approved and merged, cherry-pick the
@@ -576,12 +634,13 @@ repository</p>
 </section>
 <section id="tag-the-release-candidate">
 <h3>Tag the Release Candidate<a class="headerlink" href="#tag-the-release-candidate" title="Link to this heading">#</a></h3>
-<p>Tag the release branch with <code class="docutils literal notranslate"><span class="pre">0.1.0-rc1</span></code> and push to the <code class="docutils literal notranslate"><span class="pre">apache</span></code> repo</p>
+<p>Ensure that the Maven version update and changelog cherry-pick have been pushed to the release branch before tagging.</p>
+<p>Tag the release branch with <code class="docutils literal notranslate"><span class="pre">0.13.0-rc1</span></code> and push to the <code class="docutils literal notranslate"><span class="pre">apache</span></code> repo</p>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>fetch<span class="w"> </span>apache
-git<span class="w"> </span>checkout<span class="w"> </span>branch-0.1
-git<span class="w"> </span>reset<span class="w"> </span>--hard<span class="w"> </span>apache/branch-0.1
-git<span class="w"> </span>tag<span class="w"> </span><span class="m">0</span>.1.0-rc1
-git<span class="w"> </span>push<span class="w"> </span>apache<span class="w"> </span><span class="m">0</span>.1.0-rc1
+git<span class="w"> </span>checkout<span class="w"> </span>branch-0.13
+git<span class="w"> </span>reset<span class="w"> </span>--hard<span class="w"> </span>apache/branch-0.13
+git<span class="w"> </span>tag<span class="w"> </span><span class="m">0</span>.13.0-rc1
+git<span class="w"> </span>push<span class="w"> </span>apache<span class="w"> </span><span class="m">0</span>.13.0-rc1
 </pre></div>
 </div>
 <p>Note that pushing a release candidate tag will trigger a GitHub workflow that will build a Docker image and publish
@@ -592,14 +651,16 @@ it to GitHub Container Registry at https://github.com/apache/datafusion-comet/pk
 <p>In <code class="docutils literal notranslate"><span class="pre">docs</span></code> directory:</p>
 <ul class="simple">
 <li><p>Update <code class="docutils literal notranslate"><span class="pre">docs/source/index.rst</span></code> and add a new navigation menu link for the new release in the section <code class="docutils literal notranslate"><span class="pre">_toc.user-guide-links-versioned</span></code></p></li>
-<li><p>Add a new line to <code class="docutils literal notranslate"><span class="pre">build.sh</span></code> to delete the locally cloned <code class="docutils literal notranslate"><span class="pre">comet-*</span></code> branch for the new release e.g. <code class="docutils literal notranslate"><span class="pre">comet-0.11</span></code></p></li>
+<li><p>Add a new line to <code class="docutils literal notranslate"><span class="pre">build.sh</span></code> to delete the locally cloned <code class="docutils literal notranslate"><span class="pre">comet-*</span></code> branch for the new release e.g. <code class="docutils literal notranslate"><span class="pre">comet-0.13</span></code></p></li>
 <li><p>Update the main method in <code class="docutils literal notranslate"><span class="pre">generate-versions.py</span></code>:</p></li>
 </ul>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span>    <span class="n">latest_released_version</span> <span class="o">=</span> <span class="s2">&quot;0.11.0&quot;</span>
-    <span class="n">previous_versions</span> <span class="o">=</span> <span class="p">[</span><span class="s2">&quot;0.8.0&quot;</span><span class="p">,</span> <span class="s2">&quot;0.9.1&quot;</span><span class="p">,</span> <span class="s2">&quot;0.10.1&quot;</span><span class="p">]</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span>    <span class="n">latest_released_version</span> <span class="o">=</span> <span class="s2">&quot;0.13.0&quot;</span>
+    <span class="n">previous_versions</span> <span class="o">=</span> <span class="p">[</span><span class="s2">&quot;0.11.0&quot;</span><span class="p">,</span> <span class="s2">&quot;0.12.0&quot;</span><span class="p">]</span>
 </pre></div>
 </div>
 <p>Test the documentation build locally, following the instructions in <code class="docutils literal notranslate"><span class="pre">docs/README.md</span></code>.</p>
+<p>Once verified, create a PR against the main branch with these documentation changes. After merging, the docs will be
+deployed to https://datafusion.apache.org/comet/ by the documentation publishing workflow.</p>
 <p>Note that the download links in the installation guide will not work until the release is finalized, but having the
 documentation available could be useful for anyone testing out the release candidate during the voting period.</p>
 </section>
@@ -627,7 +688,7 @@ The artifacts will be signed using the gpg key of the release manager and upload
 <p>Note: This script needs <code class="docutils literal notranslate"><span class="pre">xmllint</span></code> to be installed. On macOS xmllint is available by default.</p>
 <p>On Ubuntu <code class="docutils literal notranslate"><span class="pre">apt-get</span> <span class="pre">install</span> <span class="pre">-y</span> <span class="pre">libxml2-utils</span></code></p>
 <p>On RedHat <code class="docutils literal notranslate"><span class="pre">yum</span> <span class="pre">install</span> <span class="pre">-y</span> <span class="pre">xmlstarlet</span></code></p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>/comet:$./dev/release/publish-to-maven.sh<span class="w"> </span>-h
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>./dev/release/publish-to-maven.sh<span class="w"> </span>-h
 usage:<span class="w"> </span>publish-to-maven.sh<span class="w"> </span>options
 
 Publish<span class="w"> </span>signed<span class="w"> </span>artifacts<span class="w"> </span>to<span class="w"> </span>Maven.
@@ -643,7 +704,7 @@ GPG_PASSPHRASE<span class="w"> </span>-<span class="w"> </span>Passphrase<span c
 </pre></div>
 </div>
 <p>example</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>/comet:$./dev/release/publish-to-maven.sh<span class="w"> </span>-u<span class="w"> </span>release_manager_asf_id<span class="w">  </span>-r<span class="w"> </span>/tmp/comet-staging-repo-VsYOX
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>./dev/release/publish-to-maven.sh<span class="w"> </span>-u<span class="w"> </span>release_manager_asf_id<span class="w"> </span>-r<span class="w"> </span>/tmp/comet-staging-repo-VsYOX
 ASF<span class="w"> </span>Password<span class="w"> </span>:
 GPG<span class="w"> </span>Key<span class="w"> </span><span class="o">(</span>Optional<span class="o">)</span>:
 GPG<span class="w"> </span>Passphrase<span class="w"> </span>:
@@ -660,16 +721,40 @@ actually happen automatically when running the script).</p>
 </section>
 <section id="create-the-release-candidate-tarball">
 <h3>Create the Release Candidate Tarball<a class="headerlink" href="#create-the-release-candidate-tarball" title="Link to this heading">#</a></h3>
-<p>Run the create-tarball script on the release candidate tag (<code class="docutils literal notranslate"><span class="pre">0.1.0-rc1</span></code>) to create the source tarball and upload it to
-the dev subversion repository</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>./dev/release/create-tarball.sh<span class="w"> </span><span class="m">0</span>.1.0<span class="w"> </span><span class="m">1</span>
+<p>The <code class="docutils literal notranslate"><span class="pre">create-tarball.sh</span></code> script creates a signed source tarball and uploads it to the dev subversion repository.</p>
+<section id="prerequisites">
+<h4>Prerequisites<a class="headerlink" href="#prerequisites" title="Link to this heading">#</a></h4>
+<p>Before running this script, ensure you have:</p>
+<ol class="arabic simple">
+<li><p>A GPG key set up for signing, with your public key uploaded to https://pgp.mit.edu/</p></li>
+<li><p>Apache SVN credentials (you must be logged into the Apache SVN server)</p></li>
+<li><p>The <code class="docutils literal notranslate"><span class="pre">requests</span></code> Python package installed (<code class="docutils literal notranslate"><span class="pre">pip3</span> <span class="pre">install</span> <span class="pre">requests</span></code>)</p></li>
+</ol>
+</section>
+<section id="run-the-script">
+<h4>Run the script<a class="headerlink" href="#run-the-script" title="Link to this heading">#</a></h4>
+<p>Run the create-tarball script on the release candidate tag (<code class="docutils literal notranslate"><span class="pre">0.13.0-rc1</span></code>):</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>./dev/release/create-tarball.sh<span class="w"> </span><span class="m">0</span>.13.0<span class="w"> </span><span class="m">1</span>
 </pre></div>
 </div>
 <p>This will generate an email template for starting the vote.</p>
 </section>
+</section>
 <section id="start-an-email-voting-thread">
 <h3>Start an Email Voting Thread<a class="headerlink" href="#start-an-email-voting-thread" title="Link to this heading">#</a></h3>
 <p>Send the email that is generated in the previous step to <code class="docutils literal notranslate"><span class="pre">dev&#64;datafusion.apache.org</span></code>.</p>
+<p>The verification procedure for voters is documented in
+<a class="reference external" href="https://github.com/apache/datafusion-comet/blob/main/dev/release/verifying-release-candidates.md">Verifying Release Candidates</a>.
+Voters can also use the <code class="docutils literal notranslate"><span class="pre">dev/release/verify-release-candidate.sh</span></code> script to assist with verification:</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>./dev/release/verify-release-candidate.sh<span class="w"> </span><span class="m">0</span>.13.0<span class="w"> </span><span class="m">1</span>
+</pre></div>
+</div>
+</section>
+<section id="if-the-vote-fails">
+<h3>If the Vote Fails<a class="headerlink" href="#if-the-vote-fails" title="Link to this heading">#</a></h3>
+<p>If the vote does not pass, address the issues raised, increment the release candidate number, and repeat from
+the <a class="reference internal" href="#tag-the-release-candidate">Tag the Release Candidate</a> step. For example, the next attempt would be tagged
+<code class="docutils literal notranslate"><span class="pre">0.13.0-rc2</span></code>.</p>
 </section>
 </section>
 <section id="publishing-binary-releases">
@@ -678,7 +763,7 @@ the dev subversion repository</p>
 <section id="publishing-source-tarball">
 <h3>Publishing Source Tarball<a class="headerlink" href="#publishing-source-tarball" title="Link to this heading">#</a></h3>
 <p>Run the release-tarball script to move the tarball to the release subversion repository.</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>./dev/release/release-tarball.sh<span class="w"> </span><span class="m">0</span>.1.0<span class="w"> </span><span class="m">1</span>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>./dev/release/release-tarball.sh<span class="w"> </span><span class="m">0</span>.13.0<span class="w"> </span><span class="m">1</span>
 </pre></div>
 </div>
 </section>
@@ -692,36 +777,33 @@ changelog in the description.</p>
 <p>Promote the Maven artifacts from staging to production by visiting https://repository.apache.org/#stagingRepositories
 and selecting the staging repository and then clicking the “release” button.</p>
 </section>
-<section id="publishing-crates">
-<h3>Publishing Crates<a class="headerlink" href="#publishing-crates" title="Link to this heading">#</a></h3>
-<p>Publish the <code class="docutils literal notranslate"><span class="pre">datafusion-comet-spark-expr</span></code> crate to crates.io so that other Rust projects can leverage the
-Spark-compatible operators and expressions outside of Spark.</p>
-</section>
 <section id="push-a-release-tag-to-the-repo">
 <h3>Push a release tag to the repo<a class="headerlink" href="#push-a-release-tag-to-the-repo" title="Link to this heading">#</a></h3>
-<p>Push a release tag (<code class="docutils literal notranslate"><span class="pre">0.1.0</span></code>) to the <code class="docutils literal notranslate"><span class="pre">apache</span></code> repository.</p>
+<p>Push a release tag (<code class="docutils literal notranslate"><span class="pre">0.13.0</span></code>) to the <code class="docutils literal notranslate"><span class="pre">apache</span></code> repository.</p>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>fetch<span class="w"> </span>apache
-git<span class="w"> </span>checkout<span class="w"> </span><span class="m">0</span>.1.0-rc1
-git<span class="w"> </span>tag<span class="w"> </span><span class="m">0</span>.1.0
-git<span class="w"> </span>push<span class="w"> </span>apache<span class="w"> </span><span class="m">0</span>.1.0
+git<span class="w"> </span>checkout<span class="w"> </span><span class="m">0</span>.13.0-rc1
+git<span class="w"> </span>tag<span class="w"> </span><span class="m">0</span>.13.0
+git<span class="w"> </span>push<span class="w"> </span>apache<span class="w"> </span><span class="m">0</span>.13.0
 </pre></div>
 </div>
 <p>Note that pushing a release tag will trigger a GitHub workflow that will build a Docker image and publish
 it to GitHub Container Registry at https://github.com/apache/datafusion-comet/pkgs/container/datafusion-comet</p>
-<p>Reply to the vote thread to close the vote and announce the release.</p>
-</section>
-</section>
-<section id="update-released-version-number-in-documentation">
-<h2>Update released version number in documentation<a class="headerlink" href="#update-released-version-number-in-documentation" title="Link to this heading">#</a></h2>
+<p>Reply to the vote thread to close the vote and announce the release. The announcement email should include:</p>
 <ul class="simple">
-<li><p>We provide direct links to the jar files in Maven</p></li>
-<li><p>The Kubernetes page needs updating once the Docker image has been published to GitHub Container Regsistry</p></li>
+<li><p>The release version</p></li>
+<li><p>A link to the release notes / changelog</p></li>
+<li><p>A link to the download page or Maven coordinates</p></li>
+<li><p>Thanks to everyone who contributed and voted</p></li>
 </ul>
 </section>
-<section id="post-release-admin">
-<h2>Post Release Admin<a class="headerlink" href="#post-release-admin" title="Link to this heading">#</a></h2>
+</section>
+<section id="post-release">
+<h2>Post Release<a class="headerlink" href="#post-release" title="Link to this heading">#</a></h2>
+<section id="register-the-release">
+<h3>Register the release<a class="headerlink" href="#register-the-release" title="Link to this heading">#</a></h3>
 <p>Register the release with the <a class="reference external" href="https://reporter.apache.org/addrelease.html?datafusion">Apache Reporter Service</a> using
-a version such as <code class="docutils literal notranslate"><span class="pre">COMET-0.1.0</span></code>.</p>
+a version such as <code class="docutils literal notranslate"><span class="pre">COMET-0.13.0</span></code>.</p>
+</section>
 <section id="delete-old-rcs-and-releases">
 <h3>Delete old RCs and Releases<a class="headerlink" href="#delete-old-rcs-and-releases" title="Link to this heading">#</a></h3>
 <p>See the ASF documentation on <a class="reference external" href="https://www.apache.org/legal/release-policy.html#when-to-archive">when to archive</a>
@@ -734,7 +816,7 @@ for more information.</p>
 </pre></div>
 </div>
 <p>Delete a release candidate:</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>svn<span class="w"> </span>delete<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;delete old DataFusion Comet RC&quot;</span><span class="w"> </span>https://dist.apache.org/repos/dist/dev/datafusion/apache-datafusion-comet-0.1.0-rc1/
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>svn<span class="w"> </span>delete<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;delete old DataFusion Comet RC&quot;</span><span class="w"> </span>https://dist.apache.org/repos/dist/dev/datafusion/apache-datafusion-comet-0.13.0-rc1/
 </pre></div>
 </div>
 </section>
@@ -746,18 +828,18 @@ for more information.</p>
 </pre></div>
 </div>
 <p>Delete a release:</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>svn<span class="w"> </span>delete<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;delete old DataFusion Comet release&quot;</span><span class="w"> </span>https://dist.apache.org/repos/dist/release/datafusion/datafusion-comet-0.0.0
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>svn<span class="w"> </span>delete<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;delete old DataFusion Comet release&quot;</span><span class="w"> </span>https://dist.apache.org/repos/dist/release/datafusion/datafusion-comet-0.12.0
 </pre></div>
 </div>
 </section>
 </section>
-</section>
-<section id="post-release-activities">
-<h2>Post Release Activities<a class="headerlink" href="#post-release-activities" title="Link to this heading">#</a></h2>
+<section id="write-a-blog-post">
+<h3>Write a blog post<a class="headerlink" href="#write-a-blog-post" title="Link to this heading">#</a></h3>
 <p>Writing a blog post about the release is a great way to generate more interest in the project. We typically create a
 Google document where the community can collaborate on a blog post. Once the content is agreed then a PR can be
 created against the <a class="reference external" href="https://github.com/apache/datafusion-site">datafusion-site</a> repository to add the blog post. Any
 contributor can drive this process.</p>
+</section>
 </section>
 </section>
 
