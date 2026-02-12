@@ -226,7 +226,6 @@ fn should_encode(byte: u8) -> bool {
     )
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -270,12 +269,7 @@ mod tests {
 
     #[test]
     fn test_url_encode_array() {
-        let input = StringArray::from(vec![
-            Some("Hello World"),
-            Some("foo=bar"),
-            None,
-            Some(""),
-        ]);
+        let input = StringArray::from(vec![Some("Hello World"), Some("foo=bar"), None, Some("")]);
         let args = ColumnarValue::Array(Arc::new(input));
         match spark_url_encode(&[args]) {
             Ok(ColumnarValue::Array(result)) => {
