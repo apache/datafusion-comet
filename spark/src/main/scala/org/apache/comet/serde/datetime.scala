@@ -232,13 +232,14 @@ object CometParseToDate extends CometExpressionSerde[ParseToDate] {
       expr: ParseToDate,
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
+    val failOnError = parseToDateFailOnError(expr)
     val childExpr: Option[Expr] = exprToProtoInternal(expr.left, inputs, binding)
     val failOnErrorExpr: Option[Expr] =
-      exprToProtoInternal(Literal(expr.ansiEnabled), inputs, binding)
+      exprToProtoInternal(Literal(failOnError), inputs, binding)
     scalarFunctionExprToProtoWithReturnType(
       "to_date",
       expr.dataType,
-      expr.ansiEnabled,
+      failOnError,
       childExpr,
       failOnErrorExpr)
   }
