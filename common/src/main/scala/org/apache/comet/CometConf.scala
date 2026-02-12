@@ -818,6 +818,15 @@ object CometConf extends ShimCometConf {
       .bytesConf(ByteUnit.BYTE)
       .createWithDefault(100L * 1024 * 1024 * 1024) // 100 GB
 
+  val COMET_RESPECT_DATAFUSION_CONFIGS: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.respectDataFusionConfigs")
+    .category(CATEGORY_TESTING)
+    .doc("Development and testing configuration option to allow DataFusion configs set in " +
+      "Spark configuration settings starting with `spark.comet.datafusion.` to be passed " +
+      "into native execution.")
+    .booleanConf
+    .createWithDefault(false)
+
   val COMET_STRICT_TESTING: ConfigEntry[Boolean] = conf(s"$COMET_PREFIX.testing.strict")
     .category(CATEGORY_TESTING)
     .doc("Experimental option to enable strict testing, which will fail tests that could be " +
