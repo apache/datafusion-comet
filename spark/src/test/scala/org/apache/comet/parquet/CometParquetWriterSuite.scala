@@ -737,7 +737,7 @@ class CometParquetWriterSuite extends CometTestBase {
       s"Expected exactly one CometNativeWriteExec in the plan, but found $nativeWriteCount:\n${plan.treeString}")
   }
 
-  private def checkCometNativeWriter(op: => Unit): Unit = {
+  private def assertCometNativeWriterCaptured(op: => Unit): Unit = {
     val plan = captureWritePlan(_ => op, "")
     assertHasCometNativeWriteExec(plan)
   }
