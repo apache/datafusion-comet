@@ -31,6 +31,7 @@ import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
 import org.apache.comet.testing.FuzzDataGenerator.{doubleNaNLiteral, floatNaNLiteral}
 
+
 class CometFuzzTestSuite extends CometFuzzTestBase {
 
   test("select *") {
