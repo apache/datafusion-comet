@@ -60,7 +60,10 @@ impl ScalarUDFImpl for SparkSha2 {
         &self.signature
     }
 
-    fn return_type(&self, _arg_types: &[arrow::datatypes::DataType]) -> Result<arrow::datatypes::DataType> {
+    fn return_type(
+        &self,
+        _arg_types: &[arrow::datatypes::DataType],
+    ) -> Result<arrow::datatypes::DataType> {
         Ok(arrow::datatypes::DataType::Utf8)
     }
 
@@ -255,9 +258,7 @@ mod tests {
 
     #[test]
     fn test_sha2_hash_256() {
-        let result = compute_sha2_hash("hello".as_bytes(), 256)
-            .unwrap()
-            .unwrap();
+        let result = compute_sha2_hash("hello".as_bytes(), 256).unwrap().unwrap();
         assert_eq!(
             result,
             "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
@@ -283,7 +284,7 @@ mod tests {
     #[test]
     fn test_sha2_different_algorithms() {
         let input = "test".as_bytes();
-        
+
         // SHA-224: 224 bits = 28 bytes = 56 hex chars
         let hash_224 = compute_sha2_hash(input, 224).unwrap().unwrap();
         assert_eq!(hash_224.len(), 56);
@@ -305,12 +306,15 @@ mod tests {
     fn test_sha2_scalar_both_scalars() {
         let input = ColumnarValue::Scalar(ScalarValue::Utf8(Some("hello".to_string())));
         let bits = ColumnarValue::Scalar(ScalarValue::Int32(Some(256)));
-        
+
         let result = spark_sha2(&[input, bits]).unwrap();
-        
+
         match result {
             ColumnarValue::Scalar(ScalarValue::Utf8(Some(hash))) => {
-                assert_eq!(hash, "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824");
+                assert_eq!(
+                    hash,
+                    "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+                );
             }
             _ => panic!("Expected scalar Utf8 result"),
         }
@@ -320,11 +324,11 @@ mod tests {
     fn test_sha2_scalar_null_input() {
         let input = ColumnarValue::Scalar(ScalarValue::Utf8(None));
         let bits = ColumnarValue::Scalar(ScalarValue::Int32(Some(256)));
-        
+
         let result = spark_sha2(&[input, bits]).unwrap();
-        
+
         match result {
-            ColumnarValue::Scalar(ScalarValue::Utf8(None)) => {},
+            ColumnarValue::Scalar(ScalarValue::Utf8(None)) => {}
             _ => panic!("Expected NULL scalar result"),
         }
     }
@@ -333,11 +337,11 @@ mod tests {
     fn test_sha2_scalar_null_bits() {
         let input = ColumnarValue::Scalar(ScalarValue::Utf8(Some("hello".to_string())));
         let bits = ColumnarValue::Scalar(ScalarValue::Int32(None));
-        
+
         let result = spark_sha2(&[input, bits]).unwrap();
-        
+
         match result {
-            ColumnarValue::Scalar(ScalarValue::Utf8(None)) => {},
+            ColumnarValue::Scalar(ScalarValue::Utf8(None)) => {}
             _ => panic!("Expected NULL scalar result"),
         }
     }
@@ -353,9 +357,9 @@ mod tests {
         ]));
         let input = ColumnarValue::Array(input_array);
         let bits = ColumnarValue::Scalar(ScalarValue::Int32(Some(256)));
-        
+
         let result = spark_sha2(&[input, bits]).unwrap();
-        
+
         match result {
             ColumnarValue::Array(arr) => {
                 let string_arr = as_string_array(&arr).unwrap();
@@ -381,9 +385,9 @@ mod tests {
         let input_array = Arc::new(StringArray::from(vec![Some("hello"), Some("world")]));
         let input = ColumnarValue::Array(input_array);
         let bits = ColumnarValue::Scalar(ScalarValue::Int32(Some(128))); // Invalid
-        
+
         let result = spark_sha2(&[input, bits]).unwrap();
-        
+
         match result {
             ColumnarValue::Array(arr) => {
                 let string_arr = as_string_array(&arr).unwrap();
@@ -403,19 +407,19 @@ mod tests {
             Some("world"),
         ]));
         let bits_array = Arc::new(Int32Array::from(vec![Some(256), Some(384), Some(512)]));
-        
+
         let input = ColumnarValue::Array(input_array);
         let bits = ColumnarValue::Array(bits_array);
-        
+
         let result = spark_sha2(&[input, bits]).unwrap();
-        
+
         match result {
             ColumnarValue::Array(arr) => {
                 let string_arr = as_string_array(&arr).unwrap();
                 assert_eq!(string_arr.len(), 3);
                 // Each row uses different algorithm
-                assert_eq!(string_arr.value(0).len(), 64);  // SHA-256: 64 hex chars
-                assert_eq!(string_arr.value(1).len(), 96);  // SHA-384: 96 hex chars
+                assert_eq!(string_arr.value(0).len(), 64); // SHA-256: 64 hex chars
+                assert_eq!(string_arr.value(1).len(), 96); // SHA-384: 96 hex chars
                 assert_eq!(string_arr.value(2).len(), 128); // SHA-512: 128 hex chars
             }
             _ => panic!("Expected array result"),
@@ -428,16 +432,16 @@ mod tests {
         let input = ColumnarValue::Scalar(ScalarValue::Utf8(Some("test".to_string())));
         let bits_array = Arc::new(Int32Array::from(vec![Some(224), Some(256), Some(384)]));
         let bits = ColumnarValue::Array(bits_array);
-        
+
         let result = spark_sha2(&[input, bits]).unwrap();
-        
+
         match result {
             ColumnarValue::Array(arr) => {
                 let string_arr = as_string_array(&arr).unwrap();
                 assert_eq!(string_arr.len(), 3);
-                assert_eq!(string_arr.value(0).len(), 56);  // SHA-224
-                assert_eq!(string_arr.value(1).len(), 64);  // SHA-256
-                assert_eq!(string_arr.value(2).len(), 96);  // SHA-384
+                assert_eq!(string_arr.value(0).len(), 56); // SHA-224
+                assert_eq!(string_arr.value(1).len(), 64); // SHA-256
+                assert_eq!(string_arr.value(2).len(), 96); // SHA-384
             }
             _ => panic!("Expected array result"),
         }
