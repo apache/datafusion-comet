@@ -353,7 +353,7 @@
 
 ### misc_funcs
 
-- [ ] aes_decrypt
+- [x] aes_decrypt
 - [ ] aes_encrypt
 - [ ] assert_true
 - [x] current_catalog

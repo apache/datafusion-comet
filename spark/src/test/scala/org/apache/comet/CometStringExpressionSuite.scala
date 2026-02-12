@@ -378,4 +378,44 @@ class CometStringExpressionSuite extends CometTestBase {
     }
   }
 
+  test("aes_decrypt") {
+    withTable("aes_tbl") {
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        sql("""
+            |CREATE TABLE aes_tbl(
+            |  encrypted_default BINARY,
+            |  encrypted_with_aad BINARY,
+            |  `key` BINARY,
+            |  mode STRING,
+            |  padding STRING,
+            |  aad BINARY
+            |) USING parquet
+            |""".stripMargin)
+
+        sql("""
+            |INSERT INTO aes_tbl
+            |SELECT
+            |  aes_encrypt(
+            |    encode('Spark SQL', 'UTF-8'),
+            |    encode('abcdefghijklmnop12345678ABCDEFGH', 'UTF-8')),
+            |  aes_encrypt(
+            |    encode('Spark SQL', 'UTF-8'),
+            |    encode('abcdefghijklmnop12345678ABCDEFGH', 'UTF-8'),
+            |    'GCM',
+            |    'DEFAULT',
+            |    unhex('00112233445566778899AABB')),
+            |  encode('abcdefghijklmnop12345678ABCDEFGH', 'UTF-8'),
+            |  'GCM',
+            |  'DEFAULT',
+            |  unhex('00112233445566778899AABB')
+            |""".stripMargin)
+      }
+
+      checkSparkAnswerAndOperator(
+        "SELECT CAST(aes_decrypt(encrypted_default, `key`) AS STRING) FROM aes_tbl")
+      checkSparkAnswerAndOperator(
+        "SELECT CAST(aes_decrypt(encrypted_with_aad, `key`, mode, padding, aad) AS STRING) FROM aes_tbl")
+    }
+  }
+
 }
