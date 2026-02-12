@@ -262,9 +262,22 @@ impl SparkPhysicalExprAdapter {
         expr.transform(|e| {
             if let Some(column) = e.as_any().downcast_ref::<Column>() {
                 let col_idx = column.index();
+                let col_name = column.name();
 
                 let logical_field = self.logical_file_schema.fields().get(col_idx);
-                let physical_field = self.physical_file_schema.fields().get(col_idx);
+                // Look up physical field by name instead of index for correctness
+                // when logical and physical schemas have different column orderings
+                let physical_field = if self.parquet_options.case_sensitive {
+                    self.physical_file_schema
+                        .fields()
+                        .iter()
+                        .find(|f| f.name() == col_name)
+                } else {
+                    self.physical_file_schema
+                        .fields()
+                        .iter()
+                        .find(|f| f.name().to_lowercase() == col_name.to_lowercase())
+                };
 
                 if let (Some(logical_field), Some(physical_field)) = (logical_field, physical_field)
                 {
