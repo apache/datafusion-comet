@@ -922,4 +922,5 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
       }
     }
   }
+
 }
