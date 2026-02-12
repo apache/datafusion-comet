@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::conversion_funcs::boolean::can_cast_from_boolean;
+use crate::conversion_funcs::boolean::{can_cast_from_boolean, cast_boolean_to_decimal};
 use crate::conversion_funcs::utils::{cast_overflow, invalid_value};
 use crate::conversion_funcs::utils::{is_identity_cast, spark_cast_postprocess};
 use crate::utils::array_with_timezone;
@@ -970,16 +970,6 @@ fn cast_date_to_timestamp(
     Ok(Arc::new(
         builder.finish().with_timezone_opt(target_tz.clone()),
     ))
-}
-
-fn cast_boolean_to_decimal(array: &ArrayRef, precision: u8, scale: i8) -> SparkResult<ArrayRef> {
-    let bool_array = array.as_boolean();
-    let scaled_val = 10_i128.pow(scale as u32);
-    let result: Decimal128Array = bool_array
-        .iter()
-        .map(|v| v.map(|b| if b { scaled_val } else { 0 }))
-        .collect();
-    Ok(Arc::new(result.with_precision_and_scale(precision, scale)?))
 }
 
 fn cast_string_to_float(

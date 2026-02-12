@@ -15,7 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::SparkResult;
+use arrow::array::{ArrayRef, AsArray, Decimal128Array};
 use arrow::datatypes::DataType;
+use std::sync::Arc;
 
 pub fn can_cast_from_boolean(to_type: &DataType) -> bool {
     use DataType::*;
@@ -23,6 +26,21 @@ pub fn can_cast_from_boolean(to_type: &DataType) -> bool {
         to_type,
         Boolean | Int8 | Int16 | Int32 | Int64 | Float32 | Float64 | Utf8
     )
+}
+
+// only incompatible boolean cast
+pub fn cast_boolean_to_decimal(
+    array: &ArrayRef,
+    precision: u8,
+    scale: i8,
+) -> SparkResult<ArrayRef> {
+    let bool_array = array.as_boolean();
+    let scaled_val = 10_i128.pow(scale as u32);
+    let result: Decimal128Array = bool_array
+        .iter()
+        .map(|v| v.map(|b| if b { scaled_val } else { 0 }))
+        .collect();
+    Ok(Arc::new(result.with_precision_and_scale(precision, scale)?))
 }
 
 #[cfg(test)]
@@ -34,6 +52,7 @@ mod tests {
         Array, ArrayRef, BooleanArray, Float32Array, Float64Array, Int16Array, Int32Array,
         Int64Array, Int8Array, StringArray,
     };
+    use arrow::datatypes::DataType::Decimal128;
     use std::sync::Arc;
 
     fn test_input_bool_array() -> ArrayRef {
@@ -54,6 +73,7 @@ mod tests {
         assert!(can_cast_from_boolean(&DataType::Float32));
         assert!(can_cast_from_boolean(&DataType::Float64));
         assert!(can_cast_from_boolean(&DataType::Utf8));
+        assert!(can_cast_from_boolean(&DataType::Decimal128(10, 4)));
         assert!(!can_cast_from_boolean(&DataType::Null));
     }
 
@@ -152,6 +172,23 @@ mod tests {
         let arr = result.as_any().downcast_ref::<StringArray>().unwrap();
         assert_eq!(arr.value(0), "true");
         assert_eq!(arr.value(1), "false");
+        assert!(arr.is_null(2));
+    }
+
+    #[test]
+    fn test_bool_to_decimal_cast() {
+        let result = cast_array(
+            test_input_bool_array(),
+            &Decimal128(10, 4),
+            &test_input_spark_opts(),
+        )
+        .unwrap();
+        let expected_arr = Decimal128Array::from(vec![10000_i128, 0_i128])
+            .with_precision_and_scale(10, 4)
+            .unwrap();
+        let arr = result.as_any().downcast_ref::<Decimal128Array>().unwrap();
+        assert_eq!(arr.value(0), expected_arr.value(0));
+        assert_eq!(arr.value(1), expected_arr.value(1));
         assert!(arr.is_null(2));
     }
 }
