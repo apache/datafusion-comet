@@ -22,12 +22,12 @@ use log::{info, warn};
 use std::sync::Arc;
 
 #[derive(Debug)]
-pub(crate) struct LoggingPool {
+pub(crate) struct LoggingMemoryPool {
     task_attempt_id: u64,
     pool: Arc<dyn MemoryPool>,
 }
 
-impl LoggingPool {
+impl LoggingMemoryPool {
     pub fn new(task_attempt_id: u64, pool: Arc<dyn MemoryPool>) -> Self {
         Self {
             task_attempt_id,
@@ -36,7 +36,7 @@ impl LoggingPool {
     }
 }
 
-impl MemoryPool for LoggingPool {
+impl MemoryPool for LoggingMemoryPool {
     fn register(&self, consumer: &MemoryConsumer) {
         info!(
             "[Task {}] MemoryPool[{}].register()",

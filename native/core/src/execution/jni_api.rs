@@ -82,7 +82,7 @@ use crate::execution::spark_plan::SparkPlan;
 
 use crate::execution::tracing::{log_memory_usage, trace_begin, trace_end, with_trace};
 
-use crate::execution::memory_pools::logging_pool::LoggingPool;
+use crate::execution::memory_pools::logging_pool::LoggingMemoryPool;
 use crate::execution::spark_config::{
     SparkConfig, COMET_DEBUG_ENABLED, COMET_DEBUG_MEMORY, COMET_EXPLAIN_NATIVE_ENABLED,
     COMET_MAX_TEMP_DIRECTORY_SIZE, COMET_TRACING_ENABLED,
@@ -232,7 +232,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 create_memory_pool(&memory_pool_config, task_memory_manager, task_attempt_id);
 
             let memory_pool = if logging_memory_pool {
-                Arc::new(LoggingPool::new(task_attempt_id as u64, memory_pool))
+                Arc::new(LoggingMemoryPool::new(task_attempt_id as u64, memory_pool))
             } else {
                 memory_pool
             };
