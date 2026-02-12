@@ -1,0 +1,826 @@
+<!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../" data-theme="light">
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Apache DataFusion Comet: Release Process &#8212; Apache DataFusion Comet  documentation</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "light";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "light";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../_static/styles/theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../_static/theme_overrides.css?v=cd442bcd" />
+  
+  <!-- So that users can add custom icons -->
+  <script src="../_static/scripts/fontawesome.js?digest=8878045cc6db502f8baf"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf" />
+
+    <script src="../_static/documentation_options.js?v=5929fcd5"></script>
+    <script src="../_static/doctools.js?v=9a2dae69"></script>
+    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'contributor-guide/release_process';</script>
+    <script async="true" defer="true" src="https://buttons.github.io/buttons.js"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="ASF Links" href="../asf/index.html" />
+    <link rel="prev" title="Comet Roadmap" href="roadmap.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="" />
+  </head>
+  
+  
+  <body data-bs-spy="scroll" data-bs-target=".bd-toc-nav" data-offset="180" data-bs-root-margin="0px 0px -60%" data-default-mode="light">
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../index.html">
+  
+  
+  
+  
+  
+    
+    
+    
+    <img src="../_static/DataFusionComet-Logo-Light.png" class="logo__image only-light" alt="Apache DataFusion Comet  documentation - Home"/>
+    <img src="../_static/DataFusionComet-Logo-Dark.png" class="logo__image only-dark pst-js-only" alt="Apache DataFusion Comet  documentation - Home"/>
+  
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../about/index.html">
+    Comet Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../user-guide/index.html">
+    User Guide
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="index.html">
+    Contributor Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../asf/index.html">
+    ASF Links
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/apache/datafusion-comet" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+</ul></div>
+      
+        <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../about/index.html">
+    Comet Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../user-guide/index.html">
+    User Guide
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="index.html">
+    Contributor Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../asf/index.html">
+    ASF Links
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/apache/datafusion-comet" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+</ul></div>
+        
+          <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item"><!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
+<nav class="bd-links" id="bd-docs-nav" aria-label="Main navigation">
+  <div class="bd-toc-item active">
+    <p aria-level="2" class="caption" role="heading"><span class="caption-text">Index</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../about/index.html">Comet Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../user-guide/index.html">User Guide</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="index.html">Contributor Guide</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="contributing.html">Getting Started</a></li>
+<li class="toctree-l2"><a class="reference internal" href="plugin_overview.html">Comet Plugin Architecture</a></li>
+<li class="toctree-l2"><a class="reference internal" href="plugin_overview.html#plugin-components">Plugin Components</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ffi.html">Arrow FFI</a></li>
+<li class="toctree-l2"><a class="reference internal" href="jvm_shuffle.html">JVM Shuffle</a></li>
+<li class="toctree-l2"><a class="reference internal" href="native_shuffle.html">Native Shuffle</a></li>
+<li class="toctree-l2"><a class="reference internal" href="parquet_scans.html">Parquet Scans</a></li>
+<li class="toctree-l2"><a class="reference internal" href="development.html">Development Guide</a></li>
+<li class="toctree-l2"><a class="reference internal" href="debugging.html">Debugging Guide</a></li>
+<li class="toctree-l2"><a class="reference internal" href="benchmarking.html">Benchmarking Guide</a></li>
+<li class="toctree-l2"><a class="reference internal" href="adding_a_new_operator.html">Adding a New Operator</a></li>
+<li class="toctree-l2"><a class="reference internal" href="adding_a_new_expression.html">Adding a New Expression</a></li>
+<li class="toctree-l2"><a class="reference internal" href="tracing.html">Tracing</a></li>
+<li class="toctree-l2"><a class="reference internal" href="profiling_native_code.html">Profiling Native Code</a></li>
+<li class="toctree-l2"><a class="reference internal" href="spark-sql-tests.html">Spark SQL Tests</a></li>
+<li class="toctree-l2"><a class="reference internal" href="sql-file-tests.html">SQL File Tests</a></li>
+<li class="toctree-l2"><a class="reference internal" href="roadmap.html">Roadmap</a></li>
+<li class="toctree-l2 current"><a class="current reference internal" href="#">Release Process</a></li>
+<li class="toctree-l2"><a class="reference external" href="https://github.com/apache/datafusion-comet">Github and Issue Tracker</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../asf/index.html">ASF Links</a></li>
+</ul>
+
+  </div>
+</nav>
+</div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    
+    <li class="breadcrumb-item"><a href="index.html" class="nav-link">Comet Contributor Guide</a></li>
+    
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Apache DataFusion Comet: Release Process</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <!---
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+<section id="apache-datafusion-comet-release-process">
+<h1>Apache DataFusion Comet: Release Process<a class="headerlink" href="#apache-datafusion-comet-release-process" title="Link to this heading">#</a></h1>
+<p>This documentation explains the release process for Apache DataFusion Comet.</p>
+<section id="creating-the-release-candidate">
+<h2>Creating the Release Candidate<a class="headerlink" href="#creating-the-release-candidate" title="Link to this heading">#</a></h2>
+<p>This part of the process can be performed by any committer.</p>
+<p>Here are the steps, using the 0.1.0 release as an example.</p>
+<section id="create-release-branch">
+<h3>Create Release Branch<a class="headerlink" href="#create-release-branch" title="Link to this heading">#</a></h3>
+<p>This document assumes that GitHub remotes are set up as follows:</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>$<span class="w"> </span>git<span class="w"> </span>remote<span class="w"> </span>-v
+apache<span class="w">	</span>git@github.com:apache/datafusion-comet.git<span class="w"> </span><span class="o">(</span>fetch<span class="o">)</span>
+apache<span class="w">	</span>git@github.com:apache/datafusion-comet.git<span class="w"> </span><span class="o">(</span>push<span class="o">)</span>
+origin<span class="w">	</span>git@github.com:yourgithubid/datafusion-comet.git<span class="w"> </span><span class="o">(</span>fetch<span class="o">)</span>
+origin<span class="w">	</span>git@github.com:yourgithubid/datafusion-comet.git<span class="w"> </span><span class="o">(</span>push<span class="o">)</span>
+</pre></div>
+</div>
+<p>Create a release branch from the latest commit in main and push to the <code class="docutils literal notranslate"><span class="pre">apache</span></code> repo:</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>fetch<span class="w"> </span>apache
+git<span class="w"> </span>checkout<span class="w"> </span>main
+git<span class="w"> </span>reset<span class="w"> </span>--hard<span class="w"> </span>apache/main
+git<span class="w"> </span>checkout<span class="w"> </span>-b<span class="w"> </span>branch-0.1
+git<span class="w"> </span>push<span class="w"> </span>apache<span class="w"> </span>branch-0.1
+</pre></div>
+</div>
+</section>
+<section id="generate-release-documentation">
+<h3>Generate Release Documentation<a class="headerlink" href="#generate-release-documentation" title="Link to this heading">#</a></h3>
+<p>Generate the documentation content for this release. The docs on <code class="docutils literal notranslate"><span class="pre">main</span></code> contain only template markers,
+so we need to generate the actual content (config tables, compatibility matrices) for the release branch:</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>./dev/generate-release-docs.sh
+git<span class="w"> </span>add<span class="w"> </span>docs/source/user-guide/latest/
+git<span class="w"> </span>commit<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;Generate docs for 0.1.0 release&quot;</span>
+git<span class="w"> </span>push<span class="w"> </span>apache<span class="w"> </span>branch-0.1
+</pre></div>
+</div>
+<p>This freezes the documentation to reflect the configs and expressions available in this release.</p>
+</section>
+<section id="update-maven-version">
+<h3>Update Maven Version<a class="headerlink" href="#update-maven-version" title="Link to this heading">#</a></h3>
+<p>Update the <code class="docutils literal notranslate"><span class="pre">pom.xml</span></code> files in the release branch to update the Maven version from <code class="docutils literal notranslate"><span class="pre">0.1.0-SNAPSHOT</span></code> to <code class="docutils literal notranslate"><span class="pre">0.1.0</span></code>.</p>
+<p>There is no need to update the Rust crate versions because they will already be <code class="docutils literal notranslate"><span class="pre">0.1.0</span></code>.</p>
+</section>
+<section id="update-version-in-main">
+<h3>Update Version in main<a class="headerlink" href="#update-version-in-main" title="Link to this heading">#</a></h3>
+<p>Create a PR against the main branch to prepare for developing the next release:</p>
+<ul class="simple">
+<li><p>Update the Rust crate version to <code class="docutils literal notranslate"><span class="pre">0.2.0</span></code>.</p></li>
+<li><p>Update the Maven version to <code class="docutils literal notranslate"><span class="pre">0.2.0-SNAPSHOT</span></code> (both in the <code class="docutils literal notranslate"><span class="pre">pom.xml</span></code> files and also in the diff files
+under <code class="docutils literal notranslate"><span class="pre">dev/diffs</span></code>).</p></li>
+</ul>
+</section>
+<section id="generate-the-change-log">
+<h3>Generate the Change Log<a class="headerlink" href="#generate-the-change-log" title="Link to this heading">#</a></h3>
+<p>Generate a change log to cover changes between the previous release and the release branch HEAD by running
+the provided <code class="docutils literal notranslate"><span class="pre">dev/release/generate-changelog.py</span></code>.</p>
+<p>It is recommended that you set up a virtual Python environment and then install the dependencies:</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nb">cd</span><span class="w"> </span>dev/release
+python3<span class="w"> </span>-m<span class="w"> </span>venv<span class="w"> </span>venv
+<span class="nb">source</span><span class="w"> </span>venv/bin/activate
+pip3<span class="w"> </span>install<span class="w"> </span>-r<span class="w"> </span>requirements.txt
+</pre></div>
+</div>
+<p>To generate the changelog, set the <code class="docutils literal notranslate"><span class="pre">GITHUB_TOKEN</span></code> environment variable to a valid token and then run the script
+providing two commit ids or tags followed by the version number of the release being created. The following
+example generates a change log of all changes between the previous version and the current release branch HEAD revision.</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">GITHUB_TOKEN</span><span class="o">=</span>&lt;your-token-here&gt;
+python3<span class="w"> </span>generate-changelog.py<span class="w"> </span><span class="m">0</span>.0.0<span class="w"> </span>HEAD<span class="w"> </span><span class="m">0</span>.1.0<span class="w"> </span>&gt;<span class="w"> </span>../changelog/0.1.0.md
+</pre></div>
+</div>
+<p>Create a PR against the <em>main</em> branch to add this change log and once this is approved and merged, cherry-pick the
+commit into the release branch.</p>
+</section>
+<section id="build-the-jars">
+<h3>Build the jars<a class="headerlink" href="#build-the-jars" title="Link to this heading">#</a></h3>
+<section id="setup-to-do-the-build">
+<h4>Setup to do the build<a class="headerlink" href="#setup-to-do-the-build" title="Link to this heading">#</a></h4>
+<p>The build process requires Docker. Download the latest Docker Desktop from https://www.docker.com/products/docker-desktop/.
+If you have multiple docker contexts running switch to the context of the Docker Desktop. For example -</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>$<span class="w"> </span>docker<span class="w"> </span>context<span class="w"> </span>ls
+NAME<span class="w">              </span>DESCRIPTION<span class="w">                               </span>DOCKER<span class="w"> </span>ENDPOINT<span class="w">                               </span>ERROR
+default<span class="w">           </span>Current<span class="w"> </span>DOCKER_HOST<span class="w"> </span>based<span class="w"> </span>configuration<span class="w">   </span>unix:///var/run/docker.sock
+desktop-linux<span class="w">     </span>Docker<span class="w"> </span>Desktop<span class="w">                            </span>unix:///Users/parth/.docker/run/docker.sock
+my_custom_context<span class="w"> </span>*<span class="w">                                         </span>tcp://192.168.64.2:2376
+
+$<span class="w"> </span>docker<span class="w"> </span>context<span class="w"> </span>use<span class="w"> </span>desktop-linux
+</pre></div>
+</div>
+</section>
+<section id="run-the-build-script">
+<h4>Run the build script<a class="headerlink" href="#run-the-build-script" title="Link to this heading">#</a></h4>
+<p>The <code class="docutils literal notranslate"><span class="pre">build-release-comet.sh</span></code> script will create a docker image for each architecture and use the image
+to build the platform specific binaries. These builder images are created every time this script is run.
+The script optionally allows overriding of the repository and branch to build the binaries from (Note that
+the local git repo is not used in the building of the binaries, but it is used to build the final uber jar).</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>Usage:<span class="w"> </span>build-release-comet.sh<span class="w"> </span><span class="o">[</span>options<span class="o">]</span>
+
+This<span class="w"> </span>script<span class="w"> </span>builds<span class="w"> </span>comet<span class="w"> </span>native<span class="w"> </span>binaries<span class="w"> </span>inside<span class="w"> </span>a<span class="w"> </span>docker<span class="w"> </span>image.<span class="w"> </span>The<span class="w"> </span>image<span class="w"> </span>is<span class="w"> </span>named
+<span class="s2">&quot;comet-rm&quot;</span><span class="w"> </span>and<span class="w"> </span>will<span class="w"> </span>be<span class="w"> </span>generated<span class="w"> </span>by<span class="w"> </span>this<span class="w"> </span>script
+
+Options<span class="w"> </span>are:
+
+-r<span class="w"> </span><span class="o">[</span>repo<span class="o">]</span><span class="w">   </span>:<span class="w"> </span>git<span class="w"> </span>repo<span class="w"> </span><span class="o">(</span>default:<span class="w"> </span>https://github.com/apache/datafusion-comet.git<span class="o">)</span>
+-b<span class="w"> </span><span class="o">[</span>branch<span class="o">]</span><span class="w"> </span>:<span class="w"> </span>git<span class="w"> </span>branch<span class="w"> </span><span class="o">(</span>default:<span class="w"> </span>release<span class="o">)</span>
+-t<span class="w"> </span><span class="o">[</span>tag<span class="o">]</span><span class="w">    </span>:<span class="w"> </span>tag<span class="w"> </span><span class="k">for</span><span class="w"> </span>the<span class="w"> </span>spark-rm<span class="w"> </span>docker<span class="w"> </span>image<span class="w"> </span>to<span class="w"> </span>use<span class="w"> </span><span class="k">for</span><span class="w"> </span>building<span class="w"> </span><span class="o">(</span>default:<span class="w"> </span><span class="s2">&quot;latest&quot;</span><span class="o">)</span>.
+</pre></div>
+</div>
+<p>Example:</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nb">cd</span><span class="w"> </span>dev/release<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>./build-release-comet.sh<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">cd</span><span class="w"> </span>../..
+</pre></div>
+</div>
+</section>
+<section id="build-output">
+<h4>Build output<a class="headerlink" href="#build-output" title="Link to this heading">#</a></h4>
+<p>The build output is installed to a temporary local maven repository. The build script will print the name of the
+repository location at the end. This location will be required at the time of deploying the artifacts to a staging
+repository</p>
+</section>
+</section>
+<section id="tag-the-release-candidate">
+<h3>Tag the Release Candidate<a class="headerlink" href="#tag-the-release-candidate" title="Link to this heading">#</a></h3>
+<p>Tag the release branch with <code class="docutils literal notranslate"><span class="pre">0.1.0-rc1</span></code> and push to the <code class="docutils literal notranslate"><span class="pre">apache</span></code> repo</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>fetch<span class="w"> </span>apache
+git<span class="w"> </span>checkout<span class="w"> </span>branch-0.1
+git<span class="w"> </span>reset<span class="w"> </span>--hard<span class="w"> </span>apache/branch-0.1
+git<span class="w"> </span>tag<span class="w"> </span><span class="m">0</span>.1.0-rc1
+git<span class="w"> </span>push<span class="w"> </span>apache<span class="w"> </span><span class="m">0</span>.1.0-rc1
+</pre></div>
+</div>
+<p>Note that pushing a release candidate tag will trigger a GitHub workflow that will build a Docker image and publish
+it to GitHub Container Registry at https://github.com/apache/datafusion-comet/pkgs/container/datafusion-comet</p>
+</section>
+<section id="publishing-documentation">
+<h3>Publishing Documentation<a class="headerlink" href="#publishing-documentation" title="Link to this heading">#</a></h3>
+<p>In <code class="docutils literal notranslate"><span class="pre">docs</span></code> directory:</p>
+<ul class="simple">
+<li><p>Update <code class="docutils literal notranslate"><span class="pre">docs/source/index.rst</span></code> and add a new navigation menu link for the new release in the section <code class="docutils literal notranslate"><span class="pre">_toc.user-guide-links-versioned</span></code></p></li>
+<li><p>Add a new line to <code class="docutils literal notranslate"><span class="pre">build.sh</span></code> to delete the locally cloned <code class="docutils literal notranslate"><span class="pre">comet-*</span></code> branch for the new release e.g. <code class="docutils literal notranslate"><span class="pre">comet-0.11</span></code></p></li>
+<li><p>Update the main method in <code class="docutils literal notranslate"><span class="pre">generate-versions.py</span></code>:</p></li>
+</ul>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span>    <span class="n">latest_released_version</span> <span class="o">=</span> <span class="s2">&quot;0.11.0&quot;</span>
+    <span class="n">previous_versions</span> <span class="o">=</span> <span class="p">[</span><span class="s2">&quot;0.8.0&quot;</span><span class="p">,</span> <span class="s2">&quot;0.9.1&quot;</span><span class="p">,</span> <span class="s2">&quot;0.10.1&quot;</span><span class="p">]</span>
+</pre></div>
+</div>
+<p>Test the documentation build locally, following the instructions in <code class="docutils literal notranslate"><span class="pre">docs/README.md</span></code>.</p>
+<p>Note that the download links in the installation guide will not work until the release is finalized, but having the
+documentation available could be useful for anyone testing out the release candidate during the voting period.</p>
+</section>
+</section>
+<section id="publishing-the-release-candidate">
+<h2>Publishing the Release Candidate<a class="headerlink" href="#publishing-the-release-candidate" title="Link to this heading">#</a></h2>
+<p>This part of the process can mostly only be performed by a PMC member.</p>
+<section id="publish-the-maven-artifacts">
+<h3>Publish the maven artifacts<a class="headerlink" href="#publish-the-maven-artifacts" title="Link to this heading">#</a></h3>
+<section id="setup-maven">
+<h4>Setup maven<a class="headerlink" href="#setup-maven" title="Link to this heading">#</a></h4>
+<section id="one-time-project-setup">
+<h5>One time project setup<a class="headerlink" href="#one-time-project-setup" title="Link to this heading">#</a></h5>
+<p>Setting up your project in the ASF Nexus Repository from here: https://infra.apache.org/publishing-maven-artifacts.html</p>
+</section>
+<section id="release-manager-setup">
+<h5>Release Manager Setup<a class="headerlink" href="#release-manager-setup" title="Link to this heading">#</a></h5>
+<p>Set up your development environment from here: https://infra.apache.org/publishing-maven-artifacts.html</p>
+</section>
+<section id="build-and-publish-a-release-candidate-to-nexus">
+<h5>Build and publish a release candidate to nexus.<a class="headerlink" href="#build-and-publish-a-release-candidate-to-nexus" title="Link to this heading">#</a></h5>
+<p>The script <code class="docutils literal notranslate"><span class="pre">publish-to-maven.sh</span></code> will publish the artifacts created by the <code class="docutils literal notranslate"><span class="pre">build-release-comet.sh</span></code> script.
+The artifacts will be signed using the gpg key of the release manager and uploaded to the maven staging repository.</p>
+<p>Note that installed GPG keys can be listed with <code class="docutils literal notranslate"><span class="pre">gpg</span> <span class="pre">--list-keys</span></code>. The gpg key is a 40 character hex string.</p>
+<p>Note: This script needs <code class="docutils literal notranslate"><span class="pre">xmllint</span></code> to be installed. On macOS xmllint is available by default.</p>
+<p>On Ubuntu <code class="docutils literal notranslate"><span class="pre">apt-get</span> <span class="pre">install</span> <span class="pre">-y</span> <span class="pre">libxml2-utils</span></code></p>
+<p>On RedHat <code class="docutils literal notranslate"><span class="pre">yum</span> <span class="pre">install</span> <span class="pre">-y</span> <span class="pre">xmlstarlet</span></code></p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>/comet:$./dev/release/publish-to-maven.sh<span class="w"> </span>-h
+usage:<span class="w"> </span>publish-to-maven.sh<span class="w"> </span>options
+
+Publish<span class="w"> </span>signed<span class="w"> </span>artifacts<span class="w"> </span>to<span class="w"> </span>Maven.
+
+Options
+-u<span class="w"> </span>ASF_USERNAME<span class="w"> </span>-<span class="w"> </span>Username<span class="w"> </span>of<span class="w"> </span>ASF<span class="w"> </span>committer<span class="w"> </span>account
+-r<span class="w"> </span>LOCAL_REPO<span class="w"> </span>-<span class="w"> </span>path<span class="w"> </span>to<span class="w"> </span>temporary<span class="w"> </span><span class="nb">local</span><span class="w"> </span>maven<span class="w"> </span>repo<span class="w"> </span><span class="o">(</span>created<span class="w"> </span>and<span class="w"> </span>written<span class="w"> </span>to<span class="w"> </span>by<span class="w"> </span><span class="s1">&#39;build-release-comet.sh&#39;</span><span class="o">)</span>
+
+The<span class="w"> </span>following<span class="w"> </span>will<span class="w"> </span>be<span class="w"> </span>prompted<span class="w"> </span><span class="k">for</span><span class="w"> </span>-
+ASF_PASSWORD<span class="w"> </span>-<span class="w"> </span>Password<span class="w"> </span>of<span class="w"> </span>ASF<span class="w"> </span>committer<span class="w"> </span>account
+GPG_KEY<span class="w"> </span>-<span class="w"> </span>GPG<span class="w"> </span>key<span class="w"> </span>used<span class="w"> </span>to<span class="w"> </span>sign<span class="w"> </span>release<span class="w"> </span>artifacts
+GPG_PASSPHRASE<span class="w"> </span>-<span class="w"> </span>Passphrase<span class="w"> </span><span class="k">for</span><span class="w"> </span>GPG<span class="w"> </span>key
+</pre></div>
+</div>
+<p>example</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>/comet:$./dev/release/publish-to-maven.sh<span class="w"> </span>-u<span class="w"> </span>release_manager_asf_id<span class="w">  </span>-r<span class="w"> </span>/tmp/comet-staging-repo-VsYOX
+ASF<span class="w"> </span>Password<span class="w"> </span>:
+GPG<span class="w"> </span>Key<span class="w"> </span><span class="o">(</span>Optional<span class="o">)</span>:
+GPG<span class="w"> </span>Passphrase<span class="w"> </span>:
+Creating<span class="w"> </span>Nexus<span class="w"> </span>staging<span class="w"> </span>repository
+...
+</pre></div>
+</div>
+<p>In the Nexus repository UI (https://repository.apache.org/) locate and verify the artifacts in
+staging (https://central.sonatype.org/publish/release/#locate-and-examine-your-staging-repository).</p>
+<p>If the artifacts appear to be correct, then close and release the repository so it is made visible (this should
+actually happen automatically when running the script).</p>
+</section>
+</section>
+</section>
+<section id="create-the-release-candidate-tarball">
+<h3>Create the Release Candidate Tarball<a class="headerlink" href="#create-the-release-candidate-tarball" title="Link to this heading">#</a></h3>
+<p>Run the create-tarball script on the release candidate tag (<code class="docutils literal notranslate"><span class="pre">0.1.0-rc1</span></code>) to create the source tarball and upload it to
+the dev subversion repository</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>./dev/release/create-tarball.sh<span class="w"> </span><span class="m">0</span>.1.0<span class="w"> </span><span class="m">1</span>
+</pre></div>
+</div>
+<p>This will generate an email template for starting the vote.</p>
+</section>
+<section id="start-an-email-voting-thread">
+<h3>Start an Email Voting Thread<a class="headerlink" href="#start-an-email-voting-thread" title="Link to this heading">#</a></h3>
+<p>Send the email that is generated in the previous step to <code class="docutils literal notranslate"><span class="pre">dev&#64;datafusion.apache.org</span></code>.</p>
+</section>
+</section>
+<section id="publishing-binary-releases">
+<h2>Publishing Binary Releases<a class="headerlink" href="#publishing-binary-releases" title="Link to this heading">#</a></h2>
+<p>Once the vote passes, we can publish the source and binary releases.</p>
+<section id="publishing-source-tarball">
+<h3>Publishing Source Tarball<a class="headerlink" href="#publishing-source-tarball" title="Link to this heading">#</a></h3>
+<p>Run the release-tarball script to move the tarball to the release subversion repository.</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>./dev/release/release-tarball.sh<span class="w"> </span><span class="m">0</span>.1.0<span class="w"> </span><span class="m">1</span>
+</pre></div>
+</div>
+</section>
+<section id="create-a-release-in-the-github-repository">
+<h3>Create a release in the GitHub repository<a class="headerlink" href="#create-a-release-in-the-github-repository" title="Link to this heading">#</a></h3>
+<p>Go to https://github.com/apache/datafusion-comet/releases and create a release for the release tag, and paste the
+changelog in the description.</p>
+</section>
+<section id="publishing-maven-artifacts">
+<h3>Publishing Maven Artifacts<a class="headerlink" href="#publishing-maven-artifacts" title="Link to this heading">#</a></h3>
+<p>Promote the Maven artifacts from staging to production by visiting https://repository.apache.org/#stagingRepositories
+and selecting the staging repository and then clicking the “release” button.</p>
+</section>
+<section id="publishing-crates">
+<h3>Publishing Crates<a class="headerlink" href="#publishing-crates" title="Link to this heading">#</a></h3>
+<p>Publish the <code class="docutils literal notranslate"><span class="pre">datafusion-comet-spark-expr</span></code> crate to crates.io so that other Rust projects can leverage the
+Spark-compatible operators and expressions outside of Spark.</p>
+</section>
+<section id="push-a-release-tag-to-the-repo">
+<h3>Push a release tag to the repo<a class="headerlink" href="#push-a-release-tag-to-the-repo" title="Link to this heading">#</a></h3>
+<p>Push a release tag (<code class="docutils literal notranslate"><span class="pre">0.1.0</span></code>) to the <code class="docutils literal notranslate"><span class="pre">apache</span></code> repository.</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>fetch<span class="w"> </span>apache
+git<span class="w"> </span>checkout<span class="w"> </span><span class="m">0</span>.1.0-rc1
+git<span class="w"> </span>tag<span class="w"> </span><span class="m">0</span>.1.0
+git<span class="w"> </span>push<span class="w"> </span>apache<span class="w"> </span><span class="m">0</span>.1.0
+</pre></div>
+</div>
+<p>Note that pushing a release tag will trigger a GitHub workflow that will build a Docker image and publish
+it to GitHub Container Registry at https://github.com/apache/datafusion-comet/pkgs/container/datafusion-comet</p>
+<p>Reply to the vote thread to close the vote and announce the release.</p>
+</section>
+</section>
+<section id="update-released-version-number-in-documentation">
+<h2>Update released version number in documentation<a class="headerlink" href="#update-released-version-number-in-documentation" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>We provide direct links to the jar files in Maven</p></li>
+<li><p>The Kubernetes page needs updating once the Docker image has been published to GitHub Container Regsistry</p></li>
+</ul>
+</section>
+<section id="post-release-admin">
+<h2>Post Release Admin<a class="headerlink" href="#post-release-admin" title="Link to this heading">#</a></h2>
+<p>Register the release with the <a class="reference external" href="https://reporter.apache.org/addrelease.html?datafusion">Apache Reporter Service</a> using
+a version such as <code class="docutils literal notranslate"><span class="pre">COMET-0.1.0</span></code>.</p>
+<section id="delete-old-rcs-and-releases">
+<h3>Delete old RCs and Releases<a class="headerlink" href="#delete-old-rcs-and-releases" title="Link to this heading">#</a></h3>
+<p>See the ASF documentation on <a class="reference external" href="https://www.apache.org/legal/release-policy.html#when-to-archive">when to archive</a>
+for more information.</p>
+<section id="deleting-old-release-candidates-from-dev-svn">
+<h4>Deleting old release candidates from <code class="docutils literal notranslate"><span class="pre">dev</span></code> svn<a class="headerlink" href="#deleting-old-release-candidates-from-dev-svn" title="Link to this heading">#</a></h4>
+<p>Release candidates should be deleted once the release is published.</p>
+<p>Get a list of DataFusion Comet release candidates:</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>svn<span class="w"> </span>ls<span class="w"> </span>https://dist.apache.org/repos/dist/dev/datafusion<span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>comet
+</pre></div>
+</div>
+<p>Delete a release candidate:</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>svn<span class="w"> </span>delete<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;delete old DataFusion Comet RC&quot;</span><span class="w"> </span>https://dist.apache.org/repos/dist/dev/datafusion/apache-datafusion-comet-0.1.0-rc1/
+</pre></div>
+</div>
+</section>
+<section id="deleting-old-releases-from-release-svn">
+<h4>Deleting old releases from <code class="docutils literal notranslate"><span class="pre">release</span></code> svn<a class="headerlink" href="#deleting-old-releases-from-release-svn" title="Link to this heading">#</a></h4>
+<p>Only the latest release should be available. Delete old releases after publishing the new release.</p>
+<p>Get a list of DataFusion releases:</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>svn<span class="w"> </span>ls<span class="w"> </span>https://dist.apache.org/repos/dist/release/datafusion<span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>comet
+</pre></div>
+</div>
+<p>Delete a release:</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>svn<span class="w"> </span>delete<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;delete old DataFusion Comet release&quot;</span><span class="w"> </span>https://dist.apache.org/repos/dist/release/datafusion/datafusion-comet-0.0.0
+</pre></div>
+</div>
+</section>
+</section>
+</section>
+<section id="post-release-activities">
+<h2>Post Release Activities<a class="headerlink" href="#post-release-activities" title="Link to this heading">#</a></h2>
+<p>Writing a blog post about the release is a great way to generate more interest in the project. We typically create a
+Google document where the community can collaborate on a blog post. Once the content is agreed then a PR can be
+created against the <a class="reference external" href="https://github.com/apache/datafusion-site">datafusion-site</a> repository to add the blog post. Any
+contributor can drive this process.</p>
+</section>
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="roadmap.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">Comet Roadmap</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="../asf/index.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">ASF Links</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf"></script>
+<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf"></script>
+
+<!-- Based on pydata_sphinx_theme/footer.html -->
+<footer class="footer mt-5 mt-md-0">
+  <div class="container">
+    
+    <div class="footer-item">
+      <p>Apache DataFusion, Apache DataFusion Comet, Apache, the Apache feather logo, and the Apache DataFusion project logo</p>
+      <p>are either registered trademarks or trademarks of The Apache Software Foundation in the United States and other countries.</p>
+    </div>
+  </div>
+</footer>
+
+
+  </body>
+</html>

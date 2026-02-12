@@ -274,6 +274,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.Log10.enabled` | Enable Comet acceleration for `Log10` | true |
 | `spark.comet.expression.Log2.enabled` | Enable Comet acceleration for `Log2` | true |
 | `spark.comet.expression.Lower.enabled` | Enable Comet acceleration for `Lower` | true |
+| `spark.comet.expression.MakeDate.enabled` | Enable Comet acceleration for `MakeDate` | true |
 | `spark.comet.expression.MakeDecimal.enabled` | Enable Comet acceleration for `MakeDecimal` | true |
 | `spark.comet.expression.MapContainsKey.enabled` | Enable Comet acceleration for `MapContainsKey` | true |
 | `spark.comet.expression.MapEntries.enabled` | Enable Comet acceleration for `MapEntries` | true |
@@ -287,6 +288,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.Month.enabled` | Enable Comet acceleration for `Month` | true |
 | `spark.comet.expression.Multiply.enabled` | Enable Comet acceleration for `Multiply` | true |
 | `spark.comet.expression.Murmur3Hash.enabled` | Enable Comet acceleration for `Murmur3Hash` | true |
+| `spark.comet.expression.NextDay.enabled` | Enable Comet acceleration for `NextDay` | true |
 | `spark.comet.expression.Not.enabled` | Enable Comet acceleration for `Not` | true |
 | `spark.comet.expression.OctetLength.enabled` | Enable Comet acceleration for `OctetLength` | true |
 | `spark.comet.expression.Or.enabled` | Enable Comet acceleration for `Or` | true |
