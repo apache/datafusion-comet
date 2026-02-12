@@ -528,7 +528,7 @@ mod tests {
         );
         let array: ArrayRef = Arc::new(list);
 
-        let target_type = DataType::List(logical_field.clone());
+        let target_type = DataType::List(Arc::clone(&logical_field));
         let result = relabel_array(array, &target_type);
         assert_eq!(result.data_type(), &target_type);
     }
@@ -539,7 +539,7 @@ mod tests {
         // Logical:  Map(Field("entries", Struct{key, value}))
         let key_field = Arc::new(Field::new("key", DataType::Utf8, false));
         let value_field = Arc::new(Field::new("value", DataType::Int32, true));
-        let struct_fields = Fields::from(vec![key_field.clone(), value_field.clone()]);
+        let struct_fields = Fields::from(vec![Arc::clone(&key_field), Arc::clone(&value_field)]);
 
         let physical_entries_field = Arc::new(Field::new(
             "key_value",
@@ -600,12 +600,12 @@ mod tests {
 
         let physical_struct_field = Arc::new(Field::new(
             "col",
-            DataType::List(physical_list_field.clone()),
+            DataType::List(Arc::clone(&physical_list_field)),
             true,
         ));
         let logical_struct_field = Arc::new(Field::new(
             "col",
-            DataType::List(logical_list_field.clone()),
+            DataType::List(Arc::clone(&logical_list_field)),
             true,
         ));
 
