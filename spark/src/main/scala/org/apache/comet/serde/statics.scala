@@ -19,11 +19,12 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.Attribute
+import org.apache.spark.sql.catalyst.expressions.{Attribute, UrlCodec}
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
 import org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
 
 object CometStaticInvoke extends CometExpressionSerde[StaticInvoke] {
 
@@ -34,7 +35,28 @@ object CometStaticInvoke extends CometExpressionSerde[StaticInvoke] {
       : Map[(String, Class[_]), CometExpressionSerde[StaticInvoke]] =
     Map(
       ("readSidePadding", classOf[CharVarcharCodegenUtils]) -> CometScalarFunction(
-        "read_side_padding"))
+        "read_side_padding"),
+      ("encode", UrlCodec.getClass) -> CometUrlEncode)
+
+  object CometUrlEncode extends CometExpressionSerde[StaticInvoke] {
+    override def convert(
+        expr: StaticInvoke,
+        inputs: Seq[Attribute],
+        binding: Boolean): Option[ExprOuterClass.Expr] = {
+      // StaticInvoke for url_encode may include a second child (the UTF-8 Charset object),
+      // which is not needed by the Rust backend — it always assumes UTF-8.
+      // We only convert the first child (the string data).
+      expr.children match {
+        case Seq(dataToEncode, _*) =>
+          val childExpr = exprToProtoInternal(dataToEncode, inputs, binding)
+          val optExpr = scalarFunctionExprToProto("url_encode", childExpr)
+          optExprWithInfo(optExpr, expr, dataToEncode)
+        case _ =>
+          withInfo(expr, "url_encode expected at least 1 argument but found none")
+          None
+      }
+    }
+  }
 
   override def convert(
       expr: StaticInvoke,
