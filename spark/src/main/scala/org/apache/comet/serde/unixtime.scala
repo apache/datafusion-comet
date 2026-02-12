@@ -20,7 +20,6 @@
 package org.apache.comet.serde
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, FromUnixTime, Literal}
-import org.apache.spark.sql.catalyst.util.TimestampFormatter
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
@@ -36,17 +35,10 @@ object CometFromUnixTime extends CometExpressionSerde[FromUnixTime] {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val secExpr = exprToProtoInternal(expr.sec, inputs, binding)
-    // TODO: DataFusion toChar does not support Spark datetime pattern format
-    // https://github.com/apache/datafusion/issues/16577
-    // https://github.com/apache/datafusion/issues/14536
-    // After fixing these issues, use provided `format` instead of the manual replacement below
-    val formatExpr = exprToProtoInternal(Literal("%Y-%m-%d %H:%M:%S"), inputs, binding)
+    val formatExpr = exprToProtoInternal(expr.format, inputs, binding)
     val timeZone = exprToProtoInternal(Literal(expr.timeZoneId.orNull), inputs, binding)
 
-    if (expr.format != Literal(TimestampFormatter.defaultPattern)) {
-      withInfo(expr, "Datetime pattern format is unsupported")
-      None
-    } else if (secExpr.isDefined && formatExpr.isDefined) {
+    if (secExpr.isDefined && formatExpr.isDefined) {
       val timestampExpr =
         scalarFunctionExprToProto("from_unixtime", Seq(secExpr, timeZone): _*)
       val optExpr = scalarFunctionExprToProto("to_char", Seq(timestampExpr, formatExpr): _*)
