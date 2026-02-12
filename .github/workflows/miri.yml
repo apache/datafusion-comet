@@ -61,5 +61,6 @@ jobs:
           cargo miri setup
       - name: Test with Miri
         run: |
+          cargo clean
           cd native
           MIRIFLAGS="-Zmiri-disable-isolation" cargo miri test --lib --bins --tests --examples
