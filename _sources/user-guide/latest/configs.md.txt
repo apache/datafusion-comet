@@ -324,6 +324,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.StringRepeat.enabled` | Enable Comet acceleration for `StringRepeat` | true |
 | `spark.comet.expression.StringReplace.enabled` | Enable Comet acceleration for `StringReplace` | true |
 | `spark.comet.expression.StringSpace.enabled` | Enable Comet acceleration for `StringSpace` | true |
+| `spark.comet.expression.StringSplit.enabled` | Enable Comet acceleration for `StringSplit` | true |
 | `spark.comet.expression.StringTranslate.enabled` | Enable Comet acceleration for `StringTranslate` | true |
 | `spark.comet.expression.StringTrim.enabled` | Enable Comet acceleration for `StringTrim` | true |
 | `spark.comet.expression.StringTrimBoth.enabled` | Enable Comet acceleration for `StringTrimBoth` | true |
