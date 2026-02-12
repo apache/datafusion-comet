@@ -386,7 +386,7 @@ class CometParquetWriterSuite extends CometTestBase {
       CometConf.COMET_EXEC_ENABLED.key -> "true",
       CometConf.getOperatorAllowIncompatConfigKey(classOf[DataWritingCommandExec]) -> "true") {
       withTempPath { path =>
-        checkCometNativeWriter {
+        assertCometNativeWriterCaptured {
           spark.range(100).repartition(10).where("id = 50").write.parquet(path.toString)
         }
         val partFiles = path
@@ -405,7 +405,7 @@ class CometParquetWriterSuite extends CometTestBase {
       CometConf.getOperatorAllowIncompatConfigKey(classOf[DataWritingCommandExec]) -> "true") {
       withTable("t1", "t2") {
         sql("CREATE TABLE t1(i CHAR(5), c VARCHAR(4)) USING parquet")
-        checkCometNativeWriter {
+        assertCometNativeWriterCaptured {
           sql("CREATE TABLE t2 USING parquet AS SELECT * FROM t1")
         }
         checkAnswer(
@@ -424,7 +424,7 @@ class CometParquetWriterSuite extends CometTestBase {
       withTable("t1", "t2") {
         sql("CREATE TABLE t1(col CHAR(5)) USING parquet")
         withSQLConf(SQLConf.CHAR_AS_VARCHAR.key -> "true") {
-          checkCometNativeWriter {
+          assertCometNativeWriterCaptured {
             sql("CREATE TABLE t2 USING parquet AS SELECT * FROM t1")
           }
           checkAnswer(
@@ -445,15 +445,15 @@ class CometParquetWriterSuite extends CometTestBase {
         val path = dir.toURI.getPath
         withTable("tab1", "tab2") {
           sql(s"""create table tab1 (a int) using parquet location '$path'""")
-          checkCometNativeWriter {
+          assertCometNativeWriterCaptured {
             sql("insert into tab1 values(1)")
           }
           checkAnswer(sql("select * from tab1"), Seq(Row(1)))
           sql("create table tab2 (a int) using parquet")
-          checkCometNativeWriter {
+          assertCometNativeWriterCaptured {
             sql("insert into tab2 values(2)")
           }
-          checkCometNativeWriter {
+          assertCometNativeWriterCaptured {
             sql(s"""insert overwrite local directory '$path' using parquet select * from tab2""")
           }
           sql("refresh table tab1")
@@ -471,7 +471,7 @@ class CometParquetWriterSuite extends CometTestBase {
       CometConf.getOperatorAllowIncompatConfigKey(classOf[DataWritingCommandExec]) -> "true") {
       withTable("t") {
         sql("create table t(i boolean, s bigint) using parquet")
-        checkCometNativeWriter {
+        assertCometNativeWriterCaptured {
           sql("insert into t(i) values(true)")
         }
         checkAnswer(spark.table("t"), Row(true, null))
@@ -488,7 +488,7 @@ class CometParquetWriterSuite extends CometTestBase {
       withTable("t") {
         sql("create table t(i boolean) using parquet")
         sql("alter table t add column s string default concat('abc', 'def')")
-        checkCometNativeWriter {
+        assertCometNativeWriterCaptured {
           sql("insert into t values(true, default)")
         }
         checkAnswer(spark.table("t"), Row(true, "abcdef"))
@@ -504,11 +504,11 @@ class CometParquetWriterSuite extends CometTestBase {
       CometConf.getOperatorAllowIncompatConfigKey(classOf[DataWritingCommandExec]) -> "true") {
       withTable("t1", "t2") {
         sql("create table t1(i boolean, s bigint default 42) using parquet")
-        checkCometNativeWriter {
+        assertCometNativeWriterCaptured {
           sql("insert into t1 values (true, 41), (false, default)")
         }
         sql("create table t2(i boolean, s bigint) using parquet")
-        checkCometNativeWriter {
+        assertCometNativeWriterCaptured {
           sql("insert into t2 select * from t1 order by s")
         }
         checkAnswer(spark.table("t2"), Seq(Row(true, 41), Row(false, 42)))
@@ -525,12 +525,12 @@ class CometParquetWriterSuite extends CometTestBase {
       withTable("tbl", "tbl2") {
         withView("view1") {
           val df = spark.range(10).toDF("id")
-          checkCometNativeWriter {
+          assertCometNativeWriterCaptured {
             df.write.format("parquet").saveAsTable("tbl")
           }
           spark.sql("CREATE VIEW view1 AS SELECT id FROM tbl")
           spark.sql("CREATE TABLE tbl2(ID long) USING parquet")
-          checkCometNativeWriter {
+          assertCometNativeWriterCaptured {
             spark.sql("INSERT OVERWRITE TABLE tbl2 SELECT ID FROM view1")
           }
           checkAnswer(spark.table("tbl2"), (0 until 10).map(Row(_)))
@@ -546,7 +546,7 @@ class CometParquetWriterSuite extends CometTestBase {
       CometConf.COMET_EXEC_ENABLED.key -> "true",
       CometConf.getOperatorAllowIncompatConfigKey(classOf[DataWritingCommandExec]) -> "true") {
       withTempPath { dir =>
-        checkCometNativeWriter {
+        assertCometNativeWriterCaptured {
           spark
             .range(1)
             .selectExpr("current_timestamp() as ts")
@@ -568,10 +568,10 @@ class CometParquetWriterSuite extends CometTestBase {
       withTable("tab1", "tab2") {
         sql("""CREATE TABLE tab1 (s struct<a: string, b: string>) USING parquet""")
         sql("""CREATE TABLE tab2 (s struct<c: string, d: string>) USING parquet""")
-        checkCometNativeWriter {
+        assertCometNativeWriterCaptured {
           sql("INSERT INTO tab1 VALUES (named_struct('a', 'x', 'b', 'y'))")
         }
-        checkCometNativeWriter {
+        assertCometNativeWriterCaptured {
           sql("INSERT INTO tab2 SELECT * FROM tab1")
         }
         checkAnswer(spark.table("tab2"), Row(Row("x", "y")))
@@ -586,7 +586,7 @@ class CometParquetWriterSuite extends CometTestBase {
       CometConf.COMET_EXEC_ENABLED.key -> "true",
       CometConf.getOperatorAllowIncompatConfigKey(classOf[DataWritingCommandExec]) -> "true") {
       withTempPath { dir =>
-        checkCometNativeWriter {
+        assertCometNativeWriterCaptured {
           spark.range(1).repartition(1).write.parquet(dir.getAbsolutePath)
         }
         val files = dir.listFiles().filter(_.getName.endsWith(".parquet"))
@@ -603,7 +603,7 @@ class CometParquetWriterSuite extends CometTestBase {
       CometConf.getOperatorAllowIncompatConfigKey(classOf[DataWritingCommandExec]) -> "true") {
       withTempDir { dir =>
         val path = dir.getCanonicalPath
-        checkCometNativeWriter {
+        assertCometNativeWriterCaptured {
           spark.range(10).repartition(10).write.mode("overwrite").parquet(path)
         }
         val files = new File(path).listFiles().filter(_.getName.startsWith("part-"))
@@ -621,7 +621,7 @@ class CometParquetWriterSuite extends CometTestBase {
       CometConf.COMET_EXEC_ENABLED.key -> "true",
       CometConf.getOperatorAllowIncompatConfigKey(classOf[DataWritingCommandExec]) -> "true") {
       withTable("t") {
-        checkCometNativeWriter {
+        assertCometNativeWriterCaptured {
           sql("CREATE TABLE t USING parquet AS SELECT 1 AS c UNION ALL SELECT 2")
         }
         checkAnswer(spark.table("t"), Seq(Row(1), Row(2)))
@@ -639,7 +639,7 @@ class CometParquetWriterSuite extends CometTestBase {
       withTable("t1", "t2") {
         sql("CREATE TABLE t1(a INT) USING parquet")
         sql("CREATE TABLE t2(a INT) USING parquet")
-        checkCometNativeWriter {
+        assertCometNativeWriterCaptured {
           sql("FROM (SELECT 1 AS a) src INSERT INTO t1 SELECT a INSERT INTO t2 SELECT a")
         }
         checkAnswer(spark.table("t1"), Row(1))
