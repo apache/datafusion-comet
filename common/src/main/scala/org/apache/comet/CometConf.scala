@@ -820,12 +820,13 @@ object CometConf extends ShimCometConf {
 
   val COMET_RESPECT_DATAFUSION_CONFIGS: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.respectDataFusionConfigs")
-    .category(CATEGORY_TESTING)
-    .doc("Development and testing configuration option to allow DataFusion configs set in " +
-      "Spark configuration settings starting with `spark.comet.datafusion.` to be passed " +
-      "into native execution.")
-    .booleanConf
-    .createWithDefault(false)
+      .category(CATEGORY_TESTING)
+      .doc(
+        "Development and testing configuration option to allow DataFusion configs set in " +
+          "Spark configuration settings starting with `spark.comet.datafusion.` to be passed " +
+          "into native execution.")
+      .booleanConf
+      .createWithDefault(false)
 
   val COMET_STRICT_TESTING: ConfigEntry[Boolean] = conf(s"$COMET_PREFIX.testing.strict")
     .category(CATEGORY_TESTING)
