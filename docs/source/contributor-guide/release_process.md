@@ -80,7 +80,7 @@ Create a PR against the main branch to prepare for developing the next release:
 ### Generate the Change Log
 
 Generate a change log to cover changes between the previous release and the release branch HEAD by running
-the provided `generate-changelog.py` script from the `dev/release` directory.
+the provided `dev/release/generate-changelog.py`.
 
 It is recommended that you set up a virtual Python environment and then install the dependencies:
 
