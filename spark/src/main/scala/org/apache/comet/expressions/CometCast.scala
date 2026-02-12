@@ -168,6 +168,7 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
           }
         }
         Compatible()
+      case (DataTypes.DateType, toType) => canCastFromDate(toType)
       case _ => unsupported(fromType, toType)
     }
   }
@@ -342,6 +343,12 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
         DataTypes.IntegerType | DataTypes.LongType | DataTypes.BooleanType =>
       Compatible()
     case _ => Unsupported(Some(s"Cast from DecimalType to $toType is not supported"))
+  }
+
+  private def canCastFromDate(toType: DataType): SupportLevel = toType match {
+    case DataTypes.TimestampType =>
+      Compatible()
+    case _ => Unsupported(Some(s"Cast from DateType to $toType is not supported"))
   }
 
   private def unsupported(fromType: DataType, toType: DataType): Unsupported = {

@@ -18,6 +18,7 @@
 pub(crate) mod codec;
 mod comet_partitioning;
 mod metrics;
+mod partitioners;
 mod shuffle_writer;
 pub mod spark_unsafe;
 mod writers;
