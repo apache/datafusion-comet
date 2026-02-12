@@ -86,7 +86,9 @@ pub(crate) fn init_datasource_exec(
     let (base_schema, projection) = match (&data_schema, &projection_vector) {
         (Some(schema), Some(proj)) => (Arc::clone(schema), Some(proj.clone())),
         (Some(schema), None) => {
-            // Compute projection: map required_schema field names to data_schema indices
+            // Compute projection: map required_schema field names to data_schema indices.
+            // This is needed for schema pruning when the data_schema has more columns than
+            // the required_schema.
             let projection: Vec<usize> = required_schema
                 .fields()
                 .iter()
@@ -100,7 +102,15 @@ pub(crate) fn init_datasource_exec(
                     })
                 })
                 .collect();
-            (Arc::clone(schema), Some(projection))
+            // Only use data_schema + projection when all required fields were found by name.
+            // When some fields can't be matched (e.g., Parquet field ID mapping where names
+            // differ between required and data schemas), fall back to using required_schema
+            // directly with no projection.
+            if projection.len() == required_schema.fields().len() {
+                (Arc::clone(schema), Some(projection))
+            } else {
+                (Arc::clone(&required_schema), None)
+            }
         }
         _ => (Arc::clone(&required_schema), None),
     };
