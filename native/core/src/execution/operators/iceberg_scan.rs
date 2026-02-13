@@ -41,8 +41,7 @@ use iceberg::io::FileIO;
 
 use crate::execution::operators::ExecutionError;
 use crate::parquet::parquet_support::SparkParquetOptions;
-use crate::parquet::schema_adapter::SparkSchemaAdapterFactory;
-use datafusion::datasource::schema_adapter::{SchemaAdapterFactory, SchemaMapper};
+use crate::parquet::schema_adapter::adapt_batch_with_expressions;
 use datafusion_comet_spark_expr::EvalMode;
 use iceberg::scan::FileScanTask;
 
@@ -169,7 +168,6 @@ impl IcebergScanExec {
         })?;
 
         let spark_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
-        let adapter_factory = SparkSchemaAdapterFactory::new(spark_options, None);
 
         let adapted_stream =
             stream.map_err(|e| DataFusionError::Execution(format!("Iceberg scan error: {}", e)));
@@ -177,8 +175,7 @@ impl IcebergScanExec {
         let wrapped_stream = IcebergStreamWrapper {
             inner: adapted_stream,
             schema: output_schema,
-            cached_adapter: None,
-            adapter_factory,
+            spark_options,
             baseline_metrics: metrics.baseline,
         };
 
@@ -221,15 +218,12 @@ impl IcebergScanMetrics {
 
 /// Wrapper around iceberg-rust's stream that performs schema adaptation.
 /// Handles batches from multiple files that may have different Arrow schemas
-/// (metadata, field IDs, etc.). Caches schema adapters by source schema to avoid
-/// recreating them for every batch from the same file.
+/// (metadata, field IDs, etc.).
 struct IcebergStreamWrapper<S> {
     inner: S,
     schema: SchemaRef,
-    /// Cached schema adapter with its source schema. Created when schema changes.
-    cached_adapter: Option<(SchemaRef, Arc<dyn SchemaMapper>)>,
-    /// Factory for creating schema adapters
-    adapter_factory: SparkSchemaAdapterFactory,
+    /// Spark parquet options for schema adaptation
+    spark_options: SparkParquetOptions,
     /// Metrics for output tracking
     baseline_metrics: BaselineMetrics,
 }
@@ -245,40 +239,9 @@ where
 
         let result = match poll_result {
             Poll::Ready(Some(Ok(batch))) => {
-                let file_schema = batch.schema();
-
-                // Check if we need to create a new adapter for this file's schema
-                let needs_new_adapter = match &self.cached_adapter {
-                    Some((cached_schema, _)) => !Arc::ptr_eq(cached_schema, &file_schema),
-                    None => true,
-                };
-
-                if needs_new_adapter {
-                    let adapter = self
-                        .adapter_factory
-                        .create(Arc::clone(&self.schema), Arc::clone(&file_schema));
-
-                    match adapter.map_schema(file_schema.as_ref()) {
-                        Ok((schema_mapper, _projection)) => {
-                            self.cached_adapter = Some((file_schema, schema_mapper));
-                        }
-                        Err(e) => {
-                            return Poll::Ready(Some(Err(DataFusionError::Execution(format!(
-                                "Schema mapping failed: {}",
-                                e
-                            )))));
-                        }
-                    }
-                }
-
-                let result = self
-                    .cached_adapter
-                    .as_ref()
-                    .expect("cached_adapter should be initialized")
-                    .1
-                    .map_batch(batch)
+                let result = adapt_batch_with_expressions(batch, &self.schema, &self.spark_options)
                     .map_err(|e| {
-                        DataFusionError::Execution(format!("Batch mapping failed: {}", e))
+                        DataFusionError::Execution(format!("Batch adaptation failed: {}", e))
                     });
 
                 Poll::Ready(Some(result))

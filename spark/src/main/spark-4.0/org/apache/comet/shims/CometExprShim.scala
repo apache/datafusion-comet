@@ -104,9 +104,14 @@ trait CometExprShim extends CommonStringExprs {
         }
 
       case wb: WidthBucket =>
-        val childExprs = wb.children.map(exprToProtoInternal(_, inputs, binding))
-        val optExpr = scalarFunctionExprToProto("width_bucket", childExprs: _*)
-        optExprWithInfo(optExpr, wb, wb.children: _*)
+        withInfo(
+          wb,
+          "WidthBucket not supported, track https://github.com/apache/datafusion/issues/20320")
+        None
+//        https://github.com/apache/datafusion/issues/20320
+//        val childExprs = wb.children.map(exprToProtoInternal(_, inputs, binding))
+//        val optExpr = scalarFunctionExprToProto("width_bucket", childExprs: _*)
+//        optExprWithInfo(optExpr, wb, wb.children: _*)
 
       case _ => None
     }
