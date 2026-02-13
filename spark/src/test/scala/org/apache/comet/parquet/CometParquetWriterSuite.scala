@@ -562,17 +562,7 @@ class CometParquetWriterSuite extends CometTestBase {
     }
   }
 
-  private def writeWithCometNativeWriteExec(
-      inputPath: String,
-      outputPath: String,
-      num_partitions: Option[Int] = None): Option[SparkPlan] = {
-    val df = spark.read.parquet(inputPath)
-
-    val plan = captureWritePlan(
-      path => num_partitions.fold(df)(n => df.repartition(n)).write.parquet(path),
-      outputPath)
-
-    // Count CometNativeWriteExec instances in the plan
+  private def assertHasCometNativeWriteExec(plan: SparkPlan): Unit = {
     var nativeWriteCount = 0
     plan.foreach {
       case _: CometNativeWriteExec =>
@@ -589,6 +579,19 @@ class CometParquetWriterSuite extends CometTestBase {
     assert(
       nativeWriteCount == 1,
       s"Expected exactly one CometNativeWriteExec in the plan, but found $nativeWriteCount:\n${plan.treeString}")
+  }
+
+  private def writeWithCometNativeWriteExec(
+      inputPath: String,
+      outputPath: String,
+      num_partitions: Option[Int] = None): Option[SparkPlan] = {
+    val df = spark.read.parquet(inputPath)
+
+    val plan = captureWritePlan(
+      path => num_partitions.fold(df)(n => df.repartition(n)).write.parquet(path),
+      outputPath)
+
+    assertHasCometNativeWriteExec(plan)
 
     Some(plan)
   }
@@ -639,7 +642,10 @@ class CometParquetWriterSuite extends CometTestBase {
         SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Halifax") {
 
         val parquetDf = spark.read.parquet(inputPath)
-        parquetDf.write.parquet(outputPath)
+
+        // Capture plan and verify CometNativeWriteExec is used
+        val plan = captureWritePlan(path => parquetDf.write.parquet(path), outputPath)
+        assertHasCometNativeWriteExec(plan)
       }
 
       // Verify round-trip: read with Spark and Comet, compare results
