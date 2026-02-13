@@ -85,30 +85,27 @@ message Scan {
   bool arrow_ffi_safe = 3;
 }
 
+// Common data shared by all partitions in NativeScan (sent once)
+message NativeScanCommon {
+  repeated SparkStructField required_schema = 1;
+  repeated SparkStructField data_schema = 2;
+  repeated SparkStructField partition_schema = 3;
+  repeated spark.spark_expression.Expr data_filters = 4;
+  repeated int64 projection_vector = 5;
+  string session_timezone = 6;
+  repeated spark.spark_expression.Expr default_values = 7;
+  repeated int64 default_values_indexes = 8;
+  bool case_sensitive = 9;
+  map<string, string> object_store_options = 10;
+  bool encryption_enabled = 11;
+  string source = 12;
+  repeated spark.spark_expression.DataType fields = 13;
+}
+
 message NativeScan {
-  repeated spark.spark_expression.DataType fields = 1;
-  // The source of the scan (e.g. file scan, broadcast exchange, shuffle, etc). This
-  // is purely for informational purposes when viewing native query plans in
-  // debug mode.
-  string source = 2;
-  repeated SparkStructField required_schema = 3;
-  repeated SparkStructField data_schema = 4;
-  repeated SparkStructField partition_schema = 5;
-  repeated spark.spark_expression.Expr data_filters = 6;
-  repeated SparkFilePartition file_partitions = 7;
-  repeated int64 projection_vector = 8;
-  string session_timezone = 9;
-  repeated spark.spark_expression.Expr default_values = 10;
-  repeated int64 default_values_indexes = 11;
-  bool case_sensitive = 12;
-  // Options for configuring object stores such as AWS S3, GCS, etc. The key-value pairs are taken
-  // from Hadoop configuration for compatibility with Hadoop FileSystem implementations of object
-  // stores.
-  // The configuration values have hadoop. or spark.hadoop. prefix trimmed. For instance, the
-  // configuration value "spark.hadoop.fs.s3a.access.key" will be stored as "fs.s3a.access.key" in
-  // the map.
-  map<string, string> object_store_options = 13;
-  bool encryption_enabled = 14;
+  // Split mode fields only (no backward compatibility)
+  NativeScanCommon common = 1;
+  SparkFilePartition file_partition = 2; // Singular - just this partition's files
 }
 
 message CsvScan {

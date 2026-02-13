@@ -82,7 +82,8 @@ private[comet] object PlanDataInjector {
 
   // Registry of injectors for different operator types
   private val injectors: Seq[PlanDataInjector] = Seq(
-    IcebergPlanDataInjector
+    IcebergPlanDataInjector,
+    NativeScanPlanDataInjector
     // Future: DeltaPlanDataInjector, HudiPlanDataInjector, etc.
   )
 
@@ -112,7 +113,7 @@ private[comet] object PlanDataInjector {
             case _ =>
               throw new CometRuntimeException(s"Missing planning data for key: $key")
           }
-        case None => // No key, skip injection
+        case None =>
       }
     }
 
@@ -188,6 +189,46 @@ private[comet] object IcebergPlanDataInjector extends PlanDataInjector {
     scanBuilder.addAllFileScanTasks(tasksOnly.getFileScanTasksList)
 
     op.toBuilder.setIcebergScan(scanBuilder).build()
+  }
+}
+
+/**
+ * Injector for NativeScan operators.
+ */
+private[comet] object NativeScanPlanDataInjector extends PlanDataInjector {
+
+  override def canInject(op: Operator): Boolean =
+    op.hasNativeScan &&
+      op.getNativeScan.hasCommon &&
+      !op.getNativeScan.hasFilePartition
+
+  override def getKey(op: Operator): Option[String] = {
+    // Reconstruct the same sourceKey that was used when storing the data
+    val common = op.getNativeScan.getCommon
+    val source = common.getSource
+    val keyComponents = Seq(
+      common.getRequiredSchemaList.toString,
+      common.getDataFiltersList.toString,
+      common.getProjectionVectorList.toString,
+      common.getFieldsList.toString)
+    val hashCode = keyComponents.mkString("|").hashCode
+    Some(s"${source}_${hashCode}")
+  }
+
+  override def inject(
+      op: Operator,
+      commonBytes: Array[Byte],
+      partitionBytes: Array[Byte]): Operator = {
+
+    val common = OperatorOuterClass.NativeScanCommon.parseFrom(commonBytes)
+    val partitionOnly = OperatorOuterClass.NativeScan.parseFrom(partitionBytes)
+
+    // Merge common data + this partition's files
+    val scanBuilder = OperatorOuterClass.NativeScan.newBuilder()
+    scanBuilder.setCommon(common)
+    scanBuilder.setFilePartition(partitionOnly.getFilePartition)
+
+    op.toBuilder.setNativeScan(scanBuilder).build()
   }
 }
 
@@ -588,6 +629,12 @@ abstract class CometNativeExec extends CometExec {
         (
           Map(iceberg.metadataLocation -> iceberg.commonData),
           Map(iceberg.metadataLocation -> iceberg.perPartitionData))
+
+      // Found a NativeScan with planning data
+      case nativeScan: CometNativeScanExec =>
+        (
+          Map(nativeScan.sourceKey -> nativeScan.commonData),
+          Map(nativeScan.sourceKey -> nativeScan.perPartitionData))
 
       // Broadcast stages are boundaries - don't collect per-partition data from inside them.
       // After DPP filtering, broadcast scans may have different partition counts than the
