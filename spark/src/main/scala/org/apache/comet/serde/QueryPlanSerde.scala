@@ -146,7 +146,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[Sha1] -> CometSha1)
 
   private val stringExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
-    classOf[AesDecrypt] -> CometScalarFunction("aes_decrypt"),
     classOf[Ascii] -> CometScalarFunction("ascii"),
     classOf[BitLength] -> CometScalarFunction("bit_length"),
     classOf[Chr] -> CometScalarFunction("char"),
@@ -220,6 +219,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
 
   private val miscExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     // TODO PromotePrecision
+    classOf[AesDecrypt] -> CometAesDecrypt,
     classOf[Alias] -> CometAlias,
     classOf[AttributeReference] -> CometAttributeReference,
     classOf[BloomFilterMightContain] -> CometBloomFilterMightContain,

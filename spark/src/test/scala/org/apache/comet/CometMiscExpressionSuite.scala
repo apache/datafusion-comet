@@ -26,75 +26,44 @@ import org.apache.comet.CometSparkSessionExtensions.isSpark35Plus
 class CometMiscExpressionSuite extends CometTestBase {
 
   test("aes_decrypt") {
-    withTable("aes_tbl") {
+    withTempView("aes_tbl") {
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-        sql("""
-            |CREATE TABLE aes_tbl(
-            |  encrypted_default BINARY,
-            |  encrypted_with_aad BINARY,
-            |  `key` BINARY,
-            |  mode STRING,
-            |  padding STRING,
-            |  iv BINARY,
-            |  aad STRING
-            |) USING parquet
-            |""".stripMargin)
-
-        if (isSpark35Plus) {
-          sql("""
-              |INSERT INTO aes_tbl
-              |SELECT
-              |  aes_encrypt(
-              |    encode('Spark SQL', 'UTF-8'),
-              |    encode('abcdefghijklmnop12345678ABCDEFGH', 'UTF-8')),
-              |  aes_encrypt(
-              |    encode('Spark SQL', 'UTF-8'),
-              |    encode('abcdefghijklmnop12345678ABCDEFGH', 'UTF-8'),
-              |    'GCM',
-              |    'DEFAULT',
-              |    unhex('00112233445566778899AABB'),
-              |    'Comet AAD'),
-              |  encode('abcdefghijklmnop12345678ABCDEFGH', 'UTF-8'),
-              |  'GCM',
-              |  'DEFAULT',
-              |  unhex('00112233445566778899AABB'),
-              |  'Comet AAD'
-              |""".stripMargin)
+        val aesDf = if (isSpark35Plus) {
+          spark
+            .range(1)
+            .selectExpr(
+              "aes_encrypt(encode('Spark SQL', 'UTF-8'), encode('abcdefghijklmnop12345678ABCDEFGH', 'UTF-8')) as encrypted_default",
+              "aes_encrypt(encode('Spark SQL', 'UTF-8'), encode('abcdefghijklmnop12345678ABCDEFGH', 'UTF-8'), 'GCM', 'DEFAULT', unhex('00112233445566778899AABB'), 'Comet AAD') as encrypted_with_aad",
+              "encode('abcdefghijklmnop12345678ABCDEFGH', 'UTF-8') as `key`",
+              "'GCM' as mode",
+              "'DEFAULT' as padding",
+              "unhex('00112233445566778899AABB') as iv",
+              "'Comet AAD' as aad")
         } else {
-          sql("""
-              |INSERT INTO aes_tbl
-              |SELECT
-              |  aes_encrypt(
-              |    encode('Spark SQL', 'UTF-8'),
-              |    encode('abcdefghijklmnop12345678ABCDEFGH', 'UTF-8')),
-              |  aes_encrypt(
-              |    encode('Spark SQL', 'UTF-8'),
-              |    encode('abcdefghijklmnop12345678ABCDEFGH', 'UTF-8'),
-              |    'GCM',
-              |    'DEFAULT'),
-              |  encode('abcdefghijklmnop12345678ABCDEFGH', 'UTF-8'),
-              |  'GCM',
-              |  'DEFAULT',
-              |  cast(null as binary),
-              |  cast(null as string)
-              |""".stripMargin)
+          spark
+            .range(1)
+            .selectExpr(
+              "aes_encrypt(encode('Spark SQL', 'UTF-8'), encode('abcdefghijklmnop12345678ABCDEFGH', 'UTF-8')) as encrypted_default",
+              "aes_encrypt(encode('Spark SQL', 'UTF-8'), encode('abcdefghijklmnop12345678ABCDEFGH', 'UTF-8'), 'GCM', 'DEFAULT') as encrypted_with_aad",
+              "encode('abcdefghijklmnop12345678ABCDEFGH', 'UTF-8') as `key`",
+              "'GCM' as mode",
+              "'DEFAULT' as padding",
+              "cast(null as binary) as iv",
+              "cast(null as string) as aad")
         }
+        aesDf.createOrReplaceTempView("aes_tbl")
       }
 
       if (isSpark35Plus) {
-        checkSparkAnswerAndFallbackReason(
-          "SELECT CAST(aes_decrypt(encrypted_default, `key`) AS STRING) FROM aes_tbl",
-          "Static invoke expression: aesDecrypt is not supported")
-        checkSparkAnswerAndFallbackReason(
-          "SELECT CAST(aes_decrypt(encrypted_with_aad, `key`, mode, padding, aad) AS STRING) FROM aes_tbl",
-          "Static invoke expression: aesDecrypt is not supported")
+        checkSparkAnswerAndOperator(
+          "SELECT CAST(aes_decrypt(encrypted_default, `key`) AS STRING) FROM aes_tbl")
+        checkSparkAnswerAndOperator(
+          "SELECT CAST(aes_decrypt(encrypted_with_aad, `key`, mode, padding, aad) AS STRING) FROM aes_tbl")
       } else {
-        checkSparkAnswerAndFallbackReason(
-          "SELECT CAST(aes_decrypt(encrypted_default, `key`) AS STRING) FROM aes_tbl",
-          "Static invoke expression: aesDecrypt is not supported")
-        checkSparkAnswerAndFallbackReason(
-          "SELECT CAST(aes_decrypt(encrypted_with_aad, `key`, mode, padding) AS STRING) FROM aes_tbl",
-          "Static invoke expression: aesDecrypt is not supported")
+        checkSparkAnswerAndOperator(
+          "SELECT CAST(aes_decrypt(encrypted_default, `key`) AS STRING) FROM aes_tbl")
+        checkSparkAnswerAndOperator(
+          "SELECT CAST(aes_decrypt(encrypted_with_aad, `key`, mode, padding) AS STRING) FROM aes_tbl")
       }
     }
   }
