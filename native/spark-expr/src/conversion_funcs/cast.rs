@@ -3117,13 +3117,12 @@ fn trim_end(s: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use arrow::array::StringArray;
     use arrow::datatypes::TimestampMicrosecondType;
     use arrow::datatypes::{Field, Fields, TimeUnit};
     use core::f64;
     use std::str::FromStr;
-
-    use super::*;
 
     /// Test helper that wraps the mode-specific parse functions
     fn cast_string_to_i8(str: &str, eval_mode: EvalMode) -> SparkResult<Option<i8>> {
@@ -3744,5 +3743,16 @@ mod tests {
         assert_eq!(r#"[1, null]"#, string_array.value(1));
         assert_eq!(r#"[null]"#, string_array.value(2));
         assert_eq!(r#"[]"#, string_array.value(3));
+    }
+
+    #[test]
+    fn test_cast_supported_boolean_to_string() {
+        let options = SparkCastOptions::new(EvalMode::Legacy, "UTC", false);
+        let is_cast_supported = is_datafusion_spark_compatible(&DataType::Boolean, &DataType::Utf8);
+        assert!(is_cast_supported);
+        assert_eq!(
+            cast_supported(&DataType::Boolean, &DataType::Utf8, &options),
+            is_cast_supported
+        );
     }
 }
