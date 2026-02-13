@@ -113,20 +113,33 @@ impl PhysicalExpr for TimestampTruncExpr {
         let tz = self.timezone.clone();
         match (timestamp, format) {
             (ColumnarValue::Array(ts), ColumnarValue::Scalar(Utf8(Some(format)))) => {
-                let ts = array_with_timezone(
-                    ts,
-                    tz.clone(),
-                    Some(&DataType::Timestamp(Microsecond, Some(tz.into()))),
-                )?;
+                // For TimestampNTZ (Timestamp(Microsecond, None)), skip timezone conversion.
+                // NTZ values are timezone-independent and truncation should operate directly
+                // on the naive microsecond values without any timezone resolution.
+                let is_ntz = matches!(ts.data_type(), DataType::Timestamp(Microsecond, None));
+                let ts = if is_ntz {
+                    ts
+                } else {
+                    array_with_timezone(
+                        ts,
+                        tz.clone(),
+                        Some(&DataType::Timestamp(Microsecond, Some(tz.into()))),
+                    )?
+                };
                 let result = timestamp_trunc_dyn(&ts, format)?;
                 Ok(ColumnarValue::Array(result))
             }
             (ColumnarValue::Array(ts), ColumnarValue::Array(formats)) => {
-                let ts = array_with_timezone(
-                    ts,
-                    tz.clone(),
-                    Some(&DataType::Timestamp(Microsecond, Some(tz.into()))),
-                )?;
+                let is_ntz = matches!(ts.data_type(), DataType::Timestamp(Microsecond, None));
+                let ts = if is_ntz {
+                    ts
+                } else {
+                    array_with_timezone(
+                        ts,
+                        tz.clone(),
+                        Some(&DataType::Timestamp(Microsecond, Some(tz.into()))),
+                    )?
+                };
                 let result = timestamp_trunc_array_fmt_dyn(&ts, &formats)?;
                 Ok(ColumnarValue::Array(result))
             }

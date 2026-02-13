@@ -62,6 +62,10 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   private val timestampPattern = "0123456789/:T" + whitespaceChars
 
+  /** Timezones used to verify that TimestampNTZ operations are timezone-independent. */
+  private val crossTimezones =
+    Seq("UTC", "America/Los_Angeles", "Europe/London", "Asia/Tokyo")
+
   lazy val usingParquetExecWithIncompatTypes: Boolean =
     hasUnsignedSmallIntSafetyCheck(conf)
 
@@ -1085,15 +1089,33 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   // CAST from TimestampNTZType
 
   test("cast TimestampNTZType to StringType") {
-    castTest(generateTimestampNTZs(), DataTypes.StringType)
+    // TimestampNTZ is timezone-independent, so casting to string should produce
+    // the same result regardless of the session timezone.
+    for (tz <- crossTimezones) {
+      withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
+        castTest(generateTimestampNTZs(), DataTypes.StringType)
+      }
+    }
   }
 
   test("cast TimestampNTZType to DateType") {
-    castTest(generateTimestampNTZs(), DataTypes.DateType)
+    // TimestampNTZ is timezone-independent, so casting to date should produce
+    // the same result regardless of the session timezone.
+    for (tz <- crossTimezones) {
+      withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
+        castTest(generateTimestampNTZs(), DataTypes.DateType)
+      }
+    }
   }
 
   test("cast TimestampNTZType to TimestampType") {
-    castTest(generateTimestampNTZs(), DataTypes.TimestampType)
+    // Casting TimestampNTZ to Timestamp interprets the NTZ value as UTC.
+    // We verify this produces the same result as Spark across different session timezones.
+    for (tz <- crossTimezones) {
+      withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
+        castTest(generateTimestampNTZs(), DataTypes.TimestampType)
+      }
+    }
   }
 
   // CAST to TimestampNTZType
