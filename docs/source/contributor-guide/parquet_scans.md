@@ -19,16 +19,18 @@ under the License.
 
 # Comet Parquet Scan Implementations
 
-Comet currently has two distinct implementations of the Parquet scan operator. The configuration property
-`spark.comet.scan.impl` is used to select an implementation. The default setting is `spark.comet.scan.impl=auto`, which
-currently always uses the `native_iceberg_compat` implementation. Most users should not need to change this setting.
-However, it is possible to force Comet to try and use a particular implementation for all scan operations by setting
-this configuration property to one of the following implementations.
+Comet currently has two distinct implementations of the Parquet scan operator.
 
 The two implementations are `native_datafusion` and `native_iceberg_compat`. They both delegate to DataFusion's
 `DataSourceExec`. The main difference between these implementations is that `native_datafusion` runs fully natively, and
 `native_iceberg_compat` is a hybrid JVM/Rust implementation that can support some Spark features that
 `native_datafusion` can not, but has some performance overhead due to crossing the JVM/Rust boundary.
+
+The configuration property
+`spark.comet.scan.impl` is used to select an implementation. The default setting is `spark.comet.scan.impl=auto`, which
+currently always uses the `native_iceberg_compat` implementation. Most users should not need to change this setting.
+However, it is possible to force Comet to try and use a particular implementation for all scan operations by setting
+this configuration property to one of the following implementations.
 
 The following unsupported features are shared by both scans and cause Comet to fall back to Spark:
 
