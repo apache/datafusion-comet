@@ -47,8 +47,8 @@ SELECT
   unhex('00112233445566778899AABB'),
   'Comet AAD'
 
-query expect_fallback(Static invoke expression: aesDecrypt is not supported)
+query
 SELECT CAST(aes_decrypt(encrypted_default, `key`) AS STRING) FROM aes_tbl
 
-query expect_fallback(Static invoke expression: aesDecrypt is not supported)
+query
 SELECT CAST(aes_decrypt(encrypted_with_aad, `key`, mode, padding, aad) AS STRING) FROM aes_tbl

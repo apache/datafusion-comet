@@ -19,11 +19,46 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, ExpressionImplUtils}
+import org.apache.spark.sql.catalyst.expressions.{AesDecrypt, Attribute, Expression, ExpressionImplUtils}
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
 import org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.serde.ExprOuterClass.Expr
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProtoWithReturnType}
+
+private object CometAesDecryptHelper {
+  def convertToAesDecryptExpr[T <: Expression](
+      expr: T,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    val childExpr = expr.children.map(exprToProtoInternal(_, inputs, binding))
+    val optExpr = scalarFunctionExprToProtoWithReturnType(
+      "aes_decrypt",
+      expr.dataType,
+      failOnError = false,
+      childExpr: _*)
+    optExprWithInfo(optExpr, expr, expr.children: _*)
+  }
+}
+
+object CometAesDecrypt extends CometExpressionSerde[AesDecrypt] {
+  override def convert(
+      expr: AesDecrypt,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    CometAesDecryptHelper.convertToAesDecryptExpr(expr, inputs, binding)
+  }
+}
+
+object CometAesDecryptStaticInvoke extends CometExpressionSerde[StaticInvoke] {
+  override def convert(
+      expr: StaticInvoke,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    CometAesDecryptHelper.convertToAesDecryptExpr(expr, inputs, binding)
+  }
+}
 
 object CometStaticInvoke extends CometExpressionSerde[StaticInvoke] {
 
@@ -35,7 +70,8 @@ object CometStaticInvoke extends CometExpressionSerde[StaticInvoke] {
     Map(
       ("readSidePadding", classOf[CharVarcharCodegenUtils]) -> CometScalarFunction(
         "read_side_padding"),
-      ("isLuhnNumber", classOf[ExpressionImplUtils]) -> CometScalarFunction("luhn_check"))
+      ("isLuhnNumber", classOf[ExpressionImplUtils]) -> CometScalarFunction("luhn_check"),
+      ("aesDecrypt", classOf[ExpressionImplUtils]) -> CometAesDecryptStaticInvoke)
 
   override def convert(
       expr: StaticInvoke,
