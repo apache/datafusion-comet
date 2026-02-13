@@ -85,30 +85,29 @@ message Scan {
   bool arrow_ffi_safe = 3;
 }
 
+// Common data shared by all partitions in split mode (sent once at planning)
+message NativeScanCommon {
+  repeated SparkStructField required_schema = 1;
+  repeated SparkStructField data_schema = 2;
+  repeated SparkStructField partition_schema = 3;
+  repeated spark.spark_expression.Expr data_filters = 4;
+  repeated int64 projection_vector = 5;
+  string session_timezone = 6;
+  repeated spark.spark_expression.Expr default_values = 7;
+  repeated int64 default_values_indexes = 8;
+  bool case_sensitive = 9;
+  map<string, string> object_store_options = 10;
+  bool encryption_enabled = 11;
+  string source = 12;
+  repeated spark.spark_expression.DataType fields = 13;
+}
+
 message NativeScan {
-  repeated spark.spark_expression.DataType fields = 1;
-  // The source of the scan (e.g. file scan, broadcast exchange, shuffle, etc). This
-  // is purely for informational purposes when viewing native query plans in
-  // debug mode.
-  string source = 2;
-  repeated SparkStructField required_schema = 3;
-  repeated SparkStructField data_schema = 4;
-  repeated SparkStructField partition_schema = 5;
-  repeated spark.spark_expression.Expr data_filters = 6;
-  repeated SparkFilePartition file_partitions = 7;
-  repeated int64 projection_vector = 8;
-  string session_timezone = 9;
-  repeated spark.spark_expression.Expr default_values = 10;
-  repeated int64 default_values_indexes = 11;
-  bool case_sensitive = 12;
-  // Options for configuring object stores such as AWS S3, GCS, etc. The key-value pairs are taken
-  // from Hadoop configuration for compatibility with Hadoop FileSystem implementations of object
-  // stores.
-  // The configuration values have hadoop. or spark.hadoop. prefix trimmed. For instance, the
-  // configuration value "spark.hadoop.fs.s3a.access.key" will be stored as "fs.s3a.access.key" in
-  // the map.
-  map<string, string> object_store_options = 13;
-  bool encryption_enabled = 14;
+  // Common data shared across partitions (schemas, filters, projections, config)
+  NativeScanCommon common = 1;
+
+  // Single partition's file list (injected at execution time)
+  SparkFilePartition file_partition = 2;
 }
 
 message CsvScan {
@@ -156,28 +155,34 @@ message PartitionData {
   repeated PartitionValue values = 1;
 }
 
-message IcebergScan {
-  // Schema to read
-  repeated SparkStructField required_schema = 1;
-
+// Common data shared by all partitions in split mode (sent once, captured in closure)
+message IcebergScanCommon {
   // Catalog-specific configuration for FileIO (credentials, S3/GCS config, etc.)
-  map<string, string> catalog_properties = 2;
-
-  // Pre-planned file scan tasks grouped by Spark partition
-  repeated IcebergFilePartition file_partitions = 3;
+  map<string, string> catalog_properties = 1;
 
   // Table metadata file path for FileIO initialization
-  string metadata_location = 4;
+  string metadata_location = 2;
 
-  // Deduplication pools - shared data referenced by index from tasks
-  repeated string schema_pool = 5;
-  repeated string partition_type_pool = 6;
-  repeated string partition_spec_pool = 7;
-  repeated string name_mapping_pool = 8;
-  repeated ProjectFieldIdList project_field_ids_pool = 9;
-  repeated PartitionData partition_data_pool = 10;
-  repeated DeleteFileList delete_files_pool = 11;
-  repeated spark.spark_expression.Expr residual_pool = 12;
+  // Schema to read
+  repeated SparkStructField required_schema = 3;
+
+  // Deduplication pools (must contain all entries for cross-partition deduplication)
+  repeated string schema_pool = 4;
+  repeated string partition_type_pool = 5;
+  repeated string partition_spec_pool = 6;
+  repeated string name_mapping_pool = 7;
+  repeated ProjectFieldIdList project_field_ids_pool = 8;
+  repeated PartitionData partition_data_pool = 9;
+  repeated DeleteFileList delete_files_pool = 10;
+  repeated spark.spark_expression.Expr residual_pool = 11;
+}
+
+message IcebergScan {
+  // Common data shared across partitions (pools, metadata, catalog props)
+  IcebergScanCommon common = 1;
+
+  // Single partition's file scan tasks
+  repeated IcebergFileScanTask file_scan_tasks = 2;
 }
 
 // Helper message for deduplicating field ID lists
@@ -188,11 +193,6 @@ message ProjectFieldIdList {
 // Helper message for deduplicating delete file lists
 message DeleteFileList {
   repeated IcebergDeleteFile delete_files = 1;
-}
-
-// Groups FileScanTasks for a single Spark partition
-message IcebergFilePartition {
-  repeated IcebergFileScanTask file_scan_tasks = 1;
 }
 
 // Iceberg FileScanTask containing data file, delete files, and residual filter
