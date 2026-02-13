@@ -20,18 +20,18 @@ under the License.
 # Comet Parquet Scan Implementations
 
 Comet currently has two distinct implementations of the Parquet scan operator. The configuration property
-`spark.comet.scan.impl` is used to select an implementation. The default setting is `spark.comet.scan.impl=auto`, and
-Comet will choose the most appropriate implementation based on the Parquet schema and other Comet configuration
-settings. Most users should not need to change this setting. However, it is possible to force Comet to try and use
-a particular implementation for all scan operations by setting this configuration property to one of the following
-implementations.
+`spark.comet.scan.impl` is used to select an implementation. The default setting is `spark.comet.scan.impl=auto`, which
+currently always uses the `native_iceberg_compat` implementation. Most users should not need to change this setting.
+However, it is possible to force Comet to try and use a particular implementation for all scan operations by setting
+this configuration property to one of the following implementations.
 
 The two implementations are `native_datafusion` and `native_iceberg_compat`. They both delegate to DataFusion's
 `DataSourceExec`. The main difference between these implementations is that `native_datafusion` runs fully natively, and
 `native_iceberg_compat` is a hybrid JVM/Rust implementation that can support some Spark features that
 `native_datafusion` can not, but has some performance overhead due to crossing the JVM/Rust boundary.
 
-The `native_datafusion` and `native_iceberg_compat` scans share the following limitations:
+The `native_datafusion` and `native_iceberg_compat` scans share the following limitations. Unless otherwise noted,
+unsupported features cause Comet to fall back to Spark, so queries will still return correct results.
 
 - When reading Parquet files written by systems other than Spark that contain columns with the logical type `UINT_8`
   (unsigned 8-bit integers), Comet may produce different results than Spark. Spark maps `UINT_8` to `ShortType`, but
@@ -40,30 +40,40 @@ The `native_datafusion` and `native_iceberg_compat` scans share the following li
   Spark when scanning Parquet files containing `ShortType` columns. This behavior can be disabled by setting
   `spark.comet.scan.unsignedSmallIntSafetyCheck=false`. Note that `ByteType` columns are always safe because they can
   only come from signed `INT8`, where truncation preserves the signed value.
-- No support for default values that are nested types (e.g., maps, arrays, structs). Literal default values are supported.
-- No support for datetime rebasing detection or the `spark.comet.exceptionOnDatetimeRebase` configuration. When reading
-  Parquet files containing dates or timestamps written before Spark 3.0 (which used a hybrid Julian/Gregorian calendar),
-  dates/timestamps will be read as if they were written using the Proleptic Gregorian calendar. This may produce
-  incorrect results for dates before October 15, 1582.
+- No support for default values that are nested types (e.g., maps, arrays, structs). Comet falls back to Spark.
+  Literal default values are supported.
+- **Potential incorrect results:** No support for datetime rebasing detection or the
+  `spark.comet.exceptionOnDatetimeRebase` configuration. When reading Parquet files containing dates or timestamps
+  written before Spark 3.0 (which used a hybrid Julian/Gregorian calendar), dates/timestamps will be read as if they
+  were written using the Proleptic Gregorian calendar. This does not fall back to Spark and may produce incorrect
+  results for dates before October 15, 1582.
 - No support for Spark's Datasource V2 API. When `spark.sql.sources.useV1SourceList` does not include `parquet`,
   Spark uses the V2 API for Parquet scans. The DataFusion-based implementations only support the V1 API, so Comet
   will fall back to Spark when V2 is enabled.
 - No support for Parquet encryption. When Parquet encryption is enabled (i.e., `parquet.crypto.factory.class` is
   set), Comet will fall back to Spark.
+- No support for Spark metadata columns (e.g., `_metadata.file_path`). When metadata columns are referenced in the
+  query, Comet falls back to Spark.
 
-The `native_datafusion` scan has some additional limitations:
+The `native_datafusion` scan has some additional limitations. All of these cause Comet to fall back to Spark.
 
 - No support for row indexes
 - No support for reading Parquet field IDs
-- Setting Spark configs `ignoreMissingFiles` or `ignoreCorruptFiles` to `true` is not compatible with Spark
+- No support for Dynamic Partition Pruning (DPP). When partition filters contain dynamic pruning subqueries, Comet
+  falls back to Spark.
+- No support for `input_file_name()`, `input_file_block_start()`, or `input_file_block_length()` SQL functions.
+  The `native_datafusion` scan does not use Spark's `FileScanRDD`, so these functions cannot populate their values.
+  When these functions appear anywhere in the query plan, Comet falls back to Spark.
+- When `ignoreMissingFiles` or `ignoreCorruptFiles` is set to `true`, Comet falls back to Spark.
 
 The `native_iceberg_compat` scan has some additional limitations:
 
-- Some Spark configuration values are hard-coded to their defaults rather than respecting user-specified values.
-  The affected configurations are `spark.sql.parquet.binaryAsString`, `spark.sql.parquet.int96AsTimestamp`,
-  `spark.sql.caseSensitive`, `spark.sql.parquet.inferTimestampNTZ.enabled`, and
-  `spark.sql.legacy.parquet.nanosAsLong`. See [issue #1816](https://github.com/apache/datafusion-comet/issues/1816)
-  for more details.
+- **Potential incorrect results:** Some Spark configuration values are hard-coded to their defaults rather than
+  respecting user-specified values. This does not fall back to Spark and may produce incorrect results when
+  non-default values are set. The affected configurations are `spark.sql.parquet.binaryAsString`,
+  `spark.sql.parquet.int96AsTimestamp`, `spark.sql.caseSensitive`, `spark.sql.parquet.inferTimestampNTZ.enabled`,
+  and `spark.sql.legacy.parquet.nanosAsLong`. See
+  [issue #1816](https://github.com/apache/datafusion-comet/issues/1816) for more details.
 
 ## S3 Support
 
