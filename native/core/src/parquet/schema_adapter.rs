@@ -395,8 +395,6 @@ impl SparkPhysicalExprAdapter {
             })
             .collect();
 
-        dbg!(&name_based, &expr);
-
         if name_based.is_empty() {
             return Ok(expr);
         }
