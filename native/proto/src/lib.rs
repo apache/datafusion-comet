@@ -34,6 +34,7 @@ pub mod spark_partitioning {
 
 // Include generated modules from .proto files.
 #[allow(missing_docs)]
+#[allow(clippy::large_enum_variant)]
 pub mod spark_operator {
     include!(concat!("generated", "/spark.spark_operator.rs"));
 }
