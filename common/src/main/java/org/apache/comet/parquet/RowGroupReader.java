@@ -29,6 +29,9 @@ import org.apache.parquet.column.page.PageReadStore;
 import org.apache.parquet.column.page.PageReader;
 import org.apache.parquet.internal.filter2.columnindex.RowRanges;
 
+import org.apache.comet.IcebergApi;
+
+@IcebergApi
 public class RowGroupReader implements PageReadStore {
   private final Map<String, PageReader> readers = new HashMap<>();
   private final long rowCount;
@@ -47,6 +50,7 @@ public class RowGroupReader implements PageReadStore {
     this.rowIndexOffset = -1;
   }
 
+  @IcebergApi
   @Override
   public long getRowCount() {
     return rowCount;

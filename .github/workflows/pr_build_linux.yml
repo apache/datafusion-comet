@@ -23,6 +23,8 @@ concurrency:
 
 on:
   push:
+    branches:
+      - main
     paths-ignore:
       - "doc/**"
       - "docs/**"
@@ -84,9 +86,9 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             native/target
-          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}
+          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-ci-
+            ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-
 
       - name: Build native library (CI profile)
         run: |
@@ -94,6 +96,8 @@ jobs:
           # CI profile: same overflow behavior as release, but faster compilation
           # (no LTO, parallel codegen)
           cargo build --profile ci
+        env:
+          RUSTFLAGS: "-Ctarget-cpu=x86-64-v3"
 
       - name: Upload native library
         uses: actions/upload-artifact@v6
@@ -110,7 +114,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             native/target
-          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}
+          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
 
   # Run Rust tests (runs in parallel with build-native, uses debug builds)
   linux-test-rust:
@@ -136,9 +140,9 @@ jobs:
             ~/.cargo/git
             native/target
           # Note: Java version intentionally excluded - Rust target is JDK-independent
-          key: ${{ runner.os }}-cargo-debug-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}
+          key: ${{ runner.os }}-cargo-debug-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-debug-
+            ${{ runner.os }}-cargo-debug-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-
 
       - name: Rust test steps
         uses: ./.github/actions/rust-test
@@ -151,7 +155,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             native/target
-          key: ${{ runner.os }}-cargo-debug-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}
+          key: ${{ runner.os }}-cargo-debug-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
 
   linux-test:
     needs: build-native
@@ -164,7 +168,7 @@ jobs:
           - name: "Spark 3.4, JDK 11, Scala 2.12"
             java_version: "11"
             maven_opts: "-Pspark-3.4 -Pscala-2.12"
-            scan_impl: "native_comet"
+            scan_impl: "auto"
 
           - name: "Spark 3.5.5, JDK 17, Scala 2.13"
             java_version: "17"
@@ -174,7 +178,7 @@ jobs:
           - name: "Spark 3.5.6, JDK 17, Scala 2.13"
             java_version: "17"
             maven_opts: "-Pspark-3.5 -Dspark.version=3.5.6 -Pscala-2.13"
-            scan_impl: "native_comet"
+            scan_impl: "auto"
 
           - name: "Spark 3.5, JDK 17, Scala 2.12"
             java_version: "17"
@@ -260,6 +264,7 @@ jobs:
               org.apache.comet.CometStringExpressionSuite
               org.apache.comet.CometBitwiseExpressionSuite
               org.apache.comet.CometMapExpressionSuite
+              org.apache.comet.CometCsvExpressionSuite
               org.apache.comet.CometJsonExpressionSuite
               org.apache.comet.expressions.conditional.CometIfSuite
               org.apache.comet.expressions.conditional.CometCoalesceSuite
