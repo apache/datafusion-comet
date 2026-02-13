@@ -371,53 +371,6 @@ impl SparkPhysicalExprAdapter {
         Ok(Transformed::no(expr))
     }
 
-    /// Cast Column expressions where the physical and logical datatypes differ.
-    ///
-    /// This function traverses the expression tree and for each Column expression,
-    /// checks if the physical file schema datatype differs from the logical file schema
-    /// datatype. If they differ, it wraps the Column with a CastColumnExpr to perform
-    /// the necessary type conversion.
-    fn cast_datafusion_unsupported_expr(
-        &self,
-        expr: Arc<dyn PhysicalExpr>,
-    ) -> DataFusionResult<Arc<dyn PhysicalExpr>> {
-        expr.transform(|e| {
-            // Check if this is a Column expression
-            if let Some(column) = e.as_any().downcast_ref::<Column>() {
-                let col_idx = column.index();
-
-                // dbg!(&self.logical_file_schema, &self.physical_file_schema);
-
-                // Get the logical datatype (expected by the query)
-                let logical_field = self.logical_file_schema.fields().get(col_idx);
-                // Get the physical datatype (actual file schema)
-                let physical_field = self.physical_file_schema.fields().get(col_idx);
-
-                // dbg!(&logical_field, &physical_field);
-
-                if let (Some(logical_field), Some(physical_field)) = (logical_field, physical_field)
-                {
-                    let logical_type = logical_field.data_type();
-                    let physical_type = physical_field.data_type();
-
-                    // If datatypes differ, insert a CastColumnExpr
-                    if logical_type != physical_type {
-                        let cast_expr: Arc<dyn PhysicalExpr> = Arc::new(CometCastColumnExpr::new(
-                            Arc::clone(&e),
-                            Arc::clone(physical_field),
-                            Arc::clone(logical_field),
-                            None,
-                        ));
-                        // dbg!(&cast_expr);
-                        return Ok(Transformed::yes(cast_expr));
-                    }
-                }
-            }
-            Ok(Transformed::no(e))
-        })
-        .data()
-    }
-
     /// Replace references to missing columns with default values.
     fn replace_missing_with_defaults(
         &self,
