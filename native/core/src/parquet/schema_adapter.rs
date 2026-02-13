@@ -452,7 +452,6 @@ impl SparkPhysicalExprAdapter {
     }
 }
 
-
 /// Adapt a batch to match the target schema using expression evaluation.
 ///
 /// This function is useful for cases like Iceberg scanning where batches
