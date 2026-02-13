@@ -2833,6 +2833,28 @@ index d675503a8ba..f220892396e 100644
        assert(bucketedScan.length == expectedNumBucketedScan)
      }
  
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/sources/InsertSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/sources/InsertSuite.scala
+index 7b1a5a32037..151ea63d740 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/sources/InsertSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/sources/InsertSuite.scala
+@@ -25,6 +25,7 @@ import org.apache.hadoop.fs.{FileAlreadyExistsException, FSDataOutputStream, Pat
+ 
+ import org.apache.spark.{SparkArithmeticException, SparkException}
+ import org.apache.spark.sql._
++import org.apache.spark.sql.IgnoreCometNativeDataFusion
+ import org.apache.spark.sql.catalyst.TableIdentifier
+ import org.apache.spark.sql.catalyst.catalog.{CatalogStorageFormat, CatalogTable, CatalogTableType}
+ import org.apache.spark.sql.catalyst.parser.ParseException
+@@ -1758,7 +1759,8 @@ class InsertSuite extends DataSourceTest with SharedSparkSession {
+     }
+   }
+ 
+-  test("INSERT rows, ALTER TABLE ADD COLUMNS with DEFAULTs, then SELECT them") {
++  test("INSERT rows, ALTER TABLE ADD COLUMNS with DEFAULTs, then SELECT them",
++    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3316")) {
+     case class Config(
+         sqlConf: Option[(String, String)],
+         useDataFrames: Boolean = false)
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/streaming/FileStreamSinkSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/streaming/FileStreamSinkSuite.scala
 index 7f6fa2a123e..c778b4e2c48 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/streaming/FileStreamSinkSuite.scala

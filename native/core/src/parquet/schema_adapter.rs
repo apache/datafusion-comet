@@ -209,6 +209,8 @@ impl PhysicalExprAdapter for SparkPhysicalExprAdapter {
         // In that case, fall back to wrapping everything ourselves.
         let expr = match self.default_adapter.rewrite(Arc::clone(&expr)) {
             Ok(rewritten) => {
+                // Replace references to missing columns with default values
+                let rewritten = self.replace_missing_with_defaults(rewritten)?;
                 // Replace DataFusion's CastColumnExpr with either:
                 // - CometCastColumnExpr (for Struct/List/Map, uses spark_parquet_convert)
                 // - Spark Cast (for simple scalar types)
@@ -216,9 +218,10 @@ impl PhysicalExprAdapter for SparkPhysicalExprAdapter {
                     .transform(|e| self.replace_with_spark_cast(e))
                     .data()?
             }
-            Err(_) => {
+            Err(e) => {
                 // Default adapter failed (likely complex nested type cast).
                 // Handle all type mismatches ourselves using spark_parquet_convert.
+                log::info!("Default schema adapter error: {}", e);
                 self.wrap_all_type_mismatches(expr)?
             }
         };
@@ -249,7 +252,6 @@ impl PhysicalExprAdapter for SparkPhysicalExprAdapter {
     }
 }
 
-#[allow(dead_code)]
 impl SparkPhysicalExprAdapter {
     /// Wrap ALL Column expressions that have type mismatches with CometCastColumnExpr.
     /// This is the fallback path when the default adapter fails (e.g., for complex
@@ -440,6 +442,8 @@ impl SparkPhysicalExprAdapter {
             })
             .collect();
 
+        dbg!(&name_based, &expr);
+
         if name_based.is_empty() {
             return Ok(expr);
         }
@@ -447,6 +451,7 @@ impl SparkPhysicalExprAdapter {
         replace_columns_with_literals(expr, &name_based)
     }
 }
+
 
 /// Adapt a batch to match the target schema using expression evaluation.
 ///
