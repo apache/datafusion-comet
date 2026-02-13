@@ -26,6 +26,8 @@ concurrency:
 
 on:
   push:
+    branches:
+      - main
     paths:
       - "native/core/benches/**"
       - "native/spark-expr/benches/**"

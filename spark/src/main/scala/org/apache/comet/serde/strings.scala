@@ -21,14 +21,15 @@ package org.apache.comet.serde
 
 import java.util.Locale
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Concat, Expression, InitCap, Left, Length, Like, Literal, Lower, RegExpReplace, RLike, StringLPad, StringRepeat, StringRPad, Substring, Upper}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Concat, Expression, If, InitCap, IsNull, Left, Length, Like, Literal, Lower, RegExpReplace, Right, RLike, StringLPad, StringRepeat, StringRPad, StringSplit, Substring, Upper}
 import org.apache.spark.sql.types.{BinaryType, DataTypes, LongType, StringType}
+import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.expressions.{CometCast, CometEvalMode, RegExp}
 import org.apache.comet.serde.ExprOuterClass.Expr
-import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
+import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType}
 
 object CometStringRepeat extends CometExpressionSerde[StringRepeat] {
 
@@ -139,6 +140,49 @@ object CometLeft extends CometExpressionSerde[Left] {
     expr.str.dataType match {
       case _: BinaryType | _: StringType => Compatible()
       case _ => Unsupported(Some(s"LEFT does not support ${expr.str.dataType}"))
+    }
+  }
+}
+
+object CometRight extends CometExpressionSerde[Right] {
+
+  override def convert(expr: Right, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
+    expr.len match {
+      case Literal(lenValue, _) =>
+        val lenInt = lenValue.asInstanceOf[Int]
+        if (lenInt <= 0) {
+          // Match Spark's behavior: If(IsNull(str), NULL, "")
+          // This ensures NULL propagation: RIGHT(NULL, 0) -> NULL, RIGHT("hello", 0) -> ""
+          val isNullExpr = IsNull(expr.str)
+          val nullLiteral = Literal.create(null, StringType)
+          val emptyStringLiteral = Literal(UTF8String.EMPTY_UTF8, StringType)
+          val ifExpr = If(isNullExpr, nullLiteral, emptyStringLiteral)
+
+          // Serialize the If expression using existing infrastructure
+          exprToProtoInternal(ifExpr, inputs, binding)
+        } else {
+          exprToProtoInternal(expr.str, inputs, binding) match {
+            case Some(strExpr) =>
+              val builder = ExprOuterClass.Substring.newBuilder()
+              builder.setChild(strExpr)
+              builder.setStart(-lenInt)
+              builder.setLen(lenInt)
+              Some(ExprOuterClass.Expr.newBuilder().setSubstring(builder).build())
+            case None =>
+              withInfo(expr, expr.str)
+              None
+          }
+        }
+      case _ =>
+        withInfo(expr, "RIGHT len must be a literal")
+        None
+    }
+  }
+
+  override def getSupportLevel(expr: Right): SupportLevel = {
+    expr.str.dataType match {
+      case _: StringType => Compatible()
+      case _ => Unsupported(Some(s"RIGHT does not support ${expr.str.dataType}"))
     }
   }
 }
@@ -286,6 +330,34 @@ object CometRegExpReplace extends CometExpressionSerde[RegExpReplace] {
       replacementExpr,
       flagsExpr)
     optExprWithInfo(optExpr, expr, expr.subject, expr.regexp, expr.rep, expr.pos)
+  }
+}
+
+/**
+ * Serde for StringSplit expression. This is a custom Comet function (not a built-in DataFusion
+ * function), so we need to include the return type in the protobuf to avoid DataFusion registry
+ * lookup failures.
+ */
+object CometStringSplit extends CometExpressionSerde[StringSplit] {
+
+  override def getSupportLevel(expr: StringSplit): SupportLevel =
+    Incompatible(Some("Regex engine differences between Java and Rust"))
+
+  override def convert(
+      expr: StringSplit,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    val strExpr = exprToProtoInternal(expr.str, inputs, binding)
+    val regexExpr = exprToProtoInternal(expr.regex, inputs, binding)
+    val limitExpr = exprToProtoInternal(expr.limit, inputs, binding)
+    val optExpr = scalarFunctionExprToProtoWithReturnType(
+      "split",
+      expr.dataType,
+      false,
+      strExpr,
+      regexExpr,
+      limitExpr)
+    optExprWithInfo(optExpr, expr, expr.str, expr.regex, expr.limit)
   }
 }
 
