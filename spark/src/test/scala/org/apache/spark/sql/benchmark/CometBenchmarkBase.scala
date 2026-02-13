@@ -38,6 +38,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.DecimalType
 
 import org.apache.comet.CometConf
+import org.apache.comet.CometConf.{SCAN_NATIVE_DATAFUSION, SCAN_NATIVE_ICEBERG_COMPAT}
 import org.apache.comet.CometSparkSessionExtensions
 
 trait CometBenchmarkBase
@@ -162,6 +163,32 @@ trait CometBenchmarkBase
     }
 
     benchmark.run()
+  }
+
+  protected def addParquetScanCases(
+      benchmark: Benchmark,
+      query: String,
+      caseSuffix: String = "",
+      extraConf: Map[String, String] = Map.empty): Unit = {
+    val suffix = if (caseSuffix.nonEmpty) s" ($caseSuffix)" else ""
+
+    benchmark.addCase(s"SQL Parquet - Spark$suffix") { _ =>
+      withSQLConf(extraConf.toSeq: _*) {
+        spark.sql(query).noop()
+      }
+    }
+
+    for (scanImpl <- Seq(SCAN_NATIVE_DATAFUSION, SCAN_NATIVE_ICEBERG_COMPAT)) {
+      benchmark.addCase(s"SQL Parquet - Comet ($scanImpl)$suffix") { _ =>
+        withSQLConf(
+          (extraConf ++ Map(
+            CometConf.COMET_ENABLED.key -> "true",
+            CometConf.COMET_EXEC_ENABLED.key -> "true",
+            CometConf.COMET_NATIVE_SCAN_IMPL.key -> scanImpl)).toSeq: _*) {
+          spark.sql(query).noop()
+        }
+      }
+    }
   }
 
   protected def prepareTable(dir: File, df: DataFrame, partition: Option[String] = None): Unit = {
