@@ -223,7 +223,7 @@ private[comet] object NativeScanPlanDataInjector extends PlanDataInjector {
     val common = OperatorOuterClass.NativeScanCommon.parseFrom(commonBytes)
     val partitionOnly = OperatorOuterClass.NativeScan.parseFrom(partitionBytes)
 
-    // Merge common data + this partition's files
+    // Build complete NativeScan with common fields + this partition's file list
     val scanBuilder = OperatorOuterClass.NativeScan.newBuilder()
     scanBuilder.setCommon(common)
     scanBuilder.setFilePartition(partitionOnly.getFilePartition)

@@ -967,7 +967,8 @@ impl PhysicalPlanner {
             OpStruct::NativeScan(scan) => {
                 // Access fields from common (shared across all partitions)
                 let common = scan.common.as_ref().unwrap();
-                let data_schema = convert_spark_types_to_arrow_schema(common.data_schema.as_slice());
+                let data_schema =
+                    convert_spark_types_to_arrow_schema(common.data_schema.as_slice());
                 let required_schema: SchemaRef =
                     convert_spark_types_to_arrow_schema(common.required_schema.as_slice());
                 let partition_schema: SchemaRef =

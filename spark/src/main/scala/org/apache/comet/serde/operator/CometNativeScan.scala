@@ -144,7 +144,7 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
         commonBuilder.addAllDefaultValuesIndexes(indexes.toIterable.asJava)
       }
 
-      // Get first partition for object store options (we still need to peek at partitions)
+      // Extract object store options from first file (S3 configs apply to all files in scan)
       var firstPartition: Option[PartitionedFile] = None
       val filePartitions = scan.getFilePartitions()
       firstPartition = filePartitions.flatMap(_.files.headOption).headOption

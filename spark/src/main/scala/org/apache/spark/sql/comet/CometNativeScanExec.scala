@@ -58,8 +58,8 @@ case class CometNativeScanExec(
     disableBucketedScan: Boolean = false,
     originalPlan: FileSourceScanExec,
     override val serializedPlanOpt: SerializedPlan,
-    @transient scan: CometScanExec, // Need to access getFilePartitions()
-    sourceKey: String) // Unique injection key
+    @transient scan: CometScanExec, // Lazy access to file partitions without serializing with plan
+    sourceKey: String) // Key for PlanDataInjector to match common+partition data at runtime
     extends CometLeafExec
     with DataSourceScanExec
     with ShimStreamSourceAwareSparkPlan {
@@ -111,7 +111,7 @@ case class CometNativeScanExec(
     val nativeMetrics = CometMetricNode.fromCometPlan(this)
     val serializedPlan = CometExec.serializeNativePlan(nativeOp)
 
-    // Handle encryption if needed
+    // Encryption config must be passed to each executor task
     val hadoopConf = relation.sparkSession.sessionState
       .newHadoopConfWithOptions(relation.options)
     val encryptionEnabled = CometParquetUtils.encryptionEnabled(hadoopConf)
@@ -153,7 +153,7 @@ case class CometNativeScanExec(
       disableBucketedScan,
       originalPlan.doCanonicalize(),
       SerializedPlan(None),
-      null, // scan not needed for canonicalization
+      null, // Transient scan not needed for canonicalization
       ""
     ) // sourceKey not needed for canonicalization
   }
@@ -198,14 +198,15 @@ object CometNativeScanExec {
       arr
     }
 
-    // Compute unique sourceKey for this scan
-    val source = nativeOp.getNativeScan.getCommon.getSource
-    val nativeScan = nativeOp.getNativeScan.getCommon
+    // Generate unique key for this scan so PlanDataInjector can match common+partition data.
+    // Multiple scans of same table with different projections/filters get different keys.
+    val common = nativeOp.getNativeScan.getCommon
+    val source = common.getSource
     val keyComponents = Seq(
-      nativeScan.getRequiredSchemaList.toString,
-      nativeScan.getDataFiltersList.toString,
-      nativeScan.getProjectionVectorList.toString,
-      nativeScan.getFieldsList.toString)
+      common.getRequiredSchemaList.toString,
+      common.getDataFiltersList.toString,
+      common.getProjectionVectorList.toString,
+      common.getFieldsList.toString)
     val hashCode = keyComponents.mkString("|").hashCode
     val sourceKey = s"${source}_${hashCode}"
 
