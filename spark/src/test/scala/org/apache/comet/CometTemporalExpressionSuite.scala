@@ -31,6 +31,10 @@ import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
+  /** Timezones used to verify that TimestampNTZ operations are timezone-independent. */
+  private val crossTimezones =
+    Seq("UTC", "America/Los_Angeles", "Europe/London", "Asia/Tokyo")
+
   test("trunc (TruncDate)") {
     val supportedFormats = CometTruncDate.supportedFormats
     val unsupportedFormats = Seq("invalid")
@@ -135,17 +139,138 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
     }
   }
 
-  test("unix_timestamp - timestamp_ntz input falls back to Spark") {
-    // TimestampNTZ is not supported because Comet incorrectly applies timezone
-    // conversion. TimestampNTZ stores local time without timezone, so the unix
-    // timestamp should just be the value divided by microseconds per second.
+  test("unix_timestamp - timestamp_ntz input") {
+    // TimestampNTZ stores local time without timezone, so the unix
+    // timestamp is the value divided by microseconds per second (no timezone conversion).
+    // Verify this produces the same result regardless of session timezone.
     val r = new Random(42)
     val ntzSchema = StructType(Seq(StructField("ts_ntz", DataTypes.TimestampNTZType, true)))
     val ntzDF = FuzzDataGenerator.generateDataFrame(r, spark, ntzSchema, 100, DataGenOptions())
     ntzDF.createOrReplaceTempView("ntz_tbl")
-    checkSparkAnswerAndFallbackReason(
-      "SELECT ts_ntz, unix_timestamp(ts_ntz) from ntz_tbl order by ts_ntz",
-      "unix_timestamp does not support input type: TimestampNTZType")
+    for (tz <- crossTimezones) {
+      withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
+        checkSparkAnswerAndOperator(
+          "SELECT ts_ntz, unix_timestamp(ts_ntz) from ntz_tbl order by ts_ntz")
+      }
+    }
+  }
+
+  test("hour/minute/second - timestamp_ntz input") {
+    // TimestampNTZ extracts time components directly from the stored local time,
+    // so the result should be the same regardless of session timezone.
+    val r = new Random(42)
+    val ntzSchema = StructType(Seq(StructField("ts_ntz", DataTypes.TimestampNTZType, true)))
+    val ntzDF = FuzzDataGenerator.generateDataFrame(r, spark, ntzSchema, 100, DataGenOptions())
+    ntzDF.createOrReplaceTempView("ntz_tbl")
+    for (tz <- crossTimezones) {
+      withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
+        checkSparkAnswerAndOperator(
+          "SELECT ts_ntz, hour(ts_ntz), minute(ts_ntz), second(ts_ntz) from ntz_tbl order by ts_ntz")
+      }
+    }
+  }
+
+  test("date_trunc - timestamp_ntz input") {
+    // TimestampNTZ truncation should be timezone-independent.
+    // Verify the result is the same regardless of session timezone.
+    val r = new Random(42)
+    val ntzSchema = StructType(Seq(StructField("ts_ntz", DataTypes.TimestampNTZType, true)))
+    // Use a reasonable date range (around year 2024) to avoid chrono-tz DST calculation
+    // issues with far-future dates. The default baseDate is year 3333 which is beyond
+    // the range where chrono-tz can reliably calculate DST transitions.
+    val reasonableBaseDate =
+      new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").parse("2024-06-15 12:00:00").getTime
+    val ntzDF = FuzzDataGenerator.generateDataFrame(
+      r,
+      spark,
+      ntzSchema,
+      100,
+      DataGenOptions(baseDate = reasonableBaseDate))
+    ntzDF.createOrReplaceTempView("ntz_tbl")
+    for (tz <- crossTimezones) {
+      withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
+        for (format <- CometTruncTimestamp.supportedFormats) {
+          checkSparkAnswerAndOperator(
+            s"SELECT ts_ntz, date_trunc('$format', ts_ntz) from ntz_tbl order by ts_ntz")
+        }
+      }
+    }
+  }
+
+  test("date_format - timestamp_ntz input") {
+    // TimestampNTZ is timezone-independent, so date_format should produce the same
+    // formatted string regardless of session timezone. Comet currently only runs this
+    // natively for UTC; for non-UTC it falls back to Spark. We verify correctness
+    // (matching Spark's output) in all cases.
+    val r = new Random(42)
+    val ntzSchema = StructType(Seq(StructField("ts_ntz", DataTypes.TimestampNTZType, true)))
+    val ntzDF = FuzzDataGenerator.generateDataFrame(r, spark, ntzSchema, 100, DataGenOptions())
+    ntzDF.createOrReplaceTempView("ntz_tbl")
+    val supportedFormats =
+      CometDateFormat.supportedFormats.keys.toSeq.filterNot(_.contains("'"))
+    for (tz <- crossTimezones) {
+      withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
+        for (format <- supportedFormats) {
+          if (tz == "UTC") {
+            checkSparkAnswerAndOperator(
+              s"SELECT ts_ntz, date_format(ts_ntz, '$format') from ntz_tbl order by ts_ntz")
+          } else {
+            // Non-UTC falls back to Spark but should still produce correct results
+            checkSparkAnswer(
+              s"SELECT ts_ntz, date_format(ts_ntz, '$format') from ntz_tbl order by ts_ntz")
+          }
+        }
+      }
+    }
+  }
+
+  test("timestamp_ntz - cross-timezone Parquet round-trip") {
+    // This test verifies the key TimestampNTZ invariant: data written to a
+    // timestamp_ntz Parquet column under one session timezone can be read by
+    // another session with a different timezone and produce identical results.
+    // This is the defining characteristic of TimestampNTZ vs TimestampType.
+    val writeTimezones = Seq("America/Los_Angeles", "Asia/Tokyo", "UTC")
+    val readTimezones = Seq("Europe/London", "America/New_York", "UTC", "Pacific/Auckland")
+
+    for (writeTz <- writeTimezones) {
+      withTempDir { dir =>
+        // Write data with one session timezone
+        withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> writeTz) {
+          val data = Seq(
+            Row("2024-01-15T08:30:00"),
+            Row("2024-07-04T23:59:59.999999"),
+            Row("1970-01-01T00:00:00"),
+            Row("2024-03-10T02:30:00"), // DST spring-forward time in US
+            Row("2024-11-03T01:30:00"), // DST fall-back time in US
+            Row(null))
+          val schema = StructType(Seq(StructField("ts_str", DataTypes.StringType, true)))
+          spark
+            .createDataFrame(spark.sparkContext.parallelize(data), schema)
+            .selectExpr("CAST(ts_str AS TIMESTAMP_NTZ) AS ts_ntz")
+            .write
+            .mode(SaveMode.Overwrite)
+            .parquet(dir.toString)
+        }
+
+        // Read with different session timezones and verify results are identical
+        for (readTz <- readTimezones) {
+          withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> readTz) {
+            spark.read.parquet(dir.toString).createOrReplaceTempView("ntz_cross_tz")
+            // Verify raw values, casts, and temporal functions all match Spark
+            checkSparkAnswerAndOperator(
+              "SELECT ts_ntz, CAST(ts_ntz AS STRING) FROM ntz_cross_tz ORDER BY ts_ntz")
+            checkSparkAnswerAndOperator(
+              "SELECT ts_ntz, CAST(ts_ntz AS DATE) FROM ntz_cross_tz ORDER BY ts_ntz")
+            checkSparkAnswerAndOperator(
+              "SELECT ts_ntz, unix_timestamp(ts_ntz) FROM ntz_cross_tz ORDER BY ts_ntz")
+            checkSparkAnswerAndOperator(
+              "SELECT ts_ntz, hour(ts_ntz), minute(ts_ntz), second(ts_ntz) FROM ntz_cross_tz ORDER BY ts_ntz")
+            checkSparkAnswerAndOperator(
+              "SELECT ts_ntz, date_trunc('HOUR', ts_ntz) FROM ntz_cross_tz ORDER BY ts_ntz")
+          }
+        }
+      }
+    }
   }
 
   test("unix_timestamp - string input falls back to Spark") {
