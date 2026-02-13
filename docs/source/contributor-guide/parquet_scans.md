@@ -59,12 +59,10 @@ The `native_datafusion` scan has some additional limitations. All of these cause
 
 - No support for row indexes
 - No support for reading Parquet field IDs
-- No support for Dynamic Partition Pruning (DPP). When partition filters contain dynamic pruning subqueries, Comet
-  falls back to Spark.
+- No support for Dynamic Partition Pruning (DPP)
 - No support for `input_file_name()`, `input_file_block_start()`, or `input_file_block_length()` SQL functions.
   The `native_datafusion` scan does not use Spark's `FileScanRDD`, so these functions cannot populate their values.
-  When these functions appear anywhere in the query plan, Comet falls back to Spark.
-- When `ignoreMissingFiles` or `ignoreCorruptFiles` is set to `true`, Comet falls back to Spark.
+- No support for `ignoreMissingFiles` or `ignoreCorruptFiles` being set to `true`
 
 The `native_iceberg_compat` scan has some additional limitations:
 
