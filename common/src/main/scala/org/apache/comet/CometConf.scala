@@ -54,6 +54,9 @@ object CometConf extends ShimCometConf {
   private val TRACING_GUIDE = "For more information, refer to the Comet Tracing " +
     "Guide (https://datafusion.apache.org/comet/contributor-guide/tracing.html)"
 
+  private val DEBUGGING_GUIDE = "For more information, refer to the Comet Debugging " +
+    "Guide (https://datafusion.apache.org/comet/contributor-guide/debugging.html)"
+
   /** List of all configs that is used for generating documentation */
   val allConfs = new ListBuffer[ConfigEntry[_]]
 
@@ -124,11 +127,8 @@ object CometConf extends ShimCometConf {
   val COMET_NATIVE_SCAN_IMPL: ConfigEntry[String] = conf("spark.comet.scan.impl")
     .category(CATEGORY_SCAN)
     .doc(
-      s"The implementation of Comet Native Scan to use. Available modes are `$SCAN_NATIVE_COMET`," +
+      "The implementation of Comet Native Scan to use. Available modes are " +
         s"`$SCAN_NATIVE_DATAFUSION`, and `$SCAN_NATIVE_ICEBERG_COMPAT`. " +
-        s"`$SCAN_NATIVE_COMET` (DEPRECATED - will be removed in a future release) is for the " +
-        "original Comet native scan which uses a jvm based parquet file reader and native " +
-        "column decoding. Supports simple types only. " +
         s"`$SCAN_NATIVE_DATAFUSION` is a fully native implementation of scan based on " +
         "DataFusion. " +
         s"`$SCAN_NATIVE_ICEBERG_COMPAT` is the recommended native implementation that " +
@@ -137,8 +137,7 @@ object CometConf extends ShimCometConf {
     .internal()
     .stringConf
     .transform(_.toLowerCase(Locale.ROOT))
-    .checkValues(
-      Set(SCAN_NATIVE_COMET, SCAN_NATIVE_DATAFUSION, SCAN_NATIVE_ICEBERG_COMPAT, SCAN_AUTO))
+    .checkValues(Set(SCAN_NATIVE_DATAFUSION, SCAN_NATIVE_ICEBERG_COMPAT, SCAN_AUTO))
     .createWithEnvVarOrDefault("COMET_PARQUET_SCAN_IMPL", SCAN_AUTO)
 
   val COMET_ICEBERG_NATIVE_ENABLED: ConfigEntry[Boolean] =
@@ -550,6 +549,13 @@ object CometConf extends ShimCometConf {
           "validating array when importing arrays from JVM at native side. Note that these " +
           "checks may be expensive in performance and should only be enabled for debugging " +
           "purpose.")
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_DEBUG_MEMORY_ENABLED: ConfigEntry[Boolean] =
+    conf(s"$COMET_PREFIX.debug.memory")
+      .category(CATEGORY_TESTING)
+      .doc(s"When enabled, log all native memory pool interactions. $DEBUGGING_GUIDE.")
       .booleanConf
       .createWithDefault(false)
 

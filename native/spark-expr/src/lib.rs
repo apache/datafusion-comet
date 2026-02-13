@@ -29,6 +29,7 @@ pub use static_invoke::*;
 mod struct_funcs;
 pub use struct_funcs::{CreateNamedStruct, GetStructField};
 
+mod csv_funcs;
 mod json_funcs;
 pub mod test_common;
 pub mod timezone;
@@ -69,9 +70,10 @@ pub use comet_scalar_funcs::{
     create_comet_physical_fun, create_comet_physical_fun_with_eval_mode,
     register_all_comet_functions,
 };
+pub use csv_funcs::*;
 pub use datetime_funcs::{
-    SparkDateDiff, SparkDateTrunc, SparkHour, SparkMinute, SparkSecond, SparkUnixTimestamp,
-    TimestampTruncExpr,
+    SparkDateDiff, SparkDateTrunc, SparkHour, SparkMakeDate, SparkMinute, SparkSecond,
+    SparkUnixTimestamp, TimestampTruncExpr,
 };
 pub use error::{SparkError, SparkResult};
 pub use hash_funcs::*;
