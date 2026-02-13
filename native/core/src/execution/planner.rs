@@ -965,8 +965,13 @@ impl PhysicalPlanner {
                 ))
             }
             OpStruct::NativeScan(scan) => {
-                // Access fields from common (shared across all partitions)
-                let common = scan.common.as_ref().unwrap();
+                // Extract common data and single partition's file list
+                // Per-partition injection happens in Scala before sending to native
+                let common = scan
+                    .common
+                    .as_ref()
+                    .ok_or_else(|| GeneralError("NativeScan missing common data".into()))?;
+
                 let data_schema =
                     convert_spark_types_to_arrow_schema(common.data_schema.as_slice());
                 let required_schema: SchemaRef =
@@ -979,8 +984,10 @@ impl PhysicalPlanner {
                     .map(|offset| *offset as usize)
                     .collect();
 
-                // Access the single file_partition directly (injected by PlanDataInjector)
-                let partition_files = scan.file_partition.as_ref().unwrap();
+                let partition_files = scan
+                    .file_partition
+                    .as_ref()
+                    .ok_or_else(|| GeneralError("NativeScan missing file_partition".into()))?;
 
                 // Check if this partition has any files (bucketed scan with bucket pruning may have empty partitions)
                 if partition_files.partitioned_file.is_empty() {
@@ -1052,8 +1059,8 @@ impl PhysicalPlanner {
                     &object_store_options,
                 )?;
 
-                // Get files for this partition (file_partition is singular, already partition-specific)
-                let files = self.get_partitioned_files(scan.file_partition.as_ref().unwrap())?;
+                // Get files for this partition
+                let files = self.get_partitioned_files(partition_files)?;
                 let file_groups: Vec<Vec<PartitionedFile>> = vec![files];
                 let partition_fields: Vec<Field> = partition_schema
                     .fields()

@@ -43,7 +43,17 @@ import org.apache.comet.parquet.{CometParquetFileFormat, CometParquetUtils}
 import org.apache.comet.serde.OperatorOuterClass.Operator
 
 /**
- * Comet fully native scan node for DataSource V1 that delegates to DataFusion's DataSourceExec.
+ * Native scan operator for DataSource V1 Parquet files using DataFusion's ParquetExec.
+ *
+ * Replaces Spark's FileSourceScanExec to enable native execution. File planning runs in Spark to
+ * produce FilePartitions (handling bucketing, partition pruning, etc.), which are serialized to
+ * protobuf for DataFusion to execute using its ParquetExec. This provides better performance than
+ * reading through Spark's FileFormat abstraction.
+ *
+ * Uses split-mode serialization introduced in PR #3349: common scan metadata (schemas, filters,
+ * projections) is serialized once at planning time, while per-partition file lists are lazily
+ * serialized at execution time. This reduces memory when scanning tables with many partitions, as
+ * each executor task receives only its partition's file list rather than all files.
  */
 case class CometNativeScanExec(
     override val nativeOp: Operator,
@@ -82,6 +92,27 @@ case class CometNativeScanExec(
 
   override lazy val outputOrdering: Seq[SortOrder] = originalPlan.outputOrdering
 
+  /**
+   * Lazy partition serialization - deferred until execution time to reduce driver memory.
+   *
+   * Split-mode serialization pattern:
+   * {{{
+   * Planning time:
+   *   - CometNativeScan.convert() serializes common data (schemas, filters, projections)
+   *   - commonData embedded in nativeOp protobuf
+   *   - File partitions NOT serialized yet
+   *
+   * Execution time:
+   *   - doExecuteColumnar() accesses commonData and perPartitionData
+   *   - Forces serializedPartitionData evaluation (here)
+   *   - Each partition's file list serialized separately
+   *   - CometExecRDD receives per-partition data and injects at runtime
+   * }}}
+   *
+   * This pattern reduces memory usage for tables with many partitions - instead of serializing
+   * all files for all partitions in the driver, we serialize only common metadata (once) and each
+   * partition's files (lazily, as tasks are scheduled).
+   */
   @transient private lazy val serializedPartitionData: (Array[Byte], Array[Array[Byte]]) = {
     // Extract common data from nativeOp
     val commonBytes = nativeOp.getNativeScan.getCommon.toByteArray
