@@ -27,8 +27,7 @@ helpful to have a roadmap for some of the major items that require coordination 
 ### Iceberg Integration
 
 Iceberg integration is still a work-in-progress ([#2060]), with major improvements expected in the next few
-releases. The default `auto` scan mode now uses `native_iceberg_compat` instead of `native_comet`, enabling
-support for complex types.
+releases.
 
 [#2060]: https://github.com/apache/datafusion-comet/issues/2060
 
@@ -39,20 +38,6 @@ more Spark SQL tests and fully implementing ANSI support ([#313]) for all suppor
 
 [#313]: https://github.com/apache/datafusion-comet/issues/313
 [#1637]: https://github.com/apache/datafusion-comet/issues/1637
-
-### Removing the native_comet scan implementation
-
-The `native_comet` scan implementation is now deprecated and will be removed in a future release ([#2186], [#2177]).
-This is the original scan implementation that uses mutable buffers (which is incompatible with best practices around
-Arrow FFI) and does not support complex types.
-
-Now that the default `auto` scan mode uses `native_iceberg_compat` (which is based on DataFusion's `DataSourceExec`),
-we can proceed with removing the `native_comet` scan implementation, and then improve the efficiency of our use of
-Arrow FFI ([#2171]).
-
-[#2186]: https://github.com/apache/datafusion-comet/issues/2186
-[#2171]: https://github.com/apache/datafusion-comet/issues/2171
-[#2177]: https://github.com/apache/datafusion-comet/issues/2177
 
 ## Ongoing Improvements
 
