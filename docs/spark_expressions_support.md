@@ -205,7 +205,7 @@
 - [ ] timestamp_micros
 - [ ] timestamp_millis
 - [ ] timestamp_seconds
-- [ ] to_date
+- [x] to_date
 - [ ] to_timestamp
 - [ ] to_timestamp_ltz
 - [ ] to_timestamp_ntz
