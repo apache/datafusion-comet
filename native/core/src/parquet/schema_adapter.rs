@@ -41,9 +41,6 @@ use datafusion_physical_expr_adapter::{
 };
 use std::collections::HashMap;
 use std::sync::Arc;
-// ============================================================================
-// New PhysicalExprAdapter Implementation (Recommended)
-// ============================================================================
 
 /// Factory for creating Spark-compatible physical expression adapters.
 ///
@@ -384,15 +381,27 @@ impl SparkPhysicalExprAdapter {
             return Ok(expr);
         }
 
-        dbg!(&self.logical_file_schema, &self.physical_file_schema);
+        // dbg!(&self.logical_file_schema, &self.physical_file_schema);
 
-        // Convert Column-based defaults to name-based for replace_columns_with_literals
-        let name_based: HashMap<&str, &ScalarValue> = defaults
+        // Convert Column-based defaults to name-based for replace_columns_with_literals.
+        // If the default value's type doesn't match the logical schema, cast it.
+        let owned_values: Vec<(String, ScalarValue)> = defaults
             .iter()
-            .map(|(col, val)| (col.name(), val))
+            .map(|(col, val)| {
+                let col_name = col.name();
+                let value = self
+                    .logical_file_schema
+                    .field_with_name(col_name)
+                    .ok()
+                    .filter(|field| val.data_type() != *field.data_type())
+                    .and_then(|field| val.cast_to(field.data_type()).ok())
+                    .unwrap_or_else(|| val.clone());
+                (col_name.to_string(), value)
+            })
             .collect();
 
-        dbg!(&expr, &name_based);
+        let name_based: HashMap<&str, &ScalarValue> =
+            owned_values.iter().map(|(k, v)| (k.as_str(), v)).collect();
 
         if name_based.is_empty() {
             return Ok(expr);
