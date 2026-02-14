@@ -440,16 +440,33 @@ class CometIcebergCompactionSuite extends CometTestBase {
           spark.sql(s"INSERT INTO compact_cat.db.bucket_table VALUES ($i, 'cat_$i', ${i * 1.5})")
         }
 
-        val rowsBefore =
-          spark.sql("SELECT count(*) FROM compact_cat.db.bucket_table").collect()(0).getLong(0)
+        val filesBefore =
+          spark.sql("SELECT file_path FROM compact_cat.db.bucket_table.files").count()
+        assert(filesBefore >= 10, s"Expected multiple files, got $filesBefore")
+
+        val dataBefore = spark
+          .sql("SELECT id, category, value FROM compact_cat.db.bucket_table ORDER BY id")
+          .collect()
 
         val icebergTable = loadIcebergTable("compact_cat.db.bucket_table")
-        CometNativeCompaction(spark).rewriteDataFiles(icebergTable)
+        val summary = CometNativeCompaction(spark).rewriteDataFiles(icebergTable)
+
+        assert(summary.filesDeleted > 0, "Should delete files")
+        assert(summary.filesAdded > 0, "Should add files")
+        assert(summary.filesAdded < summary.filesDeleted, "Should reduce file count")
 
         spark.sql("REFRESH TABLE compact_cat.db.bucket_table")
-        val rowsAfter =
-          spark.sql("SELECT count(*) FROM compact_cat.db.bucket_table").collect()(0).getLong(0)
-        assert(rowsAfter == rowsBefore, s"Row count changed: $rowsBefore -> $rowsAfter")
+
+        val filesAfter =
+          spark.sql("SELECT file_path FROM compact_cat.db.bucket_table.files").count()
+        assert(filesAfter < filesBefore, s"Expected fewer files: $filesBefore -> $filesAfter")
+
+        val dataAfter = spark
+          .sql("SELECT id, category, value FROM compact_cat.db.bucket_table ORDER BY id")
+          .collect()
+        assert(
+          dataBefore.map(_.toString()).toSeq == dataAfter.map(_.toString()).toSeq,
+          "Data must be identical after compaction")
 
         spark.sql("DROP TABLE compact_cat.db.bucket_table")
       }
@@ -476,16 +493,32 @@ class CometIcebergCompactionSuite extends CometTestBase {
             s"INSERT INTO compact_cat.db.truncate_table VALUES ($i, 'name_$i', ${i * 1.5})")
         }
 
-        val rowsBefore =
-          spark.sql("SELECT count(*) FROM compact_cat.db.truncate_table").collect()(0).getLong(0)
+        val filesBefore =
+          spark.sql("SELECT file_path FROM compact_cat.db.truncate_table.files").count()
+        assert(filesBefore >= 10, s"Expected multiple files, got $filesBefore")
+
+        val dataBefore = spark
+          .sql("SELECT id, name, value FROM compact_cat.db.truncate_table ORDER BY id")
+          .collect()
 
         val icebergTable = loadIcebergTable("compact_cat.db.truncate_table")
-        CometNativeCompaction(spark).rewriteDataFiles(icebergTable)
+        val summary = CometNativeCompaction(spark).rewriteDataFiles(icebergTable)
+
+        assert(summary.filesDeleted > 0, "Should delete files")
+        assert(summary.filesAdded > 0, "Should add files")
 
         spark.sql("REFRESH TABLE compact_cat.db.truncate_table")
-        val rowsAfter =
-          spark.sql("SELECT count(*) FROM compact_cat.db.truncate_table").collect()(0).getLong(0)
-        assert(rowsAfter == rowsBefore, s"Row count changed: $rowsBefore -> $rowsAfter")
+
+        val filesAfter =
+          spark.sql("SELECT file_path FROM compact_cat.db.truncate_table.files").count()
+        assert(filesAfter < filesBefore, s"Expected fewer files: $filesBefore -> $filesAfter")
+
+        val dataAfter = spark
+          .sql("SELECT id, name, value FROM compact_cat.db.truncate_table ORDER BY id")
+          .collect()
+        assert(
+          dataBefore.map(_.toString()).toSeq == dataAfter.map(_.toString()).toSeq,
+          "Data must be identical after compaction")
 
         spark.sql("DROP TABLE compact_cat.db.truncate_table")
       }
@@ -515,22 +548,32 @@ class CometIcebergCompactionSuite extends CometTestBase {
           """)
         }
 
-        val rowsBefore =
-          spark
-            .sql("SELECT count(*) FROM compact_cat.db.month_part_table")
-            .collect()(0)
-            .getLong(0)
+        val filesBefore =
+          spark.sql("SELECT file_path FROM compact_cat.db.month_part_table.files").count()
+        assert(filesBefore >= 5, s"Expected multiple files, got $filesBefore")
+
+        val dataBefore = spark
+          .sql("SELECT id, event_ts, data FROM compact_cat.db.month_part_table ORDER BY id")
+          .collect()
 
         val icebergTable = loadIcebergTable("compact_cat.db.month_part_table")
-        CometNativeCompaction(spark).rewriteDataFiles(icebergTable)
+        val summary = CometNativeCompaction(spark).rewriteDataFiles(icebergTable)
+
+        assert(summary.filesDeleted > 0, "Should delete files")
+        assert(summary.filesAdded > 0, "Should add files")
 
         spark.sql("REFRESH TABLE compact_cat.db.month_part_table")
-        val rowsAfter =
-          spark
-            .sql("SELECT count(*) FROM compact_cat.db.month_part_table")
-            .collect()(0)
-            .getLong(0)
-        assert(rowsAfter == rowsBefore, s"Row count changed: $rowsBefore -> $rowsAfter")
+
+        val filesAfter =
+          spark.sql("SELECT file_path FROM compact_cat.db.month_part_table.files").count()
+        assert(filesAfter < filesBefore, s"Expected fewer files: $filesBefore -> $filesAfter")
+
+        val dataAfter = spark
+          .sql("SELECT id, event_ts, data FROM compact_cat.db.month_part_table ORDER BY id")
+          .collect()
+        assert(
+          dataBefore.map(_.toString()).toSeq == dataAfter.map(_.toString()).toSeq,
+          "Data must be identical after compaction")
 
         spark.sql("DROP TABLE compact_cat.db.month_part_table")
       }
@@ -560,16 +603,32 @@ class CometIcebergCompactionSuite extends CometTestBase {
           """)
         }
 
-        val rowsBefore =
-          spark.sql("SELECT count(*) FROM compact_cat.db.hour_part_table").collect()(0).getLong(0)
+        val filesBefore =
+          spark.sql("SELECT file_path FROM compact_cat.db.hour_part_table.files").count()
+        assert(filesBefore >= 5, s"Expected multiple files, got $filesBefore")
+
+        val dataBefore = spark
+          .sql("SELECT id, event_ts, data FROM compact_cat.db.hour_part_table ORDER BY id")
+          .collect()
 
         val icebergTable = loadIcebergTable("compact_cat.db.hour_part_table")
-        CometNativeCompaction(spark).rewriteDataFiles(icebergTable)
+        val summary = CometNativeCompaction(spark).rewriteDataFiles(icebergTable)
+
+        assert(summary.filesDeleted > 0, "Should delete files")
+        assert(summary.filesAdded > 0, "Should add files")
 
         spark.sql("REFRESH TABLE compact_cat.db.hour_part_table")
-        val rowsAfter =
-          spark.sql("SELECT count(*) FROM compact_cat.db.hour_part_table").collect()(0).getLong(0)
-        assert(rowsAfter == rowsBefore, s"Row count changed: $rowsBefore -> $rowsAfter")
+
+        val filesAfter =
+          spark.sql("SELECT file_path FROM compact_cat.db.hour_part_table.files").count()
+        assert(filesAfter < filesBefore, s"Expected fewer files: $filesBefore -> $filesAfter")
+
+        val dataAfter = spark
+          .sql("SELECT id, event_ts, data FROM compact_cat.db.hour_part_table ORDER BY id")
+          .collect()
+        assert(
+          dataBefore.map(_.toString()).toSeq == dataAfter.map(_.toString()).toSeq,
+          "Data must be identical after compaction")
 
         spark.sql("DROP TABLE compact_cat.db.hour_part_table")
       }
@@ -603,22 +662,32 @@ class CometIcebergCompactionSuite extends CometTestBase {
           """)
         }
 
-        val rowsBefore =
-          spark
-            .sql("SELECT count(*) FROM compact_cat.db.multi_part_table")
-            .collect()(0)
-            .getLong(0)
+        val filesBefore =
+          spark.sql("SELECT file_path FROM compact_cat.db.multi_part_table.files").count()
+        assert(filesBefore >= 5, s"Expected multiple files, got $filesBefore")
+
+        val dataBefore = spark
+          .sql("SELECT id, region, event_date, value FROM compact_cat.db.multi_part_table ORDER BY id")
+          .collect()
 
         val icebergTable = loadIcebergTable("compact_cat.db.multi_part_table")
-        CometNativeCompaction(spark).rewriteDataFiles(icebergTable)
+        val summary = CometNativeCompaction(spark).rewriteDataFiles(icebergTable)
+
+        assert(summary.filesDeleted > 0, "Should delete files")
+        assert(summary.filesAdded > 0, "Should add files")
 
         spark.sql("REFRESH TABLE compact_cat.db.multi_part_table")
-        val rowsAfter =
-          spark
-            .sql("SELECT count(*) FROM compact_cat.db.multi_part_table")
-            .collect()(0)
-            .getLong(0)
-        assert(rowsAfter == rowsBefore, s"Row count changed: $rowsBefore -> $rowsAfter")
+
+        val filesAfter =
+          spark.sql("SELECT file_path FROM compact_cat.db.multi_part_table.files").count()
+        assert(filesAfter < filesBefore, s"Expected fewer files: $filesBefore -> $filesAfter")
+
+        val dataAfter = spark
+          .sql("SELECT id, region, event_date, value FROM compact_cat.db.multi_part_table ORDER BY id")
+          .collect()
+        assert(
+          dataBefore.map(_.toString()).toSeq == dataAfter.map(_.toString()).toSeq,
+          "Data must be identical after compaction")
 
         spark.sql("DROP TABLE compact_cat.db.multi_part_table")
       }
@@ -914,6 +983,97 @@ class CometIcebergCompactionSuite extends CometTestBase {
         assert(rowsAfter == rowsBefore, s"Row count changed: $rowsBefore -> $rowsAfter")
 
         spark.sql("DROP TABLE compact_cat.db.binary_table")
+      }
+    }
+  }
+
+  // ============== Spark Default vs Native Compaction Comparison ==============
+
+  test("native compaction produces same result as Spark default compaction") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    assume(CometNativeCompaction.isAvailable, "Native compaction not available")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(icebergCatalogConf(warehouseDir).toSeq: _*) {
+        // Create two identical tables
+        spark.sql("""
+          CREATE TABLE compact_cat.db.spark_table (
+            id BIGINT,
+            name STRING,
+            value DOUBLE
+          ) USING iceberg
+        """)
+
+        spark.sql("""
+          CREATE TABLE compact_cat.db.native_table (
+            id BIGINT,
+            name STRING,
+            value DOUBLE
+          ) USING iceberg
+        """)
+
+        // Insert same data into both tables
+        for (i <- 1 to 15) {
+          spark.sql(s"INSERT INTO compact_cat.db.spark_table VALUES ($i, 'name_$i', ${i * 1.5})")
+          spark.sql(s"INSERT INTO compact_cat.db.native_table VALUES ($i, 'name_$i', ${i * 1.5})")
+        }
+
+        // Verify both tables have same fragmented state
+        val sparkFilesBefore =
+          spark.sql("SELECT file_path FROM compact_cat.db.spark_table.files").count()
+        val nativeFilesBefore =
+          spark.sql("SELECT file_path FROM compact_cat.db.native_table.files").count()
+        assert(sparkFilesBefore == nativeFilesBefore, "Both tables should start with same files")
+
+        // Run Spark default compaction
+        val sparkTable = loadIcebergTable("compact_cat.db.spark_table")
+        import org.apache.iceberg.spark.actions.SparkActions
+        SparkActions.get(spark).rewriteDataFiles(sparkTable).execute()
+
+        // Run Native compaction
+        val nativeTable = loadIcebergTable("compact_cat.db.native_table")
+        CometNativeCompaction(spark).rewriteDataFiles(nativeTable)
+
+        // Refresh tables
+        spark.sql("REFRESH TABLE compact_cat.db.spark_table")
+        spark.sql("REFRESH TABLE compact_cat.db.native_table")
+
+        // Compare file counts after compaction
+        val sparkFilesAfter =
+          spark.sql("SELECT file_path FROM compact_cat.db.spark_table.files").count()
+        val nativeFilesAfter =
+          spark.sql("SELECT file_path FROM compact_cat.db.native_table.files").count()
+
+        assert(sparkFilesAfter < sparkFilesBefore, "Spark compaction should reduce files")
+        assert(nativeFilesAfter < nativeFilesBefore, "Native compaction should reduce files")
+
+        // Compare data - both should produce identical results
+        val sparkData = spark
+          .sql("SELECT id, name, value FROM compact_cat.db.spark_table ORDER BY id")
+          .collect()
+          .map(_.toString())
+
+        val nativeData = spark
+          .sql("SELECT id, name, value FROM compact_cat.db.native_table ORDER BY id")
+          .collect()
+          .map(_.toString())
+
+        assert(
+          sparkData.toSeq == nativeData.toSeq,
+          "Spark and Native compaction should produce identical data")
+
+        // Verify row counts match
+        val sparkRows =
+          spark.sql("SELECT count(*) FROM compact_cat.db.spark_table").collect()(0).getLong(0)
+        val nativeRows =
+          spark.sql("SELECT count(*) FROM compact_cat.db.native_table").collect()(0).getLong(0)
+        assert(
+          sparkRows == nativeRows,
+          s"Row counts differ: Spark=$sparkRows, Native=$nativeRows")
+        assert(sparkRows == 15, s"Expected 15 rows, got $sparkRows")
+
+        spark.sql("DROP TABLE compact_cat.db.spark_table")
+        spark.sql("DROP TABLE compact_cat.db.native_table")
       }
     }
   }
