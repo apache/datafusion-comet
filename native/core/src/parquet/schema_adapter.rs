@@ -384,9 +384,23 @@ impl SparkPhysicalExprAdapter {
         // dbg!(&self.logical_file_schema, &self.physical_file_schema);
 
         // Convert Column-based defaults to name-based for replace_columns_with_literals.
-        // If the default value's type doesn't match the logical schema, cast it.
+        // Only include columns that are MISSING from the physical file schema.
+        // If the default value's type doesn't match the logical schema, cast it using Spark cast.
         let owned_values: Vec<(String, ScalarValue)> = defaults
             .iter()
+            .filter(|(col, _)| {
+                // Only include defaults for columns missing from the physical file schema
+                let col_name = col.name();
+                if self.parquet_options.case_sensitive {
+                    self.physical_file_schema.field_with_name(col_name).is_err()
+                } else {
+                    !self
+                        .physical_file_schema
+                        .fields()
+                        .iter()
+                        .any(|f| f.name().eq_ignore_ascii_case(col_name))
+                }
+            })
             .map(|(col, val)| {
                 let col_name = col.name();
                 let value = self
@@ -394,7 +408,18 @@ impl SparkPhysicalExprAdapter {
                     .field_with_name(col_name)
                     .ok()
                     .filter(|field| val.data_type() != *field.data_type())
-                    .and_then(|field| val.cast_to(field.data_type()).ok())
+                    .and_then(|field| {
+                        spark_parquet_convert(
+                            ColumnarValue::Scalar(val.clone()),
+                            field.data_type(),
+                            &self.parquet_options,
+                        )
+                        .ok()
+                        .and_then(|cv| match cv {
+                            ColumnarValue::Scalar(s) => Some(s),
+                            _ => None,
+                        })
+                    })
                     .unwrap_or_else(|| val.clone());
                 (col_name.to_string(), value)
             })
@@ -402,6 +427,8 @@ impl SparkPhysicalExprAdapter {
 
         let name_based: HashMap<&str, &ScalarValue> =
             owned_values.iter().map(|(k, v)| (k.as_str(), v)).collect();
+
+        dbg!(&name_based, &expr);
 
         if name_based.is_empty() {
             return Ok(expr);
