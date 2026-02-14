@@ -74,7 +74,7 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
       // We use the schema and values of t1 to simplify random value generation for the default column value in t2.
       val df = spark.read.parquet(filename)
       df.createOrReplaceTempView("t1")
-      val columns = df.schema.fields.filter(f => !isComplexType(f.dataType)).map(_.name).take(1)
+      val columns = df.schema.fields.filter(f => !isComplexType(f.dataType)).map(_.name)
       for (col <- columns) {
         // Select the first non-null value from our target column type.
         val defaultValueRow =
