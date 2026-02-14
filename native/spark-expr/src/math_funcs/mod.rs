@@ -16,6 +16,7 @@
 // under the License.
 
 pub(crate) mod abs;
+pub(crate) mod aes_decrypt;
 mod ceil;
 pub(crate) mod checked_arithmetic;
 mod div;
@@ -27,6 +28,7 @@ mod round;
 pub(crate) mod unhex;
 mod utils;
 
+pub use aes_decrypt::spark_aes_decrypt;
 pub use ceil::spark_ceil;
 pub use div::spark_decimal_div;
 pub use div::spark_decimal_integral_div;
