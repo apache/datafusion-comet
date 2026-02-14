@@ -315,9 +315,13 @@ case class CometScanRule(session: SparkSession)
         }
 
       // Iceberg scan - detected by class name (works with unpatched Iceberg)
+      // SparkBatchQueryScan: normal query scans
+      // SparkStagedScan: compaction scans via ScanTaskSetManager
       case _
-          if scanExec.scan.getClass.getName ==
-            "org.apache.iceberg.spark.source.SparkBatchQueryScan" =>
+          if Set(
+            "org.apache.iceberg.spark.source.SparkBatchQueryScan",
+            "org.apache.iceberg.spark.source.SparkStagedScan").contains(
+            scanExec.scan.getClass.getName) =>
         val fallbackReasons = new ListBuffer[String]()
 
         // Native Iceberg scan requires both configs to be enabled

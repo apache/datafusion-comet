@@ -150,6 +150,16 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_ICEBERG_COMPACTION_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.iceberg.compaction.enabled")
+      .category(CATEGORY_TESTING)
+      .doc(
+        "Whether to enable Comet-accelerated Iceberg compaction. When enabled, " +
+          "CALL rewrite_data_files() uses Comet's native scan for the read path, " +
+          "reducing JVM overhead during compaction. Experimental.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_CSV_V2_NATIVE_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.scan.csv.v2.enabled")
       .category(CATEGORY_TESTING)
