@@ -19,7 +19,7 @@
 
 package org.apache.comet.parquet
 
-import java.io.{File, FileFilter}
+import java.io.File
 import java.math.{BigDecimal, BigInteger}
 import java.time.{ZoneId, ZoneOffset}
 
@@ -31,20 +31,17 @@ import scala.util.control.Breaks.breakable
 import org.scalactic.source.Position
 import org.scalatest.Tag
 
-import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.Path
 import org.apache.parquet.example.data.simple.SimpleGroup
 import org.apache.parquet.schema.MessageTypeParser
 import org.apache.spark.SparkException
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
-import org.apache.spark.sql.catalyst.expressions.GenericInternalRow
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.comet.{CometBatchScanExec, CometNativeScanExec, CometScanExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
-import org.apache.spark.unsafe.types.UTF8String
 
 import com.google.common.primitives.UnsignedLong
 
@@ -698,76 +695,6 @@ abstract class ParquetReadSuite extends CometTestBase {
         withParquetTable(data, "tbl", withDictionary = enableDictionary) {
           val df = sql("SELECT count(*) FROM tbl WHERE _1 >= 0")
           checkAnswer(df, Row(100) :: Nil)
-        }
-      }
-    }
-  }
-
-  test("partition column types") {
-    withTempPath { dir =>
-      Seq(1).toDF().repartition(1).write.parquet(dir.getCanonicalPath)
-
-      val dataTypes =
-        Seq(
-          StringType,
-          BooleanType,
-          ByteType,
-          BinaryType,
-          ShortType,
-          IntegerType,
-          LongType,
-          FloatType,
-          DoubleType,
-          DecimalType(25, 5),
-          DateType,
-          TimestampType)
-
-      // TODO: support `NullType` here, after we add the support in `ColumnarBatchRow`
-      val constantValues =
-        Seq(
-          UTF8String.fromString("a string"),
-          true,
-          1.toByte,
-          "Spark SQL".getBytes,
-          2.toShort,
-          3,
-          Long.MaxValue,
-          0.25.toFloat,
-          0.75d,
-          Decimal("1234.23456"),
-          DateTimeUtils.fromJavaDate(java.sql.Date.valueOf("2015-01-01")),
-          DateTimeUtils.fromJavaTimestamp(java.sql.Timestamp.valueOf("2015-01-01 23:50:59.123")))
-
-      dataTypes.zip(constantValues).foreach { case (dt, v) =>
-        val schema = StructType(StructField("pcol", dt) :: Nil)
-        val conf = SQLConf.get
-        val partitionValues = new GenericInternalRow(Array(v))
-        val file = dir
-          .listFiles(new FileFilter {
-            override def accept(pathname: File): Boolean =
-              pathname.isFile && pathname.toString.endsWith("parquet")
-          })
-          .head
-        val reader = new BatchReader(
-          file.toString,
-          CometConf.COMET_BATCH_SIZE.get(conf),
-          schema,
-          partitionValues)
-        reader.init()
-
-        try {
-          reader.nextBatch()
-          val batch = reader.currentBatch()
-          val actual = batch.getRow(0).get(1, dt)
-          val expected = v
-          if (dt.isInstanceOf[BinaryType]) {
-            assert(
-              actual.asInstanceOf[Array[Byte]] sameElements expected.asInstanceOf[Array[Byte]])
-          } else {
-            assert(actual == expected)
-          }
-        } finally {
-          reader.close()
         }
       }
     }
@@ -1535,116 +1462,6 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
-  test("test pre-fetching multiple files") {
-    def makeRawParquetFile(
-        path: Path,
-        dictionaryEnabled: Boolean,
-        n: Int,
-        pageSize: Int): Seq[Option[Int]] = {
-      val schemaStr =
-        """
-          |message root {
-          |  optional boolean _1;
-          |  optional int32   _2(INT_8);
-          |  optional int32   _3(INT_16);
-          |  optional int32   _4;
-          |  optional int64   _5;
-          |  optional float   _6;
-          |  optional double  _7;
-          |  optional binary  _8(UTF8);
-          |  optional int32   _9(UINT_8);
-          |  optional int32   _10(UINT_16);
-          |  optional int32   _11(UINT_32);
-          |  optional int64   _12(UINT_64);
-          |  optional binary  _13(ENUM);
-          |}
-        """.stripMargin
-
-      val schema = MessageTypeParser.parseMessageType(schemaStr)
-      val writer = createParquetWriter(
-        schema,
-        path,
-        dictionaryEnabled = dictionaryEnabled,
-        pageSize = pageSize,
-        dictionaryPageSize = pageSize)
-
-      val rand = new scala.util.Random(42)
-      val expected = (0 until n).map { i =>
-        if (rand.nextBoolean()) {
-          None
-        } else {
-          Some(i)
-        }
-      }
-      expected.foreach { opt =>
-        val record = new SimpleGroup(schema)
-        opt match {
-          case Some(i) =>
-            record.add(0, i % 2 == 0)
-            record.add(1, i.toByte)
-            record.add(2, i.toShort)
-            record.add(3, i)
-            record.add(4, i.toLong)
-            record.add(5, i.toFloat)
-            record.add(6, i.toDouble)
-            record.add(7, i.toString * 48)
-            record.add(8, (-i).toByte)
-            record.add(9, (-i).toShort)
-            record.add(10, -i)
-            record.add(11, (-i).toLong)
-            record.add(12, i.toString)
-          case _ =>
-        }
-        writer.write(record)
-      }
-
-      writer.close()
-      expected
-    }
-
-    val conf = new Configuration()
-    conf.set("spark.comet.scan.preFetch.enabled", "true");
-    conf.set("spark.comet.scan.preFetch.threadNum", "4");
-
-    withTempDir { dir =>
-      val threadPool = CometPrefetchThreadPool.getOrCreateThreadPool(2)
-
-      val readers = (0 to 10).map { idx =>
-        val path = new Path(dir.toURI.toString, s"part-r-$idx.parquet")
-        makeRawParquetFile(path, dictionaryEnabled = false, 10000, 500)
-
-        val reader = new BatchReader(conf, path.toString, 1000, null, null)
-        reader.submitPrefetchTask(threadPool)
-
-        reader
-      }
-
-      // Wait for all pre-fetch tasks
-      readers.foreach { reader =>
-        val task = reader.getPrefetchTask()
-        task.get()
-      }
-
-      val totolRows = readers.map { reader =>
-        val queue = reader.getPrefetchQueue()
-        var rowCount = 0L
-
-        while (!queue.isEmpty) {
-          val rowGroup = queue.take().getLeft
-          rowCount += rowGroup.getRowCount
-        }
-
-        reader.close()
-
-        rowCount
-      }.sum
-
-      readParquetFile(dir.toString) { df =>
-        assert(df.count() == totolRows)
-      }
-    }
-  }
-
   test("test merge scan range") {
     def makeRawParquetFile(path: Path, n: Int): Seq[Option[Int]] = {
       val dictionaryPageSize = 1024
@@ -1749,23 +1566,6 @@ abstract class ParquetReadSuite extends CometTestBase {
             .head
             .toString()
             .startsWith(scanner))
-      }
-    }
-  }
-
-  override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
-      pos: Position): Unit = {
-    Seq(true, false).foreach { prefetch =>
-      val cometTestName = if (prefetch) {
-        testName + " (prefetch enabled)"
-      } else {
-        testName
-      }
-
-      super.test(cometTestName, testTags: _*) {
-        withSQLConf(CometConf.COMET_SCAN_PREFETCH_ENABLED.key -> prefetch.toString) {
-          testFun
-        }
       }
     }
   }
@@ -2036,11 +1836,7 @@ class ParquetReadV2Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
       val scans = collect(r.filter(f).queryExecution.executedPlan) { case p: CometBatchScanExec =>
         p.scan
       }
-      if (CometConf.COMET_ENABLED.get()) {
-        assert(scans.nonEmpty && scans.forall(_.isInstanceOf[CometParquetScan]))
-      } else {
-        assert(!scans.exists(_.isInstanceOf[CometParquetScan]))
-      }
+      assert(scans.isEmpty)
     }
   }
 
