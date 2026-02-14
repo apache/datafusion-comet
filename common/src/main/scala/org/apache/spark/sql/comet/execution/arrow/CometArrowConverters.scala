@@ -27,10 +27,10 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.types.StructType
-import org.apache.spark.sql.vectorized.{ColumnarArray, ColumnarBatch}
+import org.apache.spark.sql.vectorized.{ArrowColumnVector, ColumnarArray, ColumnarBatch}
 
 import org.apache.comet.CometArrowAllocator
-import org.apache.comet.vector.NativeUtil
+import org.apache.comet.vector.{CometVector, NativeUtil}
 
 object CometArrowConverters extends Logging {
   // This is similar how Spark converts internal row to Arrow format except that it is transforming
@@ -183,6 +183,29 @@ object CometArrowConverters extends Logging {
         null
       }
     }
+  }
+
+  /**
+   * Attempts zero-copy conversion of a ColumnarBatch whose columns are all ArrowColumnVector
+   * instances. Returns Some(iterator) if successful, None if the batch is not Arrow-backed.
+   */
+  def tryZeroCopyConvert(batch: ColumnarBatch): Option[Iterator[ColumnarBatch]] = {
+    val numCols = batch.numCols()
+    if (numCols == 0) return None
+
+    // Check that every column is an ArrowColumnVector
+    var i = 0
+    while (i < numCols) {
+      if (!batch.column(i).isInstanceOf[ArrowColumnVector]) return None
+      i += 1
+    }
+
+    // All columns are Arrow-backed; wrap their ValueVectors as CometVectors (zero-copy)
+    val cometVectors = (0 until numCols).map { idx =>
+      val valueVector = batch.column(idx).asInstanceOf[ArrowColumnVector].getValueVector
+      CometVector.getVector(valueVector, true, null)
+    }
+    Some(Iterator(new ColumnarBatch(cometVectors.toArray, batch.numRows())))
   }
 
   def columnarBatchToArrowBatchIter(
