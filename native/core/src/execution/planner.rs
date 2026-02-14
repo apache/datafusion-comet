@@ -1040,7 +1040,7 @@ impl PhysicalPlanner {
                     .map(|expr| self.create_expr(expr, Arc::clone(&required_schema)))
                     .collect();
 
-                let default_values: Option<HashMap<usize, ScalarValue>> = if !common
+                let default_values: Option<HashMap<Column, ScalarValue>> = if !common
                     .default_values
                     .is_empty()
                 {
@@ -1070,6 +1070,11 @@ impl PhysicalPlanner {
                         default_values_indexes
                             .into_iter()
                             .zip(default_values)
+                            .map(|(idx, scalar_value)| {
+                                let field = required_schema.field(idx);
+                                let column = Column::new(field.name().as_str(), idx);
+                                (column, scalar_value)
+                            })
                             .collect(),
                     )
                 } else {

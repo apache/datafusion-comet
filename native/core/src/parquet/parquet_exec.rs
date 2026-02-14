@@ -28,7 +28,7 @@ use datafusion::datasource::physical_plan::{
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::execution::SendableRecordBatchStream;
-use datafusion::physical_expr::expressions::BinaryExpr;
+use datafusion::physical_expr::expressions::{BinaryExpr, Column};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr_adapter::PhysicalExprAdapterFactory;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
@@ -67,7 +67,7 @@ pub(crate) fn init_datasource_exec(
     file_groups: Vec<Vec<PartitionedFile>>,
     projection_vector: Option<Vec<usize>>,
     data_filters: Option<Vec<Arc<dyn PhysicalExpr>>>,
-    default_values: Option<HashMap<usize, ScalarValue>>,
+    default_values: Option<HashMap<Column, ScalarValue>>,
     session_timezone: &str,
     case_sensitive: bool,
     session_ctx: &Arc<SessionContext>,

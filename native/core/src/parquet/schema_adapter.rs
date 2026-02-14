@@ -54,15 +54,15 @@ pub struct SparkPhysicalExprAdapterFactory {
     /// Spark-specific parquet options for type conversions
     parquet_options: SparkParquetOptions,
     /// Default values for columns that may be missing from the physical schema.
-    /// The key is the column index in the logical schema.
-    default_values: Option<HashMap<usize, ScalarValue>>,
+    /// The key is the Column (containing name and index).
+    default_values: Option<HashMap<Column, ScalarValue>>,
 }
 
 impl SparkPhysicalExprAdapterFactory {
     /// Create a new factory with the given options.
     pub fn new(
         parquet_options: SparkParquetOptions,
-        default_values: Option<HashMap<usize, ScalarValue>>,
+        default_values: Option<HashMap<Column, ScalarValue>>,
     ) -> Self {
         Self {
             parquet_options,
@@ -186,8 +186,8 @@ struct SparkPhysicalExprAdapter {
     physical_file_schema: SchemaRef,
     /// Spark-specific options for type conversions
     parquet_options: SparkParquetOptions,
-    /// Default values for missing columns (keyed by logical schema index)
-    default_values: Option<HashMap<usize, ScalarValue>>,
+    /// Default values for missing columns (keyed by Column)
+    default_values: Option<HashMap<Column, ScalarValue>>,
     /// The default DataFusion adapter to delegate standard handling to
     default_adapter: Arc<dyn PhysicalExprAdapter>,
     /// Mapping from logical column names to original physical column names,
@@ -207,10 +207,10 @@ impl PhysicalExprAdapter for SparkPhysicalExprAdapter {
         //
         // The default adapter may fail for complex nested type casts (List, Map).
         // In that case, fall back to wrapping everything ourselves.
+        let expr = self.replace_missing_with_defaults(expr)?;
         let expr = match self.default_adapter.rewrite(Arc::clone(&expr)) {
             Ok(rewritten) => {
                 // Replace references to missing columns with default values
-                let rewritten = self.replace_missing_with_defaults(rewritten)?;
                 // Replace DataFusion's CastColumnExpr with either:
                 // - CometCastColumnExpr (for Struct/List/Map, uses spark_parquet_convert)
                 // - Spark Cast (for simple scalar types)
@@ -384,16 +384,15 @@ impl SparkPhysicalExprAdapter {
             return Ok(expr);
         }
 
-        // Convert index-based defaults to name-based for replace_columns_with_literals
+        dbg!(&self.logical_file_schema, &self.physical_file_schema);
+
+        // Convert Column-based defaults to name-based for replace_columns_with_literals
         let name_based: HashMap<&str, &ScalarValue> = defaults
             .iter()
-            .filter_map(|(idx, val)| {
-                self.logical_file_schema
-                    .fields()
-                    .get(*idx)
-                    .map(|f| (f.name().as_str(), val))
-            })
+            .map(|(col, val)| (col.name(), val))
             .collect();
+
+        dbg!(&expr, &name_based);
 
         if name_based.is_empty() {
             return Ok(expr);
@@ -465,13 +464,13 @@ pub fn adapt_batch_with_expressions(
 pub struct SparkSchemaAdapterFactory {
     /// Spark cast options
     parquet_options: SparkParquetOptions,
-    default_values: Option<HashMap<usize, ScalarValue>>,
+    default_values: Option<HashMap<Column, ScalarValue>>,
 }
 
 impl SparkSchemaAdapterFactory {
     pub fn new(
         options: SparkParquetOptions,
-        default_values: Option<HashMap<usize, ScalarValue>>,
+        default_values: Option<HashMap<Column, ScalarValue>>,
     ) -> Self {
         Self {
             parquet_options: options,
@@ -509,7 +508,7 @@ pub struct SparkSchemaAdapter {
     required_schema: SchemaRef,
     /// Spark cast options
     parquet_options: SparkParquetOptions,
-    default_values: Option<HashMap<usize, ScalarValue>>,
+    default_values: Option<HashMap<Column, ScalarValue>>,
 }
 
 impl SchemaAdapter for SparkSchemaAdapter {
@@ -614,7 +613,7 @@ pub struct SchemaMapping {
     field_mappings: Vec<Option<usize>>,
     /// Spark cast options
     parquet_options: SparkParquetOptions,
-    default_values: Option<HashMap<usize, ScalarValue>>,
+    default_values: Option<HashMap<Column, ScalarValue>>,
 }
 
 impl SchemaMapper for SchemaMapping {
@@ -643,7 +642,9 @@ impl SchemaMapper for SchemaMapping {
                     || {
                         if let Some(default_values) = &self.default_values {
                             // We have a map of default values, see if this field is in there.
-                            if let Some(value) = default_values.get(&field_idx)
+                            // Create a Column from the field name and index to look up the default value
+                            let column = Column::new(field.name().as_str(), field_idx);
+                            if let Some(value) = default_values.get(&column)
                             // Default value exists, construct a column from it.
                             {
                                 let cv = if field.data_type() == &value.data_type() {
