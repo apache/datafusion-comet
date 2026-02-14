@@ -106,13 +106,16 @@ case class CometSparkToColumnarExec(child: SparkPlan)
         .mapPartitionsInternal { sparkBatches =>
           val arrowBatches =
             sparkBatches.flatMap { sparkBatch =>
-              val context = TaskContext.get()
-              CometArrowConverters.columnarBatchToArrowBatchIter(
-                sparkBatch,
-                schema,
-                maxRecordsPerBatch,
-                timeZoneId,
-                context)
+              CometArrowConverters.tryZeroCopyConvert(sparkBatch).getOrElse {
+                // Fallback: element-by-element copy via ArrowWriter
+                val context = TaskContext.get()
+                CometArrowConverters.columnarBatchToArrowBatchIter(
+                  sparkBatch,
+                  schema,
+                  maxRecordsPerBatch,
+                  timeZoneId,
+                  context)
+              }
             }
           createTimingIter(arrowBatches, numInputRows, numOutputBatches, conversionTime)
         }
