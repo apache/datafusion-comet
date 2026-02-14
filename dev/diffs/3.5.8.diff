@@ -2832,7 +2832,7 @@ index d675503a8ba..f220892396e 100644
 +      }
        assert(bucketedScan.length == expectedNumBucketedScan)
      }
- 
+
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/streaming/FileStreamSinkSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/streaming/FileStreamSinkSuite.scala
 index 7f6fa2a123e..c778b4e2c48 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/streaming/FileStreamSinkSuite.scala

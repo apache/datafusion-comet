@@ -41,9 +41,6 @@ use datafusion_physical_expr_adapter::{
 };
 use std::collections::HashMap;
 use std::sync::Arc;
-// ============================================================================
-// New PhysicalExprAdapter Implementation (Recommended)
-// ============================================================================
 
 /// Factory for creating Spark-compatible physical expression adapters.
 ///
@@ -54,15 +51,15 @@ pub struct SparkPhysicalExprAdapterFactory {
     /// Spark-specific parquet options for type conversions
     parquet_options: SparkParquetOptions,
     /// Default values for columns that may be missing from the physical schema.
-    /// The key is the column index in the logical schema.
-    default_values: Option<HashMap<usize, ScalarValue>>,
+    /// The key is the Column (containing name and index).
+    default_values: Option<HashMap<Column, ScalarValue>>,
 }
 
 impl SparkPhysicalExprAdapterFactory {
     /// Create a new factory with the given options.
     pub fn new(
         parquet_options: SparkParquetOptions,
-        default_values: Option<HashMap<usize, ScalarValue>>,
+        default_values: Option<HashMap<Column, ScalarValue>>,
     ) -> Self {
         Self {
             parquet_options,
@@ -186,8 +183,8 @@ struct SparkPhysicalExprAdapter {
     physical_file_schema: SchemaRef,
     /// Spark-specific options for type conversions
     parquet_options: SparkParquetOptions,
-    /// Default values for missing columns (keyed by logical schema index)
-    default_values: Option<HashMap<usize, ScalarValue>>,
+    /// Default values for missing columns (keyed by Column)
+    default_values: Option<HashMap<Column, ScalarValue>>,
     /// The default DataFusion adapter to delegate standard handling to
     default_adapter: Arc<dyn PhysicalExprAdapter>,
     /// Mapping from logical column names to original physical column names,
@@ -207,8 +204,10 @@ impl PhysicalExprAdapter for SparkPhysicalExprAdapter {
         //
         // The default adapter may fail for complex nested type casts (List, Map).
         // In that case, fall back to wrapping everything ourselves.
+        let expr = self.replace_missing_with_defaults(expr)?;
         let expr = match self.default_adapter.rewrite(Arc::clone(&expr)) {
             Ok(rewritten) => {
+                // Replace references to missing columns with default values
                 // Replace DataFusion's CastColumnExpr with either:
                 // - CometCastColumnExpr (for Struct/List/Map, uses spark_parquet_convert)
                 // - Spark Cast (for simple scalar types)
@@ -216,9 +215,10 @@ impl PhysicalExprAdapter for SparkPhysicalExprAdapter {
                     .transform(|e| self.replace_with_spark_cast(e))
                     .data()?
             }
-            Err(_) => {
+            Err(e) => {
                 // Default adapter failed (likely complex nested type cast).
                 // Handle all type mismatches ourselves using spark_parquet_convert.
+                log::info!("Default schema adapter error: {}", e);
                 self.wrap_all_type_mismatches(expr)?
             }
         };
@@ -249,7 +249,6 @@ impl PhysicalExprAdapter for SparkPhysicalExprAdapter {
     }
 }
 
-#[allow(dead_code)]
 impl SparkPhysicalExprAdapter {
     /// Wrap ALL Column expressions that have type mismatches with CometCastColumnExpr.
     /// This is the fallback path when the default adapter fails (e.g., for complex
@@ -369,53 +368,6 @@ impl SparkPhysicalExprAdapter {
         Ok(Transformed::no(expr))
     }
 
-    /// Cast Column expressions where the physical and logical datatypes differ.
-    ///
-    /// This function traverses the expression tree and for each Column expression,
-    /// checks if the physical file schema datatype differs from the logical file schema
-    /// datatype. If they differ, it wraps the Column with a CastColumnExpr to perform
-    /// the necessary type conversion.
-    fn cast_datafusion_unsupported_expr(
-        &self,
-        expr: Arc<dyn PhysicalExpr>,
-    ) -> DataFusionResult<Arc<dyn PhysicalExpr>> {
-        expr.transform(|e| {
-            // Check if this is a Column expression
-            if let Some(column) = e.as_any().downcast_ref::<Column>() {
-                let col_idx = column.index();
-
-                // dbg!(&self.logical_file_schema, &self.physical_file_schema);
-
-                // Get the logical datatype (expected by the query)
-                let logical_field = self.logical_file_schema.fields().get(col_idx);
-                // Get the physical datatype (actual file schema)
-                let physical_field = self.physical_file_schema.fields().get(col_idx);
-
-                // dbg!(&logical_field, &physical_field);
-
-                if let (Some(logical_field), Some(physical_field)) = (logical_field, physical_field)
-                {
-                    let logical_type = logical_field.data_type();
-                    let physical_type = physical_field.data_type();
-
-                    // If datatypes differ, insert a CastColumnExpr
-                    if logical_type != physical_type {
-                        let cast_expr: Arc<dyn PhysicalExpr> = Arc::new(CometCastColumnExpr::new(
-                            Arc::clone(&e),
-                            Arc::clone(physical_field),
-                            Arc::clone(logical_field),
-                            None,
-                        ));
-                        // dbg!(&cast_expr);
-                        return Ok(Transformed::yes(cast_expr));
-                    }
-                }
-            }
-            Ok(Transformed::no(e))
-        })
-        .data()
-    }
-
     /// Replace references to missing columns with default values.
     fn replace_missing_with_defaults(
         &self,
@@ -429,16 +381,54 @@ impl SparkPhysicalExprAdapter {
             return Ok(expr);
         }
 
-        // Convert index-based defaults to name-based for replace_columns_with_literals
-        let name_based: HashMap<&str, &ScalarValue> = defaults
+        // dbg!(&self.logical_file_schema, &self.physical_file_schema);
+
+        // Convert Column-based defaults to name-based for replace_columns_with_literals.
+        // Only include columns that are MISSING from the physical file schema.
+        // If the default value's type doesn't match the logical schema, cast it using Spark cast.
+        let owned_values: Vec<(String, ScalarValue)> = defaults
             .iter()
-            .filter_map(|(idx, val)| {
-                self.logical_file_schema
-                    .fields()
-                    .get(*idx)
-                    .map(|f| (f.name().as_str(), val))
+            .filter(|(col, _)| {
+                // Only include defaults for columns missing from the physical file schema
+                let col_name = col.name();
+                if self.parquet_options.case_sensitive {
+                    self.physical_file_schema.field_with_name(col_name).is_err()
+                } else {
+                    !self
+                        .physical_file_schema
+                        .fields()
+                        .iter()
+                        .any(|f| f.name().eq_ignore_ascii_case(col_name))
+                }
+            })
+            .map(|(col, val)| {
+                let col_name = col.name();
+                let value = self
+                    .logical_file_schema
+                    .field_with_name(col_name)
+                    .ok()
+                    .filter(|field| val.data_type() != *field.data_type())
+                    .and_then(|field| {
+                        spark_parquet_convert(
+                            ColumnarValue::Scalar(val.clone()),
+                            field.data_type(),
+                            &self.parquet_options,
+                        )
+                        .ok()
+                        .and_then(|cv| match cv {
+                            ColumnarValue::Scalar(s) => Some(s),
+                            _ => None,
+                        })
+                    })
+                    .unwrap_or_else(|| val.clone());
+                (col_name.to_string(), value)
             })
             .collect();
+
+        let name_based: HashMap<&str, &ScalarValue> =
+            owned_values.iter().map(|(k, v)| (k.as_str(), v)).collect();
+
+        dbg!(&name_based, &expr);
 
         if name_based.is_empty() {
             return Ok(expr);
@@ -510,13 +500,13 @@ pub fn adapt_batch_with_expressions(
 pub struct SparkSchemaAdapterFactory {
     /// Spark cast options
     parquet_options: SparkParquetOptions,
-    default_values: Option<HashMap<usize, ScalarValue>>,
+    default_values: Option<HashMap<Column, ScalarValue>>,
 }
 
 impl SparkSchemaAdapterFactory {
     pub fn new(
         options: SparkParquetOptions,
-        default_values: Option<HashMap<usize, ScalarValue>>,
+        default_values: Option<HashMap<Column, ScalarValue>>,
     ) -> Self {
         Self {
             parquet_options: options,
@@ -554,7 +544,7 @@ pub struct SparkSchemaAdapter {
     required_schema: SchemaRef,
     /// Spark cast options
     parquet_options: SparkParquetOptions,
-    default_values: Option<HashMap<usize, ScalarValue>>,
+    default_values: Option<HashMap<Column, ScalarValue>>,
 }
 
 impl SchemaAdapter for SparkSchemaAdapter {
@@ -659,7 +649,7 @@ pub struct SchemaMapping {
     field_mappings: Vec<Option<usize>>,
     /// Spark cast options
     parquet_options: SparkParquetOptions,
-    default_values: Option<HashMap<usize, ScalarValue>>,
+    default_values: Option<HashMap<Column, ScalarValue>>,
 }
 
 impl SchemaMapper for SchemaMapping {
@@ -688,7 +678,9 @@ impl SchemaMapper for SchemaMapping {
                     || {
                         if let Some(default_values) = &self.default_values {
                             // We have a map of default values, see if this field is in there.
-                            if let Some(value) = default_values.get(&field_idx)
+                            // Create a Column from the field name and index to look up the default value
+                            let column = Column::new(field.name().as_str(), field_idx);
+                            if let Some(value) = default_values.get(&column)
                             // Default value exists, construct a column from it.
                             {
                                 let cv = if field.data_type() == &value.data_type() {
