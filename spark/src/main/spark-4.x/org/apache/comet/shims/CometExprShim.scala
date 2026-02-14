@@ -1,0 +1,120 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+package org.apache.comet.shims
+
+import org.apache.spark.sql.catalyst.expressions._
+import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
+import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.internal.types.StringTypeWithCollation
+import org.apache.spark.sql.types.{BinaryType, BooleanType, DataTypes, StringType}
+
+import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.expressions.{CometCast, CometEvalMode}
+import org.apache.comet.serde.{CommonStringExprs, Compatible, ExprOuterClass, Incompatible}
+import org.apache.comet.serde.ExprOuterClass.{BinaryOutputStyle, Expr}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
+
+/**
+ * `CometExprShim` acts as a shim for parsing expressions from different Spark versions.
+ */
+trait CometExprShim extends CommonStringExprs with ShimSQLConf {
+  protected def evalMode(c: Cast): CometEvalMode.Value =
+    CometEvalModeUtil.fromSparkEvalMode(c.evalMode)
+
+  protected def binaryOutputStyle: BinaryOutputStyle = {
+    getBinaryOutputStyle match {
+      case Some(SQLConf.BinaryOutputStyle.UTF8) => BinaryOutputStyle.UTF8
+      case Some(SQLConf.BinaryOutputStyle.BASIC) => BinaryOutputStyle.BASIC
+      case Some(SQLConf.BinaryOutputStyle.BASE64) => BinaryOutputStyle.BASE64
+      case Some(SQLConf.BinaryOutputStyle.HEX) => BinaryOutputStyle.HEX
+      case _ => BinaryOutputStyle.HEX_DISCRETE
+    }
+  }
+
+  def versionSpecificExprToProtoInternal(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    expr match {
+      case s: StaticInvoke
+          if s.staticObject == classOf[StringDecode] &&
+            s.dataType.isInstanceOf[StringType] &&
+            s.functionName == "decode" &&
+            s.arguments.size == 4 &&
+            s.inputTypes == Seq(
+              BinaryType,
+              StringTypeWithCollation(supportsTrimCollation = true),
+              BooleanType,
+              BooleanType) =>
+        val Seq(bin, charset, _, _) = s.arguments
+        stringDecode(expr, charset, bin, inputs, binding)
+
+      case expr @ ToPrettyString(child, timeZoneId) =>
+        val castSupported = CometCast.isSupported(
+          child.dataType,
+          DataTypes.StringType,
+          timeZoneId,
+          CometEvalMode.TRY)
+
+        val isCastSupported = castSupported match {
+          case Compatible(_) => true
+          case Incompatible(_) => true
+          case _ => false
+        }
+
+        if (isCastSupported) {
+          exprToProtoInternal(child, inputs, binding) match {
+            case Some(p) =>
+              val toPrettyString = ExprOuterClass.ToPrettyString
+                .newBuilder()
+                .setChild(p)
+                .setTimezone(timeZoneId.getOrElse("UTC"))
+                .setBinaryOutputStyle(binaryOutputStyle)
+                .build()
+              Some(
+                ExprOuterClass.Expr
+                  .newBuilder()
+                  .setToPrettyString(toPrettyString)
+                  .build())
+            case _ =>
+              withInfo(expr, child)
+              None
+          }
+        } else {
+          None
+        }
+
+      case wb: WidthBucket =>
+        val childExprs = wb.children.map(exprToProtoInternal(_, inputs, binding))
+        val optExpr = scalarFunctionExprToProto("width_bucket", childExprs: _*)
+        optExprWithInfo(optExpr, wb, wb.children: _*)
+
+      case _ => None
+    }
+  }
+}
+
+object CometEvalModeUtil {
+  def fromSparkEvalMode(evalMode: EvalMode.Value): CometEvalMode.Value = evalMode match {
+    case EvalMode.LEGACY => CometEvalMode.LEGACY
+    case EvalMode.TRY => CometEvalMode.TRY
+    case EvalMode.ANSI => CometEvalMode.ANSI
+  }
+}
