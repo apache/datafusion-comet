@@ -418,4 +418,503 @@ class CometIcebergCompactionSuite extends CometTestBase {
       }
     }
   }
+
+  // ============== Partition Transform Tests ==============
+
+  test("native compaction on bucket-partitioned table") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    assume(CometNativeCompaction.isAvailable, "Native compaction not available")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(icebergCatalogConf(warehouseDir).toSeq: _*) {
+        spark.sql("""
+          CREATE TABLE compact_cat.db.bucket_table (
+            id BIGINT,
+            category STRING,
+            value DOUBLE
+          ) USING iceberg
+          PARTITIONED BY (bucket(4, id))
+        """)
+
+        for (i <- 1 to 20) {
+          spark.sql(s"INSERT INTO compact_cat.db.bucket_table VALUES ($i, 'cat_$i', ${i * 1.5})")
+        }
+
+        val rowsBefore =
+          spark.sql("SELECT count(*) FROM compact_cat.db.bucket_table").collect()(0).getLong(0)
+
+        val icebergTable = loadIcebergTable("compact_cat.db.bucket_table")
+        CometNativeCompaction(spark).rewriteDataFiles(icebergTable)
+
+        spark.sql("REFRESH TABLE compact_cat.db.bucket_table")
+        val rowsAfter =
+          spark.sql("SELECT count(*) FROM compact_cat.db.bucket_table").collect()(0).getLong(0)
+        assert(rowsAfter == rowsBefore, s"Row count changed: $rowsBefore -> $rowsAfter")
+
+        spark.sql("DROP TABLE compact_cat.db.bucket_table")
+      }
+    }
+  }
+
+  test("native compaction on truncate-partitioned table") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    assume(CometNativeCompaction.isAvailable, "Native compaction not available")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(icebergCatalogConf(warehouseDir).toSeq: _*) {
+        spark.sql("""
+          CREATE TABLE compact_cat.db.truncate_table (
+            id BIGINT,
+            name STRING,
+            value DOUBLE
+          ) USING iceberg
+          PARTITIONED BY (truncate(3, name))
+        """)
+
+        for (i <- 1 to 15) {
+          spark.sql(
+            s"INSERT INTO compact_cat.db.truncate_table VALUES ($i, 'name_$i', ${i * 1.5})")
+        }
+
+        val rowsBefore =
+          spark.sql("SELECT count(*) FROM compact_cat.db.truncate_table").collect()(0).getLong(0)
+
+        val icebergTable = loadIcebergTable("compact_cat.db.truncate_table")
+        CometNativeCompaction(spark).rewriteDataFiles(icebergTable)
+
+        spark.sql("REFRESH TABLE compact_cat.db.truncate_table")
+        val rowsAfter =
+          spark.sql("SELECT count(*) FROM compact_cat.db.truncate_table").collect()(0).getLong(0)
+        assert(rowsAfter == rowsBefore, s"Row count changed: $rowsBefore -> $rowsAfter")
+
+        spark.sql("DROP TABLE compact_cat.db.truncate_table")
+      }
+    }
+  }
+
+  test("native compaction on month-partitioned table") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    assume(CometNativeCompaction.isAvailable, "Native compaction not available")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(icebergCatalogConf(warehouseDir).toSeq: _*) {
+        spark.sql("""
+          CREATE TABLE compact_cat.db.month_part_table (
+            id BIGINT,
+            event_ts TIMESTAMP,
+            data STRING
+          ) USING iceberg
+          PARTITIONED BY (month(event_ts))
+        """)
+
+        for (month <- 1 to 3; i <- 1 to 3) {
+          val monthStr = f"$month%02d"
+          spark.sql(s"""
+            INSERT INTO compact_cat.db.month_part_table
+            VALUES (${(month - 1) * 3 + i}, TIMESTAMP '2024-$monthStr-15 10:00:00', 'data_$i')
+          """)
+        }
+
+        val rowsBefore =
+          spark
+            .sql("SELECT count(*) FROM compact_cat.db.month_part_table")
+            .collect()(0)
+            .getLong(0)
+
+        val icebergTable = loadIcebergTable("compact_cat.db.month_part_table")
+        CometNativeCompaction(spark).rewriteDataFiles(icebergTable)
+
+        spark.sql("REFRESH TABLE compact_cat.db.month_part_table")
+        val rowsAfter =
+          spark
+            .sql("SELECT count(*) FROM compact_cat.db.month_part_table")
+            .collect()(0)
+            .getLong(0)
+        assert(rowsAfter == rowsBefore, s"Row count changed: $rowsBefore -> $rowsAfter")
+
+        spark.sql("DROP TABLE compact_cat.db.month_part_table")
+      }
+    }
+  }
+
+  test("native compaction on hour-partitioned table") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    assume(CometNativeCompaction.isAvailable, "Native compaction not available")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(icebergCatalogConf(warehouseDir).toSeq: _*) {
+        spark.sql("""
+          CREATE TABLE compact_cat.db.hour_part_table (
+            id BIGINT,
+            event_ts TIMESTAMP,
+            data STRING
+          ) USING iceberg
+          PARTITIONED BY (hour(event_ts))
+        """)
+
+        for (hour <- 1 to 4; i <- 1 to 2) {
+          val hourStr = f"$hour%02d"
+          spark.sql(s"""
+            INSERT INTO compact_cat.db.hour_part_table
+            VALUES (${(hour - 1) * 2 + i}, TIMESTAMP '2024-01-15 $hourStr:30:00', 'data_$i')
+          """)
+        }
+
+        val rowsBefore =
+          spark.sql("SELECT count(*) FROM compact_cat.db.hour_part_table").collect()(0).getLong(0)
+
+        val icebergTable = loadIcebergTable("compact_cat.db.hour_part_table")
+        CometNativeCompaction(spark).rewriteDataFiles(icebergTable)
+
+        spark.sql("REFRESH TABLE compact_cat.db.hour_part_table")
+        val rowsAfter =
+          spark.sql("SELECT count(*) FROM compact_cat.db.hour_part_table").collect()(0).getLong(0)
+        assert(rowsAfter == rowsBefore, s"Row count changed: $rowsBefore -> $rowsAfter")
+
+        spark.sql("DROP TABLE compact_cat.db.hour_part_table")
+      }
+    }
+  }
+
+  // ============== Multiple Partition Columns ==============
+
+  test("native compaction on multi-column partitioned table") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    assume(CometNativeCompaction.isAvailable, "Native compaction not available")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(icebergCatalogConf(warehouseDir).toSeq: _*) {
+        spark.sql("""
+          CREATE TABLE compact_cat.db.multi_part_table (
+            id BIGINT,
+            region STRING,
+            event_date DATE,
+            value DOUBLE
+          ) USING iceberg
+          PARTITIONED BY (days(event_date), bucket(2, region))
+        """)
+
+        val regions = Seq("US", "EU", "APAC")
+        for (day <- 1 to 3; region <- regions) {
+          spark.sql(s"""
+            INSERT INTO compact_cat.db.multi_part_table
+            VALUES (${day * 10 + regions.indexOf(region)}, '$region',
+                    DATE '2024-01-0$day', ${day * 1.5})
+          """)
+        }
+
+        val rowsBefore =
+          spark
+            .sql("SELECT count(*) FROM compact_cat.db.multi_part_table")
+            .collect()(0)
+            .getLong(0)
+
+        val icebergTable = loadIcebergTable("compact_cat.db.multi_part_table")
+        CometNativeCompaction(spark).rewriteDataFiles(icebergTable)
+
+        spark.sql("REFRESH TABLE compact_cat.db.multi_part_table")
+        val rowsAfter =
+          spark
+            .sql("SELECT count(*) FROM compact_cat.db.multi_part_table")
+            .collect()(0)
+            .getLong(0)
+        assert(rowsAfter == rowsBefore, s"Row count changed: $rowsBefore -> $rowsAfter")
+
+        spark.sql("DROP TABLE compact_cat.db.multi_part_table")
+      }
+    }
+  }
+
+  // ============== Schema Evolution Tests ==============
+
+  test("native compaction after schema evolution (add column)") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    assume(CometNativeCompaction.isAvailable, "Native compaction not available")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(icebergCatalogConf(warehouseDir).toSeq: _*) {
+        spark.sql("""
+          CREATE TABLE compact_cat.db.schema_evo_table (
+            id BIGINT,
+            name STRING
+          ) USING iceberg
+        """)
+
+        for (i <- 1 to 5) {
+          spark.sql(s"INSERT INTO compact_cat.db.schema_evo_table VALUES ($i, 'name_$i')")
+        }
+
+        spark.sql("ALTER TABLE compact_cat.db.schema_evo_table ADD COLUMN value DOUBLE")
+
+        for (i <- 6 to 10) {
+          spark.sql(
+            s"INSERT INTO compact_cat.db.schema_evo_table VALUES ($i, 'name_$i', ${i * 1.5})")
+        }
+
+        val rowsBefore =
+          spark
+            .sql("SELECT count(*) FROM compact_cat.db.schema_evo_table")
+            .collect()(0)
+            .getLong(0)
+
+        val icebergTable = loadIcebergTable("compact_cat.db.schema_evo_table")
+        CometNativeCompaction(spark).rewriteDataFiles(icebergTable)
+
+        spark.sql("REFRESH TABLE compact_cat.db.schema_evo_table")
+        val rowsAfter =
+          spark
+            .sql("SELECT count(*) FROM compact_cat.db.schema_evo_table")
+            .collect()(0)
+            .getLong(0)
+        assert(rowsAfter == rowsBefore, s"Row count changed: $rowsBefore -> $rowsAfter")
+
+        val nullCount = spark
+          .sql("SELECT count(*) FROM compact_cat.db.schema_evo_table WHERE value IS NULL")
+          .collect()(0)
+          .getLong(0)
+        assert(nullCount == 5, s"Expected 5 nulls for old rows, got $nullCount")
+
+        spark.sql("DROP TABLE compact_cat.db.schema_evo_table")
+      }
+    }
+  }
+
+  // ============== Nested Type Tests ==============
+
+  test("native compaction with struct column") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    assume(CometNativeCompaction.isAvailable, "Native compaction not available")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(icebergCatalogConf(warehouseDir).toSeq: _*) {
+        spark.sql("""
+          CREATE TABLE compact_cat.db.struct_table (
+            id BIGINT,
+            info STRUCT<name: STRING, age: INT>
+          ) USING iceberg
+        """)
+
+        for (i <- 1 to 10) {
+          spark.sql(
+            s"INSERT INTO compact_cat.db.struct_table VALUES ($i, named_struct('name', 'n$i', 'age', $i))")
+        }
+
+        val dataBefore = spark
+          .sql("SELECT id, info.name, info.age FROM compact_cat.db.struct_table ORDER BY id")
+          .collect()
+
+        val icebergTable = loadIcebergTable("compact_cat.db.struct_table")
+        CometNativeCompaction(spark).rewriteDataFiles(icebergTable)
+
+        spark.sql("REFRESH TABLE compact_cat.db.struct_table")
+        val dataAfter = spark
+          .sql("SELECT id, info.name, info.age FROM compact_cat.db.struct_table ORDER BY id")
+          .collect()
+
+        assert(
+          dataBefore.map(_.toString()).toSeq == dataAfter.map(_.toString()).toSeq,
+          "Struct data must be identical after compaction")
+
+        spark.sql("DROP TABLE compact_cat.db.struct_table")
+      }
+    }
+  }
+
+  test("native compaction with array column") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    assume(CometNativeCompaction.isAvailable, "Native compaction not available")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(icebergCatalogConf(warehouseDir).toSeq: _*) {
+        spark.sql("""
+          CREATE TABLE compact_cat.db.array_table (
+            id BIGINT,
+            tags ARRAY<STRING>
+          ) USING iceberg
+        """)
+
+        for (i <- 1 to 10) {
+          spark.sql(
+            s"INSERT INTO compact_cat.db.array_table VALUES ($i, array('tag_${i}_a', 'tag_${i}_b'))")
+        }
+
+        val dataBefore = spark
+          .sql("SELECT id, tags FROM compact_cat.db.array_table ORDER BY id")
+          .collect()
+
+        val icebergTable = loadIcebergTable("compact_cat.db.array_table")
+        CometNativeCompaction(spark).rewriteDataFiles(icebergTable)
+
+        spark.sql("REFRESH TABLE compact_cat.db.array_table")
+        val dataAfter = spark
+          .sql("SELECT id, tags FROM compact_cat.db.array_table ORDER BY id")
+          .collect()
+
+        assert(
+          dataBefore.map(_.toString()).toSeq == dataAfter.map(_.toString()).toSeq,
+          "Array data must be identical after compaction")
+
+        spark.sql("DROP TABLE compact_cat.db.array_table")
+      }
+    }
+  }
+
+  test("native compaction with map column") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    assume(CometNativeCompaction.isAvailable, "Native compaction not available")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(icebergCatalogConf(warehouseDir).toSeq: _*) {
+        spark.sql("""
+          CREATE TABLE compact_cat.db.map_table (
+            id BIGINT,
+            properties MAP<STRING, INT>
+          ) USING iceberg
+        """)
+
+        for (i <- 1 to 10) {
+          spark.sql(
+            s"INSERT INTO compact_cat.db.map_table VALUES ($i, map('key_$i', $i, 'val_$i', ${i * 10}))")
+        }
+
+        val dataBefore = spark
+          .sql("SELECT id, properties FROM compact_cat.db.map_table ORDER BY id")
+          .collect()
+
+        val icebergTable = loadIcebergTable("compact_cat.db.map_table")
+        CometNativeCompaction(spark).rewriteDataFiles(icebergTable)
+
+        spark.sql("REFRESH TABLE compact_cat.db.map_table")
+        val dataAfter = spark
+          .sql("SELECT id, properties FROM compact_cat.db.map_table ORDER BY id")
+          .collect()
+
+        assert(
+          dataBefore.map(_.toString()).toSeq == dataAfter.map(_.toString()).toSeq,
+          "Map data must be identical after compaction")
+
+        spark.sql("DROP TABLE compact_cat.db.map_table")
+      }
+    }
+  }
+
+  // ============== Table Properties Tests ==============
+
+  test("native compaction with custom table properties") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    assume(CometNativeCompaction.isAvailable, "Native compaction not available")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(icebergCatalogConf(warehouseDir).toSeq: _*) {
+        spark.sql("""
+          CREATE TABLE compact_cat.db.props_table (
+            id BIGINT,
+            value STRING
+          ) USING iceberg
+          TBLPROPERTIES (
+            'write.parquet.compression-codec' = 'zstd',
+            'write.parquet.compression-level' = '3',
+            'commit.retry.num-retries' = '5'
+          )
+        """)
+
+        for (i <- 1 to 10) {
+          spark.sql(s"INSERT INTO compact_cat.db.props_table VALUES ($i, 'v$i')")
+        }
+
+        val rowsBefore =
+          spark.sql("SELECT count(*) FROM compact_cat.db.props_table").collect()(0).getLong(0)
+
+        val icebergTable = loadIcebergTable("compact_cat.db.props_table")
+        CometNativeCompaction(spark).rewriteDataFiles(icebergTable)
+
+        spark.sql("REFRESH TABLE compact_cat.db.props_table")
+        val rowsAfter =
+          spark.sql("SELECT count(*) FROM compact_cat.db.props_table").collect()(0).getLong(0)
+        assert(rowsAfter == rowsBefore, s"Row count changed: $rowsBefore -> $rowsAfter")
+
+        spark.sql("DROP TABLE compact_cat.db.props_table")
+      }
+    }
+  }
+
+  // ============== Large Decimal Tests ==============
+
+  test("native compaction with large decimal precision") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    assume(CometNativeCompaction.isAvailable, "Native compaction not available")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(icebergCatalogConf(warehouseDir).toSeq: _*) {
+        spark.sql("""
+          CREATE TABLE compact_cat.db.decimal_table (
+            id BIGINT,
+            small_dec DECIMAL(10, 2),
+            large_dec DECIMAL(28, 10)
+          ) USING iceberg
+        """)
+
+        for (i <- 1 to 10) {
+          spark.sql(s"""
+            INSERT INTO compact_cat.db.decimal_table VALUES
+            ($i, ${i * 100.25}, ${i * 1000000.1234567890})
+          """)
+        }
+
+        val dataBefore = spark
+          .sql("SELECT * FROM compact_cat.db.decimal_table ORDER BY id")
+          .collect()
+
+        val icebergTable = loadIcebergTable("compact_cat.db.decimal_table")
+        CometNativeCompaction(spark).rewriteDataFiles(icebergTable)
+
+        spark.sql("REFRESH TABLE compact_cat.db.decimal_table")
+        val dataAfter = spark
+          .sql("SELECT * FROM compact_cat.db.decimal_table ORDER BY id")
+          .collect()
+
+        assert(
+          dataBefore.map(_.toString()).toSeq == dataAfter.map(_.toString()).toSeq,
+          "Decimal data must be identical after compaction")
+
+        spark.sql("DROP TABLE compact_cat.db.decimal_table")
+      }
+    }
+  }
+
+  // ============== Binary/UUID Tests ==============
+
+  test("native compaction with binary column") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    assume(CometNativeCompaction.isAvailable, "Native compaction not available")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(icebergCatalogConf(warehouseDir).toSeq: _*) {
+        spark.sql("""
+          CREATE TABLE compact_cat.db.binary_table (
+            id BIGINT,
+            data BINARY
+          ) USING iceberg
+        """)
+
+        for (i <- 1 to 10) {
+          spark.sql(
+            s"INSERT INTO compact_cat.db.binary_table VALUES ($i, cast('binary_data_$i' as binary))")
+        }
+
+        val rowsBefore =
+          spark.sql("SELECT count(*) FROM compact_cat.db.binary_table").collect()(0).getLong(0)
+
+        val icebergTable = loadIcebergTable("compact_cat.db.binary_table")
+        CometNativeCompaction(spark).rewriteDataFiles(icebergTable)
+
+        spark.sql("REFRESH TABLE compact_cat.db.binary_table")
+        val rowsAfter =
+          spark.sql("SELECT count(*) FROM compact_cat.db.binary_table").collect()(0).getLong(0)
+        assert(rowsAfter == rowsBefore, s"Row count changed: $rowsBefore -> $rowsAfter")
+
+        spark.sql("DROP TABLE compact_cat.db.binary_table")
+      }
+    }
+  }
 }
