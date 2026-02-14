@@ -230,6 +230,38 @@ class IcebergReadFromS3Suite extends CometS3TestBase with RESTCatalogHelper {
     spark.sql("DROP TABLE s3_catalog.db.mor_delete_test")
   }
 
+  test("REST catalog credential vending rejects wrong credentials") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    val wrongCreds = Map(
+      "s3.access-key-id" -> "WRONG_ACCESS_KEY",
+      "s3.secret-access-key" -> "WRONG_SECRET_KEY",
+      "s3.endpoint" -> minioContainer.getS3URL,
+      "s3.path-style-access" -> "true")
+    val warehouse = s"s3a://$testBucketName/warehouse-bad-creds"
+
+    withRESTCatalog(vendedCredentials = wrongCreds, warehouseLocation = Some(warehouse)) {
+      (restUri, _, _) =>
+        withSQLConf(
+          "spark.sql.catalog.bad_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+          "spark.sql.catalog.bad_cat.catalog-impl" -> "org.apache.iceberg.rest.RESTCatalog",
+          "spark.sql.catalog.bad_cat.uri" -> restUri,
+          "spark.sql.catalog.bad_cat.warehouse" -> warehouse) {
+
+          spark.sql("CREATE NAMESPACE bad_cat.db")
+
+          // CREATE TABLE succeeds (metadata only, no S3 access needed)
+          spark.sql("CREATE TABLE bad_cat.db.test (id INT) USING iceberg")
+
+          // INSERT fails because S3FileIO uses the wrong vended credentials
+          val e = intercept[Exception] {
+            spark.sql("INSERT INTO bad_cat.db.test VALUES (1)")
+          }
+          assert(e.getMessage.contains("403"), s"Expected S3 403 error but got: ${e.getMessage}")
+        }
+    }
+  }
+
   test("REST catalog credential vending with native Iceberg scan on S3") {
     assume(icebergAvailable, "Iceberg not available in classpath")
 
