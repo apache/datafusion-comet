@@ -139,6 +139,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[StructsToCsv] -> CometStructsToCsv)
 
   private val hashExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
+    classOf[Crc32] -> CometScalarFunction("crc32"),
     classOf[Md5] -> CometScalarFunction("md5"),
     classOf[Murmur3Hash] -> CometMurmur3Hash,
     classOf[Sha2] -> CometSha2,
