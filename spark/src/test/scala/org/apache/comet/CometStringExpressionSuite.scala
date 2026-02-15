@@ -148,6 +148,31 @@ class CometStringExpressionSuite extends CometTestBase {
     }
   }
 
+  test("unbase64") {
+    val data = Seq(
+      "SGVsbG8=", // base64("Hello")
+      "U3BhcmsgU1FM", // base64("Spark SQL")
+      "", // empty
+      null).map(Tuple1(_))
+    withParquetTable(data, "tbl") {
+      // unbase64 decoding from column
+      checkSparkAnswerAndOperator("SELECT unbase64(_1) FROM tbl")
+      // unbase64 with inline literal
+      checkSparkAnswerAndOperator("SELECT unbase64('U3BhcmsgU1FM') FROM tbl")
+      // null handling
+      checkSparkAnswerAndOperator("SELECT unbase64(NULL) FROM tbl")
+    }
+  }
+
+  test("to_binary with base64 falls back (failOnError)") {
+    val data = Seq("SGVsbG8=", "U3BhcmsgU1FM").map(Tuple1(_))
+    withParquetTable(data, "tbl") {
+      checkSparkAnswerAndFallbackReason(
+        "SELECT to_binary(_1, 'base64') FROM tbl",
+        "unbase64 with failOnError is not supported")
+    }
+  }
+
   test("split string basic") {
     withSQLConf("spark.comet.expression.StringSplit.allowIncompatible" -> "true") {
       withParquetTable((0 until 5).map(i => (s"value$i,test$i", i)), "tbl") {

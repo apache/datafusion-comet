@@ -460,7 +460,7 @@
 - [ ] try_to_binary
 - [ ] try_to_number
 - [x] ucase
-- [ ] unbase64
+- [x] unbase64
 - [x] upper
 
 ### struct_funcs

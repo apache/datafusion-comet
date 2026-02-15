@@ -178,6 +178,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[Left] -> CometLeft,
     classOf[Right] -> CometRight,
     classOf[Substring] -> CometSubstring,
+    classOf[UnBase64] -> CometUnBase64,
     classOf[Upper] -> CometUpper)
 
   private val bitwiseExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
