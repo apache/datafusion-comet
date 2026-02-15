@@ -386,6 +386,51 @@ class CometParquetWriterSuite extends CometTestBase {
     }
   }
 
+  private def assertCometNativeWrite(insertSql: String): Unit = {
+    val plan = captureSqlWritePlan(insertSql)
+    val hasNativeWrite = plan.exists {
+      case _: CometNativeWriteExec => true
+      case d: DataWritingCommandExec =>
+        d.child.exists(_.isInstanceOf[CometNativeWriteExec])
+      case _ => false
+    }
+    assert(
+      hasNativeWrite,
+      s"Expected CometNativeWriteExec in plan, but not found:\n${plan.treeString}")
+  }
+
+  private def captureSqlWritePlan(sqlText: String): SparkPlan = {
+    var capturedPlan: Option[QueryExecution] = None
+
+    val listener = new org.apache.spark.sql.util.QueryExecutionListener {
+      override def onSuccess(funcName: String, qe: QueryExecution, durationNs: Long): Unit = {
+        if (funcName == "command") {
+          capturedPlan = Some(qe)
+        }
+      }
+      override def onFailure(
+          funcName: String,
+          qe: QueryExecution,
+          exception: Exception): Unit = {}
+    }
+
+    spark.listenerManager.register(listener)
+    try {
+      sql(sqlText)
+      val maxWaitTimeMs = 5000
+      val checkIntervalMs = 50
+      var iterations = 0
+      while (capturedPlan.isEmpty && iterations < maxWaitTimeMs / checkIntervalMs) {
+        Thread.sleep(checkIntervalMs)
+        iterations += 1
+      }
+      assert(capturedPlan.isDefined, s"Failed to capture plan for: $sqlText")
+      stripAQEPlan(capturedPlan.get.executedPlan)
+    } finally {
+      spark.listenerManager.unregister(listener)
+    }
+  }
+
   // SPARK-38811 INSERT INTO on columns added with ALTER TABLE ADD COLUMNS: Positive tests
   // Mirrors the Spark InsertSuite test to validate Comet native writer compatibility.
 
@@ -394,7 +439,7 @@ class CometParquetWriterSuite extends CometTestBase {
       withTable("t") {
         sql("create table t(i boolean) using parquet")
         sql("alter table t add column s string default concat('abc', 'def')")
-        sql("insert into t values(true, default)")
+        assertCometNativeWrite("insert into t values(true, default)")
         checkAnswer(spark.table("t"), Row(true, "abcdef"))
       }
     }
@@ -406,7 +451,7 @@ class CometParquetWriterSuite extends CometTestBase {
         sql("create table t(i int) using parquet")
         sql("alter table t add column s bigint default 42")
         sql("alter table t add column x bigint default 43")
-        sql("insert into t(i) values(1)")
+        assertCometNativeWrite("insert into t(i) values(1)")
         checkAnswer(spark.table("t"), Row(1, 42, 43))
       }
     }
@@ -417,7 +462,7 @@ class CometParquetWriterSuite extends CometTestBase {
       withTable("t") {
         sql("create table t(i int) using parquet")
         sql("alter table t add columns s bigint default 42, x bigint default 43")
-        sql("insert into t(i) values(1)")
+        assertCometNativeWrite("insert into t(i) values(1)")
         checkAnswer(spark.table("t"), Row(1, 42, 43))
       }
     }
@@ -429,7 +474,7 @@ class CometParquetWriterSuite extends CometTestBase {
         sql("create table t(i int) using parquet")
         sql("alter table t add column s bigint default 42")
         sql("alter table t add column x bigint")
-        sql("insert into t(i) values(1)")
+        assertCometNativeWrite("insert into t(i) values(1)")
         checkAnswer(spark.table("t"), Row(1, 42, null))
       }
     }
@@ -440,7 +485,7 @@ class CometParquetWriterSuite extends CometTestBase {
       withTable("t") {
         sql("create table t(i boolean) using parquet")
         sql("alter table t add column s bigint default 41 + 1")
-        sql("insert into t(i) values(default)")
+        assertCometNativeWrite("insert into t(i) values(default)")
         checkAnswer(spark.table("t"), Row(null, 42))
       }
     }
@@ -451,7 +496,7 @@ class CometParquetWriterSuite extends CometTestBase {
       withTable("t") {
         sql("create table t(i boolean default false) using parquet")
         sql("alter table t add column s bigint default 42")
-        sql("insert into t values(false, default), (default, 42)")
+        assertCometNativeWrite("insert into t values(false, default), (default, 42)")
         checkAnswer(spark.table("t"), Seq(Row(false, 42), Row(false, 42)))
       }
     }
@@ -462,7 +507,8 @@ class CometParquetWriterSuite extends CometTestBase {
       withTable("t") {
         sql("create table t(i boolean) using parquet")
         sql("alter table t add column s bigint default 42")
-        sql("insert into t select * from values (false, default) as tab(col, other)")
+        assertCometNativeWrite(
+          "insert into t select * from values (false, default) as tab(col, other)")
         checkAnswer(spark.table("t"), Row(false, 42))
       }
     }
@@ -473,14 +519,14 @@ class CometParquetWriterSuite extends CometTestBase {
       withTable("t") {
         sql("create table t(i boolean) using parquet")
         sql("alter table t add column s bigint default 42")
-        sql("insert into t values (default, 43)")
+        assertCometNativeWrite("insert into t values (default, 43)")
         checkAnswer(spark.table("t"), Row(null, 43))
       }
     }
   }
 
-  // INSERT INTO ... SELECT with native write config fails due to pre-existing
-  // catalog refresh issue tracked separately. Skipping these variants.
+  // INSERT INTO ... SELECT with native writer fails, 
+  // open issue: https://github.com/apache/datafusion-comet/issues/3521
   ignore("SPARK-38811: default via SELECT statement") {
     withNativeWriteConf {
       withTable("t") {
