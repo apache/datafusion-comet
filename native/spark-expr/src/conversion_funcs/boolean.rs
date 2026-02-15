@@ -28,7 +28,7 @@ pub fn can_cast_from_boolean(to_type: &DataType) -> bool {
     )
 }
 
-// only incompatible boolean cast
+// only DF incompatible boolean cast
 pub fn cast_boolean_to_decimal(
     array: &ArrayRef,
     precision: u8,

@@ -754,7 +754,7 @@ fn dict_from_values<K: ArrowDictionaryKeyType>(
     Ok(Arc::new(dict_array))
 }
 
-pub fn cast_array(
+pub(crate) fn cast_array(
     array: ArrayRef,
     to_type: &DataType,
     cast_options: &SparkCastOptions,
