@@ -1135,6 +1135,15 @@ under the License.
                         <ignoreClass>com.google.thirdparty.publicsuffix.PublicSuffixType</ignoreClass>
                       </ignoreClasses>
                     </dependency>
+                    <!-- Iceberg uber jar bundles jetbrains annotations -->
+                    <dependency>
+                      <groupId>org.apache.iceberg</groupId>
+                      <artifactId>*</artifactId>
+                      <ignoreClasses>
+                        <ignoreClass>org.jetbrains.annotations.*</ignoreClass>
+                        <ignoreClass>org.intellij.lang.annotations.*</ignoreClass>
+                      </ignoreClasses>
+                    </dependency>
                   </dependencies>
                   <findAllDuplicates>true</findAllDuplicates>
                   <ignoreWhenIdentical>true</ignoreWhenIdentical>
