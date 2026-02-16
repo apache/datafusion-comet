@@ -127,7 +127,7 @@ object CometIcebergTPCCompactionBenchmark extends CometBenchmarkBase {
   private def runPartitionedTableBenchmark(dataLocation: String, numFragments: Int): Unit = {
     val tableFilePath = resolveTablePath(dataLocation, "lineitem")
 
-    withIcebergWarehouse { (warehouseDir, catalog) =>
+    withIcebergWarehouse { (_, catalog) =>
       val icebergTableName = s"$catalog.db.lineitem_partitioned"
 
       // Create fragmented partitioned table
@@ -193,7 +193,7 @@ object CometIcebergTPCCompactionBenchmark extends CometBenchmarkBase {
 
     val tableFilePath = resolveTablePath(dataLocation, tableName)
 
-    withIcebergWarehouse { (warehouseDir, catalog) =>
+    withIcebergWarehouse { (_, catalog) =>
       val icebergTableName = s"$catalog.db.${tableName}_iceberg"
 
       // Create fragmented table once to measure metadata
@@ -217,7 +217,6 @@ object CometIcebergTPCCompactionBenchmark extends CometBenchmarkBase {
       val nativeTable = Spark3Util.loadIcebergTable(spark, icebergTableName)
       new CometNativeCompaction(spark).rewriteDataFiles(nativeTable)
       val nativeTimeMs = (System.nanoTime() - nativeStart) / 1000000
-      val nativeFilesAfter = spark.sql(s"SELECT * FROM $icebergTableName.files").count()
 
       // Calculate speedup
       val speedup = if (nativeTimeMs > 0) sparkTimeMs.toDouble / nativeTimeMs.toDouble else 0.0

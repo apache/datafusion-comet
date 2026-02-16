@@ -136,8 +136,7 @@ class CometNativeCompaction(spark: SparkSession) extends Logging {
         tableConfig,
         group,
         targetFileSizeBytes,
-        compression,
-        table.location())
+        compression)
       val result = executeNativeCompaction(compactionConfig)
 
       result match {
@@ -172,7 +171,8 @@ class CometNativeCompaction(spark: SparkSession) extends Logging {
         s"Committing compaction: ${allFilesToDelete.size} files to delete, " +
           s"${allFilesToAdd.size} files to add")
 
-      val commitSuccess = commitCompaction(table, allFilesToDelete, allFilesToAdd)
+      val commitSuccess =
+        commitCompaction(table, allFilesToDelete.toSeq, allFilesToAdd.toSeq)
 
       if (!commitSuccess) {
         throw new RuntimeException("Failed to commit compaction results")
@@ -264,8 +264,7 @@ class CometNativeCompaction(spark: SparkSession) extends Logging {
       tableConfig: IcebergTableConfig,
       tasks: Seq[FileScanTask],
       targetFileSizeBytes: Long,
-      compression: String,
-      tableLocation: String): CompactionTaskConfig = {
+      compression: String): CompactionTaskConfig = {
 
     val fileScanTaskConfigs = tasks.map { task =>
       val partitionPath = task.spec().partitionToPath(task.file().partition())
@@ -312,12 +311,12 @@ class CometNativeCompaction(spark: SparkSession) extends Logging {
     try {
       val specs = table.specs()
       val deleteFiles: java.util.Set[DataFile] = new java.util.HashSet[DataFile]()
-      val deletePathSet = filesToDelete.toSet
       val snapshot = table.currentSnapshot()
       if (snapshot != null) {
-        import scala.jdk.CollectionConverters._
-        val fileScanTasks = table.newScan().planFiles().iterator().asScala
-        fileScanTasks.foreach { task =>
+        val deletePathSet = filesToDelete.toSet
+        val fileScanTasks = table.newScan().planFiles().iterator()
+        while (fileScanTasks.hasNext) {
+          val task = fileScanTasks.next()
           val dataFile = task.file()
           if (deletePathSet.contains(dataFile.path().toString)) {
             deleteFiles.add(dataFile)

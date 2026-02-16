@@ -69,8 +69,8 @@ class CometIcebergCompactionBenchmarkTest extends CometTestBase {
     CometConf.COMET_EXEC_ENABLED.key -> "true",
     CometConf.COMET_ICEBERG_COMPACTION_ENABLED.key -> "true")
 
+  // scalastyle:off parameter.number
   private def runTableBenchmark(
-      warehouseDir: File,
       sourceTable: String,
       schema: String,
       numFragments: Int,
@@ -90,8 +90,6 @@ class CometIcebergCompactionBenchmarkTest extends CometTestBase {
         LIMIT $rowsPerFragment OFFSET ${i * rowsPerFragment}
       """)
     }
-
-    val filesBefore = spark.sql(s"SELECT * FROM $tableName.files").count()
 
     // Benchmark 1: Spark default compaction
     val sparkStart = System.nanoTime()
@@ -147,7 +145,6 @@ class CometIcebergCompactionBenchmarkTest extends CometTestBase {
              l_returnflag STRING, l_linestatus STRING"""
         val (lSpark, lNative, lSpeedup) =
           runTableBenchmark(
-            warehouseDir,
             "lineitem",
             lineitemSchema,
             numFragments,
@@ -160,7 +157,7 @@ class CometIcebergCompactionBenchmarkTest extends CometTestBase {
              o_orderdate DATE, o_orderpriority STRING, o_clerk STRING, o_shippriority INT,
              o_comment STRING"""
         val (oSpark, oNative, oSpeedup) =
-          runTableBenchmark(warehouseDir, "orders", ordersSchema, numFragments, rowsPerFragment)
+          runTableBenchmark("orders", ordersSchema, numFragments, rowsPerFragment)
         println(f"${"orders"}%-15s $oSpark%12d $oNative%12d ${oSpeedup}%9.2fx")
 
         // Customer benchmark
@@ -169,7 +166,6 @@ class CometIcebergCompactionBenchmarkTest extends CometTestBase {
              c_phone STRING, c_acctbal DOUBLE, c_mktsegment STRING, c_comment STRING"""
         val (cSpark, cNative, cSpeedup) =
           runTableBenchmark(
-            warehouseDir,
             "customer",
             customerSchema,
             numFragments,
