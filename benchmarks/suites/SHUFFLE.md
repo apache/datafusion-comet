@@ -24,17 +24,17 @@ Comet Native shuffle implementations using hash or round-robin partitioning.
 
 ## Arguments
 
-| Argument        | Required | Default | Description                          |
-| --------------- | -------- | ------- | ------------------------------------ |
-| `--benchmark`   | yes      |         | `shuffle-hash` or `shuffle-roundrobin` |
-| `--data`        | yes      |         | Path to input Parquet data           |
-| `--mode`        | yes      |         | `spark`, `jvm`, or `native`          |
-| `--partitions`  | no       | `200`   | Number of shuffle partitions         |
-| `--iterations`  | no       | `1`     | Number of iterations                 |
-| `--output`      | yes      |         | Directory for results JSON           |
-| `--name`        | auto     |         | Result file prefix (auto-injected)   |
-| `--profile`     | no       |         | Enable JVM metrics profiling         |
-| `--profile-interval` | no  | `2.0`   | Profiling poll interval in seconds   |
+| Argument             | Required | Default | Description                            |
+| -------------------- | -------- | ------- | -------------------------------------- |
+| `--benchmark`        | yes      |         | `shuffle-hash` or `shuffle-roundrobin` |
+| `--data`             | yes      |         | Path to input Parquet data             |
+| `--mode`             | yes      |         | `spark`, `jvm`, or `native`            |
+| `--partitions`       | no       | `200`   | Number of shuffle partitions           |
+| `--iterations`       | no       | `1`     | Number of iterations                   |
+| `--output`           | yes      |         | Directory for results JSON             |
+| `--name`             | auto     |         | Result file prefix (auto-injected)     |
+| `--profile`          | no       |         | Enable JVM metrics profiling           |
+| `--profile-interval` | no       | `2.0`   | Profiling poll interval in seconds     |
 
 ## Generating Test Data
 
