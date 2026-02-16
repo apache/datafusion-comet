@@ -148,6 +148,24 @@ class CometStringExpressionSuite extends CometTestBase {
     }
   }
 
+  test("luhn_check") {
+    val data = Seq(
+      "79927398710", // invalid (fails Luhn)
+      "79927398713", // valid Luhn number
+      "1234567812345670", // valid credit card-like
+      "0", // valid single digit
+      "", // empty string
+      "abc", // non-numeric
+      null).map(Tuple1(_))
+    withParquetTable(data, "tbl") {
+      checkSparkAnswerAndOperator("SELECT luhn_check(_1) FROM tbl")
+      // literal values
+      checkSparkAnswerAndOperator("SELECT luhn_check('79927398713') FROM tbl")
+      // null handling
+      checkSparkAnswerAndOperator("SELECT luhn_check(NULL) FROM tbl")
+    }
+  }
+
   test("split string basic") {
     withSQLConf("spark.comet.expression.StringSplit.allowIncompatible" -> "true") {
       withParquetTable((0 until 5).map(i => (s"value$i,test$i", i)), "tbl") {
