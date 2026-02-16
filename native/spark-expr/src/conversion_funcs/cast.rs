@@ -690,8 +690,6 @@ pub(crate) fn cast_array(
     use DataType::*;
     let from_type = array.data_type().clone();
 
-    // dbg!(&from_type, &to_type);
-
     if &from_type == to_type {
         return Ok(Arc::new(array));
     }
@@ -705,8 +703,6 @@ pub(crate) fn cast_array(
             .with_timestamp_tz_format(TIMESTAMP_FORMAT)
             .with_timestamp_format(TIMESTAMP_FORMAT),
     };
-
-    // dbg!(&from_type, &to_type);
 
     let array = match &from_type {
         Dictionary(key_type, value_type)
@@ -749,8 +745,6 @@ pub(crate) fn cast_array(
             }
         }
     };
-
-    // dbg!(&from_type, &to_type);
 
     let cast_result = match (&from_type, to_type) {
         (Utf8, Boolean) => spark_cast_utf8_to_boolean::<i32>(&array, eval_mode),

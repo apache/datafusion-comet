@@ -1187,8 +1187,6 @@ impl PhysicalPlanner {
                     scan.arrow_ffi_safe,
                 )?;
 
-                // dbg!(&scan);
-
                 Ok((
                     vec![scan.clone()],
                     Arc::new(SparkPlan::new(spark_plan.plan_id, Arc::new(scan), vec![])),
