@@ -34,15 +34,15 @@ All benchmarks are run via `run.py`:
 python3 run.py --engine <engine> --benchmark <tpch|tpcds> [options]
 ```
 
-| Option          | Description                              |
-| --------------- | ---------------------------------------- |
-| `--engine`      | Engine name (matches a TOML file in `engines/`) |
-| `--benchmark`   | `tpch` or `tpcds`                        |
-| `--iterations`  | Number of iterations (default: 1)        |
-| `--output`      | Output directory (default: `.`)          |
-| `--query`       | Run a single query number                |
-| `--no-restart`  | Skip Spark master/worker restart         |
-| `--dry-run`     | Print the spark-submit command without executing |
+| Option         | Description                                      |
+| -------------- | ------------------------------------------------ |
+| `--engine`     | Engine name (matches a TOML file in `engines/`)  |
+| `--benchmark`  | `tpch` or `tpcds`                                |
+| `--iterations` | Number of iterations (default: 1)                |
+| `--output`     | Output directory (default: `.`)                  |
+| `--query`      | Run a single query number                        |
+| `--no-restart` | Skip Spark master/worker restart                 |
+| `--dry-run`    | Print the spark-submit command without executing |
 
 Available engines: `spark`, `comet`, `comet-iceberg`, `gluten`
 
