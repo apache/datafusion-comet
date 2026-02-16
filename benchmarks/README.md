@@ -46,7 +46,7 @@ benchmarks/
 ├── run.py                 # Entry point — builds and runs spark-submit
 ├── conf/
 │   ├── engines/           # Per-engine configs (comet, spark, gluten, ...)
-│   └── profiles/          # Per-environment configs (local, standalone, docker, k8s)
+│   └── profiles/          # Per-environment configs (local, standalone, docker)
 ├── runner/
 │   ├── cli.py             # Python CLI passed to spark-submit (subcommands: tpc, shuffle, micro)
 │   ├── config.py          # Config file loader and merger
@@ -61,7 +61,6 @@ benchmarks/
 │   └── memory_report.py   # Generate memory reports from profiling CSV
 ├── infra/
 │   ├── docker/            # Dockerfile, docker-compose, metrics collector
-│   └── k8s/               # Kubernetes manifests (namespace, RBAC, PVCs, Job)
 ├── create-iceberg-tpch.py # Utility: convert TPC-H Parquet to Iceberg tables
 └── drop-caches.sh         # Utility: drop OS page caches before benchmarks
 ```
@@ -117,7 +116,6 @@ Everything after `--` is passed to `runner/cli.py`. See per-suite docs:
 | `standalone-tpch`  | `profiles/standalone-tpch.conf`  | 1 executor, 8 cores, S3A       |
 | `standalone-tpcds` | `profiles/standalone-tpcds.conf` | 2 executors, 16 cores, S3A     |
 | `docker`           | `profiles/docker.conf`           | For docker-compose deployments |
-| `k8s`              | `profiles/k8s.conf`              | Spark-on-Kubernetes            |
 
 ## Environment Variables
 
@@ -131,7 +129,6 @@ environment at load time:
 | `COMET_JAR`    | comet engines        | Path to Comet JAR                 |
 | `GLUTEN_JAR`   | gluten engine        | Path to Gluten JAR                |
 | `ICEBERG_JAR`  | comet-iceberg engine | Path to Iceberg Spark runtime JAR |
-| `K8S_MASTER`   | k8s profile          | K8s API server URL                |
 
 ## Profiling
 
@@ -194,7 +191,3 @@ docker compose -f benchmarks/infra/docker/docker-compose.yml run --rm \
 > `spark-worker` services before starting the cluster, or restart the
 > cluster between engine switches.
 
-## Running on Kubernetes
-
-See [infra/k8s/](infra/k8s/) for K8s manifests (namespace, RBAC, PVCs,
-benchmark Job template).

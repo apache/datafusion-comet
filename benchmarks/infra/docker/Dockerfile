@@ -37,10 +37,11 @@ RUN apt-get update \
 ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
 
 # Copy the unified benchmark runner into the image.
-COPY benchmarks/conf    /opt/benchmarks/conf
-COPY benchmarks/runner  /opt/benchmarks/runner
-COPY benchmarks/suites  /opt/benchmarks/suites
-COPY benchmarks/run.py  /opt/benchmarks/run.py
+COPY benchmarks/conf     /opt/benchmarks/conf
+COPY benchmarks/runner   /opt/benchmarks/runner
+COPY benchmarks/suites   /opt/benchmarks/suites
+COPY benchmarks/queries  /opt/benchmarks/queries
+COPY benchmarks/run.py   /opt/benchmarks/run.py
 
 # Copy the metrics collector script.
 COPY benchmarks/infra/docker/collect-metrics.sh /opt/benchmarks/collect-metrics.sh
