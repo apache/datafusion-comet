@@ -41,8 +41,10 @@ python3 run.py --engine <engine> --benchmark <tpch|tpcds> [options]
 | `--iterations` | Number of iterations (default: 1)                |
 | `--output`     | Output directory (default: `.`)                  |
 | `--query`      | Run a single query number                        |
-| `--no-restart` | Skip Spark master/worker restart                 |
-| `--dry-run`    | Print the spark-submit command without executing |
+| `--no-restart`        | Skip Spark master/worker restart                     |
+| `--dry-run`           | Print the spark-submit command without executing     |
+| `--profile`           | Enable executor metrics profiling via Spark REST API |
+| `--profile-interval`  | Profiling poll interval in seconds (default: 2.0)    |
 
 Available engines: `spark`, `comet`, `comet-iceberg`, `gluten`
 
@@ -99,6 +101,20 @@ Generating charts:
 ```shell
 python3 generate-comparison.py --benchmark tpch --labels "Spark 3.5.3" "Comet 0.9.0" "Gluten 1.4.0" --title "TPC-H @ 100 GB (single executor, 8 cores, local Parquet files)" spark-tpch-1752338506381.json comet-tpch-1752337818039.json gluten-tpch-1752337474344.json
 ```
+
+## Profiling
+
+Use `--profile` to collect executor memory metrics from the Spark REST API during the benchmark run.
+A background thread polls `/api/v1/applications/{appId}/executors` at a configurable interval and
+writes the time-series data to a CSV file alongside the benchmark results.
+
+```shell
+python3 run.py --engine comet --benchmark tpch --profile
+python3 run.py --engine comet --benchmark tpch --profile --profile-interval 1.0
+```
+
+The output CSV is written to `{output}/{name}-{benchmark}-metrics.csv` and contains per-executor
+columns including `memoryUsed`, `maxMemory`, heap/off-heap storage metrics, and peak memory metrics.
 
 ## Engine Configuration
 
