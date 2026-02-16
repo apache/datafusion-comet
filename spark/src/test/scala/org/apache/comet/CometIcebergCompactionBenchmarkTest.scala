@@ -144,11 +144,7 @@ class CometIcebergCompactionBenchmarkTest extends CometTestBase {
              l_quantity DOUBLE, l_extendedprice DOUBLE, l_discount DOUBLE, l_tax DOUBLE,
              l_returnflag STRING, l_linestatus STRING"""
         val (lSpark, lNative, lSpeedup) =
-          runTableBenchmark(
-            "lineitem",
-            lineitemSchema,
-            numFragments,
-            rowsPerFragment)
+          runTableBenchmark("lineitem", lineitemSchema, numFragments, rowsPerFragment)
         println(f"${"lineitem"}%-15s $lSpark%12d $lNative%12d ${lSpeedup}%9.2fx")
 
         // Orders benchmark
@@ -165,11 +161,7 @@ class CometIcebergCompactionBenchmarkTest extends CometTestBase {
           """c_custkey BIGINT, c_name STRING, c_address STRING, c_nationkey BIGINT,
              c_phone STRING, c_acctbal DOUBLE, c_mktsegment STRING, c_comment STRING"""
         val (cSpark, cNative, cSpeedup) =
-          runTableBenchmark(
-            "customer",
-            customerSchema,
-            numFragments,
-            rowsPerFragment)
+          runTableBenchmark("customer", customerSchema, numFragments, rowsPerFragment)
         println(f"${"customer"}%-15s $cSpark%12d $cNative%12d ${cSpeedup}%9.2fx")
 
         println("-" * 60)

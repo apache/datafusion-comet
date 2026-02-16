@@ -132,11 +132,8 @@ class CometNativeCompaction(spark: SparkSession) extends Logging {
         s"Processing file group ${groupIndex + 1}/${fileGroups.size} " +
           s"with ${group.size} files")
 
-      val compactionConfig = buildCompactionConfig(
-        tableConfig,
-        group,
-        targetFileSizeBytes,
-        compression)
+      val compactionConfig =
+        buildCompactionConfig(tableConfig, group, targetFileSizeBytes, compression)
       val result = executeNativeCompaction(compactionConfig)
 
       result match {
