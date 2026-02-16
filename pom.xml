@@ -1058,6 +1058,7 @@ under the License.
             <exclude>dev/deploy-file</exclude>
             <exclude>**/test/resources/**</exclude>
             <exclude>**/benchmarks/*.txt</exclude>
+            <exclude>benchmarks/queries/**/*.sql</exclude>
             <exclude>**/inspections/*.txt</exclude>
             <exclude>tpcds-kit/**</exclude>
             <exclude>tpcds-sf-1/**</exclude>
