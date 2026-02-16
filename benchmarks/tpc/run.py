@@ -208,6 +208,29 @@ def check_common_env():
             sys.exit(1)
 
 
+def check_benchmark_env(config, benchmark):
+    """Validate benchmark-specific environment variables."""
+    profile = BENCHMARK_PROFILES[benchmark]
+    use_iceberg = config.get("tpcbench_args", {}).get("use_iceberg", False)
+
+    required = [profile["queries_env"]]
+    if not use_iceberg:
+        required.append(profile["data_env"])
+
+    missing = [v for v in required if not os.environ.get(v)]
+    if missing:
+        print(
+            f"Error: Required environment variable(s) not set for "
+            f"{benchmark}: {', '.join(missing)}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # Default ICEBERG_DATABASE to the benchmark name if not already set
+    if use_iceberg and not os.environ.get("ICEBERG_DATABASE"):
+        os.environ["ICEBERG_DATABASE"] = benchmark
+
+
 def build_spark_submit_cmd(config, benchmark, args):
     """Build the spark-submit command list."""
     spark_home = os.environ["SPARK_HOME"]
@@ -349,6 +372,7 @@ def main():
 
     check_common_env()
     check_required_env(config)
+    check_benchmark_env(config, args.benchmark)
 
     # Restart Spark unless --no-restart or --dry-run
     if not args.no_restart and not args.dry_run:

@@ -19,11 +19,10 @@
 name = "comet-iceberg"
 
 [env]
-required = ["COMET_JAR", "ICEBERG_JAR", "ICEBERG_WAREHOUSE", "TPCH_QUERIES"]
+required = ["COMET_JAR", "ICEBERG_JAR", "ICEBERG_WAREHOUSE"]
 
 [env.defaults]
 ICEBERG_CATALOG = "local"
-ICEBERG_DATABASE = "tpch"
 
 [spark_submit]
 jars = ["$COMET_JAR", "$ICEBERG_JAR"]

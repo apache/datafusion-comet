@@ -121,14 +121,15 @@ export ICEBERG_JAR=/path/to/iceberg-spark-runtime-3.5_2.12-1.8.1.jar
 
 Note: Table creation uses `--packages` which auto-downloads the dependency.
 
-### Create Iceberg TPC-H tables
+### Create Iceberg tables
 
-Convert existing Parquet TPC-H data to Iceberg format:
+Convert existing Parquet data to Iceberg format using `create-iceberg-tables.py`:
 
 ```shell
 export ICEBERG_WAREHOUSE=/mnt/bigdata/iceberg-warehouse
 export ICEBERG_CATALOG=${ICEBERG_CATALOG:-local}
 
+# TPC-H
 $SPARK_HOME/bin/spark-submit \
     --master $SPARK_MASTER \
     --packages org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.8.1 \
@@ -140,10 +141,27 @@ $SPARK_HOME/bin/spark-submit \
     --conf spark.sql.catalog.${ICEBERG_CATALOG}=org.apache.iceberg.spark.SparkCatalog \
     --conf spark.sql.catalog.${ICEBERG_CATALOG}.type=hadoop \
     --conf spark.sql.catalog.${ICEBERG_CATALOG}.warehouse=$ICEBERG_WAREHOUSE \
-    create-iceberg-tpch.py \
+    create-iceberg-tables.py \
+    --benchmark tpch \
     --parquet-path $TPCH_DATA \
-    --catalog $ICEBERG_CATALOG \
-    --database tpch
+    --catalog $ICEBERG_CATALOG
+
+# TPC-DS
+$SPARK_HOME/bin/spark-submit \
+    --master $SPARK_MASTER \
+    --packages org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.8.1 \
+    --conf spark.driver.memory=8G \
+    --conf spark.executor.instances=2 \
+    --conf spark.executor.cores=8 \
+    --conf spark.cores.max=16 \
+    --conf spark.executor.memory=16g \
+    --conf spark.sql.catalog.${ICEBERG_CATALOG}=org.apache.iceberg.spark.SparkCatalog \
+    --conf spark.sql.catalog.${ICEBERG_CATALOG}.type=hadoop \
+    --conf spark.sql.catalog.${ICEBERG_CATALOG}.warehouse=$ICEBERG_WAREHOUSE \
+    create-iceberg-tables.py \
+    --benchmark tpcds \
+    --parquet-path $TPCDS_DATA \
+    --catalog $ICEBERG_CATALOG
 ```
 
 ### Run Iceberg benchmark
@@ -167,7 +185,7 @@ physical plan output.
 | Environment Variable | Default    | Description                         |
 | -------------------- | ---------- | ----------------------------------- |
 | `ICEBERG_CATALOG`    | `local`    | Iceberg catalog name                |
-| `ICEBERG_DATABASE`   | `tpch`     | Database containing TPC-H tables    |
+| `ICEBERG_DATABASE`   | `tpch`     | Database containing TPC tables      |
 | `ICEBERG_WAREHOUSE`  | (required) | Path to Iceberg warehouse directory |
 
 ### Comparing Parquet vs Iceberg performance
