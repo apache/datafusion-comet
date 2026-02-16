@@ -152,11 +152,13 @@ object CometConf extends ShimCometConf {
 
   val COMET_ICEBERG_COMPACTION_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.iceberg.compaction.enabled")
-      .category(CATEGORY_TESTING)
+      .category(CATEGORY_EXEC)
       .doc(
         "Whether to enable Comet-accelerated Iceberg compaction. When enabled, " +
-          "CALL rewrite_data_files() uses Comet's native scan for the read path, " +
-          "reducing JVM overhead during compaction. Experimental.")
+          "CALL rewrite_data_files() is intercepted and executed via Comet's native " +
+          "Rust/DataFusion engine for direct Parquet read/write, bypassing Spark's " +
+          "DAG execution. Only bin-pack strategy is supported; sort and z-order " +
+          "fall back to Spark's default. Requires Iceberg on the classpath. Experimental.")
       .booleanConf
       .createWithDefault(false)
 
