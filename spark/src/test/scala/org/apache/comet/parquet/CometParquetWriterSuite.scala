@@ -574,19 +574,17 @@ class CometParquetWriterSuite extends CometTestBase {
   // executes InsertIntoHadoopFsRelationCommand. The outer plan shows ExecutedCommandExec,
   // but the actual write happens in an internal execution which should use Comet's native writer.
   //
-  // Root cause: RangeExec (from spark.range()) is not converted to Arrow format by default
-  // because COMET_SPARK_TO_ARROW_ENABLED is false. To enable native write with RangeExec source,
-  // set spark.comet.sparkToColumnar.enabled=true.
-  test("INSERT OVERWRITE DIRECTORY using parquet - basic") {
+  // Fix: CometExecRule now auto-converts children to Arrow format when native write is requested.
+  // This enables native writes even when the source is a Spark operator like RangeExec.
+  test("INSERT OVERWRITE DIRECTORY using parquet - basic with RangeExec source") {
     withTempPath { dir =>
       val outputPath = dir.getAbsolutePath
 
       withSQLConf(
         CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
         CometConf.getOperatorAllowIncompatConfigKey(classOf[DataWritingCommandExec]) -> "true",
-        CometConf.COMET_EXEC_ENABLED.key -> "true",
-        // Enable Spark to Arrow conversion for RangeExec
-        CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true") {
+        CometConf.COMET_EXEC_ENABLED.key -> "true") {
+        // Note: COMET_SPARK_TO_ARROW_ENABLED is NOT needed - the fix auto-converts RangeExec
 
         // Create source table using RangeExec
         spark.range(1, 10).toDF("id").createOrReplaceTempView("source_table")
@@ -646,8 +644,7 @@ class CometParquetWriterSuite extends CometTestBase {
       withSQLConf(
         CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
         CometConf.getOperatorAllowIncompatConfigKey(classOf[DataWritingCommandExec]) -> "true",
-        CometConf.COMET_EXEC_ENABLED.key -> "true",
-        CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true") {
+        CometConf.COMET_EXEC_ENABLED.key -> "true") {
 
         // Create source table
         spark.range(1, 100).toDF("value").createOrReplaceTempView("df")
@@ -680,8 +677,7 @@ class CometParquetWriterSuite extends CometTestBase {
       withSQLConf(
         CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
         CometConf.getOperatorAllowIncompatConfigKey(classOf[DataWritingCommandExec]) -> "true",
-        CometConf.COMET_EXEC_ENABLED.key -> "true",
-        CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true") {
+        CometConf.COMET_EXEC_ENABLED.key -> "true") {
 
         // Create source table with some data for aggregation
         spark.range(1, 100).toDF("id").createOrReplaceTempView("agg_source")
@@ -716,8 +712,7 @@ class CometParquetWriterSuite extends CometTestBase {
       withSQLConf(
         CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
         CometConf.getOperatorAllowIncompatConfigKey(classOf[DataWritingCommandExec]) -> "true",
-        CometConf.COMET_EXEC_ENABLED.key -> "true",
-        CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true") {
+        CometConf.COMET_EXEC_ENABLED.key -> "true") {
 
         // Create source table
         spark.range(1, 50).toDF("id").createOrReplaceTempView("comp_source")
