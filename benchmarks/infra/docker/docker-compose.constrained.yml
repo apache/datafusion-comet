@@ -1,0 +1,48 @@
+# Licensed to the Apache Software Foundation (ASF) under one or more
+# contributor license agreements.  See the NOTICE file distributed with
+# this work for additional information regarding copyright ownership.
+# The ASF licenses this file to You under the Apache License, Version 2.0
+# (the "License"); you may not use this file except in compliance with
+# the License.  You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Constrained memory overlay.
+#
+# Apply on top of docker-compose.yml to enforce hard memory limits and
+# enable the metrics-collector sidecar:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.constrained.yml up -d
+#
+# Environment variables:
+#   WORKER_MEM_LIMIT   - Hard memory limit for the worker (default: 6g)
+#   BENCH_MEM_LIMIT    - Hard memory limit for the bench runner (default: 10g)
+#   METRICS_INTERVAL   - Collection interval in seconds (default: 1)
+
+services:
+  spark-worker:
+    mem_limit: ${WORKER_MEM_LIMIT:-6g}
+    memswap_limit: ${WORKER_MEM_LIMIT:-6g}   # same as mem_limit → no swap
+
+  bench:
+    mem_limit: ${BENCH_MEM_LIMIT:-10g}
+    memswap_limit: ${BENCH_MEM_LIMIT:-10g}
+
+  metrics-collector:
+    image: ${BENCH_IMAGE:-comet-bench}
+    container_name: metrics-collector
+    pid: "service:spark-worker"                # share PID namespace with worker
+    command:
+      - /opt/benchmarks/collect-metrics.sh
+      - "${METRICS_INTERVAL:-1}"
+      - /results/container-metrics.csv
+    volumes:
+      - ${RESULTS_DIR:-/tmp/bench-results}:/results
+    depends_on:
+      - spark-worker

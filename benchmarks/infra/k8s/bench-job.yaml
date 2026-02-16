@@ -1,0 +1,99 @@
+# Licensed to the Apache Software Foundation (ASF) under one or more
+# contributor license agreements.  See the NOTICE file distributed with
+# this work for additional information regarding copyright ownership.
+# The ASF licenses this file to You under the Apache License, Version 2.0
+# (the "License"); you may not use this file except in compliance with
+# the License.  You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Kubernetes Job that runs a benchmark via spark-submit in client mode.
+#
+# The driver runs inside this pod; executors are spawned as separate pods
+# by Spark's K8s scheduler.
+#
+# Customize by setting the environment variables or overriding the command.
+#
+# Apply:
+#   kubectl apply -f benchmarks/infra/k8s/namespace.yaml
+#   kubectl apply -f benchmarks/infra/k8s/rbac.yaml
+#   kubectl apply -f benchmarks/infra/k8s/volumes.yaml
+#   kubectl apply -f benchmarks/infra/k8s/bench-job.yaml
+#
+# Or with kustomize overrides:
+#   kubectl apply -k benchmarks/infra/k8s/
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: comet-bench
+  namespace: comet-bench
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: comet-bench
+        role: driver
+    spec:
+      serviceAccountName: spark
+      restartPolicy: Never
+      containers:
+        - name: bench
+          image: comet-bench:latest   # set to your registry/tag
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: SPARK_HOME
+              value: /opt/spark
+            - name: PYTHONPATH
+              value: /opt
+            # K8s master URL — the driver talks to the API server to spawn executors.
+            - name: K8S_MASTER
+              value: k8s://https://kubernetes.default.svc:443
+            - name: COMET_JAR
+              value: /opt/spark/jars/comet-spark-spark3.5_2.12-0.14.0-SNAPSHOT.jar
+          command:
+            - python3
+            - /opt/benchmarks/run.py
+            - --engine
+            - comet
+            - --profile
+            - k8s
+            - --dry-run    # remove to actually execute
+            - --
+            - tpc
+            - --benchmark
+            - tpch
+            - --data
+            - /data/tpch
+            - --queries
+            - /data/queries/tpch
+            - --output
+            - /results
+            - --iterations
+            - "1"
+          volumeMounts:
+            - name: data
+              mountPath: /data
+              readOnly: true
+            - name: results
+              mountPath: /results
+          resources:
+            requests:
+              memory: 8Gi
+              cpu: "2"
+            limits:
+              memory: 10Gi
+              cpu: "4"
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: bench-data
+        - name: results
+          persistentVolumeClaim:
+            claimName: bench-results

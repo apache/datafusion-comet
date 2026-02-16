@@ -17,88 +17,160 @@ specific language governing permissions and limitations
 under the License.
 -->
 
-# Running Comet Benchmarks in Microk8s
+# Comet Benchmark Suite
 
-This guide explains how to run benchmarks derived from TPC-H and TPC-DS in Apache DataFusion Comet deployed in a
-local Microk8s cluster.
+Unified benchmark infrastructure for Apache DataFusion Comet. Supports
+TPC-H/TPC-DS and shuffle benchmarks across multiple engines (Spark, Comet,
+Gluten, Blaze) with composable configuration and optional memory profiling.
 
-## Use Microk8s locally
+## Quick Start
 
-Install Micro8s following the instructions at https://microk8s.io/docs/getting-started and then perform these
-additional steps, ensuring that any existing kube config is backed up first.
+```bash
+# Run TPC-H with Comet on a standalone cluster
+python benchmarks/run.py \
+    --engine comet --profile standalone-tpch --restart-cluster \
+    -- tpc --benchmark tpch --data $TPCH_DATA --queries $TPCH_QUERIES \
+       --output . --iterations 1
 
-```shell
-mkdir -p ~/.kube
-microk8s config > ~/.kube/config
-
-microk8s enable dns
-microk8s enable registry
-
-microk8s kubectl create serviceaccount spark
+# Preview the spark-submit command without executing
+python benchmarks/run.py \
+    --engine comet --profile standalone-tpch --dry-run \
+    -- tpc --benchmark tpch --data $TPCH_DATA --queries $TPCH_QUERIES \
+       --output . --iterations 1
 ```
 
-## Build Comet Docker Image
+## Directory Layout
 
-Run the following command from the root of this repository to build the Comet Docker image, or use a published
-Docker image from https://github.com/orgs/apache/packages?repo_name=datafusion-comet
-
-```shell
-docker build -t apache/datafusion-comet -f kube/Dockerfile .
+```
+benchmarks/
+├── run.py                 # Entry point — builds and runs spark-submit
+├── conf/
+│   ├── engines/           # Per-engine configs (comet, spark, gluten, blaze, ...)
+│   └── profiles/          # Per-environment configs (local, standalone, docker, k8s)
+├── runner/
+│   ├── cli.py             # Python CLI passed to spark-submit (subcommands: tpc, shuffle)
+│   ├── config.py          # Config file loader and merger
+│   ├── spark_session.py   # SparkSession builder
+│   └── profiling.py       # Level 1 JVM metrics via Spark REST API
+├── suites/
+│   ├── tpc.py             # TPC-H / TPC-DS benchmark suite
+│   └── shuffle.py         # Shuffle benchmark suite (hash, round-robin)
+├── analysis/
+│   ├── compare.py         # Generate comparison charts from result JSON
+│   └── memory_report.py   # Generate memory reports from profiling CSV
+├── infra/
+│   ├── docker/            # Dockerfile, docker-compose, metrics collector
+│   └── k8s/               # Kubernetes manifests (namespace, RBAC, PVCs, Job)
+├── create-iceberg-tpch.py # Utility: convert TPC-H Parquet to Iceberg tables
+└── drop-caches.sh         # Utility: drop OS page caches before benchmarks
 ```
 
-## Build Comet Benchmark Docker Image
+## How It Works
 
-Build the benchmark Docker image and push to the Microk8s Docker registry.
+`run.py` is the single entry point. It:
 
-```shell
-docker build -t apache/datafusion-comet-tpcbench  .
-docker tag apache/datafusion-comet-tpcbench localhost:32000/apache/datafusion-comet-tpcbench:latest
-docker push localhost:32000/apache/datafusion-comet-tpcbench:latest
+1. Reads a **profile** config (cluster shape, memory, master URL)
+2. Reads an **engine** config (plugin JARs, shuffle manager, engine-specific settings)
+3. Applies any `--conf key=value` CLI overrides (highest precedence)
+4. Builds and executes the `spark-submit` command
+
+The merge order is: **profile < engine < CLI overrides**, so engine configs
+can override profile defaults (e.g., Blaze sets `offHeap.enabled=false`
+even though the profile enables it).
+
+### Wrapper arguments (before `--`)
+
+| Flag                | Description                                    |
+| ------------------- | ---------------------------------------------- |
+| `--engine NAME`     | Engine config from `conf/engines/NAME.conf`    |
+| `--profile NAME`    | Profile config from `conf/profiles/NAME.conf`  |
+| `--conf key=value`  | Extra Spark/runner config override (repeatable) |
+| `--restart-cluster` | Stop/start Spark standalone master + worker     |
+| `--dry-run`         | Print spark-submit command without executing    |
+
+### Suite arguments (after `--`)
+
+Everything after `--` is passed to `runner/cli.py`. See per-suite docs:
+
+- [TPC-H / TPC-DS](suites/TPC.md)
+- [Shuffle](suites/SHUFFLE.md)
+
+## Available Engines
+
+| Engine              | Config file              | Description                           |
+| ------------------- | ------------------------ | ------------------------------------- |
+| `spark`             | `engines/spark.conf`     | Vanilla Spark (no accelerator)        |
+| `comet`             | `engines/comet.conf`     | DataFusion Comet with native scan     |
+| `comet-iceberg`     | `engines/comet-iceberg.conf` | Comet + native Iceberg scanning   |
+| `gluten`            | `engines/gluten.conf`    | Gluten (Velox backend)                |
+| `blaze`             | `engines/blaze.conf`     | Blaze accelerator                     |
+| `spark-shuffle`     | `engines/spark-shuffle.conf` | Spark baseline for shuffle tests  |
+| `comet-jvm-shuffle` | `engines/comet-jvm-shuffle.conf` | Comet with JVM shuffle mode |
+| `comet-native-shuffle` | `engines/comet-native-shuffle.conf` | Comet with native shuffle |
+
+## Available Profiles
+
+| Profile              | Config file                    | Description                      |
+| -------------------- | ------------------------------ | -------------------------------- |
+| `local`              | `profiles/local.conf`          | `local[*]` mode, no cluster      |
+| `standalone-tpch`    | `profiles/standalone-tpch.conf`| 1 executor, 8 cores, S3A         |
+| `standalone-tpcds`   | `profiles/standalone-tpcds.conf`| 2 executors, 16 cores, S3A      |
+| `docker`             | `profiles/docker.conf`         | For docker-compose deployments   |
+| `k8s`                | `profiles/k8s.conf`            | Spark-on-Kubernetes              |
+
+## Environment Variables
+
+The config files use `${VAR}` references that are expanded from the
+environment at load time:
+
+| Variable         | Used by                     | Description                       |
+| ---------------- | --------------------------- | --------------------------------- |
+| `SPARK_HOME`     | `run.py`                    | Path to Spark installation        |
+| `SPARK_MASTER`   | standalone profiles         | Spark master URL                  |
+| `COMET_JAR`      | comet engines               | Path to Comet JAR                 |
+| `GLUTEN_JAR`     | gluten engine               | Path to Gluten JAR                |
+| `BLAZE_JAR`      | blaze engine                | Path to Blaze JAR                 |
+| `ICEBERG_JAR`    | comet-iceberg engine        | Path to Iceberg Spark runtime JAR |
+| `K8S_MASTER`     | k8s profile                 | K8s API server URL                |
+
+## Profiling
+
+Add `--profile` (the flag, not the config) to any suite command to enable
+Level 1 JVM metrics collection via the Spark REST API:
+
+```bash
+python benchmarks/run.py --engine comet --profile standalone-tpch \
+    -- tpc --benchmark tpch --data $TPCH_DATA --queries $TPCH_QUERIES \
+       --output . --iterations 1 --profile --profile-interval 1.0
 ```
 
-## Run benchmarks
+This writes a `{name}-{benchmark}-metrics.csv` alongside the result JSON.
 
-```shell
-export SPARK_MASTER=k8s://https://127.0.0.1:16443
-export COMET_DOCKER_IMAGE=localhost:32000/apache/datafusion-comet-tpcbench:latest
-# Location of Comet JAR within the Docker image
-export COMET_JAR=/opt/spark/jars/comet-spark-spark3.4_2.12-0.5.0-SNAPSHOT.jar
+For container-level memory profiling, use the constrained docker-compose
+overlay — see [Docker infrastructure](infra/docker/).
 
-$SPARK_HOME/bin/spark-submit \
-    --master $SPARK_MASTER \
-    --deploy-mode cluster  \
-    --name comet-tpcbench \
-    --driver-memory 8G \
-    --conf spark.driver.memory=8G \
-    --conf spark.executor.instances=1 \
-    --conf spark.executor.memory=32G \
-    --conf spark.executor.cores=8 \
-    --conf spark.cores.max=8 \
-    --conf spark.task.cpus=1 \
-    --conf spark.executor.memoryOverhead=3G \
-    --jars local://$COMET_JAR \
-    --conf spark.executor.extraClassPath=$COMET_JAR \
-    --conf spark.driver.extraClassPath=$COMET_JAR \
-    --conf spark.plugins=org.apache.spark.CometPlugin \
-    --conf spark.sql.extensions=org.apache.comet.CometSparkSessionExtensions \
-    --conf spark.comet.enabled=true \
-    --conf spark.comet.exec.enabled=true \
-    --conf spark.comet.exec.all.enabled=true \
-    --conf spark.comet.cast.allowIncompatible=true \
-    --conf spark.comet.exec.shuffle.enabled=true \
-    --conf spark.comet.exec.shuffle.mode=auto \
-    --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
-    --conf spark.kubernetes.namespace=default \
-    --conf spark.kubernetes.driver.pod.name=tpcbench  \
-    --conf spark.kubernetes.container.image=$COMET_DOCKER_IMAGE \
-    --conf spark.kubernetes.driver.volumes.hostPath.tpcdata.mount.path=/mnt/bigdata/tpcds/sf100/ \
-    --conf spark.kubernetes.driver.volumes.hostPath.tpcdata.options.path=/mnt/bigdata/tpcds/sf100/ \
-    --conf spark.kubernetes.executor.volumes.hostPath.tpcdata.mount.path=/mnt/bigdata/tpcds/sf100/ \
-    --conf spark.kubernetes.executor.volumes.hostPath.tpcdata.options.path=/mnt/bigdata/tpcds/sf100/ \
-    --conf spark.kubernetes.authenticate.caCertFile=/var/snap/microk8s/current/certs/ca.crt \
-    local:///opt/datafusion-benchmarks/runners/datafusion-comet/tpcbench.py \
-    --benchmark tpcds \
-    --data /mnt/bigdata/tpcds/sf100/ \
-    --queries /opt/datafusion-benchmarks/tpcds/queries-spark \
-    --iterations 1
+## Generating Charts
+
+```bash
+# Compare two result JSON files
+python -m benchmarks.analysis.compare \
+    comet-tpch-*.json spark-tpch-*.json \
+    --labels Comet Spark --benchmark tpch \
+    --title "TPC-H SF100" --output-dir ./charts
+
+# Generate memory reports
+python -m benchmarks.analysis.memory_report \
+    --spark-csv comet-tpch-metrics.csv \
+    --container-csv container-metrics.csv \
+    --output-dir ./charts
 ```
+
+## Running in Docker
+
+See [infra/docker/](infra/docker/) for docker-compose setup with optional
+memory-constrained overlays and cgroup metrics collection.
+
+## Running on Kubernetes
+
+See [infra/k8s/](infra/k8s/) for K8s manifests (namespace, RBAC, PVCs,
+benchmark Job template).
