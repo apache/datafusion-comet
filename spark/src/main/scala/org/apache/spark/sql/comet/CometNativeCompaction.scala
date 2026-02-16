@@ -340,7 +340,8 @@ class CometNativeCompaction(spark: SparkSession) extends Logging {
       table.newRewrite().rewriteFiles(deleteFiles, addFiles).commit()
 
       logInfo(
-        s"Committed compaction: ${filesToDelete.size} files deleted, ${filesToAdd.size} files added")
+        s"Committed compaction: ${filesToDelete.size} files deleted, " +
+          s"${filesToAdd.size} files added")
       true
     } catch {
       case e: Exception =>

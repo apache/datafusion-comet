@@ -186,7 +186,7 @@ under the License.
           <groupId>org.apache.iceberg</groupId>
           <artifactId>iceberg-spark-runtime-${spark.version.short}_${scala.binary.version}</artifactId>
           <version>1.5.2</version>
-          <scope>test</scope>
+          <scope>provided</scope>
         </dependency>
         <!-- Jetty 9.4.x for Spark 3.4 (JDK 11, javax.* packages) -->
         <dependency>
@@ -214,7 +214,7 @@ under the License.
           <groupId>org.apache.iceberg</groupId>
           <artifactId>iceberg-spark-runtime-${spark.version.short}_${scala.binary.version}</artifactId>
           <version>1.8.1</version>
-          <scope>test</scope>
+          <scope>provided</scope>
         </dependency>
         <!-- Jetty 9.4.x for Spark 3.5 (JDK 11, javax.* packages) -->
         <dependency>
@@ -239,7 +239,7 @@ under the License.
           <groupId>org.apache.iceberg</groupId>
           <artifactId>iceberg-spark-runtime-${spark.version.short}_${scala.binary.version}</artifactId>
           <version>1.10.0</version>
-          <scope>test</scope>
+          <scope>provided</scope>
         </dependency>
         <!-- Jetty 11.x for Spark 4.0 (jakarta.servlet) -->
         <dependency>
