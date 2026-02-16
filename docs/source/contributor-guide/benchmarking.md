@@ -21,7 +21,7 @@ under the License.
 
 To track progress on performance, we regularly run benchmarks derived from TPC-H and TPC-DS.
 
-The benchmarking scripts are contained at [https://github.com/apache/datafusion-comet/tree/main/dev/benchmarks](https://github.com/apache/datafusion-comet/tree/main/dev/benchmarks).
+The benchmarking scripts are contained at [https://github.com/apache/datafusion-comet/tree/main/benchmarks/tpc](https://github.com/apache/datafusion-comet/tree/main/benchmarks/tpc).
 
 Data generation scripts are available in the [DataFusion Benchmarks](https://github.com/apache/datafusion-benchmarks) GitHub repository.
 
