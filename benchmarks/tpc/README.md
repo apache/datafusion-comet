@@ -185,6 +185,65 @@ physical plan output.
 | `--catalog`      | No       | `local`        | Iceberg catalog name                |
 | `--database`     | No       | benchmark name | Database name for the tables        |
 
+## Running with Docker
+
+A Docker Compose setup is provided in `infra/docker/` for running benchmarks in an isolated
+Spark standalone cluster.
+
+### Build the image
+
+From the repository root:
+
+```shell
+docker build -t comet-bench -f benchmarks/tpc/infra/docker/Dockerfile .
+```
+
+### Start the cluster
+
+Set environment variables pointing to your host paths, then start the Spark master and worker:
+
+```shell
+export DATA_DIR=/mnt/bigdata/tpch/sf100
+export QUERIES_DIR=/mnt/bigdata/tpch/queries
+export RESULTS_DIR=/tmp/bench-results
+export ENGINE_JARS_DIR=/opt/engine-jars
+
+docker compose -f benchmarks/tpc/infra/docker/docker-compose.yml up -d
+```
+
+### Run benchmarks
+
+Use `docker compose run` to execute benchmarks. Pass `--no-restart` since the cluster is
+already managed by Compose:
+
+```shell
+docker compose -f benchmarks/tpc/infra/docker/docker-compose.yml \
+    run bench python3 /opt/benchmarks/run.py \
+    --engine comet --benchmark tpch --no-restart
+```
+
+For Gluten (requires Java 8), override `JAVA_HOME`:
+
+```shell
+docker compose -f benchmarks/tpc/infra/docker/docker-compose.yml \
+    run -e JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64 \
+    bench python3 /opt/benchmarks/run.py \
+    --engine gluten --benchmark tpch --no-restart
+```
+
+### Memory-constrained benchmarks
+
+Apply the constrained overlay to enforce hard memory limits and collect cgroup metrics:
+
+```shell
+docker compose -f benchmarks/tpc/infra/docker/docker-compose.yml \
+               -f benchmarks/tpc/infra/docker/docker-compose.constrained.yml up -d
+```
+
+Metrics are written to `$RESULTS_DIR/container-metrics.csv`. Configure limits via environment
+variables: `WORKER_MEM_LIMIT` (default: 6g), `BENCH_MEM_LIMIT` (default: 10g),
+`METRICS_INTERVAL` (default: 1 second).
+
 ### Comparing Parquet vs Iceberg performance
 
 Run both benchmarks and compare:
