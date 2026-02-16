@@ -22,15 +22,19 @@
 # The build context should be the repository root so that benchmarks/ is
 # available.
 
-ARG SPARK_IMAGE=apache/spark:3.5.5-python3
+ARG SPARK_IMAGE=apache/spark:3.5.2-python3
 FROM ${SPARK_IMAGE}
 
 USER root
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends python3 python3-pip procps \
+       openjdk-8-jre-headless openjdk-17-jre-headless \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
+
+# Default to Java 17 (Comet). Override with JAVA_HOME for other engines.
+ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
 
 # Copy the unified benchmark runner into the image.
 COPY benchmarks/conf    /opt/benchmarks/conf

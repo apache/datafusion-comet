@@ -104,7 +104,7 @@ Everything after `--` is passed to `runner/cli.py`. See per-suite docs:
 | `spark`                | `engines/spark.conf`                | Vanilla Spark (no accelerator)    |
 | `comet`                | `engines/comet.conf`                | DataFusion Comet with native scan |
 | `comet-iceberg`        | `engines/comet-iceberg.conf`        | Comet + native Iceberg scanning   |
-| `gluten`               | `engines/gluten.conf`               | Gluten (Velox backend)            |
+| `gluten`               | `engines/gluten.conf`               | Gluten (Velox backend) — Java 8   |
 | `spark-shuffle`        | `engines/spark-shuffle.conf`        | Spark baseline for shuffle tests  |
 | `comet-jvm-shuffle`    | `engines/comet-jvm-shuffle.conf`    | Comet with JVM shuffle mode       |
 | `comet-native-shuffle` | `engines/comet-native-shuffle.conf` | Comet with native shuffle         |
@@ -169,6 +169,30 @@ python -m benchmarks.analysis.memory_report \
 
 See [infra/docker/](infra/docker/) for docker-compose setup with optional
 memory-constrained overlays and cgroup metrics collection.
+
+The Docker image includes both Java 8 and Java 17 runtimes. Java 17 is the
+default (`JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64`), which is required
+by Comet. Gluten requires Java 8, so override `JAVA_HOME` for all containers
+when running Gluten benchmarks:
+
+```bash
+# Start the cluster with Java 8 for Gluten
+docker compose -f benchmarks/infra/docker/docker-compose.yml up -d
+
+# Run Gluten benchmark (override JAVA_HOME on all containers)
+docker compose -f benchmarks/infra/docker/docker-compose.yml run --rm \
+    -e JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64 \
+    -e GLUTEN_JAR=/jars/gluten.jar \
+    bench bash -c 'python3 /opt/benchmarks/run.py \
+        --engine gluten --profile docker \
+        -- tpc --name gluten --benchmark tpch --data /data \
+           --queries /queries --output /results --iterations 1'
+```
+
+> **Note:** The Spark worker must also run Java 8 for Gluten. Use a
+> docker-compose override file to set `JAVA_HOME` on `spark-master` and
+> `spark-worker` services before starting the cluster, or restart the
+> cluster between engine switches.
 
 ## Running on Kubernetes
 

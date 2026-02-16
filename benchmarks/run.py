@@ -198,11 +198,14 @@ def main():
     # Python script (the CLI entry point)
     cmd.append(os.path.join(_SCRIPT_DIR, "runner", "cli.py"))
 
-    # Inject --name from runner.name if not already in suite args
+    # Inject --name from runner.name if not already in suite args.
+    # Insert after the first positional arg (the subcommand) so that
+    # argparse routes it to the correct subparser.
     runner_name = runner_conf.get("name", args.engine)
     suite_args = list(args.suite_args)
-    if "--name" not in suite_args:
-        suite_args = ["--name", runner_name] + suite_args
+    if "--name" not in suite_args and suite_args:
+        suite_args.insert(1, "--name")
+        suite_args.insert(2, runner_name)
 
     cmd += suite_args
 
