@@ -25,6 +25,7 @@ use arrow::array::{
     PrimitiveBuilder, StringArray, StructArray, TimestampMicrosecondBuilder,
 };
 use arrow::compute::can_cast_types;
+use arrow::datatypes::DataType::Int64;
 use arrow::datatypes::{
     i256, ArrowDictionaryKeyType, ArrowNativeType, DataType, Decimal256Type, GenericBinaryType,
     Schema,
@@ -915,6 +916,9 @@ fn cast_array(
         (Boolean, Decimal128(precision, scale)) => {
             cast_boolean_to_decimal(&array, *precision, *scale)
         }
+        (Int8 | Int16 | Int32 | Int64, Timestamp(_, _)) => {
+            cast_int_to_timestamp(&array, cast_options)
+        }
         _ if cast_options.is_adapting_schema
             || is_datafusion_spark_compatible(from_type, to_type) =>
         {
@@ -931,6 +935,29 @@ fn cast_array(
         }
     };
     Ok(spark_cast_postprocess(cast_result?, from_type, to_type))
+}
+
+fn cast_int_to_timestamp(
+    array_ref: &ArrayRef,
+    cast_options: &SparkCastOptions,
+) -> SparkResult<ArrayRef> {
+    // Input is seconds since epoch, multiply by MICROS_PER_SECOND to get microseconds.
+    let int64_array = cast_with_options(&array_ref, &Int64, &CAST_OPTIONS)?;
+    let int64_arr = int64_array.as_primitive::<Int64Type>();
+
+    let mut builder = TimestampMicrosecondBuilder::with_capacity(int64_arr.len());
+    for i in 0..int64_arr.len() {
+        if int64_arr.is_null(i) {
+            builder.append_null();
+        } else {
+            let micros = int64_arr.value(i).saturating_mul(MICROS_PER_SECOND);
+            builder.append_value(micros);
+        }
+    }
+
+    // input tz is always defined or set to UTC on spark side
+    let tz: Arc<str> = Arc::from(cast_options.timezone.as_str());
+    Ok(Arc::new(builder.finish().with_timezone(tz)) as ArrayRef)
 }
 
 fn cast_date_to_timestamp(

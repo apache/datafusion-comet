@@ -269,7 +269,7 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
   private def canCastFromTimestamp(toType: DataType): SupportLevel = {
     toType match {
       case DataTypes.BooleanType | DataTypes.ByteType | DataTypes.ShortType |
-          DataTypes.IntegerType =>
+           DataTypes.IntegerType =>
         // https://github.com/apache/datafusion-comet/issues/352
         // this seems like an edge case that isn't important for us to support
         unsupported(DataTypes.TimestampType, toType)
@@ -299,6 +299,8 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
         Compatible()
       case DataTypes.BinaryType if (evalMode == CometEvalMode.LEGACY) =>
         Compatible()
+      case DataTypes.TimestampType =>
+        Compatible()
       case _ =>
         unsupported(DataTypes.ByteType, toType)
     }
@@ -312,6 +314,8 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
       case DataTypes.FloatType | DataTypes.DoubleType | _: DecimalType =>
         Compatible()
       case DataTypes.BinaryType if (evalMode == CometEvalMode.LEGACY) =>
+        Compatible()
+      case DataTypes.TimestampType =>
         Compatible()
       case _ =>
         unsupported(DataTypes.ShortType, toType)
@@ -328,6 +332,8 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
       case _: DecimalType =>
         Compatible()
       case DataTypes.BinaryType if (evalMode == CometEvalMode.LEGACY) => Compatible()
+      case DataTypes.TimestampType =>
+        Compatible()
       case _ =>
         unsupported(DataTypes.IntegerType, toType)
     }
@@ -343,6 +349,8 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
       case _: DecimalType =>
         Compatible()
       case DataTypes.BinaryType if (evalMode == CometEvalMode.LEGACY) => Compatible()
+      case DataTypes.TimestampType =>
+        Compatible()
       case _ =>
         unsupported(DataTypes.LongType, toType)
     }
