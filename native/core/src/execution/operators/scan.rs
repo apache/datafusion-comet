@@ -96,7 +96,6 @@ impl ScanExec {
 
         // Build schema directly from data types since get_next now always unpacks dictionaries
         let schema = schema_from_data_types(&data_types);
-        // dbg!(&schema);
 
         let cache = PlanProperties::new(
             EquivalenceProperties::new(Arc::clone(&schema)),
@@ -211,8 +210,6 @@ impl ScanExec {
             // array_data.validate_full()?;
 
             let array = make_array(array_data);
-
-            // dbg!(&array, &selection_indices_arrays);
 
             // Apply selection if selection vectors exist (applies to all columns)
             let array = if let Some(ref selection_arrays) = selection_indices_arrays {
@@ -526,7 +523,6 @@ impl Stream for ScanStream<'_> {
 
     fn poll_next(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let mut timer = self.baseline_metrics.elapsed_compute().timer();
-        // dbg!(&self.scan);
         let mut scan_batch = self.scan.batch.try_lock().unwrap();
 
         let input_batch = &*scan_batch;

@@ -704,7 +704,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
     key_unwrapper_obj: JObject,
     metrics_node: JObject,
 ) -> jlong {
-    // dbg!("Java_org_apache_comet_parquet_Native_initRecordBatchReader");
     try_unwrap_or_throw(&e, |mut env| unsafe {
         JVMClasses::init(&mut env);
         let session_config = SessionConfig::new().with_batch_size(batch_size as usize);
@@ -778,8 +777,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
             encryption_enabled,
         )?;
 
-        // dbg!(&scan);
-
         let partition_index: usize = 0;
         let batch_stream = scan.execute(partition_index, session_ctx.task_ctx())?;
 
@@ -791,8 +788,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
             reader_state: ParquetReaderState::Init,
         };
         let res = Box::new(ctx);
-
-        // dbg!("end Java_org_apache_comet_parquet_Native_initRecordBatchReader");
 
         Ok(Box::into_raw(res) as i64)
     })
