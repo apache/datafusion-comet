@@ -24,22 +24,22 @@ files or Iceberg tables.
 
 ## Arguments
 
-| Argument        | Required | Default    | Description                                      |
-| --------------- | -------- | ---------- | ------------------------------------------------ |
-| `--benchmark`   | yes      |            | `tpch` or `tpcds`                                |
-| `--data`        | *        |            | Path to Parquet data files                        |
-| `--catalog`     | *        |            | Iceberg catalog name (mutually exclusive with `--data`) |
-| `--database`    | no       | `tpch`     | Database name (only with `--catalog`)             |
-| `--format`      | no       | `parquet`  | File format: parquet, csv, json (only with `--data`) |
-| `--options`     | no       | `{}`       | Spark reader options as JSON string               |
-| `--queries`     | yes      |            | Path to directory containing `q1.sql` ... `qN.sql` |
-| `--iterations`  | no       | `1`        | Number of times to run all queries                |
-| `--output`      | yes      |            | Directory for results JSON                        |
-| `--name`        | auto     |            | Result file prefix (auto-injected from engine config) |
-| `--query`       | no       |            | Run a single query number (1-based)               |
-| `--write`       | no       |            | Write query results as Parquet to this path       |
-| `--profile`     | no       |            | Enable JVM metrics profiling                      |
-| `--profile-interval` | no  | `2.0`      | Profiling poll interval in seconds                |
+| Argument             | Required | Default   | Description                                             |
+| -------------------- | -------- | --------- | ------------------------------------------------------- |
+| `--benchmark`        | yes      |           | `tpch` or `tpcds`                                       |
+| `--data`             | \*       |           | Path to Parquet data files                              |
+| `--catalog`          | \*       |           | Iceberg catalog name (mutually exclusive with `--data`) |
+| `--database`         | no       | `tpch`    | Database name (only with `--catalog`)                   |
+| `--format`           | no       | `parquet` | File format: parquet, csv, json (only with `--data`)    |
+| `--options`          | no       | `{}`      | Spark reader options as JSON string                     |
+| `--queries`          | yes      |           | Path to directory containing `q1.sql` ... `qN.sql`      |
+| `--iterations`       | no       | `1`       | Number of times to run all queries                      |
+| `--output`           | yes      |           | Directory for results JSON                              |
+| `--name`             | auto     |           | Result file prefix (auto-injected from engine config)   |
+| `--query`            | no       |           | Run a single query number (1-based)                     |
+| `--write`            | no       |           | Write query results as Parquet to this path             |
+| `--profile`          | no       |           | Enable JVM metrics profiling                            |
+| `--profile-interval` | no       | `2.0`     | Profiling poll interval in seconds                      |
 
 `*` Either `--data` or `--catalog` is required, but not both.
 
@@ -57,19 +57,6 @@ export TPCH_QUERIES=/mnt/bigdata/tpch/queries
 python benchmarks/run.py \
     --engine comet --profile standalone-tpch --restart-cluster \
     -- tpc --benchmark tpch --data $TPCH_DATA --queries $TPCH_QUERIES \
-       --output . --iterations 1
-```
-
-### TPC-DS with Blaze
-
-```bash
-export BLAZE_JAR=/path/to/blaze.jar
-export TPCDS_DATA=/mnt/bigdata/tpcds/sf100
-export TPCDS_QUERIES=/mnt/bigdata/tpcds/queries
-
-python benchmarks/run.py \
-    --engine blaze --profile standalone-tpcds --restart-cluster \
-    -- tpc --benchmark tpcds --data $TPCDS_DATA --queries $TPCDS_QUERIES \
        --output . --iterations 1
 ```
 

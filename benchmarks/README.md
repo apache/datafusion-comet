@@ -21,7 +21,7 @@ under the License.
 
 Unified benchmark infrastructure for Apache DataFusion Comet. Supports
 TPC-H/TPC-DS and shuffle benchmarks across multiple engines (Spark, Comet,
-Gluten, Blaze) with composable configuration and optional memory profiling.
+Gluten) with composable configuration and optional memory profiling.
 
 ## Quick Start
 
@@ -45,7 +45,7 @@ python benchmarks/run.py \
 benchmarks/
 ├── run.py                 # Entry point — builds and runs spark-submit
 ├── conf/
-│   ├── engines/           # Per-engine configs (comet, spark, gluten, blaze, ...)
+│   ├── engines/           # Per-engine configs (comet, spark, gluten, ...)
 │   └── profiles/          # Per-environment configs (local, standalone, docker, k8s)
 ├── runner/
 │   ├── cli.py             # Python CLI passed to spark-submit (subcommands: tpc, shuffle, micro)
@@ -76,7 +76,7 @@ benchmarks/
 4. Builds and executes the `spark-submit` command
 
 The merge order is: **profile < engine < CLI overrides**, so engine configs
-can override profile defaults (e.g., Blaze sets `offHeap.enabled=false`
+can override profile defaults (e.g., an engine can set `offHeap.enabled=false`
 even though the profile enables it).
 
 ### Wrapper arguments (before `--`)
@@ -105,7 +105,6 @@ Everything after `--` is passed to `runner/cli.py`. See per-suite docs:
 | `comet`                | `engines/comet.conf`                | DataFusion Comet with native scan |
 | `comet-iceberg`        | `engines/comet-iceberg.conf`        | Comet + native Iceberg scanning   |
 | `gluten`               | `engines/gluten.conf`               | Gluten (Velox backend)            |
-| `blaze`                | `engines/blaze.conf`                | Blaze accelerator                 |
 | `spark-shuffle`        | `engines/spark-shuffle.conf`        | Spark baseline for shuffle tests  |
 | `comet-jvm-shuffle`    | `engines/comet-jvm-shuffle.conf`    | Comet with JVM shuffle mode       |
 | `comet-native-shuffle` | `engines/comet-native-shuffle.conf` | Comet with native shuffle         |
@@ -131,7 +130,6 @@ environment at load time:
 | `SPARK_MASTER` | standalone profiles  | Spark master URL                  |
 | `COMET_JAR`    | comet engines        | Path to Comet JAR                 |
 | `GLUTEN_JAR`   | gluten engine        | Path to Gluten JAR                |
-| `BLAZE_JAR`    | blaze engine         | Path to Blaze JAR                 |
 | `ICEBERG_JAR`  | comet-iceberg engine | Path to Iceberg Spark runtime JAR |
 | `K8S_MASTER`   | k8s profile          | K8s API server URL                |
 

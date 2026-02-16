@@ -14,7 +14,7 @@
 # limitations under the License.
 
 # Unified benchmark image for running TPC and shuffle benchmarks across
-# engines (Spark, Comet, Gluten, Blaze).
+# engines (Spark, Comet, Gluten).
 #
 # Build:
 #   docker build -t comet-bench -f benchmarks/infra/docker/Dockerfile .

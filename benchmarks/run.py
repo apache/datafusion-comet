@@ -31,11 +31,7 @@ Usage::
         -- tpc --benchmark tpch --data $TPCH_DATA --queries $TPCH_QUERIES \\
            --output . --iterations 1
 
-    # = blaze-tpcds.sh
-    python benchmarks/run.py --engine blaze --profile standalone-tpcds \\
-        --restart-cluster \\
-        -- tpc --benchmark tpcds --data $TPCDS_DATA --queries $TPCDS_QUERIES \\
-           --output . --iterations 1
+
 
     # = comet-tpch-iceberg.sh (dynamic catalog via --conf)
     python benchmarks/run.py --engine comet-iceberg --profile standalone-tpch \\
