@@ -48,13 +48,14 @@ benchmarks/
 │   ├── engines/           # Per-engine configs (comet, spark, gluten, blaze, ...)
 │   └── profiles/          # Per-environment configs (local, standalone, docker, k8s)
 ├── runner/
-│   ├── cli.py             # Python CLI passed to spark-submit (subcommands: tpc, shuffle)
+│   ├── cli.py             # Python CLI passed to spark-submit (subcommands: tpc, shuffle, micro)
 │   ├── config.py          # Config file loader and merger
 │   ├── spark_session.py   # SparkSession builder
 │   └── profiling.py       # Level 1 JVM metrics via Spark REST API
 ├── suites/
 │   ├── tpc.py             # TPC-H / TPC-DS benchmark suite
-│   └── shuffle.py         # Shuffle benchmark suite (hash, round-robin)
+│   ├── shuffle.py         # Shuffle benchmark suite (hash, round-robin)
+│   └── micro.py           # Microbenchmark suite (string expressions, ...)
 ├── analysis/
 │   ├── compare.py         # Generate comparison charts from result JSON
 │   └── memory_report.py   # Generate memory reports from profiling CSV
@@ -80,10 +81,10 @@ even though the profile enables it).
 
 ### Wrapper arguments (before `--`)
 
-| Flag                | Description                                    |
-| ------------------- | ---------------------------------------------- |
-| `--engine NAME`     | Engine config from `conf/engines/NAME.conf`    |
-| `--profile NAME`    | Profile config from `conf/profiles/NAME.conf`  |
+| Flag                | Description                                     |
+| ------------------- | ----------------------------------------------- |
+| `--engine NAME`     | Engine config from `conf/engines/NAME.conf`     |
+| `--profile NAME`    | Profile config from `conf/profiles/NAME.conf`   |
 | `--conf key=value`  | Extra Spark/runner config override (repeatable) |
 | `--restart-cluster` | Stop/start Spark standalone master + worker     |
 | `--dry-run`         | Print spark-submit command without executing    |
@@ -94,44 +95,45 @@ Everything after `--` is passed to `runner/cli.py`. See per-suite docs:
 
 - [TPC-H / TPC-DS](suites/TPC.md)
 - [Shuffle](suites/SHUFFLE.md)
+- [Microbenchmarks](suites/MICRO.md)
 
 ## Available Engines
 
-| Engine              | Config file              | Description                           |
-| ------------------- | ------------------------ | ------------------------------------- |
-| `spark`             | `engines/spark.conf`     | Vanilla Spark (no accelerator)        |
-| `comet`             | `engines/comet.conf`     | DataFusion Comet with native scan     |
-| `comet-iceberg`     | `engines/comet-iceberg.conf` | Comet + native Iceberg scanning   |
-| `gluten`            | `engines/gluten.conf`    | Gluten (Velox backend)                |
-| `blaze`             | `engines/blaze.conf`     | Blaze accelerator                     |
-| `spark-shuffle`     | `engines/spark-shuffle.conf` | Spark baseline for shuffle tests  |
-| `comet-jvm-shuffle` | `engines/comet-jvm-shuffle.conf` | Comet with JVM shuffle mode |
-| `comet-native-shuffle` | `engines/comet-native-shuffle.conf` | Comet with native shuffle |
+| Engine                 | Config file                         | Description                       |
+| ---------------------- | ----------------------------------- | --------------------------------- |
+| `spark`                | `engines/spark.conf`                | Vanilla Spark (no accelerator)    |
+| `comet`                | `engines/comet.conf`                | DataFusion Comet with native scan |
+| `comet-iceberg`        | `engines/comet-iceberg.conf`        | Comet + native Iceberg scanning   |
+| `gluten`               | `engines/gluten.conf`               | Gluten (Velox backend)            |
+| `blaze`                | `engines/blaze.conf`                | Blaze accelerator                 |
+| `spark-shuffle`        | `engines/spark-shuffle.conf`        | Spark baseline for shuffle tests  |
+| `comet-jvm-shuffle`    | `engines/comet-jvm-shuffle.conf`    | Comet with JVM shuffle mode       |
+| `comet-native-shuffle` | `engines/comet-native-shuffle.conf` | Comet with native shuffle         |
 
 ## Available Profiles
 
-| Profile              | Config file                    | Description                      |
-| -------------------- | ------------------------------ | -------------------------------- |
-| `local`              | `profiles/local.conf`          | `local[*]` mode, no cluster      |
-| `standalone-tpch`    | `profiles/standalone-tpch.conf`| 1 executor, 8 cores, S3A         |
-| `standalone-tpcds`   | `profiles/standalone-tpcds.conf`| 2 executors, 16 cores, S3A      |
-| `docker`             | `profiles/docker.conf`         | For docker-compose deployments   |
-| `k8s`                | `profiles/k8s.conf`            | Spark-on-Kubernetes              |
+| Profile            | Config file                      | Description                    |
+| ------------------ | -------------------------------- | ------------------------------ |
+| `local`            | `profiles/local.conf`            | `local[*]` mode, no cluster    |
+| `standalone-tpch`  | `profiles/standalone-tpch.conf`  | 1 executor, 8 cores, S3A       |
+| `standalone-tpcds` | `profiles/standalone-tpcds.conf` | 2 executors, 16 cores, S3A     |
+| `docker`           | `profiles/docker.conf`           | For docker-compose deployments |
+| `k8s`              | `profiles/k8s.conf`              | Spark-on-Kubernetes            |
 
 ## Environment Variables
 
 The config files use `${VAR}` references that are expanded from the
 environment at load time:
 
-| Variable         | Used by                     | Description                       |
-| ---------------- | --------------------------- | --------------------------------- |
-| `SPARK_HOME`     | `run.py`                    | Path to Spark installation        |
-| `SPARK_MASTER`   | standalone profiles         | Spark master URL                  |
-| `COMET_JAR`      | comet engines               | Path to Comet JAR                 |
-| `GLUTEN_JAR`     | gluten engine               | Path to Gluten JAR                |
-| `BLAZE_JAR`      | blaze engine                | Path to Blaze JAR                 |
-| `ICEBERG_JAR`    | comet-iceberg engine        | Path to Iceberg Spark runtime JAR |
-| `K8S_MASTER`     | k8s profile                 | K8s API server URL                |
+| Variable       | Used by              | Description                       |
+| -------------- | -------------------- | --------------------------------- |
+| `SPARK_HOME`   | `run.py`             | Path to Spark installation        |
+| `SPARK_MASTER` | standalone profiles  | Spark master URL                  |
+| `COMET_JAR`    | comet engines        | Path to Comet JAR                 |
+| `GLUTEN_JAR`   | gluten engine        | Path to Gluten JAR                |
+| `BLAZE_JAR`    | blaze engine         | Path to Blaze JAR                 |
+| `ICEBERG_JAR`  | comet-iceberg engine | Path to Iceberg Spark runtime JAR |
+| `K8S_MASTER`   | k8s profile          | K8s API server URL                |
 
 ## Profiling
 

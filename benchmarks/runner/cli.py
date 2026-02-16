@@ -19,12 +19,13 @@
 Single CLI entry point for the unified benchmark runner.
 
 Designed to be the Python script passed to ``spark-submit``.  Subcommands
-correspond to benchmark suites (currently: ``tpc``, ``shuffle``).
+correspond to benchmark suites (currently: ``tpc``, ``shuffle``, ``micro``).
 
 Usage (via spark-submit)::
 
     spark-submit ... benchmarks/runner/cli.py tpc --benchmark tpch --data /path ...
     spark-submit ... benchmarks/runner/cli.py shuffle --benchmark shuffle-hash --data /path ...
+    spark-submit ... benchmarks/runner/cli.py micro --benchmark string-expressions --output ...
 """
 
 import argparse
@@ -35,6 +36,7 @@ import sys
 from benchmarks.runner.spark_session import create_session
 from benchmarks.suites import tpc
 from benchmarks.suites import shuffle
+from benchmarks.suites import micro
 
 
 # ---------------------------------------------------------------------------
@@ -225,6 +227,65 @@ def _run_shuffle(args):
 
 
 # ---------------------------------------------------------------------------
+# Micro subcommand
+# ---------------------------------------------------------------------------
+
+def _add_micro_subparser(subparsers):
+    """Register the ``micro`` subcommand."""
+    p = subparsers.add_parser(
+        "micro",
+        help="Run expression-level microbenchmarks",
+        description=(
+            "Microbenchmark runner.  Generates a small dataset and times "
+            "individual SQL expressions."
+        ),
+    )
+    p.add_argument(
+        "--benchmark", required=True,
+        choices=list(micro.BENCHMARKS),
+        help="Microbenchmark to run",
+    )
+    p.add_argument(
+        "--rows", type=int, default=1024,
+        help="Number of rows for data generation (default: 1024)",
+    )
+    p.add_argument("--iterations", type=int, default=3, help="Number of iterations")
+    p.add_argument("--expression", help="Run a single expression by name")
+    p.add_argument("--output", required=True, help="Directory for results JSON")
+    p.add_argument("--name", required=True, help="Prefix for result file")
+    _add_profiling_args(p)
+
+
+def _run_micro(args):
+    """Execute the micro suite."""
+    spark = create_session(
+        app_name=f"{args.name}-{args.benchmark}",
+        spark_conf={},  # configs already set by spark-submit
+    )
+
+    profiler = _maybe_start_profiler(spark, args)
+
+    timings = micro.run_micro(
+        spark,
+        benchmark=args.benchmark,
+        num_rows=args.rows,
+        iterations=args.iterations,
+        expression=args.expression,
+    )
+
+    results = micro.build_results(
+        spark,
+        benchmark=args.benchmark,
+        name=args.name,
+        timings=timings,
+    )
+
+    micro.write_results(results, args.output, args.name, args.benchmark)
+    _maybe_stop_profiler(profiler, args.output, args.name, args.benchmark)
+    spark.stop()
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -236,6 +297,7 @@ def main(argv=None):
     subparsers = parser.add_subparsers(dest="suite", required=True)
     _add_tpc_subparser(subparsers)
     _add_shuffle_subparser(subparsers)
+    _add_micro_subparser(subparsers)
 
     args = parser.parse_args(argv)
 
@@ -243,6 +305,8 @@ def main(argv=None):
         _run_tpc(args)
     elif args.suite == "shuffle":
         _run_shuffle(args)
+    elif args.suite == "micro":
+        _run_micro(args)
     else:
         parser.error(f"Unknown suite: {args.suite}")
 
