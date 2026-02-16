@@ -483,7 +483,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
     val serde = handler.asInstanceOf[CometOperatorSerde[SparkPlan]]
     if (isOperatorEnabled(serde, op)) {
       // For operators that require native children (like writes), check if all data-producing
-      // children are CometNativeExec. This prevents runtime failures when the native operator
+      // children produce Arrow data. This prevents runtime failures when the native operator
       // expects Arrow arrays but receives non-Arrow data (e.g., OnHeapColumnVector).
       if (serde.requiresNativeChildren && op.children.nonEmpty) {
         // Get the actual data-producing children (unwrap WriteFilesExec if present)
@@ -491,7 +491,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
           case writeFiles: WriteFilesExec => Seq(writeFiles.child)
           case other => Seq(other)
         }
-        if (!dataProducingChildren.forall(_.isInstanceOf[CometNativeExec])) {
+        if (!dataProducingChildren.forall(producesArrowData)) {
           withInfo(op, "Cannot perform native operation because input is not in Arrow format")
           return None
         }
@@ -597,6 +597,21 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       val simpleClassName = Utils.getSimpleName(op.getClass)
       val nodeName = simpleClassName.replaceAll("Exec$", "")
       COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST.get(conf).contains(nodeName)
+    }
+  }
+
+  /**
+   * Checks if a plan produces Arrow-formatted data by unwrapping wrapper operators. This handles
+   * ReusedExchangeExec (used in multi-insert), QueryStageExec (AQE), and checks for CometExec
+   * (includes CometNativeExec and sink operators like CometUnionExec, CometCoalesceExec, etc.).
+   */
+  private def producesArrowData(plan: SparkPlan): Boolean = {
+    plan match {
+      case _: CometExec => true
+      case r: ReusedExchangeExec => producesArrowData(r.child)
+      case s: ShuffleQueryStageExec => producesArrowData(s.plan)
+      case b: BroadcastQueryStageExec => producesArrowData(b.plan)
+      case _ => false
     }
   }
 
