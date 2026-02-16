@@ -251,19 +251,13 @@ object IcebergReflection extends Logging {
     import scala.jdk.CollectionConverters._
     getFileIO(table).flatMap { fileIO =>
       findMethodInHierarchy(fileIO.getClass, "properties").flatMap { propsMethod =>
-        try {
-          propsMethod.invoke(fileIO) match {
-            case javaMap: java.util.Map[_, _] =>
-              val scalaMap = javaMap.asScala.collect { case (k: String, v: String) =>
-                k -> v
-              }.toMap
-              if (scalaMap.nonEmpty) Some(scalaMap) else None
-            case _ => None
-          }
-        } catch {
-          case e: Exception =>
-            logDebug(s"FileIO properties() not accessible: ${e.getMessage}")
-            None
+        propsMethod.invoke(fileIO) match {
+          case javaMap: java.util.Map[_, _] =>
+            val scalaMap = javaMap.asScala.collect { case (k: String, v: String) =>
+              k -> v
+            }.toMap
+            if (scalaMap.nonEmpty) Some(scalaMap) else None
+          case _ => None
         }
       }
     }
