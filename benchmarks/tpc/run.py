@@ -21,7 +21,7 @@
 
 Usage:
     python3 run.py --engine comet --benchmark tpch
-    python3 run.py --engine blaze --benchmark tpcds --iterations 3
+    python3 run.py --engine comet --benchmark tpcds --iterations 3
     python3 run.py --engine comet-iceberg --benchmark tpch
     python3 run.py --engine comet --benchmark tpch --dry-run
     python3 run.py --engine spark --benchmark tpch --no-restart

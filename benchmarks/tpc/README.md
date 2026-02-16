@@ -44,7 +44,7 @@ python3 run.py --engine <engine> --benchmark <tpch|tpcds> [options]
 | `--no-restart`  | Skip Spark master/worker restart         |
 | `--dry-run`     | Print the spark-submit command without executing |
 
-Available engines: `spark`, `comet`, `comet-iceberg`, `gluten`, `blaze`
+Available engines: `spark`, `comet`, `comet-iceberg`, `gluten`
 
 ## Example usage
 
