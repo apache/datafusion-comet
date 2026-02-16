@@ -19,15 +19,12 @@
 
 package org.apache.spark.sql.benchmark
 
-import java.io.{FileOutputStream, PrintStream}
 import java.io.File
 import java.util.Locale
 
 import org.apache.iceberg.spark.Spark3Util
 import org.apache.iceberg.spark.actions.SparkActions
 import org.apache.spark.sql.comet.CometNativeCompaction
-
-import org.apache.comet.CometConf
 
 /**
  * Benchmark to measure Iceberg compaction performance using TPC-H dataset. Compares Spark default
@@ -146,7 +143,7 @@ object CometIcebergTPCCompactionBenchmark extends CometBenchmarkBase {
       val nativeFilesAfter = spark.sql(s"SELECT * FROM $icebergTableName.files").count()
 
       // Write result
-      writeResult(s"lineitem_part", rowCount, fileCount, nativeFilesAfter, 0, nativeTimeMs, 0)
+      writeResult("lineitem_part", rowCount, fileCount, nativeFilesAfter, 0, nativeTimeMs, 0)
 
       spark.sql(s"DROP TABLE IF EXISTS $icebergTableName")
     }

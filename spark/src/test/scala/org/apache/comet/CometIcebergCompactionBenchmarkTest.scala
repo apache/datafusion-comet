@@ -222,7 +222,7 @@ class CometIcebergCompactionBenchmarkTest extends CometTestBase {
         val rowCount = spark.sql(s"SELECT COUNT(*) FROM $tableName").first().getLong(0)
 
         // scalastyle:off println
-        println(s"\n========== COMPACTION BENCHMARK ==========")
+        println("\n========== COMPACTION BENCHMARK ==========")
         println(s"Table: $tableName")
         println(s"Files before: $filesBefore, Rows: $rowCount")
         println("=" * 45)
