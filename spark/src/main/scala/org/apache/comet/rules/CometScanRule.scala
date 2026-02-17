@@ -28,7 +28,7 @@ import scala.jdk.CollectionConverters._
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.catalyst.expressions.{Attribute, DynamicPruningExpression, Expression, GenericInternalRow, PlanExpression}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, DynamicPruningExpression, Expression, GenericInternalRow, InputFileBlockLength, InputFileBlockStart, InputFileName, PlanExpression}
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.{sideBySide, ArrayBasedMapData, GenericArrayData, MetadataColumnHelper}
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
@@ -49,7 +49,7 @@ import org.apache.comet.iceberg.{CometIcebergNativeScanMetadata, IcebergReflecti
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.parquet.{Native, SupportsComet}
 import org.apache.comet.parquet.CometParquetUtils.{encryptionEnabled, isEncryptionConfigSupported}
-import org.apache.comet.serde.operator.CometNativeScan
+import org.apache.comet.serde.operator.{CometIcebergNativeScan, CometNativeScan}
 import org.apache.comet.shims.{CometTypeShim, ShimFileFormat, ShimSubqueryBroadcast}
 
 /**
@@ -110,7 +110,9 @@ case class CometScanRule(session: SparkSession)
       metadataTableSuffix.exists(suffix => scanExec.table.name().endsWith(suffix))
     }
 
-    def transformScan(plan: SparkPlan): SparkPlan = plan match {
+    val fullPlan = plan
+
+    def transformScan(scanNode: SparkPlan): SparkPlan = scanNode match {
       case scan if !CometConf.COMET_NATIVE_SCAN_ENABLED.get(conf) =>
         withInfo(scan, "Comet Scan is not enabled")
 
@@ -119,7 +121,7 @@ case class CometScanRule(session: SparkSession)
 
       // data source V1
       case scanExec: FileSourceScanExec =>
-        transformV1Scan(scanExec)
+        transformV1Scan(fullPlan, scanExec)
 
       // data source V2
       case scanExec: BatchScanExec =>
@@ -135,7 +137,7 @@ case class CometScanRule(session: SparkSession)
     }
   }
 
-  private def transformV1Scan(scanExec: FileSourceScanExec): SparkPlan = {
+  private def transformV1Scan(plan: SparkPlan, scanExec: FileSourceScanExec): SparkPlan = {
 
     if (COMET_DPP_FALLBACK_ENABLED.get() &&
       scanExec.partitionFilters.exists(isDynamicPruningFilter)) {
@@ -170,7 +172,7 @@ case class CometScanRule(session: SparkSession)
             nativeIcebergCompatScan(session, scanExec, r, hadoopConf)
               .getOrElse(scanExec)
           case SCAN_NATIVE_DATAFUSION =>
-            nativeDataFusionScan(session, scanExec, r, hadoopConf).getOrElse(scanExec)
+            nativeDataFusionScan(plan, session, scanExec, r, hadoopConf).getOrElse(scanExec)
           case SCAN_NATIVE_ICEBERG_COMPAT =>
             nativeIcebergCompatScan(session, scanExec, r, hadoopConf).getOrElse(scanExec)
         }
@@ -181,6 +183,7 @@ case class CometScanRule(session: SparkSession)
   }
 
   private def nativeDataFusionScan(
+      plan: SparkPlan,
       session: SparkSession,
       scanExec: FileSourceScanExec,
       r: HadoopFsRelation,
@@ -194,6 +197,20 @@ case class CometScanRule(session: SparkSession)
     }
     if (scanExec.fileConstantMetadataColumns.nonEmpty) {
       withInfo(scanExec, "Native DataFusion scan does not support metadata columns")
+      return None
+    }
+    // input_file_name, input_file_block_start, and input_file_block_length read from
+    // InputFileBlockHolder, a thread-local set by Spark's FileScanRDD. The native DataFusion
+    // scan does not use FileScanRDD, so these expressions would return empty/default values.
+    if (plan.exists(node =>
+        node.expressions.exists(_.exists {
+          case _: InputFileName | _: InputFileBlockStart | _: InputFileBlockLength => true
+          case _ => false
+        }))) {
+      withInfo(
+        scanExec,
+        "Native DataFusion scan is not compatible with input_file_name, " +
+          "input_file_block_start, or input_file_block_length")
       return None
     }
     if (ShimFileFormat.findRowIndexColumnIndexInSchema(scanExec.requiredSchema) >= 0) {
@@ -370,9 +387,18 @@ case class CometScanRule(session: SparkSession)
 
             val hadoopS3Options = NativeConfig.extractObjectStoreOptions(hadoopConf, effectiveUri)
 
-            val catalogProperties =
-              org.apache.comet.serde.operator.CometIcebergNativeScan
-                .hadoopToIcebergS3Properties(hadoopS3Options)
+            val hadoopDerivedProperties =
+              CometIcebergNativeScan.hadoopToIcebergS3Properties(hadoopS3Options)
+
+            // Extract vended credentials from FileIO (REST catalog credential vending).
+            // FileIO properties take precedence over Hadoop-derived properties because
+            // they contain per-table credentials vended by the REST catalog.
+            val fileIOProperties = tableOpt
+              .flatMap(IcebergReflection.getFileIOProperties)
+              .map(CometIcebergNativeScan.filterStorageProperties)
+              .getOrElse(Map.empty)
+
+            val catalogProperties = hadoopDerivedProperties ++ fileIOProperties
 
             val result = CometIcebergNativeScanMetadata
               .extract(scanExec.scan, effectiveLocation, catalogProperties)

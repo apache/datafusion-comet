@@ -97,14 +97,17 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
       builder: Operator.Builder,
       childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
     val nativeScanBuilder = OperatorOuterClass.NativeScan.newBuilder()
-    nativeScanBuilder.setSource(scan.simpleStringWithNodeId())
+    val commonBuilder = OperatorOuterClass.NativeScanCommon.newBuilder()
+
+    // Set source in common (used as part of injection key)
+    commonBuilder.setSource(scan.simpleStringWithNodeId())
 
     val scanTypes = scan.output.flatten { attr =>
       serializeDataType(attr.dataType)
     }
 
     if (scanTypes.length == scan.output.length) {
-      nativeScanBuilder.addAllFields(scanTypes.asJava)
+      commonBuilder.addAllFields(scanTypes.asJava)
 
       // Sink operators don't have children
       builder.clearChildren()
@@ -120,7 +123,7 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
               logWarning(s"Unsupported data filter $filter")
           }
         }
-        nativeScanBuilder.addAllDataFilters(dataFilters.asJava)
+        commonBuilder.addAllDataFilters(dataFilters.asJava)
       }
 
       val possibleDefaultValues = getExistenceDefaultValues(scan.requiredSchema)
@@ -136,20 +139,15 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
             (Literal(expr), index.toLong.asInstanceOf[java.lang.Long])
           }
           .unzip
-        nativeScanBuilder.addAllDefaultValues(
+        commonBuilder.addAllDefaultValues(
           defaultValues.flatMap(exprToProto(_, scan.output)).toIterable.asJava)
-        nativeScanBuilder.addAllDefaultValuesIndexes(indexes.toIterable.asJava)
+        commonBuilder.addAllDefaultValuesIndexes(indexes.toIterable.asJava)
       }
 
+      // Extract object store options from first file (S3 configs apply to all files in scan)
       var firstPartition: Option[PartitionedFile] = None
       val filePartitions = scan.getFilePartitions()
-      val filePartitionsProto = filePartitions.map { partition =>
-        if (firstPartition.isEmpty) {
-          firstPartition = partition.files.headOption
-        }
-        partition2Proto(partition, scan.relation.partitionSchema)
-      }
-      nativeScanBuilder.addAllFilePartitions(filePartitionsProto.asJava)
+      firstPartition = filePartitions.flatMap(_.files.headOption).headOption
 
       val partitionSchema = schema2Proto(scan.relation.partitionSchema.fields)
       val requiredSchema = schema2Proto(scan.requiredSchema.fields)
@@ -166,30 +164,33 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
       val projectionVector = (dataSchemaIndexes ++ partitionSchemaIndexes).map(idx =>
         idx.toLong.asInstanceOf[java.lang.Long])
 
-      nativeScanBuilder.addAllProjectionVector(projectionVector.toIterable.asJava)
+      commonBuilder.addAllProjectionVector(projectionVector.toIterable.asJava)
 
       // In `CometScanRule`, we ensure partitionSchema is supported.
       assert(partitionSchema.length == scan.relation.partitionSchema.fields.length)
 
-      nativeScanBuilder.addAllDataSchema(dataSchema.toIterable.asJava)
-      nativeScanBuilder.addAllRequiredSchema(requiredSchema.toIterable.asJava)
-      nativeScanBuilder.addAllPartitionSchema(partitionSchema.toIterable.asJava)
-      nativeScanBuilder.setSessionTimezone(scan.conf.getConfString("spark.sql.session.timeZone"))
-      nativeScanBuilder.setCaseSensitive(scan.conf.getConf[Boolean](SQLConf.CASE_SENSITIVE))
+      commonBuilder.addAllDataSchema(dataSchema.toIterable.asJava)
+      commonBuilder.addAllRequiredSchema(requiredSchema.toIterable.asJava)
+      commonBuilder.addAllPartitionSchema(partitionSchema.toIterable.asJava)
+      commonBuilder.setSessionTimezone(scan.conf.getConfString("spark.sql.session.timeZone"))
+      commonBuilder.setCaseSensitive(scan.conf.getConf[Boolean](SQLConf.CASE_SENSITIVE))
 
       // Collect S3/cloud storage configurations
       val hadoopConf = scan.relation.sparkSession.sessionState
         .newHadoopConfWithOptions(scan.relation.options)
 
-      nativeScanBuilder.setEncryptionEnabled(CometParquetUtils.encryptionEnabled(hadoopConf))
+      commonBuilder.setEncryptionEnabled(CometParquetUtils.encryptionEnabled(hadoopConf))
 
       firstPartition.foreach { partitionFile =>
         val objectStoreOptions =
           NativeConfig.extractObjectStoreOptions(hadoopConf, partitionFile.pathUri)
         objectStoreOptions.foreach { case (key, value) =>
-          nativeScanBuilder.putObjectStoreOptions(key, value)
+          commonBuilder.putObjectStoreOptions(key, value)
         }
       }
+
+      // Set common data in NativeScan (file_partition will be populated at execution time)
+      nativeScanBuilder.setCommon(commonBuilder.build())
 
       Some(builder.setNativeScan(nativeScanBuilder).build())
 
@@ -204,6 +205,6 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
   }
 
   override def createExec(nativeOp: Operator, op: CometScanExec): CometNativeExec = {
-    CometNativeScanExec(nativeOp, op.wrapped, op.session)
+    CometNativeScanExec(nativeOp, op.wrapped, op.session, op)
   }
 }
