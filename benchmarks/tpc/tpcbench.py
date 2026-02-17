@@ -188,6 +188,7 @@ def main(
         profiler.stop()
         metrics_path = f"{output}/{name}-{benchmark}-metrics.csv"
         profiler.write_csv(metrics_path)
+        profiler.snapshot_cgroup_metrics(output, name, benchmark)
 
     spark.stop()
 

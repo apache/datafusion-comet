@@ -32,6 +32,8 @@ Usage::
 """
 
 import csv
+import glob
+import os
 import threading
 import time
 from typing import Any, Dict, List, Optional
@@ -87,6 +89,7 @@ class SparkMetricsProfiler:
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._start_time: float = 0.0
+        self._stop_time: float = 0.0
 
     @property
     def samples(self) -> List[Dict[str, Any]]:
@@ -164,6 +167,7 @@ class SparkMetricsProfiler:
         self._thread = None
         # One last poll to capture final state
         self._poll_once()
+        self._stop_time = time.time()
         print(f"Profiler stopped ({len(self._samples)} samples collected)")
 
     def write_csv(self, path: str) -> str:
@@ -180,3 +184,63 @@ class SparkMetricsProfiler:
                 writer.writerow(row)
         print(f"Profiler: wrote {len(self._samples)} samples to {path}")
         return path
+
+    def snapshot_cgroup_metrics(
+        self, output_dir: str, name: str, benchmark: str
+    ) -> List[str]:
+        """Filter cgroup CSVs to the profiling time window and write snapshots.
+
+        Looks for ``container-metrics-*.csv`` in *output_dir*, keeps only
+        rows whose ``timestamp_ms`` falls within the profiler's start/stop
+        window, and writes each filtered file as
+        ``{name}-{benchmark}-container-metrics-{label}.csv``.
+
+        Returns the list of snapshot file paths written.
+        """
+        start_ms = int(self._start_time * 1000)
+        stop_ms = int(self._stop_time * 1000) if self._stop_time else int(
+            time.time() * 1000
+        )
+
+        source_files = sorted(
+            glob.glob(os.path.join(output_dir, "container-metrics-*.csv"))
+        )
+        if not source_files:
+            print("Profiler: no container-metrics CSVs found to snapshot")
+            return []
+
+        written: List[str] = []
+        for src in source_files:
+            # Extract label, e.g. "spark-worker-1" from
+            # "container-metrics-spark-worker-1.csv"
+            basename = os.path.basename(src)
+            label = basename.replace("container-metrics-", "").replace(
+                ".csv", ""
+            )
+            dest = os.path.join(
+                output_dir,
+                f"{name}-{benchmark}-container-metrics-{label}.csv",
+            )
+
+            with open(src, "r", newline="") as fin:
+                reader = csv.DictReader(fin)
+                fieldnames = reader.fieldnames
+                if not fieldnames:
+                    continue
+                rows = [
+                    row
+                    for row in reader
+                    if start_ms <= int(row["timestamp_ms"]) <= stop_ms
+                ]
+
+            with open(dest, "w", newline="") as fout:
+                writer = csv.DictWriter(fout, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows(rows)
+
+            print(
+                f"Profiler: snapshot {len(rows)} cgroup rows -> {dest}"
+            )
+            written.append(dest)
+
+        return written
