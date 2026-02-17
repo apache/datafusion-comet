@@ -54,6 +54,9 @@ object CometConf extends ShimCometConf {
   private val TRACING_GUIDE = "For more information, refer to the Comet Tracing " +
     "Guide (https://datafusion.apache.org/comet/contributor-guide/tracing.html)"
 
+  private val DEBUGGING_GUIDE = "For more information, refer to the Comet Debugging " +
+    "Guide (https://datafusion.apache.org/comet/contributor-guide/debugging.html)"
+
   /** List of all configs that is used for generating documentation */
   val allConfs = new ListBuffer[ConfigEntry[_]]
 
@@ -549,6 +552,13 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_DEBUG_MEMORY_ENABLED: ConfigEntry[Boolean] =
+    conf(s"$COMET_PREFIX.debug.memory")
+      .category(CATEGORY_TESTING)
+      .doc(s"When enabled, log all native memory pool interactions. $DEBUGGING_GUIDE.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_EXTENDED_EXPLAIN_FORMAT_VERBOSE = "verbose"
   val COMET_EXTENDED_EXPLAIN_FORMAT_FALLBACK = "fallback"
 
@@ -817,6 +827,16 @@ object CometConf extends ShimCometConf {
       .doc("The maximum amount of data (in bytes) stored inside the temporary directories.")
       .bytesConf(ByteUnit.BYTE)
       .createWithDefault(100L * 1024 * 1024 * 1024) // 100 GB
+
+  val COMET_RESPECT_DATAFUSION_CONFIGS: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.respectDataFusionConfigs")
+      .category(CATEGORY_TESTING)
+      .doc(
+        "Development and testing configuration option to allow DataFusion configs set in " +
+          "Spark configuration settings starting with `spark.comet.datafusion.` to be passed " +
+          "into native execution.")
+      .booleanConf
+      .createWithDefault(false)
 
   val COMET_STRICT_TESTING: ConfigEntry[Boolean] = conf(s"$COMET_PREFIX.testing.strict")
     .category(CATEGORY_TESTING)
