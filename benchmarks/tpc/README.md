@@ -177,13 +177,13 @@ physical plan output.
 
 ### create-iceberg-tables.py options
 
-| Option           | Required | Default          | Description                         |
-| ---------------- | -------- | ---------------- | ----------------------------------- |
-| `--benchmark`    | Yes      |                  | `tpch` or `tpcds`                   |
-| `--parquet-path` | Yes      |                  | Path to source Parquet data         |
-| `--warehouse`    | Yes      |                  | Path to Iceberg warehouse directory |
-| `--catalog`      | No       | `local`          | Iceberg catalog name                |
-| `--database`     | No       | benchmark name   | Database name for the tables        |
+| Option           | Required | Default        | Description                         |
+| ---------------- | -------- | -------------- | ----------------------------------- |
+| `--benchmark`    | Yes      |                | `tpch` or `tpcds`                   |
+| `--parquet-path` | Yes      |                | Path to source Parquet data         |
+| `--warehouse`    | Yes      |                | Path to Iceberg warehouse directory |
+| `--catalog`      | No       | `local`        | Iceberg catalog name                |
+| `--database`     | No       | benchmark name | Database name for the tables        |
 
 ### Comparing Parquet vs Iceberg performance
 
