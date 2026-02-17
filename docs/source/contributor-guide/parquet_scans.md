@@ -21,18 +21,18 @@ under the License.
 
 Comet currently has two distinct implementations of the Parquet scan operator.
 
-The two implementations are `native_datafusion` and `native_iceberg_compat`. They both delegate to DataFusion's
-`DataSourceExec`. The main difference between these implementations is that `native_datafusion` runs fully natively, and
-`native_iceberg_compat` is a hybrid JVM/Rust implementation that can support some Spark features that
-`native_datafusion` can not, but has some performance overhead due to crossing the JVM/Rust boundary.
+| Scan Implementation     | Notes             |
+| ----------------------- | ----------------- |
+| `native_datafusion`     | Fully native scan |
+| `native_iceberg_compat` | Hybrid JVM scan   |
 
 The configuration property
 `spark.comet.scan.impl` is used to select an implementation. The default setting is `spark.comet.scan.impl=auto`, which
 currently always uses the `native_iceberg_compat` implementation. Most users should not need to change this setting.
-However, it is possible to force Comet to try and use a particular implementation for all scan operations by setting
-this configuration property to one of the following implementations. For example: `--conf spark.comet.scan.impl=native_datafusion`
+However, it is possible to force Comet to use a particular implementation for all scan operations by setting
+this configuration property to one of the following implementations. For example: `--conf spark.comet.scan.impl=native_datafusion`.
 
-The following unsupported features are shared by both scans and cause Comet to fall back to Spark:
+The following features are not supported by either scan implementation, and Comet will fall back to Spark in these scenarios:
 
 - `ShortType` columns, by default. When reading Parquet files written by systems other than Spark that contain
   columns with the logical type `UINT_8` (unsigned 8-bit integers), Comet may produce different results than Spark.
@@ -54,7 +54,8 @@ The following shared limitation may produce incorrect results without falling ba
   Julian/Gregorian calendar), dates/timestamps will be read as if they were written using the Proleptic Gregorian
   calendar. This may produce incorrect results for dates before October 15, 1582.
 
-The `native_datafusion` scan has some additional limitations. All of these cause Comet to fall back to Spark.
+The `native_datafusion` scan has some additional limitations, mostly related to Parquet metadata. All of these
+cause Comet to fall back to Spark.
 
 - No support for row indexes
 - No support for reading Parquet field IDs
