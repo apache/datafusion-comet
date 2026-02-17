@@ -839,6 +839,9 @@ object CometConf extends ShimCometConf {
     .booleanConf
     .createWithEnvVarOrDefault("ENABLE_COMET_STRICT_TESTING", false)
 
+  val COMET_OPERATOR_DATA_WRITING_COMMAND_ALLOW_INCOMPAT: ConfigEntry[Boolean] =
+    createOperatorIncompatConfig("DataWritingCommandExec")
+
   /** Create a config to enable a specific operator */
   private def createExecEnabledConfig(
       exec: String,
@@ -852,6 +855,25 @@ object CometConf extends ShimCometConf {
           .getOrElse(""))
       .booleanConf
       .createWithDefault(defaultValue)
+  }
+
+  /**
+   * Converts a config key to a valid environment variable name. Example:
+   * "spark.comet.operator.DataWritingCommandExec.allowIncompatible" ->
+   * "SPARK_COMET_OPERATOR_DATAWRITINGCOMMANDEXEC_ALLOWINCOMPATIBLE"
+   */
+  private def configKeyToEnvVar(configKey: String): String =
+    configKey.toUpperCase(Locale.ROOT).replace('.', '_')
+
+  private def createOperatorIncompatConfig(name: String): ConfigEntry[Boolean] = {
+    val configKey = getOperatorAllowIncompatConfigKey(name)
+    val envVar = configKeyToEnvVar(configKey)
+    conf(configKey)
+      .category(CATEGORY_EXEC)
+      .doc(
+        s"Whether to allow incompatibility for operator: $name. False by default. Can be overridden with $envVar env variable")
+      .booleanConf
+      .createWithEnvVarOrDefault(envVar, false)
   }
 
   def isExprEnabled(name: String, conf: SQLConf = SQLConf.get): Boolean = {
