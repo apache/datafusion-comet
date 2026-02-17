@@ -497,6 +497,9 @@ object CometConf extends ShimCometConf {
         "this should not be larger than batch size (i.e., `spark.comet.batchSize`). Otherwise " +
         "it will produce larger batches than expected in the native operator after shuffle.")
       .intConf
+      .checkValue(
+        v => v <= COMET_BATCH_SIZE.get(),
+        "Should not be larger than batch size `spark.comet.batchSize`")
       .createWithDefault(8192)
 
   val COMET_SHUFFLE_WRITE_BUFFER_SIZE: ConfigEntry[Long] =
