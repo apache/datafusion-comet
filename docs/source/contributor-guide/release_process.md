@@ -1,31 +1,84 @@
-<!--
-Licensed to the Apache Software Foundation (ASF) under one
-or more contributor license agreements.  See the NOTICE file
-distributed with this work for additional information
-regarding copyright ownership.  The ASF licenses this file
-to you under the Apache License, Version 2.0 (the
-"License"); you may not use this file except in compliance
-with the License.  You may obtain a copy of the License at
+<!---
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
 
-  http://www.apache.org/licenses/LICENSE-2.0
+    http://www.apache.org/licenses/LICENSE-2.0
 
-Unless required by applicable law or agreed to in writing,
-software distributed under the License is distributed on an
-"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-KIND, either express or implied.  See the License for the
-specific language governing permissions and limitations
-under the License.
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
 -->
 
 # Apache DataFusion Comet: Release Process
 
-This documentation explains the release process for Apache DataFusion Comet.
+This documentation explains the release process for Apache DataFusion Comet. Some preparation tasks can be
+performed by any contributor, while certain release tasks can only be performed by a DataFusion Project Management
+Committee (PMC) member.
+
+## Checklist
+
+The following is a quick-reference checklist for the full release process. See the detailed sections below for
+instructions on each step.
+
+- [ ] Release preparation: review expression support status and user guide
+- [ ] Create release branch
+- [ ] Generate release documentation
+- [ ] Update Maven version in release branch
+- [ ] Update version in main for next development cycle
+- [ ] Generate the change log and create PR against main
+- [ ] Cherry-pick the change log commit into the release branch
+- [ ] Build the jars
+- [ ] Tag the release candidate
+- [ ] Update documentation for the new release
+- [ ] Publish Maven artifacts to staging
+- [ ] Create the release candidate tarball
+- [ ] Start the email voting thread
+- [ ] Once the vote passes:
+  - [ ] Publish source tarball
+  - [ ] Create GitHub release
+  - [ ] Promote Maven artifacts to production
+  - [ ] Push the release tag
+  - [ ] Close the vote and announce the release
+- [ ] Post release:
+  - [ ] Register the release with Apache Reporter
+  - [ ] Delete old RCs and releases from SVN
+  - [ ] Write a blog post
+
+## Release Preparation
+
+Before starting the release process, review the user guide to ensure it accurately reflects the current state of the
+project:
+
+- Review the supported expressions and operators lists in the user guide. Verify that any expressions added since
+  the last release are included and that their support status is accurate.
+- Spot-check the support status of individual expressions by running tests or queries to confirm they work as
+  documented.
+- Look for any expressions that may have regressed or changed behavior since the last release and update the
+  documentation accordingly.
+
+It is also recommended to run benchmarks (such as TPC-H and TPC-DS) comparing performance against the previous
+release to check for regressions. See the
+[Comet Benchmarking Guide](benchmarking.md) for instructions.
+
+These are tasks where agentic coding tools can be particularly helpful — for example, scanning the codebase for
+newly registered expressions and cross-referencing them against the documented list, or generating test queries to
+verify expression support status.
+
+Any issues found should be addressed before creating the release branch.
 
 ## Creating the Release Candidate
 
 This part of the process can be performed by any committer.
 
-Here are the steps, using the 0.1.0 release as an example.
+Here are the steps, using the 0.13.0 release as an example.
 
 ### Create Release Branch
 
@@ -45,8 +98,8 @@ Create a release branch from the latest commit in main and push to the `apache` 
 git fetch apache
 git checkout main
 git reset --hard apache/main
-git checkout -b branch-0.1
-git push apache branch-0.1
+git checkout -b branch-0.13
+git push apache branch-0.13
 ```
 
 ### Generate Release Documentation
@@ -57,34 +110,35 @@ so we need to generate the actual content (config tables, compatibility matrices
 ```shell
 ./dev/generate-release-docs.sh
 git add docs/source/user-guide/latest/
-git commit -m "Generate docs for 0.1.0 release"
-git push apache branch-0.1
+git commit -m "Generate docs for 0.13.0 release"
+git push apache branch-0.13
 ```
 
 This freezes the documentation to reflect the configs and expressions available in this release.
 
 ### Update Maven Version
 
-Update the `pom.xml` files in the release branch to update the Maven version from `0.1.0-SNAPSHOT` to `0.1.0`.
+Update the `pom.xml` files in the release branch to update the Maven version from `0.13.0-SNAPSHOT` to `0.13.0`.
 
-There is no need to update the Rust crate versions because they will already be `0.1.0`.
+There is no need to update the Rust crate versions because they will already be `0.13.0`.
 
 ### Update Version in main
 
 Create a PR against the main branch to prepare for developing the next release:
 
-- Update the Rust crate version to `0.2.0`.
-- Update the Maven version to `0.2.0-SNAPSHOT` (both in the `pom.xml` files and also in the diff files
+- Update the Rust crate version to `0.14.0`.
+- Update the Maven version to `0.14.0-SNAPSHOT` (both in the `pom.xml` files and also in the diff files
   under `dev/diffs`).
 
 ### Generate the Change Log
 
 Generate a change log to cover changes between the previous release and the release branch HEAD by running
-the provided `generate-changelog.py` script.
+the provided `dev/release/generate-changelog.py`.
 
 It is recommended that you set up a virtual Python environment and then install the dependencies:
 
 ```shell
+cd dev/release
 python3 -m venv venv
 source venv/bin/activate
 pip3 install -r requirements.txt
@@ -96,7 +150,7 @@ example generates a change log of all changes between the previous version and t
 
 ```shell
 export GITHUB_TOKEN=<your-token-here>
-python3 generate-changelog.py 0.0.0 HEAD 0.1.0 > ../changelog/0.1.0.md
+python3 generate-changelog.py 0.12.0 HEAD 0.13.0 > ../changelog/0.13.0.md
 ```
 
 Create a PR against the _main_ branch to add this change log and once this is approved and merged, cherry-pick the
@@ -153,14 +207,16 @@ repository
 
 ### Tag the Release Candidate
 
-Tag the release branch with `0.1.0-rc1` and push to the `apache` repo
+Ensure that the Maven version update and changelog cherry-pick have been pushed to the release branch before tagging.
+
+Tag the release branch with `0.13.0-rc1` and push to the `apache` repo
 
 ```shell
 git fetch apache
-git checkout branch-0.1
-git reset --hard apache/branch-0.1
-git tag 0.1.0-rc1
-git push apache 0.1.0-rc1
+git checkout branch-0.13
+git reset --hard apache/branch-0.13
+git tag 0.13.0-rc1
+git push apache 0.13.0-rc1
 ```
 
 Note that pushing a release candidate tag will trigger a GitHub workflow that will build a Docker image and publish
@@ -171,15 +227,18 @@ it to GitHub Container Registry at https://github.com/apache/datafusion-comet/pk
 In `docs` directory:
 
 - Update `docs/source/index.rst` and add a new navigation menu link for the new release in the section `_toc.user-guide-links-versioned`
-- Add a new line to `build.sh` to delete the locally cloned `comet-*` branch for the new release e.g. `comet-0.11`
+- Add a new line to `build.sh` to delete the locally cloned `comet-*` branch for the new release e.g. `comet-0.13`
 - Update the main method in `generate-versions.py`:
 
 ```python
-    latest_released_version = "0.11.0"
-    previous_versions = ["0.8.0", "0.9.1", "0.10.1"]
+    latest_released_version = "0.13.0"
+    previous_versions = ["0.11.0", "0.12.0"]
 ```
 
 Test the documentation build locally, following the instructions in `docs/README.md`.
+
+Once verified, create a PR against the main branch with these documentation changes. After merging, the docs will be
+deployed to https://datafusion.apache.org/comet/ by the documentation publishing workflow.
 
 Note that the download links in the installation guide will not work until the release is finalized, but having the
 documentation available could be useful for anyone testing out the release candidate during the voting period.
@@ -214,8 +273,7 @@ On Ubuntu `apt-get install -y libxml2-utils`
 On RedHat `yum install -y xmlstarlet`
 
 ```shell
-
-/comet:$./dev/release/publish-to-maven.sh -h
+./dev/release/publish-to-maven.sh -h
 usage: publish-to-maven.sh options
 
 Publish signed artifacts to Maven.
@@ -233,7 +291,7 @@ GPG_PASSPHRASE - Passphrase for GPG key
 example
 
 ```shell
-/comet:$./dev/release/publish-to-maven.sh -u release_manager_asf_id  -r /tmp/comet-staging-repo-VsYOX
+./dev/release/publish-to-maven.sh -u release_manager_asf_id -r /tmp/comet-staging-repo-VsYOX
 ASF Password :
 GPG Key (Optional):
 GPG Passphrase :
@@ -249,11 +307,22 @@ actually happen automatically when running the script).
 
 ### Create the Release Candidate Tarball
 
-Run the create-tarball script on the release candidate tag (`0.1.0-rc1`) to create the source tarball and upload it to
-the dev subversion repository
+The `create-tarball.sh` script creates a signed source tarball and uploads it to the dev subversion repository.
+
+#### Prerequisites
+
+Before running this script, ensure you have:
+
+1. A GPG key set up for signing, with your public key uploaded to https://pgp.mit.edu/
+2. Apache SVN credentials (you must be logged into the Apache SVN server)
+3. The `requests` Python package installed (`pip3 install requests`)
+
+#### Run the script
+
+Run the create-tarball script on the release candidate tag (`0.13.0-rc1`):
 
 ```shell
-./dev/release/create-tarball.sh 0.1.0 1
+./dev/release/create-tarball.sh 0.13.0 1
 ```
 
 This will generate an email template for starting the vote.
@@ -261,6 +330,20 @@ This will generate an email template for starting the vote.
 ### Start an Email Voting Thread
 
 Send the email that is generated in the previous step to `dev@datafusion.apache.org`.
+
+The verification procedure for voters is documented in
+[Verifying Release Candidates](https://github.com/apache/datafusion-comet/blob/main/dev/release/verifying-release-candidates.md).
+Voters can also use the `dev/release/verify-release-candidate.sh` script to assist with verification:
+
+```shell
+./dev/release/verify-release-candidate.sh 0.13.0 1
+```
+
+### If the Vote Fails
+
+If the vote does not pass, address the issues raised, increment the release candidate number, and repeat from
+the [Tag the Release Candidate](#tag-the-release-candidate) step. For example, the next attempt would be tagged
+`0.13.0-rc2`.
 
 ## Publishing Binary Releases
 
@@ -271,7 +354,7 @@ Once the vote passes, we can publish the source and binary releases.
 Run the release-tarball script to move the tarball to the release subversion repository.
 
 ```shell
-./dev/release/release-tarball.sh 0.1.0 1
+./dev/release/release-tarball.sh 0.13.0 1
 ```
 
 ### Create a release in the GitHub repository
@@ -284,36 +367,33 @@ changelog in the description.
 Promote the Maven artifacts from staging to production by visiting https://repository.apache.org/#stagingRepositories
 and selecting the staging repository and then clicking the "release" button.
 
-### Publishing Crates
-
-Publish the `datafusion-comet-spark-expr` crate to crates.io so that other Rust projects can leverage the
-Spark-compatible operators and expressions outside of Spark.
-
 ### Push a release tag to the repo
 
-Push a release tag (`0.1.0`) to the `apache` repository.
+Push a release tag (`0.13.0`) to the `apache` repository.
 
 ```shell
 git fetch apache
-git checkout 0.1.0-rc1
-git tag 0.1.0
-git push apache 0.1.0
+git checkout 0.13.0-rc1
+git tag 0.13.0
+git push apache 0.13.0
 ```
 
 Note that pushing a release tag will trigger a GitHub workflow that will build a Docker image and publish
 it to GitHub Container Registry at https://github.com/apache/datafusion-comet/pkgs/container/datafusion-comet
 
-Reply to the vote thread to close the vote and announce the release.
+Reply to the vote thread to close the vote and announce the release. The announcement email should include:
 
-## Update released version number in documentation
+- The release version
+- A link to the release notes / changelog
+- A link to the download page or Maven coordinates
+- Thanks to everyone who contributed and voted
 
-- We provide direct links to the jar files in Maven
-- The Kubernetes page needs updating once the Docker image has been published to GitHub Container Regsistry
+## Post Release
 
-## Post Release Admin
+### Register the release
 
 Register the release with the [Apache Reporter Service](https://reporter.apache.org/addrelease.html?datafusion) using
-a version such as `COMET-0.1.0`.
+a version such as `COMET-0.13.0`.
 
 ### Delete old RCs and Releases
 
@@ -333,7 +413,7 @@ svn ls https://dist.apache.org/repos/dist/dev/datafusion | grep comet
 Delete a release candidate:
 
 ```shell
-svn delete -m "delete old DataFusion Comet RC" https://dist.apache.org/repos/dist/dev/datafusion/apache-datafusion-comet-0.1.0-rc1/
+svn delete -m "delete old DataFusion Comet RC" https://dist.apache.org/repos/dist/dev/datafusion/apache-datafusion-comet-0.13.0-rc1/
 ```
 
 #### Deleting old releases from `release` svn
@@ -349,10 +429,10 @@ svn ls https://dist.apache.org/repos/dist/release/datafusion | grep comet
 Delete a release:
 
 ```shell
-svn delete -m "delete old DataFusion Comet release" https://dist.apache.org/repos/dist/release/datafusion/datafusion-comet-0.0.0
+svn delete -m "delete old DataFusion Comet release" https://dist.apache.org/repos/dist/release/datafusion/datafusion-comet-0.12.0
 ```
 
-## Post Release Activities
+### Write a blog post
 
 Writing a blog post about the release is a great way to generate more interest in the project. We typically create a
 Google document where the community can collaborate on a blog post. Once the content is agreed then a PR can be
