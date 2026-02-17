@@ -27,5 +27,6 @@ INSERT INTO test VALUES ('Spark SQL  ', 10, 1.2), (NULL, NULL, NULL), ('', 0, 0.
 query
 SELECT crc32(cast(a as string)), crc32(cast(b as string)) FROM test
 
--- literal arguments                                                                                                                                                                                                                                                                                                                                                                                                                                                                               query ignore(https://github.com/apache/datafusion-comet/issues/3340)
+-- literal arguments
+query ignore(https://github.com/apache/datafusion-comet/issues/3340)
 SELECT crc32('Spark SQL')
