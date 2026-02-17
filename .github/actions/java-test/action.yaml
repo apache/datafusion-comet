@@ -32,7 +32,7 @@ inputs:
   scan_impl:
     description: 'The default Parquet scan implementation'
     required: false
-    default: 'native_comet'
+    default: 'auto'
   upload-test-reports:
     description: 'Whether to upload test results including coverage to GitHub'
     required: false
@@ -120,7 +120,7 @@ runs:
         MAVEN_OPTS="-Xmx4G -Xms2G -DwildcardSuites=$MAVEN_SUITES -XX:+UnlockDiagnosticVMOptions -XX:+ShowMessageBoxOnError -XX:+HeapDumpOnOutOfMemoryError -XX:ErrorFile=./hs_err_pid%p.log" SPARK_HOME=`pwd` ./mvnw -B -Prelease clean install ${{ inputs.maven_opts }}
     - name: Upload crash logs
       if: failure()
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v6
       with:
         name: crash-logs-${{ inputs.artifact_name }}
         path: "**/hs_err_pid*.log"
@@ -134,19 +134,15 @@ runs:
         find . -name 'unit-tests.log'
     - name: Upload unit-tests.log
       if: failure()
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v6
       with:
         name: unit-tests-${{ inputs.artifact_name }}
         path: "**/target/unit-tests.log"
     - name: Upload test results
       if: ${{ inputs.upload-test-reports == 'true' }}
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v6
       with:
          name: java-test-reports-${{ inputs.artifact_name }}
          path: "**/target/surefire-reports/*.txt"
          retention-days: 7 # 1 week for test reports
          overwrite: true
-
-    - name: Upload coverage results
-      if: ${{ inputs.upload-test-reports == 'true' }}
-      uses: codecov/codecov-action@v5

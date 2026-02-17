@@ -82,9 +82,9 @@ class CometIcebergSqlFileTestSuite extends CometTestBase with AdaptiveSparkPlanH
     val allConfigs = icebergConfigs ++ file.configs ++ constantFoldingExcluded
     withSQLConf(allConfigs: _*) {
       file.records.foreach {
-        case SqlStatement(sql) =>
+        case SqlStatement(sql, _) =>
           spark.sql(sql)
-        case SqlQuery(sql, mode) =>
+        case SqlQuery(sql, mode, _) =>
           mode match {
             case CheckCoverageAndAnswer =>
               checkSparkAnswerAndOperator(sql)

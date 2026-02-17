@@ -382,7 +382,8 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
-  test("ReusedExchangeExec should work on CometBroadcastExchangeExec with V2 scan") {
+  // ignored: native_comet scan is no longer supported
+  ignore("ReusedExchangeExec should work on CometBroadcastExchangeExec with V2 scan") {
     withSQLConf(
       CometConf.COMET_EXEC_BROADCAST_FORCE_ENABLED.key -> "true",
       CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET,

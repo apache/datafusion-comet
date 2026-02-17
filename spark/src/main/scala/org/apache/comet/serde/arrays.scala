@@ -22,6 +22,7 @@ package org.apache.comet.serde
 import scala.annotation.tailrec
 
 import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayFilter, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayRemove, ArrayRepeat, ArraysOverlap, ArrayUnion, Attribute, CreateArray, ElementAt, Expression, Flatten, GetArrayItem, IsNotNull, Literal, Reverse, Size}
+import org.apache.spark.sql.catalyst.util.GenericArrayData
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
@@ -134,7 +135,34 @@ object CometArrayContains extends CometExpressionSerde[ArrayContains] {
 
     val arrayContainsScalarExpr =
       scalarFunctionExprToProto("array_has", arrayExprProto, keyExprProto)
-    optExprWithInfo(arrayContainsScalarExpr, expr, expr.children: _*)
+
+    // Handle NULL array input - return NULL if array is NULL (matching Spark's behavior)
+    val isNotNullExpr = createUnaryExpr(
+      expr,
+      expr.children.head,
+      inputs,
+      binding,
+      (builder, unaryExpr) => builder.setIsNotNull(unaryExpr))
+
+    val nullLiteralProto = exprToProto(Literal(null, BooleanType), Seq.empty)
+
+    if (arrayContainsScalarExpr.isDefined && isNotNullExpr.isDefined &&
+      nullLiteralProto.isDefined) {
+      val caseWhenExpr = ExprOuterClass.CaseWhen
+        .newBuilder()
+        .addWhen(isNotNullExpr.get)
+        .addThen(arrayContainsScalarExpr.get)
+        .setElseExpr(nullLiteralProto.get)
+        .build()
+      Some(
+        ExprOuterClass.Expr
+          .newBuilder()
+          .setCaseWhen(caseWhenExpr)
+          .build())
+    } else {
+      withInfo(expr, expr.children: _*)
+      None
+    }
   }
 }
 
@@ -219,18 +247,41 @@ object CometArraysOverlap extends CometExpressionSerde[ArraysOverlap] {
 
 object CometArrayRepeat extends CometExpressionSerde[ArrayRepeat] {
 
-  override def getSupportLevel(expr: ArrayRepeat): SupportLevel = Incompatible(None)
-
   override def convert(
       expr: ArrayRepeat,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val leftArrayExprProto = exprToProto(expr.children.head, inputs, binding)
-    val rightArrayExprProto = exprToProto(expr.children(1), inputs, binding)
+    val elementProto = exprToProto(expr.left, inputs, binding)
+    val countProto = exprToProto(expr.right, inputs, binding)
+    val returnType = ArrayType(elementType = expr.left.dataType)
+    for {
+      countIsNotNullExpr <- countIsNotNullExpr(expr, inputs, binding)
+      arrayRepeatExprProto <- scalarFunctionExprToProto("array_repeat", elementProto, countProto)
+      nullLiteralExprProto <- exprToProtoInternal(Literal(null, returnType), inputs, binding)
+    } yield {
+      val caseWhenProto = ExprOuterClass.CaseWhen
+        .newBuilder()
+        .addWhen(countIsNotNullExpr)
+        .addThen(arrayRepeatExprProto)
+        .setElseExpr(nullLiteralExprProto)
+        .build()
+      ExprOuterClass.Expr
+        .newBuilder()
+        .setCaseWhen(caseWhenProto)
+        .build()
+    }
+  }
 
-    val arraysRepeatScalarExpr =
-      scalarFunctionExprToProto("array_repeat", leftArrayExprProto, rightArrayExprProto)
-    optExprWithInfo(arraysRepeatScalarExpr, expr, expr.children: _*)
+  private def countIsNotNullExpr(
+      expr: ArrayRepeat,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    createUnaryExpr(
+      expr,
+      expr.right,
+      inputs,
+      binding,
+      (builder, countExpr) => builder.setIsNotNull(countExpr))
   }
 }
 
@@ -395,6 +446,15 @@ object CometCreateArray extends CometExpressionSerde[CreateArray] {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val children = expr.children
+
+    // Handle empty array: return literal directly to avoid DataFusion coerce_types bug
+    // when make_array is called with 0 arguments (issue #3338)
+    if (children.isEmpty) {
+      val emptyArrayLiteral =
+        Literal.create(new GenericArrayData(Array.empty[Any]), expr.dataType)
+      return exprToProtoInternal(emptyArrayLiteral, inputs, binding)
+    }
+
     val childExprs = children.map(exprToProtoInternal(_, inputs, binding))
 
     if (childExprs.forall(_.isDefined)) {

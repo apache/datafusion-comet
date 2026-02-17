@@ -85,7 +85,8 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
-  test("unsupported Spark types") {
+  // ignored: native_comet scan is no longer supported
+  ignore("unsupported Spark types") {
     // TODO this test is not correctly implemented for scan implementations other than SCAN_NATIVE_COMET
     // https://github.com/apache/datafusion-comet/issues/2188
     withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET) {
@@ -130,7 +131,8 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
-  test("unsupported Spark schema") {
+  // ignored: native_comet scan is no longer supported
+  ignore("unsupported Spark schema") {
     // TODO this test is not correctly implemented for scan implementations other than SCAN_NATIVE_COMET
     // https://github.com/apache/datafusion-comet/issues/2188
     withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET) {
@@ -368,7 +370,8 @@ abstract class ParquetReadSuite extends CometTestBase {
     checkParquetFile(data)
   }
 
-  test("test multiple pages with different sizes and nulls") {
+  // ignored: native_comet scan is no longer supported
+  ignore("test multiple pages with different sizes and nulls") {
     def makeRawParquetFile(
         path: Path,
         dictionaryEnabled: Boolean,
@@ -1344,7 +1347,8 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
-  test("scan metrics") {
+  // ignored: native_comet scan is no longer supported
+  ignore("scan metrics") {
 
     val cometScanMetricNames = Seq(
       "ParquetRowGroups",
@@ -1866,8 +1870,7 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
 
   test("Test V1 parquet scan uses respective scanner") {
     Seq(
-      ("false", CometConf.SCAN_NATIVE_COMET, "FileScan parquet"),
-      ("true", CometConf.SCAN_NATIVE_COMET, "CometScan [native_comet] parquet"),
+      ("false", CometConf.SCAN_NATIVE_DATAFUSION, "FileScan parquet"),
       ("true", CometConf.SCAN_NATIVE_DATAFUSION, "CometNativeScan"),
       ("true", CometConf.SCAN_NATIVE_ICEBERG_COMPAT, "CometScan [native_iceberg_compat] parquet"))
       .foreach { case (cometEnabled, cometNativeScanImpl, expectedScanner) =>
@@ -2014,10 +2017,11 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
 
 }
 
+// ignored: native_comet scan is no longer supported
 class ParquetReadV2Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
       pos: Position): Unit = {
-    super.test(testName, testTags: _*)(
+    super.ignore(testName, testTags: _*)(
       withSQLConf(
         SQLConf.USE_V1_SOURCE_LIST.key -> "",
         CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET) {
@@ -2040,7 +2044,8 @@ class ParquetReadV2Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("Test V2 parquet scan uses respective scanner") {
+  // ignored: native_comet scan is no longer supported
+  ignore("Test V2 parquet scan uses respective scanner") {
     Seq(("false", "BatchScan"), ("true", "CometBatchScan")).foreach {
       case (cometEnabled, expectedScanner) =>
         testScanner(

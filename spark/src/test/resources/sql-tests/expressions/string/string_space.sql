@@ -26,11 +26,9 @@ INSERT INTO test_space VALUES (0), (1), (5), (NULL), (-1)
 query
 SELECT concat('[', space(n), ']') FROM test_space WHERE n >= 0 OR n IS NULL
 
--- Comet bug: space(-1) causes native crash "failed to round upto multiple of 64"
--- https://github.com/apache/datafusion-comet/issues/3326
-query ignore(https://github.com/apache/datafusion-comet/issues/3326)
+query
 SELECT concat('[', space(n), ']') FROM test_space WHERE n < 0
 
 -- literal arguments
-query ignore(https://github.com/apache/datafusion-comet/issues/3337)
+query
 SELECT concat('[', space(5), ']'), concat('[', space(0), ']'), space(-1), space(NULL)
