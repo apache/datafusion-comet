@@ -15,12 +15,11 @@
 
 # Spark standalone cluster for TPC benchmarks.
 #
+# Two workers are used so that shuffles go through the network stack,
+# which better reflects real cluster behavior.
+#
 # Usage:
 #   docker compose -f benchmarks/tpc/infra/docker/docker-compose.yml up -d
-#
-# Override with constrained memory limits:
-#   docker compose -f benchmarks/tpc/infra/docker/docker-compose.yml \
-#                  -f benchmarks/tpc/infra/docker/docker-compose.constrained.yml up -d
 #
 # Environment variables (set in .env or export before running):
 #   BENCH_IMAGE        - Docker image to use (default: comet-bench)
@@ -28,6 +27,34 @@
 #   QUERIES_DIR        - Host path to query SQL files (default: /tmp/tpc-queries)
 #   RESULTS_DIR        - Host path for results output (default: /tmp/bench-results)
 #   ENGINE_JARS_DIR    - Host path containing engine JARs (default: /tmp/engine-jars)
+#   WORKER_MEM_LIMIT   - Hard memory limit per worker container (default: 32g)
+#   BENCH_MEM_LIMIT    - Hard memory limit for the bench runner (default: 10g)
+#   METRICS_INTERVAL   - Metrics collection interval in seconds (default: 1)
+
+x-worker: &worker
+  image: ${BENCH_IMAGE:-comet-bench}
+  depends_on:
+    - spark-master
+  command: /opt/spark/sbin/start-worker.sh spark://spark-master:7077
+  volumes:
+    - ${DATA_DIR:-/tmp/tpc-data}:/data:ro
+    - ${QUERIES_DIR:-/tmp/tpc-queries}:/queries:ro
+    - ${RESULTS_DIR:-/tmp/bench-results}:/results
+    - ${ENGINE_JARS_DIR:-/tmp/engine-jars}:/jars:ro
+  environment:
+    - SPARK_WORKER_CORES=${WORKER_CORES:-8}
+    - SPARK_WORKER_MEMORY=${WORKER_MEMORY:-16g}
+    - SPARK_NO_DAEMONIZE=true
+  mem_limit: ${WORKER_MEM_LIMIT:-32g}
+  memswap_limit: ${WORKER_MEM_LIMIT:-32g}
+
+x-metrics-collector: &metrics-collector
+  image: ${BENCH_IMAGE:-comet-bench}
+  command:
+    - /opt/benchmarks/collect-metrics.sh
+    - "${METRICS_INTERVAL:-1}"
+  volumes:
+    - ${RESULTS_DIR:-/tmp/bench-results}:/results
 
 services:
   spark-master:
@@ -47,31 +74,27 @@ services:
       - SPARK_MASTER_HOST=spark-master
       - SPARK_NO_DAEMONIZE=true
 
-  spark-worker:
-    image: ${BENCH_IMAGE:-comet-bench}
-    container_name: spark-worker
-    hostname: spark-worker
-    depends_on:
-      - spark-master
-    command: /opt/spark/sbin/start-worker.sh spark://spark-master:7077
+  spark-worker-1:
+    <<: *worker
+    container_name: spark-worker-1
+    hostname: spark-worker-1
     ports:
       - "8081:8081"
-    volumes:
-      - ${DATA_DIR:-/tmp/tpc-data}:/data:ro
-      - ${QUERIES_DIR:-/tmp/tpc-queries}:/queries:ro
-      - ${RESULTS_DIR:-/tmp/bench-results}:/results
-      - ${ENGINE_JARS_DIR:-/tmp/engine-jars}:/jars:ro
-    environment:
-      - SPARK_WORKER_CORES=${WORKER_CORES:-8}
-      - SPARK_WORKER_MEMORY=${WORKER_MEMORY:-16g}
-      - SPARK_NO_DAEMONIZE=true
+
+  spark-worker-2:
+    <<: *worker
+    container_name: spark-worker-2
+    hostname: spark-worker-2
+    ports:
+      - "8082:8081"
 
   bench:
     image: ${BENCH_IMAGE:-comet-bench}
     container_name: bench-runner
     depends_on:
       - spark-master
-      - spark-worker
+      - spark-worker-1
+      - spark-worker-2
     # Override 'command' to run a specific benchmark, e.g.:
     #   docker compose run bench python3 /opt/benchmarks/run.py \
     #       --engine comet --benchmark tpch --no-restart
@@ -90,3 +113,27 @@ services:
       - TPCH_QUERIES=/queries
       - TPCDS_DATA=/data
       - TPCDS_QUERIES=/queries
+    mem_limit: ${BENCH_MEM_LIMIT:-10g}
+    memswap_limit: ${BENCH_MEM_LIMIT:-10g}
+
+  metrics-collector-1:
+    <<: *metrics-collector
+    container_name: metrics-collector-1
+    pid: "service:spark-worker-1"
+    command:
+      - /opt/benchmarks/collect-metrics.sh
+      - "${METRICS_INTERVAL:-1}"
+      - /results/container-metrics-worker-1.csv
+    depends_on:
+      - spark-worker-1
+
+  metrics-collector-2:
+    <<: *metrics-collector
+    container_name: metrics-collector-2
+    pid: "service:spark-worker-2"
+    command:
+      - /opt/benchmarks/collect-metrics.sh
+      - "${METRICS_INTERVAL:-1}"
+      - /results/container-metrics-worker-2.csv
+    depends_on:
+      - spark-worker-2

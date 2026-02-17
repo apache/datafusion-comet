@@ -151,9 +151,9 @@ $SPARK_HOME/bin/spark-submit \
     --master $SPARK_MASTER \
     --packages org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.8.1 \
     --conf spark.driver.memory=8G \
-    --conf spark.executor.instances=1 \
+    --conf spark.executor.instances=2 \
     --conf spark.executor.cores=8 \
-    --conf spark.cores.max=8 \
+    --conf spark.cores.max=16 \
     --conf spark.executor.memory=16g \
     create-iceberg-tables.py \
     --benchmark tpch \
@@ -216,13 +216,14 @@ docker build -t comet-bench -f benchmarks/tpc/infra/docker/Dockerfile .
 
 ### Start the cluster
 
-Set environment variables pointing to your host paths, then start the Spark master and worker:
+Set environment variables pointing to your host paths, then start the Spark master and
+two workers:
 
 ```shell
 export DATA_DIR=/mnt/bigdata/tpch/sf100
 export QUERIES_DIR=/mnt/bigdata/tpch/queries
 export RESULTS_DIR=/tmp/bench-results
-export ENGINE_JARS_DIR=/opt/engine-jars
+export ENGINE_JARS_DIR=/opt/comet
 
 docker compose -f benchmarks/tpc/infra/docker/docker-compose.yml up -d
 ```
@@ -247,18 +248,14 @@ docker compose -f benchmarks/tpc/infra/docker/docker-compose.yml \
     --engine gluten --benchmark tpch --no-restart
 ```
 
-### Memory-constrained benchmarks
+### Memory limits and metrics
 
-Apply the constrained overlay to enforce hard memory limits and collect cgroup metrics:
-
-```shell
-docker compose -f benchmarks/tpc/infra/docker/docker-compose.yml \
-               -f benchmarks/tpc/infra/docker/docker-compose.constrained.yml up -d
-```
-
-Metrics are written to `$RESULTS_DIR/container-metrics.csv`. Configure limits via environment
-variables: `WORKER_MEM_LIMIT` (default: 6g), `BENCH_MEM_LIMIT` (default: 10g),
+Hard memory limits are enforced on all worker and bench containers. A metrics-collector
+sidecar runs alongside each worker to collect cgroup metrics. Configure via environment
+variables: `WORKER_MEM_LIMIT` (default: 32g per worker), `BENCH_MEM_LIMIT` (default: 10g),
 `METRICS_INTERVAL` (default: 1 second).
+
+Metrics are written to `$RESULTS_DIR/container-metrics-worker-{1,2}.csv`.
 
 ### Comparing Parquet vs Iceberg performance
 
