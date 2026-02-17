@@ -76,9 +76,20 @@ macro_rules! extract_date_part {
 
                 match args {
                     [ColumnarValue::Array(array)] => {
+                        // First, normalize dictionary-encoded arrays (common in Parquet/Iceberg)
+                        let array = match array.data_type() {
+                            DataType::Dictionary(_, value_type) => {
+                                // Cast dictionary to the underlying timestamp type
+                                arrow::compute::cast(&array, value_type.as_ref())
+                                    .map_err(|e| DataFusionError::Execution(e.to_string()))?
+                            }
+                            _ => array.clone(),
+                        };
+
+                        // Then handle timezone conversion based on timestamp type
                         let array = match array.data_type() {
                             // TimestampNTZ → DO NOT apply timezone conversion
-                            DataType::Timestamp(_, None) => array.clone(),
+                            DataType::Timestamp(_, None) => array,
 
                             // Timestamp with timezone → convert from UTC to session timezone
                             DataType::Timestamp(_, Some(_)) => array_with_timezone(
