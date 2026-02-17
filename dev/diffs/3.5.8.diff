@@ -985,7 +985,7 @@ index fa1a64460fc..1d2e215d6a3 100644
 -      ("100-200", "(\\d+)-(\\d+)", "300"),
 -      ("100-200", "(\\d+)-(\\d+)", "400"),
 -      ("100-200", "(\\d+)", "400")).toDF("a", "b", "c")
-+    withSQLConf(CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.key -> "true") {
++    withSQLConf(CometConf.getExprAllowIncompatConfigKey("regex") -> "true") {
 +      val df = Seq(
 +        ("100-200", "(\\d+)-(\\d+)", "300"),
 +        ("100-200", "(\\d+)-(\\d+)", "400"),

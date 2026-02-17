@@ -54,9 +54,6 @@ object CometConf extends ShimCometConf {
   private val TRACING_GUIDE = "For more information, refer to the Comet Tracing " +
     "Guide (https://datafusion.apache.org/comet/contributor-guide/tracing.html)"
 
-  private val DEBUGGING_GUIDE = "For more information, refer to the Comet Debugging " +
-    "Guide (https://datafusion.apache.org/comet/contributor-guide/debugging.html)"
-
   /** List of all configs that is used for generating documentation */
   val allConfs = new ListBuffer[ConfigEntry[_]]
 
@@ -112,7 +109,7 @@ object CometConf extends ShimCometConf {
           "feature is highly experimental and only partially implemented. It should not " +
           "be used in production.")
       .booleanConf
-      .createWithDefault(false)
+      .createWithEnvVarOrDefault("ENABLE_COMET_WRITE", false)
 
   // Deprecated: native_comet uses mutable buffers incompatible with Arrow FFI best practices
   // and does not support complex types. Use native_iceberg_compat or auto instead.
@@ -552,13 +549,6 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
-  val COMET_DEBUG_MEMORY_ENABLED: ConfigEntry[Boolean] =
-    conf(s"$COMET_PREFIX.debug.memory")
-      .category(CATEGORY_TESTING)
-      .doc(s"When enabled, log all native memory pool interactions. $DEBUGGING_GUIDE.")
-      .booleanConf
-      .createWithDefault(false)
-
   val COMET_EXTENDED_EXPLAIN_FORMAT_VERBOSE = "verbose"
   val COMET_EXTENDED_EXPLAIN_FORMAT_FALLBACK = "fallback"
 
@@ -795,14 +785,6 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
-  val COMET_REGEXP_ALLOW_INCOMPATIBLE: ConfigEntry[Boolean] =
-    conf("spark.comet.regexp.allowIncompatible")
-      .category(CATEGORY_EXEC)
-      .doc("Comet is not currently fully compatible with Spark for all regular expressions. " +
-        s"Set this config to true to allow them anyway. $COMPAT_GUIDE.")
-      .booleanConf
-      .createWithDefault(false)
-
   val COMET_METRICS_UPDATE_INTERVAL: ConfigEntry[Long] =
     conf("spark.comet.metrics.updateInterval")
       .category(CATEGORY_EXEC)
@@ -820,13 +802,6 @@ object CometConf extends ShimCometConf {
         "via libhdfs, separated by commas. Valid only when built with hdfs feature enabled.")
       .stringConf
       .createOptional
-
-  val COMET_MAX_TEMP_DIRECTORY_SIZE: ConfigEntry[Long] =
-    conf("spark.comet.maxTempDirectorySize")
-      .category(CATEGORY_EXEC)
-      .doc("The maximum amount of data (in bytes) stored inside the temporary directories.")
-      .bytesConf(ByteUnit.BYTE)
-      .createWithDefault(100L * 1024 * 1024 * 1024) // 100 GB
 
   val COMET_RESPECT_DATAFUSION_CONFIGS: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.respectDataFusionConfigs")
