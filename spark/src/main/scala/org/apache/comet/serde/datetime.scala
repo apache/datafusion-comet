@@ -244,11 +244,7 @@ object CometParseToDate extends CometExpressionSerde[ParseToDate] {
           childExpr,
           formatExpr)
       case None =>
-        scalarFunctionExprToProtoWithReturnType(
-          "to_date",
-          expr.dataType,
-          failOnError,
-          childExpr)
+        scalarFunctionExprToProtoWithReturnType("to_date", expr.dataType, failOnError, childExpr)
     }
     optExprWithInfo(optExpr, expr, expr.children: _*)
   }
