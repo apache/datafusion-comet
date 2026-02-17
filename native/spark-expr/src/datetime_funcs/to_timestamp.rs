@@ -17,7 +17,7 @@
 
 //! Define JNI APIs which can be called from Java/Scala.
 
-use arrow::array::{ArrayRef, StringArray};
+use arrow::array::{Array, ArrayRef, StringArray};
 use arrow::datatypes::DataType::Timestamp;
 use arrow::datatypes::TimeUnit::Microsecond;
 use chrono::{DateTime, NaiveDate, NaiveDateTime, TimeZone, Timelike};
@@ -140,11 +140,14 @@ pub fn spark_to_timestamp_parse(
     Ok(local.timestamp_micros())
 }
 
-pub fn to_timestamp(args: &[ColumnarValue]) -> Result<ColumnarValue> {
-    make_scalar_function(spark_to_timestamp, vec![])(args)
+pub fn to_timestamp(args: &[ColumnarValue], fail_on_error: bool) -> Result<ColumnarValue> {
+    make_scalar_function(
+        move |input_args| spark_to_timestamp(input_args, fail_on_error),
+        vec![],
+    )(args)
 }
 
-pub fn spark_to_timestamp(args: &[ArrayRef]) -> Result<ArrayRef> {
+pub fn spark_to_timestamp(args: &[ArrayRef], fail_on_error: bool) -> Result<ArrayRef> {
     if args.len() < 2 || args.len() > 3 {
         return internal_err!(
             "`{}` function requires 2 or 3 arguments, got {} arguments",
@@ -152,25 +155,56 @@ pub fn spark_to_timestamp(args: &[ArrayRef]) -> Result<ArrayRef> {
             args.len()
         );
     }
+
     let dates: &StringArray = downcast_named_arg!(&args[0], "date", StringArray);
-    let format: &str = downcast_named_arg!(&args[1], "format", StringArray).value(0);
-    let tz: Tz = opt_downcast_arg!(&args[2], StringArray)
-        .and_then(|v| Tz::from_str(v.value(0)).ok())
+
+    let format_array: &StringArray = downcast_named_arg!(&args[1], "format", StringArray);
+
+    let tz: Tz = args
+        .get(2)
+        .and_then(|arg| opt_downcast_arg!(arg, StringArray))
+        .and_then(|v| {
+            if v.is_null(0) {
+                None
+            } else {
+                Tz::from_str(v.value(0)).ok()
+            }
+        })
         .unwrap_or(Tz::UTC);
 
     let utc_tz: String = chrono_tz::UTC.to_string();
     let utc_tz: Arc<str> = Arc::from(utc_tz);
+
     let values: Result<Vec<ScalarValue>> = dates
         .iter()
-        .map(|value| match value {
-            None => {
-                ScalarValue::Int64(None).cast_to(&Timestamp(Microsecond, Some(Arc::clone(&utc_tz))))
-            }
-            Some(date_raw) => {
-                let parsed_value: Result<i64> = spark_to_timestamp_parse(date_raw, format, tz);
+        .enumerate()
+        .map(|(index, value)| {
+            let format = if format_array.len() == 1 {
+                if format_array.is_null(0) {
+                    None
+                } else {
+                    Some(format_array.value(0))
+                }
+            } else if format_array.is_null(index) {
+                None
+            } else {
+                Some(format_array.value(index))
+            };
 
-                ScalarValue::Int64(Some(parsed_value?))
-                    .cast_to(&Timestamp(Microsecond, Some(Arc::clone(&utc_tz))))
+            match (value, format) {
+                (None, _) | (_, None) => ScalarValue::Int64(None)
+                    .cast_to(&Timestamp(Microsecond, Some(Arc::clone(&utc_tz)))),
+                (Some(date_raw), Some(format)) => {
+                    let parsed_value = spark_to_timestamp_parse(date_raw, format, tz);
+
+                    match (parsed_value, fail_on_error) {
+                        (Ok(value), _) => ScalarValue::Int64(Some(value))
+                            .cast_to(&Timestamp(Microsecond, Some(Arc::clone(&utc_tz)))),
+                        (Err(err), true) => Err(err),
+                        (Err(_), false) => ScalarValue::Int64(None)
+                            .cast_to(&Timestamp(Microsecond, Some(Arc::clone(&utc_tz)))),
+                    }
+                }
             }
         })
         .collect::<Result<Vec<ScalarValue>>>();
@@ -213,6 +247,7 @@ pub(crate) use {downcast_named_arg, opt_downcast_arg};
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arrow::array::{Array, StringArray, TimestampMicrosecondArray};
     use chrono::{NaiveDate, NaiveDateTime};
     use chrono_tz::UTC;
 
@@ -371,5 +406,35 @@ mod tests {
             .timestamp_micros();
 
         assert_eq!(micros, expected);
+    }
+
+    #[test]
+    fn supports_two_arguments_without_timezone() {
+        let dates: ArrayRef =
+            Arc::new(StringArray::from(vec![Some("2026-01-30 10:30:52")])) as ArrayRef;
+        let formats: ArrayRef =
+            Arc::new(StringArray::from(vec![Some("yyyy-MM-dd HH:mm:ss")])) as ArrayRef;
+
+        let result = spark_to_timestamp(&[dates, formats], true).unwrap();
+        let ts = result
+            .as_any()
+            .downcast_ref::<TimestampMicrosecondArray>()
+            .unwrap();
+
+        assert!(!ts.is_null(0));
+    }
+
+    #[test]
+    fn returns_null_on_parse_error_when_fail_on_error_is_false() {
+        let dates: ArrayRef = Arc::new(StringArray::from(vec![Some("malformed")])) as ArrayRef;
+        let formats: ArrayRef = Arc::new(StringArray::from(vec![Some("yyyy-MM-dd")])) as ArrayRef;
+
+        let result = spark_to_timestamp(&[dates, formats], false).unwrap();
+        let ts = result
+            .as_any()
+            .downcast_ref::<TimestampMicrosecondArray>()
+            .unwrap();
+
+        assert!(ts.is_null(0));
     }
 }
