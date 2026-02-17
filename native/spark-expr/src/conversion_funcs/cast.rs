@@ -25,7 +25,6 @@ use arrow::array::{
     PrimitiveBuilder, StringArray, StructArray, TimestampMicrosecondBuilder,
 };
 use arrow::compute::can_cast_types;
-use arrow::datatypes::DataType::Int64;
 use arrow::datatypes::{
     i256, ArrowDictionaryKeyType, ArrowNativeType, DataType, Decimal256Type, GenericBinaryType,
     Schema,
@@ -614,6 +613,20 @@ macro_rules! cast_decimal_to_int32_up {
     }};
 }
 
+macro_rules! cast_int_to_timestamp_impl {
+    ($array:expr, $builder:expr, $primitive_type:ty) => {{
+        let arr = $array.as_primitive::<$primitive_type>();
+        for i in 0..arr.len() {
+            if arr.is_null(i) {
+                $builder.append_null();
+            } else {
+                let micros = (arr.value(i) as i64).saturating_mul(MICROS_PER_SECOND);
+                $builder.append_value(micros);
+            }
+        }
+    }};
+}
+
 // copied from arrow::dataTypes::Decimal128Type since Decimal128Type::format_decimal can't be called directly
 fn format_decimal_str(value_str: &str, precision: usize, scale: i8) -> String {
     let (sign, rest) = match value_str.strip_prefix('-') {
@@ -942,16 +955,18 @@ fn cast_int_to_timestamp(
     cast_options: &SparkCastOptions,
 ) -> SparkResult<ArrayRef> {
     // Input is seconds since epoch, multiply by MICROS_PER_SECOND to get microseconds.
-    let int64_array = cast_with_options(&array_ref, &Int64, &CAST_OPTIONS)?;
-    let int64_arr = int64_array.as_primitive::<Int64Type>();
+    let mut builder = TimestampMicrosecondBuilder::with_capacity(array_ref.len());
 
-    let mut builder = TimestampMicrosecondBuilder::with_capacity(int64_arr.len());
-    for i in 0..int64_arr.len() {
-        if int64_arr.is_null(i) {
-            builder.append_null();
-        } else {
-            let micros = int64_arr.value(i).saturating_mul(MICROS_PER_SECOND);
-            builder.append_value(micros);
+    match array_ref.data_type() {
+        DataType::Int8 => cast_int_to_timestamp_impl!(array_ref, builder, Int8Type),
+        DataType::Int16 => cast_int_to_timestamp_impl!(array_ref, builder, Int16Type),
+        DataType::Int32 => cast_int_to_timestamp_impl!(array_ref, builder, Int32Type),
+        DataType::Int64 => cast_int_to_timestamp_impl!(array_ref, builder, Int64Type),
+        dt => {
+            return Err(SparkError::Internal(format!(
+                "Unsupported type for cast_int_to_timestamp: {:?}",
+                dt
+            )))
         }
     }
 
