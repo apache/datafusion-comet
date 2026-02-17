@@ -235,22 +235,38 @@ between versions by changing the path and restarting.
 ### Run benchmarks
 
 Use `docker compose run` to execute benchmarks. Pass `--no-restart` since the cluster is
-already managed by Compose:
+already managed by Compose, and `--output /results` so that output files land in the
+mounted results directory (alongside cgroup metrics CSVs):
 
 ```shell
 docker compose -f benchmarks/tpc/infra/docker/docker-compose.yml \
-    run bench python3 /opt/benchmarks/run.py \
-    --engine comet --benchmark tpch --no-restart
+    run bench sh -c 'mkdir -p /tmp/spark-events && \
+    python3 /opt/benchmarks/run.py \
+    --engine comet --benchmark tpch --output /results --no-restart'
 ```
 
-For Gluten (requires Java 8), override `JAVA_HOME`:
+> **Note:** The `mkdir -p /tmp/spark-events` is needed because the common Spark
+> config enables event logging. The bench container is ephemeral so this directory
+> does not persist between runs.
+
+For Gluten (requires Java 8), you must restart the **entire cluster** with `JAVA_HOME`
+set so that all services (master, workers, and bench) use Java 8:
 
 ```shell
+export JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64
+docker compose -f benchmarks/tpc/infra/docker/docker-compose.yml down
+docker compose -f benchmarks/tpc/infra/docker/docker-compose.yml up -d
+
 docker compose -f benchmarks/tpc/infra/docker/docker-compose.yml \
-    run -e JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64 \
-    bench python3 /opt/benchmarks/run.py \
-    --engine gluten --benchmark tpch --no-restart
+    run bench sh -c 'mkdir -p /tmp/spark-events && \
+    python3 /opt/benchmarks/run.py \
+    --engine gluten --benchmark tpch --output /results --no-restart'
 ```
+
+> **Important:** Only passing `-e JAVA_HOME=...` to the `bench` container is not
+> sufficient -- the workers also need Java 8 or Gluten will fail at runtime with
+> `sun.misc.Unsafe` errors. Switch back to Java 17 (or unset `JAVA_HOME`) and
+> restart the cluster before running Comet or Spark benchmarks.
 
 ### Memory limits and metrics
 
@@ -259,7 +275,29 @@ sidecar runs alongside each worker to collect cgroup metrics. Configure via envi
 variables: `WORKER_MEM_LIMIT` (default: 32g per worker), `BENCH_MEM_LIMIT` (default: 10g),
 `METRICS_INTERVAL` (default: 1 second).
 
-Metrics are written to `$RESULTS_DIR/container-metrics-worker-{1,2}.csv`.
+Raw cgroup metrics are continuously written to
+`$RESULTS_DIR/container-metrics-spark-worker-{1,2}.csv`. These files are overwritten each
+time the cluster restarts.
+
+When `--profile` is used, the profiler automatically snapshots the cgroup data for the
+benchmark time window, producing per-engine files:
+
+- `{name}-{benchmark}-metrics.csv` -- JVM executor metrics
+- `{name}-{benchmark}-container-metrics-spark-worker-1.csv` -- cgroup snapshot for worker 1
+- `{name}-{benchmark}-container-metrics-spark-worker-2.csv` -- cgroup snapshot for worker 2
+
+This ensures each engine run has its own paired JVM + cgroup dataset even when multiple
+engines are benchmarked on the same cluster.
+
+Use `visualize-metrics.py` to generate memory charts from these files:
+
+```shell
+python3 visualize-metrics.py \
+    --jvm-metrics /tmp/bench-results/comet-tpch-metrics.csv \
+    --cgroup-metrics /tmp/bench-results/comet-tpch-container-metrics-spark-worker-1.csv \
+                     /tmp/bench-results/comet-tpch-container-metrics-spark-worker-2.csv \
+    --output-dir /tmp/comet-charts --title "Comet TPC-H"
+```
 
 ### Comparing Parquet vs Iceberg performance
 
