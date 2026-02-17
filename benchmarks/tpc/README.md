@@ -123,11 +123,12 @@ Note: Table creation uses `--packages` which auto-downloads the dependency.
 
 ### Create Iceberg tables
 
-Convert existing Parquet data to Iceberg format using `create-iceberg-tables.py`:
+Convert existing Parquet data to Iceberg format using `create-iceberg-tables.py`.
+The script configures the Iceberg catalog automatically -- no `--conf` flags needed.
 
 ```shell
 export ICEBERG_WAREHOUSE=/mnt/bigdata/iceberg-warehouse
-export ICEBERG_CATALOG=${ICEBERG_CATALOG:-local}
+mkdir -p $ICEBERG_WAREHOUSE
 
 # TPC-H
 $SPARK_HOME/bin/spark-submit \
@@ -138,13 +139,10 @@ $SPARK_HOME/bin/spark-submit \
     --conf spark.executor.cores=8 \
     --conf spark.cores.max=8 \
     --conf spark.executor.memory=16g \
-    --conf spark.sql.catalog.${ICEBERG_CATALOG}=org.apache.iceberg.spark.SparkCatalog \
-    --conf spark.sql.catalog.${ICEBERG_CATALOG}.type=hadoop \
-    --conf spark.sql.catalog.${ICEBERG_CATALOG}.warehouse=$ICEBERG_WAREHOUSE \
     create-iceberg-tables.py \
     --benchmark tpch \
     --parquet-path $TPCH_DATA \
-    --catalog $ICEBERG_CATALOG
+    --warehouse $ICEBERG_WAREHOUSE
 
 # TPC-DS
 $SPARK_HOME/bin/spark-submit \
@@ -155,13 +153,10 @@ $SPARK_HOME/bin/spark-submit \
     --conf spark.executor.cores=8 \
     --conf spark.cores.max=16 \
     --conf spark.executor.memory=16g \
-    --conf spark.sql.catalog.${ICEBERG_CATALOG}=org.apache.iceberg.spark.SparkCatalog \
-    --conf spark.sql.catalog.${ICEBERG_CATALOG}.type=hadoop \
-    --conf spark.sql.catalog.${ICEBERG_CATALOG}.warehouse=$ICEBERG_WAREHOUSE \
     create-iceberg-tables.py \
     --benchmark tpcds \
     --parquet-path $TPCDS_DATA \
-    --catalog $ICEBERG_CATALOG
+    --warehouse $ICEBERG_WAREHOUSE
 ```
 
 ### Run Iceberg benchmark
@@ -180,13 +175,15 @@ The benchmark uses `spark.comet.scan.icebergNative.enabled=true` to enable Comet
 integration. Verify native scanning is active by checking for `CometIcebergNativeScanExec` in the
 physical plan output.
 
-### Iceberg-specific options
+### create-iceberg-tables.py options
 
-| Environment Variable | Default    | Description                         |
-| -------------------- | ---------- | ----------------------------------- |
-| `ICEBERG_CATALOG`    | `local`    | Iceberg catalog name                |
-| `ICEBERG_DATABASE`   | `tpch`     | Database containing TPC tables      |
-| `ICEBERG_WAREHOUSE`  | (required) | Path to Iceberg warehouse directory |
+| Option           | Required | Default          | Description                         |
+| ---------------- | -------- | ---------------- | ----------------------------------- |
+| `--benchmark`    | Yes      |                  | `tpch` or `tpcds`                   |
+| `--parquet-path` | Yes      |                  | Path to source Parquet data         |
+| `--warehouse`    | Yes      |                  | Path to Iceberg warehouse directory |
+| `--catalog`      | No       | `local`          | Iceberg catalog name                |
+| `--database`     | No       | benchmark name   | Database name for the tables        |
 
 ### Comparing Parquet vs Iceberg performance
 

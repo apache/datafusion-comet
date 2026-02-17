@@ -21,28 +21,22 @@ Convert TPC-H or TPC-DS Parquet data to Iceberg tables.
 Usage:
     spark-submit \
         --packages org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.8.1 \
-        --conf spark.sql.catalog.local=org.apache.iceberg.spark.SparkCatalog \
-        --conf spark.sql.catalog.local.type=hadoop \
-        --conf spark.sql.catalog.local.warehouse=/path/to/iceberg-warehouse \
         create-iceberg-tables.py \
         --benchmark tpch \
         --parquet-path /path/to/tpch/parquet \
-        --catalog local \
-        --database tpch
+        --warehouse /path/to/iceberg-warehouse
 
     spark-submit \
         --packages org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.8.1 \
-        --conf spark.sql.catalog.local=org.apache.iceberg.spark.SparkCatalog \
-        --conf spark.sql.catalog.local.type=hadoop \
-        --conf spark.sql.catalog.local.warehouse=/path/to/iceberg-warehouse \
         create-iceberg-tables.py \
         --benchmark tpcds \
         --parquet-path /path/to/tpcds/parquet \
-        --catalog local \
-        --database tpcds
+        --warehouse /path/to/iceberg-warehouse
 """
 
 import argparse
+import os
+import sys
 from pyspark.sql import SparkSession
 import time
 
@@ -90,15 +84,38 @@ BENCHMARK_TABLES = {
 }
 
 
-def main(benchmark: str, parquet_path: str, catalog: str, database: str):
+def main(benchmark: str, parquet_path: str, warehouse: str, catalog: str, database: str):
     table_names = BENCHMARK_TABLES[benchmark]
+
+    # Validate paths before starting Spark
+    errors = []
+    if not os.path.isdir(parquet_path):
+        errors.append(f"Error: --parquet-path '{parquet_path}' does not exist or is not a directory")
+    if not os.path.isdir(warehouse):
+        errors.append(f"Error: --warehouse '{warehouse}' does not exist or is not a directory. "
+                       "Create it with: mkdir -p " + warehouse)
+    if errors:
+        for e in errors:
+            print(e, file=sys.stderr)
+        sys.exit(1)
 
     spark = SparkSession.builder \
         .appName(f"Create Iceberg {benchmark.upper()} Tables") \
+        .config(f"spark.sql.catalog.{catalog}", "org.apache.iceberg.spark.SparkCatalog") \
+        .config(f"spark.sql.catalog.{catalog}.type", "hadoop") \
+        .config(f"spark.sql.catalog.{catalog}.warehouse", warehouse) \
         .getOrCreate()
 
-    # Create database if it doesn't exist
-    spark.sql(f"CREATE DATABASE IF NOT EXISTS {catalog}.{database}")
+    # Set the Iceberg catalog as the current catalog so that
+    # namespace operations are routed correctly
+    spark.sql(f"USE {catalog}")
+
+    # Create namespace if it doesn't exist
+    try:
+        spark.sql(f"CREATE NAMESPACE IF NOT EXISTS {database}")
+    except Exception:
+        # Namespace may already exist
+        pass
 
     for table in table_names:
         parquet_table_path = f"{parquet_path}/{table}.parquet"
@@ -137,8 +154,12 @@ if __name__ == "__main__":
         help="Path to Parquet data directory"
     )
     parser.add_argument(
-        "--catalog", required=True,
-        help="Iceberg catalog name (e.g., 'local')"
+        "--warehouse", required=True,
+        help="Path to Iceberg warehouse directory"
+    )
+    parser.add_argument(
+        "--catalog", default="local",
+        help="Iceberg catalog name (default: 'local')"
     )
     parser.add_argument(
         "--database", default=None,
@@ -147,4 +168,4 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     database = args.database if args.database else args.benchmark
-    main(args.benchmark, args.parquet_path, args.catalog, database)
+    main(args.benchmark, args.parquet_path, args.warehouse, args.catalog, database)
