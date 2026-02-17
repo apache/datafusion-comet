@@ -960,6 +960,10 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   // CAST from DateType
 
+  // Date to Boolean/Byte/Short/Int/Long/Float/Double/Decimal casts always return NULL
+  // in LEGACY mode. In ANSI and TRY mode, Spark throws AnalysisException at
+  // query parsing time. Hence, ANSI and Try mode are disabled in tests
+
   test("cast DateType to BooleanType") {
     castTest(generateDates(), DataTypes.BooleanType, testAnsi = false, testTry = false)
   }
