@@ -39,7 +39,6 @@ futures = { workspace = true }
 twox-hash = "2.1.2"
 rand = { workspace = true }
 hex = "0.4.3"
-sha2 = "0.10"
 base64 = "0.22.1"
 
 [dev-dependencies]

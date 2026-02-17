@@ -68,6 +68,16 @@ object CometMurmur3Hash extends CometExpressionSerde[Murmur3Hash] {
 }
 
 object CometSha2 extends CometExpressionSerde[Sha2] {
+  override def getSupportLevel(expr: Sha2): SupportLevel = {
+    // If all children are foldable (constant/scalar), let Spark evaluate sha2
+    // to avoid relying on DataFusion support for purely scalar invocations.
+    if (expr.children.forall(_.foldable)) {
+      Unsupported(Some("sha2 with all scalar arguments is evaluated in Spark"))
+    } else {
+      Compatible()
+    }
+  }
+
   override def convert(
       expr: Sha2,
       inputs: Seq[Attribute],

@@ -16,10 +16,8 @@
 // under the License.
 
 pub mod murmur3;
-pub mod sha2;
 pub(super) mod utils;
 mod xxhash64;
 
 pub use murmur3::spark_murmur3_hash;
-pub use sha2::{spark_sha2, SparkSha2};
 pub use xxhash64::spark_xxhash64;
