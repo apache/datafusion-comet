@@ -21,10 +21,10 @@ under the License.
 
 Comet currently has two distinct implementations of the Parquet scan operator.
 
-| Scan Implementation     | Notes             |
-| ----------------------- | ----------------- |
-| `native_datafusion`     | Fully native scan |
-| `native_iceberg_compat` | Hybrid JVM scan   |
+| Scan Implementation     | Notes                  |
+| ----------------------- | ---------------------- |
+| `native_datafusion`     | Fully native scan      |
+| `native_iceberg_compat` | Hybrid JVM/native scan |
 
 The configuration property
 `spark.comet.scan.impl` is used to select an implementation. The default setting is `spark.comet.scan.impl=auto`, which
