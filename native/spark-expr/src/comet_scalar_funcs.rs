@@ -175,8 +175,7 @@ pub fn create_comet_physical_fun_with_eval_mode(
             make_comet_scalar_udf!("spark_modulo", func, without data_type, fail_on_error)
         }
         "to_timestamp" => {
-            let func = Arc::new(to_timestamp);
-            make_comet_scalar_udf!("to_timestamp", func, without data_type)
+            make_comet_scalar_udf!("to_timestamp", to_timestamp, without data_type, fail_on_error)
         }
         "abs" => {
             let func = Arc::new(abs);
