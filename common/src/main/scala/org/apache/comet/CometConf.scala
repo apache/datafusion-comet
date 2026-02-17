@@ -870,9 +870,8 @@ object CometConf extends ShimCometConf {
     val envVar = configKeyToEnvVar(configKey)
     conf(configKey)
       .category(CATEGORY_EXEC)
-      .doc(
-        s"Whether to allow incompatibility for operator: $name. " +
-          s"False by default. Can be overridden with $envVar env variable")
+      .doc(s"Whether to allow incompatibility for operator: $name. " +
+        s"False by default. Can be overridden with $envVar env variable")
       .booleanConf
       .createWithEnvVarOrDefault(envVar, false)
   }
