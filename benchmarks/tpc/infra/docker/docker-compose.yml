@@ -58,6 +58,7 @@ x-worker: &worker
       exec /opt/spark/sbin/start-worker.sh spark://spark-master:7077
   volumes: *volumes
   environment:
+    - JAVA_HOME=${JAVA_HOME:-/usr/lib/jvm/java-17-openjdk-amd64}
     - SPARK_WORKER_CORES=${WORKER_CORES:-8}
     - SPARK_WORKER_MEMORY=${WORKER_MEMORY:-16g}
     - SPARK_NO_DAEMONIZE=true
@@ -75,6 +76,7 @@ services:
       - "8080:8080"
     volumes: *volumes
     environment:
+      - JAVA_HOME=${JAVA_HOME:-/usr/lib/jvm/java-17-openjdk-amd64}
       - SPARK_MASTER_HOST=spark-master
       - SPARK_NO_DAEMONIZE=true
 
@@ -105,6 +107,7 @@ services:
     command: ["echo", "Use 'docker compose run bench python3 /opt/benchmarks/run.py ...' to run benchmarks"]
     volumes: *volumes
     environment:
+      - JAVA_HOME=${JAVA_HOME:-/usr/lib/jvm/java-17-openjdk-amd64}
       - SPARK_HOME=/opt/spark
       - SPARK_MASTER=spark://spark-master:7077
       - COMET_JAR=/jars/comet.jar

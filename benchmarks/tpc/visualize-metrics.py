@@ -38,6 +38,19 @@ ENTITY_COLORS = {
 
 DEFAULT_COLORS = ['tab:orange', 'tab:green', 'tab:red', 'tab:purple', 'tab:brown', 'tab:pink']
 
+PEAK_SERIES = [
+    ('peak_JVMHeapMemory', 'Heap', 'solid', 'tab:blue'),
+    ('peak_JVMOffHeapMemory', 'OffHeap', 'solid', 'tab:orange'),
+    ('peak_OffHeapExecutionMemory', 'OffHeapExec', 'solid', 'tab:red'),
+]
+
+PEAK_BAR_FIELDS = [
+    'peak_JVMHeapMemory',
+    'peak_JVMOffHeapMemory',
+    'peak_OnHeapExecutionMemory',
+    'peak_OffHeapExecutionMemory',
+]
+
 
 def color_for(entity_id):
     """Return a stable color for the given entity identifier."""
@@ -90,71 +103,90 @@ def load_cgroup_metrics(path, label):
     return data
 
 
-def generate_jvm_memory_usage(jvm_data, output_dir, title):
-    """Chart 1: Peak-so-far JVM memory per executor over time (driver excluded).
+def _shared_time_zero(jvm_data, cgroup_datasets):
+    """Compute the global time-zero from absolute timestamps across both sources.
 
-    The Spark REST API only exposes monotonically-increasing peak counters
-    (not current usage), so the lines show the running peak at each poll.
+    Returns ``t_zero`` (ms) or ``None`` if absolute timestamps are unavailable.
     """
-    peak_series = [
-        ('peak_JVMHeapMemory', 'Heap', 'solid'),
-        ('peak_JVMOffHeapMemory', 'OffHeap', 'dashed'),
-        ('peak_OffHeapExecutionMemory', 'OffHeapExec', 'dotted'),
-    ]
+    exec_data = {eid: s for eid, s in jvm_data.items() if eid != 'driver'}
+    has_jvm_ts = any('timestamp_ms' in s for s in exec_data.values())
+    has_cg_ts = any('timestamp_ms' in ds for ds in cgroup_datasets)
+    if not (has_jvm_ts and has_cg_ts):
+        return None
+    all_abs = []
+    for s in exec_data.values():
+        all_abs.extend(s['timestamp_ms'])
+    for ds in cgroup_datasets:
+        all_abs.extend(ds.get('timestamp_ms', []))
+    return min(all_abs)
 
+
+def _jvm_time_range(jvm_data, cgroup_datasets):
+    """Compute the x-axis limits from JVM data using absolute timestamps.
+
+    Returns ``(x_min, x_max)`` — the elapsed-time window (in seconds, relative
+    to the global time-zero across both data sources) during which the JVM
+    profiler was active, or ``None`` if absolute timestamps are not available.
+    """
+    t_zero = _shared_time_zero(jvm_data, cgroup_datasets)
+    if t_zero is None:
+        return None
+    exec_data = {eid: s for eid, s in jvm_data.items() if eid != 'driver'}
+    jvm_min = float('inf')
+    jvm_max = 0
+    for s in exec_data.values():
+        jvm_min = min(jvm_min, min(s['timestamp_ms']))
+        jvm_max = max(jvm_max, max(s['timestamp_ms']))
+    return ((jvm_min - t_zero) / 1000.0, (jvm_max - t_zero) / 1000.0)
+
+
+def generate_jvm_memory_usage(jvm_data, output_dir, title):
+    """Generate one JVM peak-memory time-series chart per executor (driver excluded)."""
     executors = {eid: s for eid, s in jvm_data.items() if eid != 'driver'}
     if not executors:
-        print('  Skipped jvm_memory_usage.png (no executor data)')
+        print('  Skipped jvm_memory (no executor data)')
         return
 
-    # Check whether there is any non-zero peak data
-    all_values = []
-    for series in executors.values():
-        for field, _, _ in peak_series:
-            all_values.extend(series.get(field, []))
-    if not all_values or max(all_values) == 0:
-        print('  Skipped jvm_memory_usage.png (all peak values are zero)')
-        return
-
-    divisor, unit = auto_unit(max(all_values))
-
-    fig, ax = plt.subplots(figsize=(14, 6))
     for eid, series in sorted(executors.items()):
-        c = color_for(eid)
-        for field, label, ls in peak_series:
+        all_values = []
+        for field, _, _, _ in PEAK_SERIES:
+            all_values.extend(series.get(field, []))
+        if not all_values or max(all_values) == 0:
+            print(f'  Skipped jvm_memory_executor_{eid}.png (all peak values are zero)')
+            continue
+
+        divisor, unit = auto_unit(max(all_values))
+
+        fig, ax = plt.subplots(figsize=(14, 6))
+        for field, label, ls, color in PEAK_SERIES:
             vals = series.get(field, [])
             if vals and max(vals) > 0:
                 ax.plot(series['elapsed_secs'],
                         [v / divisor for v in vals],
-                        color=c, linestyle=ls, linewidth=1.5,
-                        label=f'executor {eid} {label}')
+                        color=color, linestyle=ls, linewidth=1.5,
+                        label=label)
 
-    ax.set_title(f'{title} — JVM Peak Memory Over Time' if title else 'JVM Peak Memory Over Time')
-    ax.set_xlabel('Elapsed Time (seconds)')
-    ax.set_ylabel(f'Peak Memory ({unit})')
-    ax.legend(fontsize=8)
-    ax.yaxis.grid(True)
-    plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, 'jvm_memory_usage.png'), format='png')
-    plt.close(fig)
-    print(f'  Created jvm_memory_usage.png')
+        suffix = f' — Executor {eid} JVM Peak Memory' if title else f'Executor {eid} JVM Peak Memory'
+        ax.set_title(f'{title}{suffix}')
+        ax.set_xlabel('Elapsed Time (seconds)')
+        ax.set_ylabel(f'Peak Memory ({unit})')
+        ax.legend(fontsize=8)
+        ax.yaxis.grid(True)
+        plt.tight_layout()
+        fname = f'jvm_memory_executor_{eid}.png'
+        plt.savefig(os.path.join(output_dir, fname), format='png')
+        plt.close(fig)
+        print(f'  Created {fname}')
 
 
 def generate_jvm_peak_memory(jvm_data, output_dir, title):
-    """Chart 2: Peak memory breakdown per executor, excluding driver (grouped bar)."""
-    peak_fields = [
-        'peak_JVMHeapMemory',
-        'peak_JVMOffHeapMemory',
-        'peak_OnHeapExecutionMemory',
-        'peak_OffHeapExecutionMemory',
-    ]
-
+    """Peak memory breakdown per executor, excluding driver (grouped bar)."""
     executor_data = {eid: s for eid, s in jvm_data.items() if eid != 'driver'}
 
     # Check if all peak values are zero — skip chart if so
     all_zero = True
     for eid, series in executor_data.items():
-        for field in peak_fields:
+        for field in PEAK_BAR_FIELDS:
             if field in series and max(series[field]) > 0:
                 all_zero = False
                 break
@@ -170,7 +202,7 @@ def generate_jvm_peak_memory(jvm_data, output_dir, title):
     all_vals = []
     for eid in executors:
         peak_values[eid] = {}
-        for field in peak_fields:
+        for field in PEAK_BAR_FIELDS:
             val = max(executor_data[eid].get(field, [0]))
             peak_values[eid][field] = val
             all_vals.append(val)
@@ -179,12 +211,12 @@ def generate_jvm_peak_memory(jvm_data, output_dir, title):
 
     import numpy as np
     x = np.arange(len(executors))
-    n_fields = len(peak_fields)
+    n_fields = len(PEAK_BAR_FIELDS)
     bar_width = 0.8 / n_fields
     field_colors = ['tab:blue', 'tab:orange', 'tab:green', 'tab:red']
 
     fig, ax = plt.subplots(figsize=(max(8, len(executors) * 2), 6))
-    for i, field in enumerate(peak_fields):
+    for i, field in enumerate(PEAK_BAR_FIELDS):
         vals = [peak_values[eid][field] / divisor for eid in executors]
         short_label = field.replace('peak_', '')
         ax.bar(x + i * bar_width, vals, bar_width, label=short_label, color=field_colors[i])
@@ -202,187 +234,143 @@ def generate_jvm_peak_memory(jvm_data, output_dir, title):
     print(f'  Created jvm_peak_memory.png')
 
 
-def _jvm_time_range(jvm_data, cgroup_datasets):
-    """Compute the x-axis limit from JVM data using absolute timestamps.
-
-    Returns the max elapsed time (in seconds, relative to the global time-zero
-    across both data sources) that the JVM profiler was active, or None if
-    absolute timestamps are not available.
-    """
-    exec_data = {eid: s for eid, s in jvm_data.items() if eid != 'driver'}
-    has_jvm_ts = any('timestamp_ms' in s for s in exec_data.values())
-    has_cg_ts = any('timestamp_ms' in ds for ds in cgroup_datasets)
-    if not (has_jvm_ts and has_cg_ts):
-        return None
-    all_abs = []
-    for s in exec_data.values():
-        all_abs.extend(s['timestamp_ms'])
-    for ds in cgroup_datasets:
-        all_abs.extend(ds.get('timestamp_ms', []))
-    t_zero = min(all_abs)
-    jvm_max = 0
-    for s in exec_data.values():
-        jvm_max = max(jvm_max, max(s['timestamp_ms']))
-    return (jvm_max - t_zero) / 1000.0
-
-
 def generate_cgroup_memory(cgroup_datasets, jvm_data, output_dir, title):
-    """Chart 3: cgroup memory_usage_bytes (solid) and rss_bytes (dashed) per worker."""
-    x_max = _jvm_time_range(jvm_data, cgroup_datasets)
-
-    # Convert cgroup timestamps to the same shared time-zero as the combined chart
-    exec_data = {eid: s for eid, s in jvm_data.items() if eid != 'driver'}
-    has_jvm_ts = any('timestamp_ms' in s for s in exec_data.values())
-    has_cg_ts = any('timestamp_ms' in ds for ds in cgroup_datasets)
-    if has_jvm_ts and has_cg_ts:
-        all_abs = []
-        for s in exec_data.values():
-            all_abs.extend(s['timestamp_ms'])
-        for ds in cgroup_datasets:
-            all_abs.extend(ds.get('timestamp_ms', []))
-        t_zero = min(all_abs)
-        def elapsed_for(ds):
-            return [(t - t_zero) / 1000.0 for t in ds['timestamp_ms']]
-    else:
-        def elapsed_for(ds):
-            return ds.get('elapsed_secs', [])
-
-    fig, ax = plt.subplots(figsize=(14, 6))
-
-    all_values = []
-    for ds in cgroup_datasets:
-        all_values.extend(ds.get('memory_usage_bytes', []))
-        all_values.extend(ds.get('rss_bytes', []))
-
-    divisor, unit = auto_unit(max(all_values)) if all_values else (1e6, 'MB')
+    """Generate one cgroup memory chart per worker."""
+    jvm_range = _jvm_time_range(jvm_data, cgroup_datasets)
+    t_zero = _shared_time_zero(jvm_data, cgroup_datasets)
 
     for ds in cgroup_datasets:
         label = ds['label']
         c = color_for(label)
-        elapsed = elapsed_for(ds)
+
+        if t_zero is not None and 'timestamp_ms' in ds:
+            elapsed = [(t - t_zero) / 1000.0 for t in ds['timestamp_ms']]
+        else:
+            elapsed = ds.get('elapsed_secs', [])
+
+        all_values = []
+        all_values.extend(ds.get('memory_usage_bytes', []))
+        all_values.extend(ds.get('rss_bytes', []))
+        if not all_values:
+            continue
+
+        divisor, unit = auto_unit(max(all_values))
+
+        fig, ax = plt.subplots(figsize=(14, 6))
         if 'memory_usage_bytes' in ds:
             ax.plot(elapsed,
                     [v / divisor for v in ds['memory_usage_bytes']],
-                    color=c, linewidth=1.5, label=f'{label} usage')
+                    color='tab:blue', linewidth=1.5, label='usage')
         if 'rss_bytes' in ds:
             ax.plot(elapsed,
                     [v / divisor for v in ds['rss_bytes']],
-                    color=c, linewidth=1.5, linestyle='--', label=f'{label} RSS')
+                    color='tab:orange', linewidth=1.5, label='RSS')
 
-    if x_max is not None:
-        ax.set_xlim(left=0, right=x_max * 1.02)
+        if jvm_range is not None:
+            x_min, x_max = jvm_range
+            ax.set_xlim(left=x_min, right=x_max * 1.02)
 
-    ax.set_title(f'{title} — Container Memory (cgroup)' if title else 'Container Memory (cgroup)')
-    ax.set_xlabel('Elapsed Time (seconds)')
-    ax.set_ylabel(f'Memory ({unit})')
-    ax.legend(fontsize=8)
-    ax.yaxis.grid(True)
-    plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, 'cgroup_memory.png'), format='png')
-    plt.close(fig)
-    print(f'  Created cgroup_memory.png')
+        suffix = f' — {label} Container Memory (cgroup)'
+        ax.set_title(f'{title}{suffix}' if title else suffix.lstrip(' — '))
+        ax.set_xlabel('Elapsed Time (seconds)')
+        ax.set_ylabel(f'Memory ({unit})')
+        ax.legend(fontsize=8)
+        ax.yaxis.grid(True)
+        plt.tight_layout()
+        fname = f'cgroup_memory_{label}.png'
+        plt.savefig(os.path.join(output_dir, fname), format='png')
+        plt.close(fig)
+        print(f'  Created {fname}')
 
 
 def generate_combined_memory(jvm_data, cgroup_datasets, cgroup_offset, output_dir, title):
-    """Chart 4: Dual-axis — JVM memoryUsed per executor (left) + cgroup usage per worker (right).
-
-    Aligns both data sources onto a shared elapsed-time axis.  When the JVM CSV
-    contains ``timestamp_ms`` (absolute epoch), the script computes a common
-    time-zero from the earliest timestamp across *both* sources.  Otherwise it
-    falls back to ``elapsed_secs`` with the manual ``--cgroup-offset``.
-    """
-    fig, ax1 = plt.subplots(figsize=(14, 6))
-    ax2 = ax1.twinx()
-
-    # --- Determine shared time-zero from absolute timestamps when available ---
+    """Generate one combined dual-axis chart per worker, pairing executor N with worker-(N+1)."""
     exec_data = {eid: s for eid, s in jvm_data.items() if eid != 'driver'}
-    has_jvm_ts = any('timestamp_ms' in series for series in exec_data.values())
-    has_cg_ts = any('timestamp_ms' in ds for ds in cgroup_datasets)
+    t_zero = _shared_time_zero(jvm_data, cgroup_datasets)
+    jvm_range = _jvm_time_range(jvm_data, cgroup_datasets)
 
-    if has_jvm_ts and has_cg_ts:
-        # Gather all absolute timestamps to find the global minimum
-        all_abs = []
-        for series in exec_data.values():
-            all_abs.extend(series['timestamp_ms'])
-        for ds in cgroup_datasets:
-            all_abs.extend(ds.get('timestamp_ms', []))
-        t_zero = min(all_abs)
-
+    # Build elapsed-time helpers
+    if t_zero is not None:
         def jvm_elapsed(series):
             return [(t - t_zero) / 1000.0 for t in series['timestamp_ms']]
-
         def cg_elapsed(ds):
             return [(t - t_zero) / 1000.0 for t in ds['timestamp_ms']]
     else:
-        # Fallback: use elapsed_secs with manual offset
         def jvm_elapsed(series):
             return series['elapsed_secs']
-
         def cg_elapsed(ds):
             elapsed = ds.get('elapsed_secs', [])
             if cgroup_offset != 0:
                 return [t + cgroup_offset for t in elapsed]
             return elapsed
 
-    # --- JVM: per-executor peak memory over time (driver excluded) ---
-    executor_data = {eid: s for eid, s in jvm_data.items() if eid != 'driver'}
-    jvm_peak_fields = [
-        ('peak_JVMHeapMemory', 'Heap', 'solid'),
-        ('peak_OffHeapExecutionMemory', 'OffHeapExec', 'dotted'),
-    ]
-    all_jvm_vals = []
-    for series in executor_data.values():
-        for field, _, _ in jvm_peak_fields:
-            all_jvm_vals.extend(series.get(field, []))
-    all_cg_vals = []
-    for ds in cgroup_datasets:
-        all_cg_vals.extend(ds.get('memory_usage_bytes', []))
+    # Pair executor IDs with cgroup datasets by index:
+    # sorted executors ['0','1'] map to cgroup_datasets [worker-1, worker-2]
+    sorted_eids = sorted(exec_data.keys())
 
-    jvm_div, jvm_unit = auto_unit(max(all_jvm_vals)) if all_jvm_vals and max(all_jvm_vals) > 0 else (1e6, 'MB')
-    cg_div, cg_unit = auto_unit(max(all_cg_vals)) if all_cg_vals else (1e6, 'MB')
-
-    for eid, series in sorted(executor_data.items()):
-        c = color_for(eid)
-        for field, label, ls in jvm_peak_fields:
-            vals = series.get(field, [])
-            if vals and max(vals) > 0:
-                ax1.plot(jvm_elapsed(series),
-                         [v / jvm_div for v in vals],
-                         color=c, linestyle=ls, linewidth=1.5,
-                         label=f'executor {eid} {label}')
-
-    ax1.set_xlabel('Elapsed Time (seconds)')
-    ax1.set_ylabel(f'JVM Peak Memory ({jvm_unit})')
-    ax1.tick_params(axis='y')
-
-    # --- Cgroup: usage per worker ---
-    for ds in cgroup_datasets:
+    for idx, ds in enumerate(cgroup_datasets):
         label = ds['label']
-        c = color_for(label)
+        eid = sorted_eids[idx] if idx < len(sorted_eids) else None
+
+        fig, ax1 = plt.subplots(figsize=(14, 6))
+        ax2 = ax1.twinx()
+
+        # --- JVM: peak memory for this executor ---
+        if eid is not None:
+            series = exec_data[eid]
+            c = color_for(eid)
+            all_jvm_vals = []
+            for field, _, _, _ in PEAK_SERIES:
+                all_jvm_vals.extend(series.get(field, []))
+            jvm_div, jvm_unit = auto_unit(max(all_jvm_vals)) if all_jvm_vals and max(all_jvm_vals) > 0 else (1e6, 'MB')
+
+            for field, flabel, ls, color in PEAK_SERIES:
+                vals = series.get(field, [])
+                if vals and max(vals) > 0:
+                    ax1.plot(jvm_elapsed(series),
+                             [v / jvm_div for v in vals],
+                             color=color, linestyle=ls, linewidth=1.5,
+                             label=f'{flabel}')
+        else:
+            jvm_unit = 'MB'
+
+        ax1.set_xlabel('Elapsed Time (seconds)')
+        ax1.set_ylabel(f'JVM Peak Memory ({jvm_unit})')
+        ax1.tick_params(axis='y')
+
+        # --- Cgroup: usage for this worker ---
+        all_cg_vals = ds.get('memory_usage_bytes', [])
+        cg_div, cg_unit = auto_unit(max(all_cg_vals)) if all_cg_vals else (1e6, 'MB')
         if 'memory_usage_bytes' in ds:
             ax2.plot(cg_elapsed(ds),
                      [v / cg_div for v in ds['memory_usage_bytes']],
-                     color=c, linewidth=1.5, linestyle='--', label=f'{label} cgroup usage')
+                     color='tab:purple', linewidth=1.5, linestyle='--', label='cgroup usage')
+        if 'rss_bytes' in ds:
+            ax2.plot(cg_elapsed(ds),
+                     [v / cg_div for v in ds['rss_bytes']],
+                     color='tab:brown', linewidth=1, linestyle='--', label='cgroup RSS')
 
-    ax2.set_ylabel(f'Container Memory ({cg_unit})')
-    ax2.tick_params(axis='y')
+        ax2.set_ylabel(f'Container Memory ({cg_unit})')
+        ax2.tick_params(axis='y')
 
-    # Truncate x-axis to JVM time range
-    x_max = _jvm_time_range(jvm_data, cgroup_datasets)
-    if x_max is not None:
-        ax1.set_xlim(left=0, right=x_max * 1.02)
+        if jvm_range is not None:
+            x_min, x_max = jvm_range
+            ax1.set_xlim(left=x_min, right=x_max * 1.02)
 
-    # Combine legends from both axes
-    lines1, labels1 = ax1.get_legend_handles_labels()
-    lines2, labels2 = ax2.get_legend_handles_labels()
-    ax1.legend(lines1 + lines2, labels1 + labels2, fontsize=8, loc='upper left')
+        # Combine legends from both axes
+        lines1, labels1 = ax1.get_legend_handles_labels()
+        lines2, labels2 = ax2.get_legend_handles_labels()
+        ax1.legend(lines1 + lines2, labels1 + labels2, fontsize=8, loc='upper left')
 
-    ax1.set_title(f'{title} — Combined Memory Overview' if title else 'Combined Memory Overview')
-    ax1.yaxis.grid(True)
-    plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, 'combined_memory.png'), format='png')
-    plt.close(fig)
-    print(f'  Created combined_memory.png')
+        eid_label = f'executor {eid} / {label}' if eid else label
+        suffix = f' — {eid_label} Combined Memory'
+        ax1.set_title(f'{title}{suffix}' if title else suffix.lstrip(' — '))
+        ax1.yaxis.grid(True)
+        plt.tight_layout()
+        fname = f'combined_memory_{label}.png'
+        plt.savefig(os.path.join(output_dir, fname), format='png')
+        plt.close(fig)
+        print(f'  Created {fname}')
 
 
 def main():
@@ -405,12 +393,6 @@ def main():
     print(f'Loading JVM metrics from {args.jvm_metrics}')
     jvm_data = load_jvm_metrics(args.jvm_metrics)
     print(f'  Found executors: {", ".join(sorted(jvm_data.keys()))}')
-
-    # Compute the JVM time window so cgroup charts can be truncated to match.
-    jvm_max_elapsed = 0
-    for eid, series in jvm_data.items():
-        if eid != 'driver' and series['elapsed_secs']:
-            jvm_max_elapsed = max(jvm_max_elapsed, max(series['elapsed_secs']))
 
     generate_jvm_memory_usage(jvm_data, args.output_dir, args.title)
     generate_jvm_peak_memory(jvm_data, args.output_dir, args.title)
