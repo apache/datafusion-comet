@@ -332,6 +332,7 @@ abstract class CometTestBase
     }
   }
 
+//  inspired from spark-testing-base
   protected def assertDataFrameEquals(
       df: => DataFrame,
       checkNativeOperators: Boolean = true): Unit = {
@@ -342,12 +343,12 @@ abstract class CometTestBase
     }
     val cometDf = datasetOfRows(spark, df.logicalPlan)
 
-    // Check schemas match
+//    schema match check
     assert(
       sparkDf.schema == cometDf.schema,
-      s"Schemas do not match.\nSpark: ${sparkDf.schema}\nComet: ${cometDf.schema}")
+      s"Schemas do not match.\nCorrect Answer: ${sparkDf.schema}\n Spark Answer: ${cometDf.schema}")
 
-    // Compare using except() - this avoids collect() and toJavaTimestamp conversion
+//    diff check using except instead of collect (collect errors out on spark driver for long -> timestamp conv)
     val sparkMinusComet = sparkDf.except(cometDf)
     val cometMinusSpark = cometDf.except(sparkDf)
 
@@ -355,10 +356,7 @@ abstract class CometTestBase
     val diffCount2 = cometMinusSpark.count()
 
     if (diffCount1 != 0 || diffCount2 != 0) {
-      fail(
-        "DataFrames are not equal.\n" +
-          s"Rows in Spark but not in Comet: $diffCount1\n" +
-          s"Rows in Comet but not in Spark: $diffCount2")
+      fail("DataFrames are not equal.\n")
     }
 
     if (checkNativeOperators) {

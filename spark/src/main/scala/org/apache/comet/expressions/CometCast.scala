@@ -269,7 +269,7 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
   private def canCastFromTimestamp(toType: DataType): SupportLevel = {
     toType match {
       case DataTypes.BooleanType | DataTypes.ByteType | DataTypes.ShortType |
-           DataTypes.IntegerType =>
+          DataTypes.IntegerType =>
         // https://github.com/apache/datafusion-comet/issues/352
         // this seems like an edge case that isn't important for us to support
         unsupported(DataTypes.TimestampType, toType)
