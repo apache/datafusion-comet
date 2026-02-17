@@ -54,6 +54,9 @@ object CometConf extends ShimCometConf {
   private val TRACING_GUIDE = "For more information, refer to the Comet Tracing " +
     "Guide (https://datafusion.apache.org/comet/contributor-guide/tracing.html)"
 
+  private val DEBUGGING_GUIDE = "For more information, refer to the Comet Debugging " +
+    "Guide (https://datafusion.apache.org/comet/contributor-guide/debugging.html)"
+
   /** List of all configs that is used for generating documentation */
   val allConfs = new ListBuffer[ConfigEntry[_]]
 
