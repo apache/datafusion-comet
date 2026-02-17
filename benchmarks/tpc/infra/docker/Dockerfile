@@ -43,6 +43,7 @@ COPY benchmarks/tpc/profiling.py        /opt/benchmarks/profiling.py
 COPY benchmarks/tpc/engines             /opt/benchmarks/engines
 COPY benchmarks/tpc/create-iceberg-tables.py /opt/benchmarks/create-iceberg-tables.py
 COPY benchmarks/tpc/generate-comparison.py   /opt/benchmarks/generate-comparison.py
+COPY benchmarks/tpc/visualize-metrics.py     /opt/benchmarks/visualize-metrics.py
 
 # Copy the metrics collector script.
 COPY benchmarks/tpc/infra/docker/collect-metrics.sh /opt/benchmarks/collect-metrics.sh

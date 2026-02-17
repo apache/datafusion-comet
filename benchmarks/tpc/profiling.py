@@ -115,9 +115,12 @@ class SparkMetricsProfiler:
         except Exception:
             return
 
-        elapsed = time.time() - self._start_time
+        now = time.time()
+        elapsed = now - self._start_time
+        timestamp_ms = int(now * 1000)
         for exc in executors:
             row: Dict[str, Any] = {
+                "timestamp_ms": timestamp_ms,
                 "elapsed_secs": round(elapsed, 2),
                 "executor_id": exc.get("id", ""),
                 "is_active": exc.get("isActive", True),

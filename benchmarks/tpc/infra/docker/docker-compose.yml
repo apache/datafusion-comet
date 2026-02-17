@@ -46,7 +46,16 @@ x-worker: &worker
   image: ${BENCH_IMAGE:-comet-bench}
   depends_on:
     - spark-master
-  command: /opt/spark/sbin/start-worker.sh spark://spark-master:7077
+  # The metrics collector runs inside the worker container so that it
+  # reads the worker's own cgroup memory stats (a separate sidecar
+  # container would only see its own cgroup, not the worker's).
+  command:
+    - sh
+    - -c
+    - >-
+      /opt/benchmarks/collect-metrics.sh ${METRICS_INTERVAL:-1}
+      /results/container-metrics-$${HOSTNAME}.csv &
+      exec /opt/spark/sbin/start-worker.sh spark://spark-master:7077
   volumes: *volumes
   environment:
     - SPARK_WORKER_CORES=${WORKER_CORES:-8}
@@ -54,14 +63,6 @@ x-worker: &worker
     - SPARK_NO_DAEMONIZE=true
   mem_limit: ${WORKER_MEM_LIMIT:-32g}
   memswap_limit: ${WORKER_MEM_LIMIT:-32g}
-
-x-metrics-collector: &metrics-collector
-  image: ${BENCH_IMAGE:-comet-bench}
-  command:
-    - /opt/benchmarks/collect-metrics.sh
-    - "${METRICS_INTERVAL:-1}"
-  volumes:
-    - ${RESULTS_DIR:-/tmp/bench-results}:/results
 
 services:
   spark-master:
@@ -116,24 +117,3 @@ services:
     mem_limit: ${BENCH_MEM_LIMIT:-10g}
     memswap_limit: ${BENCH_MEM_LIMIT:-10g}
 
-  metrics-collector-1:
-    <<: *metrics-collector
-    container_name: metrics-collector-1
-    pid: "service:spark-worker-1"
-    command:
-      - /opt/benchmarks/collect-metrics.sh
-      - "${METRICS_INTERVAL:-1}"
-      - /results/container-metrics-worker-1.csv
-    depends_on:
-      - spark-worker-1
-
-  metrics-collector-2:
-    <<: *metrics-collector
-    container_name: metrics-collector-2
-    pid: "service:spark-worker-2"
-    command:
-      - /opt/benchmarks/collect-metrics.sh
-      - "${METRICS_INTERVAL:-1}"
-      - /results/container-metrics-worker-2.csv
-    depends_on:
-      - spark-worker-2
