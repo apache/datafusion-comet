@@ -30,7 +30,7 @@ The configuration property
 `spark.comet.scan.impl` is used to select an implementation. The default setting is `spark.comet.scan.impl=auto`, which
 currently always uses the `native_iceberg_compat` implementation. Most users should not need to change this setting.
 However, it is possible to force Comet to try and use a particular implementation for all scan operations by setting
-this configuration property to one of the following implementations.
+this configuration property to one of the following implementations. For example: `--conf spark.comet.scan.impl=native_datafusion`
 
 The following unsupported features are shared by both scans and cause Comet to fall back to Spark:
 
