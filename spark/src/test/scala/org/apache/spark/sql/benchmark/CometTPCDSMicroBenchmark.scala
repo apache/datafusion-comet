@@ -114,7 +114,7 @@ object CometTPCDSMicroBenchmark extends CometTPCQueryBenchmarkBase {
         withSQLConf(
           CometConf.COMET_ENABLED.key -> "true",
           CometConf.COMET_EXEC_ENABLED.key -> "true",
-          CometConf.getExprAllowIncompatConfigKey("regex") -> "true",
+          CometConf.getExprAllowIncompatConfigKey("regexp") -> "true",
           // enabling COMET_EXPLAIN_NATIVE_ENABLED may add overhead but is useful for debugging
           CometConf.COMET_EXPLAIN_NATIVE_ENABLED.key -> "false") {
           cometSpark.sql(queryString).noop()

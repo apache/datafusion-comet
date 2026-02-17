@@ -223,11 +223,11 @@ object CometRLike extends CometExpressionSerde[RLike] {
     expr.right match {
       case Literal(pattern, DataTypes.StringType) =>
         if (!RegExp.isSupportedPattern(pattern.toString) &&
-          !CometConf.isExprAllowIncompat("regex")) {
+          !CometConf.isExprAllowIncompat("regexp")) {
           withInfo(
             expr,
             s"Regexp pattern $pattern is not compatible with Spark. " +
-              s"Set ${CometConf.getExprAllowIncompatConfigKey("regex")}=true " +
+              s"Set ${CometConf.getExprAllowIncompatConfigKey("regexp")}=true " +
               "to allow it anyway.")
           None
         } else {
@@ -298,11 +298,11 @@ object CometStringLPad extends CometExpressionSerde[StringLPad] {
 object CometRegExpReplace extends CometExpressionSerde[RegExpReplace] {
   override def getSupportLevel(expr: RegExpReplace): SupportLevel = {
     if (!RegExp.isSupportedPattern(expr.regexp.toString) &&
-      !CometConf.isExprAllowIncompat("regex")) {
+      !CometConf.isExprAllowIncompat("regexp")) {
       withInfo(
         expr,
         s"Regexp pattern ${expr.regexp} is not compatible with Spark. " +
-          s"Set ${CometConf.getExprAllowIncompatConfigKey("regex")}=true " +
+          s"Set ${CometConf.getExprAllowIncompatConfigKey("regexp")}=true " +
           "to allow it anyway.")
       return Incompatible()
     }

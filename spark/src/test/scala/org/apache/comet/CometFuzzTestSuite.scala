@@ -255,7 +255,7 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
   }
 
   test("regexp_replace") {
-    withSQLConf(CometConf.getExprAllowIncompatConfigKey("regex") -> "true") {
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey("regexp") -> "true") {
       val df = spark.read.parquet(filename)
       df.createOrReplaceTempView("t1")
       // We want to make sure that the schema generator wasn't modified to accidentally omit

@@ -133,7 +133,7 @@ class CometFuzzIcebergSuite extends CometFuzzIcebergBase {
   }
 
   test("regexp_replace") {
-    withSQLConf(CometConf.getExprAllowIncompatConfigKey("regex") -> "true") {
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey("regexp") -> "true") {
       val df = spark.table(icebergTableName)
       // We want to make sure that the schema generator wasn't modified to accidentally omit
       // StringType, since then this test would not run any queries and silently pass.

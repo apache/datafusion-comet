@@ -958,7 +958,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         // add repetitive data to trigger dictionary encoding
         Range(0, 100).map(_ => "John Smith")
       withParquetFile(data.zipWithIndex, withDictionary) { file =>
-        withSQLConf(CometConf.getExprAllowIncompatConfigKey("regex") -> "true") {
+        withSQLConf(CometConf.getExprAllowIncompatConfigKey("regexp") -> "true") {
           spark.read.parquet(file).createOrReplaceTempView(table)
           val query = sql(s"select _2 as id, _1 rlike 'R[a-z]+s [Rr]ose' from $table")
           checkSparkAnswerAndOperator(query)
@@ -996,7 +996,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     withTable(table) {
       sql(s"create table $table(id int, name varchar(20)) using parquet")
       sql(s"insert into $table values(1,'James Smith')")
-      withSQLConf(CometConf.getExprAllowIncompatConfigKey("regex") -> "true") {
+      withSQLConf(CometConf.getExprAllowIncompatConfigKey("regexp") -> "true") {
         val query2 = sql(s"select id from $table where name rlike name")
         val (_, cometPlan) = checkSparkAnswer(query2)
         val explain = new ExtendedExplainInfo().generateExtendedInfo(cometPlan)
@@ -1030,7 +1030,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         // "Smith$",
         "Smith\\Z",
         "Smith\\z")
-      withSQLConf(CometConf.getExprAllowIncompatConfigKey("regex") -> "true") {
+      withSQLConf(CometConf.getExprAllowIncompatConfigKey("regexp") -> "true") {
         patterns.foreach { pattern =>
           val query2 = sql(s"select name, '$pattern', name rlike '$pattern' from $table")
           checkSparkAnswerAndOperator(query2)
@@ -1090,7 +1090,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         "\\V")
       val qualifiers = Seq("", "+", "*", "?", "{1,}")
 
-      withSQLConf(CometConf.getExprAllowIncompatConfigKey("regex") -> "true") {
+      withSQLConf(CometConf.getExprAllowIncompatConfigKey("regexp") -> "true") {
         // testing every possible combination takes too long, so we pick some
         // random combinations
         for (_ <- 0 until 100) {

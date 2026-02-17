@@ -1009,7 +1009,7 @@ index 18123a4d6ec..fbe4c766eee 100644
 -        regexp_extract($"a", "(\\d+)-(\\d+)", 1)),
 -      Row("num-num", "300", "100") :: Row("num-num", "400", "100") ::
 -        Row("num-num", "400-400", "100") :: Nil)
-+    withSQLConf(CometConf.getExprAllowIncompatConfigKey("regex") -> "true") {
++    withSQLConf(CometConf.getExprAllowIncompatConfigKey("regexp") -> "true") {
 +      val df = Seq(
 +        ("100-200", "(\\d+)-(\\d+)", "300"),
 +        ("100-200", "(\\d+)-(\\d+)", "400"),
