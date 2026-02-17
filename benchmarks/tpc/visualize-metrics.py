@@ -284,7 +284,7 @@ def generate_cgroup_memory(cgroup_datasets, jvm_data, output_dir, title):
 
 
 def generate_combined_memory(jvm_data, cgroup_datasets, cgroup_offset, output_dir, title):
-    """Generate one combined dual-axis chart per worker, pairing executor N with worker-(N+1)."""
+    """Generate one combined log-scale chart per worker, pairing executor N with worker-(N+1)."""
     exec_data = {eid: s for eid, s in jvm_data.items() if eid != 'driver'}
     t_zero = _shared_time_zero(jvm_data, cgroup_datasets)
     jvm_range = _jvm_time_range(jvm_data, cgroup_datasets)
@@ -312,60 +312,47 @@ def generate_combined_memory(jvm_data, cgroup_datasets, cgroup_offset, output_di
         label = ds['label']
         eid = sorted_eids[idx] if idx < len(sorted_eids) else None
 
-        fig, ax1 = plt.subplots(figsize=(14, 6))
-        ax2 = ax1.twinx()
+        fig, ax = plt.subplots(figsize=(14, 6))
+
+        # All series plotted in GB on a single log-scale axis
+        divisor = 1e9
+        unit = 'GB'
 
         # --- JVM: peak memory for this executor ---
         if eid is not None:
             series = exec_data[eid]
-            c = color_for(eid)
-            all_jvm_vals = []
-            for field, _, _, _ in PEAK_SERIES:
-                all_jvm_vals.extend(series.get(field, []))
-            jvm_div, jvm_unit = auto_unit(max(all_jvm_vals)) if all_jvm_vals and max(all_jvm_vals) > 0 else (1e6, 'MB')
-
             for field, flabel, ls, color in PEAK_SERIES:
                 vals = series.get(field, [])
                 if vals and max(vals) > 0:
-                    ax1.plot(jvm_elapsed(series),
-                             [v / jvm_div for v in vals],
-                             color=color, linestyle=ls, linewidth=1.5,
-                             label=f'{flabel}')
-        else:
-            jvm_unit = 'MB'
-
-        ax1.set_xlabel('Elapsed Time (seconds)')
-        ax1.set_ylabel(f'JVM Peak Memory ({jvm_unit})')
-        ax1.tick_params(axis='y')
+                    ax.plot(jvm_elapsed(series),
+                            [v / divisor for v in vals],
+                            color=color, linestyle=ls, linewidth=1.5,
+                            label=f'JVM {flabel}')
 
         # --- Cgroup: usage for this worker ---
-        all_cg_vals = ds.get('memory_usage_bytes', [])
-        cg_div, cg_unit = auto_unit(max(all_cg_vals)) if all_cg_vals else (1e6, 'MB')
         if 'memory_usage_bytes' in ds:
-            ax2.plot(cg_elapsed(ds),
-                     [v / cg_div for v in ds['memory_usage_bytes']],
-                     color='tab:purple', linewidth=1.5, linestyle='--', label='cgroup usage')
+            ax.plot(cg_elapsed(ds),
+                    [v / divisor for v in ds['memory_usage_bytes']],
+                    color='tab:purple', linewidth=1.5, linestyle='--', label='cgroup usage')
         if 'rss_bytes' in ds:
-            ax2.plot(cg_elapsed(ds),
-                     [v / cg_div for v in ds['rss_bytes']],
-                     color='tab:brown', linewidth=1, linestyle='--', label='cgroup RSS')
+            ax.plot(cg_elapsed(ds),
+                    [v / divisor for v in ds['rss_bytes']],
+                    color='tab:brown', linewidth=1, linestyle='--', label='cgroup RSS')
 
-        ax2.set_ylabel(f'Container Memory ({cg_unit})')
-        ax2.tick_params(axis='y')
+        ax.set_yscale('log')
+        ax.set_xlabel('Elapsed Time (seconds)')
+        ax.set_ylabel(f'Memory ({unit}, log scale)')
 
         if jvm_range is not None:
             x_min, x_max = jvm_range
-            ax1.set_xlim(left=x_min, right=x_max * 1.02)
+            ax.set_xlim(left=x_min, right=x_max * 1.02)
 
-        # Combine legends from both axes
-        lines1, labels1 = ax1.get_legend_handles_labels()
-        lines2, labels2 = ax2.get_legend_handles_labels()
-        ax1.legend(lines1 + lines2, labels1 + labels2, fontsize=8, loc='upper left')
+        ax.legend(fontsize=8, loc='upper left')
 
         eid_label = f'executor {eid} / {label}' if eid else label
         suffix = f' — {eid_label} Combined Memory'
-        ax1.set_title(f'{title}{suffix}' if title else suffix.lstrip(' — '))
-        ax1.yaxis.grid(True)
+        ax.set_title(f'{title}{suffix}' if title else suffix.lstrip(' — '))
+        ax.yaxis.grid(True, which='both')
         plt.tight_layout()
         fname = f'combined_memory_{label}.png'
         plt.savefig(os.path.join(output_dir, fname), format='png')
