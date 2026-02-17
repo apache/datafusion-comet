@@ -223,10 +223,14 @@ two workers:
 export DATA_DIR=/mnt/bigdata/tpch/sf100
 export QUERIES_DIR=/mnt/bigdata/tpch/queries
 export RESULTS_DIR=/tmp/bench-results
-export ENGINE_JARS_DIR=/opt/comet
+export COMET_JAR=/opt/comet/comet-spark-spark3.5_2.12-0.10.0.jar
 
 docker compose -f benchmarks/tpc/infra/docker/docker-compose.yml up -d
 ```
+
+Set `COMET_JAR`, `GLUTEN_JAR`, or `ICEBERG_JAR` to the host path of the engine JAR you
+want to use. Each JAR is mounted individually into the container, so you can easily switch
+between versions by changing the path and restarting.
 
 ### Run benchmarks
 

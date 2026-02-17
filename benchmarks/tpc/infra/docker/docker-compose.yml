@@ -19,6 +19,7 @@
 # which better reflects real cluster behavior.
 #
 # Usage:
+#   export COMET_JAR=/path/to/comet-spark-0.10.0.jar
 #   docker compose -f benchmarks/tpc/infra/docker/docker-compose.yml up -d
 #
 # Environment variables (set in .env or export before running):
@@ -26,21 +27,27 @@
 #   DATA_DIR           - Host path to TPC data (default: /tmp/tpc-data)
 #   QUERIES_DIR        - Host path to query SQL files (default: /tmp/tpc-queries)
 #   RESULTS_DIR        - Host path for results output (default: /tmp/bench-results)
-#   ENGINE_JARS_DIR    - Host path containing engine JARs (default: /tmp/engine-jars)
+#   COMET_JAR          - Host path to Comet JAR
+#   GLUTEN_JAR         - Host path to Gluten JAR
+#   ICEBERG_JAR        - Host path to Iceberg Spark runtime JAR
 #   WORKER_MEM_LIMIT   - Hard memory limit per worker container (default: 32g)
 #   BENCH_MEM_LIMIT    - Hard memory limit for the bench runner (default: 10g)
 #   METRICS_INTERVAL   - Metrics collection interval in seconds (default: 1)
+
+x-volumes: &volumes
+  - ${DATA_DIR:-/tmp/tpc-data}:/data:ro
+  - ${QUERIES_DIR:-/tmp/tpc-queries}:/queries:ro
+  - ${RESULTS_DIR:-/tmp/bench-results}:/results
+  - ${COMET_JAR:-/dev/null}:/jars/comet.jar:ro
+  - ${GLUTEN_JAR:-/dev/null}:/jars/gluten.jar:ro
+  - ${ICEBERG_JAR:-/dev/null}:/jars/iceberg.jar:ro
 
 x-worker: &worker
   image: ${BENCH_IMAGE:-comet-bench}
   depends_on:
     - spark-master
   command: /opt/spark/sbin/start-worker.sh spark://spark-master:7077
-  volumes:
-    - ${DATA_DIR:-/tmp/tpc-data}:/data:ro
-    - ${QUERIES_DIR:-/tmp/tpc-queries}:/queries:ro
-    - ${RESULTS_DIR:-/tmp/bench-results}:/results
-    - ${ENGINE_JARS_DIR:-/tmp/engine-jars}:/jars:ro
+  volumes: *volumes
   environment:
     - SPARK_WORKER_CORES=${WORKER_CORES:-8}
     - SPARK_WORKER_MEMORY=${WORKER_MEMORY:-16g}
@@ -65,11 +72,7 @@ services:
     ports:
       - "7077:7077"
       - "8080:8080"
-    volumes:
-      - ${DATA_DIR:-/tmp/tpc-data}:/data:ro
-      - ${QUERIES_DIR:-/tmp/tpc-queries}:/queries:ro
-      - ${RESULTS_DIR:-/tmp/bench-results}:/results
-      - ${ENGINE_JARS_DIR:-/tmp/engine-jars}:/jars:ro
+    volumes: *volumes
     environment:
       - SPARK_MASTER_HOST=spark-master
       - SPARK_NO_DAEMONIZE=true
@@ -99,16 +102,13 @@ services:
     #   docker compose run bench python3 /opt/benchmarks/run.py \
     #       --engine comet --benchmark tpch --no-restart
     command: ["echo", "Use 'docker compose run bench python3 /opt/benchmarks/run.py ...' to run benchmarks"]
-    volumes:
-      - ${DATA_DIR:-/tmp/tpc-data}:/data:ro
-      - ${QUERIES_DIR:-/tmp/tpc-queries}:/queries:ro
-      - ${RESULTS_DIR:-/tmp/bench-results}:/results
-      - ${ENGINE_JARS_DIR:-/tmp/engine-jars}:/jars:ro
+    volumes: *volumes
     environment:
       - SPARK_HOME=/opt/spark
       - SPARK_MASTER=spark://spark-master:7077
       - COMET_JAR=/jars/comet.jar
       - GLUTEN_JAR=/jars/gluten.jar
+      - ICEBERG_JAR=/jars/iceberg.jar
       - TPCH_DATA=/data
       - TPCH_QUERIES=/queries
       - TPCDS_DATA=/data
