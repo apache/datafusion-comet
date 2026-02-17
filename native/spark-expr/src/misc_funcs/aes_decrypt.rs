@@ -15,18 +15,14 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::sync::Arc;
-
 use aes::cipher::consts::{U12, U16};
 use aes::{Aes128, Aes192, Aes256};
 use aes_gcm::aead::{Aead, Payload};
 use aes_gcm::{Aes128Gcm, Aes256Gcm, AesGcm, KeyInit, Nonce};
-use arrow::array::{
-    Array, ArrayRef, BinaryArray, BinaryBuilder, LargeBinaryArray, LargeStringArray, StringArray,
-};
+use arrow::array::{Array, ArrayRef, BinaryArray, LargeBinaryArray, LargeStringArray, StringArray};
 use arrow::datatypes::DataType;
 use cbc::cipher::{block_padding::Pkcs7, BlockDecryptMut, KeyIvInit};
-use datafusion::common::{exec_err, DataFusionError};
+use datafusion::common::{exec_err, DataFusionError, ScalarValue};
 use datafusion::logical_expr::ColumnarValue;
 
 const GCM_IV_LEN: usize = 12;
@@ -66,21 +62,19 @@ impl<'a> BinaryArg<'a> {
     fn from(arg_name: &str, arr: &'a ArrayRef) -> Result<Self, DataFusionError> {
         match arr.data_type() {
             DataType::Binary => Ok(Self::Binary(
-                arr.as_any().downcast_ref::<BinaryArray>().ok_or_else(|| {
-                    DataFusionError::Internal(format!(
-                        "Failed to downcast {arg_name} to BinaryArray"
-                    ))
+                crate::opt_downcast_arg!(arr, BinaryArray).ok_or_else(|| {
+                    datafusion::common::internal_datafusion_err!(
+                        "could not cast {} to {}",
+                        arg_name,
+                        std::any::type_name::<BinaryArray>()
+                    )
                 })?,
             )),
-            DataType::LargeBinary => Ok(Self::LargeBinary(
-                arr.as_any()
-                    .downcast_ref::<LargeBinaryArray>()
-                    .ok_or_else(|| {
-                        DataFusionError::Internal(format!(
-                            "Failed to downcast {arg_name} to LargeBinaryArray"
-                        ))
-                    })?,
-            )),
+            DataType::LargeBinary => Ok(Self::LargeBinary(crate::downcast_named_arg!(
+                arr,
+                arg_name,
+                LargeBinaryArray
+            ))),
             other => exec_err!("{arg_name} must be Binary/LargeBinary, got {other:?}"),
         }
     }
@@ -102,21 +96,19 @@ impl<'a> StringArg<'a> {
     fn from(arg_name: &str, arr: &'a ArrayRef) -> Result<Self, DataFusionError> {
         match arr.data_type() {
             DataType::Utf8 => Ok(Self::Utf8(
-                arr.as_any().downcast_ref::<StringArray>().ok_or_else(|| {
-                    DataFusionError::Internal(format!(
-                        "Failed to downcast {arg_name} to StringArray"
-                    ))
+                crate::opt_downcast_arg!(arr, StringArray).ok_or_else(|| {
+                    datafusion::common::internal_datafusion_err!(
+                        "could not cast {} to {}",
+                        arg_name,
+                        std::any::type_name::<StringArray>()
+                    )
                 })?,
             )),
-            DataType::LargeUtf8 => Ok(Self::LargeUtf8(
-                arr.as_any()
-                    .downcast_ref::<LargeStringArray>()
-                    .ok_or_else(|| {
-                        DataFusionError::Internal(format!(
-                            "Failed to downcast {arg_name} to LargeStringArray"
-                        ))
-                    })?,
-            )),
+            DataType::LargeUtf8 => Ok(Self::LargeUtf8(crate::downcast_named_arg!(
+                arr,
+                arg_name,
+                LargeStringArray
+            ))),
             other => exec_err!("{arg_name} must be Utf8/LargeUtf8, got {other:?}"),
         }
     }
@@ -263,56 +255,52 @@ pub fn spark_aes_decrypt(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFu
         None
     };
 
-    let mut builder = BinaryBuilder::new();
+    let values: Result<Vec<ScalarValue>, DataFusionError> = (0..num_rows)
+        .map(|row| {
+            let Some(input_value) = input.value(row) else {
+                return Ok(ScalarValue::Binary(None));
+            };
+            let Some(key_value) = key.value(row) else {
+                return Ok(ScalarValue::Binary(None));
+            };
 
-    for row in 0..num_rows {
-        let Some(input_value) = input.value(row) else {
-            builder.append_null();
-            continue;
-        };
-        let Some(key_value) = key.value(row) else {
-            builder.append_null();
-            continue;
-        };
+            let mode_value = match mode.as_ref() {
+                Some(mode) => {
+                    let Some(mode) = mode.value(row) else {
+                        return Ok(ScalarValue::Binary(None));
+                    };
+                    mode
+                }
+                None => "GCM",
+            };
 
-        let mode_value = match mode.as_ref() {
-            Some(mode) => {
-                let Some(mode) = mode.value(row) else {
-                    builder.append_null();
-                    continue;
-                };
-                mode
-            }
-            None => "GCM",
-        };
+            let padding_value = match padding.as_ref() {
+                Some(padding) => {
+                    let Some(padding) = padding.value(row) else {
+                        return Ok(ScalarValue::Binary(None));
+                    };
+                    padding
+                }
+                None => "DEFAULT",
+            };
 
-        let padding_value = match padding.as_ref() {
-            Some(padding) => {
-                let Some(padding) = padding.value(row) else {
-                    builder.append_null();
-                    continue;
-                };
-                padding
-            }
-            None => "DEFAULT",
-        };
+            let aad_value = match aad.as_ref() {
+                Some(aad) => {
+                    let Some(aad) = aad.value(row) else {
+                        return Ok(ScalarValue::Binary(None));
+                    };
+                    aad
+                }
+                None => &[],
+            };
 
-        let aad_value = match aad.as_ref() {
-            Some(aad) => {
-                let Some(aad) = aad.value(row) else {
-                    builder.append_null();
-                    continue;
-                };
-                aad
-            }
-            None => &[],
-        };
+            let plaintext =
+                decrypt_one(input_value, key_value, mode_value, padding_value, aad_value)?;
+            Ok(ScalarValue::Binary(Some(plaintext)))
+        })
+        .collect();
 
-        let plaintext = decrypt_one(input_value, key_value, mode_value, padding_value, aad_value)?;
-        builder.append_value(plaintext);
-    }
-
-    let array = Arc::new(builder.finish());
+    let array: ArrayRef = ScalarValue::iter_to_array(values?)?;
     if are_scalars {
         Ok(ColumnarValue::Scalar(
             datafusion::common::ScalarValue::try_from_array(array.as_ref(), 0)?,
