@@ -59,4 +59,6 @@ RUN chmod +x /opt/benchmarks/collect-metrics.sh
 
 WORKDIR /opt/benchmarks
 
+# Defined in the base apache/spark image.
+ARG spark_uid
 USER ${spark_uid}
