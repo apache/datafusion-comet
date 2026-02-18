@@ -215,7 +215,8 @@ physical plan output.
 ## Running with Docker
 
 A Docker Compose setup is provided in `infra/docker/` for running benchmarks in an isolated
-Spark standalone cluster.
+Spark standalone cluster. The Docker image supports both **Linux (amd64)** and **macOS (arm64)**
+via architecture-agnostic Java symlinks created at build time.
 
 ### Build the image
 
@@ -224,6 +225,18 @@ From the repository root:
 ```shell
 docker build -t comet-bench -f benchmarks/tpc/infra/docker/Dockerfile .
 ```
+
+### Platform notes
+
+**macOS (Apple Silicon):** Docker Desktop is required. You may need to add your data
+directory (e.g. `/opt`) to Docker Desktop > Settings > Resources > File Sharing before
+mounting host volumes.
+
+**Linux (amd64):** No special configuration is needed.
+
+The Docker image auto-detects the container architecture (amd64/arm64) and sets up
+arch-agnostic Java symlinks. The compose file uses `BENCH_JAVA_HOME` (not `JAVA_HOME`)
+to avoid inheriting the host's Java path into the container.
 
 ### Start the cluster
 
@@ -263,7 +276,7 @@ For Gluten (requires Java 8), you must restart the **entire cluster** with `JAVA
 set so that all services (master, workers, and bench) use Java 8:
 
 ```shell
-export JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64
+export BENCH_JAVA_HOME=/usr/lib/jvm/java-8-openjdk
 docker compose -f benchmarks/tpc/infra/docker/docker-compose.yml down
 docker compose -f benchmarks/tpc/infra/docker/docker-compose.yml up -d
 
@@ -275,8 +288,8 @@ docker compose -f benchmarks/tpc/infra/docker/docker-compose.yml \
 
 > **Important:** Only passing `-e JAVA_HOME=...` to the `bench` container is not
 > sufficient -- the workers also need Java 8 or Gluten will fail at runtime with
-> `sun.misc.Unsafe` errors. Switch back to Java 17 (or unset `JAVA_HOME`) and
-> restart the cluster before running Comet or Spark benchmarks.
+> `sun.misc.Unsafe` errors. Unset `BENCH_JAVA_HOME` (or switch it back to Java 17)
+> and restart the cluster before running Comet or Spark benchmarks.
 
 ### Memory limits and metrics
 

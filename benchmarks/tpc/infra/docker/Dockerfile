@@ -34,7 +34,11 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # Default to Java 17 (override with JAVA_HOME at runtime for Gluten).
-ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+# Detect architecture (amd64 or arm64) so the image works on both Linux and macOS.
+ARG TARGETARCH
+RUN ln -s /usr/lib/jvm/java-17-openjdk-${TARGETARCH} /usr/lib/jvm/java-17-openjdk && \
+    ln -s /usr/lib/jvm/java-8-openjdk-${TARGETARCH} /usr/lib/jvm/java-8-openjdk
+ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk
 
 # Copy the benchmark scripts into the image.
 COPY benchmarks/tpc/run.py              /opt/benchmarks/run.py

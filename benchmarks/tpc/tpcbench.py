@@ -106,7 +106,10 @@ def main(
             print(f"Registering table {table} from {source}")
             df = spark.table(source)
         else:
+            # Support both "customer/" and "customer.parquet/" layouts
             source = f"{data_path}/{table}.{format}"
+            if not os.path.exists(source):
+                source = f"{data_path}/{table}"
             print(f"Registering table {table} from {source}")
             df = spark.read.format(format).options(**options).load(source)
         df.createOrReplaceTempView(table)
