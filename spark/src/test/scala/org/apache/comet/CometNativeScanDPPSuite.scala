@@ -311,7 +311,6 @@ class CometNativeScanDPPSuite extends CometTestBase {
         val plan = df.queryExecution.executedPlan
 
         // With DPP fallback enabled for non-native scans, CometNativeScanExec should not be used
-        val nativeScans = collectCometNativeScans(stripAQEPlan(plan))
         // The scan should fall back to Spark's FileSourceScanExec
         // This is expected behavior for SCAN_NATIVE_ICEBERG_COMPAT with DPP
 
