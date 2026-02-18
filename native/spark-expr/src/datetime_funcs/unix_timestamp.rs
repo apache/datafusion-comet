@@ -78,6 +78,27 @@ impl ScalarUDFImpl for SparkUnixTimestamp {
 
         match args {
             [ColumnarValue::Array(array)] => match array.data_type() {
+                DataType::Timestamp(Microsecond, None) => {
+                    // TimestampNTZ: No timezone conversion needed - simply divide microseconds
+                    // by MICROS_PER_SECOND. TimestampNTZ stores local time without timezone.
+                    let timestamp_array =
+                        array.as_primitive::<arrow::datatypes::TimestampMicrosecondType>();
+
+                    let result: PrimitiveArray<Int64Type> = if timestamp_array.null_count() == 0 {
+                        timestamp_array
+                            .values()
+                            .iter()
+                            .map(|&micros| micros / MICROS_PER_SECOND)
+                            .collect()
+                    } else {
+                        timestamp_array
+                            .iter()
+                            .map(|v| v.map(|micros| div_floor(micros, MICROS_PER_SECOND)))
+                            .collect()
+                    };
+
+                    Ok(ColumnarValue::Array(Arc::new(result)))
+                }
                 DataType::Timestamp(_, _) => {
                     let is_utc = self.timezone == "UTC";
                     let array = if is_utc
