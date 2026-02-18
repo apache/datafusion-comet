@@ -435,21 +435,19 @@ impl SparkPhysicalExprAdapter {
 ///
 /// This function is useful for cases like Iceberg scanning where batches
 /// are read directly and need to be adapted to the expected schema.
+///
+/// The caller provides the `adapter` which handles schema mapping and
+/// expression rewriting. This allows the caller to cache and reuse the
+/// adapter across multiple batches with the same file schema.
 pub fn adapt_batch_with_expressions(
     batch: RecordBatch,
     target_schema: &SchemaRef,
-    parquet_options: &SparkParquetOptions,
+    adapter: &Arc<dyn PhysicalExprAdapter>,
 ) -> DataFusionResult<RecordBatch> {
-    let file_schema = batch.schema();
-
     // If schemas match, no adaptation needed
-    if file_schema.as_ref() == target_schema.as_ref() {
+    if batch.schema().as_ref() == target_schema.as_ref() {
         return Ok(batch);
     }
-
-    // Create adapter
-    let factory = SparkPhysicalExprAdapterFactory::new(parquet_options.clone(), None);
-    let adapter = factory.create(Arc::clone(target_schema), Arc::clone(&file_schema));
 
     // Create column projection expressions for target schema
     let projection_exprs: Vec<Arc<dyn PhysicalExpr>> = target_schema

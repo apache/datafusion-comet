@@ -41,8 +41,11 @@ use iceberg::io::FileIO;
 
 use crate::execution::operators::ExecutionError;
 use crate::parquet::parquet_support::SparkParquetOptions;
-use crate::parquet::schema_adapter::adapt_batch_with_expressions;
+use crate::parquet::schema_adapter::{
+    adapt_batch_with_expressions, SparkPhysicalExprAdapterFactory,
+};
 use datafusion_comet_spark_expr::EvalMode;
+use datafusion_physical_expr_adapter::{PhysicalExprAdapter, PhysicalExprAdapterFactory};
 use iceberg::scan::FileScanTask;
 
 /// Iceberg table scan operator that uses iceberg-rust to read Iceberg tables.
@@ -168,6 +171,7 @@ impl IcebergScanExec {
         })?;
 
         let spark_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        let adapter_factory = SparkPhysicalExprAdapterFactory::new(spark_options, None);
 
         let adapted_stream =
             stream.map_err(|e| DataFusionError::Execution(format!("Iceberg scan error: {}", e)));
@@ -175,7 +179,8 @@ impl IcebergScanExec {
         let wrapped_stream = IcebergStreamWrapper {
             inner: adapted_stream,
             schema: output_schema,
-            spark_options,
+            adapter_factory,
+            cached_adapter: None,
             baseline_metrics: metrics.baseline,
         };
 
@@ -222,8 +227,11 @@ impl IcebergScanMetrics {
 struct IcebergStreamWrapper<S> {
     inner: S,
     schema: SchemaRef,
-    /// Spark parquet options for schema adaptation
-    spark_options: SparkParquetOptions,
+    /// Factory for creating adapters when file schema changes
+    adapter_factory: SparkPhysicalExprAdapterFactory,
+    /// Cached adapter for the current file schema, reused across batches
+    /// with the same schema
+    cached_adapter: Option<(SchemaRef, Arc<dyn PhysicalExprAdapter>)>,
     /// Metrics for output tracking
     baseline_metrics: BaselineMetrics,
 }
@@ -239,8 +247,27 @@ where
 
         let result = match poll_result {
             Poll::Ready(Some(Ok(batch))) => {
-                let result = adapt_batch_with_expressions(batch, &self.schema, &self.spark_options)
-                    .map_err(|e| {
+                let file_schema = batch.schema();
+
+                // Reuse cached adapter if file schema hasn't changed,
+                // otherwise create a new one
+                let adapter = match &self.cached_adapter {
+                    Some((cached_schema, adapter))
+                        if cached_schema.as_ref() == file_schema.as_ref() =>
+                    {
+                        Arc::clone(adapter)
+                    }
+                    _ => {
+                        let adapter = self
+                            .adapter_factory
+                            .create(Arc::clone(&self.schema), Arc::clone(&file_schema));
+                        self.cached_adapter = Some((file_schema, Arc::clone(&adapter)));
+                        adapter
+                    }
+                };
+
+                let result =
+                    adapt_batch_with_expressions(batch, &self.schema, &adapter).map_err(|e| {
                         DataFusionError::Execution(format!("Batch adaptation failed: {}", e))
                     });
 
