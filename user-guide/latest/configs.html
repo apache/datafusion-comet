@@ -543,6 +543,10 @@ under the License.
 <td><p>Whether to respect Spark’s PARQUET_FILTER_PUSHDOWN_ENABLED config. This needs to be respected when running the Spark SQL test suite but the default setting results in poor performance in Comet when using the new native scans, disabled by default</p></td>
 <td><p>false</p></td>
 </tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.scan.impl</span></code></p></td>
+<td><p>The implementation of Comet’s Parquet scan to use. Available scans are <code class="docutils literal notranslate"><span class="pre">native_datafusion</span></code>, and <code class="docutils literal notranslate"><span class="pre">native_iceberg_compat</span></code>. <code class="docutils literal notranslate"><span class="pre">native_datafusion</span></code> is a fully native implementation, and <code class="docutils literal notranslate"><span class="pre">native_iceberg_compat</span></code> is a hybrid implementation that supports some additional features, such as row indexes and field ids. <code class="docutils literal notranslate"><span class="pre">auto</span></code> (default) chooses the best available scan based on the scan schema. It can be overridden by the environment variable <code class="docutils literal notranslate"><span class="pre">COMET_PARQUET_SCAN_IMPL</span></code>.</p></td>
+<td><p>auto</p></td>
+</tr>
 </tbody>
 </table>
 </div>

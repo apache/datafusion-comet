@@ -605,9 +605,8 @@ ownership is being transferred according to the Arrow C data interface specifica
 </div>
 <section id="when-ownership-is-not-transferred-to-native">
 <h4>When ownership is NOT transferred to native:<a class="headerlink" href="#when-ownership-is-not-transferred-to-native" title="Link to this heading">#</a></h4>
-<p>If the data originates from <code class="docutils literal notranslate"><span class="pre">native_comet</span></code> scan (deprecated, will be removed in a future release) or from
-<code class="docutils literal notranslate"><span class="pre">native_iceberg_compat</span></code> in some cases, then ownership is not transferred to native and the JVM may re-use the
-underlying buffers in the future.</p>
+<p>If the data originates from a scan that uses mutable buffers (such as Iceberg scans using the <a class="reference external" href="https://datafusion.apache.org/comet/user-guide/latest/iceberg.html#hybrid-reader">hybrid Iceberg reader</a>),
+then ownership is not transferred to native and the JVM may re-use the underlying buffers in the future.</p>
 <p>It is critical that the native code performs a deep copy of the arrays if the arrays are to be buffered by
 operators such as <code class="docutils literal notranslate"><span class="pre">SortExec</span></code> or <code class="docutils literal notranslate"><span class="pre">ShuffleWriterExec</span></code>, otherwise data corruption is likely to occur.</p>
 </section>

@@ -117,7 +117,7 @@ Cast operations in Comet fall into three levels of support:
 | binary | - | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | C | N/A |
 | boolean | N/A | - | C | N/A | C | C | C | C | C | C | C | U |
 | byte | C | C | - | N/A | C | C | C | C | C | C | C | U |
-| date | N/A | U | U | - | U | U | U | U | U | U | C | C |
+| date | N/A | C | C | - | C | C | C | C | C | C | C | C |
 | decimal | N/A | C | C | N/A | - | C | C | C | C | C | C | U |
 | double | N/A | C | C | N/A | I | - | C | C | C | C | C | U |
 | float | N/A | C | C | N/A | I | C | - | C | C | C | C | U |
