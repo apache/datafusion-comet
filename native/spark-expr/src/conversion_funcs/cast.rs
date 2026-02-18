@@ -15,9 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::conversion_funcs::boolean::{can_cast_from_boolean, cast_boolean_to_decimal};
+use crate::conversion_funcs::boolean::{
+    cast_boolean_to_decimal, is_df_cast_from_bool_spark_compatible,
+};
+use crate::conversion_funcs::utils::spark_cast_postprocess;
 use crate::conversion_funcs::utils::{cast_overflow, invalid_value};
-use crate::conversion_funcs::utils::{is_identity_cast, spark_cast_postprocess};
 use crate::utils::array_with_timezone;
 use crate::EvalMode::Legacy;
 use crate::{timezone, BinaryOutputStyle};
@@ -1123,12 +1125,12 @@ fn cast_binary_formatter(value: &[u8]) -> String {
 /// Determines if DataFusion supports the given cast in a way that is
 /// compatible with Spark
 fn is_datafusion_spark_compatible(from_type: &DataType, to_type: &DataType) -> bool {
-    is_identity_cast(from_type, to_type)
+    from_type == to_type
         || match from_type {
             DataType::Null => {
                 matches!(to_type, DataType::List(_))
             }
-            DataType::Boolean => can_cast_from_boolean(to_type),
+            DataType::Boolean => is_df_cast_from_bool_spark_compatible(to_type),
             DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64 => {
                 matches!(
                     to_type,

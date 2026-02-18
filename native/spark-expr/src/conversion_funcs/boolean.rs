@@ -20,11 +20,11 @@ use arrow::array::{ArrayRef, AsArray, Decimal128Array};
 use arrow::datatypes::DataType;
 use std::sync::Arc;
 
-pub fn can_cast_from_boolean(to_type: &DataType) -> bool {
+pub fn is_df_cast_from_bool_spark_compatible(to_type: &DataType) -> bool {
     use DataType::*;
     matches!(
         to_type,
-        Boolean | Int8 | Int16 | Int32 | Int64 | Float32 | Float64 | Utf8 | Decimal128(_, _)
+        Int8 | Int16 | Int32 | Int64 | Float32 | Float64 | Utf8
     )
 }
 
@@ -64,17 +64,19 @@ mod tests {
     }
 
     #[test]
-    fn test_can_cast_from_boolean() {
-        assert!(can_cast_from_boolean(&DataType::Boolean));
-        assert!(can_cast_from_boolean(&DataType::Int8));
-        assert!(can_cast_from_boolean(&DataType::Int16));
-        assert!(can_cast_from_boolean(&DataType::Int32));
-        assert!(can_cast_from_boolean(&DataType::Int64));
-        assert!(can_cast_from_boolean(&DataType::Float32));
-        assert!(can_cast_from_boolean(&DataType::Float64));
-        assert!(can_cast_from_boolean(&DataType::Utf8));
-        assert!(can_cast_from_boolean(&DataType::Decimal128(10, 4)));
-        assert!(!can_cast_from_boolean(&DataType::Null));
+    fn test_is_df_cast_from_bool_spark_compatible() {
+        assert!(!is_df_cast_from_bool_spark_compatible(&DataType::Boolean));
+        assert!(is_df_cast_from_bool_spark_compatible(&DataType::Int8));
+        assert!(is_df_cast_from_bool_spark_compatible(&DataType::Int16));
+        assert!(is_df_cast_from_bool_spark_compatible(&DataType::Int32));
+        assert!(is_df_cast_from_bool_spark_compatible(&DataType::Int64));
+        assert!(is_df_cast_from_bool_spark_compatible(&DataType::Float32));
+        assert!(is_df_cast_from_bool_spark_compatible(&DataType::Float64));
+        assert!(is_df_cast_from_bool_spark_compatible(&DataType::Utf8));
+        assert!(!is_df_cast_from_bool_spark_compatible(
+            &DataType::Decimal128(10, 4)
+        ));
+        assert!(!is_df_cast_from_bool_spark_compatible(&DataType::Null));
     }
 
     #[test]
