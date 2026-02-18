@@ -208,6 +208,11 @@ object CometConcatWs extends CometExpressionSerde[ConcatWs] {
         val nullLiteral = Literal.create(null, expr.dataType)
         exprToProtoInternal(nullLiteral, inputs, binding)
 
+      case _ if expr.children.forall(_.foldable) =>
+        // Fall back to Spark for all-literal args so ConstantFolding can handle it
+        withInfo(expr, "all arguments are foldable")
+        None
+
       case _ =>
         // For all other cases, use the generic scalar function implementation.
         CometScalarFunction[ConcatWs]("concat_ws").convert(expr, inputs, binding)
