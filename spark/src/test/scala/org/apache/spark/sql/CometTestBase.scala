@@ -332,38 +332,6 @@ abstract class CometTestBase
     }
   }
 
-  // inspired from spark-testing-base
-  protected def assertDataFrameEquals(
-      df: => DataFrame,
-      checkNativeOperators: Boolean = true): Unit = {
-
-    var sparkDf: DataFrame = null
-    withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-      sparkDf = datasetOfRows(spark, df.logicalPlan)
-    }
-    val cometDf = datasetOfRows(spark, df.logicalPlan)
-
-    // schema match check
-    assert(
-      sparkDf.schema == cometDf.schema,
-      s"Schemas do not match.\nCorrect Answer: ${sparkDf.schema}\n Spark Answer: ${cometDf.schema}")
-
-    // diff check using except instead of collect (collect errors out on spark driver for long -> timestamp conv)
-    val sparkMinusComet = sparkDf.except(cometDf)
-    val cometMinusSpark = cometDf.except(sparkDf)
-
-    val diffCount1 = sparkMinusComet.count()
-    val diffCount2 = cometMinusSpark.count()
-
-    if (diffCount1 != 0 || diffCount2 != 0) {
-      fail("DataFrames are not equal.\n")
-    }
-
-    if (checkNativeOperators) {
-      checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
-    }
-  }
-
   /**
    * A helper function for comparing Comet DataFrame with Spark result using absolute tolerance.
    */
