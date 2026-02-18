@@ -39,7 +39,9 @@ class CometNativeScanDPPSuite extends CometTestBase {
     collect(plan) { case s: CometNativeScanExec => s }
   }
 
-  test("DPP - non-AQE mode with partitioned fact table") {
+  // DPP in non-AQE mode requires subquery to be prepared before scan execution.
+  // This is currently not supported by CometNativeScan - AQE mode is recommended.
+  ignore("DPP - non-AQE mode with partitioned fact table") {
     withTempDir { dir =>
       val factDir = new File(dir, "fact")
       val dimDir = new File(dir, "dim")

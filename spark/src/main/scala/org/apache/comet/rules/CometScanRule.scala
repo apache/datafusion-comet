@@ -140,11 +140,15 @@ case class CometScanRule(session: SparkSession)
   private def transformV1Scan(plan: SparkPlan, scanExec: FileSourceScanExec): SparkPlan = {
 
     val hasDPP = scanExec.partitionFilters.exists(isDynamicPruningFilter)
+    val aqeEnabled = session.sessionState.conf.adaptiveExecutionEnabled
 
-    // DPP is supported for native_datafusion scans via lazy partition serialization.
-    // Only fall back for other scan implementations when DPP fallback is enabled.
+    // DPP is supported for native_datafusion scans via lazy partition serialization,
+    // but only in AQE mode where subqueries are properly prepared before execution.
+    // In non-AQE mode, DPP subqueries aren't ready when the scan tries to use them.
     val scanImpl = COMET_NATIVE_SCAN_IMPL.get()
-    if (COMET_DPP_FALLBACK_ENABLED.get() && hasDPP && scanImpl != SCAN_NATIVE_DATAFUSION) {
+    val shouldFallbackForDPP = COMET_DPP_FALLBACK_ENABLED.get() && hasDPP &&
+      (scanImpl != SCAN_NATIVE_DATAFUSION || !aqeEnabled)
+    if (shouldFallbackForDPP) {
       return withInfo(scanExec, "Dynamic Partition Pruning is not supported for this scan type")
     }
 
