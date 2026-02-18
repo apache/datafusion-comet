@@ -483,15 +483,18 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
     val serde = handler.asInstanceOf[CometOperatorSerde[SparkPlan]]
     if (isOperatorEnabled(serde, op)) {
       // For operators that require native children (like writes), check if all data-producing
-      // children are CometNativeExec. This prevents runtime failures when the native operator
-      // expects Arrow arrays but receives non-Arrow data (e.g., OnHeapColumnVector).
+      // children produce Arrow data. If not, try to convert them using CometSparkToColumnarExec.
       if (serde.requiresNativeChildren && op.children.nonEmpty) {
+        val convertedOp = tryConvertChildrenToArrow(op)
+        if (convertedOp.isDefined) {
+          return convertToComet(convertedOp.get, handler)
+        }
         // Get the actual data-producing children (unwrap WriteFilesExec if present)
         val dataProducingChildren = op.children.flatMap {
           case writeFiles: WriteFilesExec => Seq(writeFiles.child)
           case other => Seq(other)
         }
-        if (!dataProducingChildren.forall(_.isInstanceOf[CometNativeExec])) {
+        if (!dataProducingChildren.forall(producesArrowData)) {
           withInfo(op, "Cannot perform native operation because input is not in Arrow format")
           return None
         }
@@ -597,6 +600,76 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       val simpleClassName = Utils.getSimpleName(op.getClass)
       val nodeName = simpleClassName.replaceAll("Exec$", "")
       COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST.get(conf).contains(nodeName)
+    }
+  }
+
+  /**
+   * Check if a SparkPlan produces Arrow-formatted data. This handles wrapper operators like
+   * ReusedExchangeExec and QueryStageExec that wrap actual Comet operators.
+   */
+  private def producesArrowData(plan: SparkPlan): Boolean = {
+    plan match {
+      case _: CometExec => true
+      case r: ReusedExchangeExec => producesArrowData(r.child)
+      case s: ShuffleQueryStageExec => producesArrowData(s.plan)
+      case b: BroadcastQueryStageExec => producesArrowData(b.plan)
+      case _ => false
+    }
+  }
+
+  /**
+   * Try to convert non-Arrow children to Arrow format using CometSparkToColumnarExec. This
+   * enables native writes even when the source is a Spark operator like RangeExec.
+   *
+   * @return
+   *   Some(newOp) if any child was converted, None if no conversion was needed or possible
+   */
+  private def tryConvertChildrenToArrow(op: SparkPlan): Option[SparkPlan] = {
+    var anyConverted = false
+    val fallbackReasons = new scala.collection.mutable.ListBuffer[String]()
+
+    val newChildren = op.children.map {
+      case writeFiles: WriteFilesExec =>
+        // For WriteFilesExec, we need to convert its child
+        val child = writeFiles.child
+        if (!producesArrowData(child) && canConvertToArrow(child, fallbackReasons)) {
+          anyConverted = true
+          val converted = convertToComet(child, CometSparkToColumnarExec)
+          converted match {
+            case Some(cometChild) => writeFiles.withNewChildren(Seq(cometChild))
+            case None => writeFiles
+          }
+        } else {
+          writeFiles
+        }
+      case child if !producesArrowData(child) && canConvertToArrow(child, fallbackReasons) =>
+        anyConverted = true
+        convertToComet(child, CometSparkToColumnarExec).getOrElse(child)
+      case other => other
+    }
+
+    if (anyConverted) {
+      Some(op.withNewChildren(newChildren))
+    } else {
+      None
+    }
+  }
+
+  /**
+   * Check if a SparkPlan can be converted to Arrow format using CometSparkToColumnarExec.
+   */
+  private def canConvertToArrow(
+      op: SparkPlan,
+      fallbackReasons: scala.collection.mutable.ListBuffer[String]): Boolean = {
+    if (!CometSparkToColumnarExec.isSchemaSupported(op.schema, fallbackReasons)) {
+      return false
+    }
+    op match {
+      case _: LeafExecNode =>
+        val simpleClassName = Utils.getSimpleName(op.getClass)
+        val nodeName = simpleClassName.replaceAll("Exec$", "")
+        COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST.get(conf).contains(nodeName)
+      case _ => false
     }
   }
 
