@@ -169,10 +169,6 @@ pub fn create_comet_physical_fun_with_eval_mode(
             let func = Arc::new(spark_isnan);
             make_comet_scalar_udf!("isnan", func, without data_type)
         }
-        "array_repeat" => {
-            let func = Arc::new(spark_array_repeat);
-            make_comet_scalar_udf!("array_repeat", func, without data_type)
-        }
         "spark_modulo" => {
             let func = Arc::new(spark_modulo);
             make_comet_scalar_udf!("spark_modulo", func, without data_type, fail_on_error)
@@ -180,6 +176,10 @@ pub fn create_comet_physical_fun_with_eval_mode(
         "abs" => {
             let func = Arc::new(abs);
             make_comet_scalar_udf!("abs", func, without data_type)
+        }
+        "split" => {
+            let func = Arc::new(crate::string_funcs::spark_split);
+            make_comet_scalar_udf!("split", func, without data_type)
         }
         _ => registry.udf(fun_name).map_err(|e| {
             DataFusionError::Execution(format!(
