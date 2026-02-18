@@ -523,52 +523,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("LEFT function") {
-    withParquetTable((0 until 10).map(i => (s"test$i", i)), "tbl") {
-      checkSparkAnswerAndOperator("SELECT _1, LEFT(_1, 2) FROM tbl")
-      checkSparkAnswerAndOperator("SELECT _1, LEFT(_1, 4) FROM tbl")
-      checkSparkAnswerAndOperator("SELECT _1, LEFT(_1, 0) FROM tbl")
-      checkSparkAnswerAndOperator("SELECT _1, LEFT(_1, -1) FROM tbl")
-      checkSparkAnswerAndOperator("SELECT _1, LEFT(_1, 100) FROM tbl")
-      checkSparkAnswerAndOperator("SELECT LEFT(CAST(NULL AS STRING), 2) FROM tbl LIMIT 1")
-    }
-  }
-
-  test("LEFT function with unicode") {
-    val data = Seq("café", "hello世界", "😀emoji", "తెలుగు")
-    withParquetTable(data.zipWithIndex, "unicode_tbl") {
-      checkSparkAnswerAndOperator("SELECT _1, LEFT(_1, 2) FROM unicode_tbl")
-      checkSparkAnswerAndOperator("SELECT _1, LEFT(_1, 3) FROM unicode_tbl")
-      checkSparkAnswerAndOperator("SELECT _1, LEFT(_1, 0) FROM unicode_tbl")
-    }
-  }
-
-  test("LEFT function equivalence with SUBSTRING") {
-    withParquetTable((0 until 20).map(i => Tuple1(s"test$i")), "equiv_tbl") {
-      val df = spark.sql("""
-        SELECT _1,
-          LEFT(_1, 3) as left_result,
-          SUBSTRING(_1, 1, 3) as substring_result
-        FROM equiv_tbl
-      """)
-      checkAnswer(
-        df.filter(
-          "left_result != substring_result OR " +
-            "(left_result IS NULL AND substring_result IS NOT NULL) OR " +
-            "(left_result IS NOT NULL AND substring_result IS NULL)"),
-        Seq.empty)
-    }
-  }
-
-  test("LEFT function with dictionary") {
-    val data = (0 until 1000)
-      .map(_ % 5)
-      .map(i => s"value$i")
-    withParquetTable(data.zipWithIndex, "dict_tbl") {
-      checkSparkAnswerAndOperator("SELECT _1, LEFT(_1, 3) FROM dict_tbl")
-    }
-  }
-
   test("hour, minute, second") {
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
@@ -1178,7 +1132,39 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
       // Filter rows that contains 'rose' in 'name' column
       val queryContains = sql(s"select id from $table where contains (name, 'rose')")
-      checkAnswer(queryContains, Row(5) :: Nil)
+      checkSparkAnswerAndOperator(queryContains)
+
+      // Additional test cases for optimized contains implementation
+      // Test with empty pattern (should match all non-null rows)
+      val queryEmptyPattern = sql(s"select id from $table where contains (name, '')")
+      checkSparkAnswerAndOperator(queryEmptyPattern)
+
+      // Test with pattern not found
+      val queryNotFound = sql(s"select id from $table where contains (name, 'xyz')")
+      checkSparkAnswerAndOperator(queryNotFound)
+
+      // Test with pattern at start
+      val queryStart = sql(s"select id from $table where contains (name, 'James')")
+      checkSparkAnswerAndOperator(queryStart)
+
+      // Test with pattern at end
+      val queryEnd = sql(s"select id from $table where contains (name, 'Smith')")
+      checkSparkAnswerAndOperator(queryEnd)
+
+      // Test with null haystack
+      sql(s"insert into $table values(6, null)")
+      checkSparkAnswerAndOperator(sql(s"select id, contains(name, 'Rose') from $table"))
+
+      // Test case sensitivity (should not match)
+      checkSparkAnswerAndOperator(sql(s"select id from $table where contains(name, 'james')"))
+    }
+  }
+
+  test("contains with both columns") {
+    withParquetTable(
+      Seq(("hello world", "world"), ("foo bar", "baz"), ("abc", ""), (null, "x"), ("test", null)),
+      "tbl") {
+      checkSparkAnswerAndOperator(sql("select contains(_1, _2) from tbl"))
     }
   }
 

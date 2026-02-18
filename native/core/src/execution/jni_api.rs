@@ -45,6 +45,7 @@ use datafusion_spark::function::bitwise::bitwise_not::SparkBitwiseNot;
 use datafusion_spark::function::datetime::date_add::SparkDateAdd;
 use datafusion_spark::function::datetime::date_sub::SparkDateSub;
 use datafusion_spark::function::datetime::last_day::SparkLastDay;
+use datafusion_spark::function::datetime::next_day::SparkNextDay;
 use datafusion_spark::function::hash::sha1::SparkSha1;
 use datafusion_spark::function::hash::sha2::SparkSha2;
 use datafusion_spark::function::map::map_from_entries::MapFromEntries;
@@ -81,9 +82,10 @@ use crate::execution::spark_plan::SparkPlan;
 
 use crate::execution::tracing::{log_memory_usage, trace_begin, trace_end, with_trace};
 
+use crate::execution::memory_pools::logging_pool::LoggingMemoryPool;
 use crate::execution::spark_config::{
-    SparkConfig, COMET_DEBUG_ENABLED, COMET_EXPLAIN_NATIVE_ENABLED, COMET_MAX_TEMP_DIRECTORY_SIZE,
-    COMET_TRACING_ENABLED,
+    SparkConfig, COMET_DEBUG_ENABLED, COMET_DEBUG_MEMORY, COMET_EXPLAIN_NATIVE_ENABLED,
+    COMET_MAX_TEMP_DIRECTORY_SIZE, COMET_TRACING_ENABLED,
 };
 use crate::parquet::encryption_support::{CometEncryptionFactory, ENCRYPTION_FACTORY_ID};
 use datafusion_comet_proto::spark_operator::operator::OpStruct;
@@ -192,6 +194,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
         let tracing_enabled = spark_config.get_bool(COMET_TRACING_ENABLED);
         let max_temp_directory_size =
             spark_config.get_u64(COMET_MAX_TEMP_DIRECTORY_SIZE, 100 * 1024 * 1024 * 1024);
+        let logging_memory_pool = spark_config.get_bool(COMET_DEBUG_MEMORY);
 
         with_trace("createPlan", tracing_enabled, || {
             // Init JVM classes
@@ -228,6 +231,12 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             let memory_pool =
                 create_memory_pool(&memory_pool_config, task_memory_manager, task_attempt_id);
 
+            let memory_pool = if logging_memory_pool {
+                Arc::new(LoggingMemoryPool::new(task_attempt_id as u64, memory_pool))
+            } else {
+                memory_pool
+            };
+
             // Get local directories for storing spill files
             let num_local_dirs = env.get_array_length(&local_dirs)?;
             let mut local_dirs_vec = vec![];
@@ -246,6 +255,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 local_dirs_vec,
                 max_temp_directory_size,
                 task_cpus as usize,
+                &spark_config,
             )?;
 
             let plan_creation_time = start.elapsed();
@@ -300,6 +310,7 @@ fn prepare_datafusion_session_context(
     local_dirs: Vec<String>,
     max_temp_directory_size: u64,
     task_cpus: usize,
+    spark_config: &HashMap<String, String>,
 ) -> CometResult<SessionContext> {
     let paths = local_dirs.into_iter().map(PathBuf::from).collect();
     let disk_manager = DiskManagerBuilder::default()
@@ -308,10 +319,7 @@ fn prepare_datafusion_session_context(
     let mut rt_config = RuntimeEnvBuilder::new().with_disk_manager_builder(disk_manager);
     rt_config = rt_config.with_memory_pool(memory_pool);
 
-    // Get Datafusion configuration from Spark Execution context
-    // can be configured in Comet Spark JVM using Spark --conf parameters
-    // e.g: spark-shell --conf spark.datafusion.sql_parser.parse_float_as_decimal=true
-    let session_config = SessionConfig::new()
+    let mut session_config = SessionConfig::new()
         .with_target_partitions(task_cpus)
         // This DataFusion context is within the scope of an executing Spark Task. We want to set
         // its internal parallelism to the number of CPUs allocated to Spark Tasks. This can be
@@ -327,6 +335,17 @@ fn prepare_datafusion_session_context(
             // to be safe
             &ScalarValue::Float64(Some(1.1)),
         );
+
+    // Pass through DataFusion configs from Spark.
+    // e.g: spark-shell --conf spark.comet.datafusion.sql_parser.parse_float_as_decimal=true
+    // becomes datafusion.sql_parser.parse_float_as_decimal=true
+    const SPARK_COMET_DF_PREFIX: &str = "spark.comet.datafusion.";
+    for (key, value) in spark_config {
+        if let Some(df_key) = key.strip_prefix(SPARK_COMET_DF_PREFIX) {
+            let df_key = format!("datafusion.{df_key}");
+            session_config = session_config.set_str(&df_key, value);
+        }
+    }
 
     let runtime = rt_config.build()?;
 
@@ -349,6 +368,7 @@ fn register_datafusion_spark_function(session_ctx: &SessionContext) {
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkDateAdd::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkDateSub::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkLastDay::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkNextDay::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSha1::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkConcat::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitwiseNot::default()));
