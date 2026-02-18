@@ -228,11 +228,18 @@ docker build -t comet-bench -f benchmarks/tpc/infra/docker/Dockerfile .
 
 ### Platform notes
 
-**macOS (Apple Silicon):** Docker Desktop is required. You may need to add your data
-directory (e.g. `/opt`) to Docker Desktop > Settings > Resources > File Sharing before
-mounting host volumes.
+**macOS (Apple Silicon):** Docker Desktop is required.
 
-**Linux (amd64):** No special configuration is needed.
+- **Memory:** Docker Desktop defaults to a small memory allocation (often 8 GB) which
+  is not enough for Spark benchmarks. Go to **Docker Desktop > Settings > Resources >
+  Memory** and increase it to at least 48 GB (each worker requests 16 GB for its executor
+  plus overhead, and the driver needs 8 GB). Without enough memory, executors will be
+  OOM-killed (exit code 137).
+- **File Sharing:** You may need to add your data directory (e.g. `/opt`) to
+  **Docker Desktop > Settings > Resources > File Sharing** before mounting host volumes.
+
+**Linux (amd64):** No special configuration is needed. Docker uses cgroup memory limits
+directly without a VM layer.
 
 The Docker image auto-detects the container architecture (amd64/arm64) and sets up
 arch-agnostic Java symlinks. The compose file uses `BENCH_JAVA_HOME` (not `JAVA_HOME`)

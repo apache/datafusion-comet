@@ -41,6 +41,8 @@ x-volumes: &volumes
   - ${COMET_JAR:-/dev/null}:/jars/comet.jar:ro
   - ${GLUTEN_JAR:-/dev/null}:/jars/gluten.jar:ro
   - ${ICEBERG_JAR:-/dev/null}:/jars/iceberg.jar:ro
+  - ${RESULTS_DIR:-/tmp/bench-results}/logs:/opt/spark/logs
+  - ${RESULTS_DIR:-/tmp/bench-results}/work:/opt/spark/work
 
 x-worker: &worker
   image: ${BENCH_IMAGE:-comet-bench}
@@ -105,6 +107,8 @@ services:
     #   docker compose run bench python3 /opt/benchmarks/run.py \
     #       --engine comet --benchmark tpch --no-restart
     command: ["echo", "Use 'docker compose run bench python3 /opt/benchmarks/run.py ...' to run benchmarks"]
+    ports:
+      - "4040:4040"
     volumes: *volumes
     environment:
       - JAVA_HOME=${BENCH_JAVA_HOME:-/usr/lib/jvm/java-17-openjdk}
