@@ -124,7 +124,6 @@ BENCHMARK_PROFILES = {
         "executor_cores": "8",
         "max_cores": "16",
         "data_env": "TPCH_DATA",
-        "queries_env": "TPCH_QUERIES",
         "format": "parquet",
     },
     "tpcds": {
@@ -132,7 +131,6 @@ BENCHMARK_PROFILES = {
         "executor_cores": "8",
         "max_cores": "16",
         "data_env": "TPCDS_DATA",
-        "queries_env": "TPCDS_QUERIES",
         "format": None,  # omit --format for TPC-DS
     },
 }
@@ -213,7 +211,7 @@ def check_benchmark_env(config, benchmark):
     profile = BENCHMARK_PROFILES[benchmark]
     use_iceberg = config.get("tpcbench_args", {}).get("use_iceberg", False)
 
-    required = [profile["queries_env"]]
+    required = []
     if not use_iceberg:
         required.append(profile["data_env"])
 
@@ -281,10 +279,6 @@ def build_spark_submit_cmd(config, benchmark, args):
         data_var = profile["data_env"]
         data_val = os.environ.get(data_var, "")
         cmd += ["--data", data_val]
-
-    queries_var = profile["queries_env"]
-    queries_val = os.environ.get(queries_var, "")
-    cmd += ["--queries", queries_val]
 
     cmd += ["--output", args.output]
     cmd += ["--iterations", str(args.iterations)]

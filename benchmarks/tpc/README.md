@@ -26,6 +26,19 @@ For full instructions on running these benchmarks on an EC2 instance, see the [C
 
 [Comet Benchmarking on EC2 Guide]: https://datafusion.apache.org/comet/contributor-guide/benchmarking_aws_ec2.html
 
+## Setup
+
+TPC queries are bundled in `benchmarks/tpc/queries/` (derived from TPC-H/DS under the TPC Fair Use Policy).
+
+Create a virtual environment and install dependencies:
+
+```shell
+cd benchmarks/tpc
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
 ## Usage
 
 All benchmarks are run via `run.py`:
@@ -57,10 +70,9 @@ export SPARK_HOME=/opt/spark-3.5.3-bin-hadoop3/
 export SPARK_MASTER=spark://yourhostname:7077
 ```
 
-Set path to queries and data:
+Set path to data (TPC queries are bundled in `benchmarks/tpc/queries/`):
 
 ```shell
-export TPCH_QUERIES=/mnt/bigdata/tpch/queries/
 export TPCH_DATA=/mnt/bigdata/tpch/sf100/
 ```
 
@@ -182,7 +194,6 @@ export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
 export COMET_JAR=/opt/comet/comet-spark-spark3.5_2.12-0.10.0.jar
 export ICEBERG_JAR=/path/to/iceberg-spark-runtime-3.5_2.12-1.8.1.jar
 export ICEBERG_WAREHOUSE=/mnt/bigdata/iceberg-warehouse
-export TPCH_QUERIES=/mnt/bigdata/tpch/queries/
 sudo ./drop-caches.sh
 python3 run.py --engine comet-iceberg --benchmark tpch
 ```
@@ -221,7 +232,6 @@ two workers:
 
 ```shell
 export DATA_DIR=/mnt/bigdata/tpch/sf100
-export QUERIES_DIR=/mnt/bigdata/tpch/queries
 export RESULTS_DIR=/tmp/bench-results
 export COMET_JAR=/opt/comet/comet-spark-spark3.5_2.12-0.10.0.jar
 

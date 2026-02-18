@@ -25,7 +25,6 @@
 # Environment variables (set in .env or export before running):
 #   BENCH_IMAGE        - Docker image to use (default: comet-bench)
 #   DATA_DIR           - Host path to TPC data (default: /tmp/tpc-data)
-#   QUERIES_DIR        - Host path to query SQL files (default: /tmp/tpc-queries)
 #   RESULTS_DIR        - Host path for results output (default: /tmp/bench-results)
 #   COMET_JAR          - Host path to Comet JAR
 #   GLUTEN_JAR         - Host path to Gluten JAR
@@ -36,7 +35,6 @@
 
 x-volumes: &volumes
   - ${DATA_DIR:-/tmp/tpc-data}:/data:ro
-  - ${QUERIES_DIR:-/tmp/tpc-queries}:/queries:ro
   - ${RESULTS_DIR:-/tmp/bench-results}:/results
   - ${COMET_JAR:-/dev/null}:/jars/comet.jar:ro
   - ${GLUTEN_JAR:-/dev/null}:/jars/gluten.jar:ro
@@ -114,9 +112,7 @@ services:
       - GLUTEN_JAR=/jars/gluten.jar
       - ICEBERG_JAR=/jars/iceberg.jar
       - TPCH_DATA=/data
-      - TPCH_QUERIES=/queries
       - TPCDS_DATA=/data
-      - TPCDS_QUERIES=/queries
     mem_limit: ${BENCH_MEM_LIMIT:-10g}
     memswap_limit: ${BENCH_MEM_LIMIT:-10g}
 
