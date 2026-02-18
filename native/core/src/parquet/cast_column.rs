@@ -154,10 +154,8 @@ fn cast_timestamp_micros_to_millis_array(
         .downcast_ref::<TimestampMicrosecondArray>()
         .expect("Expected TimestampMicrosecondArray");
 
-    let millis_values: TimestampMillisecondArray = micros_array
-        .iter()
-        .map(|opt| opt.map(|v| v / 1000))
-        .collect();
+    let millis_values: TimestampMillisecondArray =
+        arrow::compute::kernels::arity::unary(micros_array, |v| v / 1000);
 
     // Apply timezone if present
     let result = if let Some(tz) = target_tz {
