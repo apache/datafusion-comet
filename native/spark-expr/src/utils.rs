@@ -82,19 +82,17 @@ pub fn array_with_timezone(
                 Some(DataType::Timestamp(TimeUnit::Microsecond, None)) => {
                     // Convert from Timestamp(Millisecond, None) to Timestamp(Microsecond, None)
                     let millis_array = as_primitive_array::<TimestampMillisecondType>(&array);
-                    let micros_array: TimestampMicrosecondArray = millis_array
-                        .iter()
-                        .map(|opt| opt.map(|v| v * 1000))
-                        .collect();
+                    let micros_array: TimestampMicrosecondArray =
+                        arrow::compute::kernels::arity::unary(millis_array, |v| v * 1000);
                     Ok(Arc::new(micros_array))
                 }
                 _ => {
                     // Not supported
-                    panic!(
+                    Err(ArrowError::CastError(format!(
                         "Cannot convert from {:?} to {:?}",
                         array.data_type(),
                         to_type.unwrap()
-                    )
+                    )))
                 }
             }
         }
@@ -107,11 +105,11 @@ pub fn array_with_timezone(
                 }
                 _ => {
                     // Not supported
-                    panic!(
+                    Err(ArrowError::CastError(format!(
                         "Cannot convert from {:?} to {:?}",
                         array.data_type(),
                         to_type.unwrap()
-                    )
+                    )))
                 }
             }
         }
@@ -124,11 +122,11 @@ pub fn array_with_timezone(
                 }
                 _ => {
                     // Not supported
-                    panic!(
+                    Err(ArrowError::CastError(format!(
                         "Cannot convert from {:?} to {:?}",
                         array.data_type(),
                         to_type.unwrap()
-                    )
+                    )))
                 }
             }
         }
@@ -171,7 +169,6 @@ pub fn array_with_timezone(
 }
 
 fn datetime_cast_err(value: i64) -> ArrowError {
-    println!("{}", std::backtrace::Backtrace::force_capture());
     ArrowError::CastError(format!(
         "Cannot convert TimestampMicrosecondType {value} to datetime. Comet only supports dates between Jan 1, 262145 BCE and Dec 31, 262143 CE",
     ))

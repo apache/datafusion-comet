@@ -614,11 +614,6 @@ pub fn spark_cast(
     data_type: &DataType,
     cast_options: &SparkCastOptions,
 ) -> DataFusionResult<ColumnarValue> {
-    // let input_type = match &arg {
-    //     ColumnarValue::Array(array) => array.data_type().clone(),
-    //     ColumnarValue::Scalar(scalar) => scalar.data_type(),
-    // };
-
     let result = match arg {
         ColumnarValue::Array(array) => {
             let result_array = cast_array(array, data_type, cast_options)?;
@@ -634,16 +629,6 @@ pub fn spark_cast(
             ColumnarValue::Scalar(scalar)
         }
     };
-
-    // let result_type = match &result {
-    //     ColumnarValue::Array(array) => array.data_type().clone(),
-    //     ColumnarValue::Scalar(scalar) => scalar.data_type(),
-    // };
-
-    // println!(
-    //     "spark_cast: {} -> {} (requested: {})",
-    //     input_type, result_type, data_type
-    // );
 
     Ok(result)
 }
@@ -859,19 +844,8 @@ pub(crate) fn cast_array(
             )))
         }
     };
-    let x = cast_result?;
-    // println!("cast_array BEFORE postprocess:");
-    // println!("  from_type: {}", from_type);
-    // println!("  to_type: {}", to_type);
-    // println!("  intermediate data_type: {}", x.data_type());
 
-    let result = spark_cast_postprocess(x, &from_type, to_type);
-    //
-    // println!("cast_array AFTER postprocess:");
-    // println!("  result data_type: {}", result.data_type());
-    // println!("  backtrace:\n{}", std::backtrace::Backtrace::force_capture());
-
-    Ok(result)
+    Ok(spark_cast_postprocess(cast_result?, &from_type, to_type))
 }
 
 fn cast_int_to_timestamp(
