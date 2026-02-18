@@ -220,10 +220,30 @@ via architecture-agnostic Java symlinks created at build time.
 
 ### Build the image
 
-From the repository root:
+The image must be built for the correct platform to match the native libraries in the
+engine JARs (e.g. Comet bundles `libcomet.so` for a specific OS/arch).
+
+**Linux (amd64):**
 
 ```shell
 docker build -t comet-bench -f benchmarks/tpc/infra/docker/Dockerfile .
+```
+
+**macOS (Apple Silicon):** Build for `linux/amd64` and use a Comet JAR that contains
+`linux/amd64` native libraries (the standard release JARs). Docker Desktop runs
+amd64 images via Rosetta emulation:
+
+```shell
+docker build --platform linux/amd64 -t comet-bench \
+    -f benchmarks/tpc/infra/docker/Dockerfile .
+```
+
+If you have a Comet JAR with `linux/aarch64` native libraries (e.g. cross-compiled),
+you can build a native arm64 image instead:
+
+```shell
+docker build --platform linux/arm64 -t comet-bench \
+    -f benchmarks/tpc/infra/docker/Dockerfile .
 ```
 
 ### Platform notes
