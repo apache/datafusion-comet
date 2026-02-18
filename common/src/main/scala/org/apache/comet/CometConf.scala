@@ -490,6 +490,13 @@ object CometConf extends ShimCometConf {
         "Ensure that Comet shuffle memory overhead factor is a double greater than 0")
       .createWithDefault(1.0)
 
+  val COMET_BATCH_SIZE: ConfigEntry[Int] = conf("spark.comet.batchSize")
+    .category(CATEGORY_TUNING)
+    .doc("The columnar batch size, i.e., the maximum number of rows that a batch can contain.")
+    .intConf
+    .checkValue(v => v > 0, "Batch size must be positive")
+    .createWithDefault(8192)
+
   val COMET_COLUMNAR_SHUFFLE_BATCH_SIZE: ConfigEntry[Int] =
     conf("spark.comet.columnar.shuffle.batch.size")
       .category(CATEGORY_SHUFFLE)
@@ -613,12 +620,6 @@ object CometConf extends ShimCometConf {
           "reduce the amount of logging.")
       .booleanConf
       .createWithDefault(false)
-
-  val COMET_BATCH_SIZE: ConfigEntry[Int] = conf("spark.comet.batchSize")
-    .category(CATEGORY_TUNING)
-    .doc("The columnar batch size, i.e., the maximum number of rows that a batch can contain.")
-    .intConf
-    .createWithDefault(8192)
 
   val COMET_PARQUET_ENABLE_DIRECT_BUFFER: ConfigEntry[Boolean] =
     conf("spark.comet.parquet.enable.directBuffer")
