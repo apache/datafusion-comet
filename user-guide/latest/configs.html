@@ -613,8 +613,8 @@ under the License.
 <td><p>Whether to require Comet native library to load successfully when Comet is enabled. If not, Comet will silently fallback to Spark when it fails to load the native lib. Otherwise, an error will be thrown and the Spark job will be aborted.</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.regexp.allowIncompatible</span></code></p></td>
-<td><p>Comet is not currently fully compatible with Spark for all regular expressions. Set this config to true to allow them anyway. For more information, refer to the <a class="reference external" href="https://datafusion.apache.org/comet/user-guide/compatibility.html">Comet Compatibility Guide</a>.</p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.operator.DataWritingCommandExec.allowIncompatible</span></code></p></td>
+<td><p>Whether to allow incompatibility for operator: DataWritingCommandExec. False by default. Can be overridden with SPARK_COMET_OPERATOR_DATAWRITINGCOMMANDEXEC_ALLOWINCOMPATIBLE env variable It can be overridden by the environment variable <code class="docutils literal notranslate"><span class="pre">SPARK_COMET_OPERATOR_DATAWRITINGCOMMANDEXEC_ALLOWINCOMPATIBLE</span></code>.</p></td>
 <td><p>false</p></td>
 </tr>
 </tbody>
@@ -819,7 +819,7 @@ under the License.
 <td><p>1024 MiB</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.parquet.write.enabled</span></code></p></td>
-<td><p>Whether to enable native Parquet write through Comet. When enabled, Comet will intercept Parquet write operations and execute them natively. This feature is highly experimental and only partially implemented. It should not be used in production.</p></td>
+<td><p>Whether to enable native Parquet write through Comet. When enabled, Comet will intercept Parquet write operations and execute them natively. This feature is highly experimental and only partially implemented. It should not be used in production. It can be overridden by the environment variable <code class="docutils literal notranslate"><span class="pre">ENABLE_COMET_WRITE</span></code>.</p></td>
 <td><p>false</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.scan.csv.v2.enabled</span></code></p></td>
