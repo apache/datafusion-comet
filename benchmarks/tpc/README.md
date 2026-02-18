@@ -287,13 +287,16 @@ between versions by changing the path and restarting.
 
 ### Run benchmarks
 
-Use `docker compose run` to execute benchmarks. Pass `--no-restart` since the cluster is
-already managed by Compose, and `--output /results` so that output files land in the
-mounted results directory (alongside cgroup metrics CSVs):
+Use `docker compose run --rm` to execute benchmarks. The `--rm` flag removes the
+container when it exits, preventing port conflicts on subsequent runs. Pass
+`--no-restart` since the cluster is already managed by Compose, and `--output /results`
+so that output files land in the mounted results directory (alongside cgroup metrics
+CSVs):
 
 ```shell
 docker compose -f benchmarks/tpc/infra/docker/docker-compose.yml \
-    run bench sh -c 'mkdir -p /tmp/spark-events && \
+    run --rm -p 4040:4040 bench \
+    sh -c 'mkdir -p /tmp/spark-events && \
     python3 /opt/benchmarks/run.py \
     --engine comet --benchmark tpch --output /results --no-restart'
 ```
@@ -302,7 +305,8 @@ docker compose -f benchmarks/tpc/infra/docker/docker-compose.yml \
 > config enables event logging. The bench container is ephemeral so this directory
 > does not persist between runs.
 
-The following UIs are available during a benchmark run:
+The `-p 4040:4040` flag exposes the Spark Application UI on the host. The following
+UIs are available during a benchmark run:
 
 | UI                   | URL                    |
 | -------------------- | ---------------------- |
@@ -324,7 +328,7 @@ docker compose -f benchmarks/tpc/infra/docker/docker-compose.yml down
 docker compose -f benchmarks/tpc/infra/docker/docker-compose.yml up -d
 
 docker compose -f benchmarks/tpc/infra/docker/docker-compose.yml \
-    run bench sh -c 'mkdir -p /tmp/spark-events && \
+    run --rm bench sh -c 'mkdir -p /tmp/spark-events && \
     python3 /opt/benchmarks/run.py \
     --engine gluten --benchmark tpch --output /results --no-restart'
 ```

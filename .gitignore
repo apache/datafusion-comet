@@ -23,3 +23,4 @@ spark/benchmarks
 .DS_Store
 comet-event-trace.json
 __pycache__
+output
