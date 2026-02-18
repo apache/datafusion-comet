@@ -229,21 +229,24 @@ engine JARs (e.g. Comet bundles `libcomet.so` for a specific OS/arch).
 docker build -t comet-bench -f benchmarks/tpc/infra/docker/Dockerfile .
 ```
 
-**macOS (Apple Silicon):** Build for `linux/amd64` and use a Comet JAR that contains
-`linux/amd64` native libraries (the standard release JARs). Docker Desktop runs
-amd64 images via Rosetta emulation:
+**macOS (Apple Silicon):** Engine JARs contain platform-specific native libraries. A
+Comet JAR built on macOS includes `darwin/aarch64` libraries which won't work inside
+Linux containers. You need a JAR with Linux native libraries.
+
+Build a Comet JAR with Linux native libraries using the provided build Dockerfile:
 
 ```shell
-docker build --platform linux/amd64 -t comet-bench \
-    -f benchmarks/tpc/infra/docker/Dockerfile .
+mkdir -p output
+docker build -t comet-builder \
+    -f benchmarks/tpc/infra/docker/Dockerfile.build-comet .
+docker run --rm -v $(pwd)/output:/output comet-builder
+export COMET_JAR=$(pwd)/output/comet-spark-spark3.5_2.12-*.jar
 ```
 
-If you have a Comet JAR with `linux/aarch64` native libraries (e.g. cross-compiled),
-you can build a native arm64 image instead:
+Then build the benchmark image (the architecture is auto-detected):
 
 ```shell
-docker build --platform linux/arm64 -t comet-bench \
-    -f benchmarks/tpc/infra/docker/Dockerfile .
+docker build -t comet-bench -f benchmarks/tpc/infra/docker/Dockerfile .
 ```
 
 ### Platform notes
