@@ -84,32 +84,33 @@ class CometNativeScanDPPBenchmark extends CometTestBase {
       spark.sql("SELECT COUNT(*) FROM fact").collect()
 
       // 1. Pure Spark (no Comet)
-      val sparkTime = withSQLConf(
+      var sparkTime = 0L
+      withSQLConf(
         CometConf.COMET_ENABLED.key -> "false",
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
         val start = System.nanoTime()
-        val result = spark.sql(query).collect()
-        val duration = (System.nanoTime() - start) / 1000000
+        spark.sql(query).collect()
+        sparkTime = (System.nanoTime() - start) / 1000000
 
         // Verify it's using Spark's FileSourceScanExec
         val plan = spark.sql(query).queryExecution.executedPlan
         val sparkScans = collect(plan) { case s: FileSourceScanExec => s }
         assert(sparkScans.nonEmpty, "Expected FileSourceScanExec for Spark mode")
 
-        println(f"  Spark (JVM scan):        $duration%6d ms  [FileSourceScanExec]")
-        duration
+        println(f"  Spark (JVM scan):        $sparkTime%6d ms  [FileSourceScanExec]")
       }
 
       // 2. Comet with DPP fallback (simulating old behavior)
-      val cometFallbackTime = withSQLConf(
+      var cometFallbackTime = 0L
+      withSQLConf(
         CometConf.COMET_ENABLED.key -> "true",
         CometConf.COMET_EXEC_ENABLED.key -> "true",
         CometConf.COMET_DPP_FALLBACK_ENABLED.key -> "true",
         CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_ICEBERG_COMPAT,
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
         val start = System.nanoTime()
-        val result = spark.sql(query).collect()
-        val duration = (System.nanoTime() - start) / 1000000
+        spark.sql(query).collect()
+        cometFallbackTime = (System.nanoTime() - start) / 1000000
 
         // With fallback enabled, DPP queries should use Spark scan
         val plan = spark.sql(query).queryExecution.executedPlan
@@ -121,20 +122,20 @@ class CometNativeScanDPPBenchmark extends CometTestBase {
           else if (sparkScans.nonEmpty) "FileSourceScanExec (fallback)"
           else "Unknown"
 
-        println(f"  Comet (DPP fallback):    $duration%6d ms  [$scanType]")
-        duration
+        println(f"  Comet (DPP fallback):    $cometFallbackTime%6d ms  [$scanType]")
       }
 
       // 3. Comet with DPP support (new behavior - native scan)
-      val cometNativeTime = withSQLConf(
+      var cometNativeTime = 0L
+      withSQLConf(
         CometConf.COMET_ENABLED.key -> "true",
         CometConf.COMET_EXEC_ENABLED.key -> "true",
         CometConf.COMET_DPP_FALLBACK_ENABLED.key -> "false",
         CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
         val start = System.nanoTime()
-        val result = spark.sql(query).collect()
-        val duration = (System.nanoTime() - start) / 1000000
+        spark.sql(query).collect()
+        cometNativeTime = (System.nanoTime() - start) / 1000000
 
         // With DPP support, should use CometNativeScanExec
         val plan = spark.sql(query).queryExecution.executedPlan
@@ -144,8 +145,7 @@ class CometNativeScanDPPBenchmark extends CometTestBase {
           if (nativeScans.nonEmpty) "CometNativeScanExec (native)"
           else "Unknown"
 
-        println(f"  Comet (DPP native):      $duration%6d ms  [$scanType]")
-        duration
+        println(f"  Comet (DPP native):      $cometNativeTime%6d ms  [$scanType]")
       }
 
       println("-" * 70)
@@ -153,11 +153,11 @@ class CometNativeScanDPPBenchmark extends CometTestBase {
       if (cometNativeTime > 0 && sparkTime > 0) {
         val speedupVsSpark = sparkTime.toDouble / cometNativeTime
         val speedupVsFallback =
-          if (cometFallbackTime > 0) cometFallbackTime.toDouble / cometNativeTime else 0
+          if (cometFallbackTime > 0) cometFallbackTime.toDouble / cometNativeTime else 0.0
 
-        println(f"  Speedup vs Spark:        ${speedupVsSpark}%.2fx")
+        println(f"  Speedup vs Spark:        $speedupVsSpark%.2fx")
         if (speedupVsFallback > 0) {
-          println(f"  Speedup vs Fallback:     ${speedupVsFallback}%.2fx")
+          println(f"  Speedup vs Fallback:     $speedupVsFallback%.2fx")
         }
       }
 
