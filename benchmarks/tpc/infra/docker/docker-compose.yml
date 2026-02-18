@@ -107,8 +107,6 @@ services:
     #   docker compose run bench python3 /opt/benchmarks/run.py \
     #       --engine comet --benchmark tpch --no-restart
     command: ["echo", "Use 'docker compose run bench python3 /opt/benchmarks/run.py ...' to run benchmarks"]
-    ports:
-      - "4040:4040"
     volumes: *volumes
     environment:
       - JAVA_HOME=${BENCH_JAVA_HOME:-/usr/lib/jvm/java-17-openjdk}
