@@ -65,6 +65,23 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   lazy val usingParquetExecWithIncompatTypes: Boolean =
     hasUnsignedSmallIntSafetyCheck(conf)
 
+  // Timezone list to check temporal type casts
+  private val compatibleTimezones = Seq(
+    "UTC",
+    "America/New_York",
+    "America/Chicago",
+    "America/Denver",
+    "America/Los_Angeles",
+    "Europe/London",
+    "Europe/Paris",
+    "Europe/Berlin",
+    "Asia/Tokyo",
+    "Asia/Shanghai",
+    "Asia/Singapore",
+    "Asia/Kolkata",
+    "Australia/Sydney",
+    "Pacific/Auckland")
+
   test("all valid cast combinations covered") {
     val names = testNames
 
@@ -224,13 +241,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast ByteType to TimestampType") {
-    val compatibleTimezones = Seq(
-      "UTC",
-      "America/New_York",
-      "America/Los_Angeles",
-      "Europe/London",
-      "Asia/Tokyo",
-      "Australia/Sydney")
     compatibleTimezones.foreach { tz =>
       withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
         castTest(
@@ -311,13 +321,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast ShortType to TimestampType") {
-    val compatibleTimezones = Seq(
-      "UTC",
-      "America/New_York",
-      "America/Los_Angeles",
-      "Europe/London",
-      "Asia/Tokyo",
-      "Australia/Sydney")
     compatibleTimezones.foreach { tz =>
       withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
         castTest(
@@ -384,13 +387,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast IntegerType to TimestampType") {
-    val compatibleTimezones = Seq(
-      "UTC",
-      "America/New_York",
-      "America/Los_Angeles",
-      "Europe/London",
-      "Asia/Tokyo",
-      "Australia/Sydney")
     compatibleTimezones.foreach { tz =>
       withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
         castTest(generateInts(), DataTypes.TimestampType)
@@ -443,19 +439,12 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("cast LongType to TimestampType") {
     // Use assertDataFrameEquals because extreme Long values (Long.MIN_VALUE, Long.MAX_VALUE)
     // overflow when converted to java.sql.Timestamp during collect(), but the cast itself works.
-    val compatibleTimezones = Seq(
-      "UTC",
-      "America/New_York",
-      "America/Los_Angeles",
-      "Europe/London",
-      "Asia/Tokyo",
-      "Australia/Sydney")
     compatibleTimezones.foreach { tz =>
       withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
         withTempPath { dir =>
-          val input = generateLongs()
-          val data = roundtripParquet(input, dir).coalesce(1)
-          val df = data.withColumn("ts", col("a").cast(DataTypes.TimestampType))
+          val data = roundtripParquet(generateLongs(), dir).coalesce(1)
+          data.createOrReplaceTempView("t1")
+          val df = spark.sql("select a, cast(a as timestamp) from t1")
           assertDataFrameEquals(df)
         }
       }

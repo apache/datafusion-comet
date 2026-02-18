@@ -620,6 +620,9 @@ macro_rules! cast_int_to_timestamp_impl {
             if arr.is_null(i) {
                 $builder.append_null();
             } else {
+                // saturating_mul limits to i64::MIN/MAX on overflow instead of panicking,
+                // which could occur when converting extreme values (e.g., Long.MIN_VALUE)
+                // matching spark behavior (irrespective of EvalMode)
                 let micros = (arr.value(i) as i64).saturating_mul(MICROS_PER_SECOND);
                 $builder.append_value(micros);
             }

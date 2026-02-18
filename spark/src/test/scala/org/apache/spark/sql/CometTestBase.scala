@@ -332,7 +332,7 @@ abstract class CometTestBase
     }
   }
 
-//  inspired from spark-testing-base
+  // inspired from spark-testing-base
   protected def assertDataFrameEquals(
       df: => DataFrame,
       checkNativeOperators: Boolean = true): Unit = {
@@ -343,12 +343,12 @@ abstract class CometTestBase
     }
     val cometDf = datasetOfRows(spark, df.logicalPlan)
 
-//    schema match check
+    // schema match check
     assert(
       sparkDf.schema == cometDf.schema,
       s"Schemas do not match.\nCorrect Answer: ${sparkDf.schema}\n Spark Answer: ${cometDf.schema}")
 
-//    diff check using except instead of collect (collect errors out on spark driver for long -> timestamp conv)
+    // diff check using except instead of collect (collect errors out on spark driver for long -> timestamp conv)
     val sparkMinusComet = sparkDf.except(cometDf)
     val cometMinusSpark = cometDf.except(sparkDf)
 
