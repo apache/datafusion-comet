@@ -279,6 +279,19 @@ docker compose -f benchmarks/tpc/infra/docker/docker-compose.yml \
 > config enables event logging. The bench container is ephemeral so this directory
 > does not persist between runs.
 
+The following UIs are available during a benchmark run:
+
+| UI                   | URL                    |
+| -------------------- | ---------------------- |
+| Spark Master         | http://localhost:8080  |
+| Worker 1             | http://localhost:8081  |
+| Worker 2             | http://localhost:8082  |
+| Spark Application    | http://localhost:4040  |
+
+> **Note:** The Master UI links to the Application UI using the container's internal
+> hostname, which is not reachable from the host. Use `http://localhost:4040` directly
+> to access the Application UI.
+
 For Gluten (requires Java 8), you must restart the **entire cluster** with `JAVA_HOME`
 set so that all services (master, workers, and bench) use Java 8:
 
