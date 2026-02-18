@@ -437,15 +437,13 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast LongType to TimestampType") {
-    // Use assertDataFrameEquals because extreme Long values (Long.MIN_VALUE, Long.MAX_VALUE)
-    // overflow when converted to java.sql.Timestamp during collect(), but the cast itself works.
+    // Cast back to long avoids java.sql.Timestamp overflow during collect() for extreme values
     compatibleTimezones.foreach { tz =>
       withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
-        withTempPath { dir =>
-          val data = roundtripParquet(generateLongs(), dir).coalesce(1)
-          data.createOrReplaceTempView("t1")
-          val df = spark.sql("select a, cast(a as timestamp) from t1")
-          assertDataFrameEquals(df)
+        withTable("t1") {
+          generateLongs().write.saveAsTable("t1")
+          val df = spark.sql("select a, cast(cast(a as timestamp) as long) from t1")
+          checkSparkAnswerAndOperator(df)
         }
       }
     }
