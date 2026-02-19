@@ -68,4 +68,92 @@ class CometMiscExpressionSuite extends CometTestBase {
     }
   }
 
+  test("aes_decrypt mode and key-size combinations") {
+    withTempView("aes_modes_tbl") {
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        spark
+          .sql("""
+            |SELECT
+            |  aes_encrypt(encode('Spark SQL', 'UTF-8'), encode('abcdefghijklmnop', 'UTF-8'), 'GCM', 'DEFAULT') AS encrypted,
+            |  encode('abcdefghijklmnop', 'UTF-8') AS `key`,
+            |  'GCM' AS mode,
+            |  'DEFAULT' AS padding,
+            |  'gcm_128' AS label
+            |UNION ALL
+            |SELECT
+            |  aes_encrypt(encode('Spark SQL', 'UTF-8'), encode('abcdefghijklmnop12345678', 'UTF-8'), 'GCM', 'DEFAULT') AS encrypted,
+            |  encode('abcdefghijklmnop12345678', 'UTF-8') AS `key`,
+            |  'GCM' AS mode,
+            |  'DEFAULT' AS padding,
+            |  'gcm_192' AS label
+            |UNION ALL
+            |SELECT
+            |  aes_encrypt(encode('Spark SQL', 'UTF-8'), encode('abcdefghijklmnop12345678ABCDEFGH', 'UTF-8'), 'GCM', 'DEFAULT') AS encrypted,
+            |  encode('abcdefghijklmnop12345678ABCDEFGH', 'UTF-8') AS `key`,
+            |  'GCM' AS mode,
+            |  'DEFAULT' AS padding,
+            |  'gcm_256' AS label
+            |UNION ALL
+            |SELECT
+            |  aes_encrypt(encode('Spark SQL', 'UTF-8'), encode('abcdefghijklmnop', 'UTF-8'), 'CBC', 'PKCS') AS encrypted,
+            |  encode('abcdefghijklmnop', 'UTF-8') AS `key`,
+            |  'CBC' AS mode,
+            |  'PKCS' AS padding,
+            |  'cbc_128' AS label
+            |UNION ALL
+            |SELECT
+            |  aes_encrypt(encode('Spark SQL', 'UTF-8'), encode('abcdefghijklmnop12345678', 'UTF-8'), 'CBC', 'PKCS') AS encrypted,
+            |  encode('abcdefghijklmnop12345678', 'UTF-8') AS `key`,
+            |  'CBC' AS mode,
+            |  'PKCS' AS padding,
+            |  'cbc_192' AS label
+            |UNION ALL
+            |SELECT
+            |  aes_encrypt(encode('Spark SQL', 'UTF-8'), encode('abcdefghijklmnop12345678ABCDEFGH', 'UTF-8'), 'CBC', 'PKCS') AS encrypted,
+            |  encode('abcdefghijklmnop12345678ABCDEFGH', 'UTF-8') AS `key`,
+            |  'CBC' AS mode,
+            |  'PKCS' AS padding,
+            |  'cbc_256' AS label
+            |UNION ALL
+            |SELECT
+            |  aes_encrypt(encode('Spark SQL', 'UTF-8'), encode('abcdefghijklmnop', 'UTF-8'), 'ECB', 'PKCS') AS encrypted,
+            |  encode('abcdefghijklmnop', 'UTF-8') AS `key`,
+            |  'ECB' AS mode,
+            |  'PKCS' AS padding,
+            |  'ecb_128' AS label
+            |UNION ALL
+            |SELECT
+            |  aes_encrypt(encode('Spark SQL', 'UTF-8'), encode('abcdefghijklmnop12345678', 'UTF-8'), 'ECB', 'PKCS') AS encrypted,
+            |  encode('abcdefghijklmnop12345678', 'UTF-8') AS `key`,
+            |  'ECB' AS mode,
+            |  'PKCS' AS padding,
+            |  'ecb_192' AS label
+            |UNION ALL
+            |SELECT
+            |  aes_encrypt(encode('Spark SQL', 'UTF-8'), encode('abcdefghijklmnop12345678ABCDEFGH', 'UTF-8'), 'ECB', 'PKCS') AS encrypted,
+            |  encode('abcdefghijklmnop12345678ABCDEFGH', 'UTF-8') AS `key`,
+            |  'ECB' AS mode,
+            |  'PKCS' AS padding,
+            |  'ecb_256' AS label
+            |UNION ALL
+            |SELECT
+            |  cast(null AS binary) AS encrypted,
+            |  encode('abcdefghijklmnop', 'UTF-8') AS `key`,
+            |  'GCM' AS mode,
+            |  'DEFAULT' AS padding,
+            |  'null_input' AS label
+            |""".stripMargin)
+          .createOrReplaceTempView("aes_modes_tbl")
+      }
+
+      checkSparkAnswerAndOperator("""
+          |SELECT
+          |  label,
+          |  CAST(aes_decrypt(encrypted, `key`, mode, padding) AS STRING) AS decrypted
+          |FROM aes_modes_tbl
+          |ORDER BY label
+          |""".stripMargin)
+    }
+  }
+
 }
