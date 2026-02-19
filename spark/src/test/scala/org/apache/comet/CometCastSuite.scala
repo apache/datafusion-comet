@@ -65,6 +65,23 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   lazy val usingParquetExecWithIncompatTypes: Boolean =
     hasUnsignedSmallIntSafetyCheck(conf)
 
+  // Timezone list to check temporal type casts
+  private val compatibleTimezones = Seq(
+    "UTC",
+    "America/New_York",
+    "America/Chicago",
+    "America/Denver",
+    "America/Los_Angeles",
+    "Europe/London",
+    "Europe/Paris",
+    "Europe/Berlin",
+    "Asia/Tokyo",
+    "Asia/Shanghai",
+    "Asia/Singapore",
+    "Asia/Kolkata",
+    "Australia/Sydney",
+    "Pacific/Auckland")
+
   test("all valid cast combinations covered") {
     val names = testNames
 
@@ -223,12 +240,15 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       testTry = false)
   }
 
-  ignore("cast ByteType to TimestampType") {
-    // input: -1, expected: 1969-12-31 15:59:59.0, actual: 1969-12-31 15:59:59.999999
-    castTest(
-      generateBytes(),
-      DataTypes.TimestampType,
-      hasIncompatibleType = usingParquetExecWithIncompatTypes)
+  test("cast ByteType to TimestampType") {
+    compatibleTimezones.foreach { tz =>
+      withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
+        castTest(
+          generateBytes(),
+          DataTypes.TimestampType,
+          hasIncompatibleType = usingParquetExecWithIncompatTypes)
+      }
+    }
   }
 
   // CAST from ShortType
@@ -300,12 +320,15 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       testTry = false)
   }
 
-  ignore("cast ShortType to TimestampType") {
-    // input: -1003, expected: 1969-12-31 15:43:17.0, actual: 1969-12-31 15:59:59.998997
-    castTest(
-      generateShorts(),
-      DataTypes.TimestampType,
-      hasIncompatibleType = usingParquetExecWithIncompatTypes)
+  test("cast ShortType to TimestampType") {
+    compatibleTimezones.foreach { tz =>
+      withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
+        castTest(
+          generateShorts(),
+          DataTypes.TimestampType,
+          hasIncompatibleType = usingParquetExecWithIncompatTypes)
+      }
+    }
   }
 
   // CAST from integer
@@ -363,9 +386,12 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateInts(), DataTypes.BinaryType, testAnsi = false, testTry = false)
   }
 
-  ignore("cast IntegerType to TimestampType") {
-    // input: -1000479329, expected: 1938-04-19 01:04:31.0, actual: 1969-12-31 15:43:19.520671
-    castTest(generateInts(), DataTypes.TimestampType)
+  test("cast IntegerType to TimestampType") {
+    compatibleTimezones.foreach { tz =>
+      withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
+        castTest(generateInts(), DataTypes.TimestampType)
+      }
+    }
   }
 
   // CAST from LongType
@@ -410,9 +436,17 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateLongs(), DataTypes.BinaryType, testAnsi = false, testTry = false)
   }
 
-  ignore("cast LongType to TimestampType") {
-    // java.lang.ArithmeticException: long overflow
-    castTest(generateLongs(), DataTypes.TimestampType)
+  test("cast LongType to TimestampType") {
+    // Cast back to long avoids java.sql.Timestamp overflow during collect() for extreme values
+    compatibleTimezones.foreach { tz =>
+      withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
+        withTable("t1") {
+          generateLongs().write.saveAsTable("t1")
+          val df = spark.sql("select a, cast(cast(a as timestamp) as long) from t1")
+          checkSparkAnswerAndOperator(df)
+        }
+      }
+    }
   }
 
   // CAST from FloatType
@@ -1042,13 +1076,13 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   ignore("cast TimestampType to ShortType") {
     // https://github.com/apache/datafusion-comet/issues/352
-    // input: 2023-12-31 10:00:00.0, expected: -21472, actual: null]
+    // input: 2023-12-31 10:00:00.0, expected: -21472, actual: null
     castTest(generateTimestamps(), DataTypes.ShortType)
   }
 
   ignore("cast TimestampType to IntegerType") {
     // https://github.com/apache/datafusion-comet/issues/352
-    // input: 2023-12-31 10:00:00.0, expected: 1704045600, actual: null]
+    // input: 2023-12-31 10:00:00.0, expected: 1704045600, actual: null
     castTest(generateTimestamps(), DataTypes.IntegerType)
   }
 
