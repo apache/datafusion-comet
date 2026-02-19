@@ -1,0 +1,149 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+name: K8s Benchmark CI
+
+concurrency:
+  group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
+  cancel-in-progress: true
+
+on:
+  pull_request:
+    paths:
+      - "native/**/*.rs"
+      - "spark/**/*.scala"
+      - "spark/**/*.java"
+  workflow_dispatch:
+    inputs:
+      scale_factor:
+        description: 'TPC-H scale factor'
+        default: '1'
+      query:
+        description: 'TPC-H query'
+        default: 'q1'
+        type: choice
+        options: [q1, q6]
+      min_speedup:
+        description: 'Minimum speedup'
+        default: '1.1'
+
+env:
+  RUST_VERSION: stable
+  K8S_VERSION: "1.32.0"
+  SPARK_VERSION: "3.5"
+  SCALA_VERSION: "2.12"
+  TPCH_SCALE_FACTOR: ${{ github.event.inputs.scale_factor || '1' }}
+  TPCH_QUERY: ${{ github.event.inputs.query || 'q1' }}
+  MIN_SPEEDUP: ${{ github.event.inputs.min_speedup || '1.1' }}
+
+jobs:
+  k8s-benchmark:
+    name: K8s Benchmark
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/share/boost /opt/ghc
+          docker system prune -af || true
+
+      - name: Install K8s tools
+        run: |
+          curl -Lo ./kind "https://kind.sigs.k8s.io/dl/v0.26.0/kind-linux-amd64"
+          chmod +x ./kind && sudo mv ./kind /usr/local/bin/kind
+          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x ./kubectl && sudo mv ./kubectl /usr/local/bin/kubectl
+          curl -sSfL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
+      - name: Setup Rust
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: ${{ env.RUST_VERSION }}
+          jdk-version: 17
+
+      - name: Cache Cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/target
+          key: ${{ runner.os }}-cargo-bench-${{ hashFiles('native/**/Cargo.lock') }}
+
+      - name: Cache Maven
+        uses: actions/cache@v5
+        with:
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-maven-bench-${{ hashFiles('**/pom.xml') }}
+
+      - name: Build Comet
+        run: make release PROFILES="-Pspark-${{ env.SPARK_VERSION }} -Pscala-${{ env.SCALA_VERSION }}"
+        timeout-minutes: 20
+
+      - name: Setup Kind cluster
+        run: ./hack/k8s-benchmark-setup.sh
+        timeout-minutes: 10
+
+      - name: Build benchmark image
+        run: |
+          docker build -t comet-bench:local -f benchmarks/Dockerfile.k8s .
+          kind load docker-image comet-bench:local --name comet-bench
+        timeout-minutes: 15
+
+      - name: Generate TPC-H data
+        run: ./benchmarks/scripts/generate-tpch-data.sh ${{ env.TPCH_SCALE_FACTOR }}
+        timeout-minutes: 10
+
+      - name: Run Spark baseline
+        id: spark_bench
+        run: ./benchmarks/scripts/run-k8s-benchmark.sh spark ${{ env.TPCH_QUERY }}
+        timeout-minutes: 15
+
+      - name: Run Comet benchmark
+        id: comet_bench
+        run: ./benchmarks/scripts/run-k8s-benchmark.sh comet ${{ env.TPCH_QUERY }}
+        timeout-minutes: 15
+
+      - name: Validate performance
+        run: |
+          python3 benchmarks/scripts/compare-results.py \
+            --spark /tmp/comet-bench-results/spark_${{ env.TPCH_QUERY }}_result.json \
+            --comet /tmp/comet-bench-results/comet_${{ env.TPCH_QUERY }}_result.json \
+            --min-speedup ${{ env.MIN_SPEEDUP }} \
+            --output /tmp/comet-bench-results/comparison.json \
+            --strict
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: benchmark-results
+          path: /tmp/comet-bench-results/
+
+      - name: Collect logs on failure
+        if: failure()
+        run: |
+          kubectl get pods -A || true
+          kubectl logs -n comet-bench comet-bench-driver --tail=100 2>/dev/null || true
+
+      - name: Cleanup
+        if: always()
+        run: kind delete cluster --name comet-bench || true
