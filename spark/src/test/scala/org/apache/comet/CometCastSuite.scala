@@ -960,44 +960,44 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   // CAST from DateType
 
-  ignore("cast DateType to BooleanType") {
-    // Arrow error: Cast error: Casting from Date32 to Boolean not supported
-    castTest(generateDates(), DataTypes.BooleanType)
+  // Date to Boolean/Byte/Short/Int/Long/Float/Double/Decimal casts always return NULL
+  // in LEGACY mode. In ANSI and TRY mode, Spark throws AnalysisException at
+  // query parsing time. Hence, ANSI and Try mode are disabled in tests
+
+  test("cast DateType to BooleanType") {
+    castTest(generateDates(), DataTypes.BooleanType, testAnsi = false, testTry = false)
   }
 
-  ignore("cast DateType to ByteType") {
-    // Arrow error: Cast error: Casting from Date32 to Int8 not supported
-    castTest(generateDates(), DataTypes.ByteType)
+  test("cast DateType to ByteType") {
+    castTest(generateDates(), DataTypes.ByteType, testAnsi = false, testTry = false)
   }
 
-  ignore("cast DateType to ShortType") {
-    // Arrow error: Cast error: Casting from Date32 to Int16 not supported
-    castTest(generateDates(), DataTypes.ShortType)
+  test("cast DateType to ShortType") {
+    castTest(generateDates(), DataTypes.ShortType, testAnsi = false, testTry = false)
   }
 
-  ignore("cast DateType to IntegerType") {
-    // input: 2345-01-01, expected: null, actual: 3789391
-    castTest(generateDates(), DataTypes.IntegerType)
+  test("cast DateType to IntegerType") {
+    castTest(generateDates(), DataTypes.IntegerType, testAnsi = false, testTry = false)
   }
 
-  ignore("cast DateType to LongType") {
-    // input: 2024-01-01, expected: null, actual: 19723
-    castTest(generateDates(), DataTypes.LongType)
+  test("cast DateType to LongType") {
+    castTest(generateDates(), DataTypes.LongType, testAnsi = false, testTry = false)
   }
 
-  ignore("cast DateType to FloatType") {
-    // Arrow error: Cast error: Casting from Date32 to Float32 not supported
-    castTest(generateDates(), DataTypes.FloatType)
+  test("cast DateType to FloatType") {
+    castTest(generateDates(), DataTypes.FloatType, testAnsi = false, testTry = false)
   }
 
-  ignore("cast DateType to DoubleType") {
-    // Arrow error: Cast error: Casting from Date32 to Float64 not supported
-    castTest(generateDates(), DataTypes.DoubleType)
+  test("cast DateType to DoubleType") {
+    castTest(generateDates(), DataTypes.DoubleType, testAnsi = false, testTry = false)
   }
 
-  ignore("cast DateType to DecimalType(10,2)") {
-    // Arrow error: Cast error: Casting from Date32 to Decimal128(10, 2) not supported
-    castTest(generateDates(), DataTypes.createDecimalType(10, 2))
+  test("cast DateType to DecimalType(10,2)") {
+    castTest(
+      generateDates(),
+      DataTypes.createDecimalType(10, 2),
+      testAnsi = false,
+      testTry = false)
   }
 
   test("cast DateType to StringType") {
