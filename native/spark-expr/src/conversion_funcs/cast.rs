@@ -613,6 +613,23 @@ macro_rules! cast_decimal_to_int32_up {
     }};
 }
 
+macro_rules! cast_int_to_timestamp_impl {
+    ($array:expr, $builder:expr, $primitive_type:ty) => {{
+        let arr = $array.as_primitive::<$primitive_type>();
+        for i in 0..arr.len() {
+            if arr.is_null(i) {
+                $builder.append_null();
+            } else {
+                // saturating_mul limits to i64::MIN/MAX on overflow instead of panicking,
+                // which could occur when converting extreme values (e.g., Long.MIN_VALUE)
+                // matching spark behavior (irrespective of EvalMode)
+                let micros = (arr.value(i) as i64).saturating_mul(MICROS_PER_SECOND);
+                $builder.append_value(micros);
+            }
+        }
+    }};
+}
+
 // copied from arrow::dataTypes::Decimal128Type since Decimal128Type::format_decimal can't be called directly
 fn format_decimal_str(value_str: &str, precision: usize, scale: i8) -> String {
     let (sign, rest) = match value_str.strip_prefix('-') {
@@ -915,6 +932,7 @@ fn cast_array(
         (Boolean, Decimal128(precision, scale)) => {
             cast_boolean_to_decimal(&array, *precision, *scale)
         }
+        (Int8 | Int16 | Int32 | Int64, Timestamp(_, tz)) => cast_int_to_timestamp(&array, tz),
         _ if cast_options.is_adapting_schema
             || is_datafusion_spark_compatible(from_type, to_type) =>
         {
@@ -931,6 +949,29 @@ fn cast_array(
         }
     };
     Ok(spark_cast_postprocess(cast_result?, from_type, to_type))
+}
+
+fn cast_int_to_timestamp(
+    array_ref: &ArrayRef,
+    target_tz: &Option<Arc<str>>,
+) -> SparkResult<ArrayRef> {
+    // Input is seconds since epoch, multiply by MICROS_PER_SECOND to get microseconds.
+    let mut builder = TimestampMicrosecondBuilder::with_capacity(array_ref.len());
+
+    match array_ref.data_type() {
+        DataType::Int8 => cast_int_to_timestamp_impl!(array_ref, builder, Int8Type),
+        DataType::Int16 => cast_int_to_timestamp_impl!(array_ref, builder, Int16Type),
+        DataType::Int32 => cast_int_to_timestamp_impl!(array_ref, builder, Int32Type),
+        DataType::Int64 => cast_int_to_timestamp_impl!(array_ref, builder, Int64Type),
+        dt => {
+            return Err(SparkError::Internal(format!(
+                "Unsupported type for cast_int_to_timestamp: {:?}",
+                dt
+            )))
+        }
+    }
+
+    Ok(Arc::new(builder.finish().with_timezone_opt(target_tz.clone())) as ArrayRef)
 }
 
 fn cast_date_to_timestamp(
@@ -3518,5 +3559,95 @@ mod tests {
         assert_eq!(r#"[1, null]"#, string_array.value(1));
         assert_eq!(r#"[null]"#, string_array.value(2));
         assert_eq!(r#"[]"#, string_array.value(3));
+    }
+
+    #[test]
+    fn test_cast_int_to_timestamp() {
+        let timezones: [Option<Arc<str>>; 6] = [
+            Some(Arc::from("UTC")),
+            Some(Arc::from("America/New_York")),
+            Some(Arc::from("America/Los_Angeles")),
+            Some(Arc::from("Europe/London")),
+            Some(Arc::from("Asia/Tokyo")),
+            Some(Arc::from("Australia/Sydney")),
+        ];
+
+        for tz in &timezones {
+            let int8_array: ArrayRef = Arc::new(Int8Array::from(vec![
+                Some(0),
+                Some(1),
+                Some(-1),
+                Some(127),
+                Some(-128),
+                None,
+            ]));
+
+            let result = cast_int_to_timestamp(&int8_array, tz).unwrap();
+            let ts_array = result.as_primitive::<TimestampMicrosecondType>();
+
+            assert_eq!(ts_array.value(0), 0);
+            assert_eq!(ts_array.value(1), 1_000_000);
+            assert_eq!(ts_array.value(2), -1_000_000);
+            assert_eq!(ts_array.value(3), 127_000_000);
+            assert_eq!(ts_array.value(4), -128_000_000);
+            assert!(ts_array.is_null(5));
+            assert_eq!(ts_array.timezone(), tz.as_ref().map(|s| s.as_ref()));
+
+            let int16_array: ArrayRef = Arc::new(Int16Array::from(vec![
+                Some(0),
+                Some(1),
+                Some(-1),
+                Some(32767),
+                Some(-32768),
+                None,
+            ]));
+
+            let result = cast_int_to_timestamp(&int16_array, tz).unwrap();
+            let ts_array = result.as_primitive::<TimestampMicrosecondType>();
+
+            assert_eq!(ts_array.value(0), 0);
+            assert_eq!(ts_array.value(1), 1_000_000);
+            assert_eq!(ts_array.value(2), -1_000_000);
+            assert_eq!(ts_array.value(3), 32_767_000_000_i64);
+            assert_eq!(ts_array.value(4), -32_768_000_000_i64);
+            assert!(ts_array.is_null(5));
+            assert_eq!(ts_array.timezone(), tz.as_ref().map(|s| s.as_ref()));
+
+            let int32_array: ArrayRef = Arc::new(Int32Array::from(vec![
+                Some(0),
+                Some(1),
+                Some(-1),
+                Some(1704067200),
+                None,
+            ]));
+
+            let result = cast_int_to_timestamp(&int32_array, tz).unwrap();
+            let ts_array = result.as_primitive::<TimestampMicrosecondType>();
+
+            assert_eq!(ts_array.value(0), 0);
+            assert_eq!(ts_array.value(1), 1_000_000);
+            assert_eq!(ts_array.value(2), -1_000_000);
+            assert_eq!(ts_array.value(3), 1_704_067_200_000_000_i64);
+            assert!(ts_array.is_null(4));
+            assert_eq!(ts_array.timezone(), tz.as_ref().map(|s| s.as_ref()));
+
+            let int64_array: ArrayRef = Arc::new(Int64Array::from(vec![
+                Some(0),
+                Some(1),
+                Some(-1),
+                Some(i64::MAX),
+                Some(i64::MIN),
+            ]));
+
+            let result = cast_int_to_timestamp(&int64_array, tz).unwrap();
+            let ts_array = result.as_primitive::<TimestampMicrosecondType>();
+
+            assert_eq!(ts_array.value(0), 0);
+            assert_eq!(ts_array.value(1), 1_000_000_i64);
+            assert_eq!(ts_array.value(2), -1_000_000_i64);
+            assert_eq!(ts_array.value(3), i64::MAX);
+            assert_eq!(ts_array.value(4), i64::MIN);
+            assert_eq!(ts_array.timezone(), tz.as_ref().map(|s| s.as_ref()));
+        }
     }
 }
