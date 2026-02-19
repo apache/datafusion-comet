@@ -48,7 +48,7 @@ class CometParquetWriterSuite extends CometTestBase {
         withSQLConf(
           CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
           SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Halifax",
-          CometConf.getOperatorAllowIncompatConfigKey(classOf[DataWritingCommandExec]) -> "true",
+          CometConf.COMET_OPERATOR_DATA_WRITING_COMMAND_ALLOW_INCOMPAT.key -> "true",
           CometConf.COMET_EXEC_ENABLED.key -> "true") {
 
           writeWithCometNativeWriteExec(inputPath, outputPath)
@@ -70,7 +70,7 @@ class CometParquetWriterSuite extends CometTestBase {
         withSQLConf(
           CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
           SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Halifax",
-          CometConf.getOperatorAllowIncompatConfigKey(classOf[DataWritingCommandExec]) -> "true",
+          CometConf.COMET_OPERATOR_DATA_WRITING_COMMAND_ALLOW_INCOMPAT.key -> "true",
           CometConf.COMET_EXEC_ENABLED.key -> "true") {
 
           withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> "native_datafusion") {
@@ -310,55 +310,6 @@ class CometParquetWriterSuite extends CometTestBase {
     }
   }
 
-  // ignored: native_comet scan is no longer supported
-  ignore("native write falls back when scan produces non-Arrow data") {
-    // This test verifies that when a native scan (like native_comet) doesn't support
-    // certain data types (complex types), the native write correctly falls back to Spark
-    // instead of failing at runtime with "Comet execution only takes Arrow Arrays" error.
-    withTempPath { dir =>
-      val inputPath = new File(dir, "input.parquet").getAbsolutePath
-      val outputPath = new File(dir, "output.parquet").getAbsolutePath
-
-      // Create data with complex types and write without Comet
-      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-        val df = Seq((1, Seq(1, 2, 3)), (2, Seq(4, 5)), (3, Seq(6, 7, 8, 9)))
-          .toDF("id", "values")
-        df.write.parquet(inputPath)
-      }
-
-      // With native Parquet write enabled but using native_comet scan which doesn't
-      // support complex types, the scan falls back to Spark. The native write should
-      // detect this and also fall back to Spark instead of failing at runtime.
-      withSQLConf(
-        CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
-        CometConf.COMET_EXEC_ENABLED.key -> "true",
-        CometConf.getOperatorAllowIncompatConfigKey(classOf[DataWritingCommandExec]) -> "true",
-        // Use native_comet which doesn't support complex types
-        CometConf.COMET_NATIVE_SCAN_IMPL.key -> "native_comet") {
-
-        val plan =
-          captureWritePlan(path => spark.read.parquet(inputPath).write.parquet(path), outputPath)
-
-        // Verify NO CometNativeWriteExec in the plan (should have fallen back to Spark)
-        val hasNativeWrite = plan.exists {
-          case _: CometNativeWriteExec => true
-          case d: DataWritingCommandExec =>
-            d.child.exists(_.isInstanceOf[CometNativeWriteExec])
-          case _ => false
-        }
-
-        assert(
-          !hasNativeWrite,
-          "Expected fallback to Spark write (no CometNativeWriteExec), but found native write " +
-            s"in plan:\n${plan.treeString}")
-
-        // Verify the data was written correctly
-        val result = spark.read.parquet(outputPath).collect()
-        assert(result.length == 3, "Expected 3 rows to be written")
-      }
-    }
-  }
-
   test("parquet write complex types fuzz test") {
     withTempPath { dir =>
       val outputPath = new File(dir, "output.parquet").getAbsolutePath
@@ -517,7 +468,7 @@ class CometParquetWriterSuite extends CometTestBase {
       withSQLConf(
         CometConf.COMET_EXEC_ENABLED.key -> "true",
         // enable experimental native writes
-        CometConf.getOperatorAllowIncompatConfigKey(classOf[DataWritingCommandExec]) -> "true",
+        CometConf.COMET_OPERATOR_DATA_WRITING_COMMAND_ALLOW_INCOMPAT.key -> "true",
         CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
         // explicitly set scan impl to override CI defaults
         CometConf.COMET_NATIVE_SCAN_IMPL.key -> "auto",

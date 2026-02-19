@@ -51,20 +51,6 @@ with benchmarks that benefit from this feature like TPC-DS. This effort can be t
 [#3349]: https://github.com/apache/datafusion-comet/pull/3349
 [#3510]: https://github.com/apache/datafusion-comet/issues/3510
 
-### Removing the native_comet scan implementation
-
-The `native_comet` scan implementation is now deprecated and will be removed in a future release ([#2186], [#2177]).
-This is the original scan implementation that uses mutable buffers (which is incompatible with best practices around
-Arrow FFI) and does not support complex types.
-
-Now that the default `auto` scan mode uses `native_iceberg_compat` (which is based on DataFusion's `DataSourceExec`),
-we can proceed with removing the `native_comet` scan implementation, and then improve the efficiency of our use of
-Arrow FFI ([#2171]).
-
-[#2186]: https://github.com/apache/datafusion-comet/issues/2186
-[#2171]: https://github.com/apache/datafusion-comet/issues/2171
-[#2177]: https://github.com/apache/datafusion-comet/issues/2177
-
 ## Ongoing Improvements
 
 In addition to the major initiatives above, we have the following ongoing areas of work:
