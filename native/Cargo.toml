@@ -54,7 +54,7 @@ object_store = { version = "0.12.3", features = ["gcp", "azure", "aws", "http"] 
 url = "2.2"
 aws-config = "1.8.14"
 aws-credential-types = "1.2.12"
-iceberg = { path = "/Users/matt/git/iceberg-rust/crates/iceberg" }
+iceberg = { git = "https://github.com/mbutrovich/iceberg-rust.git", branch = "reader_perf" }
 
 [profile.release]
 debug = true

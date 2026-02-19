@@ -3240,6 +3240,7 @@ dependencies = [
 [[package]]
 name = "iceberg"
 version = "0.8.0"
+source = "git+https://github.com/mbutrovich/iceberg-rust.git?branch=reader_perf#a847763e0cbc54819eb684545285b347c5f34be9"
 dependencies = [
  "anyhow",
  "apache-avro",
@@ -3454,9 +3455,9 @@ checksum = "8bb03732005da905c88227371639bf1ad885cc712789c011c31c5fb3ab3ccf02"
 
 [[package]]
 name = "inventory"
-version = "0.3.21"
+version = "0.3.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bc61209c082fbeb19919bee74b176221b27223e27b65d781eb91af24eb1fb46e"
+checksum = "009ae045c87e7082cb72dab0ccd01ae075dd00141ddc108f43a0ea150a9e7227"
 dependencies = [
  "rustversion",
 ]
