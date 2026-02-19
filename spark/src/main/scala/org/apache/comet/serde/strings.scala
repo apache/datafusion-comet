@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import java.util.Locale
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Concat, Expression, If, InitCap, IsNull, Left, Length, Like, Literal, Lower, RegExpReplace, Right, RLike, StringLPad, StringRepeat, StringRPad, Substring, Upper}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Concat, ConcatWs, Expression, If, InitCap, IsNull, Left, Length, Like, Literal, Lower, RegExpReplace, Right, RLike, StringLPad, StringRepeat, StringRPad, StringSplit, Substring, Upper}
 import org.apache.spark.sql.types.{BinaryType, DataTypes, LongType, StringType}
 import org.apache.spark.unsafe.types.UTF8String
 
@@ -29,7 +29,7 @@ import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.expressions.{CometCast, CometEvalMode, RegExp}
 import org.apache.comet.serde.ExprOuterClass.Expr
-import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
+import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType}
 
 object CometStringRepeat extends CometExpressionSerde[StringRepeat] {
 
@@ -199,6 +199,27 @@ object CometConcat extends CometScalarFunction[Concat]("concat") {
   }
 }
 
+object CometConcatWs extends CometExpressionSerde[ConcatWs] {
+
+  override def convert(expr: ConcatWs, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
+    expr.children.headOption match {
+      // Match Spark behavior: when the separator is NULL, the result of concat_ws is NULL.
+      case Some(Literal(null, _)) =>
+        val nullLiteral = Literal.create(null, expr.dataType)
+        exprToProtoInternal(nullLiteral, inputs, binding)
+
+      case _ if expr.children.forall(_.foldable) =>
+        // Fall back to Spark for all-literal args so ConstantFolding can handle it
+        withInfo(expr, "all arguments are foldable")
+        None
+
+      case _ =>
+        // For all other cases, use the generic scalar function implementation.
+        CometScalarFunction[ConcatWs]("concat_ws").convert(expr, inputs, binding)
+    }
+  }
+}
+
 object CometLike extends CometExpressionSerde[Like] {
 
   override def convert(expr: Like, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
@@ -223,11 +244,11 @@ object CometRLike extends CometExpressionSerde[RLike] {
     expr.right match {
       case Literal(pattern, DataTypes.StringType) =>
         if (!RegExp.isSupportedPattern(pattern.toString) &&
-          !CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.get()) {
+          !CometConf.isExprAllowIncompat("regexp")) {
           withInfo(
             expr,
             s"Regexp pattern $pattern is not compatible with Spark. " +
-              s"Set ${CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.key}=true " +
+              s"Set ${CometConf.getExprAllowIncompatConfigKey("regexp")}=true " +
               "to allow it anyway.")
           None
         } else {
@@ -298,11 +319,11 @@ object CometStringLPad extends CometExpressionSerde[StringLPad] {
 object CometRegExpReplace extends CometExpressionSerde[RegExpReplace] {
   override def getSupportLevel(expr: RegExpReplace): SupportLevel = {
     if (!RegExp.isSupportedPattern(expr.regexp.toString) &&
-      !CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.get()) {
+      !CometConf.isExprAllowIncompat("regexp")) {
       withInfo(
         expr,
         s"Regexp pattern ${expr.regexp} is not compatible with Spark. " +
-          s"Set ${CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.key}=true " +
+          s"Set ${CometConf.getExprAllowIncompatConfigKey("regexp")}=true " +
           "to allow it anyway.")
       return Incompatible()
     }
@@ -330,6 +351,34 @@ object CometRegExpReplace extends CometExpressionSerde[RegExpReplace] {
       replacementExpr,
       flagsExpr)
     optExprWithInfo(optExpr, expr, expr.subject, expr.regexp, expr.rep, expr.pos)
+  }
+}
+
+/**
+ * Serde for StringSplit expression. This is a custom Comet function (not a built-in DataFusion
+ * function), so we need to include the return type in the protobuf to avoid DataFusion registry
+ * lookup failures.
+ */
+object CometStringSplit extends CometExpressionSerde[StringSplit] {
+
+  override def getSupportLevel(expr: StringSplit): SupportLevel =
+    Incompatible(Some("Regex engine differences between Java and Rust"))
+
+  override def convert(
+      expr: StringSplit,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    val strExpr = exprToProtoInternal(expr.str, inputs, binding)
+    val regexExpr = exprToProtoInternal(expr.regex, inputs, binding)
+    val limitExpr = exprToProtoInternal(expr.limit, inputs, binding)
+    val optExpr = scalarFunctionExprToProtoWithReturnType(
+      "split",
+      expr.dataType,
+      false,
+      strExpr,
+      regexExpr,
+      limitExpr)
+    optExprWithInfo(optExpr, expr, expr.str, expr.regex, expr.limit)
   }
 }
 
