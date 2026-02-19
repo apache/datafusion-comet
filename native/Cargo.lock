@@ -3240,7 +3240,7 @@ dependencies = [
 [[package]]
 name = "iceberg"
 version = "0.8.0"
-source = "git+https://github.com/mbutrovich/iceberg-rust.git?branch=reader_perf#a847763e0cbc54819eb684545285b347c5f34be9"
+source = "git+https://github.com/mbutrovich/iceberg-rust.git?branch=reader_perf#e103c08920661855b5e35adf65ca140d469154fc"
 dependencies = [
  "anyhow",
  "apache-avro",
