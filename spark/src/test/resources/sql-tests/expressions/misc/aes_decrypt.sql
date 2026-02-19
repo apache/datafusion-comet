@@ -52,3 +52,113 @@ SELECT CAST(aes_decrypt(encrypted_default, `key`) AS STRING) FROM aes_tbl
 
 query
 SELECT CAST(aes_decrypt(encrypted_with_aad, `key`, mode, padding, aad) AS STRING) FROM aes_tbl
+
+statement
+CREATE TABLE aes_modes_tbl(
+  encrypted BINARY,
+  `key` BINARY,
+  mode STRING,
+  padding STRING,
+  label STRING
+) USING parquet
+
+statement
+INSERT INTO aes_modes_tbl
+SELECT
+  aes_encrypt(encode('Spark SQL', 'UTF-8'), encode('abcdefghijklmnop', 'UTF-8'), 'GCM', 'DEFAULT'),
+  encode('abcdefghijklmnop', 'UTF-8'),
+  'GCM',
+  'DEFAULT',
+  'gcm_128'
+UNION ALL
+SELECT
+  aes_encrypt(
+    encode('Spark SQL', 'UTF-8'),
+    encode('abcdefghijklmnop12345678', 'UTF-8'),
+    'GCM',
+    'DEFAULT'),
+  encode('abcdefghijklmnop12345678', 'UTF-8'),
+  'GCM',
+  'DEFAULT',
+  'gcm_192'
+UNION ALL
+SELECT
+  aes_encrypt(
+    encode('Spark SQL', 'UTF-8'),
+    encode('abcdefghijklmnop12345678ABCDEFGH', 'UTF-8'),
+    'GCM',
+    'DEFAULT'),
+  encode('abcdefghijklmnop12345678ABCDEFGH', 'UTF-8'),
+  'GCM',
+  'DEFAULT',
+  'gcm_256'
+UNION ALL
+SELECT
+  aes_encrypt(encode('Spark SQL', 'UTF-8'), encode('abcdefghijklmnop', 'UTF-8'), 'CBC', 'PKCS'),
+  encode('abcdefghijklmnop', 'UTF-8'),
+  'CBC',
+  'PKCS',
+  'cbc_128'
+UNION ALL
+SELECT
+  aes_encrypt(
+    encode('Spark SQL', 'UTF-8'),
+    encode('abcdefghijklmnop12345678', 'UTF-8'),
+    'CBC',
+    'PKCS'),
+  encode('abcdefghijklmnop12345678', 'UTF-8'),
+  'CBC',
+  'PKCS',
+  'cbc_192'
+UNION ALL
+SELECT
+  aes_encrypt(
+    encode('Spark SQL', 'UTF-8'),
+    encode('abcdefghijklmnop12345678ABCDEFGH', 'UTF-8'),
+    'CBC',
+    'PKCS'),
+  encode('abcdefghijklmnop12345678ABCDEFGH', 'UTF-8'),
+  'CBC',
+  'PKCS',
+  'cbc_256'
+UNION ALL
+SELECT
+  aes_encrypt(encode('Spark SQL', 'UTF-8'), encode('abcdefghijklmnop', 'UTF-8'), 'ECB', 'PKCS'),
+  encode('abcdefghijklmnop', 'UTF-8'),
+  'ECB',
+  'PKCS',
+  'ecb_128'
+UNION ALL
+SELECT
+  aes_encrypt(
+    encode('Spark SQL', 'UTF-8'),
+    encode('abcdefghijklmnop12345678', 'UTF-8'),
+    'ECB',
+    'PKCS'),
+  encode('abcdefghijklmnop12345678', 'UTF-8'),
+  'ECB',
+  'PKCS',
+  'ecb_192'
+UNION ALL
+SELECT
+  aes_encrypt(
+    encode('Spark SQL', 'UTF-8'),
+    encode('abcdefghijklmnop12345678ABCDEFGH', 'UTF-8'),
+    'ECB',
+    'PKCS'),
+  encode('abcdefghijklmnop12345678ABCDEFGH', 'UTF-8'),
+  'ECB',
+  'PKCS',
+  'ecb_256'
+UNION ALL
+SELECT
+  cast(null AS binary),
+  encode('abcdefghijklmnop', 'UTF-8'),
+  'GCM',
+  'DEFAULT',
+  'null_input'
+
+query
+SELECT label, CAST(aes_decrypt(encrypted, `key`, mode, padding) AS STRING)
+FROM aes_modes_tbl
+ORDER BY label
