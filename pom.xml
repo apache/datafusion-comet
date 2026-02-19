@@ -477,9 +477,40 @@ under the License.
         <version>${testcontainers.version}</version>
         <scope>test</scope>
       </dependency>
+      <!--
+        AWS SDK modules for Iceberg REST catalog + S3 tests.
+        iceberg-spark-runtime treats the AWS SDK as provided scope, so tests
+        that exercise Iceberg's S3FileIO (via ResolvingFileIO) must supply these.
+        AwsProperties references all service client types in method signatures,
+        and Java serialization introspection resolves them at class-load time.
+      -->
       <dependency>
         <groupId>software.amazon.awssdk</groupId>
         <artifactId>s3</artifactId>
+        <version>${amazon-awssdk-v2.version}</version>
+        <scope>test</scope>
+      </dependency>
+      <dependency>
+        <groupId>software.amazon.awssdk</groupId>
+        <artifactId>sts</artifactId>
+        <version>${amazon-awssdk-v2.version}</version>
+        <scope>test</scope>
+      </dependency>
+      <dependency>
+        <groupId>software.amazon.awssdk</groupId>
+        <artifactId>dynamodb</artifactId>
+        <version>${amazon-awssdk-v2.version}</version>
+        <scope>test</scope>
+      </dependency>
+      <dependency>
+        <groupId>software.amazon.awssdk</groupId>
+        <artifactId>glue</artifactId>
+        <version>${amazon-awssdk-v2.version}</version>
+        <scope>test</scope>
+      </dependency>
+      <dependency>
+        <groupId>software.amazon.awssdk</groupId>
+        <artifactId>kms</artifactId>
         <version>${amazon-awssdk-v2.version}</version>
         <scope>test</scope>
       </dependency>
