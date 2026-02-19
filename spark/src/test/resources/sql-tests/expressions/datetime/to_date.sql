@@ -36,11 +36,11 @@ INSERT INTO test_to_date_fmt VALUES ('2026/01/30'), ('2026/03/10'), (NULL)
 query
 SELECT col, to_date(col, 'yyyy/MM/dd') FROM test_to_date_fmt
 
-                                                query
+query
 SELECT to_date('2026-01-30')
 
-           query
+query
 SELECT to_date('2026/01/30', 'yyyy/MM/dd')
 
-           query
+query
 SELECT to_date('2026-01-30 10:30:00')
