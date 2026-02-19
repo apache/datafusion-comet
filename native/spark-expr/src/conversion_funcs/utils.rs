@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::cast::MICROS_PER_SECOND;
 use crate::SparkError;
 use arrow::array::{
     Array, ArrayRef, ArrowPrimitiveType, AsArray, GenericStringArray, PrimitiveArray,
@@ -26,7 +27,6 @@ use datafusion::common::cast::as_generic_string_array;
 use num::integer::div_floor;
 use std::sync::Arc;
 
-const MICROS_PER_SECOND: i64 = 1000000;
 /// A fork & modified version of Arrow's `unary_dyn` which is being deprecated
 pub fn unary_dyn<F, T>(array: &ArrayRef, op: F) -> Result<ArrayRef, ArrowError>
 where

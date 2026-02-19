@@ -27,7 +27,6 @@ fn criterion_benchmark(c: &mut Criterion) {
     let expr = Arc::new(Column::new("a", 0));
     let boolean_batch = create_boolean_batch();
     let spark_cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC", false);
-    Cast::new(expr.clone(), DataType::Int8, spark_cast_options.clone());
     let cast_to_i8 = Cast::new(expr.clone(), DataType::Int8, spark_cast_options.clone());
     let cast_to_i16 = Cast::new(expr.clone(), DataType::Int16, spark_cast_options.clone());
     let cast_to_i32 = Cast::new(expr.clone(), DataType::Int32, spark_cast_options.clone());
