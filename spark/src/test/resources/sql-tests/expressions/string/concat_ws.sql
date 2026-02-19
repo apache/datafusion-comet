@@ -42,6 +42,6 @@ INSERT INTO names VALUES(1, 'James', 'B', 'Taylor'), (2, 'Smith', 'C', 'Davis'),
 query
 SELECT concat_ws(' ', first_name, middle_initial, last_name) FROM names
 
--- literal + literal + literal
-query ignore(https://github.com/apache/datafusion-comet/issues/3339)
+-- literal + literal + literal (falls back to Spark when all args are foldable)
+query spark_answer_only
 SELECT concat_ws(',', 'hello', 'world'), concat_ws(',', '', ''), concat_ws(',', NULL, 'b', 'c'), concat_ws(NULL, 'a', 'b')

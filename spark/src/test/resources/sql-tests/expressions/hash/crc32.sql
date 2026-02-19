@@ -15,25 +15,18 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Test RLIKE with regexp allowIncompatible enabled (happy path)
--- Config: spark.comet.expression.regexp.allowIncompatible=true
 -- ConfigMatrix: parquet.enable.dictionary=false,true
 
+-- crc32 function
 statement
-CREATE TABLE test_rlike_enabled(s string) USING parquet
+CREATE TABLE test(col string, a int, b float) USING parquet
 
 statement
-INSERT INTO test_rlike_enabled VALUES ('hello'), ('12345'), (''), (NULL), ('Hello World'), ('abc123')
+INSERT INTO test VALUES ('Spark SQL  ', 10, 1.2), (NULL, NULL, NULL), ('', 0, 0.0), ('苹果手机', NULL, 3.999999), ('Spark SQL  ', 10, 1.2), (NULL, NULL, NULL), ('', 0, 0.0), ('苹果手机', NULL, 3.999999)
 
 query
-SELECT s RLIKE '^[0-9]+$' FROM test_rlike_enabled
-
-query
-SELECT s RLIKE '^[a-z]+$' FROM test_rlike_enabled
-
-query
-SELECT s RLIKE '' FROM test_rlike_enabled
+SELECT crc32(col), crc32(cast(a as string)), crc32(cast(b as string)) FROM test
 
 -- literal arguments
-query ignore(https://github.com/apache/datafusion-comet/issues/3343)
-SELECT 'hello' RLIKE '^[a-z]+$', '12345' RLIKE '^[a-z]+$', '' RLIKE '', NULL RLIKE 'a'
+query
+SELECT crc32('Spark SQL')
