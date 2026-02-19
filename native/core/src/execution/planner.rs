@@ -2941,6 +2941,7 @@ fn parse_file_scan_tasks_from_common(
 
             Ok(iceberg::scan::FileScanTask {
                 data_file_path: proto_task.data_file_path.clone(),
+                file_size_in_bytes: proto_task.file_size_in_bytes,
                 start: proto_task.start,
                 length: proto_task.length,
                 record_count: proto_task.record_count,

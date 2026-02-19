@@ -784,6 +784,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     val startMethod = contentScanTaskClass.getMethod("start")
     val lengthMethod = contentScanTaskClass.getMethod("length")
     val residualMethod = contentScanTaskClass.getMethod("residual")
+    val fileSizeInBytesMethod = contentFileClass.getMethod("fileSizeInBytes")
     val taskSchemaMethod = fileScanTaskClass.getMethod("schema")
     val toJsonMethod = schemaParserClass.getMethod("toJson", schemaClass)
     toJsonMethod.setAccessible(true)
@@ -837,6 +838,10 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
 
                 val length = lengthMethod.invoke(task).asInstanceOf[Long]
                 taskBuilder.setLength(length)
+
+                val fileSizeInBytes =
+                  fileSizeInBytesMethod.invoke(dataFile).asInstanceOf[Long]
+                taskBuilder.setFileSizeInBytes(fileSizeInBytes)
 
                 val taskSchema = taskSchemaMethod.invoke(task)
 
