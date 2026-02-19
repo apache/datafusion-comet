@@ -104,9 +104,13 @@ jobs:
 
       - name: Build benchmark image
         run: |
-          docker build -t comet-bench:local -f benchmarks/Dockerfile.k8s .
+          COMET_JAR=$(find spark/target -name "comet-spark-spark${{ env.SPARK_VERSION }}_${{ env.SCALA_VERSION }}-*.jar" -not -name "*sources*" -not -name "*javadoc*" | head -1)
+          echo "Using Comet JAR: $COMET_JAR"
+          docker build -t comet-bench:local \
+            --build-arg COMET_JAR=$COMET_JAR \
+            -f benchmarks/Dockerfile.k8s .
           kind load docker-image comet-bench:local --name comet-bench
-        timeout-minutes: 15
+        timeout-minutes: 10
 
       - name: Generate TPC-H data
         run: ./benchmarks/scripts/generate-tpch-data.sh ${{ env.TPCH_SCALE_FACTOR }}
