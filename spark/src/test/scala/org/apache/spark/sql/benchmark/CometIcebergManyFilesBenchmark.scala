@@ -26,8 +26,8 @@ import org.apache.spark.benchmark.Benchmark
 import org.apache.comet.CometConf
 
 /**
- * Benchmark to measure per-file overhead in Comet Iceberg reads. Creates tables with many
- * small files to amplify operator construction cost. To run this benchmark:
+ * Benchmark to measure per-file overhead in Comet Iceberg reads. Creates tables with many small
+ * files to amplify operator construction cost. To run this benchmark:
  * `SPARK_GENERATE_BENCHMARK_FILES=1 make
  * benchmark-org.apache.spark.sql.benchmark.CometIcebergManyFilesBenchmark` Results will be
  * written to "spark/benchmarks/CometIcebergManyFilesBenchmark-**results.txt".
@@ -43,13 +43,11 @@ object CometIcebergManyFilesBenchmark extends CometBenchmarkBase {
 
     withTempPath { dir =>
       val warehouseDir = new File(dir, "iceberg-warehouse")
-      spark.conf.set("spark.sql.catalog.benchmark_cat",
-        "org.apache.iceberg.spark.SparkCatalog")
+      spark.conf.set("spark.sql.catalog.benchmark_cat", "org.apache.iceberg.spark.SparkCatalog")
       spark.conf.set("spark.sql.catalog.benchmark_cat.type", "hadoop")
-      spark.conf.set("spark.sql.catalog.benchmark_cat.warehouse",
-        warehouseDir.getAbsolutePath)
+      spark.conf.set("spark.sql.catalog.benchmark_cat.warehouse", warehouseDir.getAbsolutePath)
 
-      val tableName = "benchmark_cat.db.many_files"
+      val tableName = "benchmark_cat.db.many_small"
       spark.sql(s"DROP TABLE IF EXISTS $tableName")
 
       spark.sql(s"""
@@ -64,15 +62,19 @@ object CometIcebergManyFilesBenchmark extends CometBenchmarkBase {
       """)
 
       // Each repartitioned Spark task writes one file.
-      spark.range(numRows)
+      spark
+        .range(numRows)
         .selectExpr("id", "CAST(id * 1.5 AS DOUBLE) as value")
         .repartition(numFiles)
         .writeTo(tableName)
         .append()
 
-      val actualFiles = spark.sql(s"SELECT COUNT(*) FROM $tableName.files")
-        .collect()(0).getLong(0)
-      assert(actualFiles >= numFiles,
+      val actualFiles = spark
+        .sql(s"SELECT COUNT(*) FROM $tableName.files")
+        .collect()(0)
+        .getLong(0)
+      assert(
+        actualFiles >= numFiles,
         s"Expected at least $numFiles data files but found $actualFiles")
       // scalastyle:off println
       println(s"Table has $actualFiles data files")
