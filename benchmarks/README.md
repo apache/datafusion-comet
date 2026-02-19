@@ -17,10 +17,42 @@ specific language governing permissions and limitations
 under the License.
 -->
 
-# Running Comet Benchmarks in Microk8s
+# Comet Benchmarks
 
-This guide explains how to run benchmarks derived from TPC-H and TPC-DS in Apache DataFusion Comet deployed in a
-local Microk8s cluster.
+## GitHub CI (Kind)
+
+The CI runs TPC-H benchmarks on Kind cluster for PRs modifying `native/**/*.rs` or `spark/**/*.scala|java`.
+Target: Comet >= 1.1x speedup over Spark.
+
+## Local Development (Kind)
+
+```bash
+# Setup
+./hack/k8s-benchmark-setup.sh
+
+# Build
+make release PROFILES="-Pspark-3.5 -Pscala-2.12"
+docker build -t comet-bench:local -f benchmarks/Dockerfile.k8s .
+kind load docker-image comet-bench:local --name comet-bench
+
+# Generate data
+./benchmarks/scripts/generate-tpch-data.sh 1
+
+# Run benchmarks
+./benchmarks/scripts/run-k8s-benchmark.sh spark q1
+./benchmarks/scripts/run-k8s-benchmark.sh comet q1
+
+# Compare
+python3 benchmarks/scripts/compare-results.py \
+    --spark /tmp/comet-bench-results/spark_q1_result.json \
+    --comet /tmp/comet-bench-results/comet_q1_result.json \
+    --min-speedup 1.1
+
+# Cleanup
+./hack/k8s-benchmark-setup.sh --delete
+```
+
+## Microk8s Deployment
 
 ## Use Microk8s locally
 

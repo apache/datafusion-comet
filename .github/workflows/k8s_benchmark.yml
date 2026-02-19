@@ -23,10 +23,10 @@ concurrency:
 
 on:
   pull_request:
-    paths:
-      - "native/**/*.rs"
-      - "spark/**/*.scala"
-      - "spark/**/*.java"
+    # paths:
+    #   - "native/**/*.rs"
+    #   - "spark/**/*.scala"
+    #   - "spark/**/*.java"
   workflow_dispatch:
     inputs:
       scale_factor:
