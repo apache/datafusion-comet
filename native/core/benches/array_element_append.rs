@@ -25,7 +25,7 @@ use arrow::array::builder::{
     Date32Builder, Float64Builder, Int32Builder, Int64Builder, TimestampMicrosecondBuilder,
 };
 use arrow::datatypes::{DataType, TimeUnit};
-use comet::execution::shuffle::list::{append_to_builder, SparkUnsafeArray};
+use comet::execution::shuffle::spark_unsafe::list::{append_to_builder, SparkUnsafeArray};
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 
 const NUM_ELEMENTS: usize = 10000;
