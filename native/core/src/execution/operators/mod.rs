@@ -28,8 +28,12 @@ pub use scan::*;
 mod copy;
 mod expand;
 pub use expand::ExpandExec;
+mod iceberg_parquet_writer;
 mod iceberg_scan;
 mod parquet_writer;
+pub use iceberg_parquet_writer::{
+    IcebergCompactionResult, IcebergDataFileMetadata, IcebergParquetWriterExec,
+};
 pub use parquet_writer::ParquetWriterExec;
 mod csv_scan;
 pub mod projection;

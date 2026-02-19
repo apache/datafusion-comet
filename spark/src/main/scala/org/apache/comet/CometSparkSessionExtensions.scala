@@ -32,7 +32,7 @@ import org.apache.spark.sql.execution._
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf._
-import org.apache.comet.rules.{CometExecRule, CometScanRule, EliminateRedundantTransitions}
+import org.apache.comet.rules.{CometCompactionRule, CometExecRule, CometScanRule, EliminateRedundantTransitions}
 import org.apache.comet.shims.ShimCometSparkSessionExtensions
 
 /**
@@ -47,6 +47,7 @@ class CometSparkSessionExtensions
   override def apply(extensions: SparkSessionExtensions): Unit = {
     extensions.injectColumnar { session => CometScanColumnar(session) }
     extensions.injectColumnar { session => CometExecColumnar(session) }
+    extensions.injectColumnar { session => CometCompactionColumnar(session) }
     extensions.injectQueryStagePrepRule { session => CometScanRule(session) }
     extensions.injectQueryStagePrepRule { session => CometExecRule(session) }
   }
@@ -60,6 +61,10 @@ class CometSparkSessionExtensions
 
     override def postColumnarTransitions: Rule[SparkPlan] =
       EliminateRedundantTransitions(session)
+  }
+
+  case class CometCompactionColumnar(session: SparkSession) extends ColumnarRule {
+    override def preColumnarTransitions: Rule[SparkPlan] = CometCompactionRule(session)
   }
 }
 
