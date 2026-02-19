@@ -20,6 +20,7 @@
 package org.apache.comet.shims
 
 import org.apache.spark.sql.catalyst.expressions._
+import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.expressions.CometEvalMode
 import org.apache.comet.serde.CommonStringExprs
@@ -31,6 +32,8 @@ import org.apache.comet.serde.ExprOuterClass.{BinaryOutputStyle, Expr}
 trait CometExprShim extends CommonStringExprs {
   protected def evalMode(c: Cast): CometEvalMode.Value =
     CometEvalModeUtil.fromSparkEvalMode(c.evalMode)
+
+  def parseToDateFailOnError(expr: ParseToDate): Boolean = SQLConf.get.ansiEnabled
 
   protected def binaryOutputStyle: BinaryOutputStyle = BinaryOutputStyle.HEX_DISCRETE
 

@@ -114,6 +114,115 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
     }
   }
 
+  test("to_date parses date literal") {
+    withoutConstantFolding {
+      checkSparkAnswerAndOperator("SELECT to_date('2026-01-30')")
+    }
+  }
+
+  test("to_date parses date literal with explicit format") {
+    withoutConstantFolding {
+      checkSparkAnswerAndOperator("SELECT to_date('2026/01/30', 'yyyy/MM/dd')")
+    }
+  }
+
+  test("to_date parses date string column") {
+    withTempView("string_tbl") {
+      val schema = StructType(Seq(StructField("dt_str", DataTypes.StringType, nullable = true)))
+
+      val data = Seq(Row("2026-01-30"), Row("2026-03-10"), Row("2026-10-10"), Row(null))
+
+      spark
+        .createDataFrame(spark.sparkContext.parallelize(data), schema)
+        .createOrReplaceTempView("string_tbl")
+
+      checkSparkAnswerAndOperator("SELECT dt_str, to_date(dt_str) FROM string_tbl")
+    }
+  }
+
+  test("to_date parses date string column with explicit format") {
+    withoutConstantFolding {
+      withTempView("string_tbl") {
+        val schema = StructType(Seq(StructField("dt_str", DataTypes.StringType, nullable = true)))
+
+        val data = Seq(Row("2026/01/30"), Row("2026/03/10"), Row("2026/10/10"), Row(null))
+
+        spark
+          .createDataFrame(spark.sparkContext.parallelize(data), schema)
+          .createOrReplaceTempView("string_tbl")
+
+        checkSparkAnswerAndOperator(
+          "SELECT dt_str, to_date(dt_str, 'yyyy/MM/dd') FROM string_tbl")
+      }
+    }
+  }
+
+  test("to_date parses timestamp literal string") {
+    withoutConstantFolding {
+      checkSparkAnswerAndOperator("SELECT to_date('2026-01-30 04:17:52')")
+    }
+  }
+
+  test("to_date parses timestamp string column") {
+    withTempView("string_tbl") {
+      val schema = StructType(Seq(StructField("dt_str", DataTypes.StringType, nullable = true)))
+
+      val data = Seq(
+        Row("2026-01-30 04:17:52"),
+        Row("2026-03-10 04:17:52"),
+        Row("2026-10-10 04:17:52"),
+        Row(null))
+
+      spark
+        .createDataFrame(spark.sparkContext.parallelize(data), schema)
+        .createOrReplaceTempView("string_tbl")
+
+      checkSparkAnswerAndOperator("SELECT dt_str, to_date(dt_str) FROM string_tbl")
+    }
+  }
+
+  test("to_date returns null for malformed input when ANSI is disabled") {
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "false") {
+      withTempView("string_tbl") {
+        val schema = StructType(Seq(StructField("dt_str", DataTypes.StringType, nullable = true)))
+
+        val data = Seq(Row("2026-01-30"), Row("malformed"), Row(null))
+
+        spark
+          .createDataFrame(spark.sparkContext.parallelize(data), schema)
+          .createOrReplaceTempView("string_tbl")
+
+        checkSparkAnswerAndOperator("SELECT dt_str, to_date(dt_str) FROM string_tbl")
+      }
+    }
+  }
+
+  test("to_date throws for malformed input when ANSI is enabled") {
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+      withTempView("string_tbl") {
+        val schema = StructType(Seq(StructField("dt_str", DataTypes.StringType, nullable = true)))
+
+        val data = Seq(Row("2026-01-30"), Row("malformed"), Row(null))
+
+        spark
+          .createDataFrame(spark.sparkContext.parallelize(data), schema)
+          .createOrReplaceTempView("string_tbl")
+
+        checkSparkAnswerMaybeThrows(sql("SELECT dt_str, to_date(dt_str) FROM string_tbl")) match {
+          case (Some(sparkExc), Some(cometExc)) =>
+            assert(sparkExc.getMessage.toLowerCase.contains("date"))
+            assert(cometExc.getMessage.toLowerCase.contains("date"))
+          case (Some(_), None) =>
+            fail("Expected Comet to throw when Spark throws")
+          case (None, Some(cometExc)) =>
+            throw cometExc
+          case _ =>
+            fail("Expected both Spark and Comet to throw in ANSI mode")
+        }
+      }
+    }
+  }
+
   test("unix_timestamp - timestamp input") {
     createTimestampTestData.createOrReplaceTempView("tbl")
     for (timezone <- Seq("UTC", "America/Los_Angeles")) {
@@ -395,4 +504,9 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
     // Test null handling
     checkSparkAnswerAndOperator("SELECT unix_date(NULL)")
   }
+
+  private def withoutConstantFolding[A](f: => A): Unit =
+    withSQLConf(
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+        "org.apache.spark.sql.catalyst.optimizer.ConstantFolding")(f)
 }
