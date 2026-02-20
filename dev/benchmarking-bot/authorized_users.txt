@@ -1,0 +1,59 @@
+# GitHub usernames of authorized users (DataFusion committers).
+# One username per line. Lines starting with # are comments.
+#
+# Source: https://projects.apache.org/committee.html?datafusion
+#
+# Apache ID -> GitHub username
+adriangb              # Adrian Garcia Badaracco
+andygrove             # agrove - Andrew Grove
+mustafasrepo          # akurmustafa - Mustafa Akur
+alamb                 # alamb - Andrew Lamb
+avantgardnerio        # avantgardner - Brent Gardner
+berkaysynnada         # berkay - Berkay Sahin
+blaginin              # blaginin - Dmitrii Blaginin
+comphead              # comphead - Oleks V
+Dandandan             # dheres - Daniel Heres
+findepi               # findepi - Piotr Findeisen
+gabotechs             # gabotechs - Gabriel Musat
+goldmedal             # goldmedal - Jay Shin
+houqp                 # houqp - QP Hou
+huaxingao             # huaxingao - Huaxin Gao
+isidentical           # iffyio - Batuhan Taskaya
+jackwener             # jakevin - Jack Wener
+jayzhan211            # jayzhan - Jay Zhan
+Jefffrey              # jeffreyvo - Jeffrey
+jiangzhx              # jiayuliu - Jiayu Liu
+jonahgao              # jonah - Jonah Gao
+korowa                # korowa - Oleks Koval
+kazuyukitanimura      # kazuyukitanimura - Kazuyuki Tanimura
+kosiew                # kosiew - Ko Siew
+lewiszlw              # linwei - Lin Wei
+liukun4515            # liukun - Kun Liu
+mbutrovich            # mbutrovich - Matt Butrovich
+metesynnada           # mete - Mehmet Ozan Kabak
+milenkovicm           # milenkovicm - Marko Milenkovic
+mingmwang             # mingmwang - Mingming Wang
+matthewmturner        # mjward - Matthew Turner
+crepererum            # mneumann - Marco Neumann
+yahoNanJing           # nju_yaho - Yaho
+nuno-faria            # nunofaria - Nuno Faria
+ozankabak             # ozankabak - Ozan Kabak (see also metesynnada)
+paddyhoran            # paddyhoran - Paddy Horan
+parthchandra          # parthc - Parth Chandra
+rdettai               # rdettai - Raphael Dettai (not in contributor list, keep Apache ID)
+rluvaton              # rluvaton - Raz Luvaton
+sunchao               # sunchao - Chao Sun
+thinkharderdev        # thinkharderdev - Andrew Lamb (alt)
+timsaucer             # timsaucer - Tim Saucer
+tustvold              # tustvold - Raphael Taylor-Davies
+viirya                # viirya - Liang-Chi Hsieh
+waynexia              # wayne - Wayne Xia
+Weijun-H              # weijun - Weijun Huang
+wesm                  # wesm - Wes McKinney
+wjones127             # wjones127 - Will Jones
+xudong963             # xudong963 - Xudong
+Ted-Jiang             # yangjiang - Ted Jiang
+ycohen                # ycohen - Yoni Cohen (not in contributor list, keep Apache ID)
+yjshen                # yjshen - Yijie Shen
+2010YOUY01            # ytyou - Yongting You
+zhuqi-lucas           # zhuqi - Zhu Qi

@@ -1,0 +1,22 @@
+[project]
+name = "cometbot"
+version = "0.1.0"
+description = "Automate running Comet benchmarks against GitHub PRs"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "click>=8.0",
+    "rich>=13.0",
+    "requests>=2.28",
+    "slack-sdk>=3.0",
+]
+
+[project.scripts]
+cometbot = "cometbot.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cometbot"]

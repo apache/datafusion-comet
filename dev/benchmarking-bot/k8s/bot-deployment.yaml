@@ -1,0 +1,37 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cometbot-bot
+  labels:
+    app: cometbot-bot
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cometbot-bot
+  template:
+    metadata:
+      labels:
+        app: cometbot-bot
+    spec:
+      containers:
+      - name: bot
+        image: {image}
+        command: ["cometbot", "bot", "start"]
+        env:
+        - name: COMETBOT_GITHUB_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: cometbot-secrets
+              key: github-token
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+      restartPolicy: Always
+---
+# Secret for GitHub token (create separately or use kubectl create secret)
+# kubectl create secret generic cometbot-secrets --from-literal=github-token=<your-token>
