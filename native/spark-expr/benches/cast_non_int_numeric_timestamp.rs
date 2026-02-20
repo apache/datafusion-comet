@@ -50,7 +50,11 @@ fn criterion_benchmark(c: &mut Criterion) {
     // Boolean -> Timestamp
     let batch_bool = create_boolean_batch();
     let expr_bool = Arc::new(Column::new("a", 0));
-    let cast_bool_to_ts = Cast::new(expr_bool, timestamp_type.clone(), spark_cast_options.clone());
+    let cast_bool_to_ts = Cast::new(
+        expr_bool,
+        timestamp_type.clone(),
+        spark_cast_options.clone(),
+    );
     group.bench_function("cast_bool_to_timestamp", |b| {
         b.iter(|| cast_bool_to_ts.evaluate(&batch_bool).unwrap());
     });
@@ -58,8 +62,11 @@ fn criterion_benchmark(c: &mut Criterion) {
     // Decimal128 -> Timestamp
     let batch_decimal = create_decimal128_batch();
     let expr_decimal = Arc::new(Column::new("a", 0));
-    let cast_decimal_to_ts =
-        Cast::new(expr_decimal, timestamp_type.clone(), spark_cast_options.clone());
+    let cast_decimal_to_ts = Cast::new(
+        expr_decimal,
+        timestamp_type.clone(),
+        spark_cast_options.clone(),
+    );
     group.bench_function("cast_decimal_to_timestamp", |b| {
         b.iter(|| cast_decimal_to_ts.evaluate(&batch_decimal).unwrap());
     });
@@ -117,7 +124,7 @@ fn create_decimal128_batch() -> RecordBatch {
         if i % 10 == 0 {
             b.append_null();
         } else {
-            b.append_value(rand::random::<i64>() as i128);
+            b.append_value(i as i128 * 1_000_000);
         }
     }
     let array = b.finish().with_precision_and_scale(18, 6).unwrap();

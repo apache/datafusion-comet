@@ -2066,11 +2066,8 @@ mod tests {
         ];
 
         for tz in &timezones {
-            let bool_array: ArrayRef = Arc::new(BooleanArray::from(vec![
-                Some(true),
-                Some(false),
-                None,
-            ]));
+            let bool_array: ArrayRef =
+                Arc::new(BooleanArray::from(vec![Some(true), Some(false), None]));
 
             let result = cast_boolean_to_timestamp(&bool_array, tz).unwrap();
             let ts_array = result.as_primitive::<TimestampMicrosecondType>();

@@ -70,8 +70,6 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
       case _ =>
         if (isAlwaysCastToNull(cast.child.dataType, cast.dataType, cometEvalMode)) {
           exprToProtoInternal(Literal.create(null, cast.dataType), inputs, binding)
-        } else if (isAlwaysCastToUTC(cast.child.dataType, cast.dataType, cometEvalMode)) {
-          exprToProtoInternal(Literal.create(0L, cast.dataType), inputs, binding)
         } else {
           val childExpr = exprToProtoInternal(cast.child, inputs, binding)
           if (childExpr.isDefined) {
@@ -81,17 +79,6 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
             None
           }
         }
-    }
-  }
-
-  private def isAlwaysCastToUTC(
-      fromType: DataType,
-      toType: DataType,
-      evalMode: CometEvalMode.Value): Boolean = {
-    (fromType, toType) match {
-      case (DataTypes.BooleanType, DataTypes.TimestampType) if evalMode == CometEvalMode.ANSI =>
-        true
-      case _ => false
     }
   }
 
