@@ -510,17 +510,17 @@ make<span class="w"> </span>release
 </section>
 <section id="run-benchmarks">
 <h2>Run Benchmarks<a class="headerlink" href="#run-benchmarks" title="Link to this heading">#</a></h2>
-<p>Use the scripts in <code class="docutils literal notranslate"><span class="pre">dev/benchmarks</span></code> in the Comet repository.</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nb">cd</span><span class="w"> </span>dev/benchmarks
+<p>Use the scripts in <code class="docutils literal notranslate"><span class="pre">benchmarks/tpc</span></code> in the Comet repository.</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nb">cd</span><span class="w"> </span>benchmarks/tpc
 <span class="nb">export</span><span class="w"> </span><span class="nv">TPCH_QUERIES</span><span class="o">=</span>/home/ec2-user/datafusion-benchmarks/tpch/queries/
 </pre></div>
 </div>
 <p>Run Spark benchmark:</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>./spark-tpch.sh
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>python3<span class="w"> </span>run.py<span class="w"> </span>--engine<span class="w"> </span>spark<span class="w"> </span>--benchmark<span class="w"> </span>tpch
 </pre></div>
 </div>
 <p>Run Comet benchmark:</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>./comet-tpch.sh
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>python3<span class="w"> </span>run.py<span class="w"> </span>--engine<span class="w"> </span>comet<span class="w"> </span>--benchmark<span class="w"> </span>tpch
 </pre></div>
 </div>
 </section>
@@ -550,7 +550,11 @@ wget<span class="w"> </span>https://repo1.maven.org/maven2/com/amazonaws/aws-jav
 --conf<span class="w"> </span>spark.hadoop.fs.s3a.aws.credentials.provider<span class="o">=</span>com.amazonaws.auth.DefaultAWSCredentialsProviderChain<span class="w"> </span><span class="se">\</span>
 </pre></div>
 </div>
-<p>Now run the <code class="docutils literal notranslate"><span class="pre">spark-tpch.sh</span></code> and <code class="docutils literal notranslate"><span class="pre">comet-tpch.sh</span></code> scripts.</p>
+<p>Now run the benchmarks:</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>python3<span class="w"> </span>run.py<span class="w"> </span>--engine<span class="w"> </span>spark<span class="w"> </span>--benchmark<span class="w"> </span>tpch
+python3<span class="w"> </span>run.py<span class="w"> </span>--engine<span class="w"> </span>comet<span class="w"> </span>--benchmark<span class="w"> </span>tpch
+</pre></div>
+</div>
 </section>
 </section>
 
