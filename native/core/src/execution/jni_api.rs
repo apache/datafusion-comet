@@ -537,7 +537,13 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
 
                 if exec_context.scans.is_empty() {
                     // No JVM data sources — spawn onto tokio so the executor
-                    // thread parks in blocking_recv instead of busy-polling
+                    // thread parks in blocking_recv instead of busy-polling.
+                    //
+                    // Channel capacity of 2 allows the producer to work one batch
+                    // ahead while the consumer processes the current one via JNI,
+                    // without buffering excessive memory. Increasing this would
+                    // trade memory for latency hiding if JNI/FFI overhead dominates;
+                    // decreasing to 1 would serialize production and consumption.
                     let (tx, rx) = mpsc::channel(2);
                     let mut stream = stream;
                     get_runtime().spawn(async move {
