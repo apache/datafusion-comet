@@ -65,10 +65,12 @@ case class CometScanRule(session: SparkSession)
   override def apply(plan: SparkPlan): SparkPlan = {
     val newPlan = _apply(plan)
     if (showTransformations && !newPlan.fastEquals(plan)) {
-      logInfo(s"""
+      // scalastyle:off println
+      println(s"""
            |=== Applying Rule $ruleName ===
            |${sideBySide(plan.treeString, newPlan.treeString).mkString("\n")}
            |""".stripMargin)
+      // scalastyle:on println
     }
     newPlan
   }
