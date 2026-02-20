@@ -19,7 +19,166 @@
 
 package org.apache.comet.iceberg
 
+import java.lang.reflect.Method
+
 import org.apache.spark.internal.Logging
+
+/**
+ * Cache for Iceberg reflection metadata to avoid repeated class loading and method lookups.
+ *
+ * This cache is created once per serializePartitions() call and passed to helper methods. It
+ * provides ~50% serialization speedup by eliminating redundant reflection operations that would
+ * otherwise be performed per-task (tens of thousands of times for large tables).
+ *
+ * @param contentScanTaskClass
+ *   org.apache.iceberg.ContentScanTask
+ * @param fileScanTaskClass
+ *   org.apache.iceberg.FileScanTask
+ * @param contentFileClass
+ *   org.apache.iceberg.ContentFile
+ * @param deleteFileClass
+ *   org.apache.iceberg.DeleteFile
+ * @param schemaParserClass
+ *   org.apache.iceberg.SchemaParser
+ * @param schemaClass
+ *   org.apache.iceberg.Schema
+ * @param partitionSpecParserClass
+ *   org.apache.iceberg.PartitionSpecParser
+ * @param partitionSpecClass
+ *   org.apache.iceberg.PartitionSpec
+ * @param structLikeClass
+ *   org.apache.iceberg.StructLike
+ * @param fileMethod
+ *   ContentScanTask.file()
+ * @param startMethod
+ *   ContentScanTask.start()
+ * @param lengthMethod
+ *   ContentScanTask.length()
+ * @param partitionMethod
+ *   ContentScanTask.partition()
+ * @param residualMethod
+ *   ContentScanTask.residual()
+ * @param taskSchemaMethod
+ *   FileScanTask.schema()
+ * @param deletesMethod
+ *   FileScanTask.deletes()
+ * @param specMethod
+ *   FileScanTask.spec()
+ * @param schemaToJsonMethod
+ *   SchemaParser.toJson(Schema)
+ * @param specToJsonMethod
+ *   PartitionSpecParser.toJson(PartitionSpec)
+ * @param deleteContentMethod
+ *   DeleteFile.content()
+ * @param deleteSpecIdMethod
+ *   DeleteFile.specId()
+ * @param deleteEqualityIdsMethod
+ *   DeleteFile.equalityFieldIds()
+ */
+case class ReflectionCache(
+    // Iceberg classes
+    contentScanTaskClass: Class[_],
+    fileScanTaskClass: Class[_],
+    contentFileClass: Class[_],
+    deleteFileClass: Class[_],
+    schemaParserClass: Class[_],
+    schemaClass: Class[_],
+    partitionSpecParserClass: Class[_],
+    partitionSpecClass: Class[_],
+    structLikeClass: Class[_],
+    // ContentScanTask methods
+    fileMethod: Method,
+    startMethod: Method,
+    lengthMethod: Method,
+    partitionMethod: Method,
+    residualMethod: Method,
+    // FileScanTask methods
+    taskSchemaMethod: Method,
+    deletesMethod: Method,
+    specMethod: Method,
+    // Schema methods
+    schemaToJsonMethod: Method,
+    // PartitionSpec methods
+    specToJsonMethod: Method,
+    // DeleteFile methods
+    deleteContentMethod: Method,
+    deleteSpecIdMethod: Method,
+    deleteEqualityIdsMethod: Method)
+
+object ReflectionCache extends Logging {
+
+  /**
+   * Creates a ReflectionCache by loading all Iceberg classes and methods once.
+   *
+   * This should be called once at the start of serializePartitions() and the cache passed to all
+   * helper methods.
+   *
+   * @return
+   *   ReflectionCache with all classes and methods pre-loaded
+   */
+  def create(): ReflectionCache = {
+    // scalastyle:off classforname
+    val contentScanTaskClass = Class.forName(IcebergReflection.ClassNames.CONTENT_SCAN_TASK)
+    val fileScanTaskClass = Class.forName(IcebergReflection.ClassNames.FILE_SCAN_TASK)
+    val contentFileClass = Class.forName(IcebergReflection.ClassNames.CONTENT_FILE)
+    val deleteFileClass = Class.forName(IcebergReflection.ClassNames.DELETE_FILE)
+    val schemaParserClass = Class.forName(IcebergReflection.ClassNames.SCHEMA_PARSER)
+    val schemaClass = Class.forName(IcebergReflection.ClassNames.SCHEMA)
+    val partitionSpecParserClass =
+      Class.forName(IcebergReflection.ClassNames.PARTITION_SPEC_PARSER)
+    val partitionSpecClass = Class.forName(IcebergReflection.ClassNames.PARTITION_SPEC)
+    val structLikeClass = Class.forName(IcebergReflection.ClassNames.STRUCT_LIKE)
+    // scalastyle:on classforname
+
+    // ContentScanTask methods
+    val fileMethod = contentScanTaskClass.getMethod("file")
+    val startMethod = contentScanTaskClass.getMethod("start")
+    val lengthMethod = contentScanTaskClass.getMethod("length")
+    val partitionMethod = contentScanTaskClass.getMethod("partition")
+    val residualMethod = contentScanTaskClass.getMethod("residual")
+
+    // FileScanTask methods
+    val taskSchemaMethod = fileScanTaskClass.getMethod("schema")
+    val deletesMethod = fileScanTaskClass.getMethod("deletes")
+    val specMethod = fileScanTaskClass.getMethod("spec")
+
+    // Schema methods
+    val schemaToJsonMethod = schemaParserClass.getMethod("toJson", schemaClass)
+    schemaToJsonMethod.setAccessible(true)
+
+    // PartitionSpec methods
+    val specToJsonMethod = partitionSpecParserClass.getMethod("toJson", partitionSpecClass)
+
+    // DeleteFile methods
+    val deleteContentMethod = deleteFileClass.getMethod("content")
+    val deleteSpecIdMethod = deleteFileClass.getMethod("specId")
+    val deleteEqualityIdsMethod = deleteFileClass.getMethod("equalityFieldIds")
+
+    ReflectionCache(
+      contentScanTaskClass = contentScanTaskClass,
+      fileScanTaskClass = fileScanTaskClass,
+      contentFileClass = contentFileClass,
+      deleteFileClass = deleteFileClass,
+      schemaParserClass = schemaParserClass,
+      schemaClass = schemaClass,
+      partitionSpecParserClass = partitionSpecParserClass,
+      partitionSpecClass = partitionSpecClass,
+      structLikeClass = structLikeClass,
+      fileMethod = fileMethod,
+      startMethod = startMethod,
+      lengthMethod = lengthMethod,
+      partitionMethod = partitionMethod,
+      residualMethod = residualMethod,
+      taskSchemaMethod = taskSchemaMethod,
+      deletesMethod = deletesMethod,
+      specMethod = specMethod,
+      schemaToJsonMethod = schemaToJsonMethod,
+      specToJsonMethod = specToJsonMethod,
+      deleteContentMethod = deleteContentMethod,
+      deleteSpecIdMethod = deleteSpecIdMethod,
+      deleteEqualityIdsMethod = deleteEqualityIdsMethod)
+  }
+}
 
 /**
  * Shared reflection utilities for Iceberg operations.
