@@ -22,7 +22,7 @@ package org.apache.comet.serde
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.types._
 
-import org.apache.comet.serde.QueryPlanSerde.{createUnaryExpr, exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
+import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
 
 object CometMapKeys extends CometExpressionSerde[MapKeys] {
 
@@ -85,13 +85,13 @@ object CometMapFromArrays extends CometExpressionSerde[MapFromArrays] {
     val valueType = expr.right.dataType.asInstanceOf[ArrayType].elementType
     val returnType = MapType(keyType = keyType, valueType = valueType)
     for {
-      isNotNullExprProto <- keyIsNotNullExpr(expr, inputs, binding)
+      andBinaryExprProto <- createAndBinaryExpr(expr, inputs, binding)
       mapFromArraysExprProto <- scalarFunctionExprToProto("map", keysExpr, valuesExpr)
       nullLiteralExprProto <- exprToProtoInternal(Literal(null, returnType), inputs, binding)
     } yield {
       val caseWhenExprProto = ExprOuterClass.CaseWhen
         .newBuilder()
-        .addWhen(isNotNullExprProto)
+        .addWhen(andBinaryExprProto)
         .addThen(mapFromArraysExprProto)
         .setElseExpr(nullLiteralExprProto)
         .build()
@@ -102,16 +102,17 @@ object CometMapFromArrays extends CometExpressionSerde[MapFromArrays] {
     }
   }
 
-  private def keyIsNotNullExpr(
+  private def createAndBinaryExpr(
       expr: MapFromArrays,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    createUnaryExpr(
+    createBinaryExpr(
       expr,
-      expr.left,
+      IsNotNull(expr.left),
+      IsNotNull(expr.right),
       inputs,
       binding,
-      (builder, keyExpr) => builder.setIsNotNull(keyExpr))
+      (builder, binaryExpr) => builder.setAnd(binaryExpr))
   }
 }
 
