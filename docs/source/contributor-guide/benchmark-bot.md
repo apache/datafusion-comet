@@ -37,11 +37,11 @@ Run the full TPC-H query suite (SF100) comparing the PR against the main branch:
 
 Options:
 
-| Flag | Description | Default |
-|------|-------------|---------|
-| `--iterations N` | Number of benchmark iterations (max 3) | 1 |
-| `--baseline BRANCH` | Branch to compare against | `main` |
-| `--conf KEY=VALUE` | Spark/Comet config override (only `spark.comet.*` keys allowed). Can be repeated. | — |
+| Flag                | Description                                                                       | Default |
+| ------------------- | --------------------------------------------------------------------------------- | ------- |
+| `--iterations N`    | Number of benchmark iterations (max 3)                                            | 1       |
+| `--baseline BRANCH` | Branch to compare against                                                         | `main`  |
+| `--conf KEY=VALUE`  | Spark/Comet config override (only `spark.comet.*` keys allowed). Can be repeated. | —       |
 
 Examples:
 
@@ -62,9 +62,9 @@ Run a specific JMH microbenchmark class:
 
 Options:
 
-| Flag | Description | Default |
-|------|-------------|---------|
-| `--baseline BRANCH` | Branch to compare against | `main` |
+| Flag                | Description               | Default |
+| ------------------- | ------------------------- | ------- |
+| `--baseline BRANCH` | Branch to compare against | `main`  |
 
 Examples:
 
@@ -90,10 +90,10 @@ Posts the usage reference as a PR comment.
 
 The bot uses GitHub reactions to signal progress:
 
-| Reaction | Meaning |
-|----------|---------|
-| :eyes: | Request acknowledged, job submitted |
-| :rocket: | Job completed successfully |
+| Reaction | Meaning                             |
+| -------- | ----------------------------------- |
+| :eyes:   | Request acknowledged, job submitted |
+| :rocket: | Job completed successfully          |
 
 ### TPC-H Results
 
@@ -247,8 +247,8 @@ package in a virtualenv, and sets up a systemd service.
 
 Required environment variables on the deployment host:
 
-| Variable | Description |
-|----------|-------------|
-| `COMETBOT_GITHUB_TOKEN` | GitHub token for API access and posting results |
-| `COMETBOT_SLACK_TOKEN` | (Optional) Slack bot token for notifications |
-| `COMETBOT_SLACK_CHANNEL` | (Optional) Slack channel for notifications |
+| Variable                 | Description                                     |
+| ------------------------ | ----------------------------------------------- |
+| `COMETBOT_GITHUB_TOKEN`  | GitHub token for API access and posting results |
+| `COMETBOT_SLACK_TOKEN`   | (Optional) Slack bot token for notifications    |
+| `COMETBOT_SLACK_CHANNEL` | (Optional) Slack channel for notifications      |

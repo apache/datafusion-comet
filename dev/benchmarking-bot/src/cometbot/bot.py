@@ -1,3 +1,20 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
 """GitHub bot that monitors Comet PRs for benchmark requests."""
 
 import json
@@ -38,8 +55,7 @@ def _load_authorized_users() -> set[str]:
                 if line:
                     users.add(line)
     if not users:
-        # Fallback if file is missing
-        users = {"andygrove", "comphead", "mbutrovich", "parthchandra"}
+        console.print("[bold red]WARNING: No authorized users loaded. No one will be able to trigger benchmarks.[/bold red]")
     return users
 
 AUTHORIZED_USERS = _load_authorized_users()
@@ -73,7 +89,10 @@ def load_state() -> dict:
 
 
 def save_state(state: dict) -> None:
-    """Save processed comments state."""
+    """Save processed comments state. Prunes to last 10000 comment IDs."""
+    max_comments = 10000
+    if len(state["processed_comments"]) > max_comments:
+        state["processed_comments"] = state["processed_comments"][-max_comments:]
     with open(STATE_FILE, "w") as f:
         json.dump(state, f)
 
@@ -294,8 +313,21 @@ def parse_benchmark_request(comment: dict, repo: str, pr_number: int) -> Benchma
     )
 
 
-def parse_comet_configs(args: list[str]) -> dict[str, str]:
-    """Parse --conf arguments and filter to only spark.comet.* configs."""
+def _is_safe_git_ref(ref: str) -> bool:
+    """Validate that a git ref name is safe (no shell metacharacters)."""
+    return bool(re.match(r'^[a-zA-Z0-9._\-/]+$', ref)) and len(ref) <= 128
+
+
+def _is_safe_class_name(name: str) -> bool:
+    """Validate that a benchmark class name is safe (Java class name chars only)."""
+    return bool(re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', name)) and len(name) <= 128
+
+
+def parse_comet_configs(args: list[str]) -> dict[str, str] | None:
+    """Parse --conf arguments and filter to only spark.comet.* configs.
+
+    Returns None if any config value fails validation.
+    """
     configs = {}
     i = 0
     while i < len(args):
@@ -304,17 +336,25 @@ def parse_comet_configs(args: list[str]) -> dict[str, str]:
             if "=" in conf:
                 key, value = conf.split("=", 1)
                 # Only allow spark.comet.* configs for security
-                if key.startswith("spark.comet."):
-                    configs[key] = value
-                else:
+                if not key.startswith("spark.comet."):
                     console.print(f"[yellow]Ignoring non-comet config: {key}[/yellow]")
+                    i += 2
+                    continue
+                # Validate key and value contain no shell metacharacters
+                if not re.match(r'^[a-zA-Z0-9._\-]+$', key):
+                    console.print(f"[red]Invalid config key: {key!r}[/red]")
+                    return None
+                if not re.match(r'^[a-zA-Z0-9._\-/=:]+$', value):
+                    console.print(f"[red]Invalid config value for {key}: {value!r}[/red]")
+                    return None
+                configs[key] = value
             i += 2
         else:
             i += 1
     return configs
 
 
-def run_tpch_benchmark(token: str, pr_number: int, comment_id: int, args: list[str]) -> str:
+def run_tpch_benchmark(token: str, pr_number: int, comment_id: int, args: list[str]) -> str | None:
     """Run TPC-H benchmark for a PR.
 
     Builds the Docker image with PR-specific tag, submits the K8s job,
@@ -348,8 +388,15 @@ def run_tpch_benchmark(token: str, pr_number: int, comment_id: int, args: list[s
         elif arg in ("--baseline", "-b") and i + 1 < len(args):
             baseline_branch = args[i + 1]
 
+    # Validate baseline branch name to prevent injection
+    if not _is_safe_git_ref(baseline_branch):
+        console.print(f"[red]Invalid baseline branch name: {baseline_branch!r}[/red]")
+        return None
+
     # Parse --conf arguments (only spark.comet.* allowed)
     comet_configs = parse_comet_configs(args)
+    if comet_configs is None:
+        return None  # Validation failed
 
     console.print(f"[bold blue]Running TPC-H benchmark for PR #{pr_number}[/bold blue]")
     console.print(f"Iterations: {iterations}, Baseline: {baseline_branch}")
@@ -404,12 +451,23 @@ def run_micro_benchmark(token: str, pr_number: int, comment_id: int, args: list[
         return None
 
     benchmark_class = args[0]
+
+    # Validate benchmark class name to prevent injection
+    if not _is_safe_class_name(benchmark_class):
+        console.print(f"[red]Invalid benchmark class name: {benchmark_class!r}[/red]")
+        return None
+
     baseline_branch = "main"
 
     # Parse remaining args
     for i, arg in enumerate(args):
         if arg in ("--baseline", "-b") and i + 1 < len(args):
             baseline_branch = args[i + 1]
+
+    # Validate baseline branch name to prevent injection
+    if not _is_safe_git_ref(baseline_branch):
+        console.print(f"[red]Invalid baseline branch name: {baseline_branch!r}[/red]")
+        return None
 
     console.print(f"[bold blue]Running microbenchmark for PR #{pr_number}[/bold blue]")
     console.print(f"Benchmark: {benchmark_class}, Baseline: {baseline_branch}")

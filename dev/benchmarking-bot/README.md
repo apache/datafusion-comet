@@ -1,3 +1,22 @@
+<!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
 # Comet Benchmark Automation Bot
 
 Automated benchmarking for [Apache DataFusion Comet](https://github.com/apache/datafusion-comet) PRs. Runs TPC-H and microbenchmarks in Kubernetes, triggered by GitHub PR comments.
@@ -21,6 +40,7 @@ Authorized users can trigger benchmarks by commenting on a Comet PR with slash c
 ### Reactions
 
 The bot uses reactions to signal status:
+
 - :eyes: -- request acknowledged, job submitted
 - :rocket: -- job completed successfully
 - :thumbsdown: -- job failed or invalid request
@@ -85,6 +105,7 @@ export COMETBOT_DEPLOY_DIR=/home/myuser/cometbot
 ```
 
 This script:
+
 1. Builds the Python wheel
 2. Copies files to the remote host
 3. Builds the Docker image on the remote host
@@ -95,20 +116,20 @@ This script:
 
 **Required for deployment:**
 
-| Variable | Description |
-|----------|-------------|
-| `COMETBOT_DEPLOY_HOST` | Remote hostname to deploy to |
-| `COMETBOT_DEPLOY_USER` | SSH username on remote host |
-| `COMETBOT_DEPLOY_DIR` | Installation directory on remote host |
+| Variable               | Description                           |
+| ---------------------- | ------------------------------------- |
+| `COMETBOT_DEPLOY_HOST` | Remote hostname to deploy to          |
+| `COMETBOT_DEPLOY_USER` | SSH username on remote host           |
+| `COMETBOT_DEPLOY_DIR`  | Installation directory on remote host |
 
 **Runtime (set in `$COMETBOT_DEPLOY_DIR/env` on the deployment host):**
 
-| Variable | Description |
-|----------|-------------|
-| `COMETBOT_GITHUB_TOKEN` | GitHub token for API access and posting results |
-| `COMETBOT_REGISTRY` | Docker registry for benchmark images (default: `localhost:5000`) |
-| `COMETBOT_SLACK_TOKEN` | (Optional) Slack bot token for notifications |
-| `COMETBOT_SLACK_CHANNEL` | (Optional) Slack channel for notifications |
+| Variable                 | Description                                                      |
+| ------------------------ | ---------------------------------------------------------------- |
+| `COMETBOT_GITHUB_TOKEN`  | GitHub token for API access and posting results                  |
+| `COMETBOT_REGISTRY`      | Docker registry for benchmark images (default: `localhost:5000`) |
+| `COMETBOT_SLACK_TOKEN`   | (Optional) Slack bot token for notifications                     |
+| `COMETBOT_SLACK_CHANNEL` | (Optional) Slack channel for notifications                       |
 
 ## Security Considerations
 
