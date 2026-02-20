@@ -92,9 +92,9 @@ use crate::execution::spark_config::{
 use crate::parquet::encryption_support::{CometEncryptionFactory, ENCRYPTION_FACTORY_ID};
 use datafusion_comet_proto::spark_operator::operator::OpStruct;
 use log::info;
+use std::sync::OnceLock;
 #[cfg(feature = "jemalloc")]
 use tikv_jemalloc_ctl::{epoch, stats};
-use std::sync::OnceLock;
 
 static TOKIO_RUNTIME: OnceLock<Runtime> = OnceLock::new();
 
