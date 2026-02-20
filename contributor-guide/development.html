@@ -466,6 +466,99 @@ under the License.
 </pre></div>
 </div>
 </section>
+<section id="threading-architecture">
+<h2>Threading Architecture<a class="headerlink" href="#threading-architecture" title="Link to this heading">#</a></h2>
+<p>Comet’s native execution runs on a shared tokio multi-threaded runtime. Understanding this
+architecture is important because it affects how you write native operators and JVM callbacks.</p>
+<section id="how-execution-works">
+<h3>How execution works<a class="headerlink" href="#how-execution-works" title="Link to this heading">#</a></h3>
+<p>Spark calls into native code via JNI from an <strong>executor task thread</strong>. There are two execution
+paths depending on whether the plan reads data from the JVM:</p>
+<p><strong>Async I/O path (no JVM data sources, e.g. Iceberg scans):</strong> The DataFusion stream is spawned
+onto a tokio worker thread and batches are delivered to the executor thread via an <code class="docutils literal notranslate"><span class="pre">mpsc</span></code> channel.
+The executor thread parks in <code class="docutils literal notranslate"><span class="pre">blocking_recv()</span></code> until the next batch is ready. This avoids
+busy-polling on I/O-bound workloads.</p>
+<p><strong>JVM data source path (ScanExec present):</strong> The executor thread calls <code class="docutils literal notranslate"><span class="pre">block_on()</span></code> and polls the
+DataFusion stream directly, interleaving <code class="docutils literal notranslate"><span class="pre">pull_input_batches()</span></code> calls on <code class="docutils literal notranslate"><span class="pre">Poll::Pending</span></code> to feed
+data from the JVM into ScanExec operators.</p>
+<p>In both cases, DataFusion operators execute on <strong>tokio worker threads</strong>, not on the Spark executor
+task thread. All Spark tasks on an executor share one tokio runtime.</p>
+</section>
+<section id="rules-for-native-code">
+<h3>Rules for native code<a class="headerlink" href="#rules-for-native-code" title="Link to this heading">#</a></h3>
+<p><strong>Do not use <code class="docutils literal notranslate"><span class="pre">thread_local!</span></code> or assume thread identity.</strong> Tokio may run your operator’s <code class="docutils literal notranslate"><span class="pre">poll</span></code>
+method on any worker thread, and may move it between threads across polls. Any state must live
+in the operator struct or be shared via <code class="docutils literal notranslate"><span class="pre">Arc</span></code>.</p>
+<p><strong>JNI calls work from any thread, but have overhead.</strong> <code class="docutils literal notranslate"><span class="pre">JVMClasses::get_env()</span></code> calls
+<code class="docutils literal notranslate"><span class="pre">AttachCurrentThread</span></code>, which acquires JVM internal locks. The <code class="docutils literal notranslate"><span class="pre">AttachGuard</span></code> detaches the thread
+when dropped. Repeated attach/detach cycles on tokio workers add overhead, so avoid calling
+into the JVM on hot paths during stream execution.</p>
+<p><strong>Do not call <code class="docutils literal notranslate"><span class="pre">TaskContext.get()</span></code> from JVM callbacks during execution.</strong> Spark’s <code class="docutils literal notranslate"><span class="pre">TaskContext</span></code> is
+a <code class="docutils literal notranslate"><span class="pre">ThreadLocal</span></code> on the executor task thread. JVM methods invoked from tokio worker threads will
+see <code class="docutils literal notranslate"><span class="pre">null</span></code>. If you need task metadata, capture it at construction time (in <code class="docutils literal notranslate"><span class="pre">createPlan</span></code> or
+operator setup) and store it in the operator. See <code class="docutils literal notranslate"><span class="pre">CometTaskMemoryManager</span></code> for an example — it
+captures <code class="docutils literal notranslate"><span class="pre">TaskContext.get().taskMemoryManager()</span></code> in its constructor and uses the stored reference
+thereafter.</p>
+<p><strong>Memory pool operations call into the JVM.</strong> <code class="docutils literal notranslate"><span class="pre">CometUnifiedMemoryPool</span></code> and <code class="docutils literal notranslate"><span class="pre">CometFairMemoryPool</span></code>
+call <code class="docutils literal notranslate"><span class="pre">acquireMemory()</span></code> / <code class="docutils literal notranslate"><span class="pre">releaseMemory()</span></code> via JNI whenever DataFusion operators grow or shrink
+memory reservations. This happens on whatever thread the operator is executing on. These calls
+are thread-safe (they use stored <code class="docutils literal notranslate"><span class="pre">GlobalRef</span></code>s, not thread-locals), but they do trigger
+<code class="docutils literal notranslate"><span class="pre">AttachCurrentThread</span></code>.</p>
+<p><strong>Scalar subqueries call into the JVM.</strong> <code class="docutils literal notranslate"><span class="pre">Subquery::evaluate()</span></code> calls static methods on
+<code class="docutils literal notranslate"><span class="pre">CometScalarSubquery</span></code> via JNI. These use a static <code class="docutils literal notranslate"><span class="pre">HashMap</span></code>, not thread-locals, so they are
+safe from any thread.</p>
+<p><strong>Parquet encryption calls into the JVM.</strong> <code class="docutils literal notranslate"><span class="pre">CometKeyRetriever::retrieve_key()</span></code> calls the JVM
+to unwrap decryption keys during Parquet reads. It uses a stored <code class="docutils literal notranslate"><span class="pre">GlobalRef</span></code> and a cached
+<code class="docutils literal notranslate"><span class="pre">JMethodID</span></code>, so it is safe from any thread.</p>
+</section>
+<section id="the-tokio-runtime">
+<h3>The tokio runtime<a class="headerlink" href="#the-tokio-runtime" title="Link to this heading">#</a></h3>
+<p>The runtime is created once per executor JVM in a <code class="docutils literal notranslate"><span class="pre">Lazy&lt;Runtime&gt;</span></code> static:</p>
+<ul class="simple">
+<li><p><strong>Worker threads:</strong> <code class="docutils literal notranslate"><span class="pre">num_cpus</span></code> by default, configurable via <code class="docutils literal notranslate"><span class="pre">COMET_WORKER_THREADS</span></code></p></li>
+<li><p><strong>Max blocking threads:</strong> 512 by default, configurable via <code class="docutils literal notranslate"><span class="pre">COMET_MAX_BLOCKING_THREADS</span></code></p></li>
+<li><p>All async I/O (S3, HTTP, Parquet reads) runs on worker threads as non-blocking futures</p></li>
+</ul>
+</section>
+<section id="summary-of-what-is-safe-and-what-is-not">
+<h3>Summary of what is safe and what is not<a class="headerlink" href="#summary-of-what-is-safe-and-what-is-not" title="Link to this heading">#</a></h3>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Pattern</p></th>
+<th class="head"><p>Safe?</p></th>
+<th class="head"><p>Notes</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">Arc&lt;T&gt;</span></code> shared across operators</p></td>
+<td><p>Yes</p></td>
+<td><p>Standard Rust thread safety</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">JVMClasses::get_env()</span></code> from tokio worker</p></td>
+<td><p>Yes</p></td>
+<td><p>Attaches thread to JVM automatically</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">thread_local!</span></code> in operator code</p></td>
+<td><p><strong>No</strong></p></td>
+<td><p>Tokio moves tasks between threads</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">TaskContext.get()</span></code> in JVM callback</p></td>
+<td><p><strong>No</strong></p></td>
+<td><p>Returns <code class="docutils literal notranslate"><span class="pre">null</span></code> on non-executor threads</p></td>
+</tr>
+<tr class="row-even"><td><p>Storing <code class="docutils literal notranslate"><span class="pre">JNIEnv</span></code> in an operator</p></td>
+<td><p><strong>No</strong></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">JNIEnv</span></code> is thread-specific</p></td>
+</tr>
+<tr class="row-odd"><td><p>Capturing state at plan creation time</p></td>
+<td><p>Yes</p></td>
+<td><p>Runs on executor thread, store in struct</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+</section>
 <section id="development-setup">
 <h2>Development Setup<a class="headerlink" href="#development-setup" title="Link to this heading">#</a></h2>
 <ol class="arabic simple">
