@@ -493,7 +493,7 @@ object CometConf extends ShimCometConf {
     .doc("The columnar batch size, i.e., the maximum number of rows that a batch can contain.")
     .intConf
     .checkValue(v => v > 0, "Batch size must be positive")
-    .createWithDefault(8192)
+    .createWithDefault(32768)
 
   val COMET_COLUMNAR_SHUFFLE_BATCH_SIZE: ConfigEntry[Int] =
     conf("spark.comet.columnar.shuffle.batch.size")
@@ -505,7 +505,7 @@ object CometConf extends ShimCometConf {
       .checkValue(
         v => v <= COMET_BATCH_SIZE.get(),
         "Should not be larger than batch size `spark.comet.batchSize`")
-      .createWithDefault(8192)
+      .createWithDefault(32768)
 
   val COMET_SHUFFLE_WRITE_BUFFER_SIZE: ConfigEntry[Long] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.writeBufferSize")
