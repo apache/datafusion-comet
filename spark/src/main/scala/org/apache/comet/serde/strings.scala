@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import java.util.Locale
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Concat, ConcatWs, Expression, If, InitCap, IsNull, Left, Length, Like, Literal, Lower, RegExpReplace, Right, RLike, StringLPad, StringRepeat, StringRPad, StringSplit, Substring, Upper}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Concat, ConcatWs, Expression, If, InitCap, IsNull, Left, Length, Like, Literal, Lower, ParseUrl, RegExpReplace, Right, RLike, StringLPad, StringRepeat, StringRPad, StringSplit, Substring, Upper}
 import org.apache.spark.sql.types.{BinaryType, DataTypes, LongType, StringType}
 import org.apache.spark.unsafe.types.UTF8String
 
@@ -29,7 +29,7 @@ import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.expressions.{CometCast, CometEvalMode, RegExp}
 import org.apache.comet.serde.ExprOuterClass.Expr
-import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType}
+import org.apache.comet.serde.QueryPlanSerde._
 
 object CometStringRepeat extends CometExpressionSerde[StringRepeat] {
 
@@ -379,6 +379,34 @@ object CometStringSplit extends CometExpressionSerde[StringSplit] {
       regexExpr,
       limitExpr)
     optExprWithInfo(optExpr, expr, expr.str, expr.regex, expr.limit)
+  }
+}
+
+object CometParseUrl extends CometExpressionSerde[ParseUrl] {
+  private def convertInternal(
+      expr: Expression,
+      rawChildren: Seq[Expression],
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    val parseUrlArgs: Seq[Expression] = rawChildren.lastOption match {
+      case Some(Literal(_: Boolean, _)) => rawChildren.dropRight(1)
+      case Some(Literal(_: java.lang.Boolean, _)) => rawChildren.dropRight(1)
+      case _ => rawChildren
+    }
+    val childExprs: Seq[Option[Expr]] = parseUrlArgs.map(exprToProtoInternal(_, inputs, binding))
+    val optExpr: Option[Expr] = scalarFunctionExprToProto("parse_url", childExprs: _*)
+    optExprWithInfo(optExpr, expr, parseUrlArgs: _*)
+  }
+
+  def convertExpression(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    convertInternal(expr, expr.children, inputs, binding)
+  }
+
+  override def convert(expr: ParseUrl, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
+    convertInternal(expr, expr.children, inputs, binding)
   }
 }
 

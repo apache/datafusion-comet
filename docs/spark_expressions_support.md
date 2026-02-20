@@ -470,7 +470,7 @@
 
 ### url_funcs
 
-- [ ] parse_url
+- [x] parse_url
 - [ ] url_decode
 - [ ] url_encode
 

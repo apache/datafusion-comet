@@ -248,6 +248,29 @@ class CometStringExpressionSuite extends CometTestBase {
     }
   }
 
+  test("parse_url") {
+    withParquetTable(
+      Seq(
+        ("http://spark.apache.org/path?query=1", 0),
+        ("https://spark.apache.org/path/to/page?query=1&k2=v2", 1),
+        (null, 2)),
+      "tbl_parse_url") {
+
+      val df = spark.sql("SELECT parse_url(_1, 'PATH') FROM tbl_parse_url")
+      df.show(20, false)
+      val df2 = spark.sql("SELECT parse_url(_1, 'FILE') FROM tbl_parse_url")
+      df2.show(20, false)
+
+      checkSparkAnswerAndOperator("SELECT parse_url(_1, 'HOST') FROM tbl_parse_url")
+      checkSparkAnswerAndOperator("SELECT parse_url(_1, 'QUERY') FROM tbl_parse_url")
+      checkSparkAnswerAndOperator("SELECT parse_url(_1, 'PROTOCOL') FROM tbl_parse_url")
+      checkSparkAnswerAndOperator(
+        "SELECT parse_url(_1, 'QUERY', 'query'), parse_url(_1, 'QUERY', 'k2') FROM tbl_parse_url")
+      checkSparkAnswerAndOperator("SELECT parse_url(_1, 'PATH') FROM tbl_parse_url")
+      checkSparkAnswerAndOperator("SELECT parse_url(_1, 'FILE') FROM tbl_parse_url")
+    }
+  }
+
   test("Various String scalar functions") {
     val table = "names"
     withTable(table) {
