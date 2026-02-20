@@ -51,16 +51,16 @@ use iceberg::scan::FileScanTask;
 /// Executes pre-planned FileScanTasks for efficient parallel scanning.
 #[derive(Debug)]
 pub struct IcebergScanExec {
-    /// Iceberg table metadata location for FileIO initialization
-    metadata_location: String,
     /// Output schema after projection
     output_schema: SchemaRef,
     /// Cached execution plan properties
     plan_properties: PlanProperties,
-    /// Catalog-specific configuration for FileIO
-    catalog_properties: HashMap<String, String>,
+    /// Reused across execute() calls to preserve cached OpenDAL operators
+    file_io: FileIO,
     /// Pre-planned file scan tasks
     tasks: Vec<FileScanTask>,
+    /// Number of data files to read concurrently
+    data_file_concurrency_limit: usize,
     /// Metrics
     metrics: ExecutionPlanMetricsSet,
 }
@@ -71,18 +71,20 @@ impl IcebergScanExec {
         schema: SchemaRef,
         catalog_properties: HashMap<String, String>,
         tasks: Vec<FileScanTask>,
+        data_file_concurrency_limit: usize,
     ) -> Result<Self, ExecutionError> {
         let output_schema = schema;
         let plan_properties = Self::compute_properties(Arc::clone(&output_schema), 1);
+        let file_io = Self::load_file_io(&catalog_properties, &metadata_location)?;
 
         let metrics = ExecutionPlanMetricsSet::new();
 
         Ok(Self {
-            metadata_location,
             output_schema,
             plan_properties,
-            catalog_properties,
+            file_io,
             tasks,
+            data_file_concurrency_limit,
             metrics,
         })
     }
@@ -147,7 +149,7 @@ impl IcebergScanExec {
         context: Arc<TaskContext>,
     ) -> DFResult<SendableRecordBatchStream> {
         let output_schema = Arc::clone(&self.output_schema);
-        let file_io = Self::load_file_io(&self.catalog_properties, &self.metadata_location)?;
+        let file_io = self.file_io.clone();
         let batch_size = context.session_config().batch_size();
 
         let metrics = IcebergScanMetrics::new(&self.metrics);
@@ -158,7 +160,7 @@ impl IcebergScanExec {
 
         let reader = iceberg::arrow::ArrowReaderBuilder::new(file_io)
             .with_batch_size(batch_size)
-            .with_data_file_concurrency_limit(context.session_config().target_partitions())
+            .with_data_file_concurrency_limit(self.data_file_concurrency_limit)
             .with_row_selection_enabled(true)
             .build();
 
@@ -301,11 +303,6 @@ where
 
 impl DisplayAs for IcebergScanExec {
     fn fmt_as(&self, _t: DisplayFormatType, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(
-            f,
-            "IcebergScanExec: metadata_location={}, num_tasks={}",
-            self.metadata_location,
-            self.tasks.len()
-        )
+        write!(f, "IcebergScanExec: num_tasks={}", self.tasks.len())
     }
 }

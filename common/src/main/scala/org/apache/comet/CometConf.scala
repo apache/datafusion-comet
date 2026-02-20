@@ -148,6 +148,17 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_ICEBERG_DATA_FILE_CONCURRENCY_LIMIT: ConfigEntry[Int] =
+    conf("spark.comet.scan.icebergNative.dataFileConcurrencyLimit")
+      .category(CATEGORY_SCAN)
+      .doc(
+        "The number of Iceberg data files to read concurrently within a single task. " +
+          "Higher values improve throughput for tables with many small files by overlapping " +
+          "I/O latency, but increase memory usage. Values between 2 and 8 are suggested.")
+      .intConf
+      .checkValue(v => v > 0, "Data file concurrency limit must be positive")
+      .createWithDefault(1)
+
   val COMET_CSV_V2_NATIVE_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.scan.csv.v2.enabled")
       .category(CATEGORY_TESTING)

@@ -31,7 +31,7 @@ import org.apache.spark.sql.comet.{CometBatchScanExec, CometNativeExec}
 import org.apache.spark.sql.execution.datasources.v2.{BatchScanExec, DataSourceRDD, DataSourceRDDPartition}
 import org.apache.spark.sql.types._
 
-import org.apache.comet.ConfigEntry
+import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.iceberg.{CometIcebergNativeScanMetadata, IcebergReflection}
 import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass}
 import org.apache.comet.serde.ExprOuterClass.Expr
@@ -757,6 +757,8 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     var totalTasks = 0
 
     commonBuilder.setMetadataLocation(metadata.metadataLocation)
+    commonBuilder.setDataFileConcurrencyLimit(
+      CometConf.COMET_ICEBERG_DATA_FILE_CONCURRENCY_LIMIT.get())
     metadata.catalogProperties.foreach { case (key, value) =>
       commonBuilder.putCatalogProperties(key, value)
     }
@@ -784,6 +786,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     val startMethod = contentScanTaskClass.getMethod("start")
     val lengthMethod = contentScanTaskClass.getMethod("length")
     val residualMethod = contentScanTaskClass.getMethod("residual")
+    val fileSizeInBytesMethod = contentFileClass.getMethod("fileSizeInBytes")
     val taskSchemaMethod = fileScanTaskClass.getMethod("schema")
     val toJsonMethod = schemaParserClass.getMethod("toJson", schemaClass)
     toJsonMethod.setAccessible(true)
@@ -837,6 +840,10 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
 
                 val length = lengthMethod.invoke(task).asInstanceOf[Long]
                 taskBuilder.setLength(length)
+
+                val fileSizeInBytes =
+                  fileSizeInBytesMethod.invoke(dataFile).asInstanceOf[Long]
+                taskBuilder.setFileSizeInBytes(fileSizeInBytes)
 
                 val taskSchema = taskSchemaMethod.invoke(task)
 
