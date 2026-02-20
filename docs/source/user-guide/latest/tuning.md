@@ -116,6 +116,18 @@ to test with both for your specific workloads.
 
 To configure Comet to convert `SortMergeJoin` to `ShuffledHashJoin`, set `spark.comet.exec.replaceSortMergeJoin=true`.
 
+When this feature is enabled, Comet uses statistics-based guards to only rewrite joins where the build side is
+estimated to fit in memory. Specifically:
+
+- The build side must be small enough that each partition's hash table fits in memory, using Spark's
+  `autoBroadcastJoinThreshold * numShufflePartitions` as the threshold (matching Spark's own `canBuildLocalHashMapBySize`
+  logic).
+- The build side must be significantly smaller than the probe side. The required ratio is controlled by
+  `spark.comet.exec.replaceSortMergeJoin.sizeRatio` (default: 3), matching Spark's `SHUFFLE_HASH_JOIN_FACTOR`.
+
+If either check fails, the `SortMergeJoin` is kept as-is. To understand why a specific join was not rewritten, enable
+`spark.comet.explainFallback.enabled=true` and check the logs.
+
 ## Shuffle
 
 Comet provides accelerated shuffle implementations that can be used to improve the performance of your queries.
