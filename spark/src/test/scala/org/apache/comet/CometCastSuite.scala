@@ -1087,8 +1087,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast TimestampType to LongType") {
-    // currently fails on timestamps outside chrono
-    castTest(generateTimestamps(), DataTypes.LongType)
+    castTest(generateTimestampsExtended(), DataTypes.LongType)
   }
 
   ignore("cast TimestampType to FloatType") {
