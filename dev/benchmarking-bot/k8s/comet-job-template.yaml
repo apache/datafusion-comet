@@ -1,0 +1,82 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {job_name}
+  labels:
+    app: comet-benchmark-automation
+    pr: "{pr_number}"
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: comet-benchmark-automation
+        pr: "{pr_number}"
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+      containers:
+      - name: benchmark
+        image: {image}
+        imagePullPolicy: Always
+        env:
+        - name: PR_NUMBER
+          value: "{pr_number}"
+        - name: BENCHMARK_MODE
+          value: "{benchmark_mode}"
+        - name: TPCH_DATA
+          value: "/data/tpch/sf100"
+        - name: TPCH_QUERIES
+          value: "{tpch_queries}"
+        - name: ITERATIONS
+          value: "{iterations}"
+        - name: MICRO_BENCHMARK
+          value: "{micro_benchmark}"
+        - name: SPARK_MASTER
+          value: "{spark_master}"
+        - name: COMET_CONFIGS
+          value: "{comet_configs}"
+        - name: GITHUB_TOKEN
+          value: "{github_token}"
+        - name: BASELINE_BRANCH
+          value: "{baseline_branch}"
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
+        resources:
+          requests:
+            memory: "64Gi"
+            cpu: "8"
+          limits:
+            memory: "64Gi"
+            cpu: "8"
+        volumeMounts:
+        - name: tpch-data
+          mountPath: /data/tpch
+          readOnly: true
+      volumes:
+      - name: tpch-data
+        hostPath:
+          path: /mnt/bigdata/tpch
+          type: Directory
