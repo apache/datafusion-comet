@@ -90,6 +90,8 @@ import org.apache.parquet.schema.MessageType;
 import org.apache.parquet.schema.PrimitiveType;
 import org.apache.spark.sql.execution.metric.SQLMetric;
 
+import org.apache.comet.IcebergApi;
+
 import static org.apache.parquet.hadoop.ParquetFileWriter.EFMAGIC;
 import static org.apache.parquet.hadoop.ParquetFileWriter.MAGIC;
 
@@ -101,6 +103,7 @@ import static org.apache.comet.parquet.RowGroupFilter.FilterLevel.STATISTICS;
  * A Parquet file reader. Mostly followed {@code ParquetFileReader} in {@code parquet-mr}, but with
  * customizations & optimizations for Comet.
  */
+@IcebergApi
 public class FileReader implements Closeable {
   private static final Logger LOG = LoggerFactory.getLogger(FileReader.class);
 
@@ -135,6 +138,7 @@ public class FileReader implements Closeable {
   }
 
   /** This constructor is called from Apache Iceberg. */
+  @IcebergApi
   public FileReader(
       WrappedInputFile file,
       ReadOptions cometOptions,
@@ -258,6 +262,7 @@ public class FileReader implements Closeable {
   }
 
   /** This method is called from Apache Iceberg. */
+  @IcebergApi
   public void setRequestedSchemaFromSpecs(List<ParquetColumnSpec> specList) {
     paths.clear();
     for (ParquetColumnSpec colSpec : specList) {
@@ -336,6 +341,7 @@ public class FileReader implements Closeable {
   }
 
   /** Skips the next row group. Returns false if there's no row group to skip. Otherwise, true. */
+  @IcebergApi
   public boolean skipNextRowGroup() {
     return advanceToNextBlock();
   }
@@ -344,6 +350,7 @@ public class FileReader implements Closeable {
    * Returns the next row group to read (after applying row group filtering), or null if there's no
    * more row group.
    */
+  @IcebergApi
   public RowGroupReader readNextRowGroup() throws IOException {
     if (currentBlock == blocks.size()) {
       return null;
@@ -864,6 +871,7 @@ public class FileReader implements Closeable {
     }
   }
 
+  @IcebergApi
   @Override
   public void close() throws IOException {
     try {
