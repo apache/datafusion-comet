@@ -161,6 +161,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[Like] -> CometLike,
     classOf[Lower] -> CometLower,
     classOf[OctetLength] -> CometScalarFunction("octet_length"),
+    classOf[ParseUrl] -> CometParseUrl,
     classOf[RegExpReplace] -> CometRegExpReplace,
     classOf[Reverse] -> CometReverse,
     classOf[RLike] -> CometRLike,
@@ -631,6 +632,9 @@ object QueryPlanSerde extends Logging with CometExprShim {
           // `UnaryExpression` includes `PromotePrecision` for Spark 3.3
           // `PromotePrecision` is just a wrapper, don't need to serialize it.
           exprToProtoInternal(child, inputs, binding)
+
+        case expr if expr.prettyName == "parse_url" =>
+          CometParseUrl.convertExpression(expr, inputs, binding)
 
         case expr =>
           QueryPlanSerde.exprSerdeMap.get(expr.getClass) match {
