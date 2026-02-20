@@ -504,9 +504,12 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(withNulls(values).toDF("a"), DataTypes.StringType)
   }
 
-  ignore("cast FloatType to TimestampType") {
-    // java.lang.ArithmeticException: long overflow
-    castTest(generateFloats(), DataTypes.TimestampType)
+  test("cast FloatType to TimestampType") {
+    compatibleTimezones.foreach { tz =>
+      withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
+        castTest(generateFloats(), DataTypes.TimestampType)
+      }
+    }
   }
 
   // CAST from DoubleType
@@ -560,9 +563,17 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(withNulls(values).toDF("a"), DataTypes.StringType)
   }
 
-  ignore("cast DoubleType to TimestampType") {
-    // java.lang.ArithmeticException: long overflow
-    castTest(generateDoubles(), DataTypes.TimestampType)
+  test("cast DoubleType to TimestampType") {
+    // Cast back to double avoids java.sql.Timestamp overflow during collect() for extreme values
+    compatibleTimezones.foreach { tz =>
+      withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
+        withTable("t1") {
+          generateLongs().write.saveAsTable("t1")
+          val df = spark.sql("select a, cast(cast(a as timestamp) as double) from t1")
+          checkSparkAnswerAndOperator(df)
+        }
+      }
+    }
   }
 
   // CAST from DecimalType(10,2)
