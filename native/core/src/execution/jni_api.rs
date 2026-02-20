@@ -29,7 +29,7 @@ use crate::{
 use arrow::array::{Array, RecordBatch, UInt32Array};
 use arrow::compute::{take, TakeOptions};
 use arrow::datatypes::DataType as ArrowDataType;
-use datafusion::common::ScalarValue;
+use datafusion::common::{Result as DataFusionResult, ScalarValue};
 use datafusion::execution::disk_manager::DiskManagerMode;
 use datafusion::execution::memory_pool::MemoryPool;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
@@ -73,6 +73,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use std::{sync::Arc, task::Poll};
 use tokio::runtime::Runtime;
+use tokio::sync::mpsc;
 
 use crate::execution::memory_pools::{
     create_memory_pool, handle_task_shared_pool_release, parse_memory_pool_config, MemoryPoolConfig,
@@ -136,6 +137,8 @@ struct ExecutionContext {
     pub input_sources: Vec<Arc<GlobalRef>>,
     /// The record batch stream to pull results from
     pub stream: Option<SendableRecordBatchStream>,
+    /// Receives batches from a spawned tokio task (async I/O path)
+    pub batch_receiver: Option<mpsc::Receiver<DataFusionResult<RecordBatch>>>,
     /// Native metrics
     pub metrics: Arc<GlobalRef>,
     // The interval in milliseconds to update metrics
@@ -287,6 +290,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 scans: vec![],
                 input_sources,
                 stream: None,
+                batch_receiver: None,
                 metrics,
                 metrics_update_interval,
                 metrics_last_update_time: Instant::now(),
@@ -530,21 +534,56 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                 // Each Comet native execution corresponds to a single Spark partition,
                 // so we should always execute partition 0.
                 let stream = root_op.native_plan.execute(0, task_ctx)?;
-                exec_context.stream = Some(stream);
+
+                if exec_context.scans.is_empty() {
+                    // No JVM data sources — spawn onto tokio so the executor
+                    // thread parks in blocking_recv instead of busy-polling
+                    let (tx, rx) = mpsc::channel(2);
+                    let mut stream = stream;
+                    get_runtime().spawn(async move {
+                        while let Some(batch) = stream.next().await {
+                            if tx.send(batch).await.is_err() {
+                                break;
+                            }
+                        }
+                    });
+                    exec_context.batch_receiver = Some(rx);
+                } else {
+                    exec_context.stream = Some(stream);
+                }
             } else {
                 // Pull input batches
                 pull_input_batches(exec_context)?;
             }
 
-            // Enter the runtime once for the entire polling loop to avoid repeated
-            // Runtime::enter() overhead
+            if let Some(rx) = &mut exec_context.batch_receiver {
+                match rx.blocking_recv() {
+                    Some(Ok(batch)) => {
+                        update_metrics(&mut env, exec_context)?;
+                        return prepare_output(
+                            &mut env,
+                            array_addrs,
+                            schema_addrs,
+                            batch,
+                            exec_context.debug_native,
+                        );
+                    }
+                    Some(Err(e)) => {
+                        return Err(e.into());
+                    }
+                    None => {
+                        log_plan_metrics(exec_context, stage_id, partition);
+                        return Ok(-1);
+                    }
+                }
+            }
+
+            // ScanExec path: busy-poll to interleave JVM batch pulls with stream polling
             get_runtime().block_on(async {
                 loop {
-                    // Polling the stream.
                     let next_item = exec_context.stream.as_mut().unwrap().next();
                     let poll_output = poll!(next_item);
 
-                    // update metrics at interval
                     // Only check time every 100 polls to reduce syscall overhead
                     if let Some(interval) = exec_context.metrics_update_interval {
                         exec_context.poll_count_since_metrics_check += 1;
@@ -560,7 +599,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
 
                     match poll_output {
                         Poll::Ready(Some(output)) => {
-                            // prepare output for FFI transfer
                             return prepare_output(
                                 &mut env,
                                 array_addrs,
@@ -570,43 +608,11 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                             );
                         }
                         Poll::Ready(None) => {
-                            // Reaches EOF of output.
-                            if exec_context.explain_native {
-                                if let Some(plan) = &exec_context.root_op {
-                                    let formatted_plan_str = DisplayableExecutionPlan::with_metrics(
-                                        plan.native_plan.as_ref(),
-                                    )
-                                    .indent(true);
-                                    info!(
-                                        "Comet native query plan with metrics (Plan #{} Stage {} Partition {}):\
-                                    \n plan creation took {:?}:\
-                                    \n{formatted_plan_str:}",
-                                        plan.plan_id, stage_id, partition, exec_context.plan_creation_time
-                                    );
-                                }
-                            }
+                            log_plan_metrics(exec_context, stage_id, partition);
                             return Ok(-1);
                         }
-                        // A poll pending means the stream is not ready yet.
                         Poll::Pending => {
-                            if exec_context.scans.is_empty() {
-                                // Pure async I/O (e.g., IcebergScanExec, DataSourceExec)
-                                // Yield to let the executor drive I/O instead of busy-polling
-                                tokio::task::yield_now().await;
-                            } else {
-                                // Has ScanExec operators
-                                // Busy-poll to pull batches from JVM
-                                // TODO: Investigate if JNI calls are safe without block_in_place.
-                                // block_in_place prevents Tokio from migrating this task to another thread,
-                                // which is necessary because JNI env is thread-local. If we can guarantee
-                                // thread safety another way, we could remove this wrapper for better perf.
-                                tokio::task::block_in_place(|| {
-                                    pull_input_batches(exec_context)
-                                })?;
-                            }
-
-                            // Output not ready yet
-                            continue;
+                            tokio::task::block_in_place(|| pull_input_batches(exec_context))?;
                         }
                     }
                 }
@@ -645,6 +651,21 @@ fn update_metrics(env: &mut JNIEnv, exec_context: &mut ExecutionContext) -> Come
         update_comet_metric(env, metrics, native_query)
     } else {
         Ok(())
+    }
+}
+
+fn log_plan_metrics(exec_context: &ExecutionContext, stage_id: jint, partition: jint) {
+    if exec_context.explain_native {
+        if let Some(plan) = &exec_context.root_op {
+            let formatted_plan_str =
+                DisplayableExecutionPlan::with_metrics(plan.native_plan.as_ref()).indent(true);
+            info!(
+                "Comet native query plan with metrics (Plan #{} Stage {} Partition {}):\
+                \n plan creation took {:?}:\
+                \n{formatted_plan_str:}",
+                plan.plan_id, stage_id, partition, exec_context.plan_creation_time
+            );
+        }
     }
 }
 
