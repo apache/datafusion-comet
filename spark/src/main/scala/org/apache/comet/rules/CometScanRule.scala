@@ -437,10 +437,10 @@ case class CometScanRule(session: SparkSession)
 
         val formatVersionSupported = IcebergReflection.getFormatVersion(metadata.table) match {
           case Some(formatVersion) =>
-            if (formatVersion > 2) {
+            if (formatVersion > 3) {
               fallbackReasons += "Iceberg table format version " +
                 s"$formatVersion is not supported. " +
-                "Comet only supports Iceberg table format V1 and V2"
+                "Comet supports Iceberg table format V1, V2, and V3"
               false
             } else {
               true
@@ -612,18 +612,72 @@ case class CometScanRule(session: SparkSession)
           !hasUnsupportedDeletes
         }
 
+        val v3FeaturesSupported = IcebergReflection.getFormatVersion(metadata.table) match {
+          case Some(formatVersion) if formatVersion >= 3 =>
+            var allV3FeaturesSupported = true
+
+            try {
+              if (IcebergReflection.hasDeletionVectors(taskValidation.deleteFiles)) {
+                fallbackReasons += "Iceberg V3 Deletion Vectors are not yet supported. " +
+                  "Tables using Deletion Vectors will fall back to Spark"
+                allV3FeaturesSupported = false
+              }
+            } catch {
+              case e: Exception =>
+                fallbackReasons += "Iceberg reflection failure: Could not check for " +
+                  s"Deletion Vectors: ${e.getMessage}"
+                allV3FeaturesSupported = false
+            }
+
+            try {
+              val unsupportedTypes = IcebergReflection.findUnsupportedV3Types(metadata.scanSchema)
+              if (unsupportedTypes.nonEmpty) {
+                fallbackReasons += "Iceberg V3 types not yet supported: " +
+                  s"${unsupportedTypes.mkString(", ")}. " +
+                  "Tables with these types will fall back to Spark"
+                allV3FeaturesSupported = false
+              }
+            } catch {
+              case e: Exception =>
+                fallbackReasons += "Iceberg reflection failure: Could not check for " +
+                  s"V3 types: ${e.getMessage}"
+                allV3FeaturesSupported = false
+            }
+
+            try {
+              if (IcebergReflection.hasEncryption(metadata.table)) {
+                fallbackReasons += "Iceberg table encryption is not yet supported"
+                allV3FeaturesSupported = false
+              }
+            } catch {
+              case e: Exception =>
+                fallbackReasons += "Iceberg reflection failure: Could not check for " +
+                  s"encryption: ${e.getMessage}"
+                allV3FeaturesSupported = false
+            }
+
+            try {
+              if (IcebergReflection.hasDefaultColumnValues(metadata.scanSchema)) {
+                fallbackReasons += "Iceberg default column values are not yet supported"
+                allV3FeaturesSupported = false
+              }
+            } catch {
+              case e: Exception =>
+                fallbackReasons += "Iceberg reflection failure: Could not check for " +
+                  s"default column values: ${e.getMessage}"
+                allV3FeaturesSupported = false
+            }
+
+            allV3FeaturesSupported
+          case _ => true
+        }
+
         // Check that all DPP subqueries use InSubqueryExec which we know how to handle.
-        // Future Spark versions might introduce new subquery types we haven't tested.
         val dppSubqueriesSupported = {
           val unsupportedSubqueries = scanExec.runtimeFilters.collect {
             case DynamicPruningExpression(e) if !e.isInstanceOf[InSubqueryExec] =>
               e.getClass.getSimpleName
           }
-          // Check for multi-index DPP which we don't support yet.
-          // SPARK-46946 changed SubqueryAdaptiveBroadcastExec from index: Int to indices: Seq[Int]
-          // as a preparatory refactor for future features (Null Safe Equality DPP, multiple
-          // equality predicates). Currently indices always has one element, but future Spark
-          // versions might use multiple indices.
           val multiIndexDpp = scanExec.runtimeFilters.exists {
             case DynamicPruningExpression(e: InSubqueryExec) =>
               e.plan match {
@@ -639,7 +693,6 @@ case class CometScanRule(session: SparkSession)
                 "CometIcebergNativeScanExec only supports InSubqueryExec for DPP"
             false
           } else if (multiIndexDpp) {
-            // See SPARK-46946 for context on multi-index DPP
             fallbackReasons +=
               "Multi-index DPP (indices.length > 1) is not yet supported. " +
                 "See SPARK-46946 for context."
@@ -652,7 +705,7 @@ case class CometScanRule(session: SparkSession)
         if (schemaSupported && fileIOCompatible && formatVersionSupported &&
           taskValidation.allParquet && allSupportedFilesystems && partitionTypesSupported &&
           complexTypePredicatesSupported && transformFunctionsSupported &&
-          deleteFileTypesSupported && dppSubqueriesSupported) {
+          deleteFileTypesSupported && v3FeaturesSupported && dppSubqueriesSupported) {
           CometBatchScanExec(
             scanExec.clone().asInstanceOf[BatchScanExec],
             runtimeFilters = scanExec.runtimeFilters,
