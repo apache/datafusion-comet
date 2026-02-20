@@ -612,6 +612,9 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                             return Ok(-1);
                         }
                         Poll::Pending => {
+                            // JNI call to pull batches from JVM into ScanExec operators.
+                            // block_in_place lets tokio move other tasks off this worker
+                            // while we wait for JVM data.
                             tokio::task::block_in_place(|| pull_input_batches(exec_context))?;
                         }
                     }
