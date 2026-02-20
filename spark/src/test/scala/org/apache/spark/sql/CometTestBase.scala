@@ -1276,4 +1276,39 @@ abstract class CometTestBase
     !usingLegacyNativeCometScan(conf) &&
     CometConf.COMET_PARQUET_UNSIGNED_SMALL_INT_CHECK.get(conf)
   }
+
+  /**
+   * Uses except (difference) to find differences without using collect() Checks cometDF and
+   * sparkDF including schemas
+   */
+  protected def assertDataFrameEquals(
+      df: => DataFrame,
+      assertCometNative: Boolean = true): Unit = {
+
+    var sparkDf: DataFrame = null
+    withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+      sparkDf = datasetOfRows(spark, df.logicalPlan)
+    }
+    val cometDf = datasetOfRows(spark, df.logicalPlan)
+
+    // Compare schemas
+    assert(
+      sparkDf.schema == cometDf.schema,
+      s"Schema mismatch:\nCorrect Answer: ${sparkDf.schema}\nSpark Answer: ${cometDf.schema}")
+
+    // Use except (difference) to compare DataFrames without collect() which error on extremely high Timestamp values
+    val sparkMinusComet = sparkDf.except(cometDf)
+    val cometMinusSpark = cometDf.except(sparkDf)
+
+    val diffCount1 = sparkMinusComet.count()
+    val diffCount2 = cometMinusSpark.count()
+
+    if (diffCount1 > 0 || diffCount2 > 0) {
+      fail("DataFrames count doesnt match.\n")
+    }
+
+    if (assertCometNative) {
+      checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+    }
+  }
 }
