@@ -120,11 +120,10 @@ COMMON_SPARK_CONF = {
 
 BENCHMARK_PROFILES = {
     "tpch": {
-        "executor_instances": "1",
+        "executor_instances": "2",
         "executor_cores": "8",
-        "max_cores": "8",
+        "max_cores": "16",
         "data_env": "TPCH_DATA",
-        "queries_env": "TPCH_QUERIES",
         "format": "parquet",
     },
     "tpcds": {
@@ -132,7 +131,6 @@ BENCHMARK_PROFILES = {
         "executor_cores": "8",
         "max_cores": "16",
         "data_env": "TPCDS_DATA",
-        "queries_env": "TPCDS_QUERIES",
         "format": None,  # omit --format for TPC-DS
     },
 }
@@ -213,7 +211,7 @@ def check_benchmark_env(config, benchmark):
     profile = BENCHMARK_PROFILES[benchmark]
     use_iceberg = config.get("tpcbench_args", {}).get("use_iceberg", False)
 
-    required = [profile["queries_env"]]
+    required = []
     if not use_iceberg:
         required.append(profile["data_env"])
 
@@ -282,10 +280,6 @@ def build_spark_submit_cmd(config, benchmark, args):
         data_val = os.environ.get(data_var, "")
         cmd += ["--data", data_val]
 
-    queries_var = profile["queries_env"]
-    queries_val = os.environ.get(queries_var, "")
-    cmd += ["--queries", queries_val]
-
     cmd += ["--output", args.output]
     cmd += ["--iterations", str(args.iterations)]
 
@@ -294,6 +288,11 @@ def build_spark_submit_cmd(config, benchmark, args):
 
     if profile["format"] and not use_iceberg:
         cmd += ["--format", profile["format"]]
+
+    if args.profile:
+        cmd += ["--profile"]
+        cmd += ["--profile-interval", str(args.profile_interval)]
+
 
     return cmd
 
@@ -361,6 +360,17 @@ def main():
         "--dry-run",
         action="store_true",
         help="Print the spark-submit command without executing",
+    )
+    parser.add_argument(
+        "--profile",
+        action="store_true",
+        help="Enable executor metrics profiling via Spark REST API",
+    )
+    parser.add_argument(
+        "--profile-interval",
+        type=float,
+        default=2.0,
+        help="Profiling poll interval in seconds (default: 2.0)",
     )
     args = parser.parse_args()
 

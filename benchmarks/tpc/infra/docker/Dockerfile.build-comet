@@ -1,0 +1,76 @@
+# Licensed to the Apache Software Foundation (ASF) under one or more
+# contributor license agreements.  See the NOTICE file distributed with
+# this work for additional information regarding copyright ownership.
+# The ASF licenses this file to You under the Apache License, Version 2.0
+# (the "License"); you may not use this file except in compliance with
+# the License.  You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Build a Comet JAR with native libraries for the current platform.
+#
+# This is useful on macOS (Apple Silicon) where the host-built JAR contains
+# darwin/aarch64 native libraries but Docker containers need linux/aarch64.
+#
+# Usage (from repository root):
+#   docker build -t comet-builder -f benchmarks/tpc/infra/docker/Dockerfile.build-comet .
+#   docker run --rm -v $(pwd)/output:/output comet-builder
+#
+# The JAR is copied to ./output/ on the host.
+
+# Use Ubuntu 20.04 to match the GLIBC version (2.31) in apache/spark images.
+FROM ubuntu:20.04 AS builder
+
+ARG TARGETARCH
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install build dependencies: Java 17, Maven wrapper prerequisites, GCC 11.
+# Ubuntu 20.04's default GCC 9 has a memcmp bug (GCC #95189) that breaks aws-lc-sys.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        openjdk-17-jdk-headless \
+        curl ca-certificates git pkg-config \
+        libssl-dev unzip software-properties-common \
+    && add-apt-repository -y ppa:ubuntu-toolchain-r/test \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends gcc-11 g++-11 make \
+    && update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-11 110 \
+    && update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-11 110 \
+    && update-alternatives --install /usr/bin/cc cc /usr/bin/gcc-11 110 \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Install protoc 25.x (Ubuntu 22.04's protoc is too old for proto3 optional fields).
+ARG PROTOC_VERSION=25.6
+RUN ARCH=$(uname -m) && \
+    if [ "$ARCH" = "aarch64" ]; then PROTOC_ARCH="linux-aarch_64"; \
+    else PROTOC_ARCH="linux-x86_64"; fi && \
+    curl -sLO "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-${PROTOC_ARCH}.zip" && \
+    unzip -o "protoc-${PROTOC_VERSION}-${PROTOC_ARCH}.zip" -d /usr/local bin/protoc && \
+    rm "protoc-${PROTOC_VERSION}-${PROTOC_ARCH}.zip" && \
+    protoc --version
+
+# Set JAVA_HOME and LD_LIBRARY_PATH so the Rust build can find libjvm.
+RUN ln -s /usr/lib/jvm/java-17-openjdk-${TARGETARCH} /usr/lib/jvm/java-17-openjdk
+ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk
+ENV LD_LIBRARY_PATH=${JAVA_HOME}/lib/server:${LD_LIBRARY_PATH}
+
+# Install Rust.
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+WORKDIR /build
+
+# Copy the full source tree.
+COPY . .
+
+# Build native code + package the JAR (skip tests).
+RUN make release-nogit
+
+# The entrypoint copies the built JAR to /output (bind-mounted from host).
+RUN mkdir -p /output
+CMD ["sh", "-c", "cp spark/target/comet-spark-spark3.5_2.12-*-SNAPSHOT.jar /output/ && echo 'Comet JAR copied to /output/' && ls -lh /output/*.jar"]

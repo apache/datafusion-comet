@@ -1100,6 +1100,8 @@ under the License.
             <exclude>dev/release/rat_exclude_files.txt</exclude>
             <exclude>dev/release/requirements.txt</exclude>
             <exclude>native/proto/src/generated/**</exclude>
+            <exclude>benchmarks/tpc/queries/**</exclude>
+            <exclude>benchmarks/tpc/requirements.txt</exclude>
           </excludes>
         </configuration>
       </plugin>
