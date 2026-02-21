@@ -31,8 +31,7 @@ use std::io::{BufReader, BufWriter};
 use std::sync::Arc;
 
 use ahash::RandomState;
-use arrow::array::UInt32Array;
-use arrow::compute::take;
+use arrow::compute::{concat_batches, interleave_record_batch};
 use arrow::datatypes::SchemaRef;
 use arrow::ipc::reader::StreamReader;
 use arrow::ipc::writer::StreamWriter;
@@ -470,6 +469,8 @@ async fn execute_grace_hash_join(
     let mut partitions: Vec<HashPartition> =
         (0..num_partitions).map(|_| HashPartition::new()).collect();
 
+    let mut scratch = ScratchSpace::default();
+
     // Phase 1: Partition the build side
     {
         let _timer = metrics.build_time.timer();
@@ -482,6 +483,7 @@ async fn execute_grace_hash_join(
             &mut MutableReservation(reservation),
             &context,
             &metrics,
+            &mut scratch,
         )
         .await?;
     }
@@ -497,6 +499,7 @@ async fn execute_grace_hash_join(
             &mut partitions,
             &context,
             &metrics,
+            &mut scratch,
         )
         .await?;
     }
@@ -546,61 +549,121 @@ impl MutableReservation {
 }
 
 // ---------------------------------------------------------------------------
-// Hash partitioning
+// ScratchSpace: reusable buffers for efficient hash partitioning
 // ---------------------------------------------------------------------------
 
-/// Compute hash partition indices for a batch given join key expressions.
-fn compute_partition_indices(
-    batch: &RecordBatch,
-    keys: &[Arc<dyn PhysicalExpr>],
-    num_partitions: usize,
-    recursion_level: usize,
-) -> DFResult<Vec<Vec<u32>>> {
-    // Evaluate key columns
-    let key_columns: Vec<_> = keys
-        .iter()
-        .map(|expr| {
-            expr.evaluate(batch)
-                .and_then(|cv| cv.into_array(batch.num_rows()))
-        })
-        .collect::<DFResult<Vec<_>>>()?;
-
-    // Hash the key columns with our partition random state
-    let random_state = partition_random_state(recursion_level);
-    let mut hashes = vec![0u64; batch.num_rows()];
-    create_hashes(&key_columns, &random_state, &mut hashes)?;
-
-    // Assign rows to partitions
-    let mut indices: Vec<Vec<u32>> = (0..num_partitions).map(|_| Vec::new()).collect();
-    for (row_idx, hash) in hashes.iter().enumerate() {
-        let partition = (*hash as usize) % num_partitions;
-        indices[partition].push(row_idx as u32);
-    }
-
-    Ok(indices)
+/// Reusable scratch buffers for partitioning batches. Uses a prefix-sum
+/// algorithm (borrowed from the shuffle `multi_partition.rs`) to compute
+/// contiguous row-index regions per partition in a single pass, avoiding
+/// N separate `take()` kernel calls.
+#[derive(Default)]
+struct ScratchSpace {
+    /// Hash values for each row.
+    hashes: Vec<u64>,
+    /// Partition id assigned to each row.
+    partition_ids: Vec<u32>,
+    /// Row indices reordered so that each partition's rows are contiguous.
+    partition_row_indices: Vec<u32>,
+    /// `partition_starts[k]..partition_starts[k+1]` gives the slice of
+    /// `partition_row_indices` belonging to partition k.
+    partition_starts: Vec<u32>,
 }
 
-/// Split a batch into N sub-batches by partition assignment.
-fn partition_batch(
-    batch: &RecordBatch,
-    indices: &[Vec<u32>],
-) -> DFResult<Vec<Option<RecordBatch>>> {
-    indices
-        .iter()
-        .map(|idx| {
-            if idx.is_empty() {
-                Ok(None)
-            } else {
-                let idx_array = UInt32Array::from(idx.clone());
-                let columns: Vec<_> = batch
-                    .columns()
-                    .iter()
-                    .map(|col| take(col.as_ref(), &idx_array, None))
-                    .collect::<Result<Vec<_>, _>>()?;
-                Ok(Some(RecordBatch::try_new(batch.schema(), columns)?))
-            }
-        })
-        .collect()
+impl ScratchSpace {
+    /// Compute hashes and partition ids, then build the prefix-sum index
+    /// structures for the given batch.
+    fn compute_partitions(
+        &mut self,
+        batch: &RecordBatch,
+        keys: &[Arc<dyn PhysicalExpr>],
+        num_partitions: usize,
+        recursion_level: usize,
+    ) -> DFResult<()> {
+        let num_rows = batch.num_rows();
+
+        // Evaluate key columns
+        let key_columns: Vec<_> = keys
+            .iter()
+            .map(|expr| expr.evaluate(batch).and_then(|cv| cv.into_array(num_rows)))
+            .collect::<DFResult<Vec<_>>>()?;
+
+        // Hash
+        self.hashes.resize(num_rows, 0);
+        self.hashes.truncate(num_rows);
+        self.hashes.fill(0);
+        let random_state = partition_random_state(recursion_level);
+        create_hashes(&key_columns, &random_state, &mut self.hashes)?;
+
+        // Assign partition ids
+        self.partition_ids.resize(num_rows, 0);
+        for (i, hash) in self.hashes[..num_rows].iter().enumerate() {
+            self.partition_ids[i] = (*hash as u32) % (num_partitions as u32);
+        }
+
+        // Prefix-sum to get contiguous regions
+        self.map_partition_ids_to_starts_and_indices(num_partitions, num_rows);
+
+        Ok(())
+    }
+
+    /// Prefix-sum algorithm from `multi_partition.rs`.
+    fn map_partition_ids_to_starts_and_indices(&mut self, num_partitions: usize, num_rows: usize) {
+        let partition_ids = &self.partition_ids[..num_rows];
+
+        // Count each partition size
+        let partition_counters = &mut self.partition_starts;
+        partition_counters.resize(num_partitions + 1, 0);
+        partition_counters.fill(0);
+        partition_ids
+            .iter()
+            .for_each(|pid| partition_counters[*pid as usize] += 1);
+
+        // Accumulate into partition ends
+        let mut accum = 0u32;
+        for v in partition_counters.iter_mut() {
+            *v += accum;
+            accum = *v;
+        }
+
+        // Build partition_row_indices (iterate in reverse to turn ends into starts)
+        self.partition_row_indices.resize(num_rows, 0);
+        for (index, pid) in partition_ids.iter().enumerate().rev() {
+            self.partition_starts[*pid as usize] -= 1;
+            let pos = self.partition_starts[*pid as usize];
+            self.partition_row_indices[pos as usize] = index as u32;
+        }
+    }
+
+    /// Get the row index slice for a given partition.
+    fn partition_slice(&self, partition_id: usize) -> &[u32] {
+        let start = self.partition_starts[partition_id] as usize;
+        let end = self.partition_starts[partition_id + 1] as usize;
+        &self.partition_row_indices[start..end]
+    }
+
+    /// Number of rows in a given partition.
+    fn partition_len(&self, partition_id: usize) -> usize {
+        (self.partition_starts[partition_id + 1] - self.partition_starts[partition_id]) as usize
+    }
+
+    /// Extract a sub-batch for a partition using `interleave_record_batch`.
+    fn take_partition(
+        &self,
+        batch: &RecordBatch,
+        partition_id: usize,
+    ) -> DFResult<Option<RecordBatch>> {
+        let row_indices = self.partition_slice(partition_id);
+        if row_indices.is_empty() {
+            return Ok(None);
+        }
+        let indices: Vec<(usize, usize)> = row_indices
+            .iter()
+            .map(|&idx| (0usize, idx as usize))
+            .collect();
+        let batches = [batch];
+        let result = interleave_record_batch(&batches, &indices)?;
+        Ok(Some(result))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -636,6 +699,7 @@ async fn partition_build_side(
     reservation: &mut MutableReservation,
     context: &Arc<TaskContext>,
     metrics: &GraceHashJoinMetrics,
+    scratch: &mut ScratchSpace,
 ) -> DFResult<()> {
     while let Some(batch) = input.next().await {
         let batch = batch?;
@@ -646,51 +710,64 @@ async fn partition_build_side(
         metrics.build_input_batches.add(1);
         metrics.build_input_rows.add(batch.num_rows());
 
-        let indices = compute_partition_indices(&batch, keys, num_partitions, 0)?;
-        let sub_batches = partition_batch(&batch, &indices)?;
+        // Track total batch size once, estimate per-partition proportionally
+        let total_batch_size = batch.get_array_memory_size();
+        let total_rows = batch.num_rows();
 
-        for (part_idx, sub_batch) in sub_batches.into_iter().enumerate() {
-            if let Some(sub_batch) = sub_batch {
-                let batch_size = sub_batch.get_array_memory_size();
+        scratch.compute_partitions(&batch, keys, num_partitions, 0)?;
 
-                if partitions[part_idx].build_spilled() {
-                    // This partition is already spilled; append incrementally
-                    if let Some(ref mut writer) = partitions[part_idx].build_spill_writer {
-                        writer.write_batch(&sub_batch)?;
-                    }
-                } else {
-                    // Try to reserve memory
-                    if reservation.try_grow(batch_size).is_err() {
-                        // Memory pressure: spill the largest in-memory partition
-                        info!(
-                            "GraceHashJoin: memory pressure during build, spilling largest partition"
-                        );
-                        spill_largest_partition(partitions, schema, context, reservation, metrics)?;
+        #[allow(clippy::needless_range_loop)]
+        for part_idx in 0..num_partitions {
+            if scratch.partition_len(part_idx) == 0 {
+                continue;
+            }
 
-                        // Retry reservation after spilling
-                        if reservation.try_grow(batch_size).is_err() {
-                            // Still can't fit; spill this partition too
-                            info!(
-                                "GraceHashJoin: still under pressure, spilling partition {}",
-                                part_idx
-                            );
-                            spill_partition_build(
-                                &mut partitions[part_idx],
-                                schema,
-                                context,
-                                reservation,
-                                metrics,
-                            )?;
-                            if let Some(ref mut writer) = partitions[part_idx].build_spill_writer {
-                                writer.write_batch(&sub_batch)?;
-                            }
-                            continue;
-                        }
-                    }
+            let sub_batch = scratch.take_partition(&batch, part_idx)?.unwrap();
+            // Estimate size proportionally rather than calling get_array_memory_size per sub-batch
+            let sub_rows = scratch.partition_len(part_idx);
+            let batch_size = if total_rows > 0 {
+                (total_batch_size as u64 * sub_rows as u64 / total_rows as u64) as usize
+            } else {
+                0
+            };
 
-                    partitions[part_idx].build_mem_size += batch_size;
-                    partitions[part_idx].build_batches.push(sub_batch);
+            if partitions[part_idx].build_spilled() {
+                // This partition is already spilled; append incrementally
+                if let Some(ref mut writer) = partitions[part_idx].build_spill_writer {
+                    writer.write_batch(&sub_batch)?;
                 }
+            } else {
+                // Try to reserve memory
+                if reservation.try_grow(batch_size).is_err() {
+                    // Memory pressure: spill the largest in-memory partition
+                    info!(
+                        "GraceHashJoin: memory pressure during build, spilling largest partition"
+                    );
+                    spill_largest_partition(partitions, schema, context, reservation, metrics)?;
+
+                    // Retry reservation after spilling
+                    if reservation.try_grow(batch_size).is_err() {
+                        // Still can't fit; spill this partition too
+                        info!(
+                            "GraceHashJoin: still under pressure, spilling partition {}",
+                            part_idx
+                        );
+                        spill_partition_build(
+                            &mut partitions[part_idx],
+                            schema,
+                            context,
+                            reservation,
+                            metrics,
+                        )?;
+                        if let Some(ref mut writer) = partitions[part_idx].build_spill_writer {
+                            writer.write_batch(&sub_batch)?;
+                        }
+                        continue;
+                    }
+                }
+
+                partitions[part_idx].build_mem_size += batch_size;
+                partitions[part_idx].build_batches.push(sub_batch);
             }
         }
     }
@@ -771,6 +848,7 @@ async fn partition_probe_side(
     partitions: &mut [HashPartition],
     context: &Arc<TaskContext>,
     metrics: &GraceHashJoinMetrics,
+    scratch: &mut ScratchSpace,
 ) -> DFResult<()> {
     while let Some(batch) = input.next().await {
         let batch = batch?;
@@ -781,34 +859,38 @@ async fn partition_probe_side(
         metrics.input_batches.add(1);
         metrics.input_rows.add(batch.num_rows());
 
-        let indices = compute_partition_indices(&batch, keys, num_partitions, 0)?;
-        let sub_batches = partition_batch(&batch, &indices)?;
+        scratch.compute_partitions(&batch, keys, num_partitions, 0)?;
 
-        for (part_idx, sub_batch) in sub_batches.into_iter().enumerate() {
-            if let Some(sub_batch) = sub_batch {
-                if partitions[part_idx].build_spilled() {
-                    // Build side was spilled, so spill probe side too
-                    if partitions[part_idx].probe_spill_writer.is_none() {
-                        let temp_file = context
-                            .runtime_env()
-                            .disk_manager
-                            .create_tmp_file("grace hash join probe")?;
-                        let mut writer = SpillWriter::new(temp_file, schema)?;
-                        // Write any accumulated in-memory probe batches first
-                        if !partitions[part_idx].probe_batches.is_empty() {
-                            let batches = std::mem::take(&mut partitions[part_idx].probe_batches);
-                            writer.write_batches(&batches)?;
-                            partitions[part_idx].probe_mem_size = 0;
-                        }
-                        partitions[part_idx].probe_spill_writer = Some(writer);
+        #[allow(clippy::needless_range_loop)]
+        for part_idx in 0..num_partitions {
+            if scratch.partition_len(part_idx) == 0 {
+                continue;
+            }
+
+            let sub_batch = scratch.take_partition(&batch, part_idx)?.unwrap();
+
+            if partitions[part_idx].build_spilled() {
+                // Build side was spilled, so spill probe side too
+                if partitions[part_idx].probe_spill_writer.is_none() {
+                    let temp_file = context
+                        .runtime_env()
+                        .disk_manager
+                        .create_tmp_file("grace hash join probe")?;
+                    let mut writer = SpillWriter::new(temp_file, schema)?;
+                    // Write any accumulated in-memory probe batches first
+                    if !partitions[part_idx].probe_batches.is_empty() {
+                        let batches = std::mem::take(&mut partitions[part_idx].probe_batches);
+                        writer.write_batches(&batches)?;
+                        partitions[part_idx].probe_mem_size = 0;
                     }
-                    if let Some(ref mut writer) = partitions[part_idx].probe_spill_writer {
-                        writer.write_batch(&sub_batch)?;
-                    }
-                } else {
-                    partitions[part_idx].probe_mem_size += sub_batch.get_array_memory_size();
-                    partitions[part_idx].probe_batches.push(sub_batch);
+                    partitions[part_idx].probe_spill_writer = Some(writer);
                 }
+                if let Some(ref mut writer) = partitions[part_idx].probe_spill_writer {
+                    writer.write_batch(&sub_batch)?;
+                }
+            } else {
+                partitions[part_idx].probe_mem_size += sub_batch.get_array_memory_size();
+                partitions[part_idx].probe_batches.push(sub_batch);
             }
         }
     }
@@ -957,8 +1039,6 @@ fn join_partition_recursive(
     }
 
     // Check if build side is too large and needs recursive repartitioning.
-    // Try to reserve memory for the build side — if it fails, the partition
-    // is too large to fit and needs to be sub-partitioned.
     let build_size: usize = build_batches
         .iter()
         .map(|b| b.get_array_memory_size())
@@ -1010,17 +1090,20 @@ fn join_partition_recursive(
         );
     }
 
-    // For outer joins, one side may be empty — provide an empty batch
-    // with the correct schema so MemorySourceConfig has a valid partition.
+    // Concatenate small sub-batches into single batches to reduce per-batch overhead
     let build_data = if build_batches.is_empty() {
         vec![RecordBatch::new_empty(Arc::clone(build_schema))]
-    } else {
+    } else if build_batches.len() == 1 {
         build_batches
+    } else {
+        vec![concat_batches(build_schema, &build_batches)?]
     };
     let probe_data = if probe_batches.is_empty() {
         vec![RecordBatch::new_empty(Arc::clone(probe_schema))]
-    } else {
+    } else if probe_batches.len() == 1 {
         probe_batches
+    } else {
+        vec![concat_batches(probe_schema, &probe_batches)?]
     };
 
     // Create per-partition hash join.
@@ -1105,16 +1188,16 @@ fn repartition_and_join(
             .unzip()
     };
 
+    let mut scratch = ScratchSpace::default();
+
     // Sub-partition the build side
     let mut build_sub: Vec<Vec<RecordBatch>> =
         (0..num_sub_partitions).map(|_| Vec::new()).collect();
     for batch in &build_batches {
-        let indices =
-            compute_partition_indices(batch, &build_keys, num_sub_partitions, recursion_level)?;
-        let sub_batches = partition_batch(batch, &indices)?;
-        for (i, sub) in sub_batches.into_iter().enumerate() {
-            if let Some(sub) = sub {
-                build_sub[i].push(sub);
+        scratch.compute_partitions(batch, &build_keys, num_sub_partitions, recursion_level)?;
+        for (i, sub_vec) in build_sub.iter_mut().enumerate() {
+            if let Some(sub) = scratch.take_partition(batch, i)? {
+                sub_vec.push(sub);
             }
         }
     }
@@ -1123,12 +1206,10 @@ fn repartition_and_join(
     let mut probe_sub: Vec<Vec<RecordBatch>> =
         (0..num_sub_partitions).map(|_| Vec::new()).collect();
     for batch in &probe_batches {
-        let indices =
-            compute_partition_indices(batch, &probe_keys, num_sub_partitions, recursion_level)?;
-        let sub_batches = partition_batch(batch, &indices)?;
-        for (i, sub) in sub_batches.into_iter().enumerate() {
-            if let Some(sub) = sub {
-                probe_sub[i].push(sub);
+        scratch.compute_partitions(batch, &probe_keys, num_sub_partitions, recursion_level)?;
+        for (i, sub_vec) in probe_sub.iter_mut().enumerate() {
+            if let Some(sub) = scratch.take_partition(batch, i)? {
+                sub_vec.push(sub);
             }
         }
     }
