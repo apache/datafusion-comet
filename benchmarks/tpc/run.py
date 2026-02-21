@@ -293,6 +293,7 @@ def build_spark_submit_cmd(config, benchmark, args):
         cmd += ["--profile"]
         cmd += ["--profile-interval", str(args.profile_interval)]
 
+
     return cmd
 
 

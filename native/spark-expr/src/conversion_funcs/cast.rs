@@ -15,6 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::conversion_funcs::boolean::{
+    cast_boolean_to_decimal, is_df_cast_from_bool_spark_compatible,
+};
+use crate::conversion_funcs::utils::spark_cast_postprocess;
+use crate::conversion_funcs::utils::{cast_overflow, invalid_value};
 use crate::utils::array_with_timezone;
 use crate::EvalMode::Legacy;
 use crate::{timezone, BinaryOutputStyle};
@@ -37,7 +42,7 @@ use arrow::{
         GenericStringArray, Int16Array, Int32Array, Int64Array, Int8Array, OffsetSizeTrait,
         PrimitiveArray,
     },
-    compute::{cast_with_options, take, unary, CastOptions},
+    compute::{cast_with_options, take, CastOptions},
     datatypes::{
         is_validate_decimal_precision, ArrowPrimitiveType, Decimal128Type, Float32Type,
         Float64Type, Int64Type, TimestampMicrosecondType,
@@ -48,16 +53,10 @@ use arrow::{
 };
 use base64::prelude::*;
 use chrono::{DateTime, NaiveDate, TimeZone, Timelike};
-use datafusion::common::{
-    cast::as_generic_string_array, internal_err, DataFusionError, Result as DataFusionResult,
-    ScalarValue,
-};
+use datafusion::common::{internal_err, DataFusionError, Result as DataFusionResult, ScalarValue};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ColumnarValue;
-use num::{
-    cast::AsPrimitive, integer::div_floor, traits::CheckedNeg, CheckedSub, Integer, ToPrimitive,
-    Zero,
-};
+use num::{cast::AsPrimitive, traits::CheckedNeg, CheckedSub, Integer, ToPrimitive, Zero};
 use regex::Regex;
 use std::str::FromStr;
 use std::{
@@ -70,7 +69,7 @@ use std::{
 
 static TIMESTAMP_FORMAT: Option<&str> = Some("%Y-%m-%d %H:%M:%S%.f");
 
-const MICROS_PER_SECOND: i64 = 1000000;
+pub(crate) const MICROS_PER_SECOND: i64 = 1000000;
 
 static CAST_OPTIONS: CastOptions = CastOptions {
     safe: true,
@@ -613,6 +612,23 @@ macro_rules! cast_decimal_to_int32_up {
     }};
 }
 
+macro_rules! cast_int_to_timestamp_impl {
+    ($array:expr, $builder:expr, $primitive_type:ty) => {{
+        let arr = $array.as_primitive::<$primitive_type>();
+        for i in 0..arr.len() {
+            if arr.is_null(i) {
+                $builder.append_null();
+            } else {
+                // saturating_mul limits to i64::MIN/MAX on overflow instead of panicking,
+                // which could occur when converting extreme values (e.g., Long.MIN_VALUE)
+                // matching spark behavior (irrespective of EvalMode)
+                let micros = (arr.value(i) as i64).saturating_mul(MICROS_PER_SECOND);
+                $builder.append_value(micros);
+            }
+        }
+    }};
+}
+
 // copied from arrow::dataTypes::Decimal128Type since Decimal128Type::format_decimal can't be called directly
 fn format_decimal_str(value_str: &str, precision: usize, scale: i8) -> String {
     let (sign, rest) = match value_str.strip_prefix('-') {
@@ -759,7 +775,7 @@ fn dict_from_values<K: ArrowDictionaryKeyType>(
     Ok(Arc::new(dict_array))
 }
 
-fn cast_array(
+pub(crate) fn cast_array(
     array: ArrayRef,
     to_type: &DataType,
     cast_options: &SparkCastOptions,
@@ -915,6 +931,7 @@ fn cast_array(
         (Boolean, Decimal128(precision, scale)) => {
             cast_boolean_to_decimal(&array, *precision, *scale)
         }
+        (Int8 | Int16 | Int32 | Int64, Timestamp(_, tz)) => cast_int_to_timestamp(&array, tz),
         _ if cast_options.is_adapting_schema
             || is_datafusion_spark_compatible(from_type, to_type) =>
         {
@@ -931,6 +948,29 @@ fn cast_array(
         }
     };
     Ok(spark_cast_postprocess(cast_result?, from_type, to_type))
+}
+
+fn cast_int_to_timestamp(
+    array_ref: &ArrayRef,
+    target_tz: &Option<Arc<str>>,
+) -> SparkResult<ArrayRef> {
+    // Input is seconds since epoch, multiply by MICROS_PER_SECOND to get microseconds.
+    let mut builder = TimestampMicrosecondBuilder::with_capacity(array_ref.len());
+
+    match array_ref.data_type() {
+        DataType::Int8 => cast_int_to_timestamp_impl!(array_ref, builder, Int8Type),
+        DataType::Int16 => cast_int_to_timestamp_impl!(array_ref, builder, Int16Type),
+        DataType::Int32 => cast_int_to_timestamp_impl!(array_ref, builder, Int32Type),
+        DataType::Int64 => cast_int_to_timestamp_impl!(array_ref, builder, Int64Type),
+        dt => {
+            return Err(SparkError::Internal(format!(
+                "Unsupported type for cast_int_to_timestamp: {:?}",
+                dt
+            )))
+        }
+    }
+
+    Ok(Arc::new(builder.finish().with_timezone_opt(target_tz.clone())) as ArrayRef)
 }
 
 fn cast_date_to_timestamp(
@@ -975,16 +1015,6 @@ fn cast_date_to_timestamp(
     Ok(Arc::new(
         builder.finish().with_timezone_opt(target_tz.clone()),
     ))
-}
-
-fn cast_boolean_to_decimal(array: &ArrayRef, precision: u8, scale: i8) -> SparkResult<ArrayRef> {
-    let bool_array = array.as_boolean();
-    let scaled_val = 10_i128.pow(scale as u32);
-    let result: Decimal128Array = bool_array
-        .iter()
-        .map(|v| v.map(|b| if b { scaled_val } else { 0 }))
-        .collect();
-    Ok(Arc::new(result.with_precision_and_scale(precision, scale)?))
 }
 
 fn cast_string_to_float(
@@ -1145,16 +1175,7 @@ fn is_datafusion_spark_compatible(from_type: &DataType, to_type: &DataType) -> b
         DataType::Null => {
             matches!(to_type, DataType::List(_))
         }
-        DataType::Boolean => matches!(
-            to_type,
-            DataType::Int8
-                | DataType::Int16
-                | DataType::Int32
-                | DataType::Int64
-                | DataType::Float32
-                | DataType::Float64
-                | DataType::Utf8
-        ),
+        DataType::Boolean => is_df_cast_from_bool_spark_compatible(to_type),
         DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64 => {
             matches!(
                 to_type,
@@ -2396,24 +2417,6 @@ fn parse_decimal_str(
     Ok((final_mantissa, final_scale))
 }
 
-#[inline]
-fn invalid_value(value: &str, from_type: &str, to_type: &str) -> SparkError {
-    SparkError::CastInvalidValue {
-        value: value.to_string(),
-        from_type: from_type.to_string(),
-        to_type: to_type.to_string(),
-    }
-}
-
-#[inline]
-fn cast_overflow(value: &str, from_type: &str, to_type: &str) -> SparkError {
-    SparkError::CastOverFlow {
-        value: value.to_string(),
-        from_type: from_type.to_string(),
-        to_type: to_type.to_string(),
-    }
-}
-
 impl Display for Cast {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -2808,84 +2811,6 @@ fn date_parser(date_str: &str, eval_mode: EvalMode) -> SparkResult<Option<i32>> 
             Ok(Some(duration_since_epoch.to_i32().unwrap()))
         }
         None => Ok(None),
-    }
-}
-
-/// This takes for special casting cases of Spark. E.g., Timestamp to Long.
-/// This function runs as a post process of the DataFusion cast(). By the time it arrives here,
-/// Dictionary arrays are already unpacked by the DataFusion cast() since Spark cannot specify
-/// Dictionary as to_type. The from_type is taken before the DataFusion cast() runs in
-/// expressions/cast.rs, so it can be still Dictionary.
-fn spark_cast_postprocess(array: ArrayRef, from_type: &DataType, to_type: &DataType) -> ArrayRef {
-    match (from_type, to_type) {
-        (DataType::Timestamp(_, _), DataType::Int64) => {
-            // See Spark's `Cast` expression
-            unary_dyn::<_, Int64Type>(&array, |v| div_floor(v, MICROS_PER_SECOND)).unwrap()
-        }
-        (DataType::Dictionary(_, value_type), DataType::Int64)
-            if matches!(value_type.as_ref(), &DataType::Timestamp(_, _)) =>
-        {
-            // See Spark's `Cast` expression
-            unary_dyn::<_, Int64Type>(&array, |v| div_floor(v, MICROS_PER_SECOND)).unwrap()
-        }
-        (DataType::Timestamp(_, _), DataType::Utf8) => remove_trailing_zeroes(array),
-        (DataType::Dictionary(_, value_type), DataType::Utf8)
-            if matches!(value_type.as_ref(), &DataType::Timestamp(_, _)) =>
-        {
-            remove_trailing_zeroes(array)
-        }
-        _ => array,
-    }
-}
-
-/// A fork & modified version of Arrow's `unary_dyn` which is being deprecated
-fn unary_dyn<F, T>(array: &ArrayRef, op: F) -> Result<ArrayRef, ArrowError>
-where
-    T: ArrowPrimitiveType,
-    F: Fn(T::Native) -> T::Native,
-{
-    if let Some(d) = array.as_any_dictionary_opt() {
-        let new_values = unary_dyn::<F, T>(d.values(), op)?;
-        return Ok(Arc::new(d.with_values(Arc::new(new_values))));
-    }
-
-    match array.as_primitive_opt::<T>() {
-        Some(a) if PrimitiveArray::<T>::is_compatible(a.data_type()) => {
-            Ok(Arc::new(unary::<T, F, T>(
-                array.as_any().downcast_ref::<PrimitiveArray<T>>().unwrap(),
-                op,
-            )))
-        }
-        _ => Err(ArrowError::NotYetImplemented(format!(
-            "Cannot perform unary operation of type {} on array of type {}",
-            T::DATA_TYPE,
-            array.data_type()
-        ))),
-    }
-}
-
-/// Remove any trailing zeroes in the string if they occur after in the fractional seconds,
-/// to match Spark behavior
-/// example:
-/// "1970-01-01 05:29:59.900" => "1970-01-01 05:29:59.9"
-/// "1970-01-01 05:29:59.990" => "1970-01-01 05:29:59.99"
-/// "1970-01-01 05:29:59.999" => "1970-01-01 05:29:59.999"
-/// "1970-01-01 05:30:00"     => "1970-01-01 05:30:00"
-/// "1970-01-01 05:30:00.001" => "1970-01-01 05:30:00.001"
-fn remove_trailing_zeroes(array: ArrayRef) -> ArrayRef {
-    let string_array = as_generic_string_array::<i32>(&array).unwrap();
-    let result = string_array
-        .iter()
-        .map(|s| s.map(trim_end))
-        .collect::<GenericStringArray<i32>>();
-    Arc::new(result) as ArrayRef
-}
-
-fn trim_end(s: &str) -> &str {
-    if s.rfind('.').is_some() {
-        s.trim_end_matches('0')
-    } else {
-        s
     }
 }
 
@@ -3518,5 +3443,95 @@ mod tests {
         assert_eq!(r#"[1, null]"#, string_array.value(1));
         assert_eq!(r#"[null]"#, string_array.value(2));
         assert_eq!(r#"[]"#, string_array.value(3));
+    }
+
+    #[test]
+    fn test_cast_int_to_timestamp() {
+        let timezones: [Option<Arc<str>>; 6] = [
+            Some(Arc::from("UTC")),
+            Some(Arc::from("America/New_York")),
+            Some(Arc::from("America/Los_Angeles")),
+            Some(Arc::from("Europe/London")),
+            Some(Arc::from("Asia/Tokyo")),
+            Some(Arc::from("Australia/Sydney")),
+        ];
+
+        for tz in &timezones {
+            let int8_array: ArrayRef = Arc::new(Int8Array::from(vec![
+                Some(0),
+                Some(1),
+                Some(-1),
+                Some(127),
+                Some(-128),
+                None,
+            ]));
+
+            let result = cast_int_to_timestamp(&int8_array, tz).unwrap();
+            let ts_array = result.as_primitive::<TimestampMicrosecondType>();
+
+            assert_eq!(ts_array.value(0), 0);
+            assert_eq!(ts_array.value(1), 1_000_000);
+            assert_eq!(ts_array.value(2), -1_000_000);
+            assert_eq!(ts_array.value(3), 127_000_000);
+            assert_eq!(ts_array.value(4), -128_000_000);
+            assert!(ts_array.is_null(5));
+            assert_eq!(ts_array.timezone(), tz.as_ref().map(|s| s.as_ref()));
+
+            let int16_array: ArrayRef = Arc::new(Int16Array::from(vec![
+                Some(0),
+                Some(1),
+                Some(-1),
+                Some(32767),
+                Some(-32768),
+                None,
+            ]));
+
+            let result = cast_int_to_timestamp(&int16_array, tz).unwrap();
+            let ts_array = result.as_primitive::<TimestampMicrosecondType>();
+
+            assert_eq!(ts_array.value(0), 0);
+            assert_eq!(ts_array.value(1), 1_000_000);
+            assert_eq!(ts_array.value(2), -1_000_000);
+            assert_eq!(ts_array.value(3), 32_767_000_000_i64);
+            assert_eq!(ts_array.value(4), -32_768_000_000_i64);
+            assert!(ts_array.is_null(5));
+            assert_eq!(ts_array.timezone(), tz.as_ref().map(|s| s.as_ref()));
+
+            let int32_array: ArrayRef = Arc::new(Int32Array::from(vec![
+                Some(0),
+                Some(1),
+                Some(-1),
+                Some(1704067200),
+                None,
+            ]));
+
+            let result = cast_int_to_timestamp(&int32_array, tz).unwrap();
+            let ts_array = result.as_primitive::<TimestampMicrosecondType>();
+
+            assert_eq!(ts_array.value(0), 0);
+            assert_eq!(ts_array.value(1), 1_000_000);
+            assert_eq!(ts_array.value(2), -1_000_000);
+            assert_eq!(ts_array.value(3), 1_704_067_200_000_000_i64);
+            assert!(ts_array.is_null(4));
+            assert_eq!(ts_array.timezone(), tz.as_ref().map(|s| s.as_ref()));
+
+            let int64_array: ArrayRef = Arc::new(Int64Array::from(vec![
+                Some(0),
+                Some(1),
+                Some(-1),
+                Some(i64::MAX),
+                Some(i64::MIN),
+            ]));
+
+            let result = cast_int_to_timestamp(&int64_array, tz).unwrap();
+            let ts_array = result.as_primitive::<TimestampMicrosecondType>();
+
+            assert_eq!(ts_array.value(0), 0);
+            assert_eq!(ts_array.value(1), 1_000_000_i64);
+            assert_eq!(ts_array.value(2), -1_000_000_i64);
+            assert_eq!(ts_array.value(3), i64::MAX);
+            assert_eq!(ts_array.value(4), i64::MIN);
+            assert_eq!(ts_array.timezone(), tz.as_ref().map(|s| s.as_ref()));
+        }
     }
 }

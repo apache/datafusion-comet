@@ -39,6 +39,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+
 ## Usage
 
 All benchmarks are run via `run.py`:
@@ -127,6 +128,7 @@ python3 run.py --engine comet --benchmark tpch --profile --profile-interval 1.0
 
 The output CSV is written to `{output}/{name}-{benchmark}-metrics.csv` and contains per-executor
 columns including `memoryUsed`, `maxMemory`, heap/off-heap storage metrics, and peak memory metrics.
+
 
 ## Engine Configuration
 
@@ -368,6 +370,7 @@ python3 visualize-metrics.py \
                      /tmp/bench-results/comet-tpch-container-metrics-spark-worker-2.csv \
     --output-dir /tmp/comet-charts --title "Comet TPC-H"
 ```
+
 
 ### Comparing Parquet vs Iceberg performance
 
