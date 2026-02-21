@@ -462,10 +462,12 @@ async fn execute_grace_hash_join(
     context: Arc<TaskContext>,
     metrics: GraceHashJoinMetrics,
 ) -> DFResult<impl Stream<Item = DFResult<RecordBatch>>> {
-    // Set up memory reservation
-    let reservation = MemoryConsumer::new("GraceHashJoinExec")
-        .with_can_spill(true)
-        .register(&context.runtime_env().memory_pool);
+    // Set up memory reservation (shared across build and probe phases)
+    let mut reservation = MutableReservation(
+        MemoryConsumer::new("GraceHashJoinExec")
+            .with_can_spill(true)
+            .register(&context.runtime_env().memory_pool),
+    );
 
     let mut partitions: Vec<HashPartition> =
         (0..num_partitions).map(|_| HashPartition::new()).collect();
@@ -481,7 +483,7 @@ async fn execute_grace_hash_join(
             num_partitions,
             &build_schema,
             &mut partitions,
-            &mut MutableReservation(reservation),
+            &mut reservation,
             &context,
             &metrics,
             &mut scratch,
@@ -532,6 +534,8 @@ async fn execute_grace_hash_join(
             num_partitions,
             &probe_schema,
             &mut partitions,
+            &mut reservation,
+            &build_schema,
             &context,
             &metrics,
             &mut scratch,
@@ -890,11 +894,103 @@ fn spill_partition_build(
     Ok(())
 }
 
+/// Spill a single partition's probe-side data to disk using SpillWriter.
+fn spill_partition_probe(
+    partition: &mut HashPartition,
+    schema: &SchemaRef,
+    context: &Arc<TaskContext>,
+    reservation: &mut MutableReservation,
+    metrics: &GraceHashJoinMetrics,
+) -> DFResult<()> {
+    if partition.probe_batches.is_empty() && partition.probe_spill_writer.is_some() {
+        return Ok(());
+    }
+
+    let temp_file = context
+        .runtime_env()
+        .disk_manager
+        .create_tmp_file("grace hash join probe")?;
+
+    let mut writer = SpillWriter::new(temp_file, schema)?;
+    writer.write_batches(&partition.probe_batches)?;
+
+    let freed = partition.probe_mem_size;
+    reservation.shrink(freed);
+
+    metrics.spill_count.add(1);
+    metrics.spilled_bytes.add(freed);
+
+    partition.probe_spill_writer = Some(writer);
+    partition.probe_batches.clear();
+    partition.probe_mem_size = 0;
+
+    Ok(())
+}
+
+/// Spill both build and probe sides of a partition to disk.
+/// When spilling during the probe phase, both sides must be spilled so the
+/// join phase reads both consistently from disk.
+fn spill_partition_both_sides(
+    partition: &mut HashPartition,
+    probe_schema: &SchemaRef,
+    build_schema: &SchemaRef,
+    context: &Arc<TaskContext>,
+    reservation: &mut MutableReservation,
+    metrics: &GraceHashJoinMetrics,
+) -> DFResult<()> {
+    if !partition.build_spilled() {
+        spill_partition_build(partition, build_schema, context, reservation, metrics)?;
+    }
+    if partition.probe_spill_writer.is_none() {
+        spill_partition_probe(partition, probe_schema, context, reservation, metrics)?;
+    }
+    Ok(())
+}
+
+/// Find the non-spilled partition with the largest total memory (build + probe)
+/// and spill both sides.
+fn spill_largest_partition_both_sides(
+    partitions: &mut [HashPartition],
+    probe_schema: &SchemaRef,
+    build_schema: &SchemaRef,
+    context: &Arc<TaskContext>,
+    reservation: &mut MutableReservation,
+    metrics: &GraceHashJoinMetrics,
+) -> DFResult<()> {
+    let largest_idx = partitions
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| {
+            !p.build_spilled() && (!p.build_batches.is_empty() || !p.probe_batches.is_empty())
+        })
+        .max_by_key(|(_, p)| p.build_mem_size + p.probe_mem_size)
+        .map(|(idx, _)| idx);
+
+    if let Some(idx) = largest_idx {
+        info!(
+            "GraceHashJoin: spilling partition {} (build: {} bytes, probe: {} bytes)",
+            idx, partitions[idx].build_mem_size, partitions[idx].probe_mem_size,
+        );
+        spill_partition_both_sides(
+            &mut partitions[idx],
+            probe_schema,
+            build_schema,
+            context,
+            reservation,
+            metrics,
+        )?;
+    }
+
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Phase 2: Probe-side partitioning
 // ---------------------------------------------------------------------------
 
 /// Phase 2: Read all probe-side batches, route to in-memory buffers or spill files.
+/// Tracks probe-side memory in the reservation and spills partitions when pressure
+/// is detected, preventing OOM when the probe side is much larger than the build side.
 #[allow(clippy::too_many_arguments)]
 async fn partition_probe_side(
     mut input: SendableRecordBatchStream,
@@ -902,6 +998,8 @@ async fn partition_probe_side(
     num_partitions: usize,
     schema: &SchemaRef,
     partitions: &mut [HashPartition],
+    reservation: &mut MutableReservation,
+    build_schema: &SchemaRef,
     context: &Arc<TaskContext>,
     metrics: &GraceHashJoinMetrics,
     scratch: &mut ScratchSpace,
@@ -940,9 +1038,11 @@ async fn partition_probe_side(
                     let mut writer = SpillWriter::new(temp_file, schema)?;
                     // Write any accumulated in-memory probe batches first
                     if !partitions[part_idx].probe_batches.is_empty() {
+                        let freed = partitions[part_idx].probe_mem_size;
                         let batches = std::mem::take(&mut partitions[part_idx].probe_batches);
                         writer.write_batches(&batches)?;
                         partitions[part_idx].probe_mem_size = 0;
+                        reservation.shrink(freed);
                     }
                     partitions[part_idx].probe_spill_writer = Some(writer);
                 }
@@ -950,8 +1050,54 @@ async fn partition_probe_side(
                     writer.write_batch(&sub_batch)?;
                 }
             } else {
-                partitions[part_idx].probe_mem_size += sub_batch.get_array_memory_size();
-                partitions[part_idx].probe_batches.push(sub_batch);
+                let batch_size = sub_batch.get_array_memory_size();
+                if reservation.try_grow(batch_size).is_err() {
+                    // Memory pressure: spill the largest partition (both sides)
+                    info!(
+                        "GraceHashJoin: memory pressure during probe, spilling largest partition"
+                    );
+                    spill_largest_partition_both_sides(
+                        partitions,
+                        schema,
+                        build_schema,
+                        context,
+                        reservation,
+                        metrics,
+                    )?;
+
+                    if reservation.try_grow(batch_size).is_err() {
+                        info!(
+                            "GraceHashJoin: still under pressure, spilling partition {}",
+                            part_idx
+                        );
+                        spill_partition_both_sides(
+                            &mut partitions[part_idx],
+                            schema,
+                            build_schema,
+                            context,
+                            reservation,
+                            metrics,
+                        )?;
+                    }
+                }
+
+                if partitions[part_idx].build_spilled() {
+                    // Partition was just spilled above — write to spill writer
+                    if partitions[part_idx].probe_spill_writer.is_none() {
+                        let temp_file = context
+                            .runtime_env()
+                            .disk_manager
+                            .create_tmp_file("grace hash join probe")?;
+                        partitions[part_idx].probe_spill_writer =
+                            Some(SpillWriter::new(temp_file, schema)?);
+                    }
+                    if let Some(ref mut writer) = partitions[part_idx].probe_spill_writer {
+                        writer.write_batch(&sub_batch)?;
+                    }
+                } else {
+                    partitions[part_idx].probe_mem_size += batch_size;
+                    partitions[part_idx].probe_batches.push(sub_batch);
+                }
             }
         }
     }
