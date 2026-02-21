@@ -365,10 +365,25 @@ object CometConf extends ShimCometConf {
   val COMET_REPLACE_SMJ: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.replaceSortMergeJoin")
       .category(CATEGORY_EXEC)
-      .doc("Experimental feature to force Spark to replace SortMergeJoin with ShuffledHashJoin " +
-        s"for improved performance. This feature is not stable yet. $TUNING_GUIDE.")
+      .doc("Experimental feature to replace SortMergeJoin with ShuffledHashJoin " +
+        "for improved performance. When enabled, Comet will only rewrite a " +
+        "SortMergeJoin to a ShuffledHashJoin if the build side is estimated to " +
+        "fit in memory (using Spark's autoBroadcastJoinThreshold * " +
+        "numShufflePartitions) and is significantly smaller than the probe side " +
+        s"(controlled by replaceSortMergeJoin.sizeRatio). $TUNING_GUIDE.")
       .booleanConf
       .createWithDefault(false)
+
+  val COMET_REPLACE_SMJ_SIZE_RATIO: ConfigEntry[Int] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.replaceSortMergeJoin.sizeRatio")
+      .category(CATEGORY_EXEC)
+      .doc("Minimum ratio of probe side size to build side size required when " +
+        "replacing SortMergeJoin with ShuffledHashJoin. Building a hash table is " +
+        "more expensive than sorting, so the build side should be significantly " +
+        "smaller than the probe side. Matches Spark's " +
+        s"spark.sql.shuffledHashJoinFactor behavior. $TUNING_GUIDE.")
+      .intConf
+      .createWithDefault(3)
 
   val COMET_EXEC_SHUFFLE_WITH_HASH_PARTITIONING_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.native.shuffle.partitioning.hash.enabled")
