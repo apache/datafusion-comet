@@ -489,6 +489,40 @@ async fn execute_grace_hash_join(
         .await?;
     }
 
+    // Log build-side partition summary
+    {
+        let pool = &context.runtime_env().memory_pool;
+        let total_build_rows: usize = partitions
+            .iter()
+            .flat_map(|p| p.build_batches.iter())
+            .map(|b| b.num_rows())
+            .sum();
+        let total_build_bytes: usize = partitions.iter().map(|p| p.build_mem_size).sum();
+        let spilled_count = partitions.iter().filter(|p| p.build_spilled()).count();
+        info!(
+            "GraceHashJoin: build phase complete. {} partitions ({} spilled), \
+             total build: {} rows, {} bytes. Memory pool reserved={}",
+            num_partitions,
+            spilled_count,
+            total_build_rows,
+            total_build_bytes,
+            pool.reserved(),
+        );
+        for (i, p) in partitions.iter().enumerate() {
+            if !p.build_batches.is_empty() || p.build_spilled() {
+                let rows: usize = p.build_batches.iter().map(|b| b.num_rows()).sum();
+                info!(
+                    "GraceHashJoin: partition[{}] build: {} batches, {} rows, {} bytes, spilled={}",
+                    i,
+                    p.build_batches.len(),
+                    rows,
+                    p.build_mem_size,
+                    p.build_spilled(),
+                );
+            }
+        }
+    }
+
     // Phase 2: Partition the probe side
     {
         let _timer = metrics.probe_time.timer();
@@ -503,6 +537,25 @@ async fn execute_grace_hash_join(
             &mut scratch,
         )
         .await?;
+    }
+
+    // Log probe-side partition summary
+    {
+        let total_probe_rows: usize = partitions
+            .iter()
+            .flat_map(|p| p.probe_batches.iter())
+            .map(|b| b.num_rows())
+            .sum();
+        let total_probe_bytes: usize = partitions.iter().map(|p| p.probe_mem_size).sum();
+        let probe_spilled = partitions
+            .iter()
+            .filter(|p| p.probe_spill_writer.is_some())
+            .count();
+        info!(
+            "GraceHashJoin: probe phase complete. \
+             total probe (in-memory): {} rows, {} bytes, {} spilled",
+            total_probe_rows, total_probe_bytes, probe_spilled,
+        );
     }
 
     // Finish all open spill writers before reading back
@@ -1051,12 +1104,44 @@ fn join_partition_recursive(
         .iter()
         .map(|b| b.get_array_memory_size())
         .sum();
-    let needs_repartition = if build_size > 0 && build_batches.len() > 1 {
+    let build_rows: usize = build_batches.iter().map(|b| b.num_rows()).sum();
+    let probe_size: usize = probe_batches
+        .iter()
+        .map(|b| b.get_array_memory_size())
+        .sum();
+    let probe_rows: usize = probe_batches.iter().map(|b| b.num_rows()).sum();
+    let pool_reserved = context.runtime_env().memory_pool.reserved();
+    info!(
+        "GraceHashJoin: join_partition_recursive level={}, \
+         build: {} batches/{} rows/{} bytes, \
+         probe: {} batches/{} rows/{} bytes, \
+         pool reserved={}",
+        recursion_level,
+        build_batches.len(),
+        build_rows,
+        build_size,
+        probe_batches.len(),
+        probe_rows,
+        probe_size,
+        pool_reserved,
+    );
+    let needs_repartition = if build_size > 0 {
         let mut test_reservation = MemoryConsumer::new("GraceHashJoinExec repartition check")
             .register(&context.runtime_env().memory_pool);
-        let can_fit = test_reservation.try_grow(build_size).is_ok();
+        // Account for hash table overhead (~2-3x raw data)
+        let can_fit = test_reservation.try_grow(build_size * 3).is_ok();
         if can_fit {
-            test_reservation.shrink(build_size);
+            test_reservation.shrink(build_size * 3);
+        }
+        if !can_fit {
+            info!(
+                "GraceHashJoin: repartition needed at level {}: \
+                 build_size={} (x3={}), pool reserved={}",
+                recursion_level,
+                build_size,
+                build_size * 3,
+                context.runtime_env().memory_pool.reserved(),
+            );
         }
         !can_fit
     } else {
