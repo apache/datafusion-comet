@@ -38,7 +38,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.sql.types._
 
-import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
+import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark41Plus}
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
@@ -2008,10 +2008,16 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     def verifyResult(query: String): Unit = {
       val expectedDivideByZeroError =
         "[DIVIDE_BY_ZERO] Division by zero. Use `try_divide` to tolerate divisor being 0 and return NULL instead."
+      val expectedRemainderByZeroError =
+        "[REMAINDER_BY_ZERO] Remainder by zero. Use `try_mod` to tolerate divisor being 0 and return NULL instead."
 
       checkSparkAnswerMaybeThrows(sql(query)) match {
         case (Some(sparkException), Some(cometException)) =>
-          assert(sparkException.getMessage.contains(expectedDivideByZeroError))
+          if (isSpark41Plus) {
+            assert(sparkException.getMessage.contains(expectedRemainderByZeroError))
+          } else {
+            assert(sparkException.getMessage.contains(expectedDivideByZeroError))
+          }
           assert(cometException.getMessage.contains(expectedDivideByZeroError))
         case (None, None) => checkSparkAnswerAndOperator(sql(query))
         case (None, Some(ex)) =>

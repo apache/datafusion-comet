@@ -58,7 +58,7 @@ jobs:
   # Build native library once and share with all test jobs
   build-native:
     name: Build Native Library
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest-16-cores
     container:
       image: amd64/rust
     steps:
@@ -109,7 +109,7 @@ jobs:
     needs: build-native
     strategy:
       matrix:
-        os: [ubuntu-24.04]
+        os: [ubuntu-latest-16-cores]
         module:
           - {name: "catalyst", args1: "catalyst/test", args2: ""}
           - {name: "sql_core-1", args1: "", args2: sql/testOnly * -- -l org.apache.spark.tags.ExtendedSQLTest -l org.apache.spark.tags.SlowSQLTest}
@@ -119,17 +119,21 @@ jobs:
           - {name: "sql_hive-2", args1: "", args2: "hive/testOnly * -- -n org.apache.spark.tags.ExtendedHiveTest"}
           - {name: "sql_hive-3", args1: "", args2: "hive/testOnly * -- -n org.apache.spark.tags.SlowHiveTest"}
         # Test combinations:
-        # - auto scan: all Spark versions (3.4, 3.5, 4.0)
+        # - auto scan: all Spark versions (3.4, 3.5, 4.0, 4.1)
         # - native_iceberg_compat: Spark 3.5 only
         config:
           - {spark-short: '3.4', spark-full: '3.4.3', java: 11, scan-impl: 'auto'}
           - {spark-short: '3.5', spark-full: '3.5.8', java: 11, scan-impl: 'auto'}
           - {spark-short: '3.5', spark-full: '3.5.8', java: 11, scan-impl: 'native_datafusion'}
           - {spark-short: '4.0', spark-full: '4.0.1', java: 17, scan-impl: 'auto'}
-        # Skip sql_hive-1 for Spark 4.0 due to https://github.com/apache/datafusion-comet/issues/2946
+          - {spark-short: '4.1', spark-full: '4.1.1', java: 17, scan-impl: 'auto' }
+        # Skip sql_hive-1 for Spark 4.0+ due to https://github.com/apache/datafusion-comet/issues/2946
         exclude:
           - config: {spark-short: '4.0', spark-full: '4.0.1', java: 17, scan-impl: 'auto'}
             module: {name: "sql_hive-1", args1: "", args2: "hive/testOnly * -- -l org.apache.spark.tags.ExtendedHiveTest -l org.apache.spark.tags.SlowHiveTest"}
+          - config: {spark-short: '4.1', spark-full: '4.1.1', java: 17, scan-impl: 'auto'}
+            module: {name: "sql_hive-1", args1: "", args2: "hive/testOnly * -- -l org.apache.spark.tags.ExtendedHiveTest -l org.apache.spark.tags.SlowHiveTest"}
+
       fail-fast: false
     name: spark-sql-${{ matrix.config.scan-impl }}-${{ matrix.module.name }}/spark-${{ matrix.config.spark-full }}
     runs-on: ${{ matrix.os }}
@@ -157,6 +161,10 @@ jobs:
         run: |
           cd apache-spark
           rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups
+          rm -rf /root/.m2/repository/org/scala-lang/modules/scala-xml_2.13
+          rm -rf /root/.m2/repository/org/xerial/snappy/snappy-java/1.1.10.4
+          rm -rf /root/.m2/repository/com/google/protobuf/protobuf-java/4.28.2
+          rm -rf /root/.m2/repository/org/bouncycastle/bcprov-jdk18on/1.80
           NOLINT_ON_COMPILE=true ENABLE_COMET=true ENABLE_COMET_ONHEAP=true COMET_PARQUET_SCAN_IMPL=${{ matrix.config.scan-impl }} ENABLE_COMET_LOG_FALLBACK_REASONS=${{ github.event.inputs.collect-fallback-logs || 'false' }} \
             build/sbt -Dsbt.log.noformat=true ${{ matrix.module.args1 }} "${{ matrix.module.args2 }}"
           if [ "${{ github.event.inputs.collect-fallback-logs }}" = "true" ]; then

@@ -30,7 +30,7 @@ import org.apache.comet.CometConf
 import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProto, serializeDataType}
-import org.apache.comet.shims.CometEvalModeUtil
+import org.apache.comet.shims.{CometEvalModeUtil, CometSumShim}
 
 object CometMin extends CometAggregateExpressionSerde[Min] {
 
@@ -200,7 +200,7 @@ object CometAverage extends CometAggregateExpressionSerde[Average] {
   }
 }
 
-object CometSum extends CometAggregateExpressionSerde[Sum] {
+object CometSum extends CometAggregateExpressionSerde[Sum] with CometSumShim {
 
   override def convert(
       aggExpr: AggregateExpression,
@@ -214,7 +214,7 @@ object CometSum extends CometAggregateExpressionSerde[Sum] {
       return None
     }
 
-    val evalMode = sum.evalMode
+    val evalMode = sparkEvalMode(sum)
 
     val childExpr = exprToProto(sum.child, inputs, binding)
     val dataType = serializeDataType(sum.dataType)

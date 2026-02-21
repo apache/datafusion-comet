@@ -37,7 +37,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.test.TestSparkSession
 
 import org.apache.comet.{CometConf, ExtendedExplainInfo}
-import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark41Plus}
 
 /**
  * Similar to [[org.apache.spark.sql.PlanStabilitySuite]], checks that TPC-DS Comet plans don't
@@ -263,13 +263,16 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
 }
 
 class CometTPCDSV1_4_PlanStabilitySuite extends CometPlanStabilitySuite {
-  private val planName = if (isSpark40Plus) {
-    "approved-plans-v1_4-spark4_0"
-  } else if (isSpark35Plus) {
-    "approved-plans-v1_4-spark3_5"
-  } else {
-    "approved-plans-v1_4"
-  }
+  private val planName =
+    if (isSpark41Plus) {
+      "approved-plans-v1_4-spark4_1"
+    } else if (isSpark40Plus) {
+      "approved-plans-v1_4-spark4_0"
+    } else if (isSpark35Plus) {
+      "approved-plans-v1_4-spark3_5"
+    } else {
+      "approved-plans-v1_4"
+    }
   override val goldenFilePath: String =
     new File(baseResourcePath, planName).getAbsolutePath
 
@@ -285,12 +288,16 @@ class CometTPCDSV1_4_PlanStabilitySuite extends CometPlanStabilitySuite {
 }
 
 class CometTPCDSV2_7_PlanStabilitySuite extends CometPlanStabilitySuite {
-  private val planName = if (isSpark40Plus) {
-    "approved-plans-v2_7-spark4_0"
-  } else if (isSpark35Plus) {
-    "approved-plans-v2_7-spark3_5"
-  } else {
-    "approved-plans-v2_7"
+  private val planName = {
+    if (isSpark41Plus) {
+      "approved-plans-v2_7-spark4_1"
+    } else if (isSpark40Plus) {
+      "approved-plans-v2_7-spark4_0"
+    } else if (isSpark35Plus) {
+      "approved-plans-v2_7-spark3_5"
+    } else {
+      "approved-plans-v2_7"
+    }
   }
   override val goldenFilePath: String =
     new File(baseResourcePath, planName).getAbsolutePath
