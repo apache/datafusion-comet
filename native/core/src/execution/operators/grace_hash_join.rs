@@ -947,43 +947,6 @@ fn spill_partition_both_sides(
     Ok(())
 }
 
-/// Find the non-spilled partition with the largest total memory (build + probe)
-/// and spill both sides.
-fn spill_largest_partition_both_sides(
-    partitions: &mut [HashPartition],
-    probe_schema: &SchemaRef,
-    build_schema: &SchemaRef,
-    context: &Arc<TaskContext>,
-    reservation: &mut MutableReservation,
-    metrics: &GraceHashJoinMetrics,
-) -> DFResult<()> {
-    let largest_idx = partitions
-        .iter()
-        .enumerate()
-        .filter(|(_, p)| {
-            !p.build_spilled() && (!p.build_batches.is_empty() || !p.probe_batches.is_empty())
-        })
-        .max_by_key(|(_, p)| p.build_mem_size + p.probe_mem_size)
-        .map(|(idx, _)| idx);
-
-    if let Some(idx) = largest_idx {
-        info!(
-            "GraceHashJoin: spilling partition {} (build: {} bytes, probe: {} bytes)",
-            idx, partitions[idx].build_mem_size, partitions[idx].probe_mem_size,
-        );
-        spill_partition_both_sides(
-            &mut partitions[idx],
-            probe_schema,
-            build_schema,
-            context,
-            reservation,
-            metrics,
-        )?;
-    }
-
-    Ok(())
-}
-
 // ---------------------------------------------------------------------------
 // Phase 2: Probe-side partitioning
 // ---------------------------------------------------------------------------
@@ -1052,61 +1015,35 @@ async fn partition_probe_side(
             } else {
                 let batch_size = sub_batch.get_array_memory_size();
                 if reservation.try_grow(batch_size).is_err() {
-                    // Memory pressure: spill partitions aggressively.
-                    // Free at least half of in-memory data to create real headroom,
-                    // not just enough for the current batch.
+                    // Memory pressure: spill ALL non-spilled partitions.
+                    // With multiple concurrent GHJ instances sharing the pool,
+                    // partial spilling just lets data re-accumulate. Spilling
+                    // everything ensures all subsequent probe data goes directly
+                    // to disk, keeping in-memory footprint near zero.
                     let total_in_memory: usize = partitions
                         .iter()
                         .filter(|p| !p.build_spilled())
                         .map(|p| p.build_mem_size + p.probe_mem_size)
                         .sum();
-                    let target_to_free = total_in_memory / 2;
-                    let mut freed_so_far = 0usize;
+                    let spillable_count = partitions.iter().filter(|p| !p.build_spilled()).count();
 
                     info!(
                         "GraceHashJoin: memory pressure during probe, \
-                         total in-memory={}, target to free={}",
-                        total_in_memory, target_to_free,
+                         spilling all {} non-spilled partitions ({} bytes)",
+                        spillable_count, total_in_memory,
                     );
 
-                    while freed_so_far < target_to_free {
-                        let has_spillable = partitions.iter().any(|p| {
-                            !p.build_spilled() && (p.build_mem_size > 0 || p.probe_mem_size > 0)
-                        });
-                        if !has_spillable {
-                            break;
+                    for i in 0..partitions.len() {
+                        if !partitions[i].build_spilled() {
+                            spill_partition_both_sides(
+                                &mut partitions[i],
+                                schema,
+                                build_schema,
+                                context,
+                                reservation,
+                                metrics,
+                            )?;
                         }
-                        let before: usize = partitions
-                            .iter()
-                            .filter(|p| !p.build_spilled())
-                            .map(|p| p.build_mem_size + p.probe_mem_size)
-                            .sum();
-                        spill_largest_partition_both_sides(
-                            partitions,
-                            schema,
-                            build_schema,
-                            context,
-                            reservation,
-                            metrics,
-                        )?;
-                        let after: usize = partitions
-                            .iter()
-                            .filter(|p| !p.build_spilled())
-                            .map(|p| p.build_mem_size + p.probe_mem_size)
-                            .sum();
-                        freed_so_far += before.saturating_sub(after);
-                    }
-
-                    // If still can't fit after aggressive spilling, spill this partition
-                    if reservation.try_grow(batch_size).is_err() {
-                        spill_partition_both_sides(
-                            &mut partitions[part_idx],
-                            schema,
-                            build_schema,
-                            context,
-                            reservation,
-                            metrics,
-                        )?;
                     }
                 }
 
