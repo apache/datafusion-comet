@@ -75,7 +75,6 @@ object CometJoinBenchmark extends CometBenchmarkBase {
     SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1")
 
   private def prepareTwoTables(dir: java.io.File, rows: Int, keyCardinality: Int): Unit = {
-    import spark.implicits._
     val left = spark
       .range(rows)
       .selectExpr(

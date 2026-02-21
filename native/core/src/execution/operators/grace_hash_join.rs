@@ -271,11 +271,7 @@ impl DisplayAs for GraceHashJoinExec {
             DisplayFormatType::Default
             | DisplayFormatType::Verbose
             | DisplayFormatType::TreeRender => {
-                let on: Vec<String> = self
-                    .on
-                    .iter()
-                    .map(|(l, r)| format!("({l}, {r})"))
-                    .collect();
+                let on: Vec<String> = self.on.iter().map(|(l, r)| format!("({l}, {r})")).collect();
                 write!(
                     f,
                     "GraceHashJoinExec: join_type={:?}, on=[{}], num_partitions={}",
@@ -338,10 +334,8 @@ impl ExecutionPlan for GraceHashJoinExec {
         // The internal execution always treats first arg as build, second as probe.
         let (build_stream, probe_stream, build_schema, probe_schema, build_on, probe_on) =
             if self.build_left {
-                let build_keys: Vec<_> =
-                    self.on.iter().map(|(l, _)| Arc::clone(l)).collect();
-                let probe_keys: Vec<_> =
-                    self.on.iter().map(|(_, r)| Arc::clone(r)).collect();
+                let build_keys: Vec<_> = self.on.iter().map(|(l, _)| Arc::clone(l)).collect();
+                let probe_keys: Vec<_> = self.on.iter().map(|(_, r)| Arc::clone(r)).collect();
                 (
                     left_stream,
                     right_stream,
@@ -352,10 +346,8 @@ impl ExecutionPlan for GraceHashJoinExec {
                 )
             } else {
                 // Build right: right is build side, left is probe side
-                let build_keys: Vec<_> =
-                    self.on.iter().map(|(_, r)| Arc::clone(r)).collect();
-                let probe_keys: Vec<_> =
-                    self.on.iter().map(|(l, _)| Arc::clone(l)).collect();
+                let build_keys: Vec<_> = self.on.iter().map(|(_, r)| Arc::clone(r)).collect();
+                let probe_keys: Vec<_> = self.on.iter().map(|(l, _)| Arc::clone(l)).collect();
                 (
                     right_stream,
                     left_stream,
@@ -531,12 +523,11 @@ async fn execute_grace_hash_join(
 
     // Flatten all partition results into a single stream
     let output_metrics = metrics.baseline.clone();
-    let result_stream =
-        stream::iter(partition_results.into_iter().map(Ok::<_, DataFusionError>))
-            .try_flatten()
-            .inspect_ok(move |batch| {
-                output_metrics.record_output(batch.num_rows());
-            });
+    let result_stream = stream::iter(partition_results.into_iter().map(Ok::<_, DataFusionError>))
+        .try_flatten()
+        .inspect_ok(move |batch| {
+            output_metrics.record_output(batch.num_rows());
+        });
 
     Ok(result_stream)
 }
@@ -625,9 +616,7 @@ fn read_spilled_batches(
         .map_err(|e| DataFusionError::Execution(format!("Failed to open spill file: {e}")))?;
     let reader = BufReader::new(file);
     let stream_reader = StreamReader::try_new(reader, None)?;
-    let batches: Vec<RecordBatch> = stream_reader
-        .into_iter()
-        .collect::<Result<Vec<_>, _>>()?;
+    let batches: Vec<RecordBatch> = stream_reader.into_iter().collect::<Result<Vec<_>, _>>()?;
     Ok(batches)
 }
 
@@ -728,7 +717,9 @@ fn spill_largest_partition(
     if let Some(idx) = largest_idx {
         info!(
             "GraceHashJoin: spilling partition {} ({} bytes, {} batches)",
-            idx, partitions[idx].build_mem_size, partitions[idx].build_batches.len()
+            idx,
+            partitions[idx].build_mem_size,
+            partitions[idx].build_batches.len()
         );
         spill_partition_build(&mut partitions[idx], schema, context, reservation, metrics)?;
     }
@@ -815,8 +806,7 @@ async fn partition_probe_side(
                         writer.write_batch(&sub_batch)?;
                     }
                 } else {
-                    partitions[part_idx].probe_mem_size +=
-                        sub_batch.get_array_memory_size();
+                    partitions[part_idx].probe_mem_size += sub_batch.get_array_memory_size();
                     partitions[part_idx].probe_batches.push(sub_batch);
                 }
             }
@@ -954,9 +944,7 @@ fn join_partition_recursive(
         (probe_batches.is_empty(), build_batches.is_empty())
     };
     let skip = match join_type {
-        JoinType::Inner | JoinType::LeftSemi | JoinType::LeftAnti => {
-            left_empty || right_empty
-        }
+        JoinType::Inner | JoinType::LeftSemi | JoinType::LeftAnti => left_empty || right_empty,
         JoinType::Left | JoinType::LeftMark => left_empty,
         JoinType::Right => right_empty,
         JoinType::Full => left_empty && right_empty,
@@ -989,8 +977,7 @@ fn join_partition_recursive(
 
     if needs_repartition {
         if recursion_level >= MAX_RECURSION_DEPTH {
-            let total_build_rows: usize =
-                build_batches.iter().map(|b| b.num_rows()).sum();
+            let total_build_rows: usize = build_batches.iter().map(|b| b.num_rows()).sum();
             return Err(DataFusionError::ResourcesExhausted(format!(
                 "GraceHashJoin: build side partition is still too large after {} levels of \
                  repartitioning ({} bytes, {} rows). Consider increasing \
@@ -1044,13 +1031,17 @@ fn join_partition_recursive(
         (probe_data, probe_schema, build_data, build_schema)
     };
 
-    let left_source = Arc::new(DataSourceExec::new(Arc::new(
-        MemorySourceConfig::try_new(&[left_data], Arc::clone(left_schema_ref), None)?,
-    )));
+    let left_source = Arc::new(DataSourceExec::new(Arc::new(MemorySourceConfig::try_new(
+        &[left_data],
+        Arc::clone(left_schema_ref),
+        None,
+    )?)));
 
-    let right_source = Arc::new(DataSourceExec::new(Arc::new(
-        MemorySourceConfig::try_new(&[right_data], Arc::clone(right_schema_ref), None)?,
-    )));
+    let right_source = Arc::new(DataSourceExec::new(Arc::new(MemorySourceConfig::try_new(
+        &[right_data],
+        Arc::clone(right_schema_ref),
+        None,
+    )?)));
 
     let stream = if build_left {
         let hash_join = HashJoinExec::try_new(
@@ -1209,12 +1200,16 @@ mod tests {
             make_batch(&[1, 3, 5, 7], &["p", "q", "r", "s"]),
         ];
 
-        let left_source = Arc::new(DataSourceExec::new(Arc::new(
-            MemorySourceConfig::try_new(&[left_batches], Arc::clone(&left_schema), None)?,
-        )));
-        let right_source = Arc::new(DataSourceExec::new(Arc::new(
-            MemorySourceConfig::try_new(&[right_batches], Arc::clone(&right_schema), None)?,
-        )));
+        let left_source = Arc::new(DataSourceExec::new(Arc::new(MemorySourceConfig::try_new(
+            &[left_batches],
+            Arc::clone(&left_schema),
+            None,
+        )?)));
+        let right_source = Arc::new(DataSourceExec::new(Arc::new(MemorySourceConfig::try_new(
+            &[right_batches],
+            Arc::clone(&right_schema),
+            None,
+        )?)));
 
         let on = vec![(
             Arc::new(Column::new("id", 0)) as Arc<dyn PhysicalExpr>,
@@ -1246,16 +1241,8 @@ mod tests {
         let ctx = SessionContext::new();
         let task_ctx = ctx.task_ctx();
 
-        let left_schema = Arc::new(Schema::new(vec![Field::new(
-            "id",
-            DataType::Int32,
-            false,
-        )]));
-        let right_schema = Arc::new(Schema::new(vec![Field::new(
-            "id",
-            DataType::Int32,
-            false,
-        )]));
+        let left_schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let right_schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
 
         let left_batches = vec![RecordBatch::try_new(
             Arc::clone(&left_schema),
@@ -1266,12 +1253,16 @@ mod tests {
             vec![Arc::new(Int32Array::from(vec![10, 20, 30]))],
         )?];
 
-        let left_source = Arc::new(DataSourceExec::new(Arc::new(
-            MemorySourceConfig::try_new(&[left_batches], Arc::clone(&left_schema), None)?,
-        )));
-        let right_source = Arc::new(DataSourceExec::new(Arc::new(
-            MemorySourceConfig::try_new(&[right_batches], Arc::clone(&right_schema), None)?,
-        )));
+        let left_source = Arc::new(DataSourceExec::new(Arc::new(MemorySourceConfig::try_new(
+            &[left_batches],
+            Arc::clone(&left_schema),
+            None,
+        )?)));
+        let right_source = Arc::new(DataSourceExec::new(Arc::new(MemorySourceConfig::try_new(
+            &[right_batches],
+            Arc::clone(&right_schema),
+            None,
+        )?)));
 
         let on = vec![(
             Arc::new(Column::new("id", 0)) as Arc<dyn PhysicalExpr>,

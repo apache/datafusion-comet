@@ -193,10 +193,7 @@ impl PhysicalPlanner {
     }
 
     pub fn with_spark_conf(self, spark_conf: HashMap<String, String>) -> Self {
-        Self {
-            spark_conf,
-            ..self
-        }
+        Self { spark_conf, ..self }
     }
 
     /// Return session context of this planner.
@@ -1545,12 +1542,10 @@ impl PhysicalPlanner {
                 // Check if Grace Hash Join is enabled
                 {
                     use crate::execution::spark_config::{
-                        COMET_GRACE_HASH_JOIN_ENABLED,
+                        SparkConfig, COMET_GRACE_HASH_JOIN_ENABLED,
                         COMET_GRACE_HASH_JOIN_NUM_PARTITIONS,
-                        SparkConfig,
                     };
-                    let grace_enabled =
-                        self.spark_conf.get_bool(COMET_GRACE_HASH_JOIN_ENABLED);
+                    let grace_enabled = self.spark_conf.get_bool(COMET_GRACE_HASH_JOIN_ENABLED);
 
                     if grace_enabled {
                         let num_partitions = self
@@ -1559,8 +1554,8 @@ impl PhysicalPlanner {
 
                         let build_left = join.build_side == BuildSide::BuildLeft as i32;
 
-                        let grace_join = Arc::new(
-                            crate::execution::operators::GraceHashJoinExec::try_new(
+                        let grace_join =
+                            Arc::new(crate::execution::operators::GraceHashJoinExec::try_new(
                                 Arc::clone(&left),
                                 Arc::clone(&right),
                                 join_params.join_on,
@@ -1568,8 +1563,7 @@ impl PhysicalPlanner {
                                 &join_params.join_type,
                                 num_partitions,
                                 build_left,
-                            )?,
-                        );
+                            )?);
 
                         return Ok((
                             scans,

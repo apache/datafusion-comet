@@ -23,8 +23,7 @@ pub(crate) const COMET_EXPLAIN_NATIVE_ENABLED: &str = "spark.comet.explain.nativ
 pub(crate) const COMET_MAX_TEMP_DIRECTORY_SIZE: &str = "spark.comet.maxTempDirectorySize";
 pub(crate) const COMET_DEBUG_MEMORY: &str = "spark.comet.debug.memory";
 pub(crate) const SPARK_EXECUTOR_CORES: &str = "spark.executor.cores";
-pub(crate) const COMET_GRACE_HASH_JOIN_ENABLED: &str =
-    "spark.comet.exec.graceHashJoin.enabled";
+pub(crate) const COMET_GRACE_HASH_JOIN_ENABLED: &str = "spark.comet.exec.graceHashJoin.enabled";
 pub(crate) const COMET_GRACE_HASH_JOIN_NUM_PARTITIONS: &str =
     "spark.comet.exec.graceHashJoin.numPartitions";
 
