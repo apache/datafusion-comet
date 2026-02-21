@@ -412,21 +412,16 @@ impl ExecutionPlan for GraceHashJoinExec {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> DFResult<SendableRecordBatchStream> {
-        let left_stream = self.left.execute(partition, Arc::clone(&context))?;
-        let right_stream = self.right.execute(partition, Arc::clone(&context))?;
-
-        let join_metrics = GraceHashJoinMetrics::new(&self.metrics, partition);
-
-        // Determine build/probe streams and schemas based on build_left.
-        // The internal execution always treats first arg as build, second as probe.
-        let (build_stream, probe_stream, build_schema, probe_schema, build_on, probe_on) =
+        // Only execute build stream upfront; probe plan is passed through
+        // so it can be skipped entirely if the fast path applies.
+        let (build_stream, build_schema, probe_plan, probe_schema, build_on, probe_on) =
             if self.build_left {
                 let build_keys: Vec<_> = self.on.iter().map(|(l, _)| Arc::clone(l)).collect();
                 let probe_keys: Vec<_> = self.on.iter().map(|(_, r)| Arc::clone(r)).collect();
                 (
-                    left_stream,
-                    right_stream,
+                    self.left.execute(partition, Arc::clone(&context))?,
                     self.left.schema(),
+                    Arc::clone(&self.right),
                     self.right.schema(),
                     build_keys,
                     probe_keys,
@@ -436,15 +431,16 @@ impl ExecutionPlan for GraceHashJoinExec {
                 let build_keys: Vec<_> = self.on.iter().map(|(_, r)| Arc::clone(r)).collect();
                 let probe_keys: Vec<_> = self.on.iter().map(|(l, _)| Arc::clone(l)).collect();
                 (
-                    right_stream,
-                    left_stream,
+                    self.right.execute(partition, Arc::clone(&context))?,
                     self.right.schema(),
+                    Arc::clone(&self.left),
                     self.left.schema(),
                     build_keys,
                     probe_keys,
                 )
             };
 
+        let join_metrics = GraceHashJoinMetrics::new(&self.metrics, partition);
         let on = self.on.clone();
         let filter = self.filter.clone();
         let join_type = self.join_type;
@@ -455,7 +451,8 @@ impl ExecutionPlan for GraceHashJoinExec {
         let result_stream = futures::stream::once(async move {
             execute_grace_hash_join(
                 build_stream,
-                probe_stream,
+                probe_plan,
+                partition,
                 build_on,
                 probe_on,
                 on,
@@ -528,14 +525,19 @@ impl HashPartition {
 
 /// Main execution logic for the grace hash join.
 ///
-/// `build_stream`/`probe_stream`: already swapped based on build_left.
+/// `build_stream`: already swapped based on build_left.
+/// `probe_plan`: the probe-side ExecutionPlan (not yet executed). Deferred so
+///   that when the build side is small we can skip probe partitioning entirely
+///   and stream it directly through HashJoinExec.
+/// `probe_partition`: the partition index for executing probe_plan.
 /// `build_keys`/`probe_keys`: key expressions for their respective sides.
 /// `original_on`: original (left_key, right_key) pairs for HashJoinExec.
 /// `build_left`: whether left is build side (affects HashJoinExec construction).
 #[allow(clippy::too_many_arguments)]
 async fn execute_grace_hash_join(
     build_stream: SendableRecordBatchStream,
-    probe_stream: SendableRecordBatchStream,
+    probe_plan: Arc<dyn ExecutionPlan>,
+    probe_partition: usize,
     build_keys: Vec<Arc<dyn PhysicalExpr>>,
     probe_keys: Vec<Arc<dyn PhysicalExpr>>,
     original_on: Vec<(Arc<dyn PhysicalExpr>, Arc<dyn PhysicalExpr>)>,
@@ -612,6 +614,111 @@ async fn execute_grace_hash_join(
         }
     }
 
+    // Fast path: if no build partitions spilled and the build side is small
+    // enough to fit in a hash table, skip probe partitioning entirely.
+    // Stream the probe input directly through HashJoinExec, avoiding all
+    // spill I/O.
+    let build_spilled = partitions.iter().any(|p| p.build_spilled());
+    let total_build_bytes: usize = partitions.iter().map(|p| p.build_mem_size).sum();
+
+    if !build_spilled {
+        // Check if hash table (~3x build data) fits in available memory
+        let can_fit = if total_build_bytes > 0 {
+            let mut test_reservation = MemoryConsumer::new("GraceHashJoinExec fast-path check")
+                .register(&context.runtime_env().memory_pool);
+            let ok = test_reservation.try_grow(total_build_bytes * 3).is_ok();
+            if ok {
+                test_reservation.shrink(total_build_bytes * 3);
+            }
+            ok
+        } else {
+            true
+        };
+
+        if can_fit {
+            // Release build-side reservation — HashJoinExec will manage its own memory
+            reservation.shrink(total_build_bytes);
+            drop(reservation);
+
+            let total_build_rows: usize = partitions
+                .iter()
+                .flat_map(|p| p.build_batches.iter())
+                .map(|b| b.num_rows())
+                .sum();
+            info!(
+                "GraceHashJoin: fast path — build side small ({} rows, {} bytes), \
+                 no spills. Streaming probe directly through HashJoinExec.",
+                total_build_rows, total_build_bytes,
+            );
+
+            // Concatenate all build partition data into a single batch set
+            let all_build_batches: Vec<RecordBatch> = partitions
+                .into_iter()
+                .flat_map(|p| p.build_batches)
+                .collect();
+            let build_data = if all_build_batches.is_empty() {
+                vec![RecordBatch::new_empty(Arc::clone(&build_schema))]
+            } else {
+                vec![concat_batches(&build_schema, &all_build_batches)?]
+            };
+
+            let build_source = Arc::new(DataSourceExec::new(Arc::new(
+                MemorySourceConfig::try_new(&[build_data], Arc::clone(&build_schema), None)?,
+            )));
+
+            // Use the original probe plan directly — no partitioning, no spilling
+            let (left_source, right_source): (Arc<dyn ExecutionPlan>, Arc<dyn ExecutionPlan>) =
+                if build_left {
+                    (build_source, probe_plan)
+                } else {
+                    (probe_plan, build_source)
+                };
+
+            let stream = if build_left {
+                let hash_join = HashJoinExec::try_new(
+                    left_source,
+                    right_source,
+                    original_on,
+                    filter,
+                    &join_type,
+                    None,
+                    PartitionMode::CollectLeft,
+                    NullEquality::NullEqualsNothing,
+                )?;
+                hash_join.execute(probe_partition, Arc::clone(&context))?
+            } else {
+                let hash_join = Arc::new(HashJoinExec::try_new(
+                    left_source,
+                    right_source,
+                    original_on,
+                    filter,
+                    &join_type,
+                    None,
+                    PartitionMode::CollectLeft,
+                    NullEquality::NullEqualsNothing,
+                )?);
+                let swapped = hash_join.swap_inputs(PartitionMode::CollectLeft)?;
+                swapped.execute(probe_partition, Arc::clone(&context))?
+            };
+
+            let output_metrics = metrics.baseline.clone();
+            let result_stream = stream.inspect_ok(move |batch| {
+                output_metrics.record_output(batch.num_rows());
+            });
+            return Ok(result_stream.boxed());
+        }
+    }
+
+    // Slow path: build side was spilled or too large for fast path.
+    // Execute probe plan and partition it.
+    info!(
+        "GraceHashJoin: slow path — build spilled={}, {} bytes. \
+         Partitioning probe side.",
+        build_spilled, total_build_bytes,
+    );
+
+    let probe_stream = probe_plan.execute(probe_partition, Arc::clone(&context))?;
+
     // Phase 2: Partition the probe side
     {
         let _timer = metrics.probe_time.timer();
@@ -677,7 +784,7 @@ async fn execute_grace_hash_join(
             output_metrics.record_output(batch.num_rows());
         });
 
-    Ok(result_stream)
+    Ok(result_stream.boxed())
 }
 
 /// Wraps MemoryReservation to allow mutation through reference.
