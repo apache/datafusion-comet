@@ -167,7 +167,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateBools(), DataTypes.StringType)
   }
 
-  ignore("cast BooleanType to TimestampType") {
+  test("cast BooleanType to TimestampType") {
     // Arrow error: Cast error: Casting from Boolean to Timestamp(Microsecond, Some("UTC")) not supported
     castTest(generateBools(), DataTypes.TimestampType)
   }
@@ -504,9 +504,16 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(withNulls(values).toDF("a"), DataTypes.StringType)
   }
 
-  ignore("cast FloatType to TimestampType") {
-    // java.lang.ArithmeticException: long overflow
-    castTest(generateFloats(), DataTypes.TimestampType)
+  test("cast FloatType to TimestampType") {
+    compatibleTimezones.foreach { tz =>
+      withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
+        withTable("t1") {
+          generateFloats().write.saveAsTable("t1")
+          val df = spark.sql("select a, cast(a as timestamp) from t1")
+          assertDataFrameEquals(df)
+        }
+      }
+    }
   }
 
   // CAST from DoubleType
@@ -560,9 +567,16 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(withNulls(values).toDF("a"), DataTypes.StringType)
   }
 
-  ignore("cast DoubleType to TimestampType") {
-    // java.lang.ArithmeticException: long overflow
-    castTest(generateDoubles(), DataTypes.TimestampType)
+  test("cast DoubleType to TimestampType") {
+    compatibleTimezones.foreach { tz =>
+      withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
+        withTable("t1") {
+          generateDoubles().write.saveAsTable("t1")
+          val df = spark.sql("select a, cast(a as timestamp) from t1")
+          assertDataFrameEquals(df)
+        }
+      }
+    }
   }
 
   // CAST from DecimalType(10,2)
@@ -627,8 +641,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateDecimalsPrecision10Scale2(), DataTypes.StringType)
   }
 
-  ignore("cast DecimalType(10,2) to TimestampType") {
-    // input: -123456.789000000000000000, expected: 1969-12-30 05:42:23.211, actual: 1969-12-31 15:59:59.876544
+  test("cast DecimalType(10,2) to TimestampType") {
     castTest(generateDecimalsPrecision10Scale2(), DataTypes.TimestampType)
   }
 
