@@ -35,6 +35,7 @@ include = [
 publish = false
 
 [dependencies]
+ahash = "0.8"
 arrow = { workspace = true }
 parquet = { workspace = true, default-features = false, features = ["experimental", "arrow"] }
 futures = { workspace = true }

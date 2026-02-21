@@ -163,6 +163,8 @@ pub struct PhysicalPlanner {
     exec_context_id: i64,
     partition: i32,
     session_ctx: Arc<SessionContext>,
+    /// Spark configuration map, used to read comet-specific settings.
+    spark_conf: HashMap<String, String>,
 }
 
 impl Default for PhysicalPlanner {
@@ -177,6 +179,7 @@ impl PhysicalPlanner {
             exec_context_id: TEST_EXEC_CONTEXT_ID,
             session_ctx,
             partition,
+            spark_conf: HashMap::new(),
         }
     }
 
@@ -185,6 +188,14 @@ impl PhysicalPlanner {
             exec_context_id,
             partition: self.partition,
             session_ctx: Arc::clone(&self.session_ctx),
+            spark_conf: self.spark_conf,
+        }
+    }
+
+    pub fn with_spark_conf(self, spark_conf: HashMap<String, String>) -> Self {
+        Self {
+            spark_conf,
+            ..self
         }
     }
 
@@ -1530,6 +1541,46 @@ impl PhysicalPlanner {
 
                 let left = Arc::clone(&join_params.left.native_plan);
                 let right = Arc::clone(&join_params.right.native_plan);
+
+                // Check if Grace Hash Join is enabled
+                {
+                    use crate::execution::spark_config::{
+                        COMET_GRACE_HASH_JOIN_ENABLED,
+                        COMET_GRACE_HASH_JOIN_NUM_PARTITIONS,
+                        SparkConfig,
+                    };
+                    let grace_enabled =
+                        self.spark_conf.get_bool(COMET_GRACE_HASH_JOIN_ENABLED);
+
+                    if grace_enabled {
+                        let num_partitions = self
+                            .spark_conf
+                            .get_usize(COMET_GRACE_HASH_JOIN_NUM_PARTITIONS, 16);
+
+                        let build_left = join.build_side == BuildSide::BuildLeft as i32;
+
+                        let grace_join = Arc::new(
+                            crate::execution::operators::GraceHashJoinExec::try_new(
+                                Arc::clone(&left),
+                                Arc::clone(&right),
+                                join_params.join_on,
+                                join_params.join_filter,
+                                &join_params.join_type,
+                                num_partitions,
+                                build_left,
+                            )?,
+                        );
+
+                        return Ok((
+                            scans,
+                            Arc::new(SparkPlan::new(
+                                spark_plan.plan_id,
+                                grace_join,
+                                vec![join_params.left, join_params.right],
+                            )),
+                        ));
+                    }
+                }
 
                 let hash_join = Arc::new(HashJoinExec::try_new(
                     left,
