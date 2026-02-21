@@ -1052,24 +1052,53 @@ async fn partition_probe_side(
             } else {
                 let batch_size = sub_batch.get_array_memory_size();
                 if reservation.try_grow(batch_size).is_err() {
-                    // Memory pressure: spill the largest partition (both sides)
-                    info!(
-                        "GraceHashJoin: memory pressure during probe, spilling largest partition"
-                    );
-                    spill_largest_partition_both_sides(
-                        partitions,
-                        schema,
-                        build_schema,
-                        context,
-                        reservation,
-                        metrics,
-                    )?;
+                    // Memory pressure: spill partitions aggressively.
+                    // Free at least half of in-memory data to create real headroom,
+                    // not just enough for the current batch.
+                    let total_in_memory: usize = partitions
+                        .iter()
+                        .filter(|p| !p.build_spilled())
+                        .map(|p| p.build_mem_size + p.probe_mem_size)
+                        .sum();
+                    let target_to_free = total_in_memory / 2;
+                    let mut freed_so_far = 0usize;
 
+                    info!(
+                        "GraceHashJoin: memory pressure during probe, \
+                         total in-memory={}, target to free={}",
+                        total_in_memory, target_to_free,
+                    );
+
+                    while freed_so_far < target_to_free {
+                        let has_spillable = partitions.iter().any(|p| {
+                            !p.build_spilled() && (p.build_mem_size > 0 || p.probe_mem_size > 0)
+                        });
+                        if !has_spillable {
+                            break;
+                        }
+                        let before: usize = partitions
+                            .iter()
+                            .filter(|p| !p.build_spilled())
+                            .map(|p| p.build_mem_size + p.probe_mem_size)
+                            .sum();
+                        spill_largest_partition_both_sides(
+                            partitions,
+                            schema,
+                            build_schema,
+                            context,
+                            reservation,
+                            metrics,
+                        )?;
+                        let after: usize = partitions
+                            .iter()
+                            .filter(|p| !p.build_spilled())
+                            .map(|p| p.build_mem_size + p.probe_mem_size)
+                            .sum();
+                        freed_so_far += before.saturating_sub(after);
+                    }
+
+                    // If still can't fit after aggressive spilling, spill this partition
                     if reservation.try_grow(batch_size).is_err() {
-                        info!(
-                            "GraceHashJoin: still under pressure, spilling partition {}",
-                            part_idx
-                        );
                         spill_partition_both_sides(
                             &mut partitions[part_idx],
                             schema,
