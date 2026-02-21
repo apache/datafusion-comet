@@ -1101,6 +1101,7 @@ under the License.
             <exclude>dev/release/requirements.txt</exclude>
             <exclude>native/proto/src/generated/**</exclude>
             <exclude>benchmarks/tpc/queries/**</exclude>
+            <exclude>pixi.lock</exclude>
           </excludes>
         </configuration>
       </plugin>
@@ -1165,6 +1166,20 @@ under the License.
                         <ignoreClass>com.google.thirdparty.publicsuffix.TrieParser</ignoreClass>
                         <ignoreClass>com.google.thirdparty.publicsuffix.PublicSuffixPatterns</ignoreClass>
                         <ignoreClass>com.google.thirdparty.publicsuffix.PublicSuffixType</ignoreClass>
+                      </ignoreClasses>
+                    </dependency>
+                    <dependency>
+                      <groupId>org.apache.arrow</groupId>
+                      <artifactId>arrow-c-data</artifactId>
+                      <ignoreClasses>
+                        <!-- These JNI classes are excluded from shading in comet-common because
+                             they must keep their original package for native library loading.
+                             arrow-c-data is also declared as provided in comet-spark for
+                             zero-copy columnar conversion via ArrowCDataExport. -->
+                        <ignoreClass>org.apache.arrow.c.jni.JniWrapper</ignoreClass>
+                        <ignoreClass>org.apache.arrow.c.jni.PrivateData</ignoreClass>
+                        <ignoreClass>org.apache.arrow.c.jni.CDataJniException</ignoreClass>
+                        <ignoreClass>org.apache.arrow.c.ArrayStreamExporter$ExportedArrayStreamPrivateData</ignoreClass>
                       </ignoreClasses>
                     </dependency>
                   </dependencies>
