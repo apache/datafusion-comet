@@ -218,11 +218,6 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     }
   }
 
-  /**
-   * Extracts delete files from an Iceberg FileScanTask as a list (for deduplication).
-   *
-   * Uses ReflectionCache to avoid repeated class loading and method lookups.
-   */
   private def extractDeleteFilesList(
       task: Any,
       cache: ReflectionCache): Seq[OperatorOuterClass.IcebergDeleteFile] = {
@@ -293,16 +288,6 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     }
   }
 
-  /**
-   * Serializes partition spec and data from an Iceberg FileScanTask.
-   *
-   * Extracts partition specification (field definitions and transforms) and partition data
-   * (actual values) from the task. This information is used by the native execution engine to
-   * build a constants_map for identity-transformed partition columns and to handle
-   * partition-level filtering.
-   *
-   * Uses ReflectionCache to avoid repeated class loading and method lookups.
-   */
   private def serializePartitionData(
       task: Any,
       cache: ReflectionCache,
@@ -758,14 +743,9 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       commonBuilder.addRequiredSchema(field.build())
     }
 
-    // Create reflection cache once - avoids repeated class loading and method lookups
-    // This provides ~50% serialization speedup for large tables (see issue #3456)
     val cache = ReflectionCache.create()
-
-    // Field ID mapping cache - avoid rebuilding per-task
     val fieldIdMappingCache = mutable.HashMap[AnyRef, Map[String, Int]]()
 
-    // Access inputRDD - safe now, DPP is resolved
     scanExec.inputRDD match {
       case rdd: DataSourceRDD =>
         val partitions = rdd.partitions
