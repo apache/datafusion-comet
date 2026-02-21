@@ -44,6 +44,7 @@ use datafusion::datasource::source::DataSourceExec;
 use datafusion::execution::context::TaskContext;
 use datafusion::execution::disk_manager::RefCountedTempFile;
 use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
+use datafusion::physical_expr::EquivalenceProperties;
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::joins::utils::JoinFilter;
 use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
@@ -52,7 +53,8 @@ use datafusion::physical_plan::metrics::{
 };
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
-    DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, SendableRecordBatchStream,
+    DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
+    SendableRecordBatchStream,
 };
 use futures::stream::{self, StreamExt, TryStreamExt};
 use futures::Stream;
@@ -132,6 +134,91 @@ impl SpillWriter {
     fn finish(mut self) -> DFResult<(RefCountedTempFile, usize)> {
         self.writer.finish()?;
         Ok((self.temp_file, self.bytes_written))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SpillReaderExec: streaming ExecutionPlan for reading spill files
+// ---------------------------------------------------------------------------
+
+/// An ExecutionPlan that streams record batches from an Arrow IPC spill file.
+/// Used during the join phase so that spilled probe data is read on-demand
+/// instead of loaded entirely into memory.
+#[derive(Debug)]
+struct SpillReaderExec {
+    spill_file: RefCountedTempFile,
+    schema: SchemaRef,
+    cache: PlanProperties,
+}
+
+impl SpillReaderExec {
+    fn new(spill_file: RefCountedTempFile, schema: SchemaRef) -> Self {
+        let cache = PlanProperties::new(
+            EquivalenceProperties::new(Arc::clone(&schema)),
+            Partitioning::UnknownPartitioning(1),
+            datafusion::physical_plan::execution_plan::EmissionType::Incremental,
+            datafusion::physical_plan::execution_plan::Boundedness::Bounded,
+        );
+        Self {
+            spill_file,
+            schema,
+            cache,
+        }
+    }
+}
+
+impl DisplayAs for SpillReaderExec {
+    fn fmt_as(&self, _t: DisplayFormatType, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "SpillReaderExec")
+    }
+}
+
+impl ExecutionPlan for SpillReaderExec {
+    fn name(&self) -> &str {
+        "SpillReaderExec"
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn schema(&self) -> SchemaRef {
+        Arc::clone(&self.schema)
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        vec![]
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        _children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> DFResult<Arc<dyn ExecutionPlan>> {
+        Ok(self)
+    }
+
+    fn properties(&self) -> &PlanProperties {
+        &self.cache
+    }
+
+    fn execute(
+        &self,
+        _partition: usize,
+        _context: Arc<TaskContext>,
+    ) -> DFResult<SendableRecordBatchStream> {
+        let file = File::open(self.spill_file.path())
+            .map_err(|e| DataFusionError::Execution(format!("Failed to open spill file: {e}")))?;
+        let reader = StreamReader::try_new(BufReader::new(file), None)?;
+        let schema = Arc::clone(&self.schema);
+        let batch_stream = futures::stream::iter(
+            reader
+                .into_iter()
+                .map(|r| r.map_err(|e| DataFusionError::ArrowError(Box::new(e), None))),
+        );
+        Ok(Box::pin(RecordBatchStreamAdapter::new(
+            schema,
+            batch_stream,
+        )))
     }
 }
 
@@ -1140,21 +1227,128 @@ async fn join_all_partitions(
     let mut streams = Vec::new();
 
     for partition in partitions {
-        // Get build-side batches (from memory or disk)
+        // Get build-side batches (from memory or disk — build side is typically small)
         let build_batches = if let Some(ref spill_file) = partition.build_spill_file {
             read_spilled_batches(spill_file, build_schema)?
         } else {
             partition.build_batches
         };
 
-        // Get probe-side batches (from memory or disk)
-        let probe_batches = if let Some(ref spill_file) = partition.probe_spill_file {
-            read_spilled_batches(spill_file, probe_schema)?
+        if let Some(probe_spill_file) = partition.probe_spill_file {
+            // Probe side is spilled: use streaming reader to avoid loading
+            // all probe data into memory at once. HashJoinExec in CollectLeft
+            // mode builds the hash table from the build side and streams
+            // through the probe side batch-by-batch.
+            join_with_spilled_probe(
+                build_batches,
+                probe_spill_file,
+                original_on,
+                filter,
+                join_type,
+                build_left,
+                build_schema,
+                probe_schema,
+                &context,
+                &mut streams,
+            )?;
         } else {
-            partition.probe_batches
-        };
+            // Probe side is in-memory: use existing path with repartitioning support
+            join_partition_recursive(
+                build_batches,
+                partition.probe_batches,
+                original_on,
+                filter,
+                join_type,
+                build_left,
+                build_schema,
+                probe_schema,
+                &context,
+                1,
+                &mut streams,
+            )?;
+        }
+    }
 
-        join_partition_recursive(
+    Ok(streams)
+}
+
+/// Join a partition where the probe side was spilled to disk.
+/// Uses SpillReaderExec to stream probe data from the spill file instead of
+/// loading it all into memory. The build side (typically small) is loaded
+/// into a MemorySourceConfig for the hash table.
+#[allow(clippy::too_many_arguments)]
+fn join_with_spilled_probe(
+    build_batches: Vec<RecordBatch>,
+    probe_spill_file: RefCountedTempFile,
+    original_on: JoinOnRef<'_>,
+    filter: &Option<JoinFilter>,
+    join_type: &JoinType,
+    build_left: bool,
+    build_schema: &SchemaRef,
+    probe_schema: &SchemaRef,
+    context: &Arc<TaskContext>,
+    streams: &mut Vec<SendableRecordBatchStream>,
+) -> DFResult<()> {
+    // Skip if build side is empty and join type requires it
+    let build_empty = build_batches.is_empty();
+    let skip = match join_type {
+        JoinType::Inner | JoinType::LeftSemi | JoinType::LeftAnti => {
+            if build_left {
+                build_empty
+            } else {
+                false // probe emptiness unknown without reading
+            }
+        }
+        JoinType::Left | JoinType::LeftMark => {
+            if build_left {
+                build_empty
+            } else {
+                false
+            }
+        }
+        JoinType::Right => {
+            if !build_left {
+                build_empty
+            } else {
+                false
+            }
+        }
+        _ => false,
+    };
+    if skip {
+        return Ok(());
+    }
+
+    let build_size: usize = build_batches
+        .iter()
+        .map(|b| b.get_array_memory_size())
+        .sum();
+    let build_rows: usize = build_batches.iter().map(|b| b.num_rows()).sum();
+    info!(
+        "GraceHashJoin: join_with_spilled_probe build: {} batches/{} rows/{} bytes, \
+         probe: streaming from spill file",
+        build_batches.len(),
+        build_rows,
+        build_size,
+    );
+
+    // If build side is too large for hash table, fall back to reading probe from disk
+    let needs_repartition = if build_size > 0 {
+        let mut test_reservation = MemoryConsumer::new("GraceHashJoinExec repartition check")
+            .register(&context.runtime_env().memory_pool);
+        let can_fit = test_reservation.try_grow(build_size * 3).is_ok();
+        if can_fit {
+            test_reservation.shrink(build_size * 3);
+        }
+        !can_fit
+    } else {
+        false
+    };
+
+    if needs_repartition {
+        info!("GraceHashJoin: build too large for streaming probe, falling back to eager read");
+        let probe_batches = read_spilled_batches(&probe_spill_file, probe_schema)?;
+        return join_partition_recursive(
             build_batches,
             probe_batches,
             original_on,
@@ -1163,13 +1357,70 @@ async fn join_all_partitions(
             build_left,
             build_schema,
             probe_schema,
-            &context,
-            1, // recursion starts at level 1 (level 0 was initial partitioning)
-            &mut streams,
-        )?;
+            context,
+            1,
+            streams,
+        );
     }
 
-    Ok(streams)
+    // Concatenate build side into single batch
+    let build_data = if build_batches.is_empty() {
+        vec![RecordBatch::new_empty(Arc::clone(build_schema))]
+    } else if build_batches.len() == 1 {
+        build_batches
+    } else {
+        vec![concat_batches(build_schema, &build_batches)?]
+    };
+
+    // Build side: MemorySourceConfig (small)
+    let build_source = Arc::new(DataSourceExec::new(Arc::new(MemorySourceConfig::try_new(
+        &[build_data],
+        Arc::clone(build_schema),
+        None,
+    )?)));
+
+    // Probe side: streaming from spill file
+    let probe_source: Arc<dyn ExecutionPlan> = Arc::new(SpillReaderExec::new(
+        probe_spill_file,
+        Arc::clone(probe_schema),
+    ));
+
+    // HashJoinExec expects left=build in CollectLeft mode
+    let (left_source, right_source) = if build_left {
+        (build_source as Arc<dyn ExecutionPlan>, probe_source)
+    } else {
+        (probe_source, build_source as Arc<dyn ExecutionPlan>)
+    };
+
+    let stream = if build_left {
+        let hash_join = HashJoinExec::try_new(
+            left_source,
+            right_source,
+            original_on.to_vec(),
+            filter.clone(),
+            join_type,
+            None,
+            PartitionMode::CollectLeft,
+            NullEquality::NullEqualsNothing,
+        )?;
+        hash_join.execute(0, Arc::clone(context))?
+    } else {
+        let hash_join = Arc::new(HashJoinExec::try_new(
+            left_source,
+            right_source,
+            original_on.to_vec(),
+            filter.clone(),
+            join_type,
+            None,
+            PartitionMode::CollectLeft,
+            NullEquality::NullEqualsNothing,
+        )?);
+        let swapped = hash_join.swap_inputs(PartitionMode::CollectLeft)?;
+        swapped.execute(0, Arc::clone(context))?
+    };
+
+    streams.push(stream);
+    Ok(())
 }
 
 /// Join a single partition, recursively repartitioning if the build side is too large.
