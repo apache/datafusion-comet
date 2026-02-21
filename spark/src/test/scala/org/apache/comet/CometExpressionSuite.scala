@@ -572,6 +572,28 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("scalar hour/minute/second/unix_timestamp with ConstantFolding disabled") {
+    withSQLConf(
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+        "org.apache.spark.sql.catalyst.optimizer.ConstantFolding",
+      SESSION_LOCAL_TIMEZONE.key -> "UTC") {
+      val df = spark.sql("""
+          |SELECT
+          |  hour(timestamp('2026-04-18 04:18:45')) AS h,
+          |  minute(timestamp('2026-04-18 04:18:45')) AS m,
+          |  second(timestamp('2026-04-18 04:18:45')) AS s,
+          |  unix_timestamp(timestamp('2020-01-01 00:00:00')) AS u
+          |""".stripMargin)
+
+      val Row(h: Int, m: Int, s: Int, u: Long) = df.head()
+
+      assert(h == 4)
+      assert(m == 18)
+      assert(s == 45)
+      assert(u == 1577836800L)
+    }
+  }
+
   test("hour on int96 timestamp column") {
     import testImplicits._
 
