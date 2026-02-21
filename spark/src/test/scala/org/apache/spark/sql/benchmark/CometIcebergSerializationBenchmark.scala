@@ -187,22 +187,13 @@ object CometIcebergSerializationBenchmark extends CometBenchmarkBase {
             println(s"Output columns: ${output.map(_.name).mkString(", ")}")
             // scalastyle:on println
 
-            val iterations = 100
             val benchmark = new Benchmark(
               s"serializePartitions ($numPartitions partitions, ${metadata.tasks.size()} tasks)",
-              iterations,
+              numPartitions,
               output = this.output)
 
-            // Warmup
-            CometIcebergNativeScan.serializePartitions(originalPlan, output, metadata)
-
-            // Benchmark: serializePartitions() - the heavy reflection path
             benchmark.addCase("serializePartitions()") { _ =>
-              var i = 0
-              while (i < iterations) {
-                CometIcebergNativeScan.serializePartitions(originalPlan, output, metadata)
-                i += 1
-              }
+              CometIcebergNativeScan.serializePartitions(originalPlan, output, metadata)
             }
 
             // Measure serialized size
@@ -239,48 +230,25 @@ object CometIcebergSerializationBenchmark extends CometBenchmarkBase {
    * Micro-benchmark for reflection operations to isolate their cost.
    */
   def reflectionMicroBenchmark(): Unit = {
-    val iterations = 100000
+    val numOps = 100000
+    val benchmark = new Benchmark("Reflection micro-benchmark", numOps, output = output)
 
-    val benchmark = new Benchmark("Reflection micro-benchmark", iterations, output = output)
-
-    // Benchmark: Class.forName() cost
     benchmark.addCase("Class.forName() - uncached") { _ =>
-      var i = 0
-      while (i < iterations) {
-        Class.forName("org.apache.iceberg.ContentScanTask")
-        i += 1
-      }
+      Class.forName("org.apache.iceberg.ContentScanTask")
     }
 
-    // Benchmark: Cached class lookup
     val cachedClass = Class.forName("org.apache.iceberg.ContentScanTask")
     benchmark.addCase("Class lookup - cached") { _ =>
-      var i = 0
-      var c: Class[_] = null
-      while (i < iterations) {
-        c = cachedClass
-        i += 1
-      }
+      cachedClass.hashCode()
     }
 
-    // Benchmark: getMethod() cost
     benchmark.addCase("getMethod() - uncached") { _ =>
-      var i = 0
-      while (i < iterations) {
-        cachedClass.getMethod("file")
-        i += 1
-      }
+      cachedClass.getMethod("file")
     }
 
-    // Benchmark: Cached method lookup
     val cachedMethod = cachedClass.getMethod("file")
     benchmark.addCase("Method lookup - cached") { _ =>
-      var i = 0
-      var m: java.lang.reflect.Method = null
-      while (i < iterations) {
-        m = cachedMethod
-        i += 1
-      }
+      cachedMethod.hashCode()
     }
 
     benchmark.run()
