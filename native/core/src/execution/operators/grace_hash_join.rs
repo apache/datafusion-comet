@@ -31,7 +31,8 @@ use std::io::{BufReader, BufWriter};
 use std::sync::Arc;
 
 use ahash::RandomState;
-use arrow::compute::{concat_batches, interleave_record_batch};
+use arrow::array::UInt32Array;
+use arrow::compute::{concat_batches, take};
 use arrow::datatypes::SchemaRef;
 use arrow::ipc::reader::StreamReader;
 use arrow::ipc::writer::StreamWriter;
@@ -646,7 +647,6 @@ impl ScratchSpace {
         (self.partition_starts[partition_id + 1] - self.partition_starts[partition_id]) as usize
     }
 
-    /// Extract a sub-batch for a partition using `interleave_record_batch`.
     fn take_partition(
         &self,
         batch: &RecordBatch,
@@ -656,13 +656,13 @@ impl ScratchSpace {
         if row_indices.is_empty() {
             return Ok(None);
         }
-        let indices: Vec<(usize, usize)> = row_indices
+        let indices_array = UInt32Array::from(row_indices.to_vec());
+        let columns: Vec<_> = batch
+            .columns()
             .iter()
-            .map(|&idx| (0usize, idx as usize))
-            .collect();
-        let batches = [batch];
-        let result = interleave_record_batch(&batches, &indices)?;
-        Ok(Some(result))
+            .map(|col| take(col.as_ref(), &indices_array, None))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Some(RecordBatch::try_new(batch.schema(), columns)?))
     }
 }
 
@@ -722,9 +722,12 @@ async fn partition_build_side(
                 continue;
             }
 
-            let sub_batch = scratch.take_partition(&batch, part_idx)?.unwrap();
-            // Estimate size proportionally rather than calling get_array_memory_size per sub-batch
             let sub_rows = scratch.partition_len(part_idx);
+            let sub_batch = if sub_rows == total_rows {
+                batch.clone()
+            } else {
+                scratch.take_partition(&batch, part_idx)?.unwrap()
+            };
             let batch_size = if total_rows > 0 {
                 (total_batch_size as u64 * sub_rows as u64 / total_rows as u64) as usize
             } else {
@@ -859,6 +862,7 @@ async fn partition_probe_side(
         metrics.input_batches.add(1);
         metrics.input_rows.add(batch.num_rows());
 
+        let total_rows = batch.num_rows();
         scratch.compute_partitions(&batch, keys, num_partitions, 0)?;
 
         #[allow(clippy::needless_range_loop)]
@@ -867,7 +871,11 @@ async fn partition_probe_side(
                 continue;
             }
 
-            let sub_batch = scratch.take_partition(&batch, part_idx)?.unwrap();
+            let sub_batch = if scratch.partition_len(part_idx) == total_rows {
+                batch.clone()
+            } else {
+                scratch.take_partition(&batch, part_idx)?.unwrap()
+            };
 
             if partitions[part_idx].build_spilled() {
                 // Build side was spilled, so spill probe side too
@@ -1194,9 +1202,15 @@ fn repartition_and_join(
     let mut build_sub: Vec<Vec<RecordBatch>> =
         (0..num_sub_partitions).map(|_| Vec::new()).collect();
     for batch in &build_batches {
+        let total_rows = batch.num_rows();
         scratch.compute_partitions(batch, &build_keys, num_sub_partitions, recursion_level)?;
         for (i, sub_vec) in build_sub.iter_mut().enumerate() {
-            if let Some(sub) = scratch.take_partition(batch, i)? {
+            if scratch.partition_len(i) == 0 {
+                continue;
+            }
+            if scratch.partition_len(i) == total_rows {
+                sub_vec.push(batch.clone());
+            } else if let Some(sub) = scratch.take_partition(batch, i)? {
                 sub_vec.push(sub);
             }
         }
@@ -1206,9 +1220,15 @@ fn repartition_and_join(
     let mut probe_sub: Vec<Vec<RecordBatch>> =
         (0..num_sub_partitions).map(|_| Vec::new()).collect();
     for batch in &probe_batches {
+        let total_rows = batch.num_rows();
         scratch.compute_partitions(batch, &probe_keys, num_sub_partitions, recursion_level)?;
         for (i, sub_vec) in probe_sub.iter_mut().enumerate() {
-            if let Some(sub) = scratch.take_partition(batch, i)? {
+            if scratch.partition_len(i) == 0 {
+                continue;
+            }
+            if scratch.partition_len(i) == total_rows {
+                sub_vec.push(batch.clone());
+            } else if let Some(sub) = scratch.take_partition(batch, i)? {
                 sub_vec.push(sub);
             }
         }
