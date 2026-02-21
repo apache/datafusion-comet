@@ -19,7 +19,7 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.Attribute
+import org.apache.spark.sql.catalyst.expressions.{Attribute, ExpressionImplUtils}
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
 import org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils
 
@@ -34,7 +34,8 @@ object CometStaticInvoke extends CometExpressionSerde[StaticInvoke] {
       : Map[(String, Class[_]), CometExpressionSerde[StaticInvoke]] =
     Map(
       ("readSidePadding", classOf[CharVarcharCodegenUtils]) -> CometScalarFunction(
-        "read_side_padding"))
+        "read_side_padding"),
+      ("aesDecrypt", classOf[ExpressionImplUtils]) -> CometAesDecryptStaticInvoke)
 
   override def convert(
       expr: StaticInvoke,

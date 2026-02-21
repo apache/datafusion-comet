@@ -20,9 +20,9 @@ use crate::math_funcs::abs::abs;
 use crate::math_funcs::checked_arithmetic::{checked_add, checked_div, checked_mul, checked_sub};
 use crate::math_funcs::modulo_expr::spark_modulo;
 use crate::{
-    spark_ceil, spark_decimal_div, spark_decimal_integral_div, spark_floor, spark_isnan,
-    spark_lpad, spark_make_decimal, spark_read_side_padding, spark_round, spark_rpad, spark_unhex,
-    spark_unscaled_value, EvalMode, SparkBitwiseCount, SparkContains, SparkDateDiff,
+    spark_aes_decrypt, spark_ceil, spark_decimal_div, spark_decimal_integral_div, spark_floor,
+    spark_isnan, spark_lpad, spark_make_decimal, spark_read_side_padding, spark_round, spark_rpad,
+    spark_unhex, spark_unscaled_value, EvalMode, SparkBitwiseCount, SparkContains, SparkDateDiff,
     SparkDateTrunc, SparkMakeDate, SparkSizeFunc, SparkStringSpace,
 };
 use arrow::datatypes::DataType;
@@ -176,6 +176,10 @@ pub fn create_comet_physical_fun_with_eval_mode(
         "abs" => {
             let func = Arc::new(abs);
             make_comet_scalar_udf!("abs", func, without data_type)
+        }
+        "aes_decrypt" => {
+            let func = Arc::new(spark_aes_decrypt);
+            make_comet_scalar_udf!("aes_decrypt", func, without data_type)
         }
         "split" => {
             let func = Arc::new(crate::string_funcs::spark_split);

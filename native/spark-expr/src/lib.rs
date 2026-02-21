@@ -19,7 +19,9 @@
 // The lint makes easier for code reader/reviewer separate references clones from more heavyweight ones
 #![deny(clippy::clone_on_ref_ptr)]
 
+mod downcast;
 mod error;
+pub(crate) use downcast::{downcast_named_arg, opt_downcast_arg};
 
 pub mod kernels;
 pub use kernels::temporal::date_trunc_dyn;
@@ -58,6 +60,7 @@ pub use bloom_filter::{BloomFilterAgg, BloomFilterMightContain};
 mod conditional_funcs;
 mod conversion_funcs;
 mod math_funcs;
+mod misc_funcs;
 mod nondetermenistic_funcs;
 
 pub use array_funcs::*;
@@ -83,6 +86,7 @@ pub use math_funcs::{
     spark_decimal_integral_div, spark_floor, spark_make_decimal, spark_round, spark_unhex,
     spark_unscaled_value, CheckOverflow, NegativeExpr, NormalizeNaNAndZero,
 };
+pub use misc_funcs::spark_aes_decrypt;
 pub use string_funcs::*;
 
 /// Spark supports three evaluation modes when evaluating expressions, which affect
