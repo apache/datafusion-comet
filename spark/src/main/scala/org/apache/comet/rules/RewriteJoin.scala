@@ -25,6 +25,7 @@ import org.apache.spark.sql.catalyst.plans.logical.Join
 import org.apache.spark.sql.execution.{SortExec, SparkPlan}
 import org.apache.spark.sql.execution.joins.{ShuffledHashJoinExec, SortMergeJoinExec}
 
+import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 
 /**
@@ -35,8 +36,9 @@ import org.apache.comet.CometSparkSessionExtensions.withInfo
 object RewriteJoin extends JoinSelectionHelper {
 
   private def getSmjBuildSide(join: SortMergeJoinExec): Option[BuildSide] = {
-    val leftBuildable = canBuildShuffledHashJoinLeft(join.joinType)
-    val rightBuildable = canBuildShuffledHashJoinRight(join.joinType)
+    val graceEnabled = CometConf.COMET_EXEC_GRACE_HASH_JOIN_ENABLED.get()
+    val leftBuildable = graceEnabled || canBuildShuffledHashJoinLeft(join.joinType)
+    val rightBuildable = graceEnabled || canBuildShuffledHashJoinRight(join.joinType)
     if (!leftBuildable && !rightBuildable) {
       return None
     }
@@ -67,9 +69,12 @@ object RewriteJoin extends JoinSelectionHelper {
   def rewrite(plan: SparkPlan): SparkPlan = plan match {
     case smj: SortMergeJoinExec =>
       getSmjBuildSide(smj) match {
-        case Some(BuildRight) if smj.joinType == LeftAnti || smj.joinType == LeftSemi =>
+        case Some(BuildRight)
+            if !CometConf.COMET_EXEC_GRACE_HASH_JOIN_ENABLED.get() &&
+              (smj.joinType == LeftAnti || smj.joinType == LeftSemi) =>
           // LeftAnti https://github.com/apache/datafusion-comet/issues/457
           // LeftSemi https://github.com/apache/datafusion-comet/issues/2667
+          // Grace Hash Join supports all join type / build side combinations
           withInfo(
             smj,
             "Cannot rewrite SortMergeJoin to HashJoin: " +
