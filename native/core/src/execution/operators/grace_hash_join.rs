@@ -817,12 +817,12 @@ async fn execute_grace_hash_join(
                 total_build_rows, total_build_bytes,
             );
 
-            // Release build-side memory from our reservation before HashJoinExec
-            // creates its own HashJoinInput reservation for the hash table.
-            // Without this, the pool double-counts the build data (once in our
-            // reservation, once in HashJoinInput), leaving no room for other
-            // operators. The reservation stays registered as spillable at 0 bytes.
-            reservation.shrink(total_build_bytes);
+            // Keep the reservation at total_build_bytes even though HashJoinExec
+            // will create its own HashJoinInput reservation. This "double counts"
+            // the build data, but that is intentional: the spillable reservation
+            // must hold non-zero bytes so the FairSpillPool has spillable headroom.
+            // Without it, non-spillable HashJoinInput consumers exhaust their fair
+            // limit and OOM (seen in TPC-DS q72).
 
             // Concatenate all build partition data
             let all_build_batches: Vec<RecordBatch> = partitions
@@ -947,35 +947,51 @@ async fn execute_grace_hash_join(
     let finished_partitions =
         finish_spill_writers(partitions, &build_schema, &probe_schema, &metrics)?;
 
-    // Phase 3: Join each partition
-    let partition_results = {
+    // Phase 3: Join each partition in parallel.
+    // Each partition's setup (build-side spill read + HashJoinExec creation)
+    // and execution run inside its own tokio::spawn task, so all partitions
+    // start as soon as their own build data is loaded without waiting for
+    // other partitions.
+    let (tx, rx) = mpsc::channel::<DFResult<RecordBatch>>(num_partitions * 2);
+
+    {
         let _timer = metrics.join_time.timer();
-        join_all_partitions(
-            finished_partitions,
-            &original_on,
-            &filter,
-            &join_type,
-            build_left,
-            &build_schema,
-            &probe_schema,
-            Arc::clone(&context),
-        )
-        .await?
-    };
+        for partition in finished_partitions {
+            let tx = tx.clone();
+            let original_on = original_on.clone();
+            let filter = filter.clone();
+            let build_schema = Arc::clone(&build_schema);
+            let probe_schema = Arc::clone(&probe_schema);
+            let context = Arc::clone(&context);
 
-    // Spawn each partition join as a separate tokio task so the multi-threaded
-    // runtime can run hash joins across all available cores in parallel.
-    let (tx, rx) = mpsc::channel::<DFResult<RecordBatch>>(partition_results.len() * 2);
-
-    for mut partition_stream in partition_results {
-        let tx = tx.clone();
-        tokio::spawn(async move {
-            while let Some(batch) = partition_stream.next().await {
-                if tx.send(batch).await.is_err() {
-                    break; // receiver dropped
+            tokio::spawn(async move {
+                match join_single_partition(
+                    partition,
+                    original_on,
+                    filter,
+                    join_type,
+                    build_left,
+                    build_schema,
+                    probe_schema,
+                    context,
+                )
+                .await
+                {
+                    Ok(streams) => {
+                        for mut stream in streams {
+                            while let Some(batch) = stream.next().await {
+                                if tx.send(batch).await.is_err() {
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        let _ = tx.send(Err(e)).await;
+                    }
                 }
-            }
-        });
+            });
+        }
     }
     drop(tx); // close channel when all tasks finish
 
@@ -1521,65 +1537,69 @@ fn finish_spill_writers(
 // Phase 3: Per-partition hash joins
 // ---------------------------------------------------------------------------
 
-/// Phase 3: For each partition, create a per-partition HashJoinExec and collect results.
-/// Recursively repartitions oversized partitions up to `MAX_RECURSION_DEPTH`.
+/// Join a single partition: reads build-side spill (if any) via spawn_blocking,
+/// then delegates to `join_with_spilled_probe` or `join_partition_recursive`.
+/// Returns the resulting streams for this partition.
 ///
-/// Optimization: when ALL partitions have spilled probes and the combined build
-/// side is small, merges everything into a single HashJoinExec. This builds one
-/// hash table instead of N and reads all probe spill files through one stream,
-/// avoiding repeated hash table construction and sequential per-partition I/O.
+/// Takes all owned data so it can be called inside `tokio::spawn`.
 #[allow(clippy::too_many_arguments)]
-async fn join_all_partitions(
-    partitions: Vec<FinishedPartition>,
-    original_on: JoinOnRef<'_>,
-    filter: &Option<JoinFilter>,
-    join_type: &JoinType,
+async fn join_single_partition(
+    partition: FinishedPartition,
+    original_on: Vec<(Arc<dyn PhysicalExpr>, Arc<dyn PhysicalExpr>)>,
+    filter: Option<JoinFilter>,
+    join_type: JoinType,
     build_left: bool,
-    build_schema: &SchemaRef,
-    probe_schema: &SchemaRef,
+    build_schema: SchemaRef,
+    probe_schema: SchemaRef,
     context: Arc<TaskContext>,
 ) -> DFResult<Vec<SendableRecordBatchStream>> {
+    // Get build-side batches (from memory or disk — build side is typically small).
+    // Use spawn_blocking for spill reads to avoid blocking the async executor.
+    let build_batches = if let Some(spill_file) = partition.build_spill_file {
+        let schema = Arc::clone(&build_schema);
+        tokio::task::spawn_blocking(move || read_spilled_batches(&spill_file, &schema))
+            .await
+            .map_err(|e| {
+                DataFusionError::Execution(format!(
+                    "GraceHashJoin: build spill read task failed: {e}"
+                ))
+            })??
+    } else {
+        partition.build_batches
+    };
+
     let mut streams = Vec::new();
 
-    for partition in partitions {
-        // Get build-side batches (from memory or disk — build side is typically small)
-        let build_batches = if let Some(ref spill_file) = partition.build_spill_file {
-            read_spilled_batches(spill_file, build_schema)?
-        } else {
-            partition.build_batches
-        };
-
-        if let Some(probe_spill_file) = partition.probe_spill_file {
-            // Probe side is spilled: use streaming reader to avoid loading
-            // all probe data into memory at once.
-            join_with_spilled_probe(
-                build_batches,
-                probe_spill_file,
-                original_on,
-                filter,
-                join_type,
-                build_left,
-                build_schema,
-                probe_schema,
-                &context,
-                &mut streams,
-            )?;
-        } else {
-            // Probe side is in-memory: use existing path with repartitioning support
-            join_partition_recursive(
-                build_batches,
-                partition.probe_batches,
-                original_on,
-                filter,
-                join_type,
-                build_left,
-                build_schema,
-                probe_schema,
-                &context,
-                1,
-                &mut streams,
-            )?;
-        }
+    if let Some(probe_spill_file) = partition.probe_spill_file {
+        // Probe side is spilled: use streaming reader to avoid loading
+        // all probe data into memory at once.
+        join_with_spilled_probe(
+            build_batches,
+            probe_spill_file,
+            &original_on,
+            &filter,
+            &join_type,
+            build_left,
+            &build_schema,
+            &probe_schema,
+            &context,
+            &mut streams,
+        )?;
+    } else {
+        // Probe side is in-memory: use existing path with repartitioning support
+        join_partition_recursive(
+            build_batches,
+            partition.probe_batches,
+            &original_on,
+            &filter,
+            &join_type,
+            build_left,
+            &build_schema,
+            &probe_schema,
+            &context,
+            1,
+            &mut streams,
+        )?;
     }
 
     Ok(streams)
