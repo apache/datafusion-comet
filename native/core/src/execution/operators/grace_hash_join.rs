@@ -214,8 +214,9 @@ impl ExecutionPlan for SpillReaderExec {
     ) -> DFResult<SendableRecordBatchStream> {
         let schema = Arc::clone(&self.schema);
         let path = self.spill_file.path().to_path_buf();
-        // Keep the spill file handle alive until the stream is done
-        let _spill_file = self.spill_file.clone();
+        // Move the spill file handle into the blocking closure to keep
+        // the temp file alive until the reader is done.
+        let spill_file_handle = self.spill_file.clone();
 
         // Use a channel so file I/O runs on a blocking thread and doesn't
         // block the async executor. This lets select_all interleave multiple
@@ -223,6 +224,7 @@ impl ExecutionPlan for SpillReaderExec {
         let (tx, rx) = mpsc::channel::<DFResult<RecordBatch>>(2);
 
         tokio::task::spawn_blocking(move || {
+            let _keep_alive = spill_file_handle;
             let file = match File::open(&path) {
                 Ok(f) => f,
                 Err(e) => {
