@@ -56,7 +56,7 @@ use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
     SendableRecordBatchStream,
 };
-use futures::stream::{self, StreamExt, TryStreamExt};
+use futures::stream::{StreamExt, TryStreamExt};
 use futures::Stream;
 use log::info;
 use tokio::sync::mpsc;
@@ -756,11 +756,27 @@ async fn execute_grace_hash_join(
         .await?
     };
 
-    // Interleave all partition streams so multiple partitions' I/O can overlap.
-    // select_all polls all streams round-robin, so while one partition's
-    // HashJoinExec blocks reading from its spill file, others can make progress.
+    // Spawn each partition join as a separate tokio task so the multi-threaded
+    // runtime can run hash joins across all available cores in parallel.
+    let (tx, rx) = mpsc::channel::<DFResult<RecordBatch>>(partition_results.len() * 2);
+
+    for mut partition_stream in partition_results {
+        let tx = tx.clone();
+        tokio::spawn(async move {
+            while let Some(batch) = partition_stream.next().await {
+                if tx.send(batch).await.is_err() {
+                    break; // receiver dropped
+                }
+            }
+        });
+    }
+    drop(tx); // close channel when all tasks finish
+
     let output_metrics = metrics.baseline.clone();
-    let result_stream = stream::select_all(partition_results).inspect_ok(move |batch| {
+    let result_stream = futures::stream::unfold(rx, |mut rx| async move {
+        rx.recv().await.map(|batch| (batch, rx))
+    })
+    .inspect_ok(move |batch| {
         output_metrics.record_output(batch.num_rows());
     });
 
