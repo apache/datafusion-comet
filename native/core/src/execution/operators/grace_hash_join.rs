@@ -817,6 +817,13 @@ async fn execute_grace_hash_join(
                 total_build_rows, total_build_bytes,
             );
 
+            // Release build-side memory from our reservation before HashJoinExec
+            // creates its own HashJoinInput reservation for the hash table.
+            // Without this, the pool double-counts the build data (once in our
+            // reservation, once in HashJoinInput), leaving no room for other
+            // operators. The reservation stays registered as spillable at 0 bytes.
+            reservation.shrink(total_build_bytes);
+
             // Concatenate all build partition data
             let all_build_batches: Vec<RecordBatch> = partitions
                 .into_iter()
