@@ -1534,19 +1534,18 @@ fn finish_spill_writers(
     partitions: Vec<HashPartition>,
     _left_schema: &SchemaRef,
     _right_schema: &SchemaRef,
-    metrics: &GraceHashJoinMetrics,
+    _metrics: &GraceHashJoinMetrics,
 ) -> DFResult<Vec<FinishedPartition>> {
     let mut finished = Vec::with_capacity(partitions.len());
 
     for partition in partitions {
-        let build_spill_files = if let Some(writer) = partition.build_spill_writer {
-            let (file, bytes) = writer.finish()?;
-            metrics.spilled_bytes.add(0); // bytes already tracked at spill time
-            let _ = bytes; // suppress unused warning
-            vec![file]
-        } else {
-            vec![]
-        };
+        let (build_spill_files, spilled_build_bytes) =
+            if let Some(writer) = partition.build_spill_writer {
+                let (file, bytes) = writer.finish()?;
+                (vec![file], bytes)
+            } else {
+                (vec![], 0)
+            };
 
         let probe_spill_files = if let Some(writer) = partition.probe_spill_writer {
             let (file, _bytes) = writer.finish()?;
@@ -1556,7 +1555,7 @@ fn finish_spill_writers(
         };
 
         finished.push(FinishedPartition {
-            build_bytes: partition.build_mem_size,
+            build_bytes: partition.build_mem_size + spilled_build_bytes,
             build_batches: partition.build_batches,
             probe_batches: partition.probe_batches,
             build_spill_files,
