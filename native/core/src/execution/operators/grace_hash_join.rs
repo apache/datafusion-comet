@@ -762,41 +762,64 @@ async fn execute_grace_hash_join(
     // would double-count the memory and starve other consumers.
     reservation.free();
 
-    // Phase 3: Join each partition sequentially.
-    // DataFusion manages parallelism externally by calling execute(partition)
-    // from multiple tasks, so we process partitions one at a time here.
-    // Each partition's build-side spill read uses spawn_blocking to avoid
-    // blocking the async executor.
-    let output_metrics = metrics.baseline.clone();
-    let result_stream = futures::stream::iter(finished_partitions)
-        .then(move |partition| {
-            let original_on = original_on.clone();
-            let filter = filter.clone();
-            let build_schema = Arc::clone(&build_schema);
-            let probe_schema = Arc::clone(&probe_schema);
-            let context = Arc::clone(&context);
-            async move {
-                join_single_partition(
-                    partition,
-                    original_on,
-                    filter,
-                    join_type,
-                    build_left,
-                    build_schema,
-                    probe_schema,
-                    context,
-                )
-                .await
+    // Phase 3: Join partitions with bounded parallelism.
+    // A semaphore limits concurrency to MAX_CONCURRENT_PARTITIONS so that
+    // disk I/O from one partition overlaps with CPU work from another,
+    // without creating too many simultaneous HashJoinInput reservations.
+    const MAX_CONCURRENT_PARTITIONS: usize = 3;
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_PARTITIONS));
+    let (tx, rx) = mpsc::channel::<DFResult<RecordBatch>>(MAX_CONCURRENT_PARTITIONS * 2);
+
+    for partition in finished_partitions {
+        let tx = tx.clone();
+        let sem = Arc::clone(&semaphore);
+        let original_on = original_on.clone();
+        let filter = filter.clone();
+        let build_schema = Arc::clone(&build_schema);
+        let probe_schema = Arc::clone(&probe_schema);
+        let context = Arc::clone(&context);
+
+        tokio::spawn(async move {
+            let _permit = match sem.acquire().await {
+                Ok(p) => p,
+                Err(_) => return, // semaphore closed
+            };
+            match join_single_partition(
+                partition,
+                original_on,
+                filter,
+                join_type,
+                build_left,
+                build_schema,
+                probe_schema,
+                context,
+            )
+            .await
+            {
+                Ok(streams) => {
+                    for mut stream in streams {
+                        while let Some(batch) = stream.next().await {
+                            if tx.send(batch).await.is_err() {
+                                return;
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    let _ = tx.send(Err(e)).await;
+                }
             }
-        })
-        .map(|result| match result {
-            Ok(streams) => futures::stream::iter(streams).flatten().left_stream(),
-            Err(e) => futures::stream::once(async move { Err(e) }).right_stream(),
-        })
-        .flatten()
-        .inspect_ok(move |batch| {
-            output_metrics.record_output(batch.num_rows());
         });
+    }
+    drop(tx);
+
+    let output_metrics = metrics.baseline.clone();
+    let result_stream = futures::stream::unfold(rx, |mut rx| async move {
+        rx.recv().await.map(|batch| (batch, rx))
+    })
+    .inspect_ok(move |batch| {
+        output_metrics.record_output(batch.num_rows());
+    });
 
     Ok(result_stream.boxed())
 }
