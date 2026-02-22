@@ -70,6 +70,11 @@ const DEFAULT_NUM_PARTITIONS: usize = 16;
 /// At depth 3 with 16 partitions per level, effective partitions = 16^3 = 4096.
 const MAX_RECURSION_DEPTH: usize = 3;
 
+/// I/O buffer size for spill file reads and writes. The default BufReader/BufWriter
+/// size (8 KB) is far too small for multi-GB spill files. 1 MB provides good
+/// sequential throughput while keeping per-partition memory overhead modest.
+const SPILL_IO_BUFFER_SIZE: usize = 1024 * 1024;
+
 /// Random state for hashing join keys into partitions. Uses fixed seeds
 /// different from DataFusion's HashJoinExec to avoid correlation.
 /// The `recursion_level` is XORed into the seed so that recursive
@@ -104,7 +109,7 @@ impl SpillWriter {
             .truncate(true)
             .open(temp_file.path())
             .map_err(|e| DataFusionError::Execution(format!("Failed to open spill file: {e}")))?;
-        let buf_writer = BufWriter::new(file);
+        let buf_writer = BufWriter::with_capacity(SPILL_IO_BUFFER_SIZE, file);
         let writer = StreamWriter::try_new(buf_writer, schema)?;
         Ok(Self {
             writer,
@@ -208,7 +213,7 @@ impl ExecutionPlan for SpillReaderExec {
     ) -> DFResult<SendableRecordBatchStream> {
         let file = File::open(self.spill_file.path())
             .map_err(|e| DataFusionError::Execution(format!("Failed to open spill file: {e}")))?;
-        let reader = StreamReader::try_new(BufReader::new(file), None)?;
+        let reader = StreamReader::try_new(BufReader::with_capacity(SPILL_IO_BUFFER_SIZE, file), None)?;
         let schema = Arc::clone(&self.schema);
         let batch_stream = futures::stream::iter(
             reader
@@ -821,7 +826,7 @@ fn read_spilled_batches(
 ) -> DFResult<Vec<RecordBatch>> {
     let file = File::open(spill_file.path())
         .map_err(|e| DataFusionError::Execution(format!("Failed to open spill file: {e}")))?;
-    let reader = BufReader::new(file);
+    let reader = BufReader::with_capacity(SPILL_IO_BUFFER_SIZE, file);
     let stream_reader = StreamReader::try_new(reader, None)?;
     let batches: Vec<RecordBatch> = stream_reader.into_iter().collect::<Result<Vec<_>, _>>()?;
     Ok(batches)
