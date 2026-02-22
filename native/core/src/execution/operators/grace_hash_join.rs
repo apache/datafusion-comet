@@ -59,6 +59,7 @@ use datafusion::physical_plan::{
 use futures::stream::{self, StreamExt, TryStreamExt};
 use futures::Stream;
 use log::info;
+use tokio::sync::mpsc;
 
 /// Type alias for join key expression pairs.
 type JoinOnRef<'a> = &'a [(Arc<dyn PhysicalExpr>, Arc<dyn PhysicalExpr>)];
@@ -211,15 +212,47 @@ impl ExecutionPlan for SpillReaderExec {
         _partition: usize,
         _context: Arc<TaskContext>,
     ) -> DFResult<SendableRecordBatchStream> {
-        let file = File::open(self.spill_file.path())
-            .map_err(|e| DataFusionError::Execution(format!("Failed to open spill file: {e}")))?;
-        let reader = StreamReader::try_new(BufReader::with_capacity(SPILL_IO_BUFFER_SIZE, file), None)?;
         let schema = Arc::clone(&self.schema);
-        let batch_stream = futures::stream::iter(
-            reader
-                .into_iter()
-                .map(|r| r.map_err(|e| DataFusionError::ArrowError(Box::new(e), None))),
-        );
+        let path = self.spill_file.path().to_path_buf();
+        // Keep the spill file handle alive until the stream is done
+        let _spill_file = self.spill_file.clone();
+
+        // Use a channel so file I/O runs on a blocking thread and doesn't
+        // block the async executor. This lets select_all interleave multiple
+        // partition streams effectively.
+        let (tx, rx) = mpsc::channel::<DFResult<RecordBatch>>(2);
+
+        tokio::task::spawn_blocking(move || {
+            let file = match File::open(&path) {
+                Ok(f) => f,
+                Err(e) => {
+                    let _ = tx.blocking_send(Err(DataFusionError::Execution(format!(
+                        "Failed to open spill file: {e}"
+                    ))));
+                    return;
+                }
+            };
+            let reader = match StreamReader::try_new(
+                BufReader::with_capacity(SPILL_IO_BUFFER_SIZE, file),
+                None,
+            ) {
+                Ok(r) => r,
+                Err(e) => {
+                    let _ = tx.blocking_send(Err(DataFusionError::ArrowError(Box::new(e), None)));
+                    return;
+                }
+            };
+            for batch_result in reader {
+                let msg = batch_result.map_err(|e| DataFusionError::ArrowError(Box::new(e), None));
+                if tx.blocking_send(msg).is_err() {
+                    break; // receiver dropped
+                }
+            }
+        });
+
+        let batch_stream = futures::stream::unfold(rx, |mut rx| async move {
+            rx.recv().await.map(|batch| (batch, rx))
+        });
         Ok(Box::pin(RecordBatchStreamAdapter::new(
             schema,
             batch_stream,
@@ -674,13 +707,13 @@ async fn execute_grace_hash_join(
         .await?
     };
 
-    // Flatten all partition results into a single stream
+    // Interleave all partition streams so multiple partitions' I/O can overlap.
+    // select_all polls all streams round-robin, so while one partition's
+    // HashJoinExec blocks reading from its spill file, others can make progress.
     let output_metrics = metrics.baseline.clone();
-    let result_stream = stream::iter(partition_results.into_iter().map(Ok::<_, DataFusionError>))
-        .try_flatten()
-        .inspect_ok(move |batch| {
-            output_metrics.record_output(batch.num_rows());
-        });
+    let result_stream = stream::select_all(partition_results).inspect_ok(move |batch| {
+        output_metrics.record_output(batch.num_rows());
+    });
 
     Ok(result_stream)
 }
@@ -1218,6 +1251,11 @@ fn finish_spill_writers(
 
 /// Phase 3: For each partition, create a per-partition HashJoinExec and collect results.
 /// Recursively repartitions oversized partitions up to `MAX_RECURSION_DEPTH`.
+///
+/// Optimization: when ALL partitions have spilled probes and the combined build
+/// side is small, merges everything into a single HashJoinExec. This builds one
+/// hash table instead of N and reads all probe spill files through one stream,
+/// avoiding repeated hash table construction and sequential per-partition I/O.
 #[allow(clippy::too_many_arguments)]
 async fn join_all_partitions(
     partitions: Vec<FinishedPartition>,
@@ -1241,9 +1279,7 @@ async fn join_all_partitions(
 
         if let Some(probe_spill_file) = partition.probe_spill_file {
             // Probe side is spilled: use streaming reader to avoid loading
-            // all probe data into memory at once. HashJoinExec in CollectLeft
-            // mode builds the hash table from the build side and streams
-            // through the probe side batch-by-batch.
+            // all probe data into memory at once.
             join_with_spilled_probe(
                 build_batches,
                 probe_spill_file,
