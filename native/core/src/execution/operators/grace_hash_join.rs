@@ -84,6 +84,11 @@ const SPILL_IO_BUFFER_SIZE: usize = 1024 * 1024;
 /// and channel send/recv costs.
 const SPILL_READ_COALESCE_TARGET: usize = 8192;
 
+/// Target build-side size per merged partition. After Phase 2, adjacent
+/// `FinishedPartition`s are merged so each group has roughly this much
+/// build data, reducing the number of per-partition HashJoinExec calls.
+const TARGET_PARTITION_BUILD_SIZE: usize = 32 * 1024 * 1024;
+
 /// Random state for hashing join keys into partitions. Uses fixed seeds
 /// different from DataFusion's HashJoinExec to avoid correlation.
 /// The `recursion_level` is XORed into the seed so that recursive
@@ -935,6 +940,28 @@ async fn execute_grace_hash_join(
     let finished_partitions =
         finish_spill_writers(partitions, &build_schema, &probe_schema, &metrics)?;
 
+    // Merge adjacent partitions to reduce the number of HashJoinExec calls.
+    // Compute desired partition count from total build bytes.
+    let total_build_bytes: usize = finished_partitions.iter().map(|p| p.build_bytes).sum();
+    let desired_partitions = if total_build_bytes > 0 {
+        let desired = total_build_bytes.div_ceil(TARGET_PARTITION_BUILD_SIZE);
+        desired.max(1).min(num_partitions)
+    } else {
+        1
+    };
+    let original_partition_count = finished_partitions.len();
+    let finished_partitions = merge_finished_partitions(finished_partitions, desired_partitions);
+    if finished_partitions.len() < original_partition_count {
+        info!(
+            "GraceHashJoin: merged {} partitions into {} (total build {} bytes, \
+             target {} bytes/partition)",
+            original_partition_count,
+            finished_partitions.len(),
+            total_build_bytes,
+            TARGET_PARTITION_BUILD_SIZE,
+        );
+    }
+
     // Release all remaining reservation before Phase 3. The in-memory
     // partition data is now owned by finished_partitions and will be moved
     // into per-partition HashJoinExec instances (which track memory via
@@ -1491,11 +1518,15 @@ async fn partition_probe_side(
 // ---------------------------------------------------------------------------
 
 /// State of a finished partition ready for joining.
+/// After merging, a partition may hold multiple spill files from adjacent
+/// original partitions.
 struct FinishedPartition {
     build_batches: Vec<RecordBatch>,
     probe_batches: Vec<RecordBatch>,
-    build_spill_file: Option<RefCountedTempFile>,
-    probe_spill_file: Option<RefCountedTempFile>,
+    build_spill_files: Vec<RefCountedTempFile>,
+    probe_spill_files: Vec<RefCountedTempFile>,
+    /// Total build-side bytes (in-memory + spilled) for merge decisions.
+    build_bytes: usize,
 }
 
 /// Finish all open spill writers so files can be read back.
@@ -1508,31 +1539,83 @@ fn finish_spill_writers(
     let mut finished = Vec::with_capacity(partitions.len());
 
     for partition in partitions {
-        let build_spill_file = if let Some(writer) = partition.build_spill_writer {
+        let build_spill_files = if let Some(writer) = partition.build_spill_writer {
             let (file, bytes) = writer.finish()?;
             metrics.spilled_bytes.add(0); // bytes already tracked at spill time
             let _ = bytes; // suppress unused warning
-            Some(file)
+            vec![file]
         } else {
-            None
+            vec![]
         };
 
-        let probe_spill_file = if let Some(writer) = partition.probe_spill_writer {
+        let probe_spill_files = if let Some(writer) = partition.probe_spill_writer {
             let (file, _bytes) = writer.finish()?;
-            Some(file)
+            vec![file]
         } else {
-            None
+            vec![]
         };
 
         finished.push(FinishedPartition {
+            build_bytes: partition.build_mem_size,
             build_batches: partition.build_batches,
             probe_batches: partition.probe_batches,
-            build_spill_file,
-            probe_spill_file,
+            build_spill_files,
+            probe_spill_files,
         });
     }
 
     Ok(finished)
+}
+
+/// Merge adjacent finished partitions to reduce the number of per-partition
+/// HashJoinExec calls. Groups adjacent partitions so each merged group has
+/// roughly `TARGET_PARTITION_BUILD_SIZE` bytes of build data.
+fn merge_finished_partitions(
+    partitions: Vec<FinishedPartition>,
+    target_count: usize,
+) -> Vec<FinishedPartition> {
+    let original_count = partitions.len();
+    if target_count >= original_count {
+        return partitions;
+    }
+
+    // Divide original_count partitions into target_count groups as evenly as possible
+    let base_group_size = original_count / target_count;
+    let remainder = original_count % target_count;
+
+    let mut merged = Vec::with_capacity(target_count);
+    let mut iter = partitions.into_iter();
+
+    for group_idx in 0..target_count {
+        // First `remainder` groups get one extra partition
+        let group_size = base_group_size + if group_idx < remainder { 1 } else { 0 };
+
+        let mut build_batches = Vec::new();
+        let mut probe_batches = Vec::new();
+        let mut build_spill_files = Vec::new();
+        let mut probe_spill_files = Vec::new();
+        let mut build_bytes = 0usize;
+
+        for _ in 0..group_size {
+            if let Some(p) = iter.next() {
+                build_batches.extend(p.build_batches);
+                probe_batches.extend(p.probe_batches);
+                build_spill_files.extend(p.build_spill_files);
+                probe_spill_files.extend(p.probe_spill_files);
+                build_bytes += p.build_bytes;
+            }
+        }
+
+        merged.push(FinishedPartition {
+            build_batches,
+            probe_batches,
+            build_spill_files,
+            probe_spill_files,
+            build_bytes,
+        });
+    }
+
+    merged
 }
 
 // ---------------------------------------------------------------------------
@@ -1557,18 +1640,25 @@ async fn join_single_partition(
 ) -> DFResult<Vec<SendableRecordBatchStream>> {
     // Get build-side batches (from memory or disk — build side is typically small).
     // Use spawn_blocking for spill reads to avoid blocking the async executor.
-    let build_batches = if let Some(spill_file) = partition.build_spill_file {
+    let mut build_batches = partition.build_batches;
+    if !partition.build_spill_files.is_empty() {
         let schema = Arc::clone(&build_schema);
-        tokio::task::spawn_blocking(move || read_spilled_batches(&spill_file, &schema))
-            .await
-            .map_err(|e| {
-                DataFusionError::Execution(format!(
-                    "GraceHashJoin: build spill read task failed: {e}"
-                ))
-            })??
-    } else {
-        partition.build_batches
-    };
+        let spill_files = partition.build_spill_files;
+        let spilled = tokio::task::spawn_blocking(move || {
+            let mut all = Vec::new();
+            for spill_file in &spill_files {
+                all.extend(read_spilled_batches(spill_file, &schema)?);
+            }
+            Ok::<_, DataFusionError>(all)
+        })
+        .await
+        .map_err(|e| {
+            DataFusionError::Execution(format!(
+                "GraceHashJoin: build spill read task failed: {e}"
+            ))
+        })??;
+        build_batches.extend(spilled);
+    }
 
     // Coalesce many tiny sub-batches (one per original input batch) into a
     // single batch per side. This avoids repeated concat_batches downstream
@@ -1581,12 +1671,13 @@ async fn join_single_partition(
 
     let mut streams = Vec::new();
 
-    if let Some(probe_spill_file) = partition.probe_spill_file {
-        // Probe side is spilled: use streaming reader to avoid loading
-        // all probe data into memory at once.
+    if !partition.probe_spill_files.is_empty() {
+        // Probe side has spill file(s). Also include any in-memory probe
+        // batches (possible after merging adjacent partitions).
         join_with_spilled_probe(
             build_batches,
-            probe_spill_file,
+            partition.probe_spill_files,
+            partition.probe_batches,
             &original_on,
             &filter,
             &join_type,
@@ -1628,7 +1719,8 @@ async fn join_single_partition(
 #[allow(clippy::too_many_arguments)]
 fn join_with_spilled_probe(
     build_batches: Vec<RecordBatch>,
-    probe_spill_file: RefCountedTempFile,
+    probe_spill_files: Vec<RefCountedTempFile>,
+    probe_in_memory: Vec<RecordBatch>,
     original_on: JoinOnRef<'_>,
     filter: &Option<JoinFilter>,
     join_type: &JoinType,
@@ -1696,7 +1788,10 @@ fn join_with_spilled_probe(
 
     if needs_repartition {
         info!("GraceHashJoin: build too large for streaming probe, falling back to eager read");
-        let probe_batches = read_spilled_batches(&probe_spill_file, probe_schema)?;
+        let mut probe_batches = probe_in_memory;
+        for spill_file in &probe_spill_files {
+            probe_batches.extend(read_spilled_batches(spill_file, probe_schema)?);
+        }
         return join_partition_recursive(
             build_batches,
             probe_batches,
@@ -1728,11 +1823,32 @@ fn join_with_spilled_probe(
         None,
     )?)));
 
-    // Probe side: streaming from spill file
-    let probe_source: Arc<dyn ExecutionPlan> = Arc::new(SpillReaderExec::new(
-        probe_spill_file,
-        Arc::clone(probe_schema),
-    ));
+    // Probe side: streaming from spill file(s).
+    // With a single spill file and no in-memory batches, use the streaming
+    // SpillReaderExec. Otherwise read eagerly since the merged group sizes
+    // are bounded by TARGET_PARTITION_BUILD_SIZE.
+    let probe_source: Arc<dyn ExecutionPlan> =
+        if probe_spill_files.len() == 1 && probe_in_memory.is_empty() {
+            Arc::new(SpillReaderExec::new(
+                probe_spill_files.into_iter().next().unwrap(),
+                Arc::clone(probe_schema),
+            ))
+        } else {
+            let mut probe_batches = probe_in_memory;
+            for spill_file in &probe_spill_files {
+                probe_batches.extend(read_spilled_batches(spill_file, probe_schema)?);
+            }
+            let probe_data = if probe_batches.is_empty() {
+                vec![RecordBatch::new_empty(Arc::clone(probe_schema))]
+            } else {
+                vec![concat_batches(probe_schema, &probe_batches)?]
+            };
+            Arc::new(DataSourceExec::new(Arc::new(MemorySourceConfig::try_new(
+                &[probe_data],
+                Arc::clone(probe_schema),
+                None,
+            )?)))
+        };
 
     // HashJoinExec expects left=build in CollectLeft mode
     let (left_source, right_source) = if build_left {
