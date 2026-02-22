@@ -256,11 +256,6 @@ class CometStringExpressionSuite extends CometTestBase {
         (null, 2)),
       "tbl_parse_url") {
 
-      val df = spark.sql("SELECT parse_url(_1, 'PATH') FROM tbl_parse_url")
-      df.show(20, false)
-      val df2 = spark.sql("SELECT parse_url(_1, 'FILE') FROM tbl_parse_url")
-      df2.show(20, false)
-
       checkSparkAnswerAndOperator("SELECT parse_url(_1, 'HOST') FROM tbl_parse_url")
       checkSparkAnswerAndOperator("SELECT parse_url(_1, 'QUERY') FROM tbl_parse_url")
       checkSparkAnswerAndOperator("SELECT parse_url(_1, 'PROTOCOL') FROM tbl_parse_url")
