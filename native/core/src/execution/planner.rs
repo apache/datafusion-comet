@@ -21,6 +21,8 @@ pub mod expression_registry;
 pub mod macros;
 pub mod operator_registry;
 
+use log::info;
+
 use crate::execution::operators::init_csv_datasource_exec;
 use crate::execution::operators::IcebergScanExec;
 use crate::{
@@ -1587,6 +1589,17 @@ impl PhysicalPlanner {
                             )),
                         ));
                     }
+                }
+
+                {
+                    use crate::execution::spark_config::{SparkConfig, COMET_GRACE_HASH_JOIN_ENABLED};
+                    info!(
+                        "PLANNER: creating plain HashJoinExec (NOT GraceHashJoin). \
+                         join_type={:?}, build_side={:?}, grace_enabled={}",
+                        join_params.join_type,
+                        join.build_side,
+                        self.spark_conf.get_bool(COMET_GRACE_HASH_JOIN_ENABLED),
+                    );
                 }
 
                 let hash_join = Arc::new(HashJoinExec::try_new(
