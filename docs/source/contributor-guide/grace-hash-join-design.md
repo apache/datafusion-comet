@@ -93,19 +93,15 @@ execute()
   │    Hash-partition all build input into N buckets.
   │    Spill the largest bucket on memory pressure.
   │
-  ├─ FAST PATH (if build small, no spills):
-  │    Create single HashJoinExec with probe streaming directly.
-  │    Skip Phases 2 and 3 entirely. Zero disk I/O.
+  ├─ Phase 2: Partition probe side
+  │    Hash-partition probe input into N buckets.
+  │    Spill ALL non-spilled buckets on first memory pressure.
   │
-  └─ SLOW PATH (if build spilled or large):
-       ├─ Phase 2: Partition probe side
-       │    Hash-partition probe input into N buckets.
-       │    Spill ALL non-spilled buckets on first memory pressure.
-       │
-       └─ Phase 3: Join each partition
-            For each bucket, create a per-partition HashJoinExec.
-            Spilled probes use streaming SpillReaderExec.
-            Oversized builds trigger recursive repartitioning.
+  └─ Phase 3: Join each partition (sequential)
+       For each bucket, create a per-partition HashJoinExec.
+       Spilled probes use streaming SpillReaderExec.
+       Oversized builds trigger recursive repartitioning.
+       Only one partition's HashJoinInput exists at a time.
 ```
 
 ### Phase 1: Build-Side Partitioning
@@ -123,24 +119,6 @@ For each incoming batch from the build input:
 
 **Memory tracking**: All in-memory build data is tracked in a shared `MutableReservation` registered as `can_spill: true`. This is critical — it makes GHJ a cooperative citizen in DataFusion's memory pool, allowing other operators to trigger memory reclamation.
 
-### Fast Path: Streaming Join for Small Build Sides
-
-After Phase 1, if:
-- No build partitions were spilled to disk, AND
-- The build side fits in a hash table (tested via `try_grow(total_build_bytes * 3)`)
-
-Then skip Phases 2 and 3 entirely:
-
-1. Concatenate all build partition data into a single batch
-2. Wrap it as a `MemorySourceConfig` → `DataSourceExec`
-3. Wrap the live probe input stream as a `StreamSourceExec`
-4. Create a single `HashJoinExec` in `CollectLeft` mode
-5. Stream probe data directly through the hash join — no partitioning, no buffering, no disk I/O
-
-**Reservation keep-alive**: The GHJ's spill-capable reservation is captured in the output stream's closure and only dropped when the stream completes. This preserves a spillable consumer in the memory pool. Without this, other operators' `HashJoinInput` consumers (which are `can_spill: false`) would fail when the pool fills up.
-
-This fast path is the most important optimization. In TPC-DS q72, the outer join has a ~10-row build side but a ~170M-row probe side. Without the fast path, the probe side is written to disk (~1GB) then read back — pure I/O overhead for a trivial hash table.
-
 ### Phase 2: Probe-Side Partitioning
 
 Same hash-partitioning algorithm as Phase 1, with key differences:
@@ -153,7 +131,9 @@ Same hash-partitioning algorithm as Phase 1, with key differences:
 
 ### Phase 3: Per-Partition Joins
 
-Each partition is joined independently:
+Partitions are joined **sequentially** — one at a time — so only one `HashJoinInput` consumer exists at any moment. This keeps peak memory at ~1/N of what a single large hash table would require. DataFusion manages parallelism externally by calling `execute(partition)` from multiple async tasks; GHJ does not spawn its own internal parallelism.
+
+The GHJ reservation is freed before Phase 3 begins, since the partition data has been moved into `FinishedPartition` structs and each per-partition `HashJoinExec` will track its own memory via `HashJoinInput`.
 
 **In-memory probe** → `join_partition_recursive()`:
 - Concatenate build and probe sub-batches
@@ -161,11 +141,9 @@ Each partition is joined independently:
 - If build too large for hash table: recursively repartition (up to `MAX_RECURSION_DEPTH = 3` levels, yielding up to 16^3 = 4096 effective partitions)
 
 **Spilled probe** → `join_with_spilled_probe()`:
-- Build side loaded from memory or disk (typically small)
+- Build side loaded from memory or disk via `spawn_blocking` (to avoid blocking the async executor)
 - Probe side streamed via `SpillReaderExec` (never fully loaded into memory)
 - If build too large: fall back to eager probe read + recursive repartitioning
-
-**Parallel execution**: Each partition's join stream is spawned as a separate `tokio::task`, allowing the multi-threaded runtime to schedule hash joins across all available CPU cores. Results funnel through a shared `mpsc` channel.
 
 ## Spill Mechanism
 
@@ -211,7 +189,7 @@ GHJ uses a single `MemoryReservation` registered as a spillable consumer (`with_
 
 DataFusion's memory pool (typically `FairSpillPool`) divides memory between spillable and non-spillable consumers. Non-spillable consumers (`can_spill: false`) like `HashJoinInput` from regular `HashJoinExec` get a guaranteed fraction. When non-spillable consumers exhaust their allocation, the pool returns an error.
 
-If GHJ is the only spillable consumer in the pool, removing its reservation (as attempted in an earlier fast-path design) removes the pool's ability to balance memory. Other operators' allocations fail because the pool's "spillable headroom" is gone. This is why the fast path must keep the reservation alive.
+GHJ registers as spillable so the pool can account for its memory when computing fair shares. During Phases 1 and 2, the reservation tracks all in-memory partition data and triggers spilling when `try_grow` fails. Before Phase 3, the reservation is freed — the data is now owned by `FinishedPartition` structs and will be tracked by each per-partition `HashJoinExec`'s own `HashJoinInput` reservation.
 
 ### Concurrent GHJ Instances
 
@@ -288,7 +266,6 @@ When `build_left = false`, the `HashJoinExec` is created with swapped inputs and
 |---|---|
 | `build_time` | Time spent partitioning the build side |
 | `probe_time` | Time spent partitioning the probe side |
-| `join_time` | Time spent in per-partition hash joins |
 | `spill_count` | Number of partition spill events |
 | `spilled_bytes` | Total bytes written to spill files |
 | `build_input_rows` | Total rows from build input |
@@ -302,7 +279,7 @@ When `build_left = false`, the `HashJoinExec` is created with swapped inputs and
 
 ### 1. Memory pool cooperation is non-negotiable
 
-Any optimization that removes the spillable reservation from the memory pool breaks other operators. The pool's ability to handle pressure depends on having at least one spillable consumer. The fast-path keeps the reservation alive specifically for this reason.
+Any optimization that removes the spillable reservation from the memory pool during Phases 1 and 2 breaks other operators. The pool's ability to handle pressure depends on having at least one spillable consumer. The reservation is freed before Phase 3 only because each per-partition `HashJoinExec` tracks its own memory.
 
 ### 2. Spill one partition at a time doesn't work with concurrency
 
@@ -320,13 +297,24 @@ Even with proper spilling during partitioning, eagerly loading all spilled probe
 
 Hash-partitioning creates N sub-batches per input batch. With N=16 partitions and 1000-row input batches, spill files contain ~62-row sub-batches. Reading and joining millions of tiny batches has massive per-batch overhead. Coalescing to ~8192-row batches on read reduces overhead by 100x+.
 
-### 6. Disk I/O is the real bottleneck for spilled joins
+### 6. A fast path that skips partitioning creates non-spillable memory pressure
 
-Writing 1GB to disk and reading it back dominates execution time regardless of CPU parallelism. The fast-path (eliminating I/O entirely) is far more impactful than any I/O optimization (larger buffers, async reads, parallel partition joins).
+An earlier design included a "fast path" that skipped Phases 2 and 3 when the build side appeared small: it concatenated all build data into a single `HashJoinExec` and streamed the probe directly through it. This was removed because:
+
+- **`HashJoinInput` is non-spillable.** `HashJoinExec` registers its hash table memory as `can_spill: false`. A single large `HashJoinInput` cannot be reclaimed under memory pressure.
+- **`build_mem_size` severely underestimates actual memory.** The proportional estimate (`total_batch_size * sub_rows / total_rows`) used during partitioning can undercount by 5-20x because it doesn't account for per-array overhead in sub-batches created by `take()`. A build side estimated at 45 MB could actually be 460 MB, producing a 1.3 GB hash table.
+- **The 3x memory check is a point-in-time snapshot.** Even with accurate sizes, the check (`try_grow(build_bytes * 3)`) passes when other operators haven't allocated yet. By the time the hash table is built, concurrent operators (broadcast hash joins, other GHJ instances) have consumed pool space, and the total exceeds the pool limit.
+- **The slow path handles small builds efficiently.** With 16 partitions processed sequentially, each hash table is ~1/16 of the total. The overhead of partitioning the probe side is modest compared to the memory safety gained.
+
+In TPC-DS q72 (which has 2 GHJ operators and 8 broadcast hash joins sharing a pool), the fast path created a 1.3 GB non-spillable hash table in a ~954 MB pool, causing OOM. The slow path keeps peak hash table memory at ~86 MB per partition.
 
 ### 7. DataFusion's HashJoinExec is not spill-capable
 
-`HashJoinInput` is registered with `can_spill: false`. There is no way to make `HashJoinExec` yield memory under pressure. This is a fundamental DataFusion limitation that GHJ works around by managing memory at the partition level.
+`HashJoinInput` is registered with `can_spill: false`. There is no way to make `HashJoinExec` yield memory under pressure. This is a fundamental DataFusion limitation that GHJ works around by managing memory at the partition level — keeping each per-partition hash table small and processing them one at a time.
+
+### 8. Internal parallelism fights the runtime
+
+An earlier design spawned each partition's join as a separate `tokio::task` for parallel execution. This was removed because DataFusion already manages parallelism by calling `execute(partition)` from multiple async tasks. Internal parallelism creates concurrent `HashJoinInput` reservations that compete for pool space and is redundant with the runtime's own scheduling.
 
 ## Future Work
 
