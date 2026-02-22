@@ -858,6 +858,12 @@ async fn execute_grace_hash_join(
                 (probe_source, build_source)
             };
 
+        info!(
+            "GraceHashJoin: FAST PATH creating HashJoinExec, \
+             build_left={}, actual_build_bytes={}",
+            build_left, actual_build_bytes,
+        );
+
         let stream = if build_left {
             let hash_join = HashJoinExec::try_new(
                 left_source,
@@ -1729,6 +1735,8 @@ fn join_with_spilled_probe(
     context: &Arc<TaskContext>,
     streams: &mut Vec<SendableRecordBatchStream>,
 ) -> DFResult<()> {
+    let probe_spill_files_count = probe_spill_files.len();
+
     // Skip if build side is empty and join type requires it
     let build_empty = build_batches.is_empty();
     let skip = match join_type {
@@ -1851,6 +1859,14 @@ fn join_with_spilled_probe(
     } else {
         (probe_source, build_source as Arc<dyn ExecutionPlan>)
     };
+
+    info!(
+        "GraceHashJoin: SPILLED PROBE PATH creating HashJoinExec, \
+         build_left={}, build_size={}, probe_source={}",
+        build_left,
+        build_size,
+        if probe_spill_files_count == 1 { "SpillReaderExec" } else { "MemorySourceConfig" },
+    );
 
     let stream = if build_left {
         let hash_join = HashJoinExec::try_new(
@@ -2034,6 +2050,12 @@ fn join_partition_recursive(
         None,
     )?)));
 
+    info!(
+        "GraceHashJoin: RECURSIVE PATH creating HashJoinExec at level={}, \
+         build_left={}, build_size={}, probe_size={}",
+        recursion_level, build_left, build_size, probe_size,
+    );
+
     let stream = if build_left {
         let hash_join = HashJoinExec::try_new(
             left_source,
@@ -2159,7 +2181,10 @@ mod tests {
     use super::*;
     use arrow::array::{Int32Array, StringArray};
     use arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::execution::memory_pool::FairSpillPool;
+    use datafusion::execution::runtime_env::RuntimeEnvBuilder;
     use datafusion::physical_expr::expressions::Column;
+    use datafusion::prelude::SessionConfig;
     use datafusion::prelude::SessionContext;
     use futures::TryStreamExt;
 
@@ -2287,6 +2312,175 @@ mod tests {
 
         let total_rows: usize = result_batches.iter().map(|b| b.num_rows()).sum();
         assert_eq!(total_rows, 0, "Expected 0 rows for non-matching keys");
+
+        Ok(())
+    }
+
+    /// Helper to create a SessionContext with a bounded FairSpillPool.
+    fn context_with_memory_limit(pool_bytes: usize) -> SessionContext {
+        let pool = Arc::new(FairSpillPool::new(pool_bytes));
+        let runtime = RuntimeEnvBuilder::new()
+            .with_memory_pool(pool)
+            .build_arc()
+            .unwrap();
+        let config = SessionConfig::new();
+        SessionContext::new_with_config_rt(config, runtime)
+    }
+
+    /// Generate a batch of N rows with sequential IDs and a padding string
+    /// column to control memory size. Each row is ~100 bytes of padding.
+    fn make_large_batch(start_id: i32, count: usize) -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("val", DataType::Utf8, false),
+        ]));
+        let ids: Vec<i32> = (start_id..start_id + count as i32).collect();
+        let padding = "x".repeat(100);
+        let vals: Vec<&str> = (0..count).map(|_| padding.as_str()).collect();
+        RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int32Array::from(ids)),
+                Arc::new(StringArray::from(vals)),
+            ],
+        )
+        .unwrap()
+    }
+
+    /// Test that GHJ correctly repartitions a large build side instead of
+    /// creating an oversized HashJoinExec hash table that OOMs.
+    ///
+    /// Setup: 256 MB memory pool, ~80 MB build side, ~10 MB probe side.
+    /// Without repartitioning, the hash table would be ~240 MB and could
+    /// exhaust the 256 MB pool. With repartitioning (32 MB threshold),
+    /// the build side is split into sub-partitions of ~5 MB each.
+    #[tokio::test]
+    async fn test_grace_hash_join_repartitions_large_build() -> DFResult<()> {
+        // 256 MB pool — tight enough that a 80 MB build → ~240 MB hash table fails
+        let ctx = context_with_memory_limit(256 * 1024 * 1024);
+        let task_ctx = ctx.task_ctx();
+
+        let left_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("val", DataType::Utf8, false),
+        ]));
+        let right_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("val", DataType::Utf8, false),
+        ]));
+
+        // Build side: ~80 MB (800K rows × ~100 bytes)
+        let left_batches = vec![
+            make_large_batch(0, 200_000),
+            make_large_batch(200_000, 200_000),
+            make_large_batch(400_000, 200_000),
+            make_large_batch(600_000, 200_000),
+        ];
+        let build_bytes: usize = left_batches
+            .iter()
+            .map(|b| b.get_array_memory_size())
+            .sum();
+        eprintln!("Test build side: {} bytes ({} MB)", build_bytes, build_bytes / (1024 * 1024));
+
+        // Probe side: small (~1 MB, 10K rows)
+        let right_batches = vec![make_large_batch(0, 10_000)];
+
+        let left_source = Arc::new(DataSourceExec::new(Arc::new(MemorySourceConfig::try_new(
+            &[left_batches],
+            Arc::clone(&left_schema),
+            None,
+        )?)));
+        let right_source = Arc::new(DataSourceExec::new(Arc::new(MemorySourceConfig::try_new(
+            &[right_batches],
+            Arc::clone(&right_schema),
+            None,
+        )?)));
+
+        let on = vec![(
+            Arc::new(Column::new("id", 0)) as Arc<dyn PhysicalExpr>,
+            Arc::new(Column::new("id", 0)) as Arc<dyn PhysicalExpr>,
+        )];
+
+        // Disable fast path to force slow path
+        let grace_join = GraceHashJoinExec::try_new(
+            left_source,
+            right_source,
+            on,
+            None,
+            &JoinType::Inner,
+            16,
+            true, // build_left
+            0,    // fast_path_threshold = 0 (disabled)
+        )?;
+
+        let stream = grace_join.execute(0, task_ctx)?;
+        let result_batches: Vec<RecordBatch> = stream.try_collect().await?;
+
+        let total_rows: usize = result_batches.iter().map(|b| b.num_rows()).sum();
+        // All 10K probe rows match (IDs 0..10000 exist in build)
+        assert_eq!(total_rows, 10_000, "Expected 10000 matching rows");
+
+        Ok(())
+    }
+
+    /// Same test but with build_left=false to exercise the swap_inputs path.
+    #[tokio::test]
+    async fn test_grace_hash_join_repartitions_large_build_right() -> DFResult<()> {
+        let ctx = context_with_memory_limit(256 * 1024 * 1024);
+        let task_ctx = ctx.task_ctx();
+
+        let left_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("val", DataType::Utf8, false),
+        ]));
+        let right_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("val", DataType::Utf8, false),
+        ]));
+
+        // Probe side (left): small
+        let left_batches = vec![make_large_batch(0, 10_000)];
+
+        // Build side (right): ~80 MB
+        let right_batches = vec![
+            make_large_batch(0, 200_000),
+            make_large_batch(200_000, 200_000),
+            make_large_batch(400_000, 200_000),
+            make_large_batch(600_000, 200_000),
+        ];
+
+        let left_source = Arc::new(DataSourceExec::new(Arc::new(MemorySourceConfig::try_new(
+            &[left_batches],
+            Arc::clone(&left_schema),
+            None,
+        )?)));
+        let right_source = Arc::new(DataSourceExec::new(Arc::new(MemorySourceConfig::try_new(
+            &[right_batches],
+            Arc::clone(&right_schema),
+            None,
+        )?)));
+
+        let on = vec![(
+            Arc::new(Column::new("id", 0)) as Arc<dyn PhysicalExpr>,
+            Arc::new(Column::new("id", 0)) as Arc<dyn PhysicalExpr>,
+        )];
+
+        let grace_join = GraceHashJoinExec::try_new(
+            left_source,
+            right_source,
+            on,
+            None,
+            &JoinType::Inner,
+            16,
+            false, // build_left=false → right is build side
+            0,     // fast_path_threshold = 0 (disabled)
+        )?;
+
+        let stream = grace_join.execute(0, task_ctx)?;
+        let result_batches: Vec<RecordBatch> = stream.try_collect().await?;
+
+        let total_rows: usize = result_batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(total_rows, 10_000, "Expected 10000 matching rows");
 
         Ok(())
     }
