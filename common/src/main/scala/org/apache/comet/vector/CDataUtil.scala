@@ -23,6 +23,8 @@ import org.apache.arrow.c.{ArrowArray, ArrowImporter, ArrowSchema, CDataDictiona
 import org.apache.arrow.memory.BufferAllocator
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
+import org.apache.comet.CometArrowAllocator
+
 /**
  * Import-only C Data Interface bridge for Comet's shaded Arrow side.
  *
@@ -35,6 +37,20 @@ import org.apache.spark.sql.vectorized.ColumnarBatch
  * communicate through Long memory addresses only.
  */
 object CDataUtil {
+
+  /**
+   * Imports a columnar batch from the C Data Interface using a child of the global
+   * [[CometArrowAllocator]]. This is the preferred entry point from the spark module since it
+   * avoids passing a shaded allocator type across the shading boundary.
+   */
+  def importBatch(
+      numCols: Int,
+      numRows: Int,
+      exportFn: (Int, Long, Long) => Unit): ColumnarBatch = {
+    val allocator =
+      CometArrowAllocator.newChildAllocator("CDataUtil-import", 0, Long.MaxValue)
+    importBatch(numCols, numRows, allocator, exportFn)
+  }
 
   /**
    * Imports a columnar batch from the C Data Interface.

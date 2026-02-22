@@ -28,56 +28,55 @@ import org.apache.spark.sql.execution.vectorized.OnHeapColumnVector
 import org.apache.spark.sql.types.{IntegerType, StringType, StructField, StructType}
 import org.apache.spark.sql.vectorized.{ArrowColumnVector, ColumnarBatch}
 
-import org.apache.comet.CometArrowAllocator
 import org.apache.comet.vector.{CDataUtil, CometVector}
 
 class CometArrowConvertersSuite extends CometTestBase {
 
   test("zero-copy import via ArrowCDataExport and CDataUtil.importBatch") {
     val srcAllocator = new RootAllocator(Long.MaxValue)
-    val cometAllocator =
-      CometArrowAllocator.newChildAllocator("test-zero-copy", 0, Long.MaxValue)
-    try {
-      val intVector = new IntVector("intCol", srcAllocator)
-      intVector.allocateNew(3)
-      intVector.set(0, 10)
-      intVector.set(1, 20)
-      intVector.setNull(2)
-      intVector.setValueCount(3)
 
-      val varcharVector = new VarCharVector("strCol", srcAllocator)
-      varcharVector.allocateNew()
-      varcharVector.setSafe(0, "hello".getBytes)
-      varcharVector.setSafe(1, "world".getBytes)
-      varcharVector.setNull(2)
-      varcharVector.setValueCount(3)
+    val intVector = new IntVector("intCol", srcAllocator)
+    intVector.allocateNew(3)
+    intVector.set(0, 10)
+    intVector.set(1, 20)
+    intVector.setNull(2)
+    intVector.setValueCount(3)
 
-      val arrowCol0 = new ArrowColumnVector(intVector)
-      val arrowCol1 = new ArrowColumnVector(varcharVector)
-      val inputBatch = new ColumnarBatch(Array(arrowCol0, arrowCol1), 3)
+    val varcharVector = new VarCharVector("strCol", srcAllocator)
+    varcharVector.allocateNew()
+    varcharVector.setSafe(0, "hello".getBytes)
+    varcharVector.setSafe(1, "world".getBytes)
+    varcharVector.setNull(2)
+    varcharVector.setValueCount(3)
 
-      val exportFn = ArrowCDataExport.makeExportFn(inputBatch)
-      assert(exportFn.isDefined, "Should detect ArrowColumnVector and return Some")
+    val arrowCol0 = new ArrowColumnVector(intVector)
+    val arrowCol1 = new ArrowColumnVector(varcharVector)
+    val inputBatch = new ColumnarBatch(Array(arrowCol0, arrowCol1), 3)
 
-      val outputBatch = CDataUtil.importBatch(2, 3, cometAllocator, exportFn.get)
-      assert(outputBatch.numRows() == 3)
-      assert(outputBatch.numCols() == 2)
-      assert(outputBatch.column(0).isInstanceOf[CometVector])
-      assert(outputBatch.column(1).isInstanceOf[CometVector])
+    val exportFn = ArrowCDataExport.makeExportFn(inputBatch)
+    assert(exportFn.isDefined, "Should detect ArrowColumnVector and return Some")
 
-      assert(outputBatch.column(0).getInt(0) == 10)
-      assert(outputBatch.column(0).getInt(1) == 20)
-      assert(outputBatch.column(0).isNullAt(2))
-      assert(outputBatch.column(1).getUTF8String(0).toString == "hello")
-      assert(outputBatch.column(1).getUTF8String(1).toString == "world")
-      assert(outputBatch.column(1).isNullAt(2))
+    // Use the no-allocator overload which uses the shaded CometArrowAllocator internally,
+    // avoiding the need to pass a shaded allocator type across the shading boundary.
+    val outputBatch = CDataUtil.importBatch(2, 3, exportFn.get)
+    assert(outputBatch.numRows() == 3)
+    assert(outputBatch.numCols() == 2)
+    assert(outputBatch.column(0).isInstanceOf[CometVector])
+    assert(outputBatch.column(1).isInstanceOf[CometVector])
 
-      outputBatch.close()
-      inputBatch.close()
-    } finally {
-      cometAllocator.close()
-      srcAllocator.close()
-    }
+    assert(outputBatch.column(0).getInt(0) == 10)
+    assert(outputBatch.column(0).getInt(1) == 20)
+    assert(outputBatch.column(0).isNullAt(2))
+    assert(outputBatch.column(1).getUTF8String(0).toString == "hello")
+    assert(outputBatch.column(1).getUTF8String(1).toString == "world")
+    assert(outputBatch.column(1).isNullAt(2))
+
+    // Close the imported batch first (triggers C Data release callback),
+    // then close the source batch. The child allocator under CometArrowAllocator
+    // is not explicitly closed here, matching the production lifecycle in
+    // ColumnBatchToArrowBatchIter.
+    outputBatch.close()
+    inputBatch.close()
   }
 
   test("ArrowCDataExport returns None for non-Arrow batches") {
