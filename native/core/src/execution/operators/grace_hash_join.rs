@@ -29,7 +29,6 @@ use std::fmt;
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
 use std::sync::Arc;
-use std::sync::Mutex;
 
 use ahash::RandomState;
 use arrow::array::UInt32Array;
@@ -310,89 +309,6 @@ impl ExecutionPlan for SpillReaderExec {
     }
 }
 
-// ---------------------------------------------------------------------------
-// StreamSourceExec: wrap an existing stream as an ExecutionPlan
-// ---------------------------------------------------------------------------
-
-/// An ExecutionPlan that yields batches from a pre-existing stream.
-/// Used to feed the probe side's live `SendableRecordBatchStream` into
-/// a `HashJoinExec` without buffering or spilling.
-struct StreamSourceExec {
-    stream: Mutex<Option<SendableRecordBatchStream>>,
-    schema: SchemaRef,
-    cache: PlanProperties,
-}
-
-impl StreamSourceExec {
-    fn new(stream: SendableRecordBatchStream, schema: SchemaRef) -> Self {
-        let cache = PlanProperties::new(
-            EquivalenceProperties::new(Arc::clone(&schema)),
-            Partitioning::UnknownPartitioning(1),
-            datafusion::physical_plan::execution_plan::EmissionType::Incremental,
-            datafusion::physical_plan::execution_plan::Boundedness::Bounded,
-        );
-        Self {
-            stream: Mutex::new(Some(stream)),
-            schema,
-            cache,
-        }
-    }
-}
-
-impl fmt::Debug for StreamSourceExec {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("StreamSourceExec").finish()
-    }
-}
-
-impl DisplayAs for StreamSourceExec {
-    fn fmt_as(&self, _t: DisplayFormatType, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "StreamSourceExec")
-    }
-}
-
-impl ExecutionPlan for StreamSourceExec {
-    fn name(&self) -> &str {
-        "StreamSourceExec"
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn schema(&self) -> SchemaRef {
-        Arc::clone(&self.schema)
-    }
-
-    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
-        vec![]
-    }
-
-    fn with_new_children(
-        self: Arc<Self>,
-        _children: Vec<Arc<dyn ExecutionPlan>>,
-    ) -> DFResult<Arc<dyn ExecutionPlan>> {
-        Ok(self)
-    }
-
-    fn properties(&self) -> &PlanProperties {
-        &self.cache
-    }
-
-    fn execute(
-        &self,
-        _partition: usize,
-        _context: Arc<TaskContext>,
-    ) -> DFResult<SendableRecordBatchStream> {
-        self.stream
-            .lock()
-            .map_err(|e| DataFusionError::Internal(format!("lock poisoned: {e}")))?
-            .take()
-            .ok_or_else(|| {
-                DataFusionError::Internal("StreamSourceExec: stream already consumed".to_string())
-            })
-    }
-}
 
 // ---------------------------------------------------------------------------
 // GraceHashJoinMetrics
@@ -781,129 +697,20 @@ async fn execute_grace_hash_join(
         }
     }
 
-    // Fast path: if no build partitions spilled and build is small enough,
-    // skip probe partitioning entirely. Stream probe input directly through
-    // a single HashJoinExec.
+    // Always take the slow path: partition the probe side, then join each
+    // partition sequentially. This keeps per-partition hash tables small
+    // (~1/N of total build) and processes them one at a time, so only one
+    // non-spillable HashJoinInput consumer exists at any moment.
     //
-    // IMPORTANT: The memory check uses the actual concatenated batch size,
-    // not the proportional estimate (build_mem_size). The proportional
-    // estimate can undercount by 5-20x because it divides total_batch_size
-    // across partitions but doesn't account for per-array overhead in the
-    // sub-batches created by take().
+    // A "fast path" that skips probe partitioning and creates a single
+    // HashJoinExec with ALL build data was removed because it creates one
+    // massive non-spillable hash table (e.g. 460 MB build → 1.3 GB hash
+    // table) that exhausts the memory pool.
     let build_spilled = partitions.iter().any(|p| p.build_spilled());
-
-    if !build_spilled {
-        // Concatenate all build partition data to get the actual size.
-        let all_build_batches: Vec<RecordBatch> = partitions
-            .iter()
-            .flat_map(|p| p.build_batches.iter().cloned())
-            .collect();
-        let actual_build_bytes: usize = all_build_batches
-            .iter()
-            .map(|b| b.get_array_memory_size())
-            .sum();
-
-        let can_fit = if actual_build_bytes > 0 {
-            let mut test_reservation = MemoryConsumer::new("GraceHashJoinExec fast-path check")
-                .register(&context.runtime_env().memory_pool);
-            let ok = test_reservation.try_grow(actual_build_bytes * 3).is_ok();
-            if ok {
-                test_reservation.shrink(actual_build_bytes * 3);
-            }
-            ok
-        } else {
-            true
-        };
-
-        if can_fit {
-            let total_build_rows: usize =
-                all_build_batches.iter().map(|b| b.num_rows()).sum();
-            info!(
-                "GraceHashJoin: fast path — build side small ({} rows, {} bytes actual), \
-                 no spills. Streaming probe directly through HashJoinExec.",
-                total_build_rows, actual_build_bytes,
-            );
-
-            // Release our reservation before HashJoinExec creates its own
-            // HashJoinInput reservation for the hash table. Without this,
-            // the pool double-counts the build data.
-            reservation.free();
-
-            let build_data = if all_build_batches.is_empty() {
-                vec![RecordBatch::new_empty(Arc::clone(&build_schema))]
-            } else {
-                vec![concat_batches(&build_schema, &all_build_batches)?]
-            };
-
-            // Drop the Vec to free the un-concatenated batches
-            drop(all_build_batches);
-            // Consume partitions to free their memory
-            drop(partitions);
-
-            let build_source = Arc::new(DataSourceExec::new(Arc::new(
-                MemorySourceConfig::try_new(&[build_data], Arc::clone(&build_schema), None)?,
-            )));
-
-            let probe_source: Arc<dyn ExecutionPlan> = Arc::new(StreamSourceExec::new(
-                probe_stream,
-                Arc::clone(&probe_schema),
-            ));
-
-            let (left_source, right_source): (Arc<dyn ExecutionPlan>, Arc<dyn ExecutionPlan>) =
-                if build_left {
-                    (build_source, probe_source)
-                } else {
-                    (probe_source, build_source)
-                };
-
-            let stream = if build_left {
-                let hash_join = HashJoinExec::try_new(
-                    left_source,
-                    right_source,
-                    original_on,
-                    filter,
-                    &join_type,
-                    None,
-                    PartitionMode::CollectLeft,
-                    NullEquality::NullEqualsNothing,
-                )?;
-                hash_join.execute(0, Arc::clone(&context))?
-            } else {
-                let hash_join = Arc::new(HashJoinExec::try_new(
-                    left_source,
-                    right_source,
-                    original_on,
-                    filter,
-                    &join_type,
-                    None,
-                    PartitionMode::CollectLeft,
-                    NullEquality::NullEqualsNothing,
-                )?);
-                let swapped = hash_join.swap_inputs(PartitionMode::CollectLeft)?;
-                swapped.execute(0, Arc::clone(&context))?
-            };
-
-            let output_metrics = metrics.baseline.clone();
-            let result_stream = stream.inspect_ok(move |batch| {
-                output_metrics.record_output(batch.num_rows());
-            });
-
-            return Ok(result_stream.boxed());
-        } else {
-            info!(
-                "GraceHashJoin: fast path rejected — actual build size {} bytes \
-                 (3x = {} bytes) does not fit in pool. Taking slow path.",
-                actual_build_bytes,
-                actual_build_bytes * 3,
-            );
-        }
-    }
-
-    // Slow path: build side was spilled or too large for fast path.
     let total_build_mem: usize = partitions.iter().map(|p| p.build_mem_size).sum();
     info!(
-        "GraceHashJoin: slow path — build spilled={}, ~{} bytes (estimated). \
-         Partitioning probe side.",
+        "GraceHashJoin: partitioning probe side. build spilled={}, \
+         ~{} bytes (estimated).",
         build_spilled, total_build_mem,
     );
 
