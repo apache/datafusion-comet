@@ -406,8 +406,6 @@ struct GraceHashJoinMetrics {
     build_time: Time,
     /// Time spent partitioning the probe side
     probe_time: Time,
-    /// Time spent performing per-partition hash joins
-    join_time: Time,
     /// Number of spill events
     spill_count: Count,
     /// Total bytes spilled to disk
@@ -428,7 +426,6 @@ impl GraceHashJoinMetrics {
             baseline: BaselineMetrics::new(metrics, partition),
             build_time: MetricBuilder::new(metrics).subset_time("build_time", partition),
             probe_time: MetricBuilder::new(metrics).subset_time("probe_time", partition),
-            join_time: MetricBuilder::new(metrics).subset_time("join_time", partition),
             spill_count: MetricBuilder::new(metrics).spill_count(partition),
             spilled_bytes: MetricBuilder::new(metrics).spilled_bytes(partition),
             build_input_rows: MetricBuilder::new(metrics).counter("build_input_rows", partition),
@@ -947,36 +944,21 @@ async fn execute_grace_hash_join(
     let finished_partitions =
         finish_spill_writers(partitions, &build_schema, &probe_schema, &metrics)?;
 
-    // Phase 3: Join each partition in parallel.
-    // Each partition's setup (build-side spill read + HashJoinExec creation)
-    // and execution run inside its own tokio::spawn task, so all partitions
-    // start as soon as their own build data is loaded without waiting for
-    // other partitions.
-    //
-    // A semaphore limits concurrency to avoid creating too many simultaneous
-    // HashJoinInput reservations, which would exhaust the memory pool when
-    // multiple GHJ operators run concurrently (e.g. TPC-DS q72).
-    let max_concurrent_partitions = 4;
-    let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrent_partitions));
-    let (tx, rx) = mpsc::channel::<DFResult<RecordBatch>>(num_partitions * 2);
-
-    {
-        let _timer = metrics.join_time.timer();
-        for partition in finished_partitions {
-            let tx = tx.clone();
-            let sem = Arc::clone(&semaphore);
+    // Phase 3: Join each partition sequentially.
+    // DataFusion manages parallelism externally by calling execute(partition)
+    // from multiple tasks, so we process partitions one at a time here.
+    // Each partition's build-side spill read uses spawn_blocking to avoid
+    // blocking the async executor.
+    let output_metrics = metrics.baseline.clone();
+    let result_stream = futures::stream::iter(finished_partitions)
+        .then(move |partition| {
             let original_on = original_on.clone();
             let filter = filter.clone();
             let build_schema = Arc::clone(&build_schema);
             let probe_schema = Arc::clone(&probe_schema);
             let context = Arc::clone(&context);
-
-            tokio::spawn(async move {
-                let _permit = match sem.acquire().await {
-                    Ok(p) => p,
-                    Err(_) => return, // semaphore closed
-                };
-                match join_single_partition(
+            async move {
+                join_single_partition(
                     partition,
                     original_on,
                     filter,
@@ -987,32 +969,16 @@ async fn execute_grace_hash_join(
                     context,
                 )
                 .await
-                {
-                    Ok(streams) => {
-                        for mut stream in streams {
-                            while let Some(batch) = stream.next().await {
-                                if tx.send(batch).await.is_err() {
-                                    return;
-                                }
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        let _ = tx.send(Err(e)).await;
-                    }
-                }
-            });
-        }
-    }
-    drop(tx); // close channel when all tasks finish
-
-    let output_metrics = metrics.baseline.clone();
-    let result_stream = futures::stream::unfold(rx, |mut rx| async move {
-        rx.recv().await.map(|batch| (batch, rx))
-    })
-    .inspect_ok(move |batch| {
-        output_metrics.record_output(batch.num_rows());
-    });
+            }
+        })
+        .map(|result| match result {
+            Ok(streams) => futures::stream::iter(streams).flatten().left_stream(),
+            Err(e) => futures::stream::once(async move { Err(e) }).right_stream(),
+        })
+        .flatten()
+        .inspect_ok(move |batch| {
+            output_metrics.record_output(batch.num_rows());
+        });
 
     Ok(result_stream.boxed())
 }
