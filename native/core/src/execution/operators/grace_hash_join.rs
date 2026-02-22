@@ -817,12 +817,12 @@ async fn execute_grace_hash_join(
                 total_build_rows, total_build_bytes,
             );
 
-            // Keep the reservation at total_build_bytes even though HashJoinExec
-            // will create its own HashJoinInput reservation. This "double counts"
-            // the build data, but that is intentional: the spillable reservation
-            // must hold non-zero bytes so the FairSpillPool has spillable headroom.
-            // Without it, non-spillable HashJoinInput consumers exhaust their fair
-            // limit and OOM (seen in TPC-DS q72).
+            // Release build-side memory from our reservation before HashJoinExec
+            // creates its own HashJoinInput reservation for the hash table.
+            // Without this, the pool double-counts the build data (once in our
+            // reservation, once in HashJoinInput), leaving no room for other
+            // operators. The reservation stays registered as spillable at 0 bytes.
+            reservation.shrink(total_build_bytes);
 
             // Concatenate all build partition data
             let all_build_batches: Vec<RecordBatch> = partitions
@@ -952,12 +952,19 @@ async fn execute_grace_hash_join(
     // and execution run inside its own tokio::spawn task, so all partitions
     // start as soon as their own build data is loaded without waiting for
     // other partitions.
+    //
+    // A semaphore limits concurrency to avoid creating too many simultaneous
+    // HashJoinInput reservations, which would exhaust the memory pool when
+    // multiple GHJ operators run concurrently (e.g. TPC-DS q72).
+    let max_concurrent_partitions = 4;
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrent_partitions));
     let (tx, rx) = mpsc::channel::<DFResult<RecordBatch>>(num_partitions * 2);
 
     {
         let _timer = metrics.join_time.timer();
         for partition in finished_partitions {
             let tx = tx.clone();
+            let sem = Arc::clone(&semaphore);
             let original_on = original_on.clone();
             let filter = filter.clone();
             let build_schema = Arc::clone(&build_schema);
@@ -965,6 +972,10 @@ async fn execute_grace_hash_join(
             let context = Arc::clone(&context);
 
             tokio::spawn(async move {
+                let _permit = match sem.acquire().await {
+                    Ok(p) => p,
+                    Err(_) => return, // semaphore closed
+                };
                 match join_single_partition(
                     partition,
                     original_on,
