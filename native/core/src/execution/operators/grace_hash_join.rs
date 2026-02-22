@@ -36,7 +36,8 @@ use arrow::array::UInt32Array;
 use arrow::compute::{concat_batches, take};
 use arrow::datatypes::SchemaRef;
 use arrow::ipc::reader::StreamReader;
-use arrow::ipc::writer::StreamWriter;
+use arrow::ipc::writer::{IpcWriteOptions, StreamWriter};
+use arrow::ipc::CompressionType;
 use arrow::record_batch::RecordBatch;
 use datafusion::common::hash_utils::create_hashes;
 use datafusion::common::{DataFusionError, JoinType, NullEquality, Result as DFResult};
@@ -118,7 +119,10 @@ impl SpillWriter {
             .open(temp_file.path())
             .map_err(|e| DataFusionError::Execution(format!("Failed to open spill file: {e}")))?;
         let buf_writer = BufWriter::with_capacity(SPILL_IO_BUFFER_SIZE, file);
-        let writer = StreamWriter::try_new(buf_writer, schema)?;
+        let write_options = IpcWriteOptions::default()
+            .try_with_compression(Some(CompressionType::LZ4_FRAME))?;
+        let writer =
+            StreamWriter::try_new_with_options(buf_writer, schema, write_options)?;
         Ok(Self {
             writer,
             temp_file,
