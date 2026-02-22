@@ -1543,6 +1543,7 @@ impl PhysicalPlanner {
                 {
                     use crate::execution::spark_config::{
                         SparkConfig, COMET_GRACE_HASH_JOIN_ENABLED,
+                        COMET_GRACE_HASH_JOIN_FAST_PATH_THRESHOLD,
                         COMET_GRACE_HASH_JOIN_NUM_PARTITIONS,
                     };
                     let grace_enabled = self.spark_conf.get_bool(COMET_GRACE_HASH_JOIN_ENABLED);
@@ -1551,6 +1552,9 @@ impl PhysicalPlanner {
                         let num_partitions = self
                             .spark_conf
                             .get_usize(COMET_GRACE_HASH_JOIN_NUM_PARTITIONS, 16);
+                        let fast_path_threshold = self
+                            .spark_conf
+                            .get_usize(COMET_GRACE_HASH_JOIN_FAST_PATH_THRESHOLD, 10 * 1024 * 1024);
 
                         let build_left = join.build_side == BuildSide::BuildLeft as i32;
 
@@ -1563,6 +1567,7 @@ impl PhysicalPlanner {
                                 &join_params.join_type,
                                 num_partitions,
                                 build_left,
+                                fast_path_threshold,
                             )?);
 
                         return Ok((

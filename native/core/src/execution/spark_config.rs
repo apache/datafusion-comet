@@ -26,6 +26,8 @@ pub(crate) const SPARK_EXECUTOR_CORES: &str = "spark.executor.cores";
 pub(crate) const COMET_GRACE_HASH_JOIN_ENABLED: &str = "spark.comet.exec.graceHashJoin.enabled";
 pub(crate) const COMET_GRACE_HASH_JOIN_NUM_PARTITIONS: &str =
     "spark.comet.exec.graceHashJoin.numPartitions";
+pub(crate) const COMET_GRACE_HASH_JOIN_FAST_PATH_THRESHOLD: &str =
+    "spark.comet.exec.graceHashJoin.fastPathThreshold";
 
 pub(crate) trait SparkConfig {
     fn get_bool(&self, name: &str) -> bool;

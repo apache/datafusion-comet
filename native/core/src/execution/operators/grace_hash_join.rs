@@ -463,6 +463,8 @@ pub struct GraceHashJoinExec {
     num_partitions: usize,
     /// Whether left is the build side (true) or right is (false)
     build_left: bool,
+    /// Maximum build-side bytes for the fast path (0 = disabled)
+    fast_path_threshold: usize,
     /// Output schema
     schema: SchemaRef,
     /// Plan properties cache
@@ -472,6 +474,7 @@ pub struct GraceHashJoinExec {
 }
 
 impl GraceHashJoinExec {
+    #[allow(clippy::too_many_arguments)]
     pub fn try_new(
         left: Arc<dyn ExecutionPlan>,
         right: Arc<dyn ExecutionPlan>,
@@ -480,6 +483,7 @@ impl GraceHashJoinExec {
         join_type: &JoinType,
         num_partitions: usize,
         build_left: bool,
+        fast_path_threshold: usize,
     ) -> DFResult<Self> {
         // Build the output schema using HashJoinExec's logic.
         // HashJoinExec expects left=build, right=probe. When build_left=false,
@@ -515,6 +519,7 @@ impl GraceHashJoinExec {
                 num_partitions
             },
             build_left,
+            fast_path_threshold,
             schema,
             cache,
             metrics: ExecutionPlanMetricsSet::new(),
@@ -570,6 +575,7 @@ impl ExecutionPlan for GraceHashJoinExec {
             &self.join_type,
             self.num_partitions,
             self.build_left,
+            self.fast_path_threshold,
         )?))
     }
 
@@ -620,6 +626,7 @@ impl ExecutionPlan for GraceHashJoinExec {
         let join_type = self.join_type;
         let num_partitions = self.num_partitions;
         let build_left = self.build_left;
+        let fast_path_threshold = self.fast_path_threshold;
         let output_schema = Arc::clone(&self.schema);
 
         let result_stream = futures::stream::once(async move {
@@ -633,6 +640,7 @@ impl ExecutionPlan for GraceHashJoinExec {
                 join_type,
                 num_partitions,
                 build_left,
+                fast_path_threshold,
                 build_schema,
                 probe_schema,
                 output_schema,
@@ -713,6 +721,7 @@ async fn execute_grace_hash_join(
     join_type: JoinType,
     num_partitions: usize,
     build_left: bool,
+    fast_path_threshold: usize,
     build_schema: SchemaRef,
     probe_schema: SchemaRef,
     _output_schema: SchemaRef,
@@ -788,10 +797,10 @@ async fn execute_grace_hash_join(
     // probe data to disk for a trivial hash table (e.g. 10-row build side).
     //
     // The threshold uses actual batch sizes (not the unreliable proportional
-    // estimate) and is deliberately small (10 MB). Large build sides must
+    // estimate) and is deliberately small (default 10 MB). Large build sides must
     // go through the slow path — the old fast path accepted 460 MB builds,
     // producing 1.3 GB non-spillable hash tables that caused OOM.
-    const FAST_PATH_BUILD_THRESHOLD: usize = 10 * 1024 * 1024; // 10 MB
+    // Configurable via spark.comet.exec.graceHashJoin.fastPathThreshold.
 
     let build_spilled = partitions.iter().any(|p| p.build_spilled());
     let actual_build_bytes: usize = partitions
@@ -800,7 +809,7 @@ async fn execute_grace_hash_join(
         .map(|b| b.get_array_memory_size())
         .sum();
 
-    if !build_spilled && actual_build_bytes <= FAST_PATH_BUILD_THRESHOLD {
+    if !build_spilled && fast_path_threshold > 0 && actual_build_bytes <= fast_path_threshold {
         let total_build_rows: usize = partitions
             .iter()
             .flat_map(|p| p.build_batches.iter())
@@ -2096,6 +2105,7 @@ mod tests {
             &JoinType::Inner,
             4, // Use 4 partitions for testing
             true,
+            10 * 1024 * 1024, // 10 MB fast path threshold
         )?;
 
         let stream = grace_join.execute(0, task_ctx)?;
@@ -2149,6 +2159,7 @@ mod tests {
             &JoinType::Inner,
             4,
             true,
+            10 * 1024 * 1024, // 10 MB fast path threshold
         )?;
 
         let stream = grace_join.execute(0, task_ctx)?;
