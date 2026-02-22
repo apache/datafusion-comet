@@ -64,6 +64,10 @@ use futures::Stream;
 use log::info;
 use tokio::sync::mpsc;
 
+/// Global atomic counter for unique GHJ instance IDs (debug tracing).
+static GHJ_INSTANCE_COUNTER: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
 /// Type alias for join key expression pairs.
 type JoinOnRef<'a> = &'a [(Arc<dyn PhysicalExpr>, Arc<dyn PhysicalExpr>)];
 
@@ -745,11 +749,18 @@ async fn execute_grace_hash_join(
     context: Arc<TaskContext>,
     metrics: GraceHashJoinMetrics,
 ) -> DFResult<impl Stream<Item = DFResult<RecordBatch>>> {
+    let ghj_id = GHJ_INSTANCE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
     // Set up memory reservation (shared across build and probe phases)
     let mut reservation = MutableReservation(
         MemoryConsumer::new("GraceHashJoinExec")
             .with_can_spill(true)
             .register(&context.runtime_env().memory_pool),
+    );
+
+    info!(
+        "GHJ#{}: started. build_left={}, join_type={:?}, pool reserved={}",
+        ghj_id, build_left, join_type, context.runtime_env().memory_pool.reserved(),
     );
 
     let mut partitions: Vec<HashPartition> =
@@ -832,9 +843,10 @@ async fn execute_grace_hash_join(
             .map(|b| b.num_rows())
             .sum();
         info!(
-            "GraceHashJoin: fast path — build side tiny ({} rows, {} bytes). \
-             Streaming probe directly through HashJoinExec.",
-            total_build_rows, actual_build_bytes,
+            "GHJ#{}: fast path — build side tiny ({} rows, {} bytes). \
+             Streaming probe directly through HashJoinExec. pool reserved={}",
+            ghj_id, total_build_rows, actual_build_bytes,
+            context.runtime_env().memory_pool.reserved(),
         );
 
         // Release our reservation — HashJoinExec tracks its own memory.
@@ -921,9 +933,10 @@ async fn execute_grace_hash_join(
         .map(|b| b.num_rows())
         .sum();
     info!(
-        "GraceHashJoin: slow path — build spilled={}, {} rows, {} bytes (actual). \
-         join_type={:?}, build_left={}. Partitioning probe side.",
-        build_spilled, total_build_rows, actual_build_bytes, join_type, build_left,
+        "GHJ#{}: slow path — build spilled={}, {} rows, {} bytes (actual). \
+         join_type={:?}, build_left={}. pool reserved={}. Partitioning probe side.",
+        ghj_id, build_spilled, total_build_rows, actual_build_bytes, join_type, build_left,
+        context.runtime_env().memory_pool.reserved(),
     );
 
     // Phase 2: Partition the probe side
@@ -957,9 +970,11 @@ async fn execute_grace_hash_join(
             .filter(|p| p.probe_spill_writer.is_some())
             .count();
         info!(
-            "GraceHashJoin: probe phase complete. \
-             total probe (in-memory): {} rows, {} bytes, {} spilled",
-            total_probe_rows, total_probe_bytes, probe_spilled,
+            "GHJ#{}: probe phase complete. \
+             total probe (in-memory): {} rows, {} bytes, {} spilled. \
+             reservation={}, pool reserved={}",
+            ghj_id, total_probe_rows, total_probe_bytes, probe_spilled,
+            reservation.0.size(), context.runtime_env().memory_pool.reserved(),
         );
     }
 
@@ -994,6 +1009,10 @@ async fn execute_grace_hash_join(
     // into per-partition HashJoinExec instances (which track memory via
     // their own HashJoinInput reservations). Keeping our reservation alive
     // would double-count the memory and starve other consumers.
+    info!(
+        "GHJ#{}: freeing reservation ({} bytes) before Phase 3. pool reserved={}",
+        ghj_id, reservation.0.size(), context.runtime_env().memory_pool.reserved(),
+    );
     reservation.free();
 
     // Phase 3: Join partitions sequentially.
@@ -1454,10 +1473,23 @@ async fn partition_probe_side(
     metrics: &GraceHashJoinMetrics,
     scratch: &mut ScratchSpace,
 ) -> DFResult<()> {
+    let mut probe_rows_accumulated: usize = 0;
     while let Some(batch) = input.next().await {
         let batch = batch?;
         if batch.num_rows() == 0 {
             continue;
+        }
+        let prev_milestone = probe_rows_accumulated / 5_000_000;
+        probe_rows_accumulated += batch.num_rows();
+        let new_milestone = probe_rows_accumulated / 5_000_000;
+        if new_milestone > prev_milestone {
+            info!(
+                "GraceHashJoin: probe accumulation progress: {} rows, \
+                 reservation={}, pool reserved={}",
+                probe_rows_accumulated,
+                reservation.0.size(),
+                context.runtime_env().memory_pool.reserved(),
+            );
         }
 
         metrics.input_batches.add(1);
@@ -2097,10 +2129,11 @@ fn join_partition_recursive(
         None,
     )?)));
 
+    let pool_before_join = context.runtime_env().memory_pool.reserved();
     info!(
         "GraceHashJoin: RECURSIVE PATH creating HashJoinExec at level={}, \
-         build_left={}, build_size={}, probe_size={}",
-        recursion_level, build_left, build_size, probe_size,
+         build_left={}, build_size={}, probe_size={}, pool reserved={}",
+        recursion_level, build_left, build_size, probe_size, pool_before_join,
     );
 
     let stream = if build_left {
