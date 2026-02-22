@@ -915,10 +915,15 @@ async fn execute_grace_hash_join(
         return Ok(result_stream.boxed());
     }
 
+    let total_build_rows: usize = partitions
+        .iter()
+        .flat_map(|p| p.build_batches.iter())
+        .map(|b| b.num_rows())
+        .sum();
     info!(
-        "GraceHashJoin: slow path — build spilled={}, {} bytes (actual). \
-         Partitioning probe side.",
-        build_spilled, actual_build_bytes,
+        "GraceHashJoin: slow path — build spilled={}, {} rows, {} bytes (actual). \
+         join_type={:?}, build_left={}. Partitioning probe side.",
+        build_spilled, total_build_rows, actual_build_bytes, join_type, build_left,
     );
 
     // Phase 2: Partition the probe side
@@ -1044,11 +1049,28 @@ async fn execute_grace_hash_join(
     drop(tx);
 
     let output_metrics = metrics.baseline.clone();
+    let output_row_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = Arc::clone(&output_row_count);
+    let jt = join_type;
+    let bl = build_left;
     let result_stream = futures::stream::unfold(rx, |mut rx| async move {
         rx.recv().await.map(|batch| (batch, rx))
     })
     .inspect_ok(move |batch| {
         output_metrics.record_output(batch.num_rows());
+        let prev = counter.fetch_add(
+            batch.num_rows(),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        let new_total = prev + batch.num_rows();
+        // Log every ~1M rows to detect exploding joins
+        if new_total / 1_000_000 > prev / 1_000_000 {
+            info!(
+                "GraceHashJoin: slow path output: {} rows emitted so far \
+                 (join_type={:?}, build_left={})",
+                new_total, jt, bl,
+            );
+        }
     });
 
     Ok(result_stream.boxed())
