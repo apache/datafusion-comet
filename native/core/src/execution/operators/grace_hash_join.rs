@@ -29,6 +29,7 @@ use std::fmt;
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
 use std::sync::Arc;
+use std::sync::Mutex;
 
 use ahash::RandomState;
 use arrow::array::UInt32Array;
@@ -306,6 +307,90 @@ impl ExecutionPlan for SpillReaderExec {
             schema,
             batch_stream,
         )))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// StreamSourceExec: wrap an existing stream as an ExecutionPlan
+// ---------------------------------------------------------------------------
+
+/// An ExecutionPlan that yields batches from a pre-existing stream.
+/// Used to feed the probe side's live `SendableRecordBatchStream` into
+/// a `HashJoinExec` without buffering or spilling.
+struct StreamSourceExec {
+    stream: Mutex<Option<SendableRecordBatchStream>>,
+    schema: SchemaRef,
+    cache: PlanProperties,
+}
+
+impl StreamSourceExec {
+    fn new(stream: SendableRecordBatchStream, schema: SchemaRef) -> Self {
+        let cache = PlanProperties::new(
+            EquivalenceProperties::new(Arc::clone(&schema)),
+            Partitioning::UnknownPartitioning(1),
+            datafusion::physical_plan::execution_plan::EmissionType::Incremental,
+            datafusion::physical_plan::execution_plan::Boundedness::Bounded,
+        );
+        Self {
+            stream: Mutex::new(Some(stream)),
+            schema,
+            cache,
+        }
+    }
+}
+
+impl fmt::Debug for StreamSourceExec {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("StreamSourceExec").finish()
+    }
+}
+
+impl DisplayAs for StreamSourceExec {
+    fn fmt_as(&self, _t: DisplayFormatType, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "StreamSourceExec")
+    }
+}
+
+impl ExecutionPlan for StreamSourceExec {
+    fn name(&self) -> &str {
+        "StreamSourceExec"
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn schema(&self) -> SchemaRef {
+        Arc::clone(&self.schema)
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        vec![]
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        _children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> DFResult<Arc<dyn ExecutionPlan>> {
+        Ok(self)
+    }
+
+    fn properties(&self) -> &PlanProperties {
+        &self.cache
+    }
+
+    fn execute(
+        &self,
+        _partition: usize,
+        _context: Arc<TaskContext>,
+    ) -> DFResult<SendableRecordBatchStream> {
+        self.stream
+            .lock()
+            .map_err(|e| DataFusionError::Internal(format!("lock poisoned: {e}")))?
+            .take()
+            .ok_or_else(|| {
+                DataFusionError::Internal("StreamSourceExec: stream already consumed".to_string())
+            })
     }
 }
 
@@ -699,6 +784,121 @@ async fn execute_grace_hash_join(
         }
     }
 
+    // Fast path: if no build partitions spilled and build is small, skip probe
+    // partitioning entirely. Stream probe input directly through a single
+    // HashJoinExec. Keep our spill-capable reservation alive so the memory pool
+    // retains a spillable consumer (unlike the earlier failed fast-path attempt).
+    let build_spilled = partitions.iter().any(|p| p.build_spilled());
+    let total_build_bytes: usize = partitions.iter().map(|p| p.build_mem_size).sum();
+
+    if !build_spilled {
+        let can_fit = if total_build_bytes > 0 {
+            let mut test_reservation = MemoryConsumer::new("GraceHashJoinExec fast-path check")
+                .register(&context.runtime_env().memory_pool);
+            let ok = test_reservation.try_grow(total_build_bytes * 3).is_ok();
+            if ok {
+                test_reservation.shrink(total_build_bytes * 3);
+            }
+            ok
+        } else {
+            true
+        };
+
+        if can_fit {
+            let total_build_rows: usize = partitions
+                .iter()
+                .flat_map(|p| p.build_batches.iter())
+                .map(|b| b.num_rows())
+                .sum();
+            info!(
+                "GraceHashJoin: fast path — build side small ({} rows, {} bytes), \
+                 no spills. Streaming probe directly through HashJoinExec. \
+                 Reservation kept alive as spillable buffer.",
+                total_build_rows, total_build_bytes,
+            );
+
+            // Concatenate all build partition data
+            let all_build_batches: Vec<RecordBatch> = partitions
+                .into_iter()
+                .flat_map(|p| p.build_batches)
+                .collect();
+            let build_data = if all_build_batches.is_empty() {
+                vec![RecordBatch::new_empty(Arc::clone(&build_schema))]
+            } else {
+                vec![concat_batches(&build_schema, &all_build_batches)?]
+            };
+
+            let build_source = Arc::new(DataSourceExec::new(Arc::new(
+                MemorySourceConfig::try_new(&[build_data], Arc::clone(&build_schema), None)?,
+            )));
+
+            // Wrap the probe stream as an ExecutionPlan using MemorySourceConfig
+            // with no data — we'll swap in the real stream via a wrapper.
+            let probe_source: Arc<dyn ExecutionPlan> = Arc::new(StreamSourceExec::new(
+                probe_stream,
+                Arc::clone(&probe_schema),
+            ));
+
+            let (left_source, right_source): (Arc<dyn ExecutionPlan>, Arc<dyn ExecutionPlan>) =
+                if build_left {
+                    (build_source, probe_source)
+                } else {
+                    (probe_source, build_source)
+                };
+
+            let stream = if build_left {
+                let hash_join = HashJoinExec::try_new(
+                    left_source,
+                    right_source,
+                    original_on,
+                    filter,
+                    &join_type,
+                    None,
+                    PartitionMode::CollectLeft,
+                    NullEquality::NullEqualsNothing,
+                )?;
+                hash_join.execute(0, Arc::clone(&context))?
+            } else {
+                let hash_join = Arc::new(HashJoinExec::try_new(
+                    left_source,
+                    right_source,
+                    original_on,
+                    filter,
+                    &join_type,
+                    None,
+                    PartitionMode::CollectLeft,
+                    NullEquality::NullEqualsNothing,
+                )?);
+                let swapped = hash_join.swap_inputs(PartitionMode::CollectLeft)?;
+                swapped.execute(0, Arc::clone(&context))?
+            };
+
+            // Keep reservation alive until the stream is fully consumed.
+            // This preserves a spill-capable consumer in the memory pool so
+            // other non-spillable consumers (HashJoinInput from other joins)
+            // can trigger memory reclamation. The reservation is captured by
+            // the map closure and dropped when the stream ends.
+            let output_metrics = metrics.baseline.clone();
+            let result_stream = stream.map(move |batch| {
+                // Just reference reservation to keep it alive in this closure
+                let _keep = &reservation;
+                if let Ok(ref b) = batch {
+                    output_metrics.record_output(b.num_rows());
+                }
+                batch
+            });
+
+            return Ok(result_stream.boxed());
+        }
+    }
+
+    // Slow path: build side was spilled or too large for fast path.
+    info!(
+        "GraceHashJoin: slow path — build spilled={}, {} bytes. \
+         Partitioning probe side.",
+        build_spilled, total_build_bytes,
+    );
+
     // Phase 2: Partition the probe side
     {
         let _timer = metrics.probe_time.timer();
@@ -780,7 +980,7 @@ async fn execute_grace_hash_join(
         output_metrics.record_output(batch.num_rows());
     });
 
-    Ok(result_stream)
+    Ok(result_stream.boxed())
 }
 
 /// Wraps MemoryReservation to allow mutation through reference.
