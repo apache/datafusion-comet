@@ -781,20 +781,34 @@ async fn execute_grace_hash_join(
         }
     }
 
-    // Fast path: if no build partitions spilled and build is small, skip probe
-    // partitioning entirely. Stream probe input directly through a single
-    // HashJoinExec. Keep our spill-capable reservation alive so the memory pool
-    // retains a spillable consumer (unlike the earlier failed fast-path attempt).
+    // Fast path: if no build partitions spilled and build is small enough,
+    // skip probe partitioning entirely. Stream probe input directly through
+    // a single HashJoinExec.
+    //
+    // IMPORTANT: The memory check uses the actual concatenated batch size,
+    // not the proportional estimate (build_mem_size). The proportional
+    // estimate can undercount by 5-20x because it divides total_batch_size
+    // across partitions but doesn't account for per-array overhead in the
+    // sub-batches created by take().
     let build_spilled = partitions.iter().any(|p| p.build_spilled());
-    let total_build_bytes: usize = partitions.iter().map(|p| p.build_mem_size).sum();
 
     if !build_spilled {
-        let can_fit = if total_build_bytes > 0 {
+        // Concatenate all build partition data to get the actual size.
+        let all_build_batches: Vec<RecordBatch> = partitions
+            .iter()
+            .flat_map(|p| p.build_batches.iter().cloned())
+            .collect();
+        let actual_build_bytes: usize = all_build_batches
+            .iter()
+            .map(|b| b.get_array_memory_size())
+            .sum();
+
+        let can_fit = if actual_build_bytes > 0 {
             let mut test_reservation = MemoryConsumer::new("GraceHashJoinExec fast-path check")
                 .register(&context.runtime_env().memory_pool);
-            let ok = test_reservation.try_grow(total_build_bytes * 3).is_ok();
+            let ok = test_reservation.try_grow(actual_build_bytes * 3).is_ok();
             if ok {
-                test_reservation.shrink(total_build_bytes * 3);
+                test_reservation.shrink(actual_build_bytes * 3);
             }
             ok
         } else {
@@ -802,42 +816,34 @@ async fn execute_grace_hash_join(
         };
 
         if can_fit {
-            let total_build_rows: usize = partitions
-                .iter()
-                .flat_map(|p| p.build_batches.iter())
-                .map(|b| b.num_rows())
-                .sum();
+            let total_build_rows: usize =
+                all_build_batches.iter().map(|b| b.num_rows()).sum();
             info!(
-                "GraceHashJoin: fast path — build side small ({} rows, {} bytes), \
-                 no spills. Streaming probe directly through HashJoinExec. \
-                 Reservation kept alive as spillable buffer.",
-                total_build_rows, total_build_bytes,
+                "GraceHashJoin: fast path — build side small ({} rows, {} bytes actual), \
+                 no spills. Streaming probe directly through HashJoinExec.",
+                total_build_rows, actual_build_bytes,
             );
 
-            // Release build-side memory from our reservation before HashJoinExec
-            // creates its own HashJoinInput reservation for the hash table.
-            // Without this, the pool double-counts the build data (once in our
-            // reservation, once in HashJoinInput), leaving no room for other
-            // operators.
-            reservation.shrink(total_build_bytes);
+            // Release our reservation before HashJoinExec creates its own
+            // HashJoinInput reservation for the hash table. Without this,
+            // the pool double-counts the build data.
+            reservation.free();
 
-            // Concatenate all build partition data
-            let all_build_batches: Vec<RecordBatch> = partitions
-                .into_iter()
-                .flat_map(|p| p.build_batches)
-                .collect();
             let build_data = if all_build_batches.is_empty() {
                 vec![RecordBatch::new_empty(Arc::clone(&build_schema))]
             } else {
                 vec![concat_batches(&build_schema, &all_build_batches)?]
             };
 
+            // Drop the Vec to free the un-concatenated batches
+            drop(all_build_batches);
+            // Consume partitions to free their memory
+            drop(partitions);
+
             let build_source = Arc::new(DataSourceExec::new(Arc::new(
                 MemorySourceConfig::try_new(&[build_data], Arc::clone(&build_schema), None)?,
             )));
 
-            // Wrap the probe stream as an ExecutionPlan using MemorySourceConfig
-            // with no data — we'll swap in the real stream via a wrapper.
             let probe_source: Arc<dyn ExecutionPlan> = Arc::new(StreamSourceExec::new(
                 probe_stream,
                 Arc::clone(&probe_schema),
@@ -877,30 +883,28 @@ async fn execute_grace_hash_join(
                 swapped.execute(0, Arc::clone(&context))?
             };
 
-            // Keep reservation alive until the stream is fully consumed.
-            // This preserves a spill-capable consumer in the memory pool so
-            // other non-spillable consumers (HashJoinInput from other joins)
-            // can trigger memory reclamation. The reservation is captured by
-            // the map closure and dropped when the stream ends.
             let output_metrics = metrics.baseline.clone();
-            let result_stream = stream.map(move |batch| {
-                // Just reference reservation to keep it alive in this closure
-                let _keep = &reservation;
-                if let Ok(ref b) = batch {
-                    output_metrics.record_output(b.num_rows());
-                }
-                batch
+            let result_stream = stream.inspect_ok(move |batch| {
+                output_metrics.record_output(batch.num_rows());
             });
 
             return Ok(result_stream.boxed());
+        } else {
+            info!(
+                "GraceHashJoin: fast path rejected — actual build size {} bytes \
+                 (3x = {} bytes) does not fit in pool. Taking slow path.",
+                actual_build_bytes,
+                actual_build_bytes * 3,
+            );
         }
     }
 
     // Slow path: build side was spilled or too large for fast path.
+    let total_build_mem: usize = partitions.iter().map(|p| p.build_mem_size).sum();
     info!(
-        "GraceHashJoin: slow path — build spilled={}, {} bytes. \
+        "GraceHashJoin: slow path — build spilled={}, ~{} bytes (estimated). \
          Partitioning probe side.",
-        build_spilled, total_build_bytes,
+        build_spilled, total_build_mem,
     );
 
     // Phase 2: Partition the probe side
