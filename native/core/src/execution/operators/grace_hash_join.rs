@@ -1570,6 +1570,15 @@ async fn join_single_partition(
         partition.build_batches
     };
 
+    // Coalesce many tiny sub-batches (one per original input batch) into a
+    // single batch per side. This avoids repeated concat_batches downstream
+    // and reduces overhead in HashJoinExec.
+    let build_batches = if build_batches.len() > 1 {
+        vec![concat_batches(&build_schema, &build_batches)?]
+    } else {
+        build_batches
+    };
+
     let mut streams = Vec::new();
 
     if let Some(probe_spill_file) = partition.probe_spill_file {
@@ -1588,10 +1597,15 @@ async fn join_single_partition(
             &mut streams,
         )?;
     } else {
-        // Probe side is in-memory: use existing path with repartitioning support
+        // Probe side is in-memory: coalesce and use repartitioning support
+        let probe_batches = if partition.probe_batches.len() > 1 {
+            vec![concat_batches(&probe_schema, &partition.probe_batches)?]
+        } else {
+            partition.probe_batches
+        };
         join_partition_recursive(
             build_batches,
-            partition.probe_batches,
+            probe_batches,
             &original_on,
             &filter,
             &join_type,
