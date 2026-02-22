@@ -76,6 +76,12 @@ const MAX_RECURSION_DEPTH: usize = 3;
 /// sequential throughput while keeping per-partition memory overhead modest.
 const SPILL_IO_BUFFER_SIZE: usize = 1024 * 1024;
 
+/// Target number of rows per coalesced batch when reading spill files.
+/// Spill files contain many tiny sub-batches (from partitioning). Coalescing
+/// into larger batches reduces per-batch overhead in the hash join kernel
+/// and channel send/recv costs.
+const SPILL_READ_COALESCE_TARGET: usize = 8192;
+
 /// Random state for hashing join keys into partitions. Uses fixed seeds
 /// different from DataFusion's HashJoinExec to avoid correlation.
 /// The `recursion_level` is XORed into the seed so that recursive
@@ -213,6 +219,7 @@ impl ExecutionPlan for SpillReaderExec {
         _context: Arc<TaskContext>,
     ) -> DFResult<SendableRecordBatchStream> {
         let schema = Arc::clone(&self.schema);
+        let coalesce_schema = Arc::clone(&self.schema);
         let path = self.spill_file.path().to_path_buf();
         // Move the spill file handle into the blocking closure to keep
         // the temp file alive until the reader is done.
@@ -221,7 +228,7 @@ impl ExecutionPlan for SpillReaderExec {
         // Use a channel so file I/O runs on a blocking thread and doesn't
         // block the async executor. This lets select_all interleave multiple
         // partition streams effectively.
-        let (tx, rx) = mpsc::channel::<DFResult<RecordBatch>>(2);
+        let (tx, rx) = mpsc::channel::<DFResult<RecordBatch>>(4);
 
         tokio::task::spawn_blocking(move || {
             let _keep_alive = spill_file_handle;
@@ -244,11 +251,51 @@ impl ExecutionPlan for SpillReaderExec {
                     return;
                 }
             };
+
+            // Coalesce small sub-batches into larger ones to reduce per-batch
+            // overhead in the downstream hash join.
+            let mut pending: Vec<RecordBatch> = Vec::new();
+            let mut pending_rows = 0usize;
+
             for batch_result in reader {
-                let msg = batch_result.map_err(|e| DataFusionError::ArrowError(Box::new(e), None));
-                if tx.blocking_send(msg).is_err() {
-                    break; // receiver dropped
+                let batch = match batch_result {
+                    Ok(b) => b,
+                    Err(e) => {
+                        let _ =
+                            tx.blocking_send(Err(DataFusionError::ArrowError(Box::new(e), None)));
+                        return;
+                    }
+                };
+                if batch.num_rows() == 0 {
+                    continue;
                 }
+                pending_rows += batch.num_rows();
+                pending.push(batch);
+
+                if pending_rows >= SPILL_READ_COALESCE_TARGET {
+                    let merged = if pending.len() == 1 {
+                        Ok(pending.pop().unwrap())
+                    } else {
+                        concat_batches(&coalesce_schema, &pending)
+                            .map_err(|e| DataFusionError::ArrowError(Box::new(e), None))
+                    };
+                    pending.clear();
+                    pending_rows = 0;
+                    if tx.blocking_send(merged).is_err() {
+                        return;
+                    }
+                }
+            }
+
+            // Flush remaining
+            if !pending.is_empty() {
+                let merged = if pending.len() == 1 {
+                    Ok(pending.pop().unwrap())
+                } else {
+                    concat_batches(&coalesce_schema, &pending)
+                        .map_err(|e| DataFusionError::ArrowError(Box::new(e), None))
+                };
+                let _ = tx.blocking_send(merged);
             }
         });
 
