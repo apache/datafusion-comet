@@ -222,6 +222,14 @@ This is O(rows) with excellent cache locality, compared to O(rows × partitions)
 
 ### Hash Seed Variation
 
+GHJ hashes on the same join keys that Spark already used for its shuffle exchange, but this is not redundant. Spark's shuffle uses Murmur3 to assign rows to exchange partitions, so all rows arriving at a given Spark partition share the same `murmur3(key) % num_spark_partitions` value — but they have diverse actual key values. GHJ then hashes those same keys with a **different hash function** (ahash via `RandomState` with fixed seeds), producing a completely different distribution:
+
+```
+Spark shuffle:   murmur3(key) % 200  →  all rows land in partition 42
+GHJ level 0:     ahash(key, seed0) % 16  →  rows spread across buckets 0-15
+GHJ level 1:     ahash(key, seed1) % 16  →  further redistribution within each bucket
+```
+
 The hash function uses different random seeds at each recursion level:
 
 ```rust
@@ -233,7 +241,7 @@ fn partition_random_state(recursion_level: usize) -> RandomState {
 }
 ```
 
-This ensures that rows which hash to the same partition at level 0 are distributed across different sub-partitions at level 1, breaking up skewed data.
+This ensures that rows which hash to the same partition at level 0 are distributed across different sub-partitions at level 1, breaking up hash collisions. The only case where repartitioning cannot help is true data skew — many rows with the *same* key value. No amount of rehashing can separate identical keys, which is why there is a `MAX_RECURSION_DEPTH = 3` limit, after which GHJ returns a `ResourcesExhausted` error.
 
 ## Recursive Repartitioning
 
