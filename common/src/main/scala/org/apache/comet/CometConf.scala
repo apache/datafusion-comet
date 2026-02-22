@@ -294,6 +294,25 @@ object CometConf extends ShimCometConf {
   val COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("localTableScan", defaultValue = false)
 
+  val COMET_EXEC_GRACE_HASH_JOIN_ENABLED: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.graceHashJoin.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Whether to enable Grace Hash Join. When enabled, Comet will use a Grace Hash Join " +
+          "operator that partitions both sides into buckets and can spill to disk when memory " +
+          "is tight. Supports all join types. This is an experimental feature.")
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_EXEC_GRACE_HASH_JOIN_NUM_PARTITIONS: ConfigEntry[Int] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.graceHashJoin.numPartitions")
+      .category(CATEGORY_EXEC)
+      .doc("The number of partitions (buckets) to use for Grace Hash Join. A higher number " +
+        "reduces the size of each partition but increases overhead.")
+      .intConf
+      .checkValue(v => v > 0, "The number of partitions must be positive.")
+      .createWithDefault(16)
+
   val COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.columnarToRow.native.enabled")
       .category(CATEGORY_EXEC)
