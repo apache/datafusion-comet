@@ -814,12 +814,13 @@ async fn execute_grace_hash_join(
                 total_build_rows, total_build_bytes,
             );
 
-            // Release build-side memory from our reservation before HashJoinExec
-            // creates its own HashJoinInput reservation for the hash table.
-            // Without this, the pool double-counts the build data (once in our
-            // reservation, once in HashJoinInput), leaving no room for other
-            // operators. The reservation stays registered as spillable at 0 bytes.
-            reservation.shrink(total_build_bytes);
+            // Keep the reservation at total_build_bytes even though HashJoinExec
+            // will create its own HashJoinInput reservation for the hash table.
+            // This intentionally double-counts the build data: the spillable
+            // reservation must hold non-zero bytes so the FairSpillPool's fair
+            // limit stays high enough for non-spillable HashJoinInput consumers.
+            // Without this, HashJoinInput consumers exhaust their fair limit and
+            // OOM (seen in TPC-DS q72 with multiple concurrent joins).
 
             // Concatenate all build partition data
             let all_build_batches: Vec<RecordBatch> = partitions
@@ -949,6 +950,11 @@ async fn execute_grace_hash_join(
     // from multiple tasks, so we process partitions one at a time here.
     // Each partition's build-side spill read uses spawn_blocking to avoid
     // blocking the async executor.
+    //
+    // The reservation is captured by the stream closure to keep it alive
+    // until the stream is fully consumed. This ensures a spillable consumer
+    // with non-zero bytes remains registered in the FairSpillPool, raising
+    // the fair limit for non-spillable HashJoinInput consumers.
     let output_metrics = metrics.baseline.clone();
     let result_stream = futures::stream::iter(finished_partitions)
         .then(move |partition| {
@@ -977,6 +983,9 @@ async fn execute_grace_hash_join(
         })
         .flatten()
         .inspect_ok(move |batch| {
+            // Keep reservation alive until the stream ends so the pool
+            // retains a spillable consumer for fair-limit headroom.
+            let _keep = &reservation;
             output_metrics.record_output(batch.num_rows());
         });
 
