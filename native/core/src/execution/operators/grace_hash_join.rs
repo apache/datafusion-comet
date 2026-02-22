@@ -1772,21 +1772,17 @@ fn join_with_spilled_probe(
         build_size,
     );
 
-    // If build side is too large for hash table, fall back to reading probe from disk
-    let needs_repartition = if build_size > 0 {
-        let mut test_reservation = MemoryConsumer::new("GraceHashJoinExec repartition check")
-            .register(&context.runtime_env().memory_pool);
-        let can_fit = test_reservation.try_grow(build_size * 3).is_ok();
-        if can_fit {
-            test_reservation.shrink(build_size * 3);
-        }
-        !can_fit
-    } else {
-        false
-    };
+    // If build side exceeds the target partition size, fall back to eager
+    // read + recursive repartitioning. This prevents creating HashJoinExec
+    // with oversized build sides that expand into huge hash tables.
+    let needs_repartition = build_size > TARGET_PARTITION_BUILD_SIZE;
 
     if needs_repartition {
-        info!("GraceHashJoin: build too large for streaming probe, falling back to eager read");
+        info!(
+            "GraceHashJoin: build too large for streaming probe ({} bytes > {} target), \
+             falling back to eager read + repartition",
+            build_size, TARGET_PARTITION_BUILD_SIZE,
+        );
         let mut probe_batches = probe_in_memory;
         for spill_file in &probe_spill_files {
             probe_batches.extend(read_spilled_batches(spill_file, probe_schema)?);
@@ -1952,28 +1948,20 @@ fn join_partition_recursive(
         probe_size,
         pool_reserved,
     );
-    let needs_repartition = if build_size > 0 {
-        let mut test_reservation = MemoryConsumer::new("GraceHashJoinExec repartition check")
-            .register(&context.runtime_env().memory_pool);
-        // Account for hash table overhead (~2-3x raw data)
-        let can_fit = test_reservation.try_grow(build_size * 3).is_ok();
-        if can_fit {
-            test_reservation.shrink(build_size * 3);
-        }
-        if !can_fit {
-            info!(
-                "GraceHashJoin: repartition needed at level {}: \
-                 build_size={} (x3={}), pool reserved={}",
-                recursion_level,
-                build_size,
-                build_size * 3,
-                context.runtime_env().memory_pool.reserved(),
-            );
-        }
-        !can_fit
-    } else {
-        false
-    };
+    // Repartition if the build side exceeds the target size. This prevents
+    // creating HashJoinExec with oversized build sides whose hash tables
+    // can expand well beyond the raw data size and exhaust the memory pool.
+    let needs_repartition = build_size > TARGET_PARTITION_BUILD_SIZE;
+    if needs_repartition {
+        info!(
+            "GraceHashJoin: repartition needed at level {}: \
+             build_size={} > target={}, pool reserved={}",
+            recursion_level,
+            build_size,
+            TARGET_PARTITION_BUILD_SIZE,
+            context.runtime_env().memory_pool.reserved(),
+        );
+    }
 
     if needs_repartition {
         if recursion_level >= MAX_RECURSION_DEPTH {
