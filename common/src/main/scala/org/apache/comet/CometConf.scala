@@ -317,10 +317,12 @@ object CometConf extends ShimCometConf {
     conf(s"$COMET_EXEC_CONFIG_PREFIX.graceHashJoin.fastPathThreshold")
       .category(CATEGORY_EXEC)
       .doc(
-        "Maximum build-side size in bytes for the Grace Hash Join fast path. When the " +
-          "build side fits in memory and is smaller than this threshold, the join is executed " +
-          "as a single HashJoinExec without spilling. Set to 0 to disable the fast path. " +
-          "Larger values risk OOM because HashJoinExec creates a non-spillable hash table.")
+        "Total memory budget in bytes for Grace Hash Join fast-path hash tables across " +
+          "all concurrent tasks. This is divided by spark.executor.cores to get the per-task " +
+          "threshold. When a build side fits in memory and is smaller than the per-task " +
+          "threshold, the join executes as a single HashJoinExec without spilling. " +
+          "Set to 0 to disable the fast path. Larger values risk OOM because HashJoinExec " +
+          "creates non-spillable hash tables.")
       .intConf
       .checkValue(v => v >= 0, "The fast path threshold must be non-negative.")
       .createWithDefault(10 * 1024 * 1024) // 10 MB

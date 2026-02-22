@@ -797,9 +797,8 @@ async fn execute_grace_hash_join(
     // probe data to disk for a trivial hash table (e.g. 10-row build side).
     //
     // The threshold uses actual batch sizes (not the unreliable proportional
-    // estimate) and is deliberately small (default 10 MB). Large build sides must
-    // go through the slow path — the old fast path accepted 460 MB builds,
-    // producing 1.3 GB non-spillable hash tables that caused OOM.
+    // estimate). The configured value is divided by spark.executor.cores in
+    // the planner so each concurrent task gets its fair share.
     // Configurable via spark.comet.exec.graceHashJoin.fastPathThreshold.
 
     let build_spilled = partitions.iter().any(|p| p.build_spilled());
