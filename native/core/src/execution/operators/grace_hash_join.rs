@@ -53,6 +53,7 @@ use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
 use datafusion::physical_plan::metrics::{
     BaselineMetrics, Count, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet, Time,
 };
+use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
@@ -597,6 +598,13 @@ impl ExecutionPlan for GraceHashJoinExec {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> DFResult<SendableRecordBatchStream> {
+        info!(
+            "GraceHashJoin: execute() called. build_left={}, join_type={:?}, \
+             num_partitions={}, fast_path_threshold={}\n  left: {}\n  right: {}",
+            self.build_left, self.join_type, self.num_partitions, self.fast_path_threshold,
+            DisplayableExecutionPlan::new(self.left.as_ref()).one_line(),
+            DisplayableExecutionPlan::new(self.right.as_ref()).one_line(),
+        );
         let left_stream = self.left.execute(partition, Arc::clone(&context))?;
         let right_stream = self.right.execute(partition, Arc::clone(&context))?;
 
@@ -875,6 +883,10 @@ async fn execute_grace_hash_join(
                 PartitionMode::CollectLeft,
                 NullEquality::NullEqualsNothing,
             )?;
+            info!(
+                "GraceHashJoin: FAST PATH plan:\n{}",
+                DisplayableExecutionPlan::new(&hash_join).indent(true)
+            );
             hash_join.execute(0, Arc::clone(&context))?
         } else {
             let hash_join = Arc::new(HashJoinExec::try_new(
@@ -888,6 +900,10 @@ async fn execute_grace_hash_join(
                 NullEquality::NullEqualsNothing,
             )?);
             let swapped = hash_join.swap_inputs(PartitionMode::CollectLeft)?;
+            info!(
+                "GraceHashJoin: FAST PATH (swapped) plan:\n{}",
+                DisplayableExecutionPlan::new(swapped.as_ref()).indent(true)
+            );
             swapped.execute(0, Arc::clone(&context))?
         };
 
@@ -975,11 +991,12 @@ async fn execute_grace_hash_join(
     // would double-count the memory and starve other consumers.
     reservation.free();
 
-    // Phase 3: Join partitions with bounded parallelism.
-    // A semaphore limits concurrency to MAX_CONCURRENT_PARTITIONS so that
-    // disk I/O from one partition overlaps with CPU work from another,
-    // without creating too many simultaneous HashJoinInput reservations.
-    const MAX_CONCURRENT_PARTITIONS: usize = 3;
+    // Phase 3: Join partitions sequentially.
+    // We use a concurrency limit of 1 to avoid creating multiple simultaneous
+    // HashJoinInput reservations per task. With multiple Spark tasks sharing
+    // the same memory pool, even modest build sides (e.g. 22 MB) can exhaust
+    // memory when many tasks run concurrent hash table builds simultaneously.
+    const MAX_CONCURRENT_PARTITIONS: usize = 1;
     let semaphore = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_PARTITIONS));
     let (tx, rx) = mpsc::channel::<DFResult<RecordBatch>>(MAX_CONCURRENT_PARTITIONS * 2);
 
@@ -1879,6 +1896,10 @@ fn join_with_spilled_probe(
             PartitionMode::CollectLeft,
             NullEquality::NullEqualsNothing,
         )?;
+        info!(
+            "GraceHashJoin: SPILLED PROBE PATH plan:\n{}",
+            DisplayableExecutionPlan::new(&hash_join).indent(true)
+        );
         hash_join.execute(0, Arc::clone(context))?
     } else {
         let hash_join = Arc::new(HashJoinExec::try_new(
@@ -1892,6 +1913,10 @@ fn join_with_spilled_probe(
             NullEquality::NullEqualsNothing,
         )?);
         let swapped = hash_join.swap_inputs(PartitionMode::CollectLeft)?;
+        info!(
+            "GraceHashJoin: SPILLED PROBE PATH (swapped) plan:\n{}",
+            DisplayableExecutionPlan::new(swapped.as_ref()).indent(true)
+        );
         swapped.execute(0, Arc::clone(context))?
     };
 
@@ -2067,6 +2092,11 @@ fn join_partition_recursive(
             PartitionMode::CollectLeft,
             NullEquality::NullEqualsNothing,
         )?;
+        info!(
+            "GraceHashJoin: RECURSIVE PATH plan (level={}):\n{}",
+            recursion_level,
+            DisplayableExecutionPlan::new(&hash_join).indent(true)
+        );
         hash_join.execute(0, Arc::clone(context))?
     } else {
         let hash_join = Arc::new(HashJoinExec::try_new(
@@ -2080,6 +2110,11 @@ fn join_partition_recursive(
             NullEquality::NullEqualsNothing,
         )?);
         let swapped = hash_join.swap_inputs(PartitionMode::CollectLeft)?;
+        info!(
+            "GraceHashJoin: RECURSIVE PATH (swapped, level={}) plan:\n{}",
+            recursion_level,
+            DisplayableExecutionPlan::new(swapped.as_ref()).indent(true)
+        );
         swapped.execute(0, Arc::clone(context))?
     };
 
