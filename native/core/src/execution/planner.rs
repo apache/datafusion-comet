@@ -1554,10 +1554,8 @@ impl PhysicalPlanner {
                         let num_partitions = self
                             .spark_conf
                             .get_usize(COMET_GRACE_HASH_JOIN_NUM_PARTITIONS, 16);
-                        let executor_cores = self
-                            .spark_conf
-                            .get_usize(SPARK_EXECUTOR_CORES, 1)
-                            .max(1);
+                        let executor_cores =
+                            self.spark_conf.get_usize(SPARK_EXECUTOR_CORES, 1).max(1);
                         // The configured threshold is the total budget across all
                         // concurrent tasks. Divide by executor cores so each task's
                         // fast-path hash table stays within its fair share.
@@ -1592,7 +1590,9 @@ impl PhysicalPlanner {
                 }
 
                 {
-                    use crate::execution::spark_config::{SparkConfig, COMET_GRACE_HASH_JOIN_ENABLED};
+                    use crate::execution::spark_config::{
+                        SparkConfig, COMET_GRACE_HASH_JOIN_ENABLED,
+                    };
                     info!(
                         "PLANNER: creating plain HashJoinExec (NOT GraceHashJoin). \
                          join_type={:?}, build_side={:?}, grace_enabled={}",

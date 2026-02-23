@@ -48,12 +48,12 @@ use datafusion::execution::disk_manager::RefCountedTempFile;
 use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
 use datafusion::physical_expr::EquivalenceProperties;
 use datafusion::physical_expr::PhysicalExpr;
+use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::joins::utils::JoinFilter;
 use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
 use datafusion::physical_plan::metrics::{
     BaselineMetrics, Count, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet, Time,
 };
-use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
@@ -129,10 +129,9 @@ impl SpillWriter {
             .open(temp_file.path())
             .map_err(|e| DataFusionError::Execution(format!("Failed to open spill file: {e}")))?;
         let buf_writer = BufWriter::with_capacity(SPILL_IO_BUFFER_SIZE, file);
-        let write_options = IpcWriteOptions::default()
-            .try_with_compression(Some(CompressionType::LZ4_FRAME))?;
-        let writer =
-            StreamWriter::try_new_with_options(buf_writer, schema, write_options)?;
+        let write_options =
+            IpcWriteOptions::default().try_with_compression(Some(CompressionType::LZ4_FRAME))?;
+        let writer = StreamWriter::try_new_with_options(buf_writer, schema, write_options)?;
         Ok(Self {
             writer,
             temp_file,
@@ -323,7 +322,6 @@ impl ExecutionPlan for SpillReaderExec {
         )))
     }
 }
-
 
 // ---------------------------------------------------------------------------
 // StreamSourceExec: wrap an existing stream as an ExecutionPlan
@@ -605,7 +603,10 @@ impl ExecutionPlan for GraceHashJoinExec {
         info!(
             "GraceHashJoin: execute() called. build_left={}, join_type={:?}, \
              num_partitions={}, fast_path_threshold={}\n  left: {}\n  right: {}",
-            self.build_left, self.join_type, self.num_partitions, self.fast_path_threshold,
+            self.build_left,
+            self.join_type,
+            self.num_partitions,
+            self.fast_path_threshold,
             DisplayableExecutionPlan::new(self.left.as_ref()).one_line(),
             DisplayableExecutionPlan::new(self.right.as_ref()).one_line(),
         );
@@ -760,7 +761,10 @@ async fn execute_grace_hash_join(
 
     info!(
         "GHJ#{}: started. build_left={}, join_type={:?}, pool reserved={}",
-        ghj_id, build_left, join_type, context.runtime_env().memory_pool.reserved(),
+        ghj_id,
+        build_left,
+        join_type,
+        context.runtime_env().memory_pool.reserved(),
     );
 
     let mut partitions: Vec<HashPartition> =
@@ -845,7 +849,9 @@ async fn execute_grace_hash_join(
         info!(
             "GHJ#{}: fast path — build side tiny ({} rows, {} bytes). \
              Streaming probe directly through HashJoinExec. pool reserved={}",
-            ghj_id, total_build_rows, actual_build_bytes,
+            ghj_id,
+            total_build_rows,
+            actual_build_bytes,
             context.runtime_env().memory_pool.reserved(),
         );
 
@@ -933,7 +939,12 @@ async fn execute_grace_hash_join(
     info!(
         "GHJ#{}: slow path — build spilled={}, {} rows, {} bytes (actual). \
          join_type={:?}, build_left={}. pool reserved={}. Partitioning probe side.",
-        ghj_id, build_spilled, total_build_rows, actual_build_bytes, join_type, build_left,
+        ghj_id,
+        build_spilled,
+        total_build_rows,
+        actual_build_bytes,
+        join_type,
+        build_left,
         context.runtime_env().memory_pool.reserved(),
     );
 
@@ -971,8 +982,12 @@ async fn execute_grace_hash_join(
             "GHJ#{}: probe phase complete. \
              total probe (in-memory): {} rows, {} bytes, {} spilled. \
              reservation={}, pool reserved={}",
-            ghj_id, total_probe_rows, total_probe_bytes, probe_spilled,
-            reservation.0.size(), context.runtime_env().memory_pool.reserved(),
+            ghj_id,
+            total_probe_rows,
+            total_probe_bytes,
+            probe_spilled,
+            reservation.0.size(),
+            context.runtime_env().memory_pool.reserved(),
         );
     }
 
@@ -1009,7 +1024,9 @@ async fn execute_grace_hash_join(
     // would double-count the memory and starve other consumers.
     info!(
         "GHJ#{}: freeing reservation ({} bytes) before Phase 3. pool reserved={}",
-        ghj_id, reservation.0.size(), context.runtime_env().memory_pool.reserved(),
+        ghj_id,
+        reservation.0.size(),
+        context.runtime_env().memory_pool.reserved(),
     );
     reservation.free();
 
@@ -1075,10 +1092,7 @@ async fn execute_grace_hash_join(
     })
     .inspect_ok(move |batch| {
         output_metrics.record_output(batch.num_rows());
-        let prev = counter.fetch_add(
-            batch.num_rows(),
-            std::sync::atomic::Ordering::Relaxed,
-        );
+        let prev = counter.fetch_add(batch.num_rows(), std::sync::atomic::Ordering::Relaxed);
         let new_total = prev + batch.num_rows();
         // Log every ~1M rows to detect exploding joins
         if new_total / 1_000_000 > prev / 1_000_000 {
@@ -1710,10 +1724,8 @@ fn memory_source_exec(
     schema: &SchemaRef,
 ) -> DFResult<Arc<dyn ExecutionPlan>> {
     let schema_clone = Arc::clone(schema);
-    let stream = RecordBatchStreamAdapter::new(
-        Arc::clone(schema),
-        stream::iter(data.into_iter().map(Ok)),
-    );
+    let stream =
+        RecordBatchStreamAdapter::new(Arc::clone(schema), stream::iter(data.into_iter().map(Ok)));
     Ok(Arc::new(StreamSourceExec::new(
         Box::pin(stream),
         schema_clone,
@@ -1751,9 +1763,7 @@ async fn join_single_partition(
         })
         .await
         .map_err(|e| {
-            DataFusionError::Execution(format!(
-                "GraceHashJoin: build spill read task failed: {e}"
-            ))
+            DataFusionError::Execution(format!("GraceHashJoin: build spill read task failed: {e}"))
         })??;
         build_batches.extend(spilled);
     }
@@ -1954,7 +1964,11 @@ fn join_with_spilled_probe(
          build_left={}, build_size={}, probe_source={}",
         build_left,
         build_size,
-        if probe_spill_files_count == 1 { "SpillReaderExec" } else { "MemorySourceConfig" },
+        if probe_spill_files_count == 1 {
+            "SpillReaderExec"
+        } else {
+            "MemorySourceConfig"
+        },
     );
 
     let stream = if build_left {
@@ -2132,12 +2146,9 @@ fn join_partition_recursive(
     // Build side uses StreamSourceExec to avoid BatchSplitStream splitting;
     // probe side uses DataSourceExec (splitting is fine for streamed probe).
     let build_source = memory_source_exec(build_data, build_schema)?;
-    let probe_source: Arc<dyn ExecutionPlan> =
-        Arc::new(DataSourceExec::new(Arc::new(MemorySourceConfig::try_new(
-            &[probe_data],
-            Arc::clone(probe_schema),
-            None,
-        )?)));
+    let probe_source: Arc<dyn ExecutionPlan> = Arc::new(DataSourceExec::new(Arc::new(
+        MemorySourceConfig::try_new(&[probe_data], Arc::clone(probe_schema), None)?,
+    )));
 
     let (left_source, right_source) = if build_left {
         (build_source, probe_source)
@@ -2482,11 +2493,12 @@ mod tests {
             make_large_batch(400_000, 200_000),
             make_large_batch(600_000, 200_000),
         ];
-        let build_bytes: usize = left_batches
-            .iter()
-            .map(|b| b.get_array_memory_size())
-            .sum();
-        eprintln!("Test build side: {} bytes ({} MB)", build_bytes, build_bytes / (1024 * 1024));
+        let build_bytes: usize = left_batches.iter().map(|b| b.get_array_memory_size()).sum();
+        eprintln!(
+            "Test build side: {} bytes ({} MB)",
+            build_bytes,
+            build_bytes / (1024 * 1024)
+        );
 
         // Probe side: small (~1 MB, 10K rows)
         let right_batches = vec![make_large_batch(0, 10_000)];
