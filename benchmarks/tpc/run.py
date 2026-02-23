@@ -120,9 +120,9 @@ COMMON_SPARK_CONF = {
 
 BENCHMARK_PROFILES = {
     "tpch": {
-        "executor_instances": "1",
+        "executor_instances": "2",
         "executor_cores": "8",
-        "max_cores": "8",
+        "max_cores": "16",
         "data_env": "TPCH_DATA",
         "format": "parquet",
     },
