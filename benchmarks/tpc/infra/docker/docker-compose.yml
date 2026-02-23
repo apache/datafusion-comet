@@ -110,3 +110,22 @@ services:
     mem_limit: ${BENCH_MEM_LIMIT:-10g}
     memswap_limit: ${BENCH_MEM_LIMIT:-10g}
 
+  # Uncomment to enable the Spark History Server for inspecting completed
+  # benchmark runs at http://localhost:18080.  Requires event logs in
+  # $RESULTS_DIR/spark-events (created by `mkdir -p $RESULTS_DIR/spark-events`
+  # before starting the cluster).
+  #
+  # history-server:
+  #   image: ${BENCH_IMAGE:-comet-bench}
+  #   container_name: spark-history
+  #   hostname: spark-history
+  #   command: /opt/spark/sbin/start-history-server.sh
+  #   ports:
+  #     - "18080:18080"
+  #   volumes:
+  #     - ${RESULTS_DIR:-/tmp/bench-results}:/results:ro
+  #   environment:
+  #     - JAVA_HOME=${BENCH_JAVA_HOME:-/usr/lib/jvm/java-17-openjdk}
+  #     - SPARK_HISTORY_OPTS=-Dspark.history.fs.logDirectory=/results/spark-events
+  #     - SPARK_NO_DAEMONIZE=true
+

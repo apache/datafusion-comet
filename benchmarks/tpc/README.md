@@ -198,17 +198,23 @@ via architecture-agnostic Java symlinks created at build time.
 The image must be built for the correct platform to match the native libraries in the
 engine JARs (e.g. Comet bundles `libcomet.so` for a specific OS/arch).
 
-**Linux (amd64):**
-
 ```shell
 docker build -t comet-bench -f benchmarks/tpc/infra/docker/Dockerfile .
 ```
 
-**macOS (Apple Silicon):** Engine JARs contain platform-specific native libraries. A
-Comet JAR built on macOS includes `darwin/aarch64` libraries which won't work inside
-Linux containers. You need a JAR with Linux native libraries.
+### Building a compatible Comet JAR
 
-Build a Comet JAR with Linux native libraries using the provided build Dockerfile:
+The Comet JAR contains platform-specific native libraries (`libcomet.so` / `libcomet.dylib`).
+A JAR built on the host may not work inside the Docker container due to OS, architecture,
+or glibc version mismatches. Use `Dockerfile.build-comet` to build a JAR with compatible
+native libraries:
+
+- **macOS (Apple Silicon):** The host JAR contains `darwin/aarch64` libraries which
+  won't work in Linux containers. You **must** use the build Dockerfile.
+- **Linux:** If your host glibc version differs from the container's, the native library
+  will fail to load with a `GLIBC_x.xx not found` error. The build Dockerfile uses
+  Ubuntu 20.04 (glibc 2.31) for broad compatibility. Use it if you see
+  `UnsatisfiedLinkError` mentioning glibc when running benchmarks.
 
 ```shell
 mkdir -p output
@@ -216,12 +222,6 @@ docker build -t comet-builder \
     -f benchmarks/tpc/infra/docker/Dockerfile.build-comet .
 docker run --rm -v $(pwd)/output:/output comet-builder
 export COMET_JAR=$(pwd)/output/comet-spark-spark3.5_2.12-*.jar
-```
-
-Then build the benchmark image (the architecture is auto-detected):
-
-```shell
-docker build -t comet-bench -f benchmarks/tpc/infra/docker/Dockerfile .
 ```
 
 ### Platform notes
@@ -236,8 +236,10 @@ docker build -t comet-bench -f benchmarks/tpc/infra/docker/Dockerfile .
 - **File Sharing:** You may need to add your data directory (e.g. `/opt`) to
   **Docker Desktop > Settings > Resources > File Sharing** before mounting host volumes.
 
-**Linux (amd64):** No special configuration is needed. Docker uses cgroup memory limits
-directly without a VM layer.
+**Linux (amd64):** Docker uses cgroup memory limits directly without a VM layer. No
+special Docker configuration is needed, but you may still need to build the Comet JAR
+using `Dockerfile.build-comet` (see above) if your host glibc version doesn't match
+the container's.
 
 The Docker image auto-detects the container architecture (amd64/arm64) and sets up
 arch-agnostic Java symlinks. The compose file uses `BENCH_JAVA_HOME` (not `JAVA_HOME`)
@@ -253,6 +255,7 @@ export DATA_DIR=/mnt/bigdata/tpch/sf100
 export RESULTS_DIR=/tmp/bench-results
 export COMET_JAR=/opt/comet/comet-spark-spark3.5_2.12-0.10.0.jar
 
+mkdir -p $RESULTS_DIR/spark-events
 docker compose -f benchmarks/tpc/infra/docker/docker-compose.yml up -d
 ```
 
@@ -270,14 +273,9 @@ so that output files land in the mounted results directory:
 ```shell
 docker compose -f benchmarks/tpc/infra/docker/docker-compose.yml \
     run --rm -p 4040:4040 bench \
-    sh -c 'mkdir -p /tmp/spark-events && \
     python3 /opt/benchmarks/run.py \
-    --engine comet --benchmark tpch --output /results --no-restart'
+    --engine comet --benchmark tpch --output /results --no-restart
 ```
-
-> **Note:** The `mkdir -p /tmp/spark-events` is needed because the common Spark
-> config enables event logging. The bench container is ephemeral so this directory
-> does not persist between runs.
 
 The `-p 4040:4040` flag exposes the Spark Application UI on the host. The following
 UIs are available during a benchmark run:
@@ -288,10 +286,15 @@ UIs are available during a benchmark run:
 | Worker 1          | http://localhost:8081 |
 | Worker 2          | http://localhost:8082 |
 | Spark Application | http://localhost:4040 |
+| History Server    | http://localhost:18080 |
 
 > **Note:** The Master UI links to the Application UI using the container's internal
 > hostname, which is not reachable from the host. Use `http://localhost:4040` directly
 > to access the Application UI.
+
+The Spark Application UI is only available while a benchmark is running. To inspect
+completed runs, uncomment the `history-server` service in `docker-compose.yml` and
+restart the cluster. The History Server reads event logs from `$RESULTS_DIR/spark-events`.
 
 For Gluten (requires Java 8), you must restart the **entire cluster** with `JAVA_HOME`
 set so that all services (master, workers, and bench) use Java 8:
@@ -302,9 +305,9 @@ docker compose -f benchmarks/tpc/infra/docker/docker-compose.yml down
 docker compose -f benchmarks/tpc/infra/docker/docker-compose.yml up -d
 
 docker compose -f benchmarks/tpc/infra/docker/docker-compose.yml \
-    run --rm bench sh -c 'mkdir -p /tmp/spark-events && \
+    run --rm bench \
     python3 /opt/benchmarks/run.py \
-    --engine gluten --benchmark tpch --output /results --no-restart'
+    --engine gluten --benchmark tpch --output /results --no-restart
 ```
 
 > **Important:** Only passing `-e JAVA_HOME=...` to the `bench` container is not

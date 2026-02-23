@@ -110,6 +110,7 @@ COMMON_SPARK_CONF = {
     "spark.memory.offHeap.enabled": "true",
     "spark.memory.offHeap.size": "16g",
     "spark.eventLog.enabled": "true",
+    "spark.eventLog.dir": "/results/spark-events",
     "spark.hadoop.fs.s3a.impl": "org.apache.hadoop.fs.s3a.S3AFileSystem",
     "spark.hadoop.fs.s3a.aws.credentials.provider": "com.amazonaws.auth.DefaultAWSCredentialsProviderChain",
 }
