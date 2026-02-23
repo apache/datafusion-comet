@@ -59,7 +59,7 @@ use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
     SendableRecordBatchStream,
 };
-use futures::stream::{StreamExt, TryStreamExt};
+use futures::stream::{self, StreamExt, TryStreamExt};
 use futures::Stream;
 use log::info;
 use tokio::sync::mpsc;
@@ -862,9 +862,7 @@ async fn execute_grace_hash_join(
             vec![concat_batches(&build_schema, &all_build_batches)?]
         };
 
-        let build_source = Arc::new(DataSourceExec::new(Arc::new(
-            MemorySourceConfig::try_new(&[build_data], Arc::clone(&build_schema), None)?,
-        )));
+        let build_source = memory_source_exec(build_data, &build_schema)?;
 
         let probe_source: Arc<dyn ExecutionPlan> = Arc::new(StreamSourceExec::new(
             probe_stream,
@@ -899,8 +897,7 @@ async fn execute_grace_hash_join(
                 "GraceHashJoin: FAST PATH plan:\n{}",
                 DisplayableExecutionPlan::new(&hash_join).indent(true)
             );
-            let join_ctx = context_for_join(&context, total_build_rows);
-            hash_join.execute(0, join_ctx)?
+            hash_join.execute(0, Arc::clone(&context))?
         } else {
             let hash_join = Arc::new(HashJoinExec::try_new(
                 left_source,
@@ -917,8 +914,7 @@ async fn execute_grace_hash_join(
                 "GraceHashJoin: FAST PATH (swapped) plan:\n{}",
                 DisplayableExecutionPlan::new(swapped.as_ref()).indent(true)
             );
-            let join_ctx = context_for_join(&context, total_build_rows);
-            swapped.execute(0, join_ctx)?
+            swapped.execute(0, Arc::clone(&context))?
         };
 
         let output_metrics = metrics.baseline.clone();
@@ -1700,27 +1696,28 @@ fn merge_finished_partitions(
 // Phase 3: Per-partition hash joins
 // ---------------------------------------------------------------------------
 
-/// Create a TaskContext with batch_size large enough to prevent DataSourceExec's
-/// BatchSplitStream from slicing the input batches. Arrow's `batch.slice()`
-/// shares underlying buffers, so `get_record_batch_memory_size()` reports
-/// the full buffer size for every slice. This causes `collect_left_input`
-/// to vastly over-count memory (e.g. 85 slices × 22 MB = 1.8 GB instead
-/// of the actual 22 MB), leading to spurious OOM.
+/// Create a `StreamSourceExec` that yields `data` batches without splitting.
 ///
-/// `max_rows` should be the maximum row count across all input batches.
-/// We cannot use `usize::MAX` because HashJoinExec uses batch_size for
-/// output buffer allocation, which would cause capacity overflow.
-fn context_for_join(context: &TaskContext, max_rows: usize) -> Arc<TaskContext> {
-    let batch_size = max_rows.max(context.session_config().batch_size());
-    Arc::new(TaskContext::new(
-        context.task_id(),
-        context.session_id(),
-        context.session_config().clone().with_batch_size(batch_size),
-        context.scalar_functions().clone(),
-        context.aggregate_functions().clone(),
-        context.window_functions().clone(),
-        context.runtime_env(),
-    ))
+/// Unlike `DataSourceExec(MemorySourceConfig)`, `StreamSourceExec` does NOT
+/// wrap its output in `BatchSplitStream`. This is critical for the build side
+/// because Arrow's zero-copy `batch.slice()` shares underlying buffers, so
+/// `get_record_batch_memory_size()` reports the full buffer size for every
+/// slice — causing `collect_left_input` to vastly over-count memory and
+/// trigger spurious OOM. Additionally, using `batch_size` large enough to
+/// prevent splitting can cause Arrow i32 offset overflow for string columns.
+fn memory_source_exec(
+    data: Vec<RecordBatch>,
+    schema: &SchemaRef,
+) -> DFResult<Arc<dyn ExecutionPlan>> {
+    let schema_clone = Arc::clone(schema);
+    let stream = RecordBatchStreamAdapter::new(
+        Arc::clone(schema),
+        stream::iter(data.into_iter().map(Ok)),
+    );
+    Ok(Arc::new(StreamSourceExec::new(
+        Box::pin(stream),
+        schema_clone,
+    )))
 }
 
 /// Join a single partition: reads build-side spill (if any) via spawn_blocking,
@@ -1915,12 +1912,8 @@ fn join_with_spilled_probe(
         vec![concat_batches(build_schema, &build_batches)?]
     };
 
-    // Build side: MemorySourceConfig (small)
-    let build_source = Arc::new(DataSourceExec::new(Arc::new(MemorySourceConfig::try_new(
-        &[build_data],
-        Arc::clone(build_schema),
-        None,
-    )?)));
+    // Build side: StreamSourceExec to avoid BatchSplitStream splitting
+    let build_source = memory_source_exec(build_data, build_schema)?;
 
     // Probe side: streaming from spill file(s).
     // With a single spill file and no in-memory batches, use the streaming
@@ -1979,8 +1972,7 @@ fn join_with_spilled_probe(
             "GraceHashJoin: SPILLED PROBE PATH plan:\n{}",
             DisplayableExecutionPlan::new(&hash_join).indent(true)
         );
-        let join_ctx = context_for_join(context, build_rows);
-        hash_join.execute(0, join_ctx)?
+        hash_join.execute(0, Arc::clone(context))?
     } else {
         let hash_join = Arc::new(HashJoinExec::try_new(
             left_source,
@@ -1997,8 +1989,7 @@ fn join_with_spilled_probe(
             "GraceHashJoin: SPILLED PROBE PATH (swapped) plan:\n{}",
             DisplayableExecutionPlan::new(swapped.as_ref()).indent(true)
         );
-        let join_ctx = context_for_join(context, build_rows);
-        swapped.execute(0, join_ctx)?
+        swapped.execute(0, Arc::clone(context))?
     };
 
     streams.push(stream);
@@ -2138,23 +2129,21 @@ fn join_partition_recursive(
 
     // Create per-partition hash join.
     // HashJoinExec expects left=build (CollectLeft mode).
-    let (left_data, left_schema_ref, right_data, right_schema_ref) = if build_left {
-        (build_data, build_schema, probe_data, probe_schema)
+    // Build side uses StreamSourceExec to avoid BatchSplitStream splitting;
+    // probe side uses DataSourceExec (splitting is fine for streamed probe).
+    let build_source = memory_source_exec(build_data, build_schema)?;
+    let probe_source: Arc<dyn ExecutionPlan> =
+        Arc::new(DataSourceExec::new(Arc::new(MemorySourceConfig::try_new(
+            &[probe_data],
+            Arc::clone(probe_schema),
+            None,
+        )?)));
+
+    let (left_source, right_source) = if build_left {
+        (build_source, probe_source)
     } else {
-        (probe_data, probe_schema, build_data, build_schema)
+        (probe_source, build_source)
     };
-
-    let left_source = Arc::new(DataSourceExec::new(Arc::new(MemorySourceConfig::try_new(
-        &[left_data],
-        Arc::clone(left_schema_ref),
-        None,
-    )?)));
-
-    let right_source = Arc::new(DataSourceExec::new(Arc::new(MemorySourceConfig::try_new(
-        &[right_data],
-        Arc::clone(right_schema_ref),
-        None,
-    )?)));
 
     let pool_before_join = context.runtime_env().memory_pool.reserved();
     info!(
@@ -2179,8 +2168,7 @@ fn join_partition_recursive(
             recursion_level,
             DisplayableExecutionPlan::new(&hash_join).indent(true)
         );
-        let join_ctx = context_for_join(context, build_rows.max(probe_rows));
-        hash_join.execute(0, join_ctx)?
+        hash_join.execute(0, Arc::clone(context))?
     } else {
         let hash_join = Arc::new(HashJoinExec::try_new(
             left_source,
@@ -2198,8 +2186,7 @@ fn join_partition_recursive(
             recursion_level,
             DisplayableExecutionPlan::new(swapped.as_ref()).indent(true)
         );
-        let join_ctx = context_for_join(context, build_rows.max(probe_rows));
-        swapped.execute(0, join_ctx)?
+        swapped.execute(0, Arc::clone(context))?
     };
 
     streams.push(stream);
