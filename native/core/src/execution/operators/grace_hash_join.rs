@@ -856,15 +856,10 @@ async fn execute_grace_hash_join(
         // Release our reservation — HashJoinExec tracks its own memory.
         reservation.free();
 
-        let all_build_batches: Vec<RecordBatch> = partitions
+        let build_data: Vec<RecordBatch> = partitions
             .into_iter()
             .flat_map(|p| p.build_batches)
             .collect();
-        let build_data = if all_build_batches.is_empty() {
-            vec![RecordBatch::new_empty(Arc::clone(&build_schema))]
-        } else {
-            vec![concat_batches(&build_schema, &all_build_batches)?]
-        };
 
         let build_source = memory_source_exec(build_data, &build_schema)?;
 
@@ -1708,25 +1703,25 @@ fn merge_finished_partitions(
 // Phase 3: Per-partition hash joins
 // ---------------------------------------------------------------------------
 
-/// The output batch size for HashJoinExec within GHJ.
+/// Create a TaskContext with `usize::MAX` batch_size for HashJoinExec output.
 ///
-/// With the default Comet batch size (8192), HashJoinExec produces many small
-/// output batches, causing significant per-batch overhead for large joins.
-/// A larger value reduces this overhead. We avoid `usize::MAX` because
-/// HashJoinExec uses batch_size for output buffer allocation, which can cause
-/// Arrow i32 offset overflow for string columns if too large.
-const GHJ_OUTPUT_BATCH_SIZE: usize = 131072;
-
-/// Create a TaskContext with a larger output batch size for HashJoinExec.
+/// With the default Comet batch size (8192), HashJoinExec produces thousands
+/// of small output batches, causing significant per-batch overhead for large
+/// joins (e.g., 150M output rows = 18K batches at 8192). Using `usize::MAX`
+/// lets HashJoinExec emit all results from each probe batch in one go.
 ///
-/// This improves performance by reducing per-batch overhead without affecting
-/// input splitting (which is handled by StreamSourceExec).
+/// This is safe because:
+/// - Input splitting is handled by StreamSourceExec (not batch_size)
+/// - We avoid `concat_batches` so individual input batches stay small,
+///   preventing Arrow i32 offset overflow in output construction
 fn context_for_join_output(context: &Arc<TaskContext>) -> Arc<TaskContext> {
-    let batch_size = GHJ_OUTPUT_BATCH_SIZE.max(context.session_config().batch_size());
     Arc::new(TaskContext::new(
         context.task_id(),
         context.session_id(),
-        context.session_config().clone().with_batch_size(batch_size),
+        context
+            .session_config()
+            .clone()
+            .with_batch_size(usize::MAX),
         context.scalar_functions().clone(),
         context.aggregate_functions().clone(),
         context.window_functions().clone(),
@@ -1792,15 +1787,6 @@ async fn join_single_partition(
         build_batches.extend(spilled);
     }
 
-    // Coalesce many tiny sub-batches (one per original input batch) into a
-    // single batch per side. This avoids repeated concat_batches downstream
-    // and reduces overhead in HashJoinExec.
-    let build_batches = if build_batches.len() > 1 {
-        vec![concat_batches(&build_schema, &build_batches)?]
-    } else {
-        build_batches
-    };
-
     let mut streams = Vec::new();
 
     if !partition.probe_spill_files.is_empty() {
@@ -1820,15 +1806,10 @@ async fn join_single_partition(
             &mut streams,
         )?;
     } else {
-        // Probe side is in-memory: coalesce and use repartitioning support
-        let probe_batches = if partition.probe_batches.len() > 1 {
-            vec![concat_batches(&probe_schema, &partition.probe_batches)?]
-        } else {
-            partition.probe_batches
-        };
+        // Probe side is in-memory
         join_partition_recursive(
             build_batches,
-            probe_batches,
+            partition.probe_batches,
             &original_on,
             &filter,
             &join_type,
@@ -1937,17 +1918,8 @@ fn join_with_spilled_probe(
         );
     }
 
-    // Concatenate build side into single batch
-    let build_data = if build_batches.is_empty() {
-        vec![RecordBatch::new_empty(Arc::clone(build_schema))]
-    } else if build_batches.len() == 1 {
-        build_batches
-    } else {
-        vec![concat_batches(build_schema, &build_batches)?]
-    };
-
     // Build side: StreamSourceExec to avoid BatchSplitStream splitting
-    let build_source = memory_source_exec(build_data, build_schema)?;
+    let build_source = memory_source_exec(build_batches, build_schema)?;
 
     // Probe side: streaming from spill file(s).
     // With a single spill file and no in-memory batches, use the streaming
@@ -1964,12 +1936,7 @@ fn join_with_spilled_probe(
             for spill_file in &probe_spill_files {
                 probe_batches.extend(read_spilled_batches(spill_file, probe_schema)?);
             }
-            let probe_data = if probe_batches.is_empty() {
-                vec![RecordBatch::new_empty(Arc::clone(probe_schema))]
-            } else {
-                vec![concat_batches(probe_schema, &probe_batches)?]
-            };
-            memory_source_exec(probe_data, probe_schema)?
+            memory_source_exec(probe_batches, probe_schema)?
         };
 
     // HashJoinExec expects left=build in CollectLeft mode
@@ -1987,7 +1954,7 @@ fn join_with_spilled_probe(
         if probe_spill_files_count == 1 {
             "SpillReaderExec"
         } else {
-            "MemorySourceConfig"
+            "StreamSourceExec"
         },
     );
 
@@ -2145,28 +2112,13 @@ fn join_partition_recursive(
         );
     }
 
-    // Concatenate small sub-batches into single batches to reduce per-batch overhead
-    let build_data = if build_batches.is_empty() {
-        vec![RecordBatch::new_empty(Arc::clone(build_schema))]
-    } else if build_batches.len() == 1 {
-        build_batches
-    } else {
-        vec![concat_batches(build_schema, &build_batches)?]
-    };
-    let probe_data = if probe_batches.is_empty() {
-        vec![RecordBatch::new_empty(Arc::clone(probe_schema))]
-    } else if probe_batches.len() == 1 {
-        probe_batches
-    } else {
-        vec![concat_batches(probe_schema, &probe_batches)?]
-    };
-
     // Create per-partition hash join.
     // HashJoinExec expects left=build (CollectLeft mode).
-    // Both sides use StreamSourceExec to avoid DataSourceExec's BatchSplitStream,
-    // which would split the concatenated batches and add per-batch overhead.
-    let build_source = memory_source_exec(build_data, build_schema)?;
-    let probe_source = memory_source_exec(probe_data, probe_schema)?;
+    // Both sides use StreamSourceExec to avoid DataSourceExec's BatchSplitStream.
+    // We pass batches directly without concat_batches to avoid i32 offset overflow
+    // when string data exceeds 2GB.
+    let build_source = memory_source_exec(build_batches, build_schema)?;
+    let probe_source = memory_source_exec(probe_batches, probe_schema)?;
 
     let (left_source, right_source) = if build_left {
         (build_source, probe_source)
