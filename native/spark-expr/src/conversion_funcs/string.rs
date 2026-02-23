@@ -1276,6 +1276,7 @@ fn date_parser(date_str: &str, eval_mode: EvalMode) -> SparkResult<Option<i32>> 
 mod tests {
     use super::*;
     use crate::cast::cast_array;
+    use crate::SparkCastOptions;
     use arrow::array::{DictionaryArray, Int32Array, StringArray};
     use arrow::datatypes::TimeUnit;
     use datafusion::common::Result as DataFusionResult;
