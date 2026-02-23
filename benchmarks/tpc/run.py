@@ -280,10 +280,6 @@ def build_spark_submit_cmd(config, benchmark, args):
         data_val = os.environ.get(data_var, "")
         cmd += ["--data", data_val]
 
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    queries_path = os.path.join(script_dir, "queries", benchmark)
-    cmd += ["--queries", queries_path]
-
     cmd += ["--output", args.output]
     cmd += ["--iterations", str(args.iterations)]
 
