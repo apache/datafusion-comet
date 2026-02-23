@@ -899,7 +899,8 @@ async fn execute_grace_hash_join(
                 "GraceHashJoin: FAST PATH plan:\n{}",
                 DisplayableExecutionPlan::new(&hash_join).indent(true)
             );
-            hash_join.execute(0, Arc::clone(&context))?
+            let no_split_ctx = context_without_batch_splitting(&context);
+            hash_join.execute(0, no_split_ctx)?
         } else {
             let hash_join = Arc::new(HashJoinExec::try_new(
                 left_source,
@@ -916,7 +917,8 @@ async fn execute_grace_hash_join(
                 "GraceHashJoin: FAST PATH (swapped) plan:\n{}",
                 DisplayableExecutionPlan::new(swapped.as_ref()).indent(true)
             );
-            swapped.execute(0, Arc::clone(&context))?
+            let no_split_ctx = context_without_batch_splitting(&context);
+            swapped.execute(0, no_split_ctx)?
         };
 
         let output_metrics = metrics.baseline.clone();
@@ -1698,6 +1700,24 @@ fn merge_finished_partitions(
 // Phase 3: Per-partition hash joins
 // ---------------------------------------------------------------------------
 
+/// Create a TaskContext with batch_size = MAX to prevent DataSourceExec's
+/// BatchSplitStream from slicing large Arrow batches. Arrow's `batch.slice()`
+/// shares underlying buffers, so `get_record_batch_memory_size()` reports
+/// the full buffer size for every slice. This causes `collect_left_input`
+/// to vastly over-count memory (e.g. 85 slices × 22 MB = 1.8 GB instead
+/// of the actual 22 MB), leading to spurious OOM.
+fn context_without_batch_splitting(context: &TaskContext) -> Arc<TaskContext> {
+    Arc::new(TaskContext::new(
+        context.task_id(),
+        context.session_id(),
+        context.session_config().clone().with_batch_size(usize::MAX),
+        context.scalar_functions().clone(),
+        context.aggregate_functions().clone(),
+        context.window_functions().clone(),
+        context.runtime_env(),
+    ))
+}
+
 /// Join a single partition: reads build-side spill (if any) via spawn_blocking,
 /// then delegates to `join_with_spilled_probe` or `join_partition_recursive`.
 /// Returns the resulting streams for this partition.
@@ -1954,7 +1974,8 @@ fn join_with_spilled_probe(
             "GraceHashJoin: SPILLED PROBE PATH plan:\n{}",
             DisplayableExecutionPlan::new(&hash_join).indent(true)
         );
-        hash_join.execute(0, Arc::clone(context))?
+        let no_split_ctx = context_without_batch_splitting(context);
+        hash_join.execute(0, no_split_ctx)?
     } else {
         let hash_join = Arc::new(HashJoinExec::try_new(
             left_source,
@@ -1971,7 +1992,8 @@ fn join_with_spilled_probe(
             "GraceHashJoin: SPILLED PROBE PATH (swapped) plan:\n{}",
             DisplayableExecutionPlan::new(swapped.as_ref()).indent(true)
         );
-        swapped.execute(0, Arc::clone(context))?
+        let no_split_ctx = context_without_batch_splitting(context);
+        swapped.execute(0, no_split_ctx)?
     };
 
     streams.push(stream);
@@ -2152,7 +2174,8 @@ fn join_partition_recursive(
             recursion_level,
             DisplayableExecutionPlan::new(&hash_join).indent(true)
         );
-        hash_join.execute(0, Arc::clone(context))?
+        let no_split_ctx = context_without_batch_splitting(context);
+        hash_join.execute(0, no_split_ctx)?
     } else {
         let hash_join = Arc::new(HashJoinExec::try_new(
             left_source,
@@ -2170,7 +2193,8 @@ fn join_partition_recursive(
             recursion_level,
             DisplayableExecutionPlan::new(swapped.as_ref()).indent(true)
         );
-        swapped.execute(0, Arc::clone(context))?
+        let no_split_ctx = context_without_batch_splitting(context);
+        swapped.execute(0, no_split_ctx)?
     };
 
     streams.push(stream);
