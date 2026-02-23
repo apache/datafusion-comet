@@ -33,7 +33,6 @@ case class ReflectionCache(
     schemaClass: Class[_],
     partitionSpecParserClass: Class[_],
     partitionSpecClass: Class[_],
-    structLikeClass: Class[_],
     fileMethod: Method,
     startMethod: Method,
     lengthMethod: Method,
@@ -61,7 +60,6 @@ object ReflectionCache extends Logging {
     val partitionSpecParserClass =
       Class.forName(IcebergReflection.ClassNames.PARTITION_SPEC_PARSER)
     val partitionSpecClass = Class.forName(IcebergReflection.ClassNames.PARTITION_SPEC)
-    val structLikeClass = Class.forName(IcebergReflection.ClassNames.STRUCT_LIKE)
     // scalastyle:on classforname
 
     val fileMethod = contentScanTaskClass.getMethod("file")
@@ -88,7 +86,6 @@ object ReflectionCache extends Logging {
       schemaClass = schemaClass,
       partitionSpecParserClass = partitionSpecParserClass,
       partitionSpecClass = partitionSpecClass,
-      structLikeClass = structLikeClass,
       fileMethod = fileMethod,
       startMethod = startMethod,
       lengthMethod = lengthMethod,

@@ -45,7 +45,6 @@ class ReflectionCacheSuite extends AnyFunSuite {
     assert(cache.schemaClass != null)
     assert(cache.partitionSpecParserClass != null)
     assert(cache.partitionSpecClass != null)
-    assert(cache.structLikeClass != null)
 
     assert(cache.contentScanTaskClass.getName == IcebergReflection.ClassNames.CONTENT_SCAN_TASK)
     assert(cache.fileScanTaskClass.getName == IcebergReflection.ClassNames.FILE_SCAN_TASK)
@@ -53,7 +52,6 @@ class ReflectionCacheSuite extends AnyFunSuite {
     assert(cache.deleteFileClass.getName == IcebergReflection.ClassNames.DELETE_FILE)
     assert(cache.schemaClass.getName == IcebergReflection.ClassNames.SCHEMA)
     assert(cache.partitionSpecClass.getName == IcebergReflection.ClassNames.PARTITION_SPEC)
-    assert(cache.structLikeClass.getName == IcebergReflection.ClassNames.STRUCT_LIKE)
   }
 
   test("ReflectionCache.create() resolves all methods") {
