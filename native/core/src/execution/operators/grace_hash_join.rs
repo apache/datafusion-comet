@@ -1709,11 +1709,12 @@ fn merge_finished_partitions(
 /// of small output batches, causing significant per-batch overhead for large
 /// joins (e.g., 150M output rows = 18K batches at 8192).
 ///
-/// We use 10M as the output batch size which gives at most ~15 batches for
-/// 150M row joins. Cannot use `usize::MAX` because HashJoinExec pre-allocates
-/// Vec capacity = batch_size in `get_matched_indices_with_limit_offset`,
-/// causing capacity overflow.
-const GHJ_OUTPUT_BATCH_SIZE: usize = 10_000_000;
+/// 1M rows gives ~150 batches for a 150M row join — enough to avoid
+/// per-batch overhead while keeping each output batch at a few hundred MB.
+/// Cannot use `usize::MAX` because HashJoinExec pre-allocates Vec with
+/// capacity = batch_size in `get_matched_indices_with_limit_offset`.
+/// Cannot use 10M+ because output batches become multi-GB and cause OOM.
+const GHJ_OUTPUT_BATCH_SIZE: usize = 1_000_000;
 
 /// Create a TaskContext with a larger output batch size for HashJoinExec.
 ///
