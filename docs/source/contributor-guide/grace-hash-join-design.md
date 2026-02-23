@@ -30,16 +30,17 @@ GHJ supports all join types (Inner, Left, Right, Full, LeftSemi, LeftAnti, LeftM
 Spark's `ShuffledHashJoinExec` loads the entire build side into a hash table in memory. When the build side is large or executor memory is constrained, this causes OOM failures. DataFusion's built-in `HashJoinExec` has the same limitation — its `HashJoinInput` consumer is marked `can_spill: false`.
 
 GHJ solves this by:
+
 1. Partitioning both sides into smaller buckets that fit in memory individually
 2. Spilling partitions to disk when memory pressure is detected
 3. Joining partitions independently, reading spilled data back via streaming I/O
 
 ## Configuration
 
-| Config Key | Type | Default | Description |
-|---|---|---|---|
-| `spark.comet.exec.graceHashJoin.enabled` | boolean | `false` | Enable Grace Hash Join |
-| `spark.comet.exec.graceHashJoin.numPartitions` | int | `16` | Number of hash partitions (buckets) |
+| Config Key                                     | Type    | Default | Description                         |
+| ---------------------------------------------- | ------- | ------- | ----------------------------------- |
+| `spark.comet.exec.graceHashJoin.enabled`       | boolean | `false` | Enable Grace Hash Join              |
+| `spark.comet.exec.graceHashJoin.numPartitions` | int     | `16`    | Number of hash partitions (buckets) |
 
 ## Architecture
 
@@ -136,11 +137,13 @@ Partitions are joined **sequentially** — one at a time — so only one `HashJo
 The GHJ reservation is freed before Phase 3 begins, since the partition data has been moved into `FinishedPartition` structs and each per-partition `HashJoinExec` will track its own memory via `HashJoinInput`.
 
 **In-memory probe** → `join_partition_recursive()`:
+
 - Concatenate build and probe sub-batches
 - Create `HashJoinExec` with both sides as `MemorySourceConfig`
 - If build too large for hash table: recursively repartition (up to `MAX_RECURSION_DEPTH = 3` levels, yielding up to 16^3 = 4096 effective partitions)
 
 **Spilled probe** → `join_with_spilled_probe()`:
+
 - Build side loaded from memory or disk via `spawn_blocking` (to avoid blocking the async executor)
 - Probe side streamed via `SpillReaderExec` (never fully loaded into memory)
 - If build too large: fall back to eager probe read + recursive repartitioning
@@ -150,6 +153,7 @@ The GHJ reservation is freed before Phase 3 begins, since the partition data has
 ### Writing
 
 `SpillWriter` wraps Arrow IPC `StreamWriter` for incremental appends:
+
 - Uses `BufWriter` with 1 MB buffer (vs 8 KB default) for throughput
 - Batches are appended one at a time — no need to rewrite the file
 - `finish()` flushes the writer and returns the `RefCountedTempFile`
@@ -163,6 +167,7 @@ Two read paths depending on whether the full data is needed:
 **Eager read** (`read_spilled_batches`): Opens file, reads all batches into `Vec<RecordBatch>`. Used for small build-side spill files.
 
 **Streaming read** (`SpillReaderExec`): An `ExecutionPlan` that reads batches on-demand:
+
 - Spawns a `tokio::task::spawn_blocking` to read from the file on a blocking thread pool
 - Uses an `mpsc` channel (capacity 4) to feed batches to the async executor
 - Coalesces small sub-batches into ~8192-row chunks before sending, reducing per-batch overhead in the downstream hash join kernel
@@ -171,6 +176,7 @@ Two read paths depending on whether the full data is needed:
 ### Spill I/O Optimization
 
 Spill files contain many tiny sub-batches because each incoming batch is partitioned into N pieces. Without coalescing, a spill file with 1M rows might contain 10,000+ batches of ~100 rows each. The coalescing step in `SpillReaderExec` merges these into ~122 batches of ~8192 rows, dramatically reducing:
+
 - Channel send/recv overhead
 - Hash join kernel invocations
 - Per-batch `RecordBatch` construction costs
@@ -180,6 +186,7 @@ Spill files contain many tiny sub-batches because each incoming batch is partiti
 ### Reservation Model
 
 GHJ uses a single `MemoryReservation` registered as a spillable consumer (`with_can_spill(true)`). This reservation:
+
 - Tracks all in-memory build and probe data across all partitions
 - Grows via `try_grow()` before each batch is added to memory
 - Shrinks via `shrink()` when partitions are spilled to disk
@@ -238,7 +245,7 @@ fn partition_random_state(recursion_level: usize) -> RandomState {
 }
 ```
 
-This ensures that rows which hash to the same partition at level 0 are distributed across different sub-partitions at level 1, breaking up hash collisions. The only case where repartitioning cannot help is true data skew — many rows with the *same* key value. No amount of rehashing can separate identical keys, which is why there is a `MAX_RECURSION_DEPTH = 3` limit, after which GHJ returns a `ResourcesExhausted` error.
+This ensures that rows which hash to the same partition at level 0 are distributed across different sub-partitions at level 1, breaking up hash collisions. The only case where repartitioning cannot help is true data skew — many rows with the _same_ key value. No amount of rehashing can separate identical keys, which is why there is a `MAX_RECURSION_DEPTH = 3` limit, after which GHJ returns a `ResourcesExhausted` error.
 
 ## Recursive Repartitioning
 
@@ -254,6 +261,7 @@ The 3x multiplier accounts for hash table overhead (the `JoinHashMap` typically 
 ## Build Side Selection
 
 GHJ respects Spark's build side selection (`BuildLeft` or `BuildRight`). The `build_left` flag determines:
+
 - Which input is consumed in Phase 1 (build) vs Phase 2 (probe)
 - How join key expressions are mapped (left keys → build keys if `build_left`)
 - How `HashJoinExec` is constructed (build side is always left in `CollectLeft` mode)
@@ -262,18 +270,18 @@ When `build_left = false`, the `HashJoinExec` is created with swapped inputs and
 
 ## Metrics
 
-| Metric | Description |
-|---|---|
-| `build_time` | Time spent partitioning the build side |
-| `probe_time` | Time spent partitioning the probe side |
-| `spill_count` | Number of partition spill events |
-| `spilled_bytes` | Total bytes written to spill files |
-| `build_input_rows` | Total rows from build input |
-| `build_input_batches` | Total batches from build input |
-| `input_rows` | Total rows from probe input |
-| `input_batches` | Total batches from probe input |
-| `output_rows` | Total output rows (from `BaselineMetrics`) |
-| `elapsed_compute` | Total compute time (from `BaselineMetrics`) |
+| Metric                | Description                                 |
+| --------------------- | ------------------------------------------- |
+| `build_time`          | Time spent partitioning the build side      |
+| `probe_time`          | Time spent partitioning the probe side      |
+| `spill_count`         | Number of partition spill events            |
+| `spilled_bytes`       | Total bytes written to spill files          |
+| `build_input_rows`    | Total rows from build input                 |
+| `build_input_batches` | Total batches from build input              |
+| `input_rows`          | Total rows from probe input                 |
+| `input_batches`       | Total batches from probe input              |
+| `output_rows`         | Total output rows (from `BaselineMetrics`)  |
+| `elapsed_compute`     | Total compute time (from `BaselineMetrics`) |
 
 ## Lessons Learned
 
