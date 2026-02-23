@@ -41,8 +41,6 @@ use arrow::ipc::CompressionType;
 use arrow::record_batch::RecordBatch;
 use datafusion::common::hash_utils::create_hashes;
 use datafusion::common::{DataFusionError, JoinType, NullEquality, Result as DFResult};
-use datafusion::datasource::memory::MemorySourceConfig;
-use datafusion::datasource::source::DataSourceExec;
 use datafusion::execution::context::TaskContext;
 use datafusion::execution::disk_manager::RefCountedTempFile;
 use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
@@ -1945,11 +1943,7 @@ fn join_with_spilled_probe(
             } else {
                 vec![concat_batches(probe_schema, &probe_batches)?]
             };
-            Arc::new(DataSourceExec::new(Arc::new(MemorySourceConfig::try_new(
-                &[probe_data],
-                Arc::clone(probe_schema),
-                None,
-            )?)))
+            memory_source_exec(probe_data, probe_schema)?
         };
 
     // HashJoinExec expects left=build in CollectLeft mode
@@ -2143,12 +2137,10 @@ fn join_partition_recursive(
 
     // Create per-partition hash join.
     // HashJoinExec expects left=build (CollectLeft mode).
-    // Build side uses StreamSourceExec to avoid BatchSplitStream splitting;
-    // probe side uses DataSourceExec (splitting is fine for streamed probe).
+    // Both sides use StreamSourceExec to avoid DataSourceExec's BatchSplitStream,
+    // which would split the concatenated batches and add per-batch overhead.
     let build_source = memory_source_exec(build_data, build_schema)?;
-    let probe_source: Arc<dyn ExecutionPlan> = Arc::new(DataSourceExec::new(Arc::new(
-        MemorySourceConfig::try_new(&[probe_data], Arc::clone(probe_schema), None)?,
-    )));
+    let probe_source = memory_source_exec(probe_data, probe_schema)?;
 
     let (left_source, right_source) = if build_left {
         (build_source, probe_source)
@@ -2298,6 +2290,8 @@ mod tests {
     use super::*;
     use arrow::array::{Int32Array, StringArray};
     use arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::datasource::memory::MemorySourceConfig;
+    use datafusion::datasource::source::DataSourceExec;
     use datafusion::execution::memory_pool::FairSpillPool;
     use datafusion::execution::runtime_env::RuntimeEnvBuilder;
     use datafusion::physical_expr::expressions::Column;
