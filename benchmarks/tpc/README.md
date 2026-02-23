@@ -282,12 +282,12 @@ docker compose -f benchmarks/tpc/infra/docker/docker-compose.yml \
 The `-p 4040:4040` flag exposes the Spark Application UI on the host. The following
 UIs are available during a benchmark run:
 
-| UI                   | URL                    |
-| -------------------- | ---------------------- |
-| Spark Master         | http://localhost:8080  |
-| Worker 1             | http://localhost:8081  |
-| Worker 2             | http://localhost:8082  |
-| Spark Application    | http://localhost:4040  |
+| UI                | URL                   |
+| ----------------- | --------------------- |
+| Spark Master      | http://localhost:8080 |
+| Worker 1          | http://localhost:8081 |
+| Worker 2          | http://localhost:8082 |
+| Spark Application | http://localhost:4040 |
 
 > **Note:** The Master UI links to the Application UI using the container's internal
 > hostname, which is not reachable from the host. Use `http://localhost:4040` directly
@@ -316,19 +316,19 @@ docker compose -f benchmarks/tpc/infra/docker/docker-compose.yml \
 
 Two compose files are provided for different hardware profiles:
 
-| File | Workers | Total memory | Use case |
-| ---- | ------- | ------------ | -------- |
-| `docker-compose.yml` | 2 | ~74 GB | SF100+ on a workstation/server |
-| `docker-compose-laptop.yml` | 1 | ~12 GB | SF1–SF10 on a laptop |
+| File                        | Workers | Total memory | Use case                       |
+| --------------------------- | ------- | ------------ | ------------------------------ |
+| `docker-compose.yml`        | 2       | ~74 GB       | SF100+ on a workstation/server |
+| `docker-compose-laptop.yml` | 1       | ~12 GB       | SF1–SF10 on a laptop           |
 
 **`docker-compose.yml`** (workstation default):
 
-| Container      | Container limit (`mem_limit`) | Spark JVM allocation            |
-| -------------- | ----------------------------- | ------------------------------- |
-| spark-worker-1 | 32 GB                         | 16 GB executor + overhead       |
-| spark-worker-2 | 32 GB                         | 16 GB executor + overhead       |
-| bench (driver) | 10 GB                         | 8 GB driver                     |
-| **Total**      | **74 GB**                     |                                 |
+| Container      | Container limit (`mem_limit`) | Spark JVM allocation      |
+| -------------- | ----------------------------- | ------------------------- |
+| spark-worker-1 | 32 GB                         | 16 GB executor + overhead |
+| spark-worker-2 | 32 GB                         | 16 GB executor + overhead |
+| bench (driver) | 10 GB                         | 8 GB driver               |
+| **Total**      | **74 GB**                     |                           |
 
 Configure via environment variables: `WORKER_MEM_LIMIT` (default: 32g per worker),
 `BENCH_MEM_LIMIT` (default: 10g), `WORKER_MEMORY` (default: 16g, Spark executor memory),
