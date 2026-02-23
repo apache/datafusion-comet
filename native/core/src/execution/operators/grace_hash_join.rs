@@ -901,7 +901,7 @@ async fn execute_grace_hash_join(
                 "GraceHashJoin: FAST PATH plan:\n{}",
                 DisplayableExecutionPlan::new(&hash_join).indent(true)
             );
-            hash_join.execute(0, Arc::clone(&context))?
+            hash_join.execute(0, context_for_join_output(&context))?
         } else {
             let hash_join = Arc::new(HashJoinExec::try_new(
                 left_source,
@@ -918,7 +918,7 @@ async fn execute_grace_hash_join(
                 "GraceHashJoin: FAST PATH (swapped) plan:\n{}",
                 DisplayableExecutionPlan::new(swapped.as_ref()).indent(true)
             );
-            swapped.execute(0, Arc::clone(&context))?
+            swapped.execute(0, context_for_join_output(&context))?
         };
 
         let output_metrics = metrics.baseline.clone();
@@ -1708,6 +1708,32 @@ fn merge_finished_partitions(
 // Phase 3: Per-partition hash joins
 // ---------------------------------------------------------------------------
 
+/// The output batch size for HashJoinExec within GHJ.
+///
+/// With the default Comet batch size (8192), HashJoinExec produces many small
+/// output batches, causing significant per-batch overhead for large joins.
+/// A larger value reduces this overhead. We avoid `usize::MAX` because
+/// HashJoinExec uses batch_size for output buffer allocation, which can cause
+/// Arrow i32 offset overflow for string columns if too large.
+const GHJ_OUTPUT_BATCH_SIZE: usize = 131072;
+
+/// Create a TaskContext with a larger output batch size for HashJoinExec.
+///
+/// This improves performance by reducing per-batch overhead without affecting
+/// input splitting (which is handled by StreamSourceExec).
+fn context_for_join_output(context: &Arc<TaskContext>) -> Arc<TaskContext> {
+    let batch_size = GHJ_OUTPUT_BATCH_SIZE.max(context.session_config().batch_size());
+    Arc::new(TaskContext::new(
+        context.task_id(),
+        context.session_id(),
+        context.session_config().clone().with_batch_size(batch_size),
+        context.scalar_functions().clone(),
+        context.aggregate_functions().clone(),
+        context.window_functions().clone(),
+        context.runtime_env(),
+    ))
+}
+
 /// Create a `StreamSourceExec` that yields `data` batches without splitting.
 ///
 /// Unlike `DataSourceExec(MemorySourceConfig)`, `StreamSourceExec` does NOT
@@ -1980,7 +2006,7 @@ fn join_with_spilled_probe(
             "GraceHashJoin: SPILLED PROBE PATH plan:\n{}",
             DisplayableExecutionPlan::new(&hash_join).indent(true)
         );
-        hash_join.execute(0, Arc::clone(context))?
+        hash_join.execute(0, context_for_join_output(context))?
     } else {
         let hash_join = Arc::new(HashJoinExec::try_new(
             left_source,
@@ -1997,7 +2023,7 @@ fn join_with_spilled_probe(
             "GraceHashJoin: SPILLED PROBE PATH (swapped) plan:\n{}",
             DisplayableExecutionPlan::new(swapped.as_ref()).indent(true)
         );
-        swapped.execute(0, Arc::clone(context))?
+        swapped.execute(0, context_for_join_output(context))?
     };
 
     streams.push(stream);
@@ -2171,7 +2197,7 @@ fn join_partition_recursive(
             recursion_level,
             DisplayableExecutionPlan::new(&hash_join).indent(true)
         );
-        hash_join.execute(0, Arc::clone(context))?
+        hash_join.execute(0, context_for_join_output(context))?
     } else {
         let hash_join = Arc::new(HashJoinExec::try_new(
             left_source,
@@ -2189,7 +2215,7 @@ fn join_partition_recursive(
             recursion_level,
             DisplayableExecutionPlan::new(swapped.as_ref()).indent(true)
         );
-        swapped.execute(0, Arc::clone(context))?
+        swapped.execute(0, context_for_join_output(context))?
     };
 
     streams.push(stream);
