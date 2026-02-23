@@ -314,8 +314,41 @@ docker compose -f benchmarks/tpc/infra/docker/docker-compose.yml \
 
 ### Memory limits
 
-Hard memory limits are enforced on all worker and bench containers. Configure via environment
-variables: `WORKER_MEM_LIMIT` (default: 32g per worker), `BENCH_MEM_LIMIT` (default: 10g).
+Two compose files are provided for different hardware profiles:
+
+| File | Workers | Total memory | Use case |
+| ---- | ------- | ------------ | -------- |
+| `docker-compose.yml` | 2 | ~74 GB | SF100+ on a workstation/server |
+| `docker-compose-laptop.yml` | 1 | ~12 GB | SF1–SF10 on a laptop |
+
+**`docker-compose.yml`** (workstation default):
+
+| Container      | Container limit (`mem_limit`) | Spark JVM allocation            |
+| -------------- | ----------------------------- | ------------------------------- |
+| spark-worker-1 | 32 GB                         | 16 GB executor + overhead       |
+| spark-worker-2 | 32 GB                         | 16 GB executor + overhead       |
+| bench (driver) | 10 GB                         | 8 GB driver                     |
+| **Total**      | **74 GB**                     |                                 |
+
+Configure via environment variables: `WORKER_MEM_LIMIT` (default: 32g per worker),
+`BENCH_MEM_LIMIT` (default: 10g), `WORKER_MEMORY` (default: 16g, Spark executor memory),
+`WORKER_CORES` (default: 8).
+
+### Running on a laptop with small scale factors
+
+For local development or testing with small scale factors (e.g. SF1 or SF10), use the
+laptop compose file which runs a single worker with reduced memory:
+
+```shell
+docker compose -f benchmarks/tpc/infra/docker/docker-compose-laptop.yml up -d
+```
+
+This starts one worker (4 GB executor inside an 8 GB container) and a 4 GB bench
+container, totaling approximately **12 GB** of memory.
+
+The benchmark scripts request 2 executor instances and 16 max cores by default
+(`run.py`). Spark will simply use whatever resources are available on the single worker,
+so no script changes are needed.
 
 ### Comparing Parquet vs Iceberg performance
 
