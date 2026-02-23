@@ -1703,25 +1703,27 @@ fn merge_finished_partitions(
 // Phase 3: Per-partition hash joins
 // ---------------------------------------------------------------------------
 
-/// Create a TaskContext with `usize::MAX` batch_size for HashJoinExec output.
+/// The output batch size for HashJoinExec within GHJ.
 ///
 /// With the default Comet batch size (8192), HashJoinExec produces thousands
 /// of small output batches, causing significant per-batch overhead for large
-/// joins (e.g., 150M output rows = 18K batches at 8192). Using `usize::MAX`
-/// lets HashJoinExec emit all results from each probe batch in one go.
+/// joins (e.g., 150M output rows = 18K batches at 8192).
 ///
-/// This is safe because:
-/// - Input splitting is handled by StreamSourceExec (not batch_size)
-/// - We avoid `concat_batches` so individual input batches stay small,
-///   preventing Arrow i32 offset overflow in output construction
+/// We use 10M as the output batch size which gives at most ~15 batches for
+/// 150M row joins. Cannot use `usize::MAX` because HashJoinExec pre-allocates
+/// Vec capacity = batch_size in `get_matched_indices_with_limit_offset`,
+/// causing capacity overflow.
+const GHJ_OUTPUT_BATCH_SIZE: usize = 10_000_000;
+
+/// Create a TaskContext with a larger output batch size for HashJoinExec.
+///
+/// Input splitting is handled by StreamSourceExec (not batch_size).
 fn context_for_join_output(context: &Arc<TaskContext>) -> Arc<TaskContext> {
+    let batch_size = GHJ_OUTPUT_BATCH_SIZE.max(context.session_config().batch_size());
     Arc::new(TaskContext::new(
         context.task_id(),
         context.session_id(),
-        context
-            .session_config()
-            .clone()
-            .with_batch_size(usize::MAX),
+        context.session_config().clone().with_batch_size(batch_size),
         context.scalar_functions().clone(),
         context.aggregate_functions().clone(),
         context.window_functions().clone(),
