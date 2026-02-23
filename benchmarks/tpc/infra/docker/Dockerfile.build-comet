@@ -57,7 +57,7 @@ RUN ARCH=$(uname -m) && \
 # Set JAVA_HOME and LD_LIBRARY_PATH so the Rust build can find libjvm.
 RUN ln -s /usr/lib/jvm/java-17-openjdk-${TARGETARCH} /usr/lib/jvm/java-17-openjdk
 ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk
-ENV LD_LIBRARY_PATH=${JAVA_HOME}/lib/server:${LD_LIBRARY_PATH}
+ENV LD_LIBRARY_PATH=${JAVA_HOME}/lib/server
 
 # Install Rust.
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
