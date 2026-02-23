@@ -1790,6 +1790,15 @@ async fn join_single_partition(
         build_batches.extend(spilled);
     }
 
+    // Coalesce many tiny sub-batches into single batches to reduce per-batch
+    // overhead in HashJoinExec. Per-partition data is bounded by
+    // TARGET_PARTITION_BUILD_SIZE so concat won't hit i32 offset overflow.
+    let build_batches = if build_batches.len() > 1 {
+        vec![concat_batches(&build_schema, &build_batches)?]
+    } else {
+        build_batches
+    };
+
     let mut streams = Vec::new();
 
     if !partition.probe_spill_files.is_empty() {
@@ -1809,10 +1818,15 @@ async fn join_single_partition(
             &mut streams,
         )?;
     } else {
-        // Probe side is in-memory
+        // Probe side is in-memory: coalesce before joining
+        let probe_batches = if partition.probe_batches.len() > 1 {
+            vec![concat_batches(&probe_schema, &partition.probe_batches)?]
+        } else {
+            partition.probe_batches
+        };
         join_partition_recursive(
             build_batches,
-            partition.probe_batches,
+            probe_batches,
             &original_on,
             &filter,
             &join_type,
@@ -1921,8 +1935,18 @@ fn join_with_spilled_probe(
         );
     }
 
+    // Concatenate build side into single batch. Per-partition data is bounded
+    // by TARGET_PARTITION_BUILD_SIZE so this won't hit i32 offset overflow.
+    let build_data = if build_batches.is_empty() {
+        vec![RecordBatch::new_empty(Arc::clone(build_schema))]
+    } else if build_batches.len() == 1 {
+        build_batches
+    } else {
+        vec![concat_batches(build_schema, &build_batches)?]
+    };
+
     // Build side: StreamSourceExec to avoid BatchSplitStream splitting
-    let build_source = memory_source_exec(build_batches, build_schema)?;
+    let build_source = memory_source_exec(build_data, build_schema)?;
 
     // Probe side: streaming from spill file(s).
     // With a single spill file and no in-memory batches, use the streaming
@@ -1939,7 +1963,12 @@ fn join_with_spilled_probe(
             for spill_file in &probe_spill_files {
                 probe_batches.extend(read_spilled_batches(spill_file, probe_schema)?);
             }
-            memory_source_exec(probe_batches, probe_schema)?
+            let probe_data = if probe_batches.is_empty() {
+                vec![RecordBatch::new_empty(Arc::clone(probe_schema))]
+            } else {
+                vec![concat_batches(probe_schema, &probe_batches)?]
+            };
+            memory_source_exec(probe_data, probe_schema)?
         };
 
     // HashJoinExec expects left=build in CollectLeft mode
@@ -2115,13 +2144,29 @@ fn join_partition_recursive(
         );
     }
 
+    // Concatenate sub-batches into single batches to reduce per-batch overhead
+    // in HashJoinExec. Per-partition data is bounded by TARGET_PARTITION_BUILD_SIZE
+    // so this won't hit i32 offset overflow.
+    let build_data = if build_batches.is_empty() {
+        vec![RecordBatch::new_empty(Arc::clone(build_schema))]
+    } else if build_batches.len() == 1 {
+        build_batches
+    } else {
+        vec![concat_batches(build_schema, &build_batches)?]
+    };
+    let probe_data = if probe_batches.is_empty() {
+        vec![RecordBatch::new_empty(Arc::clone(probe_schema))]
+    } else if probe_batches.len() == 1 {
+        probe_batches
+    } else {
+        vec![concat_batches(probe_schema, &probe_batches)?]
+    };
+
     // Create per-partition hash join.
     // HashJoinExec expects left=build (CollectLeft mode).
     // Both sides use StreamSourceExec to avoid DataSourceExec's BatchSplitStream.
-    // We pass batches directly without concat_batches to avoid i32 offset overflow
-    // when string data exceeds 2GB.
-    let build_source = memory_source_exec(build_batches, build_schema)?;
-    let probe_source = memory_source_exec(probe_batches, probe_schema)?;
+    let build_source = memory_source_exec(build_data, build_schema)?;
+    let probe_source = memory_source_exec(probe_data, probe_schema)?;
 
     let (left_source, right_source) = if build_left {
         (build_source, probe_source)
