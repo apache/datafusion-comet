@@ -308,7 +308,7 @@ class CometNativeScanDPPSuite extends CometTestBase {
             |JOIN dim_fallback d ON f.part_col = d.dim_key""".stripMargin
 
         val df = spark.sql(query)
-        val plan = df.queryExecution.executedPlan
+        df.queryExecution.executedPlan
 
         // With DPP fallback enabled for non-native scans, CometNativeScanExec should not be used
         // The scan should fall back to Spark's FileSourceScanExec
