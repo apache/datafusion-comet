@@ -37,7 +37,7 @@ rust-version = "1.88"
 arrow = { version = "57.3.0", features = ["prettyprint", "ffi", "chrono-tz"] }
 async-trait = { version = "0.1" }
 bytes = { version = "1.11.1" }
-parquet = { version = "57.2.0", default-features = false, features = ["experimental"] }
+parquet = { version = "57.3.0", default-features = false, features = ["experimental"] }
 datafusion = { version = "51.0.0", default-features = false, features = ["unicode_expressions", "crypto_expressions", "nested_expressions", "parquet"] }
 datafusion-datasource = { version = "51.0.0" }
 datafusion-spark = { version = "51.0.0" }
