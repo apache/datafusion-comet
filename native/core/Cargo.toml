@@ -48,7 +48,7 @@ log4rs = "1.4.0"
 thiserror = { workspace = true }
 lazy_static = "1.4.0"
 prost = "0.14.3"
-jni = "0.21"
+jni = "0.22"
 snap = "1.1"
 # we disable default features in lz4_flex to force the use of the faster unsafe encoding and decoding implementation
 lz4_flex = { version = "0.12.0", default-features = false, features = ["frame"] }
@@ -91,7 +91,7 @@ hdrs = { version = "0.3.2", features = ["vendored"] }
 [dev-dependencies]
 pprof = { version = "0.15", features = ["flamegraph"] }
 criterion = { version = "0.7", features = ["async", "async_tokio", "async_std"] }
-jni = { version = "0.21", features = ["invocation"] }
+jni = { version = "0.22", features = ["invocation"] }
 lazy_static = "1.4"
 assertables = "9"
 hex = "0.4.3"
