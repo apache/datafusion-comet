@@ -1,4 +1,4 @@
--- CometBench-H query 12 derived from TPC-H query 12 under the terms of the TPC Fair Use Policy.
+-- SQLBench-H query 12 derived from TPC-H query 12 under the terms of the TPC Fair Use Policy.
 -- TPC-H queries are Copyright 1993-2022 Transaction Processing Performance Council.
 select
 	l_shipmode,

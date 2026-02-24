@@ -1,4 +1,4 @@
--- CometBench-DS query 35 derived from TPC-DS query 35 under the terms of the TPC Fair Use Policy.
+-- SQLBench-DS query 35 derived from TPC-DS query 35 under the terms of the TPC Fair Use Policy.
 -- TPC-DS queries are Copyright 2021 Transaction Processing Performance Council.
 -- This query was generated at scale factor 1.
 select   
@@ -7,19 +7,19 @@ select
   cd_marital_status,
   cd_dep_count,
   count(*) cnt1,
-  min(cd_dep_count),
   max(cd_dep_count),
-  avg(cd_dep_count),
+  stddev_samp(cd_dep_count),
+  stddev_samp(cd_dep_count),
   cd_dep_employed_count,
   count(*) cnt2,
-  min(cd_dep_employed_count),
   max(cd_dep_employed_count),
-  avg(cd_dep_employed_count),
+  stddev_samp(cd_dep_employed_count),
+  stddev_samp(cd_dep_employed_count),
   cd_dep_college_count,
   count(*) cnt3,
-  min(cd_dep_college_count),
   max(cd_dep_college_count),
-  avg(cd_dep_college_count)
+  stddev_samp(cd_dep_college_count),
+  stddev_samp(cd_dep_college_count)
  from
   customer c,customer_address ca,customer_demographics
  where

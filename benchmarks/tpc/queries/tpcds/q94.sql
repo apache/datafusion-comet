@@ -1,10 +1,10 @@
--- CometBench-DS query 94 derived from TPC-DS query 94 under the terms of the TPC Fair Use Policy.
+-- SQLBench-DS query 94 derived from TPC-DS query 94 under the terms of the TPC Fair Use Policy.
 -- TPC-DS queries are Copyright 2021 Transaction Processing Performance Council.
 -- This query was generated at scale factor 1.
 select  
-   count(distinct ws_order_number) as "order count"
-  ,sum(ws_ext_ship_cost) as "total shipping cost"
-  ,sum(ws_net_profit) as "total net profit"
+   count(distinct ws_order_number) as `order count`
+  ,sum(ws_ext_ship_cost) as `total shipping cost`
+  ,sum(ws_net_profit) as `total net profit`
 from
    web_sales ws1
   ,date_dim
@@ -12,7 +12,7 @@ from
   ,web_site
 where
     d_date between '1999-4-01' and 
-           (cast('1999-4-01' as date) + interval 60 days)
+           (cast('1999-4-01' as date) + INTERVAL '60 DAYS')
 and ws1.ws_ship_date_sk = d_date_sk
 and ws1.ws_ship_addr_sk = ca_address_sk
 and ca_state = 'WI'

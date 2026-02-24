@@ -1,4 +1,4 @@
--- CometBench-H query 20 derived from TPC-H query 20 under the terms of the TPC Fair Use Policy.
+-- SQLBench-H query 20 derived from TPC-H query 20 under the terms of the TPC Fair Use Policy.
 -- TPC-H queries are Copyright 1993-2022 Transaction Processing Performance Council.
 select
 	s_name,

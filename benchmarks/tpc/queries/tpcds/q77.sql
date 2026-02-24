@@ -1,4 +1,4 @@
--- CometBench-DS query 77 derived from TPC-DS query 77 under the terms of the TPC Fair Use Policy.
+-- SQLBench-DS query 77 derived from TPC-DS query 77 under the terms of the TPC Fair Use Policy.
 -- TPC-DS queries are Copyright 2021 Transaction Processing Performance Council.
 -- This query was generated at scale factor 1.
 with ss as
@@ -10,7 +10,7 @@ with ss as
       store
  where ss_sold_date_sk = d_date_sk
        and d_date between cast('2001-08-11' as date) 
-                  and (cast('2001-08-11' as date) + interval 30 days) 
+                  and (cast('2001-08-11' as date) +  INTERVAL '30 DAYS') 
        and ss_store_sk = s_store_sk
  group by s_store_sk)
  ,
@@ -23,7 +23,7 @@ with ss as
       store
  where sr_returned_date_sk = d_date_sk
        and d_date between cast('2001-08-11' as date)
-                  and (cast('2001-08-11' as date) + interval 30 days)
+                  and (cast('2001-08-11' as date) +  INTERVAL '30 DAYS')
        and sr_store_sk = s_store_sk
  group by s_store_sk), 
  cs as
@@ -34,7 +34,7 @@ with ss as
       date_dim
  where cs_sold_date_sk = d_date_sk
        and d_date between cast('2001-08-11' as date)
-                  and (cast('2001-08-11' as date) + interval 30 days)
+                  and (cast('2001-08-11' as date) +  INTERVAL '30 DAYS')
  group by cs_call_center_sk 
  ), 
  cr as
@@ -45,7 +45,7 @@ with ss as
       date_dim
  where cr_returned_date_sk = d_date_sk
        and d_date between cast('2001-08-11' as date)
-                  and (cast('2001-08-11' as date) + interval 30 days)
+                  and (cast('2001-08-11' as date) +  INTERVAL '30 DAYS')
  group by cr_call_center_sk
  ), 
  ws as
@@ -57,7 +57,7 @@ with ss as
       web_page
  where ws_sold_date_sk = d_date_sk
        and d_date between cast('2001-08-11' as date)
-                  and (cast('2001-08-11' as date) + interval 30 days)
+                  and (cast('2001-08-11' as date) +  INTERVAL '30 DAYS')
        and ws_web_page_sk = wp_web_page_sk
  group by wp_web_page_sk), 
  wr as
@@ -69,7 +69,7 @@ with ss as
       web_page
  where wr_returned_date_sk = d_date_sk
        and d_date between cast('2001-08-11' as date)
-                  and (cast('2001-08-11' as date) + interval 30 days)
+                  and (cast('2001-08-11' as date) +  INTERVAL '30 DAYS')
        and wr_web_page_sk = wp_web_page_sk
  group by wp_web_page_sk)
   select  channel

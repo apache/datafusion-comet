@@ -1,4 +1,4 @@
--- CometBench-DS query 98 derived from TPC-DS query 98 under the terms of the TPC Fair Use Policy.
+-- SQLBench-DS query 98 derived from TPC-DS query 98 under the terms of the TPC Fair Use Policy.
 -- TPC-DS queries are Copyright 2021 Transaction Processing Performance Council.
 -- This query was generated at scale factor 1.
 select i_item_id
@@ -18,7 +18,7 @@ where
   	and i_category in ('Shoes', 'Music', 'Men')
   	and ss_sold_date_sk = d_date_sk
 	and d_date between cast('2000-01-05' as date) 
-				and (cast('2000-01-05' as date) + interval 30 days)
+				and (cast('2000-01-05' as date) + INTERVAL '30 DAYS')
 group by 
 	i_item_id
         ,i_item_desc 

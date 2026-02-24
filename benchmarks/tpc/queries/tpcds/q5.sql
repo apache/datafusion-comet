@@ -1,4 +1,4 @@
--- CometBench-DS query 5 derived from TPC-DS query 5 under the terms of the TPC Fair Use Policy.
+-- SQLBench-DS query 5 derived from TPC-DS query 5 under the terms of the TPC Fair Use Policy.
 -- TPC-DS queries are Copyright 2021 Transaction Processing Performance Council.
 -- This query was generated at scale factor 1.
 with ssr as
@@ -28,7 +28,7 @@ with ssr as
      store
  where date_sk = d_date_sk
        and d_date between cast('2001-08-04' as date) 
-                  and (cast('2001-08-04' as date) + interval 14 days)
+                  and (cast('2001-08-04' as date) +  INTERVAL '14 DAYS')
        and store_sk = s_store_sk
  group by s_store_id)
  ,
@@ -59,7 +59,7 @@ with ssr as
      catalog_page
  where date_sk = d_date_sk
        and d_date between cast('2001-08-04' as date)
-                  and (cast('2001-08-04' as date) + interval 14 days)
+                  and (cast('2001-08-04' as date) +  INTERVAL '14 DAYS')
        and page_sk = cp_catalog_page_sk
  group by cp_catalog_page_id)
  ,
@@ -92,7 +92,7 @@ with ssr as
      web_site
  where date_sk = d_date_sk
        and d_date between cast('2001-08-04' as date)
-                  and (cast('2001-08-04' as date) + interval 14 days)
+                  and (cast('2001-08-04' as date) +  INTERVAL '14 DAYS')
        and wsr_web_site_sk = web_site_sk
  group by web_site_id)
   select  channel

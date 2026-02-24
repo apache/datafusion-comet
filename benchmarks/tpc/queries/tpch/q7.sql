@@ -1,4 +1,4 @@
--- CometBench-H query 7 derived from TPC-H query 7 under the terms of the TPC Fair Use Policy.
+-- SQLBench-H query 7 derived from TPC-H query 7 under the terms of the TPC Fair Use Policy.
 -- TPC-H queries are Copyright 1993-2022 Transaction Processing Performance Council.
 select
 	supp_nation,
