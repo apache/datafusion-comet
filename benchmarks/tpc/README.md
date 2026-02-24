@@ -280,12 +280,12 @@ docker compose -f benchmarks/tpc/infra/docker/docker-compose.yml \
 The `-p 4040:4040` flag exposes the Spark Application UI on the host. The following
 UIs are available during a benchmark run:
 
-| UI                | URL                   |
-| ----------------- | --------------------- |
-| Spark Master      | http://localhost:8080 |
-| Worker 1          | http://localhost:8081 |
-| Worker 2          | http://localhost:8082 |
-| Spark Application | http://localhost:4040 |
+| UI                | URL                    |
+| ----------------- | ---------------------- |
+| Spark Master      | http://localhost:8080  |
+| Worker 1          | http://localhost:8081  |
+| Worker 2          | http://localhost:8082  |
+| Spark Application | http://localhost:4040  |
 | History Server    | http://localhost:18080 |
 
 > **Note:** The Master UI links to the Application UI using the container's internal
