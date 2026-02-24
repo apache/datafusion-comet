@@ -39,7 +39,6 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-
 ## Usage
 
 All benchmarks are run via `run.py`:
@@ -48,17 +47,17 @@ All benchmarks are run via `run.py`:
 python3 run.py --engine <engine> --benchmark <tpch|tpcds> [options]
 ```
 
-| Option         | Description                                      |
-| -------------- | ------------------------------------------------ |
-| `--engine`     | Engine name (matches a TOML file in `engines/`)  |
-| `--benchmark`  | `tpch` or `tpcds`                                |
-| `--iterations` | Number of iterations (default: 1)                |
-| `--output`     | Output directory (default: `.`)                  |
-| `--query`      | Run a single query number                        |
-| `--no-restart`        | Skip Spark master/worker restart                     |
-| `--dry-run`           | Print the spark-submit command without executing     |
-| `--profile`           | Enable executor metrics profiling via Spark REST API |
-| `--profile-interval`  | Profiling poll interval in seconds (default: 2.0)    |
+| Option               | Description                                          |
+| -------------------- | ---------------------------------------------------- |
+| `--engine`           | Engine name (matches a TOML file in `engines/`)      |
+| `--benchmark`        | `tpch` or `tpcds`                                    |
+| `--iterations`       | Number of iterations (default: 1)                    |
+| `--output`           | Output directory (default: `.`)                      |
+| `--query`            | Run a single query number                            |
+| `--no-restart`       | Skip Spark master/worker restart                     |
+| `--dry-run`          | Print the spark-submit command without executing     |
+| `--profile`          | Enable executor metrics profiling via Spark REST API |
+| `--profile-interval` | Profiling poll interval in seconds (default: 2.0)    |
 
 Available engines: `spark`, `comet`, `comet-iceberg`, `gluten`
 
@@ -128,7 +127,6 @@ python3 run.py --engine comet --benchmark tpch --profile --profile-interval 1.0
 
 The output CSV is written to `{output}/{name}-{benchmark}-metrics.csv` and contains per-executor
 columns including `memoryUsed`, `maxMemory`, heap/off-heap storage metrics, and peak memory metrics.
-
 
 ## Engine Configuration
 
@@ -405,6 +403,32 @@ container, totaling approximately **12 GB** of memory.
 The benchmark scripts request 2 executor instances and 16 max cores by default
 (`run.py`). Spark will simply use whatever resources are available on the single worker,
 so no script changes are needed.
+
+### Quick start with docker-bench.sh
+
+The `docker-bench.sh` wrapper script orchestrates the full Docker lifecycle — start
+cluster, run benchmark, tear down — in a single command. The cluster is always torn
+down on exit, even on Ctrl-C or errors.
+
+```shell
+export DATA_DIR=/mnt/bigdata/tpch/sf100
+export COMET_JAR=/path/to/comet-spark-spark3.5_2.12-0.10.0.jar
+
+# Run a benchmark (starts cluster, runs benchmark, tears down)
+./benchmarks/tpc/docker-bench.sh --engine comet --benchmark tpch
+
+# With profiling
+./benchmarks/tpc/docker-bench.sh --engine comet --benchmark tpch --profile
+
+# Laptop mode (single worker, reduced memory)
+./benchmarks/tpc/docker-bench.sh --laptop --engine comet --benchmark tpch
+
+# Dry run (prints spark-submit command without executing)
+./benchmarks/tpc/docker-bench.sh --engine comet --benchmark tpch --dry-run
+```
+
+All arguments except `--laptop` are passed through to `run.py`. The script
+automatically adds `--output /results` and `--no-restart`.
 
 ### Comparing Parquet vs Iceberg performance
 
