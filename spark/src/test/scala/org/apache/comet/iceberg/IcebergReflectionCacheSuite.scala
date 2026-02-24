@@ -21,7 +21,7 @@ package org.apache.comet.iceberg
 
 import org.scalatest.funsuite.AnyFunSuite
 
-class ReflectionCacheSuite extends AnyFunSuite {
+class IcebergReflectionCacheSuite extends AnyFunSuite {
 
   private def icebergAvailable: Boolean = {
     try {
@@ -32,10 +32,10 @@ class ReflectionCacheSuite extends AnyFunSuite {
     }
   }
 
-  test("ReflectionCache.create() loads all Iceberg classes") {
+  test("IcebergReflectionCache.create() loads all Iceberg classes") {
     assume(icebergAvailable, "Iceberg not available in classpath")
 
-    val cache = ReflectionCache.create()
+    val cache = IcebergReflectionCache.create()
 
     assert(cache.contentScanTaskClass != null)
     assert(cache.fileScanTaskClass != null)
@@ -54,10 +54,10 @@ class ReflectionCacheSuite extends AnyFunSuite {
     assert(cache.partitionSpecClass.getName == IcebergReflection.ClassNames.PARTITION_SPEC)
   }
 
-  test("ReflectionCache.create() resolves all methods") {
+  test("IcebergReflectionCache.create() resolves all methods") {
     assume(icebergAvailable, "Iceberg not available in classpath")
 
-    val cache = ReflectionCache.create()
+    val cache = IcebergReflectionCache.create()
 
     assert(cache.fileMethod != null)
     assert(cache.startMethod != null)
@@ -88,29 +88,29 @@ class ReflectionCacheSuite extends AnyFunSuite {
     assert(cache.deleteEqualityIdsMethod.getName == "equalityFieldIds")
   }
 
-  test("ReflectionCache is reusable across multiple calls") {
+  test("IcebergReflectionCache is reusable across multiple calls") {
     assume(icebergAvailable, "Iceberg not available in classpath")
 
-    val cache = ReflectionCache.create()
+    val cache = IcebergReflectionCache.create()
 
     assert(cache.contentScanTaskClass != null)
     assert(cache.fileMethod != null)
     assert(cache.schemaToJsonMethod != null)
   }
 
-  test("ReflectionCache schemaToJsonMethod is accessible") {
+  test("IcebergReflectionCache schemaToJsonMethod is accessible") {
     assume(icebergAvailable, "Iceberg not available in classpath")
 
-    val cache = ReflectionCache.create()
+    val cache = IcebergReflectionCache.create()
 
     assert(cache.schemaToJsonMethod.isAccessible)
   }
 
-  test("Multiple ReflectionCache instances are independent") {
+  test("Multiple IcebergReflectionCache instances share underlying class references") {
     assume(icebergAvailable, "Iceberg not available in classpath")
 
-    val cache1 = ReflectionCache.create()
-    val cache2 = ReflectionCache.create()
+    val cache1 = IcebergReflectionCache.create()
+    val cache2 = IcebergReflectionCache.create()
 
     assert(cache1.contentScanTaskClass != null)
     assert(cache2.contentScanTaskClass != null)

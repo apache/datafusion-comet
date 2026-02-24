@@ -32,7 +32,7 @@ import org.apache.spark.sql.execution.datasources.v2.{BatchScanExec, DataSourceR
 import org.apache.spark.sql.types._
 
 import org.apache.comet.ConfigEntry
-import org.apache.comet.iceberg.{CometIcebergNativeScanMetadata, IcebergReflection, ReflectionCache}
+import org.apache.comet.iceberg.{CometIcebergNativeScanMetadata, IcebergReflection, IcebergReflectionCache}
 import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass}
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.OperatorOuterClass.{Operator, SparkStructField}
@@ -220,7 +220,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
 
   private def extractDeleteFilesList(
       task: Any,
-      cache: ReflectionCache): Seq[OperatorOuterClass.IcebergDeleteFile] = {
+      cache: IcebergReflectionCache): Seq[OperatorOuterClass.IcebergDeleteFile] = {
     try {
       val deletes = cache.deletesMethod.invoke(task).asInstanceOf[java.util.List[_]]
       val deletesList = if (deletes == null) new java.util.ArrayList[Any]() else deletes
@@ -290,7 +290,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
 
   private def serializePartitionData(
       task: Any,
-      cache: ReflectionCache,
+      cache: IcebergReflectionCache,
       taskBuilder: OperatorOuterClass.IcebergFileScanTask.Builder,
       commonBuilder: OperatorOuterClass.IcebergScanCommon.Builder,
       partitionTypeToPoolIndex: mutable.HashMap[String, Int],
@@ -743,7 +743,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       commonBuilder.addRequiredSchema(field.build())
     }
 
-    val cache = ReflectionCache.create()
+    val cache = IcebergReflectionCache.create()
     val fieldIdMappingCache = mutable.HashMap[AnyRef, Map[String, Int]]()
 
     scanExec.inputRDD match {

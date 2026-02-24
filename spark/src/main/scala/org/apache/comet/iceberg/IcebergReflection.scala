@@ -24,7 +24,7 @@ import java.lang.reflect.Method
 import org.apache.spark.internal.Logging
 
 /** Cached Iceberg classes and methods to avoid repeated reflection lookups. */
-case class ReflectionCache(
+case class IcebergReflectionCache(
     contentScanTaskClass: Class[_],
     fileScanTaskClass: Class[_],
     contentFileClass: Class[_],
@@ -47,9 +47,9 @@ case class ReflectionCache(
     deleteSpecIdMethod: Method,
     deleteEqualityIdsMethod: Method)
 
-object ReflectionCache extends Logging {
+object IcebergReflectionCache extends Logging {
 
-  def create(): ReflectionCache = {
+  def create(): IcebergReflectionCache = {
     // scalastyle:off classforname
     val contentScanTaskClass = Class.forName(IcebergReflection.ClassNames.CONTENT_SCAN_TASK)
     val fileScanTaskClass = Class.forName(IcebergReflection.ClassNames.FILE_SCAN_TASK)
@@ -77,7 +77,7 @@ object ReflectionCache extends Logging {
     val deleteSpecIdMethod = deleteFileClass.getMethod("specId")
     val deleteEqualityIdsMethod = deleteFileClass.getMethod("equalityFieldIds")
 
-    ReflectionCache(
+    IcebergReflectionCache(
       contentScanTaskClass = contentScanTaskClass,
       fileScanTaskClass = fileScanTaskClass,
       contentFileClass = contentFileClass,
