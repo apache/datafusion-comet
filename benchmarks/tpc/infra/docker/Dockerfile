@@ -43,10 +43,16 @@ ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk
 # Copy the benchmark scripts into the image.
 COPY benchmarks/tpc/run.py              /opt/benchmarks/run.py
 COPY benchmarks/tpc/tpcbench.py         /opt/benchmarks/tpcbench.py
+COPY benchmarks/tpc/profiling.py        /opt/benchmarks/profiling.py
 COPY benchmarks/tpc/engines             /opt/benchmarks/engines
 COPY benchmarks/tpc/queries             /opt/benchmarks/queries
 COPY benchmarks/tpc/create-iceberg-tables.py /opt/benchmarks/create-iceberg-tables.py
 COPY benchmarks/tpc/generate-comparison.py   /opt/benchmarks/generate-comparison.py
+COPY benchmarks/tpc/visualize-metrics.py     /opt/benchmarks/visualize-metrics.py
+
+# Copy the metrics collector script.
+COPY benchmarks/tpc/infra/docker/collect-metrics.sh /opt/benchmarks/collect-metrics.sh
+RUN chmod +x /opt/benchmarks/collect-metrics.sh
 
 # Engine JARs are bind-mounted or copied in at runtime via --jars.
 # Data and query paths are also bind-mounted.

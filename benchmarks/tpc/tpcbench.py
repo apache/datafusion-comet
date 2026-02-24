@@ -58,6 +58,8 @@ def main(
     query_num: int = None,
     write_path: str = None,
     options: Dict[str, str] = None,
+    profile: bool = False,
+    profile_interval: float = 2.0,
 ):
     if options is None:
         options = {}
@@ -69,6 +71,12 @@ def main(
     spark = SparkSession.builder \
         .appName(f"{name} benchmark derived from {benchmark}") \
         .getOrCreate()
+
+    profiler = None
+    if profile:
+        from profiling import SparkMetricsProfiler
+        profiler = SparkMetricsProfiler(spark, interval_secs=profile_interval)
+        profiler.start()
 
     # Define tables for each benchmark
     if benchmark == "tpch":
@@ -182,6 +190,12 @@ def main(
     with open(results_path, "w") as f:
         f.write(result_str)
 
+    if profiler is not None:
+        profiler.stop()
+        metrics_path = f"{output}/{name}-{benchmark}-metrics.csv"
+        profiler.write_csv(metrics_path)
+        profiler.snapshot_cgroup_metrics(output, name, benchmark)
+
     spark.stop()
 
 
@@ -241,6 +255,14 @@ if __name__ == "__main__":
         "--write",
         help="Path to save query results as Parquet"
     )
+    parser.add_argument(
+        "--profile", action="store_true",
+        help="Enable executor metrics profiling via Spark REST API"
+    )
+    parser.add_argument(
+        "--profile-interval", type=float, default=2.0,
+        help="Profiling poll interval in seconds (default: 2.0)"
+    )
     args = parser.parse_args()
 
     main(
@@ -255,4 +277,6 @@ if __name__ == "__main__":
         args.query,
         args.write,
         args.options,
+        args.profile,
+        args.profile_interval,
     )

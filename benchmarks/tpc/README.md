@@ -30,6 +30,16 @@ For full instructions on running these benchmarks on an EC2 instance, see the [C
 
 TPC queries are bundled in `benchmarks/tpc/queries/` (derived from TPC-H/DS under the TPC Fair Use Policy).
 
+Create a virtual environment and install dependencies:
+
+```shell
+cd benchmarks/tpc
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+
 ## Usage
 
 All benchmarks are run via `run.py`:
@@ -45,8 +55,10 @@ python3 run.py --engine <engine> --benchmark <tpch|tpcds> [options]
 | `--iterations` | Number of iterations (default: 1)                |
 | `--output`     | Output directory (default: `.`)                  |
 | `--query`      | Run a single query number                        |
-| `--no-restart` | Skip Spark master/worker restart                 |
-| `--dry-run`    | Print the spark-submit command without executing |
+| `--no-restart`        | Skip Spark master/worker restart                     |
+| `--dry-run`           | Print the spark-submit command without executing     |
+| `--profile`           | Enable executor metrics profiling via Spark REST API |
+| `--profile-interval`  | Profiling poll interval in seconds (default: 2.0)    |
 
 Available engines: `spark`, `comet`, `comet-iceberg`, `gluten`
 
@@ -102,6 +114,21 @@ Generating charts:
 ```shell
 python3 generate-comparison.py --benchmark tpch --labels "Spark 3.5.3" "Comet 0.9.0" "Gluten 1.4.0" --title "TPC-H @ 100 GB (single executor, 8 cores, local Parquet files)" spark-tpch-1752338506381.json comet-tpch-1752337818039.json gluten-tpch-1752337474344.json
 ```
+
+## Profiling
+
+Use `--profile` to collect executor memory metrics from the Spark REST API during the benchmark run.
+A background thread polls `/api/v1/applications/{appId}/executors` at a configurable interval and
+writes the time-series data to a CSV file alongside the benchmark results.
+
+```shell
+python3 run.py --engine comet --benchmark tpch --profile
+python3 run.py --engine comet --benchmark tpch --profile --profile-interval 1.0
+```
+
+The output CSV is written to `{output}/{name}-{benchmark}-metrics.csv` and contains per-executor
+columns including `memoryUsed`, `maxMemory`, heap/off-heap storage metrics, and peak memory metrics.
+
 
 ## Engine Configuration
 
@@ -268,7 +295,8 @@ between versions by changing the path and restarting.
 Use `docker compose run --rm` to execute benchmarks. The `--rm` flag removes the
 container when it exits, preventing port conflicts on subsequent runs. Pass
 `--no-restart` since the cluster is already managed by Compose, and `--output /results`
-so that output files land in the mounted results directory:
+so that output files land in the mounted results directory (alongside cgroup metrics
+CSVs):
 
 ```shell
 docker compose -f benchmarks/tpc/infra/docker/docker-compose.yml \
@@ -315,7 +343,7 @@ docker compose -f benchmarks/tpc/infra/docker/docker-compose.yml \
 > `sun.misc.Unsafe` errors. Unset `BENCH_JAVA_HOME` (or switch it back to Java 17)
 > and restart the cluster before running Comet or Spark benchmarks.
 
-### Memory limits
+### Memory limits and metrics
 
 Two compose files are provided for different hardware profiles:
 
@@ -335,7 +363,32 @@ Two compose files are provided for different hardware profiles:
 
 Configure via environment variables: `WORKER_MEM_LIMIT` (default: 32g per worker),
 `BENCH_MEM_LIMIT` (default: 10g), `WORKER_MEMORY` (default: 16g, Spark executor memory),
-`WORKER_CORES` (default: 8).
+`WORKER_CORES` (default: 8), `METRICS_INTERVAL` (default: 1 second).
+
+A metrics-collector sidecar runs alongside each worker to collect cgroup metrics.
+Raw cgroup metrics are continuously written to
+`$RESULTS_DIR/container-metrics-spark-worker-{1,2}.csv`. These files are overwritten each
+time the cluster restarts.
+
+When `--profile` is used, the profiler automatically snapshots the cgroup data for the
+benchmark time window, producing per-engine files:
+
+- `{name}-{benchmark}-metrics.csv` -- JVM executor metrics
+- `{name}-{benchmark}-container-metrics-spark-worker-1.csv` -- cgroup snapshot for worker 1
+- `{name}-{benchmark}-container-metrics-spark-worker-2.csv` -- cgroup snapshot for worker 2
+
+This ensures each engine run has its own paired JVM + cgroup dataset even when multiple
+engines are benchmarked on the same cluster.
+
+Use `visualize-metrics.py` to generate memory charts from these files:
+
+```shell
+python3 visualize-metrics.py \
+    --jvm-metrics /tmp/bench-results/comet-tpch-metrics.csv \
+    --cgroup-metrics /tmp/bench-results/comet-tpch-container-metrics-spark-worker-1.csv \
+                     /tmp/bench-results/comet-tpch-container-metrics-spark-worker-2.csv \
+    --output-dir /tmp/comet-charts --title "Comet TPC-H"
+```
 
 ### Running on a laptop with small scale factors
 
