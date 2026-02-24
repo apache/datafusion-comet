@@ -17,19 +17,88 @@
 
 import argparse
 import json
+import logging
 import matplotlib.pyplot as plt
 import numpy as np
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 def geomean(data):
     return np.prod(data) ** (1 / len(data))
 
-def generate_query_rel_speedup_chart(baseline, comparison, label1: str, label2: str, benchmark: str, title: str):
+def get_durations(result, query_key):
+    """Extract durations from a query result, supporting both old (list) and new (dict) formats."""
+    value = result[query_key]
+    if isinstance(value, dict):
+        return value["durations"]
+    return value
+
+def get_all_queries(results):
+    """Return the sorted union of all query keys across all result sets."""
+    all_keys = set()
+    for result in results:
+        all_keys.update(result.keys())
+    # Filter to numeric query keys and sort numerically
+    numeric_keys = []
+    for k in all_keys:
+        try:
+            numeric_keys.append(int(k))
+        except ValueError:
+            pass
+    return sorted(numeric_keys)
+
+def get_common_queries(results, labels):
+    """Return queries present in ALL result sets, warning about queries missing from some files."""
+    all_queries = get_all_queries(results)
+    common = []
+    for query in all_queries:
+        key = str(query)
+        present = [labels[i] for i, r in enumerate(results) if key in r]
+        missing = [labels[i] for i, r in enumerate(results) if key not in r]
+        if missing:
+            logger.warning(f"Query {query}: present in [{', '.join(present)}] but missing from [{', '.join(missing)}]")
+        if not missing:
+            common.append(query)
+    return common
+
+def check_result_consistency(results, labels, benchmark):
+    """Log warnings if row counts or result hashes differ across result sets."""
+    all_queries = get_all_queries(results)
+    for query in all_queries:
+        key = str(query)
+        row_counts = []
+        hashes = []
+        for i, result in enumerate(results):
+            if key not in result:
+                continue
+            value = result[key]
+            if not isinstance(value, dict):
+                continue
+            if "row_count" in value:
+                row_counts.append((labels[i], value["row_count"]))
+            if "result_hash" in value:
+                hashes.append((labels[i], value["result_hash"]))
+
+        if len(row_counts) > 1:
+            counts = set(rc for _, rc in row_counts)
+            if len(counts) > 1:
+                details = ", ".join(f"{label}={rc}" for label, rc in row_counts)
+                logger.warning(f"Query {query}: row count mismatch: {details}")
+
+        if len(hashes) > 1:
+            hash_values = set(h for _, h in hashes)
+            if len(hash_values) > 1:
+                details = ", ".join(f"{label}={h}" for label, h in hashes)
+                logger.warning(f"Query {query}: result hash mismatch: {details}")
+
+def generate_query_rel_speedup_chart(baseline, comparison, label1: str, label2: str, benchmark: str, title: str, common_queries=None):
+    if common_queries is None:
+        common_queries = range(1, query_count(benchmark)+1)
     results = []
-    for query in range(1, query_count(benchmark)+1):
-        if query == 999:
-            continue
-        a = np.median(np.array(baseline[str(query)]))
-        b = np.median(np.array(comparison[str(query)]))
+    for query in common_queries:
+        a = np.median(np.array(get_durations(baseline, str(query))))
+        b = np.median(np.array(get_durations(comparison, str(query))))
         if a > b:
             speedup = a/b-1
         else:
@@ -80,13 +149,13 @@ def generate_query_rel_speedup_chart(baseline, comparison, label1: str, label2: 
     # Save the plot as an image file
     plt.savefig(f'{benchmark}_queries_speedup_rel.png', format='png')
 
-def generate_query_abs_speedup_chart(baseline, comparison, label1: str, label2: str, benchmark: str, title: str):
+def generate_query_abs_speedup_chart(baseline, comparison, label1: str, label2: str, benchmark: str, title: str, common_queries=None):
+    if common_queries is None:
+        common_queries = range(1, query_count(benchmark)+1)
     results = []
-    for query in range(1, query_count(benchmark)+1):
-        if query == 999:
-            continue
-        a = np.median(np.array(baseline[str(query)]))
-        b = np.median(np.array(comparison[str(query)]))
+    for query in common_queries:
+        a = np.median(np.array(get_durations(baseline, str(query))))
+        b = np.median(np.array(get_durations(comparison, str(query))))
         speedup = a-b
         results.append(("q" + str(query), round(speedup, 1)))
 
@@ -130,17 +199,17 @@ def generate_query_abs_speedup_chart(baseline, comparison, label1: str, label2: 
     # Save the plot as an image file
     plt.savefig(f'{benchmark}_queries_speedup_abs.png', format='png')
 
-def generate_query_comparison_chart(results, labels, benchmark: str, title: str):
+def generate_query_comparison_chart(results, labels, benchmark: str, title: str, common_queries=None):
+    if common_queries is None:
+        common_queries = range(1, query_count(benchmark)+1)
     queries = []
     benches = []
     for _ in results:
         benches.append([])
-    for query in range(1, query_count(benchmark)+1):
-        if query == 999:
-            continue
+    for query in common_queries:
         queries.append("q" + str(query))
         for i in range(0, len(results)):
-            benches[i].append(np.median(np.array(results[i][str(query)])))
+            benches[i].append(np.median(np.array(get_durations(results[i], str(query)))))
 
     # Define the width of the bars
     bar_width = 0.3
@@ -168,17 +237,17 @@ def generate_query_comparison_chart(results, labels, benchmark: str, title: str)
     # Save the plot as an image file
     plt.savefig(f'{benchmark}_queries_compare.png', format='png')
 
-def generate_summary(results, labels, benchmark: str, title: str):
+def generate_summary(results, labels, benchmark: str, title: str, common_queries=None):
+    if common_queries is None:
+        common_queries = range(1, query_count(benchmark)+1)
     timings = []
     for _ in results:
         timings.append(0)
 
-    num_queries = query_count(benchmark)
-    for query in range(1, num_queries + 1):
-        if query == 999:
-            continue
+    num_queries = len([q for q in common_queries])
+    for query in common_queries:
         for i in range(0, len(results)):
-            timings[i] += np.median(np.array(results[i][str(query)]))
+            timings[i] += np.median(np.array(get_durations(results[i], str(query))))
 
     # Create figure and axis
     fig, ax = plt.subplots()
@@ -186,7 +255,7 @@ def generate_summary(results, labels, benchmark: str, title: str):
 
     # Add title and labels
     ax.set_title(title)
-    ax.set_ylabel(f'Time in seconds to run all {num_queries} {benchmark} queries (lower is better)')
+    ax.set_ylabel(f'Time in seconds to run {num_queries} {benchmark} queries (lower is better)')
 
     times = [round(x,0) for x in timings]
 
@@ -213,11 +282,16 @@ def main(files, labels, benchmark: str, title: str):
     for filename in files:
         with open(filename) as f:
             results.append(json.load(f))
-    generate_summary(results, labels, benchmark, title)
-    generate_query_comparison_chart(results, labels, benchmark, title)
+    check_result_consistency(results, labels, benchmark)
+    common_queries = get_common_queries(results, labels)
+    if not common_queries:
+        logger.error("No queries found in common across all result files")
+        return
+    generate_summary(results, labels, benchmark, title, common_queries)
+    generate_query_comparison_chart(results, labels, benchmark, title, common_queries)
     if len(files) == 2:
-        generate_query_abs_speedup_chart(results[0], results[1], labels[0], labels[1], benchmark, title)
-        generate_query_rel_speedup_chart(results[0], results[1], labels[0], labels[1], benchmark, title)
+        generate_query_abs_speedup_chart(results[0], results[1], labels[0], labels[1], benchmark, title, common_queries)
+        generate_query_rel_speedup_chart(results[0], results[1], labels[0], labels[1], benchmark, title, common_queries)
 
 if __name__ == '__main__':
     argparse = argparse.ArgumentParser(description='Generate comparison')

@@ -16,7 +16,7 @@
 # under the License.
 
 [engine]
-name = "comet"
+name = "comet-hashjoin"
 
 [env]
 required = ["COMET_JAR"]
@@ -31,4 +31,5 @@ driver_class_path = ["$COMET_JAR"]
 "spark.plugins" = "org.apache.spark.CometPlugin"
 "spark.shuffle.manager" = "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager"
 "spark.comet.scan.impl" = "native_datafusion"
+"spark.comet.exec.replaceSortMergeJoin" = "true"
 "spark.comet.expression.Cast.allowIncompatible" = "true"

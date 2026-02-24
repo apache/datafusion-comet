@@ -93,5 +93,6 @@ services:
       - ICEBERG_JAR=/jars/iceberg.jar
       - TPCH_DATA=/data
       - TPCDS_DATA=/data
+      - SPARK_EVENT_LOG_DIR=/results/spark-events
     mem_limit: 4g
     memswap_limit: 4g

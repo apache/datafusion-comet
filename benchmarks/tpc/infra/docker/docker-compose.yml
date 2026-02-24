@@ -107,6 +107,7 @@ services:
       - ICEBERG_JAR=/jars/iceberg.jar
       - TPCH_DATA=/data
       - TPCDS_DATA=/data
+      - SPARK_EVENT_LOG_DIR=/results/spark-events
     mem_limit: ${BENCH_MEM_LIMIT:-10g}
     memswap_limit: ${BENCH_MEM_LIMIT:-10g}
 
