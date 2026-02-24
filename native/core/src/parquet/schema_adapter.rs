@@ -17,7 +17,6 @@
 
 use crate::parquet::cast_column::CometCastColumnExpr;
 use crate::parquet::parquet_support::{spark_parquet_convert, SparkParquetOptions};
-use arrow::array::{ArrayRef, RecordBatch};
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNode};
 use datafusion::common::Result as DataFusionResult;
@@ -429,47 +428,6 @@ impl SparkPhysicalExprAdapter {
 
         replace_columns_with_literals(expr, &name_based)
     }
-}
-
-/// Adapt a batch to match the target schema using expression evaluation.
-///
-/// This function is useful for cases like Iceberg scanning where batches
-/// are read directly and need to be adapted to the expected schema.
-///
-/// The caller provides the `adapter` which handles schema mapping and
-/// expression rewriting. This allows the caller to cache and reuse the
-/// adapter across multiple batches with the same file schema.
-pub fn adapt_batch_with_expressions(
-    batch: RecordBatch,
-    target_schema: &SchemaRef,
-    adapter: &Arc<dyn PhysicalExprAdapter>,
-) -> DataFusionResult<RecordBatch> {
-    // If schemas match, no adaptation needed
-    if batch.schema().as_ref() == target_schema.as_ref() {
-        return Ok(batch);
-    }
-
-    // Create column projection expressions for target schema
-    let projection_exprs: Vec<Arc<dyn PhysicalExpr>> = target_schema
-        .fields()
-        .iter()
-        .enumerate()
-        .map(|(i, _field)| {
-            let col_expr: Arc<dyn PhysicalExpr> = Arc::new(Column::new_with_schema(
-                target_schema.field(i).name(),
-                target_schema.as_ref(),
-            )?);
-            adapter.rewrite(col_expr)
-        })
-        .collect::<DataFusionResult<Vec<_>>>()?;
-
-    // Evaluate expressions against batch
-    let columns: Vec<ArrayRef> = projection_exprs
-        .iter()
-        .map(|expr| expr.evaluate(&batch)?.into_array(batch.num_rows()))
-        .collect::<DataFusionResult<Vec<_>>>()?;
-
-    RecordBatch::try_new(Arc::clone(target_schema), columns).map_err(|e| e.into())
 }
 
 #[cfg(test)]
