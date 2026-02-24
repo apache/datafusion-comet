@@ -27,6 +27,7 @@ import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.comet.{CometBatchScanExec, CometNativeScanExec, CometNativeWriteExec, CometScanExec}
 import org.apache.spark.sql.execution.{FileSourceScanExec, QueryExecution, SparkPlan}
 import org.apache.spark.sql.execution.command.DataWritingCommandExec
+import org.apache.spark.sql.functions.{col, lit}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.StructType
 
@@ -549,4 +550,95 @@ class CometParquetWriterSuite extends CometTestBase {
     rows
   }
 
+  test("partitioned parquet write") {
+    withTempPath { dir =>
+      val outputPath = dir.getAbsolutePath
+      withTempPath { inputDir =>
+        val inputPath = createTestData(inputDir)
+
+        withSQLConf(
+          CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
+          SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Halifax",
+          CometConf.getOperatorAllowIncompatConfigKey(classOf[DataWritingCommandExec]) -> "true",
+          CometConf.COMET_EXEC_ENABLED.key -> "true") {
+
+          val df = spark.read.parquet(inputPath)
+          // Pick first column to partition by
+          val partCols = df.columns.take(3)
+
+          val uniquePartitions = df.select(partCols.map(col): _*).distinct().collect()
+          val expectedPaths = uniquePartitions.map { row =>
+            partCols.zipWithIndex
+              .map { case (colName, i) =>
+                val value =
+                  if (row.isNullAt(i)) "__HIVE_DEFAULT_PARTITION__" else row.get(i).toString
+                s"$colName=$value"
+              }
+              .mkString("/")
+          }.toSet
+
+          df.write.partitionBy(partCols: _*).parquet(outputPath)
+
+          val result = spark.read.parquet(outputPath)
+          val actualFiles = result.inputFiles
+          actualFiles.foreach { filePath =>
+            val matchesPartition = expectedPaths.exists(p => filePath.contains(p))
+            assert(
+              matchesPartition,
+              s"File $filePath doesn't match any expected partition: $expectedPaths")
+          }
+          // Verify data
+          assert(result.count() == 1000)
+        }
+      }
+    }
+  }
+
+  test("partitioned write - data correctness per partition") {
+    withTempPath { dir =>
+      val outputPath = new File(dir, "output").getAbsolutePath
+
+      withTempPath { inputDir =>
+        val inputPath = createTestData(inputDir)
+
+        withSQLConf(
+          CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
+          CometConf.getOperatorAllowIncompatConfigKey(
+            classOf[DataWritingCommandExec]) -> "true") {
+
+          val inputDf = spark.read.parquet(inputPath).filter(col("c1") <= lit(10))
+          val partCols = inputDf.columns.take(2)
+          val col1 = partCols(0)
+          val col2 = partCols(1)
+
+          inputDf.write.partitionBy(partCols: _*).parquet(outputPath)
+
+          // unique combinations
+          val combinations = inputDf
+            .select(partCols.head, partCols.last)
+            .distinct()
+            .collect()
+            .map(r => (r.getBoolean(0), r.getByte(1)))
+
+          combinations.foreach { tuple =>
+            val val1 = tuple._1
+            val val2 = tuple._2
+
+            val partitionPath = s"$outputPath/${partCols.head}=$val1/${partCols.last}=$val2"
+
+            val actualDf = spark.read.parquet(partitionPath)
+            val expectedDf = inputDf
+              .filter(col(col1) === val1)
+              .filter(col(col2) === val2)
+              .drop(col1, col2)
+
+            checkAnswer(actualDf, expectedDf)
+          }
+
+          // Verify total count as well
+          checkAnswer(spark.read.parquet(outputPath), inputDf)
+        }
+      }
+    }
+  }
 }
