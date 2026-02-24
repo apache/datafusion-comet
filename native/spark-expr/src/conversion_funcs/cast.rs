@@ -31,11 +31,11 @@ use crate::{EvalMode, SparkError, SparkResult};
 use arrow::array::builder::StringBuilder;
 use arrow::array::{
     BinaryBuilder, BooleanBuilder, Decimal128Builder, DictionaryArray, GenericByteArray, ListArray,
-    StringArray, StructArray, TimestampMicrosecondBuilder,
+    MapArray, StringArray, StructArray, TimestampMicrosecondBuilder,
 };
 use arrow::compute::can_cast_types;
-use arrow::datatypes::GenericBinaryType;
 use arrow::datatypes::{ArrowDictionaryKeyType, ArrowNativeType, DataType, Schema};
+use arrow::datatypes::{Field, Fields, GenericBinaryType};
 use arrow::error::ArrowError;
 use arrow::{
     array::{
