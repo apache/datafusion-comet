@@ -383,9 +383,18 @@ object CometStringSplit extends CometExpressionSerde[StringSplit] {
 }
 
 object CometParseUrl extends CometExpressionSerde[ParseUrl] {
+  private def failOnErrorFromChildren(rawChildren: Seq[Expression]): Option[Boolean] = {
+    rawChildren.lastOption.flatMap {
+      case Literal(value: Boolean, _) => Some(value)
+      case Literal(value: java.lang.Boolean, _) => Some(value.booleanValue())
+      case _ => None
+    }
+  }
+
   private def convertInternal(
       expr: Expression,
       rawChildren: Seq[Expression],
+      failOnError: Option[Boolean],
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
     val parseUrlArgs: Seq[Expression] = rawChildren.lastOption match {
@@ -393,20 +402,30 @@ object CometParseUrl extends CometExpressionSerde[ParseUrl] {
       case Some(Literal(_: java.lang.Boolean, _)) => rawChildren.dropRight(1)
       case _ => rawChildren
     }
+
+    val shouldFailOnError: Boolean =
+      failOnError.orElse(failOnErrorFromChildren(rawChildren)).getOrElse(true)
+    val functionName: String = if (shouldFailOnError) {
+      "parse_url"
+    } else {
+      "try_parse_url"
+    }
+
     val childExprs: Seq[Option[Expr]] = parseUrlArgs.map(exprToProtoInternal(_, inputs, binding))
-    val optExpr: Option[Expr] = scalarFunctionExprToProto("parse_url", childExprs: _*)
+    val optExpr: Option[Expr] = scalarFunctionExprToProto(functionName, childExprs: _*)
     optExprWithInfo(optExpr, expr, parseUrlArgs: _*)
   }
 
   def convertExpression(
       expr: Expression,
       inputs: Seq[Attribute],
-      binding: Boolean): Option[Expr] = {
-    convertInternal(expr, expr.children, inputs, binding)
+      binding: Boolean,
+      failOnError: Option[Boolean] = None): Option[Expr] = {
+    convertInternal(expr, expr.children, failOnError, inputs, binding)
   }
 
   override def convert(expr: ParseUrl, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
-    convertInternal(expr, expr.children, inputs, binding)
+    convertInternal(expr, expr.children, None, inputs, binding)
   }
 }
 

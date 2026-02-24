@@ -20,14 +20,15 @@
 package org.apache.comet.shims
 
 import org.apache.spark.sql.catalyst.expressions._
-import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
+import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
+import org.apache.spark.sql.catalyst.expressions.url.ParseUrlEvaluator
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.types.StringTypeWithCollation
 import org.apache.spark.sql.types.{BinaryType, BooleanType, DataTypes, StringType}
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
-import org.apache.comet.serde.{CommonStringExprs, Compatible, ExprOuterClass, Incompatible}
+import org.apache.comet.serde.{CometParseUrl, CommonStringExprs, Compatible, ExprOuterClass, Incompatible}
 import org.apache.comet.serde.ExprOuterClass.{BinaryOutputStyle, Expr}
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
 
@@ -67,6 +68,18 @@ trait CometExprShim extends CommonStringExprs {
               BooleanType) =>
         val Seq(bin, charset, _, _) = s.arguments
         stringDecode(expr, charset, bin, inputs, binding)
+
+      case i: Invoke if i.functionName == "evaluate" =>
+        i.targetObject match {
+          case Literal(parseUrlEvaluator: ParseUrlEvaluator, _) =>
+            CometParseUrl.convertExpression(
+              i,
+              inputs,
+              binding,
+              Some(parseUrlEvaluator.failOnError))
+          case _ =>
+            None
+        }
 
       case expr @ ToPrettyString(child, timeZoneId) =>
         val castSupported = CometCast.isSupported(
