@@ -2835,12 +2835,12 @@ index c97979a57a5..45a998db0e0 100644
          case l: StreamingLocalLimitExec => l
 +        case l: CometLocalLimitExec => l
        }
- 
+
        require(
          localLimits.size == 1,
 -        s"Cant verify local limit optimization with this plan:\n$execPlan")
 +        s"Cant verify local limit optimization ${localLimits.size} with this plan:\n$execPlan")
- 
+
        if (expectStreamingLimit) {
          assert(
 @@ -1126,7 +1128,8 @@ class StreamSuite extends StreamTest {
@@ -2859,7 +2859,7 @@ index b4c4ec7acbf..20579284856 100644
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamingAggregationDistributionSuite.scala
 @@ -23,6 +23,7 @@ import org.apache.commons.io.FileUtils
  import org.scalatest.Assertions
- 
+
  import org.apache.spark.sql.catalyst.plans.physical.UnspecifiedDistribution
 +import org.apache.spark.sql.comet.CometHashAggregateExec
  import org.apache.spark.sql.execution.aggregate.BaseAggregateExec
@@ -2871,7 +2871,7 @@ index b4c4ec7acbf..20579284856 100644
            case a: BaseAggregateExec => a
 +          case c: CometHashAggregateExec => c.originalPlan
          }
- 
+
          val aggregateExecsWithoutPartialAgg = allAggregateExecs.filter {
 @@ -201,6 +203,7 @@ class StreamingAggregationDistributionSuite extends StreamTest
          // verify aggregations in between, except partial aggregation
@@ -2879,7 +2879,7 @@ index b4c4ec7acbf..20579284856 100644
            case a: BaseAggregateExec => a
 +          case c: CometHashAggregateExec => c.originalPlan
          }
- 
+
          val aggregateExecsWithoutPartialAgg = allAggregateExecs.filter {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamingJoinSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamingJoinSuite.scala
 index aad91601758..201083bd621 100644
@@ -2895,9 +2895,9 @@ index aad91601758..201083bd621 100644
  import org.apache.spark.sql.execution.streaming.state.{RocksDBStateStoreProvider, StateStore, StateStoreProviderId}
  import org.apache.spark.sql.functions._
 @@ -619,14 +619,27 @@ class StreamingInnerJoinSuite extends StreamingJoinSuite {
- 
+
          val numPartitions = spark.sqlContext.conf.getConf(SQLConf.SHUFFLE_PARTITIONS)
- 
+
 -        assert(query.lastExecution.executedPlan.collect {
 -          case j @ StreamingSymmetricHashJoinExec(_, _, _, _, _, _, _, _, _,
 -            ShuffleExchangeExec(opA: HashPartitioning, _, _, _),
@@ -2929,13 +2929,13 @@ index aad91601758..201083bd621 100644
 +        assert(opA.numPartitions == numPartitions && opB.numPartitions == numPartitions)
        })
    }
- 
+
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamingQuerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamingQuerySuite.scala
 index b5cf13a9c12..ac17603fb7f 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamingQuerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamingQuerySuite.scala
 @@ -36,7 +36,7 @@ import org.scalatestplus.mockito.MockitoSugar
- 
+
  import org.apache.spark.{SparkException, TestUtils}
  import org.apache.spark.internal.Logging
 -import org.apache.spark.sql.{AnalysisException, Column, DataFrame, Dataset, Row, SaveMode}
@@ -2946,7 +2946,7 @@ index b5cf13a9c12..ac17603fb7f 100644
 @@ -660,7 +660,8 @@ class StreamingQuerySuite extends StreamTest with BeforeAndAfter with Logging wi
      )
    }
- 
+
 -  test("SPARK-41198: input row calculation with CTE") {
 +  test("SPARK-41198: input row calculation with CTE",
 +    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3315")) {
@@ -2956,7 +2956,7 @@ index b5cf13a9c12..ac17603fb7f 100644
 @@ -712,7 +713,8 @@ class StreamingQuerySuite extends StreamTest with BeforeAndAfter with Logging wi
      }
    }
- 
+
 -  test("SPARK-41199: input row calculation with mixed-up of DSv1 and DSv2 streaming sources") {
 +  test("SPARK-41199: input row calculation with mixed-up of DSv1 and DSv2 streaming sources",
 +    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3315")) {
@@ -2970,7 +2970,7 @@ index 8f099c31e6b..ce4b7ad25b3 100644
 @@ -20,7 +20,7 @@ package org.apache.spark.sql.streaming
  import org.scalatest.BeforeAndAfter
  import org.scalatest.concurrent.PatienceConfiguration.Timeout
- 
+
 -import org.apache.spark.sql.SaveMode
 +import org.apache.spark.sql.{IgnoreCometNativeDataFusion, SaveMode}
  import org.apache.spark.sql.connector.catalog.Identifier
@@ -2979,7 +2979,7 @@ index 8f099c31e6b..ce4b7ad25b3 100644
 @@ -42,7 +42,8 @@ class StreamingSelfUnionSuite extends StreamTest with BeforeAndAfter {
      sqlContext.streams.active.foreach(_.stop())
    }
- 
+
 -  test("self-union, DSv1, read via DataStreamReader API") {
 +  test("self-union, DSv1, read via DataStreamReader API",
 +    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3401")) {
@@ -2989,21 +2989,21 @@ index 8f099c31e6b..ce4b7ad25b3 100644
 @@ -66,7 +67,8 @@ class StreamingSelfUnionSuite extends StreamTest with BeforeAndAfter {
      }
    }
- 
+
 -  test("self-union, DSv1, read via table API") {
 +  test("self-union, DSv1, read via table API",
 +    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3401")) {
      withTable("parquet_streaming_tbl") {
        spark.sql("CREATE TABLE parquet_streaming_tbl (key integer) USING parquet")
- 
+
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/streaming/test/DataStreamTableAPISuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/streaming/test/DataStreamTableAPISuite.scala
 index abe606ad9c1..2d930b64cca 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/streaming/test/DataStreamTableAPISuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/streaming/test/DataStreamTableAPISuite.scala
 @@ -22,7 +22,7 @@ import java.util
- 
+
  import org.scalatest.BeforeAndAfter
- 
+
 -import org.apache.spark.sql.{AnalysisException, Row, SaveMode}
 +import org.apache.spark.sql.{AnalysisException, IgnoreComet, Row, SaveMode}
  import org.apache.spark.sql.catalyst.TableIdentifier
@@ -3012,7 +3012,7 @@ index abe606ad9c1..2d930b64cca 100644
 @@ -327,7 +327,8 @@ class DataStreamTableAPISuite extends StreamTest with BeforeAndAfter {
      }
    }
- 
+
 -  test("explain with table on DSv1 data source") {
 +  test("explain with table on DSv1 data source",
 +      IgnoreComet("Comet explain output is different")) {
@@ -3026,7 +3026,7 @@ index e937173a590..7d20538bc68 100644
 @@ -27,6 +27,7 @@ import scala.concurrent.duration._
  import scala.language.implicitConversions
  import scala.util.control.NonFatal
- 
+
 +import org.apache.comet.CometConf
  import org.apache.hadoop.fs.Path
  import org.scalactic.source.Position
@@ -3040,7 +3040,7 @@ index e937173a590..7d20538bc68 100644
  import org.apache.spark.sql.execution.adaptive.DisableAdaptiveExecution
  import org.apache.spark.sql.execution.datasources.DataSourceUtils
 @@ -119,6 +121,34 @@ private[sql] trait SQLTestUtils extends SparkFunSuite with SQLTestUtilsBase with
- 
+
    override protected def test(testName: String, testTags: Tag*)(testFun: => Any)
        (implicit pos: Position): Unit = {
 +    // Check Comet skip tags first, before DisableAdaptiveExecution handling
@@ -3077,7 +3077,7 @@ index e937173a590..7d20538bc68 100644
 @@ -242,6 +272,29 @@ private[sql] trait SQLTestUtilsBase
      protected override def _sqlContext: SQLContext = self.spark.sqlContext
    }
- 
+
 +  /**
 +   * Whether Comet extension is enabled
 +   */
@@ -3111,7 +3111,7 @@ index e937173a590..7d20538bc68 100644
 +      case CometFilterExec(_, _, _, _, child, _) => child
 +      case CometProjectExec(_, _, _, _, CometFilterExec(_, _, _, _, child, _), _) => child
      }
- 
+
      spark.internalCreateDataFrame(withoutFilters.execute(), schema)
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala b/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
 index ed2e309fa07..a5ea58146ad 100644
@@ -3155,11 +3155,11 @@ index c63c748953f..7edca9c93a6 100644
 +++ b/sql/core/src/test/scala/org/apache/spark/status/api/v1/sql/SqlResourceWithActualMetricsSuite.scala
 @@ -45,7 +45,7 @@ class SqlResourceWithActualMetricsSuite
    import testImplicits._
- 
+
    // Exclude nodes which may not have the metrics
 -  val excludedNodes = List("WholeStageCodegen", "Project", "SerializeFromObject")
 +  val excludedNodes = List("WholeStageCodegen", "Project", "SerializeFromObject", "RowToColumnar")
- 
+
    implicit val formats = new DefaultFormats {
      override def dateFormatter = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss")
 diff --git a/sql/hive/src/test/scala/org/apache/spark/sql/hive/DynamicPartitionPruningHiveScanSuite.scala b/sql/hive/src/test/scala/org/apache/spark/sql/hive/DynamicPartitionPruningHiveScanSuite.scala
@@ -3167,7 +3167,7 @@ index 52abd248f3a..7a199931a08 100644
 --- a/sql/hive/src/test/scala/org/apache/spark/sql/hive/DynamicPartitionPruningHiveScanSuite.scala
 +++ b/sql/hive/src/test/scala/org/apache/spark/sql/hive/DynamicPartitionPruningHiveScanSuite.scala
 @@ -19,6 +19,7 @@ package org.apache.spark.sql.hive
- 
+
  import org.apache.spark.sql._
  import org.apache.spark.sql.catalyst.expressions.{DynamicPruningExpression, Expression}
 +import org.apache.spark.sql.comet._
@@ -3190,7 +3190,7 @@ index de3b1ffccf0..2a76d127093 100644
 +++ b/sql/hive/src/test/scala/org/apache/spark/sql/hive/PartitionedTablePerfStatsSuite.scala
 @@ -23,14 +23,15 @@ import java.util.concurrent.{Executors, TimeUnit}
  import org.scalatest.BeforeAndAfterEach
- 
+
  import org.apache.spark.metrics.source.HiveCatalogMetrics
 -import org.apache.spark.sql.QueryTest
 +import org.apache.spark.sql.{IgnoreCometSuite, QueryTest}
@@ -3198,12 +3198,12 @@ index de3b1ffccf0..2a76d127093 100644
  import org.apache.spark.sql.hive.test.TestHiveSingleton
  import org.apache.spark.sql.internal.SQLConf
  import org.apache.spark.sql.test.SQLTestUtils
- 
+
  class PartitionedTablePerfStatsSuite
 -  extends QueryTest with TestHiveSingleton with SQLTestUtils with BeforeAndAfterEach {
 +  extends QueryTest with TestHiveSingleton with SQLTestUtils with BeforeAndAfterEach
 +    with IgnoreCometSuite {
- 
+
    override def beforeEach(): Unit = {
      super.beforeEach()
 diff --git a/sql/hive/src/test/scala/org/apache/spark/sql/hive/execution/SQLQuerySuite.scala b/sql/hive/src/test/scala/org/apache/spark/sql/hive/execution/SQLQuerySuite.scala
@@ -3212,15 +3212,15 @@ index 6160c3e5f6c..0956d7d9edc 100644
 +++ b/sql/hive/src/test/scala/org/apache/spark/sql/hive/execution/SQLQuerySuite.scala
 @@ -24,6 +24,7 @@ import java.sql.{Date, Timestamp}
  import java.util.{Locale, Set}
- 
+
  import com.google.common.io.Files
 +import org.apache.comet.CometConf
  import org.apache.hadoop.fs.{FileSystem, Path}
- 
+
  import org.apache.spark.{SparkException, TestUtils}
 @@ -838,8 +839,13 @@ abstract class SQLQuerySuiteBase extends QueryTest with SQLTestUtils with TestHi
    }
- 
+
    test("SPARK-2554 SumDistinct partial aggregation") {
 -    checkAnswer(sql("SELECT sum( distinct key) FROM src group by key order by key"),
 -      sql("SELECT distinct key FROM src order by key").collect().toSeq)
@@ -3232,7 +3232,7 @@ index 6160c3e5f6c..0956d7d9edc 100644
 +        sql("SELECT distinct key FROM src order by key").collect().toSeq)
 +    }
    }
- 
+
    test("SPARK-4963 DataFrame sample on mutable row return wrong result") {
 diff --git a/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala b/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala
 index 1d646f40b3e..5babe505301 100644
@@ -3304,10 +3304,10 @@ index 1d646f40b3e..5babe505301 100644
 +              .set("spark.sql.ansi.enabled", "true")
 +          }
 +        }
- 
+
 +        conf
 +      }
 +    ))
- 
+
  case class TestHiveVersion(hiveClient: HiveClient)
    extends TestHiveContext(TestHive.sparkContext, hiveClient)
