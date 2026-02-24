@@ -488,6 +488,21 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     }
   }
 
+  /** Storage-related property prefixes passed through to native FileIO. */
+  private val storagePropertyPrefixes =
+    Seq("s3.", "gcs.", "adls.", "client.")
+
+  /**
+   * Filters a properties map to only include storage-related keys. FileIO.properties() may
+   * contain catalog URIs, bearer tokens, and other non-storage settings that should not be passed
+   * to the native FileIO builder.
+   */
+  def filterStorageProperties(props: Map[String, String]): Map[String, String] = {
+    props.filter { case (key, _) =>
+      storagePropertyPrefixes.exists(prefix => key.startsWith(prefix))
+    }
+  }
+
   /**
    * Transforms Hadoop S3A configuration keys to Iceberg FileIO property keys.
    *
