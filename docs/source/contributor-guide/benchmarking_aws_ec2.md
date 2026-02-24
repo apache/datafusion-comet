@@ -109,23 +109,23 @@ export COMET_JAR=/home/ec2-user/datafusion-comet/spark/target/comet-spark-spark3
 
 ## Run Benchmarks
 
-Use the scripts in `dev/benchmarks` in the Comet repository.
+Use the scripts in `benchmarks/tpc` in the Comet repository.
 
 ```shell
-cd dev/benchmarks
+cd benchmarks/tpc
 export TPCH_QUERIES=/home/ec2-user/datafusion-benchmarks/tpch/queries/
 ```
 
 Run Spark benchmark:
 
 ```shell
-./spark-tpch.sh
+python3 run.py --engine spark --benchmark tpch
 ```
 
 Run Comet benchmark:
 
 ```shell
-./comet-tpch.sh
+python3 run.py --engine comet --benchmark tpch
 ```
 
 ## Running Benchmarks with S3
@@ -164,4 +164,9 @@ Modify the scripts to add the following configurations.
 --conf spark.hadoop.fs.s3a.aws.credentials.provider=com.amazonaws.auth.DefaultAWSCredentialsProviderChain \
 ```
 
-Now run the `spark-tpch.sh` and `comet-tpch.sh` scripts.
+Now run the benchmarks:
+
+```shell
+python3 run.py --engine spark --benchmark tpch
+python3 run.py --engine comet --benchmark tpch
+```
