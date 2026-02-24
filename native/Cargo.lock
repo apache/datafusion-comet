@@ -426,9 +426,13 @@ checksum = "b0f477b951e452a0b6b4a10b53ccd569042d1d01729b519e02074a9c0958a063"
 
 [[package]]
 name = "assertables"
-version = "9.8.4"
+version = "9.8.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4dcd1f7f2f608b9a888a851f234086946c2ca1dfeadf1431c5082fee0942eeb6"
+checksum = "098fbfe90e8af520c4a968eaad7a4031908e473394f16c99cd9cce6369328a68"
+dependencies = [
+ "regex",
+ "walkdir",
+]
 
 [[package]]
 name = "async-channel"
@@ -624,9 +628,9 @@ dependencies = [
 
 [[package]]
 name = "aws-credential-types"
-version = "1.2.12"
+version = "1.2.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e26bbf46abc608f2dc61fd6cb3b7b0665497cc259a21520151ed98f8b37d2c79"
+checksum = "6d203b0bf2626dcba8665f5cd0871d7c2c0930223d6b6be9097592fea21242d0"
 dependencies = [
  "aws-smithy-async",
  "aws-smithy-runtime-api",
@@ -778,9 +782,9 @@ dependencies = [
 
 [[package]]
 name = "aws-smithy-async"
-version = "1.2.12"
+version = "1.2.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3cba48474f1d6807384d06fec085b909f5807e16653c5af5c45dfe89539f0b70"
+checksum = "5cc50d0f63e714784b84223abd7abbc8577de8c35d699e0edd19f0a88a08ae13"
 dependencies = [
  "futures-util",
  "pin-project-lite",
@@ -887,9 +891,9 @@ dependencies = [
 
 [[package]]
 name = "aws-smithy-runtime-api"
-version = "1.11.4"
+version = "1.11.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8c55e0837e9b8526f49e0b9bfa9ee18ddee70e853f5bc09c5d11ebceddcb0fec"
+checksum = "b4af6e5def28be846479bbeac55aa4603d6f7986fc5da4601ba324dd5d377516"
 dependencies = [
  "aws-smithy-async",
  "aws-smithy-types",
@@ -904,9 +908,9 @@ dependencies = [
 
 [[package]]
 name = "aws-smithy-types"
-version = "1.4.4"
+version = "1.4.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "576b0d6991c9c32bc14fc340582ef148311f924d41815f641a308b5d11e8e7cd"
+checksum = "8ca2734c16913a45343b37313605d84e7d8b34a4611598ce1d25b35860a2bed3"
 dependencies = [
  "base64-simd",
  "bytes",
@@ -4373,9 +4377,9 @@ dependencies = [
 
 [[package]]
 name = "parquet"
-version = "57.2.0"
+version = "57.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5f6a2926a30477c0b95fea6c28c3072712b139337a242c2cc64817bdc20a8854"
+checksum = "6ee96b29972a257b855ff2341b37e61af5f12d6af1158b6dcdb5b31ea07bb3cb"
 dependencies = [
  "ahash 0.8.12",
  "arrow-array",
@@ -4414,9 +4418,9 @@ dependencies = [
 
 [[package]]
 name = "parquet-variant"
-version = "57.2.0"
+version = "57.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c254fac16af78ad96aa442290cb6504951c4d484fdfcfe58f4588033d30e4c8f"
+checksum = "a6c31f8f9bfefb9dbf67b0807e00fd918676954a7477c889be971ac904103184"
 dependencies = [
  "arrow-schema",
  "chrono",
@@ -4428,9 +4432,9 @@ dependencies = [
 
 [[package]]
 name = "parquet-variant-compute"
-version = "57.2.0"
+version = "57.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2178772f1c5ad7e5da8b569d986d3f5cbb4a4cee915925f28fdc700dbb2e80cf"
+checksum = "196cd9f7178fed3ac8d5e6d2b51193818e896bbc3640aea3fde3440114a8f39c"
 dependencies = [
  "arrow",
  "arrow-schema",
@@ -4444,9 +4448,9 @@ dependencies = [
 
 [[package]]
 name = "parquet-variant-json"
-version = "57.2.0"
+version = "57.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7a1510daa121c04848368f9c38d0be425b9418c70be610ecc0aa8071738c0ef3"
+checksum = "ed23d7acc90ef60f7fdbcc473fa2fdaefa33542ed15b84388959346d52c839be"
 dependencies = [
  "arrow-schema",
  "base64",
@@ -6312,11 +6316,11 @@ checksum = "b6c140620e7ffbb22c2dee59cafe6084a59b5ffc27a8859a5f0d494b5d52b6be"
 
 [[package]]
 name = "uuid"
-version = "1.20.0"
+version = "1.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ee48d38b119b0cd71fe4141b30f5ba9c7c5d9f4e7a3a8b4a674e4b6ef789976f"
+checksum = "b672338555252d43fd2240c714dc444b8c6fb0a5c5335e65a07bba7742735ddb"
 dependencies = [
- "getrandom 0.3.4",
+ "getrandom 0.4.1",
  "js-sys",
  "serde_core",
  "wasm-bindgen",
