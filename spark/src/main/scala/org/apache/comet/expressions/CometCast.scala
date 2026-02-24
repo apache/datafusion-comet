@@ -166,7 +166,7 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
       case (_: DecimalType, _) =>
         canCastFromDecimal(toType)
       case (DataTypes.BooleanType, _) =>
-        canCastFromBoolean(toType)
+        canCastFromBoolean(toType, evalMode)
       case (DataTypes.ByteType, _) =>
         canCastFromByte(toType, evalMode)
       case (DataTypes.ShortType, _) =>
@@ -283,12 +283,15 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
     }
   }
 
-  private def canCastFromBoolean(toType: DataType): SupportLevel = toType match {
-    case DataTypes.ByteType | DataTypes.ShortType | DataTypes.IntegerType | DataTypes.LongType |
-        DataTypes.FloatType | DataTypes.DoubleType | _: DecimalType | _: TimestampType =>
-      Compatible()
-    case _ => unsupported(DataTypes.BooleanType, toType)
-  }
+  private def canCastFromBoolean(toType: DataType, evalMode: CometEvalMode.Value): SupportLevel =
+    toType match {
+      case DataTypes.ByteType | DataTypes.ShortType | DataTypes.IntegerType | DataTypes.LongType |
+          DataTypes.FloatType | DataTypes.DoubleType | _: DecimalType =>
+        Compatible()
+      case _: TimestampType if evalMode == CometEvalMode.LEGACY =>
+        Compatible()
+      case _ => unsupported(DataTypes.BooleanType, toType)
+    }
 
   private def canCastFromByte(toType: DataType, evalMode: CometEvalMode.Value): SupportLevel =
     toType match {
