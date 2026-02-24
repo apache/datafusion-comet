@@ -57,8 +57,8 @@ object CometStaticInvoke extends CometExpressionSerde[StaticInvoke] {
 }
 
 /**
- * Handler for Base64.encode StaticInvoke (Spark 3.5+, where Base64 is RuntimeReplaceable).
- * Maps to DataFusion's built-in encode(input, 'base64') function.
+ * Handler for Base64.encode StaticInvoke (Spark 3.5+, where Base64 is RuntimeReplaceable). Maps
+ * to DataFusion's built-in encode(input, 'base64') function.
  */
 private object CometBase64Encode extends CometExpressionSerde[StaticInvoke] {
 

@@ -149,14 +149,16 @@ class CometStringExpressionSuite extends CometTestBase {
   }
 
   test("base64") {
-    val data = Seq(
-      Array[Byte](72, 101, 108, 108, 111), // "Hello"
-      Array[Byte](83, 112, 97, 114, 107, 32, 83, 81, 76), // "Spark SQL"
-      Array[Byte](), // empty
-      null).map(Tuple1(_))
-    withParquetTable(data, "tbl") {
-      checkSparkAnswerAndOperator("SELECT base64(_1) FROM tbl")
-      checkSparkAnswerAndOperator("SELECT base64(NULL) FROM tbl")
+    withSQLConf("spark.sql.chunkBase64String.enabled" -> "false") {
+      val data = Seq(
+        Array[Byte](72, 101, 108, 108, 111), // "Hello"
+        Array[Byte](83, 112, 97, 114, 107, 32, 83, 81, 76), // "Spark SQL"
+        Array[Byte](), // empty
+        null).map(Tuple1(_))
+      withParquetTable(data, "tbl") {
+        checkSparkAnswerAndOperator("SELECT base64(_1) FROM tbl")
+        checkSparkAnswerAndOperator("SELECT base64(NULL) FROM tbl")
+      }
     }
   }
 

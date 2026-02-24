@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import java.util.Locale
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Base64, Cast, Concat, Expression, If, InitCap, IsNull, Left, Length, Like, Literal, Lower, RegExpReplace, Right, RLike, StringLPad, StringRepeat, StringRPad, StringSplit, Substring, Upper}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Base64, Cast, Concat, ConcatWs, Expression, If, InitCap, IsNull, Left, Length, Like, Literal, Lower, RegExpReplace, Right, RLike, StringLPad, StringRepeat, StringRPad, StringSplit, Substring, Upper}
 import org.apache.spark.sql.types.{BinaryType, DataTypes, LongType, StringType}
 import org.apache.spark.unsafe.types.UTF8String
 
@@ -32,8 +32,8 @@ import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType}
 
 /**
- * Handler for Base64 as a direct expression (Spark 3.4 where it is not RuntimeReplaceable).
- * In Spark 3.5+, Base64 is RuntimeReplaceable and handled via CometBase64Encode in statics.scala.
+ * Handler for Base64 as a direct expression (Spark 3.4 where it is not RuntimeReplaceable). In
+ * Spark 3.5+, Base64 is RuntimeReplaceable and handled via CometBase64Encode in statics.scala.
  */
 object CometBase64 extends CometExpressionSerde[Base64] {
 
