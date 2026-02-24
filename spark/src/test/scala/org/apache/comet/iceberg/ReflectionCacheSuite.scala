@@ -93,11 +93,9 @@ class ReflectionCacheSuite extends AnyFunSuite {
 
     val cache = ReflectionCache.create()
 
-    for (_ <- 1 to 10) {
-      assert(cache.contentScanTaskClass != null)
-      assert(cache.fileMethod != null)
-      assert(cache.schemaToJsonMethod != null)
-    }
+    assert(cache.contentScanTaskClass != null)
+    assert(cache.fileMethod != null)
+    assert(cache.schemaToJsonMethod != null)
   }
 
   test("ReflectionCache schemaToJsonMethod is accessible") {
