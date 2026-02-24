@@ -145,4 +145,28 @@ class CometMathExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
         "SELECT id, width_bucket(value, 0.0, 10.0, 5) FROM width_bucket_range ORDER BY id")
     }
   }
+
+  test("factorial") {
+    withParquetTable(Seq((0, 1), (1, 5), (2, 10), (3, 20), (4, -1)).map(Tuple1(_)), "tbl") {
+      checkSparkAnswerAndOperator("SELECT factorial(_1._1) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT factorial(_1._2) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT factorial(NULL) FROM tbl")
+    }
+  }
+
+  test("pmod") {
+    withParquetTable(Seq((10, 3), (7, -2), (-7, 2), (-7, -2), (0, 5)), "tbl") {
+      checkSparkAnswerAndOperator("SELECT pmod(_1, _2) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT pmod(NULL, _2) FROM tbl")
+    }
+  }
+
+  test("rint") {
+    withParquetTable(
+      Seq[java.lang.Double](1.5, 2.5, -1.5, 0.0, 3.7, null).map(Tuple1(_)),
+      "tbl") {
+      checkSparkAnswerAndOperator("SELECT rint(_1) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT rint(NULL) FROM tbl")
+    }
+  }
 }
