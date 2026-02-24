@@ -45,7 +45,7 @@ datafusion-comet-spark-expr = { path = "spark-expr" }
 datafusion-comet-proto = { path = "proto" }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 chrono-tz = { version = "0.10" }
-futures = "0.3.28"
+futures = "0.3.32"
 num = "0.4"
 rand = "0.10"
 regex = "1.12.3"
