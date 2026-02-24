@@ -19,7 +19,88 @@
 
 package org.apache.comet.iceberg
 
+import java.lang.reflect.Method
+
 import org.apache.spark.internal.Logging
+
+/** Cached Iceberg classes and methods to avoid repeated reflection lookups. */
+case class IcebergReflectionCache(
+    contentScanTaskClass: Class[_],
+    fileScanTaskClass: Class[_],
+    contentFileClass: Class[_],
+    deleteFileClass: Class[_],
+    schemaParserClass: Class[_],
+    schemaClass: Class[_],
+    partitionSpecParserClass: Class[_],
+    partitionSpecClass: Class[_],
+    fileMethod: Method,
+    startMethod: Method,
+    lengthMethod: Method,
+    partitionMethod: Method,
+    residualMethod: Method,
+    taskSchemaMethod: Method,
+    deletesMethod: Method,
+    specMethod: Method,
+    schemaToJsonMethod: Method,
+    specToJsonMethod: Method,
+    deleteContentMethod: Method,
+    deleteSpecIdMethod: Method,
+    deleteEqualityIdsMethod: Method)
+
+object IcebergReflectionCache extends Logging {
+
+  def create(): IcebergReflectionCache = {
+    // scalastyle:off classforname
+    val contentScanTaskClass = Class.forName(IcebergReflection.ClassNames.CONTENT_SCAN_TASK)
+    val fileScanTaskClass = Class.forName(IcebergReflection.ClassNames.FILE_SCAN_TASK)
+    val contentFileClass = Class.forName(IcebergReflection.ClassNames.CONTENT_FILE)
+    val deleteFileClass = Class.forName(IcebergReflection.ClassNames.DELETE_FILE)
+    val schemaParserClass = Class.forName(IcebergReflection.ClassNames.SCHEMA_PARSER)
+    val schemaClass = Class.forName(IcebergReflection.ClassNames.SCHEMA)
+    val partitionSpecParserClass =
+      Class.forName(IcebergReflection.ClassNames.PARTITION_SPEC_PARSER)
+    val partitionSpecClass = Class.forName(IcebergReflection.ClassNames.PARTITION_SPEC)
+    // scalastyle:on classforname
+
+    val fileMethod = contentScanTaskClass.getMethod("file")
+    val startMethod = contentScanTaskClass.getMethod("start")
+    val lengthMethod = contentScanTaskClass.getMethod("length")
+    val partitionMethod = contentScanTaskClass.getMethod("partition")
+    val residualMethod = contentScanTaskClass.getMethod("residual")
+    val taskSchemaMethod = fileScanTaskClass.getMethod("schema")
+    val deletesMethod = fileScanTaskClass.getMethod("deletes")
+    val specMethod = fileScanTaskClass.getMethod("spec")
+    val schemaToJsonMethod = schemaParserClass.getMethod("toJson", schemaClass)
+    schemaToJsonMethod.setAccessible(true)
+    val specToJsonMethod = partitionSpecParserClass.getMethod("toJson", partitionSpecClass)
+    val deleteContentMethod = deleteFileClass.getMethod("content")
+    val deleteSpecIdMethod = deleteFileClass.getMethod("specId")
+    val deleteEqualityIdsMethod = deleteFileClass.getMethod("equalityFieldIds")
+
+    IcebergReflectionCache(
+      contentScanTaskClass = contentScanTaskClass,
+      fileScanTaskClass = fileScanTaskClass,
+      contentFileClass = contentFileClass,
+      deleteFileClass = deleteFileClass,
+      schemaParserClass = schemaParserClass,
+      schemaClass = schemaClass,
+      partitionSpecParserClass = partitionSpecParserClass,
+      partitionSpecClass = partitionSpecClass,
+      fileMethod = fileMethod,
+      startMethod = startMethod,
+      lengthMethod = lengthMethod,
+      partitionMethod = partitionMethod,
+      residualMethod = residualMethod,
+      taskSchemaMethod = taskSchemaMethod,
+      deletesMethod = deletesMethod,
+      specMethod = specMethod,
+      schemaToJsonMethod = schemaToJsonMethod,
+      specToJsonMethod = specToJsonMethod,
+      deleteContentMethod = deleteContentMethod,
+      deleteSpecIdMethod = deleteSpecIdMethod,
+      deleteEqualityIdsMethod = deleteEqualityIdsMethod)
+  }
+}
 
 /**
  * Shared reflection utilities for Iceberg operations.
