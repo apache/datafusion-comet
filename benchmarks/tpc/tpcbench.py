@@ -25,6 +25,7 @@ Supports two data sources:
 
 import argparse
 from datetime import datetime
+import hashlib
 import json
 from pyspark.sql import SparkSession
 import time
@@ -43,6 +44,15 @@ def dedup_columns(df):
             counts[c] += 1
             new_cols.append(f"{c}_{counts[c]}")
     return df.toDF(*new_cols)
+
+
+def result_hash(rows):
+    """Compute a deterministic MD5 hash from collected rows."""
+    sorted_rows = sorted(rows, key=lambda r: str(r))
+    h = hashlib.md5()
+    for row in sorted_rows:
+        h.update(str(row).encode("utf-8"))
+    return h.hexdigest()
 
 
 def main(
@@ -156,14 +166,19 @@ def main(
                                 print(f"Results written to {output_path}")
                         else:
                             rows = df.collect()
-                            print(f"Query {query} returned {len(rows)} rows")
+                            row_count = len(rows)
+                            row_hash = result_hash(rows)
+                            print(f"Query {query} returned {row_count} rows, hash={row_hash}")
 
                 end_time = time.time()
                 elapsed = end_time - start_time
                 print(f"Query {query} took {elapsed:.2f} seconds")
 
-                query_timings = results.setdefault(query, [])
-                query_timings.append(elapsed)
+                query_result = results.setdefault(query, {"durations": []})
+                query_result["durations"].append(round(elapsed, 3))
+                if "row_count" not in query_result and not write_path:
+                    query_result["row_count"] = row_count
+                    query_result["result_hash"] = row_hash
 
         iter_end_time = time.time()
         print(f"\nIteration {iteration + 1} took {iter_end_time - iter_start_time:.2f} seconds")
