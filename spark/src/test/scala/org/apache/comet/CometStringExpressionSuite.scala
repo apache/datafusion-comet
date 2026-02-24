@@ -26,6 +26,7 @@ import org.apache.spark.sql.{CometTestBase, DataFrame}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 class CometStringExpressionSuite extends CometTestBase {
@@ -263,6 +264,21 @@ class CometStringExpressionSuite extends CometTestBase {
         "SELECT parse_url(_1, 'QUERY', 'query'), parse_url(_1, 'QUERY', 'k2') FROM tbl_parse_url")
       checkSparkAnswerAndOperator("SELECT parse_url(_1, 'PATH') FROM tbl_parse_url")
       checkSparkAnswerAndOperator("SELECT parse_url(_1, 'FILE') FROM tbl_parse_url")
+    }
+  }
+
+  test("parse_url with invalid URL in legacy mode") {
+    assume(isSpark40Plus)
+
+    withParquetTable(
+      Seq(
+        ("http://spark.apache.org/path?query=1", 0),
+        ("http://spark.apache.org:abc/path", 1),
+        (null, 2)),
+      "tbl_parse_url_invalid") {
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> "false") {
+        checkSparkAnswerAndOperator("SELECT parse_url(_1, 'HOST') FROM tbl_parse_url_invalid")
+      }
     }
   }
 
