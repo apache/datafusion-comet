@@ -148,6 +148,14 @@ class CometStringExpressionSuite extends CometTestBase {
     }
   }
 
+  test("format_string") {
+    withParquetTable(Seq(("hello", 42), ("world", 100), (null, 0)), "tbl") {
+      checkSparkAnswerAndOperator("SELECT format_string('%s has %d items', _1, _2) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT format_string('value: %05d', _2) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT format_string('%s', NULL) FROM tbl")
+    }
+  }
+
   test("split string basic") {
     withSQLConf("spark.comet.expression.StringSplit.allowIncompatible" -> "true") {
       withParquetTable((0 until 5).map(i => (s"value$i,test$i", i)), "tbl") {
