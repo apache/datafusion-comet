@@ -188,7 +188,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[BitwiseNot] -> CometBitwiseNot,
     classOf[BitwiseXor] -> CometBitwiseXor,
     classOf[ShiftLeft] -> CometShiftLeft,
-    classOf[ShiftRight] -> CometShiftRight)
+    classOf[ShiftRight] -> CometShiftRight,
+    classOf[ShiftRightUnsigned] -> CometScalarFunction("shiftrightunsigned"))
 
   private val temporalExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     classOf[DateAdd] -> CometDateAdd,
