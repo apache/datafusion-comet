@@ -26,6 +26,7 @@ Supports two data sources:
 import argparse
 from datetime import datetime
 import json
+import os
 from pyspark.sql import SparkSession
 import time
 from typing import Dict
@@ -50,17 +51,20 @@ def main(
     data_path: str,
     catalog: str,
     database: str,
-    query_path: str,
     iterations: int,
     output: str,
     name: str,
     format: str,
     query_num: int = None,
     write_path: str = None,
-    options: Dict[str, str] = None
+    options: Dict[str, str] = None,
 ):
     if options is None:
         options = {}
+
+    query_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "queries", benchmark
+    )
 
     spark = SparkSession.builder \
         .appName(f"{name} benchmark derived from {benchmark}") \
@@ -94,7 +98,10 @@ def main(
             print(f"Registering table {table} from {source}")
             df = spark.table(source)
         else:
+            # Support both "customer/" and "customer.parquet/" layouts
             source = f"{data_path}/{table}.{format}"
+            if not os.path.exists(source):
+                source = f"{data_path}/{table}"
             print(f"Registering table {table} from {source}")
             df = spark.read.format(format).options(**options).load(source)
         df.createOrReplaceTempView(table)
@@ -104,7 +111,6 @@ def main(
     results = {
         'engine': 'datafusion-comet',
         'benchmark': benchmark,
-        'query_path': query_path,
         'spark_conf': conf_dict,
     }
     if using_iceberg:
@@ -216,10 +222,6 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
-        "--queries", required=True,
-        help="Path to query SQL files"
-    )
-    parser.add_argument(
         "--iterations", type=int, default=1,
         help="Number of iterations"
     )
@@ -246,12 +248,11 @@ if __name__ == "__main__":
         args.data,
         args.catalog,
         args.database,
-        args.queries,
         args.iterations,
         args.output,
         args.name,
         args.format,
         args.query,
         args.write,
-        args.options
+        args.options,
     )

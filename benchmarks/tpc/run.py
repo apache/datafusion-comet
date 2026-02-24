@@ -110,6 +110,7 @@ COMMON_SPARK_CONF = {
     "spark.memory.offHeap.enabled": "true",
     "spark.memory.offHeap.size": "16g",
     "spark.eventLog.enabled": "true",
+    "spark.eventLog.dir": "/results/spark-events",
     "spark.hadoop.fs.s3a.impl": "org.apache.hadoop.fs.s3a.S3AFileSystem",
     "spark.hadoop.fs.s3a.aws.credentials.provider": "com.amazonaws.auth.DefaultAWSCredentialsProviderChain",
 }
@@ -120,9 +121,9 @@ COMMON_SPARK_CONF = {
 
 BENCHMARK_PROFILES = {
     "tpch": {
-        "executor_instances": "1",
+        "executor_instances": "2",
         "executor_cores": "8",
-        "max_cores": "8",
+        "max_cores": "16",
         "data_env": "TPCH_DATA",
         "format": "parquet",
     },
@@ -279,10 +280,6 @@ def build_spark_submit_cmd(config, benchmark, args):
         data_var = profile["data_env"]
         data_val = os.environ.get(data_var, "")
         cmd += ["--data", data_val]
-
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    queries_path = os.path.join(script_dir, "queries", benchmark)
-    cmd += ["--queries", queries_path]
 
     cmd += ["--output", args.output]
     cmd += ["--iterations", str(args.iterations)]
