@@ -233,11 +233,6 @@ case class CometNativeColumnarToRowExec(child: SparkPlan)
 object CometNativeColumnarToRowExec {
 
   /**
-   * Checks if native columnar to row conversion is enabled.
-   */
-  def isEnabled: Boolean = CometConf.COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED.get()
-
-  /**
    * Checks if the given schema is supported by native columnar to row conversion.
    *
    * Currently supported types:
