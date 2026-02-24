@@ -16,7 +16,7 @@
 # under the License.
 
 [engine]
-name = "comet-iceberg"
+name = "comet-iceberg-hashjoin"
 
 [env]
 required = ["COMET_JAR", "ICEBERG_JAR", "ICEBERG_WAREHOUSE"]
@@ -33,6 +33,7 @@ driver_class_path = ["$COMET_JAR", "$ICEBERG_JAR"]
 "spark.executor.extraClassPath" = "$COMET_JAR:$ICEBERG_JAR"
 "spark.plugins" = "org.apache.spark.CometPlugin"
 "spark.shuffle.manager" = "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager"
+"spark.comet.exec.replaceSortMergeJoin" = "true"
 "spark.comet.expression.Cast.allowIncompatible" = "true"
 "spark.comet.enabled" = "true"
 "spark.comet.exec.enabled" = "true"
