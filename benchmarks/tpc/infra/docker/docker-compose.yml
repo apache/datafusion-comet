@@ -1,0 +1,132 @@
+# Licensed to the Apache Software Foundation (ASF) under one or more
+# contributor license agreements.  See the NOTICE file distributed with
+# this work for additional information regarding copyright ownership.
+# The ASF licenses this file to You under the Apache License, Version 2.0
+# (the "License"); you may not use this file except in compliance with
+# the License.  You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Spark standalone cluster for TPC benchmarks.
+#
+# Two workers are used so that shuffles go through the network stack,
+# which better reflects real cluster behavior.
+#
+# Usage:
+#   export COMET_JAR=/path/to/comet-spark-0.10.0.jar
+#   docker compose -f benchmarks/tpc/infra/docker/docker-compose.yml up -d
+#
+# Environment variables (set in .env or export before running):
+#   BENCH_IMAGE        - Docker image to use (default: comet-bench)
+#   DATA_DIR           - Host path to TPC data (default: /tmp/tpc-data)
+#   RESULTS_DIR        - Host path for results output (default: /tmp/bench-results)
+#   COMET_JAR          - Host path to Comet JAR
+#   GLUTEN_JAR         - Host path to Gluten JAR
+#   ICEBERG_JAR        - Host path to Iceberg Spark runtime JAR
+#   WORKER_MEM_LIMIT   - Hard memory limit per worker container (default: 32g)
+#   BENCH_MEM_LIMIT    - Hard memory limit for the bench runner (default: 10g)
+#   BENCH_JAVA_HOME    - Java home inside container (default: /usr/lib/jvm/java-17-openjdk)
+#                        Set to /usr/lib/jvm/java-8-openjdk for Gluten
+
+x-volumes: &volumes
+  - ${DATA_DIR:-/tmp/tpc-data}:/data:ro
+  - ${RESULTS_DIR:-/tmp/bench-results}:/results
+  - ${COMET_JAR:-/dev/null}:/jars/comet.jar:ro
+  - ${GLUTEN_JAR:-/dev/null}:/jars/gluten.jar:ro
+  - ${ICEBERG_JAR:-/dev/null}:/jars/iceberg.jar:ro
+  - ${RESULTS_DIR:-/tmp/bench-results}/logs:/opt/spark/logs
+  - ${RESULTS_DIR:-/tmp/bench-results}/work:/opt/spark/work
+
+x-worker: &worker
+  image: ${BENCH_IMAGE:-comet-bench}
+  depends_on:
+    - spark-master
+  command: /opt/spark/sbin/start-worker.sh spark://spark-master:7077
+  volumes: *volumes
+  environment:
+    - JAVA_HOME=${BENCH_JAVA_HOME:-/usr/lib/jvm/java-17-openjdk}
+    - SPARK_WORKER_CORES=${WORKER_CORES:-8}
+    - SPARK_WORKER_MEMORY=${WORKER_MEMORY:-16g}
+    - SPARK_NO_DAEMONIZE=true
+  mem_limit: ${WORKER_MEM_LIMIT:-32g}
+  memswap_limit: ${WORKER_MEM_LIMIT:-32g}
+
+services:
+  spark-master:
+    image: ${BENCH_IMAGE:-comet-bench}
+    container_name: spark-master
+    hostname: spark-master
+    command: /opt/spark/sbin/start-master.sh --host spark-master
+    ports:
+      - "7077:7077"
+      - "8080:8080"
+    volumes: *volumes
+    environment:
+      - JAVA_HOME=${BENCH_JAVA_HOME:-/usr/lib/jvm/java-17-openjdk}
+      - SPARK_MASTER_HOST=spark-master
+      - SPARK_NO_DAEMONIZE=true
+
+  spark-worker-1:
+    <<: *worker
+    container_name: spark-worker-1
+    hostname: spark-worker-1
+    ports:
+      - "8081:8081"
+
+  spark-worker-2:
+    <<: *worker
+    container_name: spark-worker-2
+    hostname: spark-worker-2
+    ports:
+      - "8082:8081"
+
+  bench:
+    image: ${BENCH_IMAGE:-comet-bench}
+    container_name: bench-runner
+    depends_on:
+      - spark-master
+      - spark-worker-1
+      - spark-worker-2
+    # Override 'command' to run a specific benchmark, e.g.:
+    #   docker compose run bench python3 /opt/benchmarks/run.py \
+    #       --engine comet --benchmark tpch --no-restart
+    command: ["echo", "Use 'docker compose run bench python3 /opt/benchmarks/run.py ...' to run benchmarks"]
+    volumes: *volumes
+    environment:
+      - JAVA_HOME=${BENCH_JAVA_HOME:-/usr/lib/jvm/java-17-openjdk}
+      - SPARK_HOME=/opt/spark
+      - SPARK_MASTER=spark://spark-master:7077
+      - COMET_JAR=/jars/comet.jar
+      - GLUTEN_JAR=/jars/gluten.jar
+      - ICEBERG_JAR=/jars/iceberg.jar
+      - TPCH_DATA=/data
+      - TPCDS_DATA=/data
+      - SPARK_EVENT_LOG_DIR=/results/spark-events
+    mem_limit: ${BENCH_MEM_LIMIT:-10g}
+    memswap_limit: ${BENCH_MEM_LIMIT:-10g}
+
+  # Uncomment to enable the Spark History Server for inspecting completed
+  # benchmark runs at http://localhost:18080.  Requires event logs in
+  # $RESULTS_DIR/spark-events (created by `mkdir -p $RESULTS_DIR/spark-events`
+  # before starting the cluster).
+  #
+  # history-server:
+  #   image: ${BENCH_IMAGE:-comet-bench}
+  #   container_name: spark-history
+  #   hostname: spark-history
+  #   command: /opt/spark/sbin/start-history-server.sh
+  #   ports:
+  #     - "18080:18080"
+  #   volumes:
+  #     - ${RESULTS_DIR:-/tmp/bench-results}:/results:ro
+  #   environment:
+  #     - JAVA_HOME=${BENCH_JAVA_HOME:-/usr/lib/jvm/java-17-openjdk}
+  #     - SPARK_HISTORY_OPTS=-Dspark.history.fs.logDirectory=/results/spark-events
+  #     - SPARK_NO_DAEMONIZE=true
+
