@@ -1278,33 +1278,34 @@ abstract class CometTestBase
   }
 
   /**
-   * Uses except (difference) to find differences without using collect() Checks cometDF and
-   * sparkDF including schemas
+   * Compares Spark and Comet results using exceptAll instead of collect(). This avoids
+   * java.sql.Timestamp overflow issues with extreme timestamp values.
    */
   protected def assertDataFrameEquals(
       df: => DataFrame,
       assertCometNative: Boolean = true): Unit = {
 
-    var sparkDf: DataFrame = null
+    var dfSpark: DataFrame = null
     withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-      sparkDf = datasetOfRows(spark, df.logicalPlan)
+      dfSpark = datasetOfRows(spark, df.logicalPlan)
     }
-    val cometDf = datasetOfRows(spark, df.logicalPlan)
+    val dfComet = datasetOfRows(spark, df.logicalPlan)
 
     // Compare schemas
     assert(
-      sparkDf.schema == cometDf.schema,
-      s"Schema mismatch:\nCorrect Answer: ${sparkDf.schema}\nSpark Answer: ${cometDf.schema}")
+      dfSpark.schema == dfComet.schema,
+      s"Schema mismatch:\nSpark: ${dfSpark.schema}\nComet: ${dfComet.schema}")
 
-    // Use except (difference) to compare DataFrames without collect() which error on extremely high Timestamp values
-    val sparkMinusComet = sparkDf.except(cometDf)
-    val cometMinusSpark = cometDf.except(sparkDf)
-
+    val sparkMinusComet = dfSpark.exceptAll(dfComet)
+    val cometMinusSpark = dfComet.exceptAll(dfSpark)
     val diffCount1 = sparkMinusComet.count()
     val diffCount2 = cometMinusSpark.count()
 
     if (diffCount1 > 0 || diffCount2 > 0) {
-      fail("DataFrames count doesnt match.\n")
+      fail(
+        "Results do not match. " +
+          s"Rows in Spark but not Comet: $diffCount1. " +
+          s"Rows in Comet but not Spark: $diffCount2.")
     }
 
     if (assertCometNative) {
