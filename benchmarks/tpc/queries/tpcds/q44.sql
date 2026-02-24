@@ -1,4 +1,4 @@
--- SQLBench-DS query 44 derived from TPC-DS query 44 under the terms of the TPC Fair Use Policy.
+-- CometBench-DS query 44 derived from TPC-DS query 44 under the terms of the TPC Fair Use Policy.
 -- TPC-DS queries are Copyright 2021 Transaction Processing Performance Council.
 -- This query was generated at scale factor 1.
 select  asceding.rnk, i1.i_product_name best_performing, i2.i_product_name worst_performing

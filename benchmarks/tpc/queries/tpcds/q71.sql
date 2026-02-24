@@ -1,4 +1,4 @@
--- SQLBench-DS query 71 derived from TPC-DS query 71 under the terms of the TPC Fair Use Policy.
+-- CometBench-DS query 71 derived from TPC-DS query 71 under the terms of the TPC Fair Use Policy.
 -- TPC-DS queries are Copyright 2021 Transaction Processing Performance Council.
 -- This query was generated at scale factor 1.
 select i_brand_id brand_id, i_brand brand,t_hour,t_minute,

@@ -1,4 +1,4 @@
--- SQLBench-DS query 61 derived from TPC-DS query 61 under the terms of the TPC Fair Use Policy.
+-- CometBench-DS query 61 derived from TPC-DS query 61 under the terms of the TPC Fair Use Policy.
 -- TPC-DS queries are Copyright 2021 Transaction Processing Performance Council.
 -- This query was generated at scale factor 1.
 select  promotions,total,cast(promotions as decimal(15,4))/cast(total as decimal(15,4))*100

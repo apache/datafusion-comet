@@ -1,4 +1,4 @@
--- SQLBench-H query 3 derived from TPC-H query 3 under the terms of the TPC Fair Use Policy.
+-- CometBench-H query 3 derived from TPC-H query 3 under the terms of the TPC Fair Use Policy.
 -- TPC-H queries are Copyright 1993-2022 Transaction Processing Performance Council.
 select
 	l_orderkey,
