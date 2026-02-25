@@ -258,6 +258,32 @@ object IcebergReflection extends Logging {
   }
 
   /**
+   * Gets storage properties from an Iceberg table's FileIO.
+   *
+   * This extracts credentials from the FileIO implementation, which is critical for REST catalog
+   * credential vending. The REST catalog returns temporary S3 credentials per-table via the
+   * loadTable response, stored in the table's FileIO (typically ResolvingFileIO).
+   *
+   * The properties() method is not on the FileIO interface -- it exists on specific
+   * implementations like ResolvingFileIO and S3FileIO. Returns None gracefully when unavailable.
+   */
+  def getFileIOProperties(table: Any): Option[Map[String, String]] = {
+    import scala.jdk.CollectionConverters._
+    getFileIO(table).flatMap { fileIO =>
+      findMethodInHierarchy(fileIO.getClass, "properties").flatMap { propsMethod =>
+        propsMethod.invoke(fileIO) match {
+          case javaMap: java.util.Map[_, _] =>
+            val scalaMap = javaMap.asScala.collect { case (k: String, v: String) =>
+              k -> v
+            }.toMap
+            if (scalaMap.nonEmpty) Some(scalaMap) else None
+          case _ => None
+        }
+      }
+    }
+  }
+
+  /**
    * Gets the schema from an Iceberg table.
    */
   def getSchema(table: Any): Option[Any] = {
