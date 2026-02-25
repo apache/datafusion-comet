@@ -62,6 +62,8 @@ pub struct IcebergScanExec {
     catalog_properties: HashMap<String, String>,
     /// Pre-planned file scan tasks
     tasks: Vec<FileScanTask>,
+    /// Number of data files to read concurrently
+    data_file_concurrency_limit: usize,
     /// Metrics
     metrics: ExecutionPlanMetricsSet,
 }
@@ -72,6 +74,7 @@ impl IcebergScanExec {
         schema: SchemaRef,
         catalog_properties: HashMap<String, String>,
         tasks: Vec<FileScanTask>,
+        data_file_concurrency_limit: usize,
     ) -> Result<Self, ExecutionError> {
         let output_schema = schema;
         let plan_properties = Self::compute_properties(Arc::clone(&output_schema), 1);
@@ -84,6 +87,7 @@ impl IcebergScanExec {
             plan_properties,
             catalog_properties,
             tasks,
+            data_file_concurrency_limit,
             metrics,
         })
     }
@@ -159,7 +163,7 @@ impl IcebergScanExec {
 
         let reader = iceberg::arrow::ArrowReaderBuilder::new(file_io)
             .with_batch_size(batch_size)
-            .with_data_file_concurrency_limit(context.session_config().target_partitions())
+            .with_data_file_concurrency_limit(self.data_file_concurrency_limit)
             .with_row_selection_enabled(true)
             .build();
 

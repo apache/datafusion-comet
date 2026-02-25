@@ -1209,12 +1209,14 @@ impl PhysicalPlanner {
                     .collect();
                 let metadata_location = common.metadata_location.clone();
                 let tasks = parse_file_scan_tasks_from_common(common, &scan.file_scan_tasks)?;
+                let data_file_concurrency_limit = common.data_file_concurrency_limit as usize;
 
                 let iceberg_scan = IcebergScanExec::new(
                     metadata_location,
                     required_schema,
                     catalog_properties,
                     tasks,
+                    data_file_concurrency_limit,
                 )?;
 
                 Ok((
