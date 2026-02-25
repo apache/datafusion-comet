@@ -1068,7 +1068,19 @@ impl ColumnarToRowContext {
                     })?;
                 Ok(Arc::new(decimal_array))
             }
-            _ => Ok(Arc::clone(array)),
+            _ => {
+                // For any other type mismatch, attempt an Arrow cast.
+                // This handles cases like Int32 → Date32 (which can happen when Spark
+                // generates default column values using the physical storage type rather
+                // than the logical type).
+                let options = CastOptions::default();
+                cast_with_options(array, schema_type, &options).map_err(|e| {
+                    CometError::Internal(format!(
+                        "Failed to cast array from {:?} to {:?}: {}",
+                        actual_type, schema_type, e
+                    ))
+                })
+            }
         }
     }
 
