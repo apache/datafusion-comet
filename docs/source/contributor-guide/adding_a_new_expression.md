@@ -210,59 +210,9 @@ Any notes provided will be logged to help with debugging and understanding why a
 
 #### Adding Spark-side Tests for the New Expression
 
-It is important to verify that the new expression is correctly recognized by the native execution engine and matches the expected Spark behavior. The preferred way to add test coverage is to write a SQL test file using the SQL file test framework. This approach is simpler than writing Scala test code and makes it easy to cover many input combinations and edge cases.
+It is important to verify that the new expression is correctly recognized by the native execution engine and matches the expected spark behavior. To do this, you can add a set of test cases in the `CometExpressionSuite`, and use the `checkSparkAnswerAndOperator` method to compare the results of the new expression with the expected Spark results and that Comet's native execution engine is able to execute the expression.
 
-##### Writing a SQL test file
-
-Create a `.sql` file under the appropriate subdirectory in `spark/src/test/resources/sql-tests/expressions/` (e.g., `string/`, `math/`, `array/`). The file should create a table with test data, then run queries that exercise the expression. Here is an example for the `unhex` expression:
-
-```sql
--- ConfigMatrix: parquet.enable.dictionary=false,true
-
-statement
-CREATE TABLE test_unhex(col string) USING parquet
-
-statement
-INSERT INTO test_unhex VALUES
-  ('537061726B2053514C'),
-  ('737472696E67'),
-  ('\0'),
-  (''),
-  ('###'),
-  ('G123'),
-  ('hello'),
-  ('A1B'),
-  ('0A1B'),
-  (NULL)
-
--- column argument
-query
-SELECT unhex(col) FROM test_unhex
-
--- literal arguments
-query
-SELECT unhex('48656C6C6F'), unhex(''), unhex(NULL)
-```
-
-Each `query` block automatically runs the SQL through both Spark and Comet and compares results, and also verifies that Comet executes the expression natively (not falling back to Spark).
-
-Run the test with:
-
-```shell
-./mvnw test -Dsuites="org.apache.comet.CometSqlFileTestSuite unhex" -Dtest=none
-```
-
-For full documentation on the test file format — including directives like `ConfigMatrix`, query modes like `spark_answer_only` and `tolerance`, handling known bugs with `ignore(...)`, and tips for writing thorough tests — see the [SQL File Tests](sql-file-tests.md) guide.
-
-##### Tips
-
-- **Cover both column references and literals.** Comet often uses different code paths for each. The SQL file test suite automatically disables constant folding, so all-literal queries are evaluated natively.
-- **Include edge cases** such as `NULL`, empty strings, boundary values, `NaN`, and multibyte UTF-8 characters.
-- **Keep one file per expression** to make failures easy to locate.
-
-##### Scala tests (alternative)
-
-For cases that require programmatic setup or custom assertions beyond what SQL files support, you can also add Scala test cases in `CometExpressionSuite` using the `checkSparkAnswerAndOperator` method:
+For example, this is the test case for the `unhex` expression:
 
 ```scala
 test("unhex") {
@@ -286,7 +236,11 @@ test("unhex") {
 }
 ```
 
-When writing Scala tests with literal values (e.g., `SELECT my_func('literal')`), Spark's constant folding optimizer may evaluate the expression at planning time, bypassing Comet. To prevent this, disable constant folding:
+#### Testing with Literal Values
+
+When writing tests that use literal values (e.g., `SELECT my_func('literal')`), Spark's constant folding optimizer may evaluate the expression at planning time rather than execution time. This means your Comet implementation might not actually be exercised during the test.
+
+To ensure literal expressions are executed by Comet, disable the constant folding optimizer:
 
 ```scala
 test("my_func with literals") {
@@ -296,6 +250,14 @@ test("my_func with literals") {
   }
 }
 ```
+
+This is particularly important for:
+
+- Edge case tests using specific literal values (e.g., null handling, overflow conditions)
+- Tests verifying behavior with special input values
+- Any test where the expression inputs are entirely literal
+
+When possible, prefer testing with column references from tables (as shown in the `unhex` example above), which naturally avoids the constant folding issue.
 
 ### Adding the Expression To the Protobuf Definition
 

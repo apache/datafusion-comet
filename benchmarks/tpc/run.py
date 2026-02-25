@@ -261,6 +261,24 @@ def build_spark_submit_cmd(config, benchmark, args):
             val = "true" if val else "false"
         conf[resolve_env(key)] = resolve_env(str(val))
 
+    # JFR profiling: append to extraJavaOptions (preserving any existing values)
+    if args.jfr:
+        jfr_dir = args.jfr_dir
+        driver_jfr = (
+            f"-XX:StartFlightRecording=disk=true,dumponexit=true,"
+            f"filename={jfr_dir}/driver.jfr,settings=profile"
+        )
+        executor_jfr = (
+            f"-XX:StartFlightRecording=disk=true,dumponexit=true,"
+            f"filename={jfr_dir}/executor.jfr,settings=profile"
+        )
+        for spark_key, jfr_opts in [
+            ("spark.driver.extraJavaOptions", driver_jfr),
+            ("spark.executor.extraJavaOptions", executor_jfr),
+        ]:
+            existing = conf.get(spark_key, "")
+            conf[spark_key] = f"{existing} {jfr_opts}".strip()
+
     for key, val in sorted(conf.items()):
         cmd += ["--conf", f"{key}={val}"]
 
@@ -357,6 +375,16 @@ def main():
         action="store_true",
         help="Print the spark-submit command without executing",
     )
+    parser.add_argument(
+        "--jfr",
+        action="store_true",
+        help="Enable Java Flight Recorder profiling for driver and executors",
+    )
+    parser.add_argument(
+        "--jfr-dir",
+        default="/results/jfr",
+        help="Directory for JFR output files (default: /results/jfr)",
+    )
     args = parser.parse_args()
 
     config = load_engine_config(args.engine)
@@ -372,6 +400,10 @@ def main():
     # Restart Spark unless --no-restart or --dry-run
     if not args.no_restart and not args.dry_run:
         restart_spark()
+
+    # Create JFR output directory if profiling is enabled
+    if args.jfr:
+        os.makedirs(args.jfr_dir, exist_ok=True)
 
     cmd = build_spark_submit_cmd(config, args.benchmark, args)
 
