@@ -889,6 +889,65 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
     }
   }
 
+  // Regression test for cache refresh issue after MOR deletes
+  // Verifies that Comet uses fresh file scan tasks after relation cache refresh
+  test("MOR delete refreshes relation cache - no stale file references") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        // Create V3 table with MOR delete mode (matches failing test config)
+        spark.sql("""
+          CREATE TABLE test_cat.db.cache_refresh_test (
+            id INT,
+            name STRING,
+            value DOUBLE
+          ) USING iceberg
+          TBLPROPERTIES (
+            'format-version' = '3',
+            'write.delete.mode' = 'merge-on-read',
+            'write.update.mode' = 'merge-on-read',
+            'write.distribution-mode' = 'hash'
+          )
+        """)
+
+        // Insert initial data
+        spark.sql("""
+          INSERT INTO test_cat.db.cache_refresh_test
+          VALUES
+            (1, 'Alice', 10.5), (2, 'Bob', 20.3), (3, 'Charlie', 30.7),
+            (4, 'Diana', 15.2), (5, 'Eve', 25.8), (6, 'Frank', 35.0)
+        """)
+
+        // First query - this caches the relation
+        checkIcebergNativeScan("SELECT * FROM test_cat.db.cache_refresh_test ORDER BY id")
+
+        // Delete some rows - this should invalidate the cache
+        spark.sql("DELETE FROM test_cat.db.cache_refresh_test WHERE id IN (2, 4)")
+
+        // Refresh the table cache explicitly
+        spark.catalog.refreshTable("test_cat.db.cache_refresh_test")
+
+        // Second query after cache refresh - should see updated data without stale file errors
+        // This is the scenario that was failing with "corrupt footer" error
+        checkIcebergNativeScan("SELECT * FROM test_cat.db.cache_refresh_test ORDER BY id")
+
+        // Verify correct row count after delete
+        val result = spark.sql("SELECT COUNT(*) FROM test_cat.db.cache_refresh_test").collect()
+        assert(result(0).getLong(0) == 4, "Expected 4 rows after deleting 2")
+
+        spark.sql("DROP TABLE test_cat.db.cache_refresh_test")
+      }
+    }
+  }
+
   test("verify no duplicate rows across multiple partitions") {
     assume(icebergAvailable, "Iceberg not available in classpath")
 
