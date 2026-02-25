@@ -24,7 +24,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
-use arrow::array::{ArrayRef, RecordBatch};
+use arrow::array::{ArrayRef, RecordBatch, RecordBatchOptions};
 use arrow::datatypes::SchemaRef;
 use datafusion::common::{DataFusionError, Result as DFResult};
 use datafusion::execution::{RecordBatchStream, SendableRecordBatchStream, TaskContext};
@@ -352,6 +352,15 @@ fn adapt_batch_with_expressions(
     // If schemas match, no adaptation needed
     if Arc::ptr_eq(&batch.schema(), target_schema) {
         return Ok(batch);
+    }
+
+    // Zero-column projection (e.g. SELECT count(*)) — preserve row count
+    if projection_exprs.is_empty() {
+        return Ok(RecordBatch::try_new_with_options(
+            Arc::clone(target_schema),
+            vec![],
+            &RecordBatchOptions::new().with_row_count(Some(batch.num_rows())),
+        )?);
     }
 
     // Evaluate expressions against batch

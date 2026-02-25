@@ -207,7 +207,7 @@ impl PhysicalExprAdapter for SparkPhysicalExprAdapter {
             Err(e) => {
                 // Default adapter failed (likely complex nested type cast).
                 // Handle all type mismatches ourselves using spark_parquet_convert.
-                log::info!("Default schema adapter error: {}", e);
+                log::debug!("Default schema adapter error: {}", e);
                 self.wrap_all_type_mismatches(expr)?
             }
         };
