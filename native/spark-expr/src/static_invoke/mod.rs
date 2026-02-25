@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+mod binary_pad;
 mod char_varchar_utils;
 
+pub use binary_pad::{spark_binary_lpad, spark_binary_rpad};
 pub use char_varchar_utils::{spark_lpad, spark_read_side_padding, spark_rpad};
