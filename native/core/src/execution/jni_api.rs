@@ -51,7 +51,10 @@ use datafusion_spark::function::hash::sha1::SparkSha1;
 use datafusion_spark::function::hash::sha2::SparkSha2;
 use datafusion_spark::function::map::map_from_entries::MapFromEntries;
 use datafusion_spark::function::math::expm1::SparkExpm1;
+use datafusion_spark::function::math::factorial::SparkFactorial;
 use datafusion_spark::function::math::hex::SparkHex;
+use datafusion_spark::function::math::modulus::SparkPmod;
+use datafusion_spark::function::math::rint::SparkRint;
 use datafusion_spark::function::math::width_bucket::SparkWidthBucket;
 use datafusion_spark::function::string::char::CharFunc;
 use datafusion_spark::function::string::concat::SparkConcat;
@@ -400,6 +403,9 @@ fn register_datafusion_spark_function(session_ctx: &SessionContext) {
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkWidthBucket::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(MapFromEntries::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkCrc32::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkFactorial::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkPmod::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkRint::default()));
 }
 
 /// Prepares arrow arrays for output.
