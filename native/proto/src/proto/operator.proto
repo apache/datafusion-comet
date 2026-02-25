@@ -175,6 +175,9 @@ message IcebergScanCommon {
   repeated PartitionData partition_data_pool = 9;
   repeated DeleteFileList delete_files_pool = 10;
   repeated spark.spark_expression.Expr residual_pool = 11;
+
+  // Number of data files to read concurrently within a single task
+  uint32 data_file_concurrency_limit = 12;
 }
 
 message IcebergScan {
