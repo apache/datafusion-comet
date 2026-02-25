@@ -258,10 +258,11 @@ where
             Poll::Ready(Some(Ok(batch))) => {
                 let file_schema = batch.schema();
 
-                // Reuse cached projection expressions if file schema hasn't changed,
-                // otherwise create a new adapter and build new expressions
+                // Reuse cached projection expressions if file schema hasn't changed.
+                // Batches from the same file share the same Arc<Schema> pointer,
+                // so pointer equality is sufficient here.
                 let projection_exprs = match &self.cached {
-                    Some(cached) if cached.file_schema.as_ref() == file_schema.as_ref() => {
+                    Some(cached) if Arc::ptr_eq(&cached.file_schema, &file_schema) => {
                         &cached.projection_exprs
                     }
                     _ => {
@@ -349,7 +350,7 @@ fn adapt_batch_with_expressions(
     projection_exprs: &[Arc<dyn PhysicalExpr>],
 ) -> DFResult<RecordBatch> {
     // If schemas match, no adaptation needed
-    if batch.schema().as_ref() == target_schema.as_ref() {
+    if Arc::ptr_eq(&batch.schema(), target_schema) {
         return Ok(batch);
     }
 
