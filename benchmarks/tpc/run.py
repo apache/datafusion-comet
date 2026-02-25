@@ -199,12 +199,23 @@ def check_required_env(config):
         sys.exit(1)
 
 
+def is_k8s_master():
+    """Check if SPARK_MASTER points to a Kubernetes cluster."""
+    return os.environ.get("SPARK_MASTER", "").startswith("k8s://")
+
+
 def check_common_env():
     """Validate SPARK_HOME and SPARK_MASTER are set."""
     for var in ("SPARK_HOME", "SPARK_MASTER"):
         if not os.environ.get(var):
             print(f"Error: {var} is not set", file=sys.stderr)
             sys.exit(1)
+    if is_k8s_master() and not os.environ.get("BENCH_IMAGE"):
+        print(
+            "Error: BENCH_IMAGE must be set for Kubernetes mode",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
 
 def check_benchmark_env(config, benchmark):
@@ -236,8 +247,13 @@ def build_spark_submit_cmd(config, benchmark, args):
     spark_master = os.environ["SPARK_MASTER"]
     profile = BENCHMARK_PROFILES[benchmark]
 
+    k8s_mode = is_k8s_master()
+
     cmd = [os.path.join(spark_home, "bin", "spark-submit")]
     cmd += ["--master", spark_master]
+
+    if k8s_mode:
+        cmd += ["--deploy-mode", "cluster"]
 
     # --jars
     jars = config.get("spark_submit", {}).get("jars", [])
@@ -261,11 +277,25 @@ def build_spark_submit_cmd(config, benchmark, args):
             val = "true" if val else "false"
         conf[resolve_env(key)] = resolve_env(str(val))
 
+    # K8s-specific Spark configuration
+    if k8s_mode:
+        bench_image = os.environ["BENCH_IMAGE"]
+        conf["spark.kubernetes.container.image"] = bench_image
+        conf["spark.kubernetes.authenticate.driver.serviceAccountName"] = "spark"
+        # Upload local files (JARs, etc.) to this path for K8s access
+        upload_path = os.environ.get("SPARK_UPLOAD_PATH", "")
+        if upload_path:
+            conf["spark.kubernetes.file.upload.path"] = upload_path
+
     for key, val in sorted(conf.items()):
         cmd += ["--conf", f"{key}={val}"]
 
-    # tpcbench.py path
-    cmd.append("tpcbench.py")
+    # tpcbench.py path — in K8s cluster mode, reference the path baked into
+    # the Docker image since there's no shared filesystem with the submitter
+    if k8s_mode:
+        cmd.append("/opt/benchmarks/tpcbench.py")
+    else:
+        cmd.append("tpcbench.py")
 
     # tpcbench args
     engine_name = config.get("engine", {}).get("name", args.engine)
@@ -369,8 +399,8 @@ def main():
     check_required_env(config)
     check_benchmark_env(config, args.benchmark)
 
-    # Restart Spark unless --no-restart or --dry-run
-    if not args.no_restart and not args.dry_run:
+    # Restart Spark unless --no-restart, --dry-run, or K8s mode
+    if not args.no_restart and not args.dry_run and not is_k8s_master():
         restart_spark()
 
     cmd = build_spark_submit_cmd(config, args.benchmark, args)

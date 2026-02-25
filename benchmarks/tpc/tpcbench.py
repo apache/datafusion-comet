@@ -56,6 +56,13 @@ def result_hash(rows):
     return h.hexdigest()
 
 
+def is_remote_path(path):
+    """Check if a path is a remote filesystem path (S3, GCS, etc.)."""
+    return path and any(
+        path.startswith(prefix) for prefix in ("s3a://", "s3://", "gs://")
+    )
+
+
 def main(
     benchmark: str,
     data_path: str,
@@ -110,7 +117,7 @@ def main(
         else:
             # Support both "customer/" and "customer.parquet/" layouts
             source = f"{data_path}/{table}.{format}"
-            if not os.path.exists(source):
+            if not is_remote_path(source) and not os.path.exists(source):
                 source = f"{data_path}/{table}"
             print(f"Registering table {table} from {source}")
             df = spark.read.format(format).options(**options).load(source)
@@ -194,8 +201,17 @@ def main(
     current_time_millis = int(datetime.now().timestamp() * 1000)
     results_path = f"{output}/{name}-{benchmark}-{current_time_millis}.json"
     print(f"\nWriting results to {results_path}")
-    with open(results_path, "w") as f:
-        f.write(result_str)
+    if is_remote_path(output):
+        # Use Hadoop FileSystem API for remote paths (S3, GCS, etc.)
+        hadoop_conf = spark._jsc.hadoopConfiguration()
+        path = spark._jvm.org.apache.hadoop.fs.Path(results_path)
+        fs = path.getFileSystem(hadoop_conf)
+        out = fs.create(path)
+        out.write(bytearray(result_str, "utf-8"))
+        out.close()
+    else:
+        with open(results_path, "w") as f:
+            f.write(result_str)
 
     spark.stop()
 
