@@ -16,5 +16,7 @@
 // under the License.
 
 mod read_side_padding;
+mod write_side_check;
 
 pub use read_side_padding::{spark_lpad, spark_read_side_padding, spark_rpad};
+pub use write_side_check::{spark_char_type_write_side_check, spark_varchar_type_write_side_check};
