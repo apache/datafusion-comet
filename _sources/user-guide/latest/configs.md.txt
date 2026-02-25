@@ -28,6 +28,7 @@ Comet provides the following configuration settings.
 | Config | Description | Default Value |
 |--------|-------------|---------------|
 | `spark.comet.scan.enabled` | Whether to enable native scans. When this is turned on, Spark will use Comet to read supported data sources (currently only Parquet is supported natively). Note that to enable native vectorized execution, both this config and `spark.comet.exec.enabled` need to be enabled. | true |
+| `spark.comet.scan.icebergNative.dataFileConcurrencyLimit` | The number of Iceberg data files to read concurrently within a single task. Higher values improve throughput for tables with many small files by overlapping I/O latency, but increase memory usage. Values between 2 and 8 are suggested. | 1 |
 | `spark.comet.scan.icebergNative.enabled` | Whether to enable native Iceberg table scan using iceberg-rust. When enabled, Iceberg tables are read directly through native execution, bypassing Spark's DataSource V2 API for better performance. | false |
 | `spark.comet.scan.preFetch.enabled` | Whether to enable pre-fetching feature of CometScan. | false |
 | `spark.comet.scan.preFetch.threadNum` | The number of threads running pre-fetching for CometScan. Effective if spark.comet.scan.preFetch.enabled is enabled. Note that more pre-fetching threads means more memory requirement to store pre-fetched row groups. | 2 |

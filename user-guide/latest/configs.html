@@ -477,23 +477,27 @@ under the License.
 <td><p>Whether to enable native scans. When this is turned on, Spark will use Comet to read supported data sources (currently only Parquet is supported natively). Note that to enable native vectorized execution, both this config and <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.enabled</span></code> need to be enabled.</p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.scan.icebergNative.enabled</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.scan.icebergNative.dataFileConcurrencyLimit</span></code></p></td>
+<td><p>The number of Iceberg data files to read concurrently within a single task. Higher values improve throughput for tables with many small files by overlapping I/O latency, but increase memory usage. Values between 2 and 8 are suggested.</p></td>
+<td><p>1</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.scan.icebergNative.enabled</span></code></p></td>
 <td><p>Whether to enable native Iceberg table scan using iceberg-rust. When enabled, Iceberg tables are read directly through native execution, bypassing Spark’s DataSource V2 API for better performance.</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.scan.preFetch.enabled</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.scan.preFetch.enabled</span></code></p></td>
 <td><p>Whether to enable pre-fetching feature of CometScan.</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.scan.preFetch.threadNum</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.scan.preFetch.threadNum</span></code></p></td>
 <td><p>The number of threads running pre-fetching for CometScan. Effective if spark.comet.scan.preFetch.enabled is enabled. Note that more pre-fetching threads means more memory requirement to store pre-fetched row groups.</p></td>
 <td><p>2</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.scan.unsignedSmallIntSafetyCheck</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.scan.unsignedSmallIntSafetyCheck</span></code></p></td>
 <td><p>Parquet files may contain unsigned 8-bit integers (UINT_8) which Spark maps to ShortType. When this config is true (default), Comet falls back to Spark for ShortType columns because we cannot distinguish signed INT16 (safe) from unsigned UINT_8 (may produce different results). Set to false to allow native execution of ShortType columns if you know your data does not contain unsigned UINT_8 columns from improperly encoded Parquet files. For more information, refer to the <a class="reference external" href="https://datafusion.apache.org/comet/user-guide/compatibility.html">Comet Compatibility Guide</a>.</p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.hadoop.fs.comet.libhdfs.schemes</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.hadoop.fs.comet.libhdfs.schemes</span></code></p></td>
 <td><p>Defines filesystem schemes (e.g., hdfs, webhdfs) that the native side accesses via libhdfs, separated by commas. Valid only when built with hdfs feature enabled.</p></td>
 <td><p></p></td>
 </tr>
