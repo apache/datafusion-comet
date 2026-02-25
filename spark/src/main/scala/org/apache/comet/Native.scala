@@ -248,4 +248,37 @@ class Native extends NativeBase {
    */
   @native def columnarToRowClose(c2rHandle: Long): Unit
 
+  // Native Iceberg Compaction methods
+
+  /**
+   * Execute native Iceberg compaction.
+   *
+   * This function:
+   *   1. Parses the compaction configuration from JSON 2. Creates a native scan plan for the
+   *      input files 3. Writes compacted output using IcebergParquetWriterExec 4. Returns
+   *      metadata for new files (does NOT commit)
+   *
+   * @param compactionConfigJson
+   *   JSON string containing CompactionTaskConfig with:
+   *   - table_config: IcebergTableConfig (table identifier, metadata location, etc.)
+   *   - file_scan_tasks: Array of FileScanTaskConfig (files to compact)
+   *   - target_file_size_bytes: Target size for output files
+   *   - compression: Compression codec (snappy, zstd, etc.)
+   *   - data_dir: Output data directory
+   * @return
+   *   JSON string containing NativeCompactionResult with:
+   *   - success: Boolean indicating if compaction succeeded
+   *   - error_message: Error message if failed
+   *   - result: IcebergCompactionResult with files_to_delete and files_to_add
+   */
+  @native def executeIcebergCompaction(compactionConfigJson: String): String
+
+  /**
+   * Get the version of the native Iceberg compaction library.
+   *
+   * @return
+   *   Version string of the native library
+   */
+  @native def getIcebergCompactionVersion(): String
+
 }

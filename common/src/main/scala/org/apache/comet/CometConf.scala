@@ -148,6 +148,18 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_ICEBERG_COMPACTION_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.iceberg.compaction.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Whether to enable Comet-accelerated Iceberg compaction. When enabled, " +
+          "CALL rewrite_data_files() is intercepted and executed via Comet's native " +
+          "Rust/DataFusion engine for direct Parquet read/write, bypassing Spark's " +
+          "DAG execution. Only bin-pack strategy is supported; sort and z-order " +
+          "fall back to Spark's default. Requires Iceberg on the classpath. Experimental.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_ICEBERG_DATA_FILE_CONCURRENCY_LIMIT: ConfigEntry[Int] =
     conf("spark.comet.scan.icebergNative.dataFileConcurrencyLimit")
       .category(CATEGORY_SCAN)
