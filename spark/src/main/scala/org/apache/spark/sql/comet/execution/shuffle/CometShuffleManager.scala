@@ -238,7 +238,8 @@ class CometShuffleManager(conf: SparkConf) extends ShuffleManager with Logging {
           mapId,
           context,
           metrics,
-          dep.rangePartitionBounds)
+          dep.rangePartitionBounds,
+          dep.childNativePlan)
       case bypassMergeSortHandle: CometBypassMergeSortShuffleHandle[K @unchecked, V @unchecked] =>
         new CometBypassMergeSortShuffleWriter(
           env.blockManager,

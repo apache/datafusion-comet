@@ -31,6 +31,8 @@ import org.apache.spark.sql.catalyst.plans.physical.Partitioning
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.types.StructType
 
+import org.apache.comet.serde.OperatorOuterClass.Operator
+
 /**
  * A [[ShuffleDependency]] that allows us to identify the shuffle dependency as a Comet shuffle.
  */
@@ -49,7 +51,9 @@ class CometShuffleDependency[K: ClassTag, V: ClassTag, C: ClassTag](
     val outputAttributes: Seq[Attribute] = Seq.empty,
     val shuffleWriteMetrics: Map[String, SQLMetric] = Map.empty,
     val numParts: Int = 0,
-    val rangePartitionBounds: Option[Seq[InternalRow]] = None)
+    val rangePartitionBounds: Option[Seq[InternalRow]] = None,
+    // For direct native execution: the child's native plan to compose with ShuffleWriter
+    val childNativePlan: Option[Operator] = None)
     extends ShuffleDependency[K, V, C](
       _rdd,
       partitioner,
