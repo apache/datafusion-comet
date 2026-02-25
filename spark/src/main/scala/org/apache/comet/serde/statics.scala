@@ -57,8 +57,8 @@ object CometStaticInvoke extends CometExpressionSerde[StaticInvoke] {
 }
 
 /**
- * Handler for ExpressionImplUtils.isLuhnNumber StaticInvoke (Spark 3.5+).
- * Maps to datafusion-spark's built-in luhn_check function.
+ * Handler for ExpressionImplUtils.isLuhnNumber StaticInvoke (Spark 3.5+). Maps to
+ * datafusion-spark's built-in luhn_check function.
  */
 private object CometLuhnCheck extends CometExpressionSerde[StaticInvoke] {
 
@@ -67,11 +67,8 @@ private object CometLuhnCheck extends CometExpressionSerde[StaticInvoke] {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val childExpr = exprToProtoInternal(expr.arguments.head, inputs, binding)
-    val optExpr = scalarFunctionExprToProtoWithReturnType(
-      "luhn_check",
-      BooleanType,
-      false,
-      childExpr)
+    val optExpr =
+      scalarFunctionExprToProtoWithReturnType("luhn_check", BooleanType, false, childExpr)
     optExprWithInfo(optExpr, expr, expr.arguments.head)
   }
 }
