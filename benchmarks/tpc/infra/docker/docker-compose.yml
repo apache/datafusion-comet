@@ -31,6 +31,7 @@
 #   ICEBERG_JAR        - Host path to Iceberg Spark runtime JAR
 #   WORKER_MEM_LIMIT   - Hard memory limit per worker container (default: 32g)
 #   BENCH_MEM_LIMIT    - Hard memory limit for the bench runner (default: 10g)
+#   METRICS_INTERVAL   - Metrics collection interval in seconds (default: 1)
 #   BENCH_JAVA_HOME    - Java home inside container (default: /usr/lib/jvm/java-17-openjdk)
 #                        Set to /usr/lib/jvm/java-8-openjdk for Gluten
 
@@ -47,7 +48,16 @@ x-worker: &worker
   image: ${BENCH_IMAGE:-comet-bench}
   depends_on:
     - spark-master
-  command: /opt/spark/sbin/start-worker.sh spark://spark-master:7077
+  # The metrics collector runs inside the worker container so that it
+  # reads the worker's own cgroup memory stats (a separate sidecar
+  # container would only see its own cgroup, not the worker's).
+  command:
+    - sh
+    - -c
+    - >-
+      /opt/benchmarks/collect-metrics.sh ${METRICS_INTERVAL:-1}
+      /results/container-metrics-$${HOSTNAME}.csv &
+      exec /opt/spark/sbin/start-worker.sh spark://spark-master:7077
   volumes: *volumes
   environment:
     - JAVA_HOME=${BENCH_JAVA_HOME:-/usr/lib/jvm/java-17-openjdk}

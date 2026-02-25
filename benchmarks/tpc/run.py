@@ -290,6 +290,11 @@ def build_spark_submit_cmd(config, benchmark, args):
     if profile["format"] and not use_iceberg:
         cmd += ["--format", profile["format"]]
 
+    if args.profile:
+        cmd += ["--profile"]
+        cmd += ["--profile-interval", str(args.profile_interval)]
+
+
     return cmd
 
 
@@ -356,6 +361,17 @@ def main():
         "--dry-run",
         action="store_true",
         help="Print the spark-submit command without executing",
+    )
+    parser.add_argument(
+        "--profile",
+        action="store_true",
+        help="Enable executor metrics profiling via Spark REST API",
+    )
+    parser.add_argument(
+        "--profile-interval",
+        type=float,
+        default=2.0,
+        help="Profiling poll interval in seconds (default: 2.0)",
     )
     args = parser.parse_args()
 
