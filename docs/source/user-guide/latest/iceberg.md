@@ -189,7 +189,9 @@ The native Iceberg reader supports the following features:
 
 **Table specifications:**
 
-- Iceberg table spec v1 and v2 (v3 will fall back to Spark)
+- Iceberg table spec v1, v2, and v3 (basic read support)
+- V3 tables using V2-compatible features are fully accelerated
+- V3-specific features (Deletion Vectors, new types) will gracefully fall back to Spark
 
 **Schema and data types:**
 
@@ -266,10 +268,19 @@ scala> spark.sql("SELECT * FROM rest_cat.db.test_table").show()
 
 The following scenarios will fall back to Spark's native Iceberg reader:
 
-- Iceberg table spec v3 scans
 - Iceberg writes (reads are accelerated, writes use Spark)
 - Tables backed by Avro or ORC data files (only Parquet is accelerated)
 - Tables partitioned on `BINARY` or `DECIMAL` (with precision >28) columns
 - Scans with residual filters using `truncate`, `bucket`, `year`, `month`, `day`, or `hour`
   transform functions (partition pruning still works, but row-level filtering of these
   transforms falls back)
+
+**V3-specific limitations (graceful fallback to Spark):**
+
+- Deletion Vectors (DVs) - V3's efficient bitmap-based deletes stored in Puffin files
+- V3-only data types: `timestamp_ns`, `timestamptz_ns`, `variant`, `geometry`, `geography`
+- Table encryption - tables with `encryption.key-id` or other encryption properties
+- Default column values - schema fields with `initial-default` or `write-default`
+
+Note: V3 tables that use only V2-compatible features (position deletes, equality deletes,
+standard types, no encryption, no column defaults) are fully accelerated by Comet.

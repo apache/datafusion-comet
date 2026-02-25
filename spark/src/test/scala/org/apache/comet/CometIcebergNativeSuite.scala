@@ -98,6 +98,267 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
     }
   }
 
+  // ==========================================================================
+  // Iceberg V3 Table Format Tests
+  // ==========================================================================
+
+  test("V3 table - basic read support (no V3-specific features)") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.v3_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.v3_cat.type" -> "hadoop",
+        "spark.sql.catalog.v3_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE v3_cat.db.v3_basic (
+            id INT,
+            name STRING,
+            value DOUBLE
+          ) USING iceberg
+          TBLPROPERTIES ('format-version' = '3')
+        """)
+
+        spark.sql("""
+          INSERT INTO v3_cat.db.v3_basic
+          VALUES (1, 'Alice', 10.5), (2, 'Bob', 20.3), (3, 'Charlie', 30.7)
+        """)
+
+        checkIcebergNativeScan("SELECT * FROM v3_cat.db.v3_basic ORDER BY id")
+        checkIcebergNativeScan("SELECT * FROM v3_cat.db.v3_basic WHERE id = 2")
+        checkIcebergNativeScan("SELECT * FROM v3_cat.db.v3_basic WHERE name = 'Alice'")
+        checkIcebergNativeScan("SELECT * FROM v3_cat.db.v3_basic WHERE value > 15.0 ORDER BY id")
+
+        spark.sql("DROP TABLE v3_cat.db.v3_basic")
+      }
+    }
+  }
+
+  test("V3 table - with position deletes (V2 compatibility mode)") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.v3_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.v3_cat.type" -> "hadoop",
+        "spark.sql.catalog.v3_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE v3_cat.db.v3_pos_deletes (
+            id INT,
+            name STRING,
+            value DOUBLE
+          ) USING iceberg
+          TBLPROPERTIES (
+            'format-version' = '3',
+            'write.delete.mode' = 'merge-on-read',
+            'write.update.mode' = 'merge-on-read'
+          )
+        """)
+
+        spark.sql("""
+          INSERT INTO v3_cat.db.v3_pos_deletes
+          VALUES (1, 'Alice', 10.5), (2, 'Bob', 20.3), (3, 'Charlie', 30.7)
+        """)
+
+        spark.sql("DELETE FROM v3_cat.db.v3_pos_deletes WHERE id = 2")
+
+        checkIcebergNativeScan("SELECT * FROM v3_cat.db.v3_pos_deletes ORDER BY id")
+
+        spark.sql("DROP TABLE v3_cat.db.v3_pos_deletes")
+      }
+    }
+  }
+
+  test("V3 table - with equality deletes") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.v3_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.v3_cat.type" -> "hadoop",
+        "spark.sql.catalog.v3_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE v3_cat.db.v3_eq_deletes (
+            id INT,
+            category STRING,
+            value DOUBLE
+          ) USING iceberg
+          PARTITIONED BY (category)
+          TBLPROPERTIES (
+            'format-version' = '3',
+            'write.delete.mode' = 'merge-on-read'
+          )
+        """)
+
+        spark.sql("""
+          INSERT INTO v3_cat.db.v3_eq_deletes
+          VALUES (1, 'A', 10.5), (2, 'B', 20.3), (3, 'A', 30.7), (4, 'B', 40.1)
+        """)
+
+        spark.sql("DELETE FROM v3_cat.db.v3_eq_deletes WHERE category = 'B'")
+
+        checkIcebergNativeScan("SELECT * FROM v3_cat.db.v3_eq_deletes ORDER BY id")
+
+        spark.sql("DROP TABLE v3_cat.db.v3_eq_deletes")
+      }
+    }
+  }
+
+  test("V3 table - all data types supported in V3") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.v3_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.v3_cat.type" -> "hadoop",
+        "spark.sql.catalog.v3_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE v3_cat.db.v3_types (
+            id INT,
+            big_num BIGINT,
+            price DECIMAL(10, 2),
+            event_date DATE,
+            event_time TIMESTAMP,
+            is_active BOOLEAN,
+            description STRING,
+            score FLOAT,
+            rating DOUBLE,
+            tags ARRAY<STRING>,
+            metadata MAP<STRING, STRING>,
+            address STRUCT<city: STRING, zip: INT>
+          ) USING iceberg
+          TBLPROPERTIES ('format-version' = '3')
+        """)
+
+        spark.sql("""
+          INSERT INTO v3_cat.db.v3_types
+          VALUES (
+            1, 9223372036854775807, 123.45, DATE '2024-01-15',
+            TIMESTAMP '2024-01-15 10:30:00', true, 'Test description',
+            3.14, 2.718281828, array('tag1', 'tag2'),
+            map('key1', 'value1'), struct('NYC', 10001)
+          )
+        """)
+
+        checkIcebergNativeScan("SELECT * FROM v3_cat.db.v3_types")
+
+        spark.sql("DROP TABLE v3_cat.db.v3_types")
+      }
+    }
+  }
+
+  test("V3 table - partitioned table with date transform") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.v3_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.v3_cat.type" -> "hadoop",
+        "spark.sql.catalog.v3_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE v3_cat.db.v3_partitioned (
+            id INT,
+            event_date DATE,
+            value STRING
+          ) USING iceberg
+          PARTITIONED BY (days(event_date))
+          TBLPROPERTIES ('format-version' = '3')
+        """)
+
+        spark.sql("""
+          INSERT INTO v3_cat.db.v3_partitioned VALUES
+          (1, DATE '2024-01-01', 'a'), (2, DATE '2024-01-02', 'b'),
+          (3, DATE '2024-01-03', 'c'), (4, DATE '2024-02-01', 'd')
+        """)
+
+        checkIcebergNativeScan("SELECT * FROM v3_cat.db.v3_partitioned ORDER BY id")
+        checkIcebergNativeScan(
+          "SELECT * FROM v3_cat.db.v3_partitioned WHERE event_date = DATE '2024-01-01'")
+
+        spark.sql("DROP TABLE v3_cat.db.v3_partitioned")
+      }
+    }
+  }
+
+  test("V3 table - aggregations and joins") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.v3_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.v3_cat.type" -> "hadoop",
+        "spark.sql.catalog.v3_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE v3_cat.db.v3_orders (
+            order_id INT,
+            customer_id INT,
+            amount DOUBLE
+          ) USING iceberg
+          TBLPROPERTIES ('format-version' = '3')
+        """)
+
+        spark.sql("""
+          CREATE TABLE v3_cat.db.v3_customers (
+            id INT,
+            name STRING
+          ) USING iceberg
+          TBLPROPERTIES ('format-version' = '3')
+        """)
+
+        spark.sql("""
+          INSERT INTO v3_cat.db.v3_orders VALUES
+          (1, 1, 100.0), (2, 1, 200.0), (3, 2, 150.0), (4, 3, 300.0)
+        """)
+
+        spark.sql("""
+          INSERT INTO v3_cat.db.v3_customers VALUES
+          (1, 'Alice'), (2, 'Bob'), (3, 'Charlie')
+        """)
+
+        checkIcebergNativeScan(
+          "SELECT customer_id, SUM(amount) as total FROM v3_cat.db.v3_orders GROUP BY customer_id")
+
+        val (_, joinPlan) = checkSparkAnswer("""
+          SELECT o.order_id, c.name, o.amount
+          FROM v3_cat.db.v3_orders o
+          JOIN v3_cat.db.v3_customers c ON o.customer_id = c.id
+          ORDER BY o.order_id
+        """)
+        val icebergScans = collectIcebergNativeScans(joinPlan)
+        assert(
+          icebergScans.length == 2,
+          s"Expected 2 CometIcebergNativeScanExec for join but found ${icebergScans.length}")
+
+        spark.sql("DROP TABLE v3_cat.db.v3_orders")
+        spark.sql("DROP TABLE v3_cat.db.v3_customers")
+      }
+    }
+  }
+
   test("filter pushdown - equality predicates") {
     assume(icebergAvailable, "Iceberg not available in classpath")
 
@@ -624,6 +885,65 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
         checkIcebergNativeScan("SELECT * FROM test_cat.db.multi_delete_test ORDER BY id")
 
         spark.sql("DROP TABLE test_cat.db.multi_delete_test")
+      }
+    }
+  }
+
+  // Regression test for cache refresh issue after MOR deletes
+  // Verifies that Comet uses fresh file scan tasks after relation cache refresh
+  test("MOR delete refreshes relation cache - no stale file references") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        // Create V3 table with MOR delete mode (matches failing test config)
+        spark.sql("""
+          CREATE TABLE test_cat.db.cache_refresh_test (
+            id INT,
+            name STRING,
+            value DOUBLE
+          ) USING iceberg
+          TBLPROPERTIES (
+            'format-version' = '3',
+            'write.delete.mode' = 'merge-on-read',
+            'write.update.mode' = 'merge-on-read',
+            'write.distribution-mode' = 'hash'
+          )
+        """)
+
+        // Insert initial data
+        spark.sql("""
+          INSERT INTO test_cat.db.cache_refresh_test
+          VALUES
+            (1, 'Alice', 10.5), (2, 'Bob', 20.3), (3, 'Charlie', 30.7),
+            (4, 'Diana', 15.2), (5, 'Eve', 25.8), (6, 'Frank', 35.0)
+        """)
+
+        // First query - this caches the relation
+        checkIcebergNativeScan("SELECT * FROM test_cat.db.cache_refresh_test ORDER BY id")
+
+        // Delete some rows - this should invalidate the cache
+        spark.sql("DELETE FROM test_cat.db.cache_refresh_test WHERE id IN (2, 4)")
+
+        // Refresh the table cache explicitly
+        spark.catalog.refreshTable("test_cat.db.cache_refresh_test")
+
+        // Second query after cache refresh - should see updated data without stale file errors
+        // This is the scenario that was failing with "corrupt footer" error
+        checkIcebergNativeScan("SELECT * FROM test_cat.db.cache_refresh_test ORDER BY id")
+
+        // Verify correct row count after delete
+        val result = spark.sql("SELECT COUNT(*) FROM test_cat.db.cache_refresh_test").collect()
+        assert(result(0).getLong(0) == 4, "Expected 4 rows after deleting 2")
+
+        spark.sql("DROP TABLE test_cat.db.cache_refresh_test")
       }
     }
   }
