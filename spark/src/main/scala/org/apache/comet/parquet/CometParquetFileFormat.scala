@@ -57,7 +57,7 @@ import org.apache.comet.vector.CometVector
  *     in [[org.apache.comet.CometSparkSessionExtensions]]
  *   - `buildReaderWithPartitionValues`, so Spark calls Comet's Parquet reader to read values.
  */
-class CometParquetFileFormat(session: SparkSession, scanImpl: String)
+class CometParquetFileFormat(session: SparkSession)
     extends ParquetFileFormat
     with MetricsSupport
     with ShimSQLConf {
@@ -110,8 +110,6 @@ class CometParquetFileFormat(session: SparkSession, scanImpl: String)
     // Comet specific configurations
     val capacity = CometConf.COMET_BATCH_SIZE.get(sqlConf)
 
-    val nativeIcebergCompat = scanImpl == CometConf.SCAN_NATIVE_ICEBERG_COMPAT
-
     (file: PartitionedFile) => {
       val sharedConf = broadcastedHadoopConf.value.value
       val footer = FooterReader.readFooter(sharedConf, file)
@@ -135,85 +133,42 @@ class CometParquetFileFormat(session: SparkSession, scanImpl: String)
         isCaseSensitive,
         datetimeRebaseSpec)
 
-      val recordBatchReader =
-        if (nativeIcebergCompat) {
-          // We still need the predicate in the conf to allow us to generate row indexes based on
-          // the actual row groups read
-          val pushed = if (parquetFilterPushDown) {
-            filters
-              // Collects all converted Parquet filter predicates. Notice that not all predicates
-              // can be converted (`ParquetFilters.createFilter` returns an `Option`). That's why
-              // a `flatMap` is used here.
-              .flatMap(parquetFilters.createFilter)
-              .reduceOption(FilterApi.and)
-          } else {
-            None
-          }
-          pushed.foreach(p => ParquetInputFormat.setFilterPredicate(sharedConf, p))
-          val pushedNative = if (parquetFilterPushDown) {
-            parquetFilters.createNativeFilters(filters)
-          } else {
-            None
-          }
-          val batchReader = new NativeBatchReader(
-            sharedConf,
-            file,
-            footer,
-            pushedNative.orNull,
-            capacity,
-            requiredSchema,
-            dataSchema,
-            isCaseSensitive,
-            useFieldId,
-            ignoreMissingIds,
-            datetimeRebaseSpec.mode == CORRECTED,
-            partitionSchema,
-            file.partitionValues,
-            metrics.asJava,
-            CometMetricNode(metrics))
-          try {
-            batchReader.init()
-          } catch {
-            case e: Throwable =>
-              batchReader.close()
-              throw e
-          }
-          batchReader
-        } else {
-          val pushed = if (parquetFilterPushDown) {
-            filters
-              // Collects all converted Parquet filter predicates. Notice that not all predicates
-              // can be converted (`ParquetFilters.createFilter` returns an `Option`). That's why
-              // a `flatMap` is used here.
-              .flatMap(parquetFilters.createFilter)
-              .reduceOption(FilterApi.and)
-          } else {
-            None
-          }
-          pushed.foreach(p => ParquetInputFormat.setFilterPredicate(sharedConf, p))
-
-          val batchReader = new BatchReader(
-            sharedConf,
-            file,
-            footer,
-            capacity,
-            requiredSchema,
-            isCaseSensitive,
-            useFieldId,
-            ignoreMissingIds,
-            datetimeRebaseSpec.mode == CORRECTED,
-            partitionSchema,
-            file.partitionValues,
-            metrics.asJava)
-          try {
-            batchReader.init()
-          } catch {
-            case e: Throwable =>
-              batchReader.close()
-              throw e
-          }
-          batchReader
-        }
+      val pushed = if (parquetFilterPushDown) {
+        filters
+          .flatMap(parquetFilters.createFilter)
+          .reduceOption(FilterApi.and)
+      } else {
+        None
+      }
+      pushed.foreach(p => ParquetInputFormat.setFilterPredicate(sharedConf, p))
+      val pushedNative = if (parquetFilterPushDown) {
+        parquetFilters.createNativeFilters(filters)
+      } else {
+        None
+      }
+      val recordBatchReader = new NativeBatchReader(
+        sharedConf,
+        file,
+        footer,
+        pushedNative.orNull,
+        capacity,
+        requiredSchema,
+        dataSchema,
+        isCaseSensitive,
+        useFieldId,
+        ignoreMissingIds,
+        datetimeRebaseSpec.mode == CORRECTED,
+        partitionSchema,
+        file.partitionValues,
+        metrics.asJava,
+        CometMetricNode(metrics))
+      try {
+        recordBatchReader.init()
+      } catch {
+        case e: Throwable =>
+          recordBatchReader.close()
+          throw e
+      }
       val iter = new RecordReaderIterator(recordBatchReader)
       try {
         iter.asInstanceOf[Iterator[InternalRow]]

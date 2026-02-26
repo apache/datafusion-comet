@@ -965,20 +965,31 @@ impl PhysicalPlanner {
                 ))
             }
             OpStruct::NativeScan(scan) => {
-                let data_schema = convert_spark_types_to_arrow_schema(scan.data_schema.as_slice());
+                // Extract common data and single partition's file list
+                // Per-partition injection happens in Scala before sending to native
+                let common = scan
+                    .common
+                    .as_ref()
+                    .ok_or_else(|| GeneralError("NativeScan missing common data".into()))?;
+
+                let data_schema =
+                    convert_spark_types_to_arrow_schema(common.data_schema.as_slice());
                 let required_schema: SchemaRef =
-                    convert_spark_types_to_arrow_schema(scan.required_schema.as_slice());
+                    convert_spark_types_to_arrow_schema(common.required_schema.as_slice());
                 let partition_schema: SchemaRef =
-                    convert_spark_types_to_arrow_schema(scan.partition_schema.as_slice());
-                let projection_vector: Vec<usize> = scan
+                    convert_spark_types_to_arrow_schema(common.partition_schema.as_slice());
+                let projection_vector: Vec<usize> = common
                     .projection_vector
                     .iter()
                     .map(|offset| *offset as usize)
                     .collect();
 
-                // Check if this partition has any files (bucketed scan with bucket pruning may have empty partitions)
-                let partition_files = &scan.file_partitions[self.partition as usize];
+                let partition_files = scan
+                    .file_partition
+                    .as_ref()
+                    .ok_or_else(|| GeneralError("NativeScan missing file_partition".into()))?;
 
+                // Check if this partition has any files (bucketed scan with bucket pruning may have empty partitions)
                 if partition_files.partitioned_file.is_empty() {
                     let empty_exec = Arc::new(EmptyExec::new(required_schema));
                     return Ok((
@@ -988,19 +999,19 @@ impl PhysicalPlanner {
                 }
 
                 // Convert the Spark expressions to Physical expressions
-                let data_filters: Result<Vec<Arc<dyn PhysicalExpr>>, ExecutionError> = scan
+                let data_filters: Result<Vec<Arc<dyn PhysicalExpr>>, ExecutionError> = common
                     .data_filters
                     .iter()
                     .map(|expr| self.create_expr(expr, Arc::clone(&required_schema)))
                     .collect();
 
-                let default_values: Option<HashMap<usize, ScalarValue>> = if !scan
+                let default_values: Option<HashMap<usize, ScalarValue>> = if !common
                     .default_values
                     .is_empty()
                 {
                     // We have default values. Extract the two lists (same length) of values and
                     // indexes in the schema, and then create a HashMap to use in the SchemaMapper.
-                    let default_values: Result<Vec<ScalarValue>, DataFusionError> = scan
+                    let default_values: Result<Vec<ScalarValue>, DataFusionError> = common
                         .default_values
                         .iter()
                         .map(|expr| {
@@ -1015,7 +1026,7 @@ impl PhysicalPlanner {
                         })
                         .collect();
                     let default_values = default_values?;
-                    let default_values_indexes: Vec<usize> = scan
+                    let default_values_indexes: Vec<usize> = common
                         .default_values_indexes
                         .iter()
                         .map(|offset| *offset as usize)
@@ -1037,7 +1048,7 @@ impl PhysicalPlanner {
                     .map(|f| f.file_path.clone())
                     .expect("partition should have files after empty check");
 
-                let object_store_options: HashMap<String, String> = scan
+                let object_store_options: HashMap<String, String> = common
                     .object_store_options
                     .iter()
                     .map(|(k, v)| (k.clone(), v.clone()))
@@ -1048,10 +1059,8 @@ impl PhysicalPlanner {
                     &object_store_options,
                 )?;
 
-                // Comet serializes all partitions' PartitionedFiles, but we only want to read this
-                // Spark partition's PartitionedFiles
-                let files =
-                    self.get_partitioned_files(&scan.file_partitions[self.partition as usize])?;
+                // Get files for this partition
+                let files = self.get_partitioned_files(partition_files)?;
                 let file_groups: Vec<Vec<PartitionedFile>> = vec![files];
                 let partition_fields: Vec<Field> = partition_schema
                     .fields()
@@ -1070,10 +1079,10 @@ impl PhysicalPlanner {
                     Some(projection_vector),
                     Some(data_filters?),
                     default_values,
-                    scan.session_timezone.as_str(),
-                    scan.case_sensitive,
+                    common.session_timezone.as_str(),
+                    common.case_sensitive,
                     self.session_ctx(),
-                    scan.encryption_enabled,
+                    common.encryption_enabled,
                 )?;
                 Ok((
                     vec![],
@@ -1151,33 +1160,30 @@ impl PhysicalPlanner {
                 ))
             }
             OpStruct::IcebergScan(scan) => {
-                let required_schema: SchemaRef =
-                    convert_spark_types_to_arrow_schema(scan.required_schema.as_slice());
+                // Extract common data and single partition's file tasks
+                // Per-partition injection happens in Scala before sending to native
+                let common = scan
+                    .common
+                    .as_ref()
+                    .ok_or_else(|| GeneralError("IcebergScan missing common data".into()))?;
 
-                let catalog_properties: HashMap<String, String> = scan
+                let required_schema =
+                    convert_spark_types_to_arrow_schema(common.required_schema.as_slice());
+                let catalog_properties: HashMap<String, String> = common
                     .catalog_properties
                     .iter()
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect();
-
-                let metadata_location = scan.metadata_location.clone();
-
-                debug_assert!(
-                    !scan.file_partitions.is_empty(),
-                    "IcebergScan must have at least one file partition. This indicates a bug in Scala serialization."
-                );
-
-                let tasks = parse_file_scan_tasks(
-                    scan,
-                    &scan.file_partitions[self.partition as usize].file_scan_tasks,
-                )?;
-                let file_task_groups = vec![tasks];
+                let metadata_location = common.metadata_location.clone();
+                let tasks = parse_file_scan_tasks_from_common(common, &scan.file_scan_tasks)?;
+                let data_file_concurrency_limit = common.data_file_concurrency_limit as usize;
 
                 let iceberg_scan = IcebergScanExec::new(
                     metadata_location,
                     required_schema,
                     catalog_properties,
-                    file_task_groups,
+                    tasks,
+                    data_file_concurrency_limit,
                 )?;
 
                 Ok((
@@ -2762,15 +2768,14 @@ fn partition_data_to_struct(
 /// Each task contains a residual predicate that is used for row-group level filtering
 /// during Parquet scanning.
 ///
-/// This function uses deduplication pools from the IcebergScan to avoid redundant parsing
-/// of schemas, partition specs, partition types, name mappings, and other repeated data.
-fn parse_file_scan_tasks(
-    proto_scan: &spark_operator::IcebergScan,
+/// This function uses deduplication pools from the IcebergScanCommon to avoid redundant
+/// parsing of schemas, partition specs, partition types, name mappings, and other repeated data.
+fn parse_file_scan_tasks_from_common(
+    proto_common: &spark_operator::IcebergScanCommon,
     proto_tasks: &[spark_operator::IcebergFileScanTask],
 ) -> Result<Vec<iceberg::scan::FileScanTask>, ExecutionError> {
-    // Build caches upfront: for 10K tasks with 1 schema, this parses the schema
-    // once instead of 10K times, eliminating redundant JSON deserialization
-    let schema_cache: Vec<Arc<iceberg::spec::Schema>> = proto_scan
+    // Parse each unique schema once, not once per task
+    let schema_cache: Vec<Arc<iceberg::spec::Schema>> = proto_common
         .schema_pool
         .iter()
         .map(|json| {
@@ -2783,7 +2788,7 @@ fn parse_file_scan_tasks(
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    let partition_spec_cache: Vec<Option<Arc<iceberg::spec::PartitionSpec>>> = proto_scan
+    let partition_spec_cache: Vec<Option<Arc<iceberg::spec::PartitionSpec>>> = proto_common
         .partition_spec_pool
         .iter()
         .map(|json| {
@@ -2793,7 +2798,7 @@ fn parse_file_scan_tasks(
         })
         .collect();
 
-    let name_mapping_cache: Vec<Option<Arc<iceberg::spec::NameMapping>>> = proto_scan
+    let name_mapping_cache: Vec<Option<Arc<iceberg::spec::NameMapping>>> = proto_common
         .name_mapping_pool
         .iter()
         .map(|json| {
@@ -2803,7 +2808,7 @@ fn parse_file_scan_tasks(
         })
         .collect();
 
-    let delete_files_cache: Vec<Vec<iceberg::scan::FileScanTaskDeleteFile>> = proto_scan
+    let delete_files_cache: Vec<Vec<iceberg::scan::FileScanTaskDeleteFile>> = proto_common
         .delete_files_pool
         .iter()
         .map(|list| {
@@ -2815,7 +2820,7 @@ fn parse_file_scan_tasks(
                         "EQUALITY_DELETES" => iceberg::spec::DataContentType::EqualityDeletes,
                         other => {
                             return Err(GeneralError(format!(
-                                "Invalid delete content type '{}'. This indicates a bug in Scala serialization.",
+                                "Invalid delete content type '{}'",
                                 other
                             )))
                         }
@@ -2836,7 +2841,6 @@ fn parse_file_scan_tasks(
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    // Partition data pool is in protobuf messages
     let results: Result<Vec<_>, _> = proto_tasks
         .iter()
         .map(|proto_task| {
@@ -2870,7 +2874,7 @@ fn parse_file_scan_tasks(
             };
 
             let bound_predicate = if let Some(idx) = proto_task.residual_idx {
-                proto_scan
+                proto_common
                     .residual_pool
                     .get(idx as usize)
                     .and_then(convert_spark_expr_to_predicate)
@@ -2890,24 +2894,22 @@ fn parse_file_scan_tasks(
             };
 
             let partition = if let Some(partition_data_idx) = proto_task.partition_data_idx {
-                // Get partition data from protobuf pool
-                let partition_data_proto = proto_scan
+                let partition_data_proto = proto_common
                     .partition_data_pool
                     .get(partition_data_idx as usize)
                     .ok_or_else(|| {
                         ExecutionError::GeneralError(format!(
                             "Invalid partition_data_idx: {} (pool size: {})",
                             partition_data_idx,
-                            proto_scan.partition_data_pool.len()
+                            proto_common.partition_data_pool.len()
                         ))
                     })?;
 
-                // Convert protobuf PartitionData to iceberg Struct
                 match partition_data_to_struct(partition_data_proto) {
                     Ok(s) => Some(s),
                     Err(e) => {
                         return Err(ExecutionError::GeneralError(format!(
-                            "Failed to deserialize partition data from protobuf: {}",
+                            "Failed to deserialize partition data: {}",
                             e
                         )))
                     }
@@ -2926,14 +2928,14 @@ fn parse_file_scan_tasks(
                 .and_then(|idx| name_mapping_cache.get(idx as usize))
                 .and_then(|opt| opt.clone());
 
-            let project_field_ids = proto_scan
+            let project_field_ids = proto_common
                 .project_field_ids_pool
                 .get(proto_task.project_field_ids_idx as usize)
                 .ok_or_else(|| {
                     ExecutionError::GeneralError(format!(
                         "Invalid project_field_ids_idx: {} (pool size: {})",
                         proto_task.project_field_ids_idx,
-                        proto_scan.project_field_ids_pool.len()
+                        proto_common.project_field_ids_pool.len()
                     ))
                 })?
                 .field_ids
@@ -3893,134 +3895,6 @@ mod tests {
                             "| [0, 1] |",
                             "| [3, 4] |",
                             "+--------+",
-                        ];
-                        assert_batches_eq!(expected, &[batch]);
-                    }
-                    Poll::Ready(None) => {
-                        break;
-                    }
-                    _ => {}
-                }
-            }
-        });
-    }
-
-    #[test]
-    fn test_array_repeat() {
-        let session_ctx = SessionContext::new();
-        let task_ctx = session_ctx.task_ctx();
-        let planner = PhysicalPlanner::new(Arc::from(session_ctx), 0);
-
-        // Mock scan operator with 3 INT32 columns
-        let op_scan = Operator {
-            plan_id: 0,
-            children: vec![],
-            op_struct: Some(OpStruct::Scan(spark_operator::Scan {
-                fields: vec![
-                    spark_expression::DataType {
-                        type_id: 3, // Int32
-                        type_info: None,
-                    },
-                    spark_expression::DataType {
-                        type_id: 3, // Int32
-                        type_info: None,
-                    },
-                    spark_expression::DataType {
-                        type_id: 3, // Int32
-                        type_info: None,
-                    },
-                ],
-                source: "".to_string(),
-                arrow_ffi_safe: false,
-            })),
-        };
-
-        // Mock expression to read a INT32 column with position 0
-        let array_col = spark_expression::Expr {
-            expr_struct: Some(Bound(spark_expression::BoundReference {
-                index: 0,
-                datatype: Some(spark_expression::DataType {
-                    type_id: 3,
-                    type_info: None,
-                }),
-            })),
-        };
-
-        // Mock expression to read a INT32 column with position 1
-        let array_col_1 = spark_expression::Expr {
-            expr_struct: Some(Bound(spark_expression::BoundReference {
-                index: 1,
-                datatype: Some(spark_expression::DataType {
-                    type_id: 3,
-                    type_info: None,
-                }),
-            })),
-        };
-
-        // Make a projection operator with array_repeat(array_col, array_col_1)
-        let projection = Operator {
-            children: vec![op_scan],
-            plan_id: 0,
-            op_struct: Some(OpStruct::Projection(spark_operator::Projection {
-                project_list: vec![spark_expression::Expr {
-                    expr_struct: Some(ExprStruct::ScalarFunc(spark_expression::ScalarFunc {
-                        func: "array_repeat".to_string(),
-                        args: vec![array_col, array_col_1],
-                        return_type: None,
-                        fail_on_error: false,
-                    })),
-                }],
-            })),
-        };
-
-        // Create a physical plan
-        let (mut scans, datafusion_plan) =
-            planner.create_plan(&projection, &mut vec![], 1).unwrap();
-
-        // Start executing the plan in a separate thread
-        // The plan waits for incoming batches and emitting result as input comes
-        let mut stream = datafusion_plan.native_plan.execute(0, task_ctx).unwrap();
-
-        let runtime = tokio::runtime::Runtime::new().unwrap();
-        // create async channel
-        let (tx, mut rx) = mpsc::channel(1);
-
-        // Send data as input to the plan being executed in a separate thread
-        runtime.spawn(async move {
-            // create data batch
-            // 0, 1, 2
-            // 3, 4, 5
-            // 6, null, null
-            let a = Int32Array::from(vec![Some(0), Some(3), Some(6)]);
-            let b = Int32Array::from(vec![Some(1), Some(4), None]);
-            let c = Int32Array::from(vec![Some(2), Some(5), None]);
-            let input_batch1 = InputBatch::Batch(vec![Arc::new(a), Arc::new(b), Arc::new(c)], 3);
-            let input_batch2 = InputBatch::EOF;
-
-            let batches = vec![input_batch1, input_batch2];
-
-            for batch in batches.into_iter() {
-                tx.send(batch).await.unwrap();
-            }
-        });
-
-        // Wait for the plan to finish executing and assert the result
-        runtime.block_on(async move {
-            loop {
-                let batch = rx.recv().await.unwrap();
-                scans[0].set_input_batch(batch);
-                match poll!(stream.next()) {
-                    Poll::Ready(Some(batch)) => {
-                        assert!(batch.is_ok(), "got error {}", batch.unwrap_err());
-                        let batch = batch.unwrap();
-                        let expected = [
-                            "+--------------+",
-                            "| col_0        |",
-                            "+--------------+",
-                            "| [0]          |",
-                            "| [3, 3, 3, 3] |",
-                            "|              |",
-                            "+--------------+",
                         ];
                         assert_batches_eq!(expected, &[batch]);
                     }

@@ -65,6 +65,23 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   lazy val usingParquetExecWithIncompatTypes: Boolean =
     hasUnsignedSmallIntSafetyCheck(conf)
 
+  // Timezone list to check temporal type casts
+  private val compatibleTimezones = Seq(
+    "UTC",
+    "America/New_York",
+    "America/Chicago",
+    "America/Denver",
+    "America/Los_Angeles",
+    "Europe/London",
+    "Europe/Paris",
+    "Europe/Berlin",
+    "Asia/Tokyo",
+    "Asia/Shanghai",
+    "Asia/Singapore",
+    "Asia/Kolkata",
+    "Australia/Sydney",
+    "Pacific/Auckland")
+
   test("all valid cast combinations covered") {
     val names = testNames
 
@@ -134,9 +151,16 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateBools(), DataTypes.DoubleType)
   }
 
-  ignore("cast BooleanType to DecimalType(10,2)") {
-    // Arrow error: Cast error: Casting from Boolean to Decimal128(10, 2) not supported
+  test("cast BooleanType to DecimalType(10,2)") {
     castTest(generateBools(), DataTypes.createDecimalType(10, 2))
+  }
+
+  test("cast BooleanType to DecimalType(14,4)") {
+    castTest(generateBools(), DataTypes.createDecimalType(14, 4))
+  }
+
+  test("cast BooleanType to DecimalType(30,0)") {
+    castTest(generateBools(), DataTypes.createDecimalType(30, 0))
   }
 
   test("cast BooleanType to StringType") {
@@ -206,19 +230,25 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       hasIncompatibleType = usingParquetExecWithIncompatTypes)
   }
 
-  ignore("cast ByteType to BinaryType") {
+  test("cast ByteType to BinaryType") {
+    //    Spark does not support ANSI or Try mode
     castTest(
       generateBytes(),
       DataTypes.BinaryType,
-      hasIncompatibleType = usingParquetExecWithIncompatTypes)
+      hasIncompatibleType = usingParquetExecWithIncompatTypes,
+      testAnsi = false,
+      testTry = false)
   }
 
-  ignore("cast ByteType to TimestampType") {
-    // input: -1, expected: 1969-12-31 15:59:59.0, actual: 1969-12-31 15:59:59.999999
-    castTest(
-      generateBytes(),
-      DataTypes.TimestampType,
-      hasIncompatibleType = usingParquetExecWithIncompatTypes)
+  test("cast ByteType to TimestampType") {
+    compatibleTimezones.foreach { tz =>
+      withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
+        castTest(
+          generateBytes(),
+          DataTypes.TimestampType,
+          hasIncompatibleType = usingParquetExecWithIncompatTypes)
+      }
+    }
   }
 
   // CAST from ShortType
@@ -280,19 +310,25 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       hasIncompatibleType = usingParquetExecWithIncompatTypes)
   }
 
-  ignore("cast ShortType to BinaryType") {
+  test("cast ShortType to BinaryType") {
+//    Spark does not support ANSI or Try mode
     castTest(
       generateShorts(),
       DataTypes.BinaryType,
-      hasIncompatibleType = usingParquetExecWithIncompatTypes)
+      hasIncompatibleType = usingParquetExecWithIncompatTypes,
+      testAnsi = false,
+      testTry = false)
   }
 
-  ignore("cast ShortType to TimestampType") {
-    // input: -1003, expected: 1969-12-31 15:43:17.0, actual: 1969-12-31 15:59:59.998997
-    castTest(
-      generateShorts(),
-      DataTypes.TimestampType,
-      hasIncompatibleType = usingParquetExecWithIncompatTypes)
+  test("cast ShortType to TimestampType") {
+    compatibleTimezones.foreach { tz =>
+      withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
+        castTest(
+          generateShorts(),
+          DataTypes.TimestampType,
+          hasIncompatibleType = usingParquetExecWithIncompatTypes)
+      }
+    }
   }
 
   // CAST from integer
@@ -345,13 +381,17 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateInts(), DataTypes.StringType)
   }
 
-  ignore("cast IntegerType to BinaryType") {
-    castTest(generateInts(), DataTypes.BinaryType)
+  test("cast IntegerType to BinaryType") {
+    //    Spark does not support ANSI or Try mode
+    castTest(generateInts(), DataTypes.BinaryType, testAnsi = false, testTry = false)
   }
 
-  ignore("cast IntegerType to TimestampType") {
-    // input: -1000479329, expected: 1938-04-19 01:04:31.0, actual: 1969-12-31 15:43:19.520671
-    castTest(generateInts(), DataTypes.TimestampType)
+  test("cast IntegerType to TimestampType") {
+    compatibleTimezones.foreach { tz =>
+      withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
+        castTest(generateInts(), DataTypes.TimestampType)
+      }
+    }
   }
 
   // CAST from LongType
@@ -391,13 +431,22 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateLongs(), DataTypes.StringType)
   }
 
-  ignore("cast LongType to BinaryType") {
-    castTest(generateLongs(), DataTypes.BinaryType)
+  test("cast LongType to BinaryType") {
+    //    Spark does not support ANSI or Try mode
+    castTest(generateLongs(), DataTypes.BinaryType, testAnsi = false, testTry = false)
   }
 
-  ignore("cast LongType to TimestampType") {
-    // java.lang.ArithmeticException: long overflow
-    castTest(generateLongs(), DataTypes.TimestampType)
+  test("cast LongType to TimestampType") {
+    // Cast back to long avoids java.sql.Timestamp overflow during collect() for extreme values
+    compatibleTimezones.foreach { tz =>
+      withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
+        withTable("t1") {
+          generateLongs().write.saveAsTable("t1")
+          val df = spark.sql("select a, cast(cast(a as timestamp) as long) from t1")
+          checkSparkAnswerAndOperator(df)
+        }
+      }
+    }
   }
 
   // CAST from FloatType
@@ -945,44 +994,44 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   // CAST from DateType
 
-  ignore("cast DateType to BooleanType") {
-    // Arrow error: Cast error: Casting from Date32 to Boolean not supported
-    castTest(generateDates(), DataTypes.BooleanType)
+  // Date to Boolean/Byte/Short/Int/Long/Float/Double/Decimal casts always return NULL
+  // in LEGACY mode. In ANSI and TRY mode, Spark throws AnalysisException at
+  // query parsing time. Hence, ANSI and Try mode are disabled in tests
+
+  test("cast DateType to BooleanType") {
+    castTest(generateDates(), DataTypes.BooleanType, testAnsi = false, testTry = false)
   }
 
-  ignore("cast DateType to ByteType") {
-    // Arrow error: Cast error: Casting from Date32 to Int8 not supported
-    castTest(generateDates(), DataTypes.ByteType)
+  test("cast DateType to ByteType") {
+    castTest(generateDates(), DataTypes.ByteType, testAnsi = false, testTry = false)
   }
 
-  ignore("cast DateType to ShortType") {
-    // Arrow error: Cast error: Casting from Date32 to Int16 not supported
-    castTest(generateDates(), DataTypes.ShortType)
+  test("cast DateType to ShortType") {
+    castTest(generateDates(), DataTypes.ShortType, testAnsi = false, testTry = false)
   }
 
-  ignore("cast DateType to IntegerType") {
-    // input: 2345-01-01, expected: null, actual: 3789391
-    castTest(generateDates(), DataTypes.IntegerType)
+  test("cast DateType to IntegerType") {
+    castTest(generateDates(), DataTypes.IntegerType, testAnsi = false, testTry = false)
   }
 
-  ignore("cast DateType to LongType") {
-    // input: 2024-01-01, expected: null, actual: 19723
-    castTest(generateDates(), DataTypes.LongType)
+  test("cast DateType to LongType") {
+    castTest(generateDates(), DataTypes.LongType, testAnsi = false, testTry = false)
   }
 
-  ignore("cast DateType to FloatType") {
-    // Arrow error: Cast error: Casting from Date32 to Float32 not supported
-    castTest(generateDates(), DataTypes.FloatType)
+  test("cast DateType to FloatType") {
+    castTest(generateDates(), DataTypes.FloatType, testAnsi = false, testTry = false)
   }
 
-  ignore("cast DateType to DoubleType") {
-    // Arrow error: Cast error: Casting from Date32 to Float64 not supported
-    castTest(generateDates(), DataTypes.DoubleType)
+  test("cast DateType to DoubleType") {
+    castTest(generateDates(), DataTypes.DoubleType, testAnsi = false, testTry = false)
   }
 
-  ignore("cast DateType to DecimalType(10,2)") {
-    // Arrow error: Cast error: Casting from Date32 to Decimal128(10, 2) not supported
-    castTest(generateDates(), DataTypes.createDecimalType(10, 2))
+  test("cast DateType to DecimalType(10,2)") {
+    castTest(
+      generateDates(),
+      DataTypes.createDecimalType(10, 2),
+      testAnsi = false,
+      testTry = false)
   }
 
   test("cast DateType to StringType") {
@@ -1027,13 +1076,13 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   ignore("cast TimestampType to ShortType") {
     // https://github.com/apache/datafusion-comet/issues/352
-    // input: 2023-12-31 10:00:00.0, expected: -21472, actual: null]
+    // input: 2023-12-31 10:00:00.0, expected: -21472, actual: null
     castTest(generateTimestamps(), DataTypes.ShortType)
   }
 
   ignore("cast TimestampType to IntegerType") {
     // https://github.com/apache/datafusion-comet/issues/352
-    // input: 2023-12-31 10:00:00.0, expected: 1704045600, actual: null]
+    // input: 2023-12-31 10:00:00.0, expected: 1704045600, actual: null
     castTest(generateTimestamps(), DataTypes.IntegerType)
   }
 
@@ -1416,28 +1465,32 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       input: DataFrame,
       toType: DataType,
       hasIncompatibleType: Boolean = false,
-      testAnsi: Boolean = true): Unit = {
+      testAnsi: Boolean = true,
+      testTry: Boolean = true): Unit = {
 
     withTempPath { dir =>
       val data = roundtripParquet(input, dir).coalesce(1)
-      data.createOrReplaceTempView("t")
 
       withSQLConf((SQLConf.ANSI_ENABLED.key, "false")) {
         // cast() should return null for invalid inputs when ansi mode is disabled
-        val df = spark.sql(s"select a, cast(a as ${toType.sql}) from t order by a")
+        val df = data.select(col("a"), col("a").cast(toType)).orderBy(col("a"))
         if (hasIncompatibleType) {
           checkSparkAnswer(df)
         } else {
           checkSparkAnswerAndOperator(df)
         }
 
-        // try_cast() should always return null for invalid inputs
-        val df2 =
-          spark.sql(s"select a, try_cast(a as ${toType.sql}) from t order by a")
-        if (hasIncompatibleType) {
-          checkSparkAnswer(df2)
-        } else {
-          checkSparkAnswerAndOperator(df2)
+        if (testTry) {
+          data.createOrReplaceTempView("t")
+//          try_cast() should always return null for invalid inputs
+//          not using spark DSL since it `try_cast` is only available from Spark 4x
+          val df2 =
+            spark.sql(s"select a, try_cast(a as ${toType.sql}) from t order by a")
+          if (hasIncompatibleType) {
+            checkSparkAnswer(df2)
+          } else {
+            checkSparkAnswerAndOperator(df2)
+          }
         }
       }
 
@@ -1495,14 +1548,16 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           }
 
           // try_cast() should always return null for invalid inputs
-          val df2 =
-            spark.sql(s"select a, try_cast(a as ${toType.sql}) from t order by a")
-          if (hasIncompatibleType) {
-            checkSparkAnswer(df2)
-          } else {
-            checkSparkAnswerAndOperator(df2)
+          if (testTry) {
+            data.createOrReplaceTempView("t")
+            val df2 =
+              spark.sql(s"select a, try_cast(a as ${toType.sql}) from t order by a")
+            if (hasIncompatibleType) {
+              checkSparkAnswer(df2)
+            } else {
+              checkSparkAnswerAndOperator(df2)
+            }
           }
-
         }
       }
     }
