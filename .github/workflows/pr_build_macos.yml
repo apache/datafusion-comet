@@ -23,7 +23,10 @@ concurrency:
 
 on:
   push:
+    branches:
+      - main
     paths-ignore:
+      - "benchmarks/**"
       - "doc/**"
       - "docs/**"
       - "**.md"
@@ -32,6 +35,7 @@ on:
       - "spark/src/test/scala/org/apache/spark/sql/benchmark/**"
   pull_request:
     paths-ignore:
+      - "benchmarks/**"
       - "doc/**"
       - "docs/**"
       - "**.md"
@@ -78,15 +82,15 @@ jobs:
           protoc-architecture: aarch_64
 
       - name: Restore Cargo cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             native/target
-          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}
+          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-ci-
+            ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-
 
       - name: Build native library (CI profile)
         run: |
@@ -94,23 +98,25 @@ jobs:
           # CI profile: same overflow behavior as release, but faster compilation
           # (no LTO, parallel codegen)
           cargo build --profile ci
+        env:
+          RUSTFLAGS: "-Ctarget-cpu=apple-m1"
 
       - name: Upload native library
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: native-lib-macos
           path: native/target/ci/libcomet.dylib
           retention-days: 1
 
       - name: Save Cargo cache
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         if: github.ref == 'refs/heads/main'
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             native/target
-          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}
+          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
 
   macos-aarch64-test:
     needs: build-native
@@ -193,6 +199,7 @@ jobs:
           - name: "expressions"
             value: |
               org.apache.comet.CometExpressionSuite
+              org.apache.comet.CometSqlFileTestSuite
               org.apache.comet.CometExpressionCoverageSuite
               org.apache.comet.CometHashExpressionSuite
               org.apache.comet.CometTemporalExpressionSuite
@@ -203,6 +210,7 @@ jobs:
               org.apache.comet.CometBitwiseExpressionSuite
               org.apache.comet.CometMapExpressionSuite
               org.apache.comet.CometJsonExpressionSuite
+              org.apache.comet.CometCsvExpressionSuite
               org.apache.comet.expressions.conditional.CometIfSuite
               org.apache.comet.expressions.conditional.CometCoalesceSuite
               org.apache.comet.expressions.conditional.CometCaseWhenSuite
@@ -225,7 +233,7 @@ jobs:
           protoc-architecture: aarch_64
 
       - name: Download native library
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: native-lib-macos
           # Download to release/ since Maven's -Prelease expects libcomet.dylib there
@@ -233,7 +241,7 @@ jobs:
 
       # Restore cargo registry cache (for any cargo commands that might run)
       - name: Cache Cargo registry
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry

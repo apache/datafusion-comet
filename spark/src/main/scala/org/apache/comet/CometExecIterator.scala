@@ -270,8 +270,19 @@ object CometExecIterator extends Logging {
   def serializeCometSQLConfs(): Array[Byte] = {
     val builder = ConfigMap.newBuilder()
     cometSqlConfs.foreach { case (k, v) =>
-      builder.putEntries(k, v)
+      if (k.startsWith(s"${CometConf.COMET_PREFIX}.datafusion.")) {
+        if (CometConf.COMET_RESPECT_DATAFUSION_CONFIGS.get(SQLConf.get)) {
+          builder.putEntries(k, v)
+        }
+      } else {
+        builder.putEntries(k, v)
+      }
     }
+    // Inject the resolved executor cores so the native side can use it
+    // for tokio runtime thread count
+    val executorCores = numDriverOrExecutorCores(SparkEnv.get.conf)
+    builder.putEntries("spark.executor.cores", executorCores.toString)
+
     builder.build().toByteArray
   }
 

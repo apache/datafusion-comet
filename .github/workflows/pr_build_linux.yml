@@ -23,7 +23,10 @@ concurrency:
 
 on:
   push:
+    branches:
+      - main
     paths-ignore:
+      - "benchmarks/**"
       - "doc/**"
       - "docs/**"
       - "**.md"
@@ -32,6 +35,7 @@ on:
       - "spark/src/test/scala/org/apache/spark/sql/benchmark/**"
   pull_request:
     paths-ignore:
+      - "benchmarks/**"
       - "doc/**"
       - "docs/**"
       - "**.md"
@@ -65,12 +69,12 @@ jobs:
   build-native:
     needs: lint
     name: Build Native Library
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.repository_owner == 'apache' && format('runs-on={0},family=m8a,cpu=8,image=ubuntu24-full-x64,extras=s3-cache,disk=large,tag=datafusion-comet', github.run_id) || 'ubuntu-latest' }}
     container:
       image: amd64/rust
     steps:
+      - uses: runs-on/action@cd2b598b0515d39d78c38a02d529db87d2196d1e  # v2.0.3
       - uses: actions/checkout@v6
-
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-builder
         with:
@@ -78,15 +82,15 @@ jobs:
           jdk-version: 17  # JDK only needed for common module proto generation
 
       - name: Restore Cargo cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             native/target
-          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}
+          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-ci-
+            ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-
 
       - name: Build native library (CI profile)
         run: |
@@ -94,32 +98,36 @@ jobs:
           # CI profile: same overflow behavior as release, but faster compilation
           # (no LTO, parallel codegen)
           cargo build --profile ci
+        env:
+          RUSTFLAGS: "-Ctarget-cpu=x86-64-v3"
 
       - name: Upload native library
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: native-lib-linux
           path: native/target/ci/libcomet.so
           retention-days: 1
 
       - name: Save Cargo cache
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         if: github.ref == 'refs/heads/main'
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             native/target
-          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}
+          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
 
   # Run Rust tests (runs in parallel with build-native, uses debug builds)
   linux-test-rust:
     needs: lint
     name: ubuntu-latest/rust-test
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.repository_owner == 'apache' && format('runs-on={0},family=m8a,cpu=16,image=ubuntu24-full-x64,extras=s3-cache,disk=large,tag=datafusion-comet', github.run_id) || 'ubuntu-latest' }}
     container:
       image: amd64/rust
     steps:
+      - uses: runs-on/action@cd2b598b0515d39d78c38a02d529db87d2196d1e  # v2.0.3
+
       - uses: actions/checkout@v6
 
       - name: Setup Rust & Java toolchain
@@ -129,59 +137,58 @@ jobs:
           jdk-version: 17
 
       - name: Restore Cargo cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             native/target
           # Note: Java version intentionally excluded - Rust target is JDK-independent
-          key: ${{ runner.os }}-cargo-debug-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}
+          key: ${{ runner.os }}-cargo-debug-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-debug-
+            ${{ runner.os }}-cargo-debug-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-
 
       - name: Rust test steps
         uses: ./.github/actions/rust-test
 
       - name: Save Cargo cache
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         if: github.ref == 'refs/heads/main'
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             native/target
-          key: ${{ runner.os }}-cargo-debug-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}
+          key: ${{ runner.os }}-cargo-debug-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
 
   linux-test:
     needs: build-native
     strategy:
       matrix:
-        os: [ubuntu-latest]
         # the goal with these profiles is to get coverage of all Java, Scala, and Spark
         # versions without testing all possible combinations, which would be overkill
         profile:
           - name: "Spark 3.4, JDK 11, Scala 2.12"
             java_version: "11"
             maven_opts: "-Pspark-3.4 -Pscala-2.12"
-            scan_impl: "native_comet"
+            scan_impl: "auto"
 
           - name: "Spark 3.5.5, JDK 17, Scala 2.13"
             java_version: "17"
             maven_opts: "-Pspark-3.5 -Dspark.version=3.5.5 -Pscala-2.13"
-            scan_impl: "native_comet"
+            scan_impl: "auto"
 
           - name: "Spark 3.5.6, JDK 17, Scala 2.13"
             java_version: "17"
             maven_opts: "-Pspark-3.5 -Dspark.version=3.5.6 -Pscala-2.13"
-            scan_impl: "native_comet"
+            scan_impl: "auto"
 
-          - name: "Spark 3.5, JDK 17, Scala 2.12 native_datafusion"
+          - name: "Spark 3.5, JDK 17, Scala 2.12"
             java_version: "17"
             maven_opts: "-Pspark-3.5 -Pscala-2.12"
             scan_impl: "native_datafusion"
 
-          - name: "Spark 3.5, JDK 17, Scala 2.12 native_iceberg_compat"
+          - name: "Spark 3.5, JDK 17, Scala 2.12"
             java_version: "17"
             maven_opts: "-Pspark-3.5 -Pscala-2.12"
             scan_impl: "native_iceberg_compat"
@@ -189,7 +196,7 @@ jobs:
           - name: "Spark 4.0, JDK 17"
             java_version: "17"
             maven_opts: "-Pspark-4.0"
-            scan_impl: "native_comet"
+            scan_impl: "auto"
         suite:
           - name: "fuzz"
             value: |
@@ -250,6 +257,7 @@ jobs:
           - name: "expressions"
             value: |
               org.apache.comet.CometExpressionSuite
+              org.apache.comet.CometSqlFileTestSuite
               org.apache.comet.CometExpressionCoverageSuite
               org.apache.comet.CometHashExpressionSuite
               org.apache.comet.CometTemporalExpressionSuite
@@ -259,6 +267,7 @@ jobs:
               org.apache.comet.CometStringExpressionSuite
               org.apache.comet.CometBitwiseExpressionSuite
               org.apache.comet.CometMapExpressionSuite
+              org.apache.comet.CometCsvExpressionSuite
               org.apache.comet.CometJsonExpressionSuite
               org.apache.comet.expressions.conditional.CometIfSuite
               org.apache.comet.expressions.conditional.CometCoalesceSuite
@@ -267,14 +276,15 @@ jobs:
             value: |
               org.apache.spark.sql.CometToPrettyStringSuite
       fail-fast: false
-    name: ${{ matrix.os }}/${{ matrix.profile.name }} [${{ matrix.suite.name }}]
-    runs-on: ${{ matrix.os }}
+    name: ${{ matrix.profile.name }}/${{ matrix.profile.scan_impl }} [${{ matrix.suite.name }}]
+    runs-on: ${{ github.repository_owner == 'apache' && format('runs-on={0},family=m8a,cpu=16,image=ubuntu24-full-x64,extras=s3-cache,disk=large,tag=datafusion-comet', github.run_id) || 'ubuntu-latest' }}
     container:
       image: amd64/rust
       env:
         JAVA_TOOL_OPTIONS: ${{ matrix.profile.java_version == '17' && '--add-exports=java.base/sun.nio.ch=ALL-UNNAMED --add-exports=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED' || '' }}
 
     steps:
+      - uses: runs-on/action@cd2b598b0515d39d78c38a02d529db87d2196d1e  # v2.0.3
       - uses: actions/checkout@v6
 
       - name: Setup Rust & Java toolchain
@@ -284,7 +294,7 @@ jobs:
           jdk-version: ${{ matrix.profile.java_version }}
 
       - name: Download native library
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: native-lib-linux
           # Download to release/ since Maven's -Prelease expects libcomet.so there
@@ -292,7 +302,7 @@ jobs:
 
       # Restore cargo registry cache (for any cargo commands that might run)
       - name: Cache Cargo registry
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -304,7 +314,7 @@ jobs:
       - name: Java test steps
         uses: ./.github/actions/java-test
         with:
-          artifact_name: ${{ matrix.os }}-${{ matrix.profile.name }}-${{ matrix.suite.name }}-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
+          artifact_name: ${{ matrix.profile.name }}-${{ matrix.suite.name }}-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
           suites: ${{ matrix.suite.name == 'sql' && matrix.profile.name == 'Spark 3.4, JDK 11, Scala 2.12' && '' || matrix.suite.value }}
           maven_opts: ${{ matrix.profile.maven_opts }}
           scan_impl: ${{ matrix.profile.scan_impl }}
@@ -315,10 +325,12 @@ jobs:
   verify-benchmark-results-tpch:
     needs: build-native
     name: Verify TPC-H Results
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.repository_owner == 'apache' && format('runs-on={0},family=m8a,cpu=16,image=ubuntu24-full-x64,extras=s3-cache,disk=large,tag=datafusion-comet', github.run_id) || 'ubuntu-latest' }}
     container:
       image: amd64/rust
     steps:
+      - uses: runs-on/action@cd2b598b0515d39d78c38a02d529db87d2196d1e  # v2.0.3
+
       - uses: actions/checkout@v6
 
       - name: Setup Rust & Java toolchain
@@ -328,13 +340,13 @@ jobs:
           jdk-version: 11
 
       - name: Download native library
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: native-lib-linux
           path: native/target/release/
 
       - name: Cache Maven dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.m2/repository
@@ -345,7 +357,7 @@ jobs:
 
       - name: Cache TPC-H data
         id: cache-tpch
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ./tpch
           key: tpch-${{ hashFiles('.github/workflows/pr_build_linux.yml') }}
@@ -367,7 +379,7 @@ jobs:
   verify-benchmark-results-tpcds:
     needs: build-native
     name: Verify TPC-DS Results (${{ matrix.join }})
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.repository_owner == 'apache' && format('runs-on={0},family=m8a,cpu=16,image=ubuntu24-full-x64,extras=s3-cache,disk=large,tag=datafusion-comet', github.run_id) || 'ubuntu-latest' }}
     container:
       image: amd64/rust
     strategy:
@@ -375,6 +387,8 @@ jobs:
         join: [sort_merge, broadcast, hash]
       fail-fast: false
     steps:
+      - uses: runs-on/action@cd2b598b0515d39d78c38a02d529db87d2196d1e  # v2.0.3
+
       - uses: actions/checkout@v6
 
       - name: Setup Rust & Java toolchain
@@ -384,13 +398,13 @@ jobs:
           jdk-version: 11
 
       - name: Download native library
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: native-lib-linux
           path: native/target/release/
 
       - name: Cache Maven dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.m2/repository
@@ -401,7 +415,7 @@ jobs:
 
       - name: Cache TPC-DS data
         id: cache-tpcds
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ./tpcds-sf-1
           key: tpcds-${{ hashFiles('.github/workflows/pr_build_linux.yml') }}

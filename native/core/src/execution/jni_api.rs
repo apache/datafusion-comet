@@ -22,14 +22,14 @@ use crate::{
     errors::{try_unwrap_or_throw, CometError, CometResult},
     execution::{
         metrics::utils::update_comet_metric, planner::PhysicalPlanner, serde::to_arrow_datatype,
-        shuffle::row::process_sorted_row_partition, sort::RdxSort,
+        shuffle::spark_unsafe::row::process_sorted_row_partition, sort::RdxSort,
     },
     jvm_bridge::{jni_new_global_ref, JVMClasses},
 };
 use arrow::array::{Array, RecordBatch, UInt32Array};
 use arrow::compute::{take, TakeOptions};
 use arrow::datatypes::DataType as ArrowDataType;
-use datafusion::common::ScalarValue;
+use datafusion::common::{Result as DataFusionResult, ScalarValue};
 use datafusion::execution::disk_manager::DiskManagerMode;
 use datafusion::execution::memory_pool::MemoryPool;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
@@ -45,10 +45,14 @@ use datafusion_spark::function::bitwise::bitwise_not::SparkBitwiseNot;
 use datafusion_spark::function::datetime::date_add::SparkDateAdd;
 use datafusion_spark::function::datetime::date_sub::SparkDateSub;
 use datafusion_spark::function::datetime::last_day::SparkLastDay;
+use datafusion_spark::function::datetime::next_day::SparkNextDay;
+use datafusion_spark::function::hash::crc32::SparkCrc32;
 use datafusion_spark::function::hash::sha1::SparkSha1;
 use datafusion_spark::function::hash::sha2::SparkSha2;
+use datafusion_spark::function::map::map_from_entries::MapFromEntries;
 use datafusion_spark::function::math::expm1::SparkExpm1;
 use datafusion_spark::function::math::hex::SparkHex;
+use datafusion_spark::function::math::width_bucket::SparkWidthBucket;
 use datafusion_spark::function::string::char::CharFunc;
 use datafusion_spark::function::string::concat::SparkConcat;
 use futures::poll;
@@ -69,6 +73,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use std::{sync::Arc, task::Poll};
 use tokio::runtime::Runtime;
+use tokio::sync::mpsc;
 
 use crate::execution::memory_pools::{
     create_memory_pool, handle_task_shared_pool_release, parse_memory_pool_config, MemoryPoolConfig,
@@ -79,21 +84,34 @@ use crate::execution::spark_plan::SparkPlan;
 
 use crate::execution::tracing::{log_memory_usage, trace_begin, trace_end, with_trace};
 
+use crate::execution::memory_pools::logging_pool::LoggingMemoryPool;
 use crate::execution::spark_config::{
-    SparkConfig, COMET_DEBUG_ENABLED, COMET_EXPLAIN_NATIVE_ENABLED, COMET_MAX_TEMP_DIRECTORY_SIZE,
-    COMET_TRACING_ENABLED,
+    SparkConfig, COMET_DEBUG_ENABLED, COMET_DEBUG_MEMORY, COMET_EXPLAIN_NATIVE_ENABLED,
+    COMET_MAX_TEMP_DIRECTORY_SIZE, COMET_TRACING_ENABLED, SPARK_EXECUTOR_CORES,
 };
 use crate::parquet::encryption_support::{CometEncryptionFactory, ENCRYPTION_FACTORY_ID};
 use datafusion_comet_proto::spark_operator::operator::OpStruct;
 use log::info;
-use once_cell::sync::Lazy;
+use std::sync::OnceLock;
 #[cfg(feature = "jemalloc")]
 use tikv_jemalloc_ctl::{epoch, stats};
 
-static TOKIO_RUNTIME: Lazy<Runtime> = Lazy::new(|| {
+static TOKIO_RUNTIME: OnceLock<Runtime> = OnceLock::new();
+
+fn parse_usize_env_var(name: &str) -> Option<usize> {
+    std::env::var_os(name).and_then(|n| n.to_str().and_then(|s| s.parse::<usize>().ok()))
+}
+
+fn build_runtime(default_worker_threads: Option<usize>) -> Runtime {
     let mut builder = tokio::runtime::Builder::new_multi_thread();
     if let Some(n) = parse_usize_env_var("COMET_WORKER_THREADS") {
+        info!("Comet tokio runtime: using COMET_WORKER_THREADS={n}");
         builder.worker_threads(n);
+    } else if let Some(n) = default_worker_threads {
+        info!("Comet tokio runtime: using spark.executor.cores={n} worker threads");
+        builder.worker_threads(n);
+    } else {
+        info!("Comet tokio runtime: using default thread count");
     }
     if let Some(n) = parse_usize_env_var("COMET_MAX_BLOCKING_THREADS") {
         builder.max_blocking_threads(n);
@@ -102,15 +120,17 @@ static TOKIO_RUNTIME: Lazy<Runtime> = Lazy::new(|| {
         .enable_all()
         .build()
         .expect("Failed to create Tokio runtime")
-});
+}
 
-fn parse_usize_env_var(name: &str) -> Option<usize> {
-    std::env::var_os(name).and_then(|n| n.to_str().and_then(|s| s.parse::<usize>().ok()))
+/// Initialize the global Tokio runtime with the given default worker thread count.
+/// If the runtime is already initialized, this is a no-op.
+pub fn init_runtime(default_worker_threads: usize) {
+    TOKIO_RUNTIME.get_or_init(|| build_runtime(Some(default_worker_threads)));
 }
 
 /// Function to get a handle to the global Tokio runtime
 pub fn get_runtime() -> &'static Runtime {
-    &TOKIO_RUNTIME
+    TOKIO_RUNTIME.get_or_init(|| build_runtime(None))
 }
 
 /// Comet native execution context. Kept alive across JNI calls.
@@ -131,6 +151,8 @@ struct ExecutionContext {
     pub input_sources: Vec<Arc<GlobalRef>>,
     /// The record batch stream to pull results from
     pub stream: Option<SendableRecordBatchStream>,
+    /// Receives batches from a spawned tokio task (async I/O path)
+    pub batch_receiver: Option<mpsc::Receiver<DataFusionResult<RecordBatch>>>,
     /// Native metrics
     pub metrics: Arc<GlobalRef>,
     // The interval in milliseconds to update metrics
@@ -184,12 +206,18 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
         let spark_configs = serde::deserialize_config(bytes.as_slice())?;
         let spark_config: HashMap<String, String> = spark_configs.entries.into_iter().collect();
 
+        // Initialize the tokio runtime with spark.executor.cores as the default
+        // worker thread count, falling back to 1 if not set.
+        let executor_cores = spark_config.get_usize(SPARK_EXECUTOR_CORES, 1);
+        init_runtime(executor_cores);
+
         // Access Comet configs
         let debug_native = spark_config.get_bool(COMET_DEBUG_ENABLED);
         let explain_native = spark_config.get_bool(COMET_EXPLAIN_NATIVE_ENABLED);
         let tracing_enabled = spark_config.get_bool(COMET_TRACING_ENABLED);
         let max_temp_directory_size =
             spark_config.get_u64(COMET_MAX_TEMP_DIRECTORY_SIZE, 100 * 1024 * 1024 * 1024);
+        let logging_memory_pool = spark_config.get_bool(COMET_DEBUG_MEMORY);
 
         with_trace("createPlan", tracing_enabled, || {
             // Init JVM classes
@@ -226,6 +254,12 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             let memory_pool =
                 create_memory_pool(&memory_pool_config, task_memory_manager, task_attempt_id);
 
+            let memory_pool = if logging_memory_pool {
+                Arc::new(LoggingMemoryPool::new(task_attempt_id as u64, memory_pool))
+            } else {
+                memory_pool
+            };
+
             // Get local directories for storing spill files
             let num_local_dirs = env.get_array_length(&local_dirs)?;
             let mut local_dirs_vec = vec![];
@@ -244,6 +278,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 local_dirs_vec,
                 max_temp_directory_size,
                 task_cpus as usize,
+                &spark_config,
             )?;
 
             let plan_creation_time = start.elapsed();
@@ -274,6 +309,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 scans: vec![],
                 input_sources,
                 stream: None,
+                batch_receiver: None,
                 metrics,
                 metrics_update_interval,
                 metrics_last_update_time: Instant::now(),
@@ -298,6 +334,7 @@ fn prepare_datafusion_session_context(
     local_dirs: Vec<String>,
     max_temp_directory_size: u64,
     task_cpus: usize,
+    spark_config: &HashMap<String, String>,
 ) -> CometResult<SessionContext> {
     let paths = local_dirs.into_iter().map(PathBuf::from).collect();
     let disk_manager = DiskManagerBuilder::default()
@@ -306,10 +343,7 @@ fn prepare_datafusion_session_context(
     let mut rt_config = RuntimeEnvBuilder::new().with_disk_manager_builder(disk_manager);
     rt_config = rt_config.with_memory_pool(memory_pool);
 
-    // Get Datafusion configuration from Spark Execution context
-    // can be configured in Comet Spark JVM using Spark --conf parameters
-    // e.g: spark-shell --conf spark.datafusion.sql_parser.parse_float_as_decimal=true
-    let session_config = SessionConfig::new()
+    let mut session_config = SessionConfig::new()
         .with_target_partitions(task_cpus)
         // This DataFusion context is within the scope of an executing Spark Task. We want to set
         // its internal parallelism to the number of CPUs allocated to Spark Tasks. This can be
@@ -325,6 +359,17 @@ fn prepare_datafusion_session_context(
             // to be safe
             &ScalarValue::Float64(Some(1.1)),
         );
+
+    // Pass through DataFusion configs from Spark.
+    // e.g: spark-shell --conf spark.comet.datafusion.sql_parser.parse_float_as_decimal=true
+    // becomes datafusion.sql_parser.parse_float_as_decimal=true
+    const SPARK_COMET_DF_PREFIX: &str = "spark.comet.datafusion.";
+    for (key, value) in spark_config {
+        if let Some(df_key) = key.strip_prefix(SPARK_COMET_DF_PREFIX) {
+            let df_key = format!("datafusion.{df_key}");
+            session_config = session_config.set_str(&df_key, value);
+        }
+    }
 
     let runtime = rt_config.build()?;
 
@@ -347,10 +392,14 @@ fn register_datafusion_spark_function(session_ctx: &SessionContext) {
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkDateAdd::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkDateSub::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkLastDay::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkNextDay::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSha1::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkConcat::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitwiseNot::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkHex::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkWidthBucket::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(MapFromEntries::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkCrc32::default()));
 }
 
 /// Prepares arrow arrays for output.
@@ -504,21 +553,62 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                 // Each Comet native execution corresponds to a single Spark partition,
                 // so we should always execute partition 0.
                 let stream = root_op.native_plan.execute(0, task_ctx)?;
-                exec_context.stream = Some(stream);
+
+                if exec_context.scans.is_empty() {
+                    // No JVM data sources — spawn onto tokio so the executor
+                    // thread parks in blocking_recv instead of busy-polling.
+                    //
+                    // Channel capacity of 2 allows the producer to work one batch
+                    // ahead while the consumer processes the current one via JNI,
+                    // without buffering excessive memory. Increasing this would
+                    // trade memory for latency hiding if JNI/FFI overhead dominates;
+                    // decreasing to 1 would serialize production and consumption.
+                    let (tx, rx) = mpsc::channel(2);
+                    let mut stream = stream;
+                    get_runtime().spawn(async move {
+                        while let Some(batch) = stream.next().await {
+                            if tx.send(batch).await.is_err() {
+                                break;
+                            }
+                        }
+                    });
+                    exec_context.batch_receiver = Some(rx);
+                } else {
+                    exec_context.stream = Some(stream);
+                }
             } else {
                 // Pull input batches
                 pull_input_batches(exec_context)?;
             }
 
-            // Enter the runtime once for the entire polling loop to avoid repeated
-            // Runtime::enter() overhead
+            if let Some(rx) = &mut exec_context.batch_receiver {
+                match rx.blocking_recv() {
+                    Some(Ok(batch)) => {
+                        update_metrics(&mut env, exec_context)?;
+                        return prepare_output(
+                            &mut env,
+                            array_addrs,
+                            schema_addrs,
+                            batch,
+                            exec_context.debug_native,
+                        );
+                    }
+                    Some(Err(e)) => {
+                        return Err(e.into());
+                    }
+                    None => {
+                        log_plan_metrics(exec_context, stage_id, partition);
+                        return Ok(-1);
+                    }
+                }
+            }
+
+            // ScanExec path: busy-poll to interleave JVM batch pulls with stream polling
             get_runtime().block_on(async {
                 loop {
-                    // Polling the stream.
                     let next_item = exec_context.stream.as_mut().unwrap().next();
                     let poll_output = poll!(next_item);
 
-                    // update metrics at interval
                     // Only check time every 100 polls to reduce syscall overhead
                     if let Some(interval) = exec_context.metrics_update_interval {
                         exec_context.poll_count_since_metrics_check += 1;
@@ -534,7 +624,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
 
                     match poll_output {
                         Poll::Ready(Some(output)) => {
-                            // prepare output for FFI transfer
                             return prepare_output(
                                 &mut env,
                                 array_addrs,
@@ -544,43 +633,14 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                             );
                         }
                         Poll::Ready(None) => {
-                            // Reaches EOF of output.
-                            if exec_context.explain_native {
-                                if let Some(plan) = &exec_context.root_op {
-                                    let formatted_plan_str = DisplayableExecutionPlan::with_metrics(
-                                        plan.native_plan.as_ref(),
-                                    )
-                                    .indent(true);
-                                    info!(
-                                        "Comet native query plan with metrics (Plan #{} Stage {} Partition {}):\
-                                    \n plan creation took {:?}:\
-                                    \n{formatted_plan_str:}",
-                                        plan.plan_id, stage_id, partition, exec_context.plan_creation_time
-                                    );
-                                }
-                            }
+                            log_plan_metrics(exec_context, stage_id, partition);
                             return Ok(-1);
                         }
-                        // A poll pending means the stream is not ready yet.
                         Poll::Pending => {
-                            if exec_context.scans.is_empty() {
-                                // Pure async I/O (e.g., IcebergScanExec, DataSourceExec)
-                                // Yield to let the executor drive I/O instead of busy-polling
-                                tokio::task::yield_now().await;
-                            } else {
-                                // Has ScanExec operators
-                                // Busy-poll to pull batches from JVM
-                                // TODO: Investigate if JNI calls are safe without block_in_place.
-                                // block_in_place prevents Tokio from migrating this task to another thread,
-                                // which is necessary because JNI env is thread-local. If we can guarantee
-                                // thread safety another way, we could remove this wrapper for better perf.
-                                tokio::task::block_in_place(|| {
-                                    pull_input_batches(exec_context)
-                                })?;
-                            }
-
-                            // Output not ready yet
-                            continue;
+                            // JNI call to pull batches from JVM into ScanExec operators.
+                            // block_in_place lets tokio move other tasks off this worker
+                            // while we wait for JVM data.
+                            tokio::task::block_in_place(|| pull_input_batches(exec_context))?;
                         }
                     }
                 }
@@ -619,6 +679,21 @@ fn update_metrics(env: &mut JNIEnv, exec_context: &mut ExecutionContext) -> Come
         update_comet_metric(env, metrics, native_query)
     } else {
         Ok(())
+    }
+}
+
+fn log_plan_metrics(exec_context: &ExecutionContext, stage_id: jint, partition: jint) {
+    if exec_context.explain_native {
+        if let Some(plan) = &exec_context.root_op {
+            let formatted_plan_str =
+                DisplayableExecutionPlan::with_metrics(plan.native_plan.as_ref()).indent(true);
+            info!(
+                "Comet native query plan with metrics (Plan #{} Stage {} Partition {}):\
+                \n plan creation took {:?}:\
+                \n{formatted_plan_str:}",
+                plan.plan_id, stage_id, partition, exec_context.plan_creation_time
+            );
+        }
     }
 }
 

@@ -19,55 +19,60 @@ under the License.
 
 # Comet Parquet Scan Implementations
 
-Comet currently has three distinct implementations of the Parquet scan operator. The configuration property
-`spark.comet.scan.impl` is used to select an implementation. The default setting is `spark.comet.scan.impl=auto`, and
-Comet will choose the most appropriate implementation based on the Parquet schema and other Comet configuration
-settings. Most users should not need to change this setting. However, it is possible to force Comet to try and use
-a particular implementation for all scan operations by setting this configuration property to one of the following
-implementations.
+Comet currently has two distinct implementations of the Parquet scan operator.
 
-| Implementation          | Description                                                                                                                                                                          |
-| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `native_comet`          | This implementation provides strong compatibility with Spark but does not support complex types. This is the original scan implementation in Comet and may eventually be removed.    |
-| `native_iceberg_compat` | This implementation delegates to DataFusion's `DataSourceExec` but uses a hybrid approach of JVM and native code. This scan is designed to be integrated with Iceberg in the future. |
-| `native_datafusion`     | This experimental implementation delegates to DataFusion's `DataSourceExec` for full native execution. There are known compatibility issues when using this scan.                    |
+| Scan Implementation     | Notes                  |
+| ----------------------- | ---------------------- |
+| `native_datafusion`     | Fully native scan      |
+| `native_iceberg_compat` | Hybrid JVM/native scan |
 
-The `native_datafusion` and `native_iceberg_compat` scans provide the following benefits over the `native_comet`
-implementation:
+The configuration property
+`spark.comet.scan.impl` is used to select an implementation. The default setting is `spark.comet.scan.impl=auto`, which
+currently always uses the `native_iceberg_compat` implementation. Most users should not need to change this setting.
+However, it is possible to force Comet to use a particular implementation for all scan operations by setting
+this configuration property to one of the following implementations. For example: `--conf spark.comet.scan.impl=native_datafusion`.
 
-- Leverages the DataFusion community's ongoing improvements to `DataSourceExec`
-- Provides support for reading complex types (structs, arrays, and maps)
-- Removes the use of reusable mutable-buffers in Comet, which is complex to maintain
-- Improves performance
+The following features are not supported by either scan implementation, and Comet will fall back to Spark in these scenarios:
 
-The `native_datafusion` and `native_iceberg_compat` scans share the following limitations:
+- `ShortType` columns, by default. When reading Parquet files written by systems other than Spark that contain
+  columns with the logical type `UINT_8` (unsigned 8-bit integers), Comet may produce different results than Spark.
+  Spark maps `UINT_8` to `ShortType`, but Comet's Arrow-based readers respect the unsigned type and read the data as
+  unsigned rather than signed. Since Comet cannot distinguish `ShortType` columns that came from `UINT_8` versus
+  signed `INT16`, by default Comet falls back to Spark when scanning Parquet files containing `ShortType` columns.
+  This behavior can be disabled by setting `spark.comet.scan.unsignedSmallIntSafetyCheck=false`. Note that `ByteType`
+  columns are always safe because they can only come from signed `INT8`, where truncation preserves the signed value.
+- Default values that are nested types (e.g., maps, arrays, structs). Literal default values are supported.
+- Spark's Datasource V2 API. When `spark.sql.sources.useV1SourceList` does not include `parquet`, Spark uses the
+  V2 API for Parquet scans. The DataFusion-based implementations only support the V1 API.
+- Spark metadata columns (e.g., `_metadata.file_path`)
+- No support for Dynamic Partition Pruning (DPP)
 
-- When reading Parquet files written by systems other than Spark that contain columns with the logical types `UINT_8`
-  or `UINT_16`, Comet will produce different results than Spark because Spark does not preserve or understand these
-  logical types. Arrow-based readers, such as DataFusion and Comet do respect these types and read the data as unsigned
-  rather than signed. By default, Comet will fall back to Spark's native scan when scanning Parquet files containing
-  `byte` or `short` types (regardless of the logical type). This behavior can be disabled by setting
-  `spark.comet.scan.allowIncompatible=true`.
-- No support for default values that are nested types (e.g., maps, arrays, structs). Literal default values are supported.
+The following shared limitation may produce incorrect results without falling back to Spark:
 
-The `native_datafusion` scan has some additional limitations:
+- No support for datetime rebasing detection or the `spark.comet.exceptionOnDatetimeRebase` configuration. When
+  reading Parquet files containing dates or timestamps written before Spark 3.0 (which used a hybrid
+  Julian/Gregorian calendar), dates/timestamps will be read as if they were written using the Proleptic Gregorian
+  calendar. This may produce incorrect results for dates before October 15, 1582.
+
+The `native_datafusion` scan has some additional limitations, mostly related to Parquet metadata. All of these
+cause Comet to fall back to Spark.
 
 - No support for row indexes
-- `PARQUET_FIELD_ID_READ_ENABLED` is not respected [#1758]
-- There are failures in the Spark SQL test suite [#1545]
-- Setting Spark configs `ignoreMissingFiles` or `ignoreCorruptFiles` to `true` is not compatible with Spark
+- No support for reading Parquet field IDs
+- No support for `input_file_name()`, `input_file_block_start()`, or `input_file_block_length()` SQL functions.
+  The `native_datafusion` scan does not use Spark's `FileScanRDD`, so these functions cannot populate their values.
+- No support for `ignoreMissingFiles` or `ignoreCorruptFiles` being set to `true`
+
+The `native_iceberg_compat` scan has the following additional limitation that may produce incorrect results
+without falling back to Spark:
+
+- Some Spark configuration values are hard-coded to their defaults rather than respecting user-specified values.
+  This may produce incorrect results when non-default values are set. The affected configurations are
+  `spark.sql.parquet.binaryAsString`, `spark.sql.parquet.int96AsTimestamp`, `spark.sql.caseSensitive`,
+  `spark.sql.parquet.inferTimestampNTZ.enabled`, and `spark.sql.legacy.parquet.nanosAsLong`. See
+  [issue #1816](https://github.com/apache/datafusion-comet/issues/1816) for more details.
 
 ## S3 Support
-
-There are some differences in S3 support between the scan implementations.
-
-### `native_comet`
-
-The `native_comet` Parquet scan implementation reads data from S3 using the [Hadoop-AWS module](https://hadoop.apache.org/docs/stable/hadoop-aws/tools/hadoop-aws/index.html), which
-is identical to the approach commonly used with vanilla Spark. AWS credential configuration and other Hadoop S3A
-configurations works the same way as in vanilla Spark.
-
-### `native_datafusion` and `native_iceberg_compat`
 
 The `native_datafusion` and `native_iceberg_compat` Parquet scan implementations completely offload data loading
 to native code. They use the [`object_store` crate](https://crates.io/crates/object_store) to read data from S3 and
@@ -79,7 +84,8 @@ continue to work as long as the configurations are supported and can be translat
 
 #### Additional S3 Configuration Options
 
-Beyond credential providers, the `native_datafusion` implementation supports additional S3 configuration options:
+Beyond credential providers, the `native_datafusion` and `native_iceberg_compat` implementations support additional
+S3 configuration options:
 
 | Option                          | Description                                                                                        |
 | ------------------------------- | -------------------------------------------------------------------------------------------------- |
@@ -92,7 +98,8 @@ All configuration options support bucket-specific overrides using the pattern `f
 
 #### Examples
 
-The following examples demonstrate how to configure S3 access with the `native_datafusion` Parquet scan implementation using different authentication methods.
+The following examples demonstrate how to configure S3 access with the `native_datafusion` and `native_iceberg_compat`
+Parquet scan implementations using different authentication methods.
 
 **Example 1: Simple Credentials**
 
@@ -124,11 +131,8 @@ $SPARK_HOME/bin/spark-shell \
 
 #### Limitations
 
-The S3 support of `native_datafusion` has the following limitations:
+The S3 support of `native_datafusion` and `native_iceberg_compat` has the following limitations:
 
 1. **Partial Hadoop S3A configuration support**: Not all Hadoop S3A configurations are currently supported. Only the configurations listed in the tables above are translated and applied to the underlying `object_store` crate.
 
 2. **Custom credential providers**: Custom implementations of AWS credential providers are not supported. The implementation only supports the standard credential providers listed in the table above. We are planning to add support for custom credential providers through a JNI-based adapter that will allow calling Java credential providers from native code. See [issue #1829](https://github.com/apache/datafusion-comet/issues/1829) for more details.
-
-[#1545]: https://github.com/apache/datafusion-comet/issues/1545
-[#1758]: https://github.com/apache/datafusion-comet/issues/1758

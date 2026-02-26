@@ -23,7 +23,7 @@ use arrow::{
 use rand::{
     distr::{Distribution, StandardUniform},
     rngs::StdRng,
-    Rng, SeedableRng,
+    RngExt, SeedableRng,
 };
 use std::sync::Arc;
 
