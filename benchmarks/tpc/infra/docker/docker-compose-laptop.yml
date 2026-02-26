@@ -72,6 +72,7 @@ services:
       - SPARK_NO_DAEMONIZE=true
     mem_limit: 8g
     memswap_limit: 8g
+    stop_grace_period: 30s
 
   bench:
     image: ${BENCH_IMAGE:-comet-bench}
