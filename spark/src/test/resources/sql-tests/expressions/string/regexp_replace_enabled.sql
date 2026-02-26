@@ -16,7 +16,7 @@
 -- under the License.
 
 -- Test regexp_replace() with regexp allowIncompatible enabled (happy path)
--- Config: spark.comet.regexp.allowIncompatible=true
+-- Config: spark.comet.expression.regexp.allowIncompatible=true
 -- ConfigMatrix: parquet.enable.dictionary=false,true
 
 statement

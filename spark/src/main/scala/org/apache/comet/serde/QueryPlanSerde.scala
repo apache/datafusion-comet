@@ -140,6 +140,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[StructsToCsv] -> CometStructsToCsv)
 
   private val hashExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
+    classOf[Crc32] -> CometScalarFunction("crc32"),
     classOf[Md5] -> CometScalarFunction("md5"),
     classOf[Murmur3Hash] -> CometMurmur3Hash,
     classOf[Sha2] -> CometSha2,
@@ -150,7 +151,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[Ascii] -> CometScalarFunction("ascii"),
     classOf[BitLength] -> CometScalarFunction("bit_length"),
     classOf[Chr] -> CometScalarFunction("char"),
-    classOf[ConcatWs] -> CometScalarFunction("concat_ws"),
+    classOf[ConcatWs] -> CometConcatWs,
     classOf[Concat] -> CometConcat,
     classOf[Contains] -> CometScalarFunction("contains"),
     classOf[EndsWith] -> CometScalarFunction("ends_with"),

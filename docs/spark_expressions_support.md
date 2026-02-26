@@ -234,7 +234,7 @@
 
 ### hash_funcs
 
-- [ ] crc32
+- [x] crc32
 - [ ] hash
 - [x] md5
 - [ ] sha
