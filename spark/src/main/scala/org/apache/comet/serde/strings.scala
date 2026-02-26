@@ -22,7 +22,8 @@ package org.apache.comet.serde
 import java.util.Locale
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Concat, ConcatWs, Expression, If, InitCap, IsNull, Left, Length, Like, Literal, Lower, ParseUrl, RegExpReplace, Right, RLike, StringLPad, StringRepeat, StringRPad, StringSplit, Substring, Upper}
-import org.apache.spark.sql.types.{BinaryType, DataTypes, LongType, StringType}
+import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.types.{BinaryType, DataTypes, LongType, ObjectType, StringType}
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometConf
@@ -383,6 +384,37 @@ object CometStringSplit extends CometExpressionSerde[StringSplit] {
 }
 
 object CometParseUrl extends CometExpressionSerde[ParseUrl] {
+  val invokeTargetClassName: String =
+    "org.apache.spark.sql.catalyst.expressions.url.ParseUrlEvaluator"
+
+  private def parseUrlFailOnErrorFromInvoke(expr: Expression): Option[Boolean] = {
+    expr.children.headOption match {
+      case Some(Literal(evaluator, objectType: ObjectType))
+          if evaluator != null && objectType.cls.getName == invokeTargetClassName =>
+        try {
+          val failOnErrorMethod = evaluator.getClass.getMethod("failOnError")
+          Some(failOnErrorMethod.invoke(evaluator).asInstanceOf[Boolean])
+        } catch {
+          case _: ReflectiveOperationException => Some(SQLConf.get.ansiEnabled)
+        }
+      case Some(Literal(_, objectType: ObjectType))
+          if objectType.cls.getName == invokeTargetClassName =>
+        Some(SQLConf.get.ansiEnabled)
+      case _ =>
+        None
+    }
+  }
+
+  private def dropParseUrlEvaluator(rawChildren: Seq[Expression]): Seq[Expression] = {
+    rawChildren.headOption match {
+      case Some(Literal(_, objectType: ObjectType))
+          if objectType.cls.getName == invokeTargetClassName =>
+        rawChildren.drop(1)
+      case _ =>
+        rawChildren
+    }
+  }
+
   private def failOnErrorFromChildren(rawChildren: Seq[Expression]): Option[Boolean] = {
     rawChildren.lastOption.flatMap {
       case Literal(value: Boolean, _) => Some(value)
@@ -397,14 +429,15 @@ object CometParseUrl extends CometExpressionSerde[ParseUrl] {
       failOnError: Option[Boolean],
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
-    val parseUrlArgs: Seq[Expression] = rawChildren.lastOption match {
-      case Some(Literal(_: Boolean, _)) => rawChildren.dropRight(1)
-      case Some(Literal(_: java.lang.Boolean, _)) => rawChildren.dropRight(1)
-      case _ => rawChildren
+    val sanitizedChildren: Seq[Expression] = dropParseUrlEvaluator(rawChildren)
+    val parseUrlArgs: Seq[Expression] = sanitizedChildren.lastOption match {
+      case Some(Literal(_: Boolean, _)) => sanitizedChildren.dropRight(1)
+      case Some(Literal(_: java.lang.Boolean, _)) => sanitizedChildren.dropRight(1)
+      case _ => sanitizedChildren
     }
 
     val shouldFailOnError: Boolean =
-      failOnError.orElse(failOnErrorFromChildren(rawChildren)).getOrElse(true)
+      failOnError.orElse(failOnErrorFromChildren(sanitizedChildren)).getOrElse(true)
     val functionName: String = if (shouldFailOnError) {
       "parse_url"
     } else {
@@ -421,7 +454,17 @@ object CometParseUrl extends CometExpressionSerde[ParseUrl] {
       inputs: Seq[Attribute],
       binding: Boolean,
       failOnError: Option[Boolean] = None): Option[Expr] = {
-    convertInternal(expr, expr.children, failOnError, inputs, binding)
+    expr.prettyName match {
+      case "parse_url" =>
+        convertInternal(expr, expr.children, failOnError, inputs, binding)
+      case "invoke" =>
+        failOnError
+          .orElse(parseUrlFailOnErrorFromInvoke(expr))
+          .flatMap(inferredFailOnError =>
+            convertInternal(expr, expr.children, Some(inferredFailOnError), inputs, binding))
+      case _ =>
+        None
+    }
   }
 
   override def convert(expr: ParseUrl, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
