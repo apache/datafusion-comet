@@ -240,7 +240,7 @@ message IcebergDeleteFile {
   // Equality field IDs (empty for positional deletes)
   repeated int32 equality_ids = 4;
 
-  // Total file size in bytes (from manifest entry), used to read Parquet footer
+  // Total file size in bytes (from manifest entry), used to skip stat/HEAD calls
   uint64 file_size_in_bytes = 5;
 }
 
