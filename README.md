@@ -90,6 +90,30 @@ Comet aims for 100% compatibility with all supported versions of Apache Spark, a
 your existing Spark deployments and workflows seamlessly. With no code changes required, you can immediately harness
 the benefits of Comet's acceleration capabilities without disrupting your Spark applications.
 
+## Explain and Fallback Configuration
+
+Comet provides several configuration options to help users understand which parts of a Spark query plan are accelerated natively and when execution falls back to Spark. 
+These options control how fallback information and explain output are reported, and their behavior may vary depending on the Spark version.
+
+The following configuration properties are commonly used when inspecting fallback behavior and explain output:
+
+| Configuration                              | What it does                                           | Notes                                                 |
+|-------------------------------------------|--------------------------------------------------------|--------------------------------------------------------|
+| `spark.comet.explainFallback.enabled`     | Reports fallback reasons and shows an extended explain | No output is produced if there are no fallback reasons |
+                                              plan when fallback occurs 
+| `spark.comet.logFallbackReasons.enabled`  | Logs fallback reasons to a WARN log entry              | Does not include the associated query plan |
+| `spark.comet.explain.verbose.enabled`     | Enables more detailed explain output                   | Used with `ExtendedExplainInfo` (Spark 4.0+) |
+| `spark.comet.explain.native.enabled`      | Shows explain output for native execution              | Output is written to executor logs and can be verbose |
+
+### Spark Version Notes
+
+Prior to Spark 4.0, verbose explain output is only shown when fallback occurs. Starting with Spark 4.0, Spark introduces support for `ExtendedExplainInfo`,
+which allows verbose explain output even when no fallback occurs,
+provided the appropriate configuration is enabled (for example, by setting `spark.sql.extendedExplainProviders`).
+
+Because these configuration options affect logging and explain output in different ways, users are encouraged
+to choose the settings that best match their debugging and observability needs.
+
 ## Tight Integration with Apache DataFusion
 
 Comet tightly integrates with the core Apache DataFusion project, leveraging its powerful execution engine. With
