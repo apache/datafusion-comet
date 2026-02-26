@@ -38,6 +38,8 @@ trait CometExprShim extends CommonStringExprs {
   protected def evalMode(c: Cast): CometEvalMode.Value =
     CometEvalModeUtil.fromSparkEvalMode(c.evalMode)
 
+  def parseToDateFailOnError(expr: ParseToDate): Boolean = expr.ansiEnabled
+
   protected def binaryOutputStyle: BinaryOutputStyle = {
     SQLConf.get
       .getConf(SQLConf.BINARY_OUTPUT_STYLE)
