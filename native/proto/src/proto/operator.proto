@@ -210,6 +210,9 @@ message IcebergFileScanTask {
   // Record count if reading entire file
   optional uint64 record_count = 4;
 
+  // Total file size from the manifest entry, used to skip stat/HEAD calls
+  uint64 file_size_in_bytes = 5;
+
   // Indices into IcebergScan deduplication pools
   uint32 schema_idx = 15;
   optional uint32 partition_type_idx = 16;
@@ -236,6 +239,9 @@ message IcebergDeleteFile {
 
   // Equality field IDs (empty for positional deletes)
   repeated int32 equality_ids = 4;
+
+  // Total file size in bytes (from manifest entry), used to read Parquet footer
+  uint64 file_size_in_bytes = 5;
 }
 
 message Projection {
