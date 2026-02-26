@@ -53,7 +53,7 @@ The following shared limitation may produce incorrect results without falling ba
   written before Spark 3.0 (which used a hybrid Julian/Gregorian calendar), dates/timestamps will be read as if
   they were written using the Proleptic Gregorian calendar. This may produce incorrect results for dates before
   October 15, 1582. The `native_iceberg_compat` scan supports the `spark.comet.exceptionOnDatetimeRebase`
-  configuration, which when set to `true` will cause the scan to fail when reading legacy dates/timestamps. The
+  configuration, which when set to `true` will throw an exception when reading legacy dates/timestamps. The
   `native_datafusion` scan does not support this configuration and will silently read the data without rebasing.
 
 The `native_datafusion` scan has some additional limitations, mostly related to Parquet metadata. All of these

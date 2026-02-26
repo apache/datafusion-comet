@@ -687,10 +687,10 @@ object CometConf extends ShimCometConf {
   val COMET_EXCEPTION_ON_LEGACY_DATE_TIMESTAMP: ConfigEntry[Boolean] =
     conf("spark.comet.exceptionOnDatetimeRebase")
       .category(CATEGORY_EXEC)
-      .doc("Whether to panic when seeing dates/timestamps from the legacy hybrid " +
+      .doc("Whether to throw an exception when seeing dates/timestamps from the legacy hybrid " +
         "(Julian + Gregorian) calendar. Since Spark 3, dates/timestamps were written according " +
         "to the Proleptic Gregorian calendar. When this is true, Comet will " +
-        "panic when reading dates/timestamps that were written by Spark versions " +
+        "throw an exception when reading dates/timestamps that were written by Spark versions " +
         "before 3.0. If this is false, these dates/timestamps will be read as if they were " +
         "written to the Proleptic Gregorian calendar and will not be rebased. " +
         "This configuration only applies to the native_iceberg_compat scan implementation.")
