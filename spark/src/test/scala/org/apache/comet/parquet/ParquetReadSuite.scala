@@ -1822,20 +1822,25 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
     val file =
       getResourceParquetFilePath("test-data/before_1582_date_v3_2_0.snappy.parquet")
 
-    withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_ICEBERG_COMPAT) {
-      val df = spark.read.parquet(file)
+    Seq(CometConf.SCAN_NATIVE_ICEBERG_COMPAT, CometConf.SCAN_NATIVE_DATAFUSION).foreach {
+      scanImpl =>
+        withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> scanImpl) {
+          val df = spark.read.parquet(file)
 
-      // Verify Comet scan is in the plan
-      val plan = df.queryExecution.executedPlan
-      checkCometOperators(plan)
+          // Verify Comet scan is in the plan
+          val plan = df.queryExecution.executedPlan
+          checkCometOperators(plan)
 
-      // Verify all 8 rows are read and contain dates before 1582
-      val rows = df.collect()
-      assert(rows.length == 8)
-      rows.foreach { row =>
-        val date = row.getDate(0)
-        assert(date.toLocalDate.getYear < 1582, s"Expected date before 1582, got $date")
-      }
+          // Verify all 8 rows are read and contain dates before 1582
+          val rows = df.collect()
+          assert(rows.length == 8, s"Expected 8 rows with $scanImpl, got ${rows.length}")
+          rows.foreach { row =>
+            val date = row.getDate(0)
+            assert(
+              date.toLocalDate.getYear < 1582,
+              s"Expected date before 1582 with $scanImpl, got $date")
+          }
+        }
     }
   }
 
