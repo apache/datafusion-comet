@@ -395,4 +395,30 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
     // Test null handling
     checkSparkAnswerAndOperator("SELECT unix_date(NULL)")
   }
+
+  test("hour/minute/second with TimestampNTZ in non-UTC timezone") {
+    // Regression test for issue #3180
+    // TimestampNTZ stores local time without timezone information
+    // hour/minute/second should extract directly from local time without timezone conversion
+    val schema = StructType(Seq(StructField("ts_ntz", DataTypes.TimestampNTZType, true)))
+    
+    // Create test data with known TimestampNTZ values
+    val data = Seq(
+      Row(java.time.LocalDateTime.of(2024, 1, 15, 10, 30, 45)),  // 10:30:45
+      Row(java.time.LocalDateTime.of(2024, 6, 20, 14, 15, 20)),  // 14:15:20
+      Row(java.time.LocalDateTime.of(2024, 12, 31, 23, 59, 59)), // 23:59:59
+      Row(null))
+    
+    val df = spark.createDataFrame(spark.sparkContext.parallelize(data), schema)
+    df.createOrReplaceTempView("timestamp_ntz_tbl")
+
+    // Test in multiple timezones - results should be the same since TimestampNTZ has no timezone
+    for (timezone <- Seq("UTC", "America/Los_Angeles", "Asia/Tokyo")) {
+      withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> timezone) {
+        // hour() should return the hour from local time directly
+        checkSparkAnswerAndOperator(
+          "SELECT ts_ntz, hour(ts_ntz), minute(ts_ntz), second(ts_ntz) FROM timestamp_ntz_tbl ORDER BY ts_ntz")
+      }
+    }
+  }
 }
