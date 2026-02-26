@@ -110,6 +110,7 @@ COMMON_SPARK_CONF = {
     "spark.memory.offHeap.enabled": "true",
     "spark.memory.offHeap.size": "16g",
     "spark.eventLog.enabled": "true",
+    "spark.eventLog.dir": os.environ.get("SPARK_EVENT_LOG_DIR", "/tmp/spark-events"),
     "spark.hadoop.fs.s3a.impl": "org.apache.hadoop.fs.s3a.S3AFileSystem",
     "spark.hadoop.fs.s3a.aws.credentials.provider": "com.amazonaws.auth.DefaultAWSCredentialsProviderChain",
 }
@@ -120,11 +121,10 @@ COMMON_SPARK_CONF = {
 
 BENCHMARK_PROFILES = {
     "tpch": {
-        "executor_instances": "1",
+        "executor_instances": "2",
         "executor_cores": "8",
-        "max_cores": "8",
+        "max_cores": "16",
         "data_env": "TPCH_DATA",
-        "queries_env": "TPCH_QUERIES",
         "format": "parquet",
     },
     "tpcds": {
@@ -132,7 +132,6 @@ BENCHMARK_PROFILES = {
         "executor_cores": "8",
         "max_cores": "16",
         "data_env": "TPCDS_DATA",
-        "queries_env": "TPCDS_QUERIES",
         "format": None,  # omit --format for TPC-DS
     },
 }
@@ -213,7 +212,7 @@ def check_benchmark_env(config, benchmark):
     profile = BENCHMARK_PROFILES[benchmark]
     use_iceberg = config.get("tpcbench_args", {}).get("use_iceberg", False)
 
-    required = [profile["queries_env"]]
+    required = []
     if not use_iceberg:
         required.append(profile["data_env"])
 
@@ -262,6 +261,24 @@ def build_spark_submit_cmd(config, benchmark, args):
             val = "true" if val else "false"
         conf[resolve_env(key)] = resolve_env(str(val))
 
+    # JFR profiling: append to extraJavaOptions (preserving any existing values)
+    if args.jfr:
+        jfr_dir = args.jfr_dir
+        driver_jfr = (
+            f"-XX:StartFlightRecording=disk=true,dumponexit=true,"
+            f"filename={jfr_dir}/driver.jfr,settings=profile"
+        )
+        executor_jfr = (
+            f"-XX:StartFlightRecording=disk=true,dumponexit=true,"
+            f"filename={jfr_dir}/executor.jfr,settings=profile"
+        )
+        for spark_key, jfr_opts in [
+            ("spark.driver.extraJavaOptions", driver_jfr),
+            ("spark.executor.extraJavaOptions", executor_jfr),
+        ]:
+            existing = conf.get(spark_key, "")
+            conf[spark_key] = f"{existing} {jfr_opts}".strip()
+
     for key, val in sorted(conf.items()):
         cmd += ["--conf", f"{key}={val}"]
 
@@ -281,10 +298,6 @@ def build_spark_submit_cmd(config, benchmark, args):
         data_var = profile["data_env"]
         data_val = os.environ.get(data_var, "")
         cmd += ["--data", data_val]
-
-    queries_var = profile["queries_env"]
-    queries_val = os.environ.get(queries_var, "")
-    cmd += ["--queries", queries_val]
 
     cmd += ["--output", args.output]
     cmd += ["--iterations", str(args.iterations)]
@@ -362,6 +375,16 @@ def main():
         action="store_true",
         help="Print the spark-submit command without executing",
     )
+    parser.add_argument(
+        "--jfr",
+        action="store_true",
+        help="Enable Java Flight Recorder profiling for driver and executors",
+    )
+    parser.add_argument(
+        "--jfr-dir",
+        default="/results/jfr",
+        help="Directory for JFR output files (default: /results/jfr)",
+    )
     args = parser.parse_args()
 
     config = load_engine_config(args.engine)
@@ -377,6 +400,10 @@ def main():
     # Restart Spark unless --no-restart or --dry-run
     if not args.no_restart and not args.dry_run:
         restart_spark()
+
+    # Create JFR output directory if profiling is enabled
+    if args.jfr:
+        os.makedirs(args.jfr_dir, exist_ok=True)
 
     cmd = build_spark_submit_cmd(config, args.benchmark, args)
 
