@@ -207,6 +207,9 @@ object CometParquetFileFormat extends Logging with ShimSQLConf {
     hadoopConf.setBoolean(
       CometConf.COMET_USE_DECIMAL_128.key,
       CometConf.COMET_USE_DECIMAL_128.get())
+    hadoopConf.setBoolean(
+      CometConf.COMET_EXCEPTION_ON_LEGACY_DATE_TIMESTAMP.key,
+      CometConf.COMET_EXCEPTION_ON_LEGACY_DATE_TIMESTAMP.get())
     hadoopConf.setInt(CometConf.COMET_BATCH_SIZE.key, CometConf.COMET_BATCH_SIZE.get())
   }
 
@@ -216,6 +219,9 @@ object CometParquetFileFormat extends Logging with ShimSQLConf {
       sharedConf: Configuration,
       footerFileMetaData: FileMetaData,
       datetimeRebaseModeInRead: String): RebaseSpec = {
+    val exceptionOnRebase = sharedConf.getBoolean(
+      CometConf.COMET_EXCEPTION_ON_LEGACY_DATE_TIMESTAMP.key,
+      CometConf.COMET_EXCEPTION_ON_LEGACY_DATE_TIMESTAMP.defaultValue.get)
     var datetimeRebaseSpec = DataSourceUtils.datetimeRebaseSpec(
       footerFileMetaData.getKeyValueMetaData.get,
       datetimeRebaseModeInRead)
@@ -226,8 +232,19 @@ object CometParquetFileFormat extends Logging with ShimSQLConf {
       })
 
     if (hasDateOrTimestamp && datetimeRebaseSpec.mode == LEGACY) {
-      // Comet does not support datetime rebasing. Read as-is without rebase.
-      datetimeRebaseSpec = datetimeRebaseSpec.copy(CORRECTED)
+      if (exceptionOnRebase) {
+        logWarning(
+          s"""Found Parquet file $file that could potentially contain dates/timestamps that were
+              written in legacy hybrid Julian/Gregorian calendar. Unlike Spark 3+, which will rebase
+              and return these according to the new Proleptic Gregorian calendar, Comet will throw
+              exception when reading them. If you want to read them as it is according to the hybrid
+              Julian/Gregorian calendar, please set `spark.comet.exceptionOnDatetimeRebase` to
+              false. Otherwise, if you want to read them according to the new Proleptic Gregorian
+              calendar, please disable Comet for this query.""")
+      } else {
+        // do not throw exception on rebase - read as it is
+        datetimeRebaseSpec = datetimeRebaseSpec.copy(CORRECTED)
+      }
     }
 
     datetimeRebaseSpec
