@@ -268,11 +268,11 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                 }
               deleteBuilder.setPartitionSpecId(specId)
 
-              // Workaround for Iceberg Java bug:
+              // Workaround for https://github.com/apache/iceberg/issues/12554
               // RewriteTablePath rewrites path references inside position delete files,
-              // making the copied file larger, but does not update file_size_in_bytes in
-              // the manifest. The manifest value cannot be trusted; always use FileIO to
-              // get the actual size.
+              // making the copied file possibly differ in size, but does not update
+              // file_size_in_bytes in the manifest. The manifest value cannot be trusted;
+              // always use FileIO to get the actual size.
               val inputFile = fileIO.get.getClass
                 .getMethod("newInputFile", classOf[String])
                 .invoke(fileIO.get, deletePath)
