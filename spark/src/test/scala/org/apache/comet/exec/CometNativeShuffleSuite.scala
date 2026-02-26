@@ -116,6 +116,28 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
     }
   }
 
+  test("native shuffle with nested struct fields") {
+    Seq(10, 201).foreach { numPartitions =>
+      Seq("1.0", "10.0").foreach { ratio =>
+        withSQLConf(
+          CometConf.COMET_SHUFFLE_PREFER_DICTIONARY_RATIO.key -> ratio,
+          CometConf.COMET_NATIVE_SCAN_IMPL.key -> "native_datafusion") {
+          // Struct with primitive field types: (Int, (Int, Long, String, Double), Int)
+          withParquetTable(
+            (0 until 50).map(i => (i, (i % 5, (i + 1).toLong, s"str_$i", i.toDouble), i + 1)),
+            "tbl") {
+            // Partitioning on primitive type, with nested struct in other columns.
+            // This exercises the field-major struct processing path in row.rs.
+            val df = sql("SELECT * FROM tbl")
+              .filter($"_3" > 10)
+              .repartition(numPartitions, $"_1")
+            checkShuffleAnswer(df, 1)
+          }
+        }
+      }
+    }
+  }
+
   test("hash-based native shuffle") {
     withParquetTable((0 until 5).map(i => (i, (i + 1).toLong)), "tbl") {
       val df = sql("SELECT * FROM tbl").sortWithinPartitions($"_1".desc)
