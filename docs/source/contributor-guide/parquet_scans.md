@@ -49,12 +49,10 @@ The following features are not supported by either scan implementation, and Come
 
 The following shared limitation may produce incorrect results without falling back to Spark:
 
-- Neither scan implementation supports datetime rebasing. When reading Parquet files containing dates or timestamps
-  written before Spark 3.0 (which used a hybrid Julian/Gregorian calendar), dates/timestamps will be read as if
-  they were written using the Proleptic Gregorian calendar. This may produce incorrect results for dates before
-  October 15, 1582. The `native_iceberg_compat` scan supports the `spark.comet.exceptionOnDatetimeRebase`
-  configuration, which when set to `true` will throw an exception when reading legacy dates/timestamps. The
-  `native_datafusion` scan does not support this configuration and will silently read the data without rebasing.
+- No support for datetime rebasing. When reading Parquet files containing dates or timestamps written before
+  Spark 3.0 (which used a hybrid Julian/Gregorian calendar), dates/timestamps will be read as if they were
+  written using the Proleptic Gregorian calendar. This may produce incorrect results for dates before
+  October 15, 1582.
 
 The `native_datafusion` scan has some additional limitations, mostly related to Parquet metadata. All of these
 cause Comet to fall back to Spark.
