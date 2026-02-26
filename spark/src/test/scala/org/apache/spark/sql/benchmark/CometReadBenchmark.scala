@@ -38,7 +38,6 @@ import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.ColumnVector
 
 import org.apache.comet.{CometConf, WithHdfsCluster}
-import org.apache.comet.parquet.BatchReader
 
 /**
  * Benchmark to measure Comet read performance. To run this benchmark:
@@ -165,29 +164,6 @@ class CometReadBaseBenchmark extends CometBenchmarkBase {
               val column = batch.column(0)
               var totalNumRows = 0
               while (reader.nextBatch()) {
-                val numRows = batch.numRows()
-                var i = 0
-                while (i < numRows) {
-                  if (!column.isNullAt(i)) aggregateValue(column, i)
-                  i += 1
-                }
-                totalNumRows += batch.numRows()
-              }
-            } finally {
-              reader.close()
-            }
-          }
-        }
-
-        sqlBenchmark.addCase("ParquetReader Comet") { _ =>
-          files.map(_.asInstanceOf[String]).foreach { p =>
-            val reader = new BatchReader(p, vectorizedReaderBatchSize)
-            reader.init()
-            try {
-              var totalNumRows = 0
-              while (reader.nextBatch()) {
-                val batch = reader.currentBatch()
-                val column = batch.column(0)
                 val numRows = batch.numRows()
                 var i = 0
                 while (i < numRows) {
