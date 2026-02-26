@@ -91,6 +91,8 @@ pub trait SparkUnsafeObject {
     #[inline]
     fn get_boolean(&self, index: usize) -> bool {
         let addr = self.get_element_offset(index, 1);
+        // SAFETY: addr points to valid element data within the UnsafeRow/UnsafeArray region.
+        // The caller ensures index is within bounds.
         unsafe { *addr != 0 }
     }
 
@@ -98,6 +100,7 @@ pub trait SparkUnsafeObject {
     #[inline]
     fn get_byte(&self, index: usize) -> i8 {
         let addr = self.get_element_offset(index, 1);
+        // SAFETY: addr points to valid element data (1 byte) within the row/array region.
         let slice: &[u8] = unsafe { std::slice::from_raw_parts(addr, 1) };
         i8::from_le_bytes(slice.try_into().unwrap())
     }
@@ -106,6 +109,7 @@ pub trait SparkUnsafeObject {
     #[inline]
     fn get_short(&self, index: usize) -> i16 {
         let addr = self.get_element_offset(index, 2);
+        // SAFETY: addr points to valid element data (2 bytes) within the row/array region.
         let slice: &[u8] = unsafe { std::slice::from_raw_parts(addr, 2) };
         i16::from_le_bytes(slice.try_into().unwrap())
     }
@@ -114,6 +118,7 @@ pub trait SparkUnsafeObject {
     #[inline]
     fn get_int(&self, index: usize) -> i32 {
         let addr = self.get_element_offset(index, 4);
+        // SAFETY: addr points to valid element data (4 bytes) within the row/array region.
         let slice: &[u8] = unsafe { std::slice::from_raw_parts(addr, 4) };
         i32::from_le_bytes(slice.try_into().unwrap())
     }
@@ -122,6 +127,7 @@ pub trait SparkUnsafeObject {
     #[inline]
     fn get_long(&self, index: usize) -> i64 {
         let addr = self.get_element_offset(index, 8);
+        // SAFETY: addr points to valid element data (8 bytes) within the row/array region.
         let slice: &[u8] = unsafe { std::slice::from_raw_parts(addr, 8) };
         i64::from_le_bytes(slice.try_into().unwrap())
     }
@@ -130,6 +136,7 @@ pub trait SparkUnsafeObject {
     #[inline]
     fn get_float(&self, index: usize) -> f32 {
         let addr = self.get_element_offset(index, 4);
+        // SAFETY: addr points to valid element data (4 bytes) within the row/array region.
         let slice: &[u8] = unsafe { std::slice::from_raw_parts(addr, 4) };
         f32::from_le_bytes(slice.try_into().unwrap())
     }
@@ -138,6 +145,7 @@ pub trait SparkUnsafeObject {
     #[inline]
     fn get_double(&self, index: usize) -> f64 {
         let addr = self.get_element_offset(index, 8);
+        // SAFETY: addr points to valid element data (8 bytes) within the row/array region.
         let slice: &[u8] = unsafe { std::slice::from_raw_parts(addr, 8) };
         f64::from_le_bytes(slice.try_into().unwrap())
     }
@@ -146,6 +154,8 @@ pub trait SparkUnsafeObject {
     fn get_string(&self, index: usize) -> &str {
         let (offset, len) = self.get_offset_and_len(index);
         let addr = self.get_row_addr() + offset as i64;
+        // SAFETY: addr points to valid UTF-8 string data within the variable-length region.
+        // Offset and length are read from the fixed-length portion of the row/array.
         let slice: &[u8] = unsafe { std::slice::from_raw_parts(addr as *const u8, len as usize) };
 
         from_utf8(slice).unwrap()
@@ -155,6 +165,8 @@ pub trait SparkUnsafeObject {
     fn get_binary(&self, index: usize) -> &[u8] {
         let (offset, len) = self.get_offset_and_len(index);
         let addr = self.get_row_addr() + offset as i64;
+        // SAFETY: addr points to valid binary data within the variable-length region.
+        // Offset and length are read from the fixed-length portion of the row/array.
         unsafe { std::slice::from_raw_parts(addr as *const u8, len as usize) }
     }
 
@@ -162,6 +174,7 @@ pub trait SparkUnsafeObject {
     #[inline]
     fn get_date(&self, index: usize) -> i32 {
         let addr = self.get_element_offset(index, 4);
+        // SAFETY: addr points to valid element data (4 bytes) within the row/array region.
         let slice: &[u8] = unsafe { std::slice::from_raw_parts(addr, 4) };
         i32::from_le_bytes(slice.try_into().unwrap())
     }
@@ -170,6 +183,7 @@ pub trait SparkUnsafeObject {
     #[inline]
     fn get_timestamp(&self, index: usize) -> i64 {
         let addr = self.get_element_offset(index, 8);
+        // SAFETY: addr points to valid element data (8 bytes) within the row/array region.
         let slice: &[u8] = unsafe { std::slice::from_raw_parts(addr, 8) };
         i64::from_le_bytes(slice.try_into().unwrap())
     }
