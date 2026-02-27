@@ -165,6 +165,7 @@ impl IcebergScanExec {
             .with_batch_size(batch_size)
             .with_data_file_concurrency_limit(self.data_file_concurrency_limit)
             .with_row_selection_enabled(true)
+            .with_metadata_size_hint(512 * 1024) // Same as DataFusion's default
             .build();
 
         // Pass all tasks to iceberg-rust at once to utilize its flatten_unordered
