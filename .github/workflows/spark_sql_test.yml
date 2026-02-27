@@ -91,7 +91,7 @@ jobs:
           RUSTFLAGS: "-Ctarget-cpu=x86-64-v3"
 
       - name: Upload native library
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: native-lib-linux
           path: native/target/ci/libcomet.so
@@ -168,7 +168,7 @@ jobs:
           LC_ALL: "C.UTF-8"
       - name: Upload fallback log
         if: ${{ github.event.inputs.collect-fallback-logs == 'true' }}
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: fallback-log-spark-sql-${{ matrix.config.scan-impl }}-${{ matrix.module.name }}-spark-${{ matrix.config.spark-full }}
           path: "**/fallback.log"
@@ -187,7 +187,7 @@ jobs:
         run: |
           find ./fallback-logs/ -type f -name "fallback.log" -print0 | xargs -0 cat | sort -u > all_fallback.log
       - name: Upload merged fallback log
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: all-fallback-log
           path: all_fallback.log
