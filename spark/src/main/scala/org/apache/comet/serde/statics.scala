@@ -19,11 +19,13 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.Attribute
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Base64, Literal}
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
 import org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils
+import org.apache.spark.sql.types.BooleanType
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
 
 object CometStaticInvoke extends CometExpressionSerde[StaticInvoke] {
 
@@ -34,7 +36,8 @@ object CometStaticInvoke extends CometExpressionSerde[StaticInvoke] {
       : Map[(String, Class[_]), CometExpressionSerde[StaticInvoke]] =
     Map(
       ("readSidePadding", classOf[CharVarcharCodegenUtils]) -> CometScalarFunction(
-        "read_side_padding"))
+        "read_side_padding"),
+      ("encode", classOf[Base64]) -> CometBase64Encode)
 
   override def convert(
       expr: StaticInvoke,
@@ -50,5 +53,29 @@ object CometStaticInvoke extends CometExpressionSerde[StaticInvoke] {
           expr.children: _*)
         None
     }
+  }
+}
+
+/**
+ * Handler for Base64.encode StaticInvoke (Spark 3.5+, where Base64 is RuntimeReplaceable). Maps
+ * to DataFusion's built-in encode(input, 'base64') function.
+ */
+private object CometBase64Encode extends CometExpressionSerde[StaticInvoke] {
+
+  override def convert(
+      expr: StaticInvoke,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    // Check if chunked mode is requested (2nd argument, Spark 3.5+)
+    expr.arguments match {
+      case Seq(_, Literal(true, BooleanType)) =>
+        withInfo(expr, "base64 with chunk encoding is not supported")
+        return None
+      case _ => // OK: either no chunkBase64 param (Spark 3.4) or chunkBase64=false
+    }
+    val inputExpr = exprToProtoInternal(expr.arguments.head, inputs, binding)
+    val encodingExpr = exprToProtoInternal(Literal("base64"), inputs, binding)
+    val optExpr = scalarFunctionExprToProto("encode", inputExpr, encodingExpr)
+    optExprWithInfo(optExpr, expr, expr.arguments.head)
   }
 }

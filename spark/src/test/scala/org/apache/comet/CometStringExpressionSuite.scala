@@ -148,6 +148,31 @@ class CometStringExpressionSuite extends CometTestBase {
     }
   }
 
+  test("base64") {
+    withSQLConf("spark.sql.chunkBase64String.enabled" -> "false") {
+      val data = Seq(
+        Array[Byte](72, 101, 108, 108, 111), // "Hello"
+        Array[Byte](83, 112, 97, 114, 107, 32, 83, 81, 76), // "Spark SQL"
+        Array[Byte](), // empty
+        null).map(Tuple1(_))
+      withParquetTable(data, "tbl") {
+        checkSparkAnswerAndOperator("SELECT base64(_1) FROM tbl")
+        checkSparkAnswerAndOperator("SELECT base64(NULL) FROM tbl")
+      }
+    }
+  }
+
+  test("base64 with chunk encoding falls back") {
+    withSQLConf("spark.sql.chunkBase64String.enabled" -> "true") {
+      val data = Seq(Array[Byte](72, 101, 108, 108, 111)).map(Tuple1(_))
+      withParquetTable(data, "tbl") {
+        checkSparkAnswerAndFallbackReason(
+          "SELECT base64(_1) FROM tbl",
+          "base64 with chunk encoding is not supported")
+      }
+    }
+  }
+
   test("split string basic") {
     withSQLConf("spark.comet.expression.StringSplit.allowIncompatible" -> "true") {
       withParquetTable((0 until 5).map(i => (s"value$i,test$i", i)), "tbl") {

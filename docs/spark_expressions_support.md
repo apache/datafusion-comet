@@ -400,7 +400,7 @@
 ### string_funcs
 
 - [x] ascii
-- [ ] base64
+- [x] base64
 - [x] bit_length
 - [x] btrim
 - [x] char
