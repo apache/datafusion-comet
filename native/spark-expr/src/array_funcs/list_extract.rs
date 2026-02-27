@@ -31,13 +31,17 @@ use std::{
     sync::Arc,
 };
 
-#[derive(Debug, Eq)]
+use crate::SparkError;
+
+#[derive(Debug, Clone)]
 pub struct ListExtract {
     child: Arc<dyn PhysicalExpr>,
     ordinal: Arc<dyn PhysicalExpr>,
     default_value: Option<Arc<dyn PhysicalExpr>>,
     one_based: bool,
     fail_on_error: bool,
+    expr_id: Option<u64>,
+    registry: Arc<crate::QueryContextMap>,
 }
 
 impl Hash for ListExtract {
@@ -47,8 +51,11 @@ impl Hash for ListExtract {
         self.default_value.hash(state);
         self.one_based.hash(state);
         self.fail_on_error.hash(state);
+        self.expr_id.hash(state);
+        // Exclude registry from hash
     }
 }
+
 impl PartialEq for ListExtract {
     fn eq(&self, other: &Self) -> bool {
         self.child.eq(&other.child)
@@ -56,8 +63,12 @@ impl PartialEq for ListExtract {
             && self.default_value.eq(&other.default_value)
             && self.one_based.eq(&other.one_based)
             && self.fail_on_error.eq(&other.fail_on_error)
+            && self.expr_id.eq(&other.expr_id)
+        // Exclude registry from equality check
     }
 }
+
+impl Eq for ListExtract {}
 
 impl ListExtract {
     pub fn new(
@@ -66,6 +77,8 @@ impl ListExtract {
         default_value: Option<Arc<dyn PhysicalExpr>>,
         one_based: bool,
         fail_on_error: bool,
+        expr_id: Option<u64>,
+        registry: Arc<crate::QueryContextMap>,
     ) -> Self {
         Self {
             child,
@@ -73,6 +86,8 @@ impl ListExtract {
             default_value,
             one_based,
             fail_on_error,
+            expr_id,
+            registry,
         }
     }
 
@@ -83,6 +98,17 @@ impl ListExtract {
                 "Unexpected data type in ListExtract: {data_type:?}"
             ))),
         }
+    }
+
+    /// Wrap a SparkError with QueryContext if expr_id is available
+    fn wrap_error_with_context(&self, error: SparkError) -> DataFusionError {
+        if let Some(expr_id) = self.expr_id {
+            if let Some(query_ctx) = self.registry.get(expr_id) {
+                let wrapped = crate::SparkErrorWithContext::with_context(error, query_ctx);
+                return DataFusionError::External(Box::new(wrapped));
+            }
+        }
+        DataFusionError::from(error)
     }
 }
 
@@ -127,11 +153,15 @@ impl PhysicalExpr for ListExtract {
             .transpose()?
             .unwrap_or(self.data_type(&batch.schema())?.try_into())?;
 
-        let adjust_index = if self.one_based {
-            one_based_index
-        } else {
-            zero_based_index
-        };
+        // Create error wrapper closure that has access to self
+        let error_wrapper = |error: SparkError| self.wrap_error_with_context(error);
+
+        let adjust_index: Box<dyn Fn(i32, usize) -> DataFusionResult<Option<usize>>> =
+            if self.one_based {
+                Box::new(|idx, len| one_based_index(idx, len, &error_wrapper))
+            } else {
+                Box::new(|idx, len| zero_based_index(idx, len, &error_wrapper))
+            };
 
         match child_value.data_type() {
             DataType::List(_) => {
@@ -143,7 +173,9 @@ impl PhysicalExpr for ListExtract {
                     index_array,
                     &default_value,
                     self.fail_on_error,
+                    self.one_based,
                     adjust_index,
+                    &error_wrapper,
                 )
             }
             DataType::LargeList(_) => {
@@ -155,7 +187,9 @@ impl PhysicalExpr for ListExtract {
                     index_array,
                     &default_value,
                     self.fail_on_error,
+                    self.one_based,
                     adjust_index,
+                    &error_wrapper,
                 )
             }
             data_type => Err(DataFusionError::Internal(format!(
@@ -179,17 +213,21 @@ impl PhysicalExpr for ListExtract {
                 self.default_value.clone(),
                 self.one_based,
                 self.fail_on_error,
+                self.expr_id,
+                Arc::clone(&self.registry),
             ))),
             _ => internal_err!("ListExtract should have exactly two children"),
         }
     }
 }
 
-fn one_based_index(index: i32, len: usize) -> DataFusionResult<Option<usize>> {
+fn one_based_index(
+    index: i32,
+    len: usize,
+    error_wrapper: &impl Fn(SparkError) -> DataFusionError,
+) -> DataFusionResult<Option<usize>> {
     if index == 0 {
-        return Err(DataFusionError::Execution(
-            "Invalid index of 0 for one-based ListExtract".to_string(),
-        ));
+        return Err(error_wrapper(SparkError::InvalidIndexOfZero));
     }
 
     let abs_index = index.abs().as_usize();
@@ -204,7 +242,11 @@ fn one_based_index(index: i32, len: usize) -> DataFusionResult<Option<usize>> {
     }
 }
 
-fn zero_based_index(index: i32, len: usize) -> DataFusionResult<Option<usize>> {
+fn zero_based_index(
+    index: i32,
+    len: usize,
+    _error_wrapper: &impl Fn(SparkError) -> DataFusionError,
+) -> DataFusionResult<Option<usize>> {
     if index < 0 {
         Ok(None)
     } else {
@@ -222,7 +264,9 @@ fn list_extract<O: OffsetSizeTrait>(
     index_array: &Int32Array,
     default_value: &ScalarValue,
     fail_on_error: bool,
+    one_based: bool,
     adjust_index: impl Fn(i32, usize) -> DataFusionResult<Option<usize>>,
+    error_wrapper: &impl Fn(SparkError) -> DataFusionError,
 ) -> DataFusionResult<ColumnarValue> {
     let values = list_array.values();
     let offsets = list_array.offsets();
@@ -242,9 +286,22 @@ fn list_extract<O: OffsetSizeTrait>(
         } else if list_array.is_null(row) {
             mutable.extend_nulls(1);
         } else if fail_on_error {
-            return Err(DataFusionError::Execution(
-                "Index out of bounds for array".to_string(),
-            ));
+            // Throw appropriate error based on whether this is element_at (one_based=true)
+            // or GetArrayItem (one_based=false)
+            let error = if one_based {
+                // element_at function
+                SparkError::InvalidElementAtIndex {
+                    index_value: *index,
+                    array_size: len as i32,
+                }
+            } else {
+                // GetArrayItem (arr[index])
+                SparkError::InvalidArrayIndex {
+                    index_value: *index,
+                    array_size: len as i32,
+                }
+            };
+            return Err(error_wrapper(error));
         } else {
             mutable.extend(1, 0, 1);
         }
@@ -283,8 +340,18 @@ mod test {
 
         let null_default = ScalarValue::Int32(None);
 
-        let ColumnarValue::Array(result) =
-            list_extract(&list, &indices, &null_default, false, zero_based_index)?
+        // Simple error wrapper for tests - just converts SparkError to DataFusionError
+        let error_wrapper = |error: SparkError| DataFusionError::from(error);
+
+        let ColumnarValue::Array(result) = list_extract(
+            &list,
+            &indices,
+            &null_default,
+            false,
+            false,
+            |idx, len| zero_based_index(idx, len, &error_wrapper),
+            &error_wrapper,
+        )?
         else {
             unreachable!()
         };
@@ -296,8 +363,15 @@ mod test {
 
         let zero_default = ScalarValue::Int32(Some(0));
 
-        let ColumnarValue::Array(result) =
-            list_extract(&list, &indices, &zero_default, false, zero_based_index)?
+        let ColumnarValue::Array(result) = list_extract(
+            &list,
+            &indices,
+            &zero_default,
+            false,
+            false,
+            |idx, len| zero_based_index(idx, len, &error_wrapper),
+            &error_wrapper,
+        )?
         else {
             unreachable!()
         };
