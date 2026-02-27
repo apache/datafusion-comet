@@ -1479,25 +1479,28 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         // cast() should return null for invalid inputs when ansi mode is disabled
         val df = data.select(col("a"), col("a").cast(toType)).orderBy(col("a"))
         if (useDataFrameDiff) {
-          assertDataFrameEquals(df, assertCometNative = !hasIncompatibleType)
-        } else if (hasIncompatibleType) {
-          checkSparkAnswer(df)
+          assertDataFrameEqualsWithExceptions(df, assertCometNative = !hasIncompatibleType)
         } else {
-          checkSparkAnswerAndOperator(df)
+          if (hasIncompatibleType) {
+            checkSparkAnswer(df)
+          } else {
+            checkSparkAnswerAndOperator(df)
+          }
         }
 
         if (testTry) {
           data.createOrReplaceTempView("t")
-//          try_cast() should always return null for invalid inputs
-//          not using spark DSL since it `try_cast` is only available from Spark 4x
-          val df2 =
-            spark.sql(s"select a, try_cast(a as ${toType.sql}) from t order by a")
-          if (useDataFrameDiff) {
-            assertDataFrameEquals(df2, assertCometNative = !hasIncompatibleType)
-          } else if (hasIncompatibleType) {
+          // try_cast() should always return null for invalid inputs
+          // not using spark DSL since it `try_cast` is only available from Spark 4x
+          val df2 = spark.sql(s"select a, try_cast(a as ${toType.sql}) from t order by a")
+          if (hasIncompatibleType) {
             checkSparkAnswer(df2)
           } else {
-            checkSparkAnswerAndOperator(df2)
+            if (useDataFrameDiff) {
+              assertDataFrameEqualsWithExceptions(df2, assertCometNative = !hasIncompatibleType)
+            } else {
+              checkSparkAnswerAndOperator(df2)
+            }
           }
         }
       }
@@ -1510,63 +1513,65 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
           // cast() should throw exception on invalid inputs when ansi mode is enabled
           val df = data.withColumn("converted", col("a").cast(toType))
-          if (useDataFrameDiff) {
-            assertDataFrameEquals(df, assertCometNative = !hasIncompatibleType)
+          val res = if (useDataFrameDiff) {
+            assertDataFrameEqualsWithExceptions(df, assertCometNative = !hasIncompatibleType)
           } else {
-            checkSparkAnswerMaybeThrows(df) match {
-              case (None, None) =>
-              // neither system threw an exception
-              case (None, Some(e)) =>
-                throw e
-              case (Some(e), None) =>
-                // Spark failed but Comet succeeded
-                fail(s"Comet should have failed with ${e.getCause.getMessage}")
-              case (Some(sparkException), Some(cometException)) =>
-                // both systems threw an exception so we make sure they are the same
-                val sparkMessage =
-                  if (sparkException.getCause != null) sparkException.getCause.getMessage
-                  else sparkException.getMessage
-                val cometMessage =
-                  if (cometException.getCause != null) cometException.getCause.getMessage
-                  else cometException.getMessage
-                // this if branch should only check decimal to decimal cast and errors when output precision, scale causes overflow.
-                if (df.schema("a").dataType.typeName.contains("decimal") && toType.typeName
-                    .contains("decimal") && sparkMessage.contains("cannot be represented as")) {
-                  assert(cometMessage.contains("too large to store"))
-                } else {
-                  if (CometSparkSessionExtensions.isSpark40Plus) {
-                    // for Spark 4 we expect to sparkException carries the message
-                    assert(sparkMessage.contains("SQLSTATE"))
-                    if (sparkMessage.startsWith("[NUMERIC_VALUE_OUT_OF_RANGE.WITH_SUGGESTION]")) {
-                      assert(
-                        sparkMessage.replace(".WITH_SUGGESTION] ", "]").startsWith(cometMessage))
-                    } else if (cometMessage.startsWith("[CAST_INVALID_INPUT]") || cometMessage
-                        .startsWith("[CAST_OVERFLOW]")) {
-                      assert(
-                        sparkMessage.startsWith(
-                          cometMessage
-                            .replace(
-                              "If necessary set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error.",
-                              "")))
-                    } else {
-                      assert(sparkMessage.startsWith(cometMessage))
-                    }
-                  } else {
-                    // for Spark 3.4 we expect to reproduce the error message exactly
-                    assert(cometMessage == sparkMessage)
-                  }
-                }
-            }
+            checkSparkAnswerMaybeThrows(df)
           }
+          res match {
+            case (None, None) =>
+            // neither system threw an exception
+            case (None, Some(e)) =>
+              throw e
+            case (Some(e), None) =>
+              // Spark failed but Comet succeeded
+              fail(s"Comet should have failed with ${e.getCause.getMessage}")
+            case (Some(sparkException), Some(cometException)) =>
+              // both systems threw an exception so we make sure they are the same
+              val sparkMessage =
+                if (sparkException.getCause != null) sparkException.getCause.getMessage
+                else sparkException.getMessage
+              val cometMessage =
+                if (cometException.getCause != null) cometException.getCause.getMessage
+                else cometException.getMessage
+              // this if branch should only check decimal to decimal cast and errors when output precision, scale causes overflow.
+              if (df.schema("a").dataType.typeName.contains("decimal") && toType.typeName
+                  .contains("decimal") && sparkMessage.contains("cannot be represented as")) {
+                assert(cometMessage.contains("too large to store"))
+              } else {
+                if (CometSparkSessionExtensions.isSpark40Plus) {
+                  // for Spark 4 we expect to sparkException carries the message
+                  assert(sparkMessage.contains("SQLSTATE"))
+                  if (sparkMessage.startsWith("[NUMERIC_VALUE_OUT_OF_RANGE.WITH_SUGGESTION]")) {
+                    assert(
+                      sparkMessage.replace(".WITH_SUGGESTION] ", "]").startsWith(cometMessage))
+                  } else if (cometMessage.startsWith("[CAST_INVALID_INPUT]") || cometMessage
+                      .startsWith("[CAST_OVERFLOW]")) {
+                    assert(
+                      sparkMessage.startsWith(
+                        cometMessage
+                          .replace(
+                            "If necessary set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error.",
+                            "")))
+                  } else {
+                    assert(sparkMessage.startsWith(cometMessage))
+                  }
+                } else {
+                  // for Spark 3.4 we expect to reproduce the error message exactly
+                  assert(cometMessage == sparkMessage)
+                }
+              }
+          }
+        }
 
-          // try_cast() should always return null for invalid inputs
-          if (testTry) {
-            data.createOrReplaceTempView("t")
-            val df2 =
-              spark.sql(s"select a, try_cast(a as ${toType.sql}) from t order by a")
-            if (useDataFrameDiff) {
-              assertDataFrameEquals(df2, assertCometNative = !hasIncompatibleType)
-            } else if (hasIncompatibleType) {
+        // try_cast() should always return null for invalid inputs
+        if (testTry) {
+          data.createOrReplaceTempView("t")
+          val df2 = spark.sql(s"select a, try_cast(a as ${toType.sql}) from t order by a")
+          if (useDataFrameDiff) {
+            assertDataFrameEqualsWithExceptions(df2, assertCometNative = !hasIncompatibleType)
+          } else {
+            if (hasIncompatibleType) {
               checkSparkAnswer(df2)
             } else {
               checkSparkAnswerAndOperator(df2)

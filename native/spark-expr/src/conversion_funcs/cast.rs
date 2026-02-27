@@ -1694,7 +1694,7 @@ fn cast_binary_formatter(value: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::StringArray;
+    use arrow::array::{BooleanArray, StringArray};
     use arrow::datatypes::TimestampMicrosecondType;
     use arrow::datatypes::{Field, Fields, TimeUnit};
     use core::f64;
