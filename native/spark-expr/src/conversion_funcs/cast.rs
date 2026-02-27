@@ -520,6 +520,32 @@ macro_rules! cast_int_to_timestamp_impl {
     }};
 }
 
+macro_rules! cast_float_to_timestamp_impl {
+    ($array:expr, $builder:expr, $primitive_type:ty, $eval_mode:expr) => {{
+        let arr = $array.as_primitive::<$primitive_type>();
+        for i in 0..arr.len() {
+            if arr.is_null(i) {
+                $builder.append_null();
+            } else {
+                let val = arr.value(i) as f64;
+                if val.is_nan() || val.is_infinite() {
+                    if $eval_mode == EvalMode::Ansi {
+                        return Err(SparkError::CastInvalidValue {
+                            value: val.to_string(),
+                            from_type: "DOUBLE".to_string(),
+                            to_type: "TIMESTAMP".to_string(),
+                        });
+                    }
+                    $builder.append_null();
+                } else {
+                    let micros = (val * MICROS_PER_SECOND as f64) as i64;
+                    $builder.append_value(micros);
+                }
+            }
+        }
+    }};
+}
+
 // copied from arrow::dataTypes::Decimal128Type since Decimal128Type::format_decimal can't be called directly
 fn format_decimal_str(value_str: &str, precision: usize, scale: i8) -> String {
     let (sign, rest) = match value_str.strip_prefix('-') {
@@ -829,6 +855,9 @@ pub(crate) fn cast_array(
             cast_boolean_to_decimal(&array, *precision, *scale)
         }
         (Int8 | Int16 | Int32 | Int64, Timestamp(_, tz)) => cast_int_to_timestamp(&array, tz),
+        (Float32 | Float64, Timestamp(_, tz)) => cast_float_to_timestamp(&array, tz, eval_mode),
+        (Boolean, Timestamp(_, tz)) => cast_boolean_to_timestamp(&array, tz),
+        (Decimal128(_, scale), Timestamp(_, tz)) => cast_decimal_to_timestamp(&array, tz, *scale),
         _ if cast_options.is_adapting_schema
             || is_datafusion_spark_compatible(&from_type, to_type) =>
         {
@@ -865,6 +894,77 @@ fn cast_int_to_timestamp(
                 "Unsupported type for cast_int_to_timestamp: {:?}",
                 dt
             )))
+        }
+    }
+
+    Ok(Arc::new(builder.finish().with_timezone_opt(target_tz.clone())) as ArrayRef)
+}
+
+fn cast_float_to_timestamp(
+    array_ref: &ArrayRef,
+    target_tz: &Option<Arc<str>>,
+    eval_mode: EvalMode,
+) -> SparkResult<ArrayRef> {
+    // Input is seconds since epoch (with fractional microseconds).
+    // NaN, Infinity -> null (or error in ANSI mode)
+    let mut builder = TimestampMicrosecondBuilder::with_capacity(array_ref.len());
+
+    match array_ref.data_type() {
+        DataType::Float32 => {
+            cast_float_to_timestamp_impl!(array_ref, builder, Float32Type, eval_mode)
+        }
+        DataType::Float64 => {
+            cast_float_to_timestamp_impl!(array_ref, builder, Float64Type, eval_mode)
+        }
+        dt => {
+            return Err(SparkError::Internal(format!(
+                "Unsupported type for cast_float_to_timestamp: {:?}",
+                dt
+            )))
+        }
+    }
+
+    Ok(Arc::new(builder.finish().with_timezone_opt(target_tz.clone())) as ArrayRef)
+}
+
+fn cast_boolean_to_timestamp(
+    array_ref: &ArrayRef,
+    target_tz: &Option<Arc<str>>,
+) -> SparkResult<ArrayRef> {
+    // In Spark: true -> 1 microsecond, false -> 0 (epoch)
+    let bool_array = array_ref.as_boolean();
+    let mut builder = TimestampMicrosecondBuilder::with_capacity(bool_array.len());
+
+    for i in 0..bool_array.len() {
+        if bool_array.is_null(i) {
+            builder.append_null();
+        } else {
+            let micros = if bool_array.value(i) { 1 } else { 0 };
+            builder.append_value(micros);
+        }
+    }
+
+    Ok(Arc::new(builder.finish().with_timezone_opt(target_tz.clone())) as ArrayRef)
+}
+
+fn cast_decimal_to_timestamp(
+    array_ref: &ArrayRef,
+    target_tz: &Option<Arc<str>>,
+    scale: i8,
+) -> SparkResult<ArrayRef> {
+    // Decimal value represents seconds since epoch
+    // Convert to microseconds: value / 10^scale * MICROS_PER_SECOND
+    let arr = array_ref.as_primitive::<Decimal128Type>();
+    let scale_factor = 10_i128.pow(scale as u32);
+    let mut builder = TimestampMicrosecondBuilder::with_capacity(arr.len());
+
+    for i in 0..arr.len() {
+        if arr.is_null(i) {
+            builder.append_null();
+        } else {
+            let value = arr.value(i);
+            let micros = (value * MICROS_PER_SECOND as i128) / scale_factor;
+            builder.append_value(micros as i64);
         }
     }
 
@@ -1691,7 +1791,7 @@ fn cast_binary_formatter(value: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::StringArray;
+    use arrow::array::{BooleanArray, StringArray};
     use arrow::datatypes::TimestampMicrosecondType;
     use arrow::datatypes::{Field, Fields, TimeUnit};
     use core::f64;
@@ -2052,5 +2152,136 @@ mod tests {
             assert_eq!(ts_array.value(4), i64::MIN);
             assert_eq!(ts_array.timezone(), tz.as_ref().map(|s| s.as_ref()));
         }
+    }
+
+    #[test]
+    fn test_cast_boolean_to_timestamp() {
+        let timezones: [Option<Arc<str>>; 3] = [
+            Some(Arc::from("UTC")),
+            Some(Arc::from("America/Los_Angeles")),
+            None,
+        ];
+
+        for tz in &timezones {
+            let bool_array: ArrayRef =
+                Arc::new(BooleanArray::from(vec![Some(true), Some(false), None]));
+
+            let result = cast_boolean_to_timestamp(&bool_array, tz).unwrap();
+            let ts_array = result.as_primitive::<TimestampMicrosecondType>();
+
+            assert_eq!(ts_array.value(0), 1); // true -> 1 microsecond
+            assert_eq!(ts_array.value(1), 0); // false -> 0 (epoch)
+            assert!(ts_array.is_null(2));
+            assert_eq!(ts_array.timezone(), tz.as_ref().map(|s| s.as_ref()));
+        }
+    }
+
+    #[test]
+    fn test_cast_decimal_to_timestamp() {
+        let timezones: [Option<Arc<str>>; 3] = [
+            Some(Arc::from("UTC")),
+            Some(Arc::from("America/Los_Angeles")),
+            None,
+        ];
+
+        for tz in &timezones {
+            // Decimal128 with scale 6
+            let decimal_array: ArrayRef = Arc::new(
+                Decimal128Array::from(vec![
+                    Some(0_i128),
+                    Some(1_000_000_i128),
+                    Some(-1_000_000_i128),
+                    Some(1_500_000_i128),
+                    Some(123_456_789_i128),
+                    None,
+                ])
+                .with_precision_and_scale(18, 6)
+                .unwrap(),
+            );
+
+            let result = cast_decimal_to_timestamp(&decimal_array, tz, 6).unwrap();
+            let ts_array = result.as_primitive::<TimestampMicrosecondType>();
+
+            assert_eq!(ts_array.value(0), 0);
+            assert_eq!(ts_array.value(1), 1_000_000);
+            assert_eq!(ts_array.value(2), -1_000_000);
+            assert_eq!(ts_array.value(3), 1_500_000);
+            assert_eq!(ts_array.value(4), 123_456_789);
+            assert!(ts_array.is_null(5));
+            assert_eq!(ts_array.timezone(), tz.as_ref().map(|s| s.as_ref()));
+
+            // Test with scale 2
+            let decimal_array: ArrayRef = Arc::new(
+                Decimal128Array::from(vec![Some(100_i128), Some(150_i128), Some(-250_i128)])
+                    .with_precision_and_scale(10, 2)
+                    .unwrap(),
+            );
+
+            let result = cast_decimal_to_timestamp(&decimal_array, tz, 2).unwrap();
+            let ts_array = result.as_primitive::<TimestampMicrosecondType>();
+
+            assert_eq!(ts_array.value(0), 1_000_000);
+            assert_eq!(ts_array.value(1), 1_500_000);
+            assert_eq!(ts_array.value(2), -2_500_000);
+        }
+    }
+
+    #[test]
+    fn test_cast_float_to_timestamp() {
+        let timezones: [Option<Arc<str>>; 3] = [
+            Some(Arc::from("UTC")),
+            Some(Arc::from("America/Los_Angeles")),
+            None,
+        ];
+        let eval_modes = [EvalMode::Legacy, EvalMode::Ansi, EvalMode::Try];
+
+        for tz in &timezones {
+            for eval_mode in &eval_modes {
+                // Float64 tests
+                let f64_array: ArrayRef = Arc::new(Float64Array::from(vec![
+                    Some(0.0),
+                    Some(1.0),
+                    Some(-1.0),
+                    Some(1.5),
+                    Some(0.000001),
+                    None,
+                ]));
+
+                let result = cast_float_to_timestamp(&f64_array, tz, *eval_mode).unwrap();
+                let ts_array = result.as_primitive::<TimestampMicrosecondType>();
+
+                assert_eq!(ts_array.value(0), 0);
+                assert_eq!(ts_array.value(1), 1_000_000);
+                assert_eq!(ts_array.value(2), -1_000_000);
+                assert_eq!(ts_array.value(3), 1_500_000);
+                assert_eq!(ts_array.value(4), 1);
+                assert!(ts_array.is_null(5));
+                assert_eq!(ts_array.timezone(), tz.as_ref().map(|s| s.as_ref()));
+
+                // Float32 tests
+                let f32_array: ArrayRef = Arc::new(Float32Array::from(vec![
+                    Some(0.0_f32),
+                    Some(1.0_f32),
+                    Some(-1.0_f32),
+                    None,
+                ]));
+
+                let result = cast_float_to_timestamp(&f32_array, tz, *eval_mode).unwrap();
+                let ts_array = result.as_primitive::<TimestampMicrosecondType>();
+
+                assert_eq!(ts_array.value(0), 0);
+                assert_eq!(ts_array.value(1), 1_000_000);
+                assert_eq!(ts_array.value(2), -1_000_000);
+                assert!(ts_array.is_null(3));
+            }
+        }
+
+        // ANSI mode errors on NaN/Infinity
+        let tz = &Some(Arc::from("UTC"));
+        let f64_nan: ArrayRef = Arc::new(Float64Array::from(vec![Some(f64::NAN)]));
+        assert!(cast_float_to_timestamp(&f64_nan, tz, EvalMode::Ansi).is_err());
+
+        let f64_inf: ArrayRef = Arc::new(Float64Array::from(vec![Some(f64::INFINITY)]));
+        assert!(cast_float_to_timestamp(&f64_inf, tz, EvalMode::Ansi).is_err());
     }
 }

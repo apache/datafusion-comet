@@ -1276,4 +1276,50 @@ abstract class CometTestBase
     !usingLegacyNativeCometScan(conf) &&
     CometConf.COMET_PARQUET_UNSIGNED_SMALL_INT_CHECK.get(conf)
   }
+
+  /**
+   * Compares Spark and Comet results using foreach() and exceptAll() to avoid collect()
+   */
+  protected def assertDataFrameEqualsWithExceptions(
+      df: => DataFrame,
+      assertCometNative: Boolean = true): (Option[Throwable], Option[Throwable]) = {
+
+    var dfSpark: DataFrame = null
+    withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+      dfSpark = datasetOfRows(spark, df.logicalPlan)
+    }
+    val dfComet = datasetOfRows(spark, df.logicalPlan)
+
+    // Compare schemas
+    assert(
+      dfSpark.schema == dfComet.schema,
+      s"Schema mismatch:\nSpark: ${dfSpark.schema}\nComet: ${dfComet.schema}")
+
+    val expected = Try(dfSpark.foreach(_ => ()))
+    val actual = Try(dfComet.foreach(_ => ()))
+
+    (expected, actual) match {
+      case (Success(_), Success(_)) =>
+        // compare results and confirm that they match
+        val sparkMinusComet = dfSpark.exceptAll(dfComet)
+        val cometMinusSpark = dfComet.exceptAll(dfSpark)
+        val diffCount1 = sparkMinusComet.count()
+        val diffCount2 = cometMinusSpark.count()
+
+        if (diffCount1 > 0 || diffCount2 > 0) {
+          fail(
+            "Results do not match. " +
+              s"Rows in Spark but not Comet: $diffCount1. " +
+              s"Rows in Comet but not Spark: $diffCount2.")
+        }
+
+        if (assertCometNative) {
+          checkCometOperators(stripAQEPlan(dfComet.queryExecution.executedPlan))
+        }
+
+        (None, None)
+      case _ =>
+        (expected.failed.toOption, actual.failed.toOption)
+    }
+  }
 }
