@@ -4566,6 +4566,8 @@ mod tests {
                     type_info: None,
                 }),
             })),
+            expr_id: None,
+            query_context: None,
         };
 
         // Create bound reference for the INT8 column (index 1)
@@ -4577,6 +4579,8 @@ mod tests {
                     type_info: None,
                 }),
             })),
+            expr_id: None,
+            query_context: None,
         };
 
         // Create a Subtract expression: date_col - int8_col
@@ -4592,6 +4596,8 @@ mod tests {
                 }),
                 eval_mode: 0, // Legacy mode
             }))),
+            expr_id: None,
+            query_context: None,
         };
 
         // Create a projection operator with the subtract expression
