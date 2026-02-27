@@ -15,7 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::{Array, ArrayRef, BooleanArray, ListArray};
+use arrow::array::{Array, ArrayRef, BooleanArray, LargeListArray, ListArray};
+use arrow::buffer::NullBuffer;
 use arrow::compute::kernels::take::take;
 use arrow::datatypes::{DataType, Field, Schema, UInt32Type};
 use arrow::record_batch::RecordBatch;
@@ -28,6 +29,39 @@ use std::hash::Hash;
 use std::sync::Arc;
 
 const LAMBDA_VAR_COLUMN: &str = "__comet_lambda_var";
+
+/// Decomposed list array: offsets as usize, values, and optional null buffer.
+struct ListComponents {
+    offsets: Vec<usize>,
+    values: ArrayRef,
+    nulls: Option<NullBuffer>,
+}
+
+impl ListComponents {
+    fn is_null(&self, row: usize) -> bool {
+        self.nulls.as_ref().is_some_and(|n| n.is_null(row))
+    }
+}
+
+fn decompose_list(array: &dyn Array) -> DataFusionResult<ListComponents> {
+    if let Some(list) = array.as_any().downcast_ref::<ListArray>() {
+        Ok(ListComponents {
+            offsets: list.offsets().iter().map(|&o| o as usize).collect(),
+            values: Arc::clone(list.values()),
+            nulls: list.nulls().cloned(),
+        })
+    } else if let Some(large) = array.as_any().downcast_ref::<LargeListArray>() {
+        Ok(ListComponents {
+            offsets: large.offsets().iter().map(|&o| o as usize).collect(),
+            values: Arc::clone(large.values()),
+            nulls: large.nulls().cloned(),
+        })
+    } else {
+        Err(DataFusionError::Internal(
+            "ArrayExists expects a ListArray or LargeListArray input".to_string(),
+        ))
+    }
+}
 
 /// Spark-compatible `array_exists(array, x -> predicate(x))`.
 ///
@@ -92,24 +126,14 @@ impl PhysicalExpr for ArrayExistsExpr {
     fn evaluate(&self, batch: &RecordBatch) -> DataFusionResult<ColumnarValue> {
         let num_rows = batch.num_rows();
 
-        // Evaluate the array expression
         let array_value = self.array_expr.evaluate(batch)?.into_array(num_rows)?;
-
-        let list_array = array_value
-            .as_any()
-            .downcast_ref::<ListArray>()
-            .ok_or_else(|| {
-                DataFusionError::Internal("ArrayExists expects a ListArray input".to_string())
-            })?;
-
-        let offsets = list_array.offsets();
-        let values = list_array.values();
-        let total_elements = values.len();
+        let list = decompose_list(array_value.as_ref())?;
+        let total_elements = list.values.len();
 
         if total_elements == 0 {
             let mut result_builder = BooleanArray::builder(num_rows);
             for row in 0..num_rows {
-                if list_array.is_null(row) {
+                if list.is_null(row) {
                     result_builder.append_null();
                 } else {
                     result_builder.append_value(false);
@@ -120,8 +144,8 @@ impl PhysicalExpr for ArrayExistsExpr {
 
         let mut repeat_indices = Vec::with_capacity(total_elements);
         for row in 0..num_rows {
-            let start = offsets[row] as usize;
-            let end = offsets[row + 1] as usize;
+            let start = list.offsets[row];
+            let end = list.offsets[row + 1];
             for _ in start..end {
                 repeat_indices.push(row as u32);
             }
@@ -140,10 +164,10 @@ impl PhysicalExpr for ArrayExistsExpr {
 
         let element_field = Arc::new(Field::new(
             LAMBDA_VAR_COLUMN,
-            values.data_type().clone(),
+            list.values.data_type().clone(),
             true,
         ));
-        expanded_columns.push(Arc::clone(values));
+        expanded_columns.push(Arc::clone(&list.values));
         expanded_fields.push(element_field);
 
         let expanded_schema = Arc::new(Schema::new(expanded_fields));
@@ -165,13 +189,13 @@ impl PhysicalExpr for ArrayExistsExpr {
 
         let mut result_builder = BooleanArray::builder(num_rows);
         for row in 0..num_rows {
-            if list_array.is_null(row) {
+            if list.is_null(row) {
                 result_builder.append_null();
                 continue;
             }
 
-            let start = offsets[row] as usize;
-            let end = offsets[row + 1] as usize;
+            let start = list.offsets[row];
+            let end = list.offsets[row + 1];
 
             if start == end {
                 result_builder.append_value(false);
@@ -274,13 +298,8 @@ impl PhysicalExpr for LambdaVariableExpr {
     }
 
     fn evaluate(&self, batch: &RecordBatch) -> DataFusionResult<ColumnarValue> {
-        let schema = batch.schema();
-        let idx = schema.index_of(LAMBDA_VAR_COLUMN).map_err(|_| {
-            DataFusionError::Internal(format!(
-                "Lambda variable column '{}' not found in batch schema",
-                LAMBDA_VAR_COLUMN
-            ))
-        })?;
+        // The lambda variable is always the last column, appended by ArrayExistsExpr
+        let idx = batch.num_columns() - 1;
         Ok(ColumnarValue::Array(Arc::clone(batch.column(idx))))
     }
 
@@ -494,6 +513,34 @@ mod test {
         assert!(bools.value(0));
         assert!(!bools.value(1));
         assert!(bools.is_null(2));
+        Ok(())
+    }
+
+    #[test]
+    fn test_multi_column_batch() -> DataFusionResult<()> {
+        // Verify batch expansion works correctly with additional columns
+        use arrow::array::Int32Array;
+
+        let list = ListArray::from_iter_primitive::<Int32Type, _, _>(vec![
+            Some(vec![Some(10), Some(20)]),
+            Some(vec![Some(5)]),
+        ]);
+        let extra_col = Int32Array::from(vec![100, 200]);
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("arr", list.data_type().clone(), true),
+            Field::new("extra", DataType::Int32, false),
+        ]));
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(list), Arc::new(extra_col)])?;
+
+        let array_expr: Arc<dyn PhysicalExpr> = Arc::new(Column::new("arr", 0));
+        let lambda_body = make_gt_predicate(15);
+        let expr = ArrayExistsExpr::new(array_expr, lambda_body, true);
+
+        let result = expr.evaluate(&batch)?.into_array(2)?;
+        let bools = result.as_any().downcast_ref::<BooleanArray>().unwrap();
+        assert!(bools.value(0)); // [10, 20] has 20 > 15
+        assert!(!bools.value(1)); // [5] has no element > 15
         Ok(())
     }
 }

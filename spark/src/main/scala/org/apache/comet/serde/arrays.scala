@@ -609,7 +609,7 @@ object CometArrayExists extends CometExpressionSerde[ArrayExists] {
     val elementType = expr.argument.dataType.asInstanceOf[ArrayType].elementType
     elementType match {
       case BooleanType | ByteType | ShortType | IntegerType | LongType | FloatType | DoubleType |
-          _: DecimalType | DateType | TimestampType | StringType =>
+          _: DecimalType | DateType | TimestampType | TimestampNTZType | StringType =>
         Compatible()
       case _ => Unsupported(Some(s"element type not supported: $elementType"))
     }
@@ -633,18 +633,10 @@ object CometArrayExists extends CometExpressionSerde[ArrayExists] {
           return None
         }
 
-        val elementType = elementVar.dataType
-        val elementTypeProto = serializeDataType(elementType)
-        if (elementTypeProto.isEmpty) {
-          withInfo(expr, s"Cannot serialize element type: $elementType")
-          return None
-        }
-
         val arrayExistsBuilder = ExprOuterClass.ArrayExists
           .newBuilder()
           .setArray(arrayExprProto.get)
           .setLambdaBody(bodyProto.get)
-          .setElementType(elementTypeProto.get)
           .setFollowThreeValuedLogic(expr.followThreeValuedLogic)
 
         Some(
@@ -658,9 +650,11 @@ object CometArrayExists extends CometExpressionSerde[ArrayExists] {
         None
     }
   }
+
 }
 
 object CometNamedLambdaVariable extends CometExpressionSerde[NamedLambdaVariable] {
+
   override def convert(
       expr: NamedLambdaVariable,
       inputs: Seq[Attribute],
