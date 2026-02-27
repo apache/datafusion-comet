@@ -540,7 +540,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                 let physical_plan_time = start.elapsed();
 
                 exec_context.plan_creation_time += physical_plan_time;
-                exec_context.root_op = Some(Arc::clone(&root_op));
                 exec_context.scans = scans;
 
                 if exec_context.explain_native {
@@ -576,6 +575,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                 } else {
                     exec_context.stream = Some(stream);
                 }
+                exec_context.root_op = Some(root_op);
             } else {
                 // Pull input batches
                 pull_input_batches(exec_context)?;
