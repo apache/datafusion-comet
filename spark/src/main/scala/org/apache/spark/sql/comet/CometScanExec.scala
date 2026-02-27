@@ -37,15 +37,13 @@ import org.apache.spark.sql.errors.QueryExecutionErrors
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.execution.datasources.parquet.{ParquetFileFormat, ParquetOptions}
-import org.apache.spark.sql.execution.datasources.v2.DataSourceRDD
 import org.apache.spark.sql.execution.metric._
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.ColumnarBatch
-import org.apache.spark.util.SerializableConfiguration
 import org.apache.spark.util.collection._
 
 import org.apache.comet.{CometConf, MetricsSupport}
-import org.apache.comet.parquet.{CometParquetFileFormat, CometParquetPartitionReaderFactory}
+import org.apache.comet.parquet.CometParquetFileFormat
 
 /**
  * Comet physical scan node for DataSource V1. Most of the code here follow Spark's
@@ -476,43 +474,13 @@ case class CometScanExec(
       fsRelation: HadoopFsRelation,
       readFile: (PartitionedFile) => Iterator[InternalRow],
       partitions: Seq[FilePartition]): RDD[InternalRow] = {
-    val hadoopConf = relation.sparkSession.sessionState.newHadoopConfWithOptions(relation.options)
-    val usingDataFusionReader: Boolean = scanImpl == CometConf.SCAN_NATIVE_ICEBERG_COMPAT
-
-    val prefetchEnabled = hadoopConf.getBoolean(
-      CometConf.COMET_SCAN_PREFETCH_ENABLED.key,
-      CometConf.COMET_SCAN_PREFETCH_ENABLED.defaultValue.get) &&
-      !usingDataFusionReader
-
     val sqlConf = fsRelation.sparkSession.sessionState.conf
-    if (prefetchEnabled) {
-      CometParquetFileFormat.populateConf(sqlConf, hadoopConf)
-      val broadcastedConf =
-        fsRelation.sparkSession.sparkContext.broadcast(new SerializableConfiguration(hadoopConf))
-      val partitionReaderFactory = CometParquetPartitionReaderFactory(
-        scanImpl == CometConf.SCAN_NATIVE_ICEBERG_COMPAT,
-        sqlConf,
-        broadcastedConf,
-        requiredSchema,
-        relation.partitionSchema,
-        pushedDownFilters.toArray,
-        new ParquetOptions(CaseInsensitiveMap(relation.options), sqlConf),
-        metrics)
-
-      new DataSourceRDD(
-        fsRelation.sparkSession.sparkContext,
-        partitions.map(Seq(_)),
-        partitionReaderFactory,
-        true,
-        Map.empty)
-    } else {
-      newFileScanRDD(
-        fsRelation,
-        readFile,
-        partitions,
-        new StructType(requiredSchema.fields ++ fsRelation.partitionSchema.fields),
-        new ParquetOptions(CaseInsensitiveMap(relation.options), sqlConf))
-    }
+    newFileScanRDD(
+      fsRelation,
+      readFile,
+      partitions,
+      new StructType(requiredSchema.fields ++ fsRelation.partitionSchema.fields),
+      new ParquetOptions(CaseInsensitiveMap(relation.options), sqlConf))
   }
 
   override def doCanonicalize(): CometScanExec = {
@@ -556,8 +524,7 @@ object CometScanExec {
     // https://github.com/apache/arrow-datafusion-comet/issues/190
     def transform(arg: Any): AnyRef = arg match {
       case _: HadoopFsRelation =>
-        scanExec.relation.copy(fileFormat = new CometParquetFileFormat(session, scanImpl))(
-          session)
+        scanExec.relation.copy(fileFormat = new CometParquetFileFormat(session))(session)
       case other: AnyRef => other
       case null => null
     }
