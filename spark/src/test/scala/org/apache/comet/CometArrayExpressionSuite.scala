@@ -922,4 +922,98 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
       }
     }
   }
+
+  test("array_exists - basic") {
+    val table = "t1"
+    withTable(table) {
+      sql(s"create table $table(arr array<int>, threshold int) using parquet")
+      sql(s"insert into $table values (array(1, 2, 3), 2)")
+      sql(s"insert into $table values (array(1, 2), 5)")
+      sql(s"insert into $table values (array(), 0)")
+      sql(s"insert into $table values (null, 1)")
+
+      checkSparkAnswerAndOperator(sql(s"select exists(arr, x -> x > 2) from $table"))
+      checkSparkAnswerAndOperator(sql(s"select exists(arr, x -> x > threshold) from $table"))
+      checkSparkAnswerAndOperator(sql(s"select exists(arr, x -> x > 0) from $table"))
+    }
+  }
+
+  test("array_exists - null elements and three-valued logic") {
+    val table = "t1"
+    withTable(table) {
+      sql(s"create table $table(arr array<int>) using parquet")
+      sql(s"insert into $table values (array(1, null, 3))")
+      sql(s"insert into $table values (array(null, null))")
+      sql(s"insert into $table values (array(1, 2, 3))")
+
+      checkSparkAnswerAndOperator(sql(s"select exists(arr, x -> x > 5) from $table"))
+      checkSparkAnswerAndOperator(sql(s"select exists(arr, x -> x > 2) from $table"))
+    }
+  }
+
+  test("array_exists - various types") {
+    val table = "t1"
+    withTable(table) {
+      sql(s"create table $table(arr array<string>) using parquet")
+      sql(s"insert into $table values (array('a', 'bb', 'ccc'))")
+      checkSparkAnswerAndOperator(sql(s"select exists(arr, x -> length(x) > 2) from $table"))
+    }
+
+    withTable(table) {
+      sql(s"create table $table(arr array<double>) using parquet")
+      sql(s"insert into $table values (array(1.5, 2.5, 3.5))")
+      checkSparkAnswerAndOperator(sql(s"select exists(arr, x -> x > 2.0) from $table"))
+    }
+
+    withTable(table) {
+      sql(s"create table $table(arr array<boolean>) using parquet")
+      sql(s"insert into $table values (array(false, false, true))")
+      checkSparkAnswerAndOperator(sql(s"select exists(arr, x -> x) from $table"))
+    }
+
+    withTable(table) {
+      sql(s"create table $table(arr array<bigint>) using parquet")
+      sql(s"insert into $table values (array(100, 200, 300))")
+      checkSparkAnswerAndOperator(sql(s"select exists(arr, x -> x > 250) from $table"))
+    }
+  }
+
+  test("array_exists - DataFrame API") {
+    val table = "t1"
+    withTable(table) {
+      sql(s"create table $table(arr array<int>, threshold int) using parquet")
+      sql(s"insert into $table values (array(1, 2, 3), 2)")
+      sql(s"insert into $table values (array(1, 2), 5)")
+      sql(s"insert into $table values (array(), 0)")
+      sql(s"insert into $table values (null, 1)")
+      sql(s"insert into $table values (array(1, null, 3), 2)")
+
+      val df = spark.table(table)
+
+      checkSparkAnswerAndOperator(df.select(exists(col("arr"), x => x > 2)))
+      checkSparkAnswerAndOperator(df.select(exists(col("arr"), x => x > col("threshold"))))
+      checkSparkAnswerAndOperator(
+        df.select(
+          exists(col("arr"), x => x > 0).as("any_positive"),
+          exists(col("arr"), x => x > 100).as("any_large")))
+    }
+  }
+
+  test("array_exists - fallback with UDF in lambda") {
+    val table = "t1"
+    withTable(table) {
+      sql(s"create table $table(arr array<int>) using parquet")
+      sql(s"insert into $table values (array(1, 2, 3))")
+      sql(s"insert into $table values (array(4, 5, 6))")
+      sql(s"insert into $table values (null)")
+
+      val isEven = udf((x: Int) => x % 2 == 0)
+
+      val df = spark.table(table)
+      // UDF in lambda body cannot be serialized to native code
+      checkSparkAnswerAndFallbackReason(
+        df.select(exists(col("arr"), x => isEven(x))),
+        "scalaudf is not supported")
+    }
+  }
 }

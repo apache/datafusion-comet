@@ -88,6 +88,8 @@ message Expr {
     UnixTimestamp unix_timestamp = 65;
     FromJson from_json = 66;
     ToCsv to_csv = 67;
+    ArrayExists array_exists = 68;
+    LambdaVariable lambda_variable = 69;
   }
 }
 
@@ -439,4 +441,15 @@ message ArrayJoin {
 
 message Rand {
   int64 seed = 1;
+}
+
+message ArrayExists {
+  Expr array = 1;
+  Expr lambda_body = 2;
+  DataType element_type = 3;
+  bool follow_three_valued_logic = 4;
+}
+
+message LambdaVariable {
+  DataType datatype = 1;
 }
