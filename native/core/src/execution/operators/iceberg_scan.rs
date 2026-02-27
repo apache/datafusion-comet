@@ -24,11 +24,12 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
-use arrow::array::RecordBatch;
+use arrow::array::{ArrayRef, RecordBatch, RecordBatchOptions};
 use arrow::datatypes::SchemaRef;
 use datafusion::common::{DataFusionError, Result as DFResult};
 use datafusion::execution::{RecordBatchStream, SendableRecordBatchStream, TaskContext};
-use datafusion::physical_expr::EquivalenceProperties;
+use datafusion::physical_expr::expressions::Column;
+use datafusion::physical_expr::{EquivalenceProperties, PhysicalExpr};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::metrics::{
     BaselineMetrics, Count, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet,
@@ -41,9 +42,9 @@ use iceberg::io::FileIO;
 
 use crate::execution::operators::ExecutionError;
 use crate::parquet::parquet_support::SparkParquetOptions;
-use crate::parquet::schema_adapter::SparkSchemaAdapterFactory;
-use datafusion::datasource::schema_adapter::{SchemaAdapterFactory, SchemaMapper};
+use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
 use datafusion_comet_spark_expr::EvalMode;
+use datafusion_physical_expr_adapter::{PhysicalExprAdapter, PhysicalExprAdapterFactory};
 use iceberg::scan::FileScanTask;
 
 /// Iceberg table scan operator that uses iceberg-rust to read Iceberg tables.
@@ -61,6 +62,8 @@ pub struct IcebergScanExec {
     catalog_properties: HashMap<String, String>,
     /// Pre-planned file scan tasks
     tasks: Vec<FileScanTask>,
+    /// Number of data files to read concurrently
+    data_file_concurrency_limit: usize,
     /// Metrics
     metrics: ExecutionPlanMetricsSet,
 }
@@ -71,6 +74,7 @@ impl IcebergScanExec {
         schema: SchemaRef,
         catalog_properties: HashMap<String, String>,
         tasks: Vec<FileScanTask>,
+        data_file_concurrency_limit: usize,
     ) -> Result<Self, ExecutionError> {
         let output_schema = schema;
         let plan_properties = Self::compute_properties(Arc::clone(&output_schema), 1);
@@ -83,6 +87,7 @@ impl IcebergScanExec {
             plan_properties,
             catalog_properties,
             tasks,
+            data_file_concurrency_limit,
             metrics,
         })
     }
@@ -158,7 +163,7 @@ impl IcebergScanExec {
 
         let reader = iceberg::arrow::ArrowReaderBuilder::new(file_io)
             .with_batch_size(batch_size)
-            .with_data_file_concurrency_limit(context.session_config().target_partitions())
+            .with_data_file_concurrency_limit(self.data_file_concurrency_limit)
             .with_row_selection_enabled(true)
             .build();
 
@@ -169,7 +174,7 @@ impl IcebergScanExec {
         })?;
 
         let spark_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
-        let adapter_factory = SparkSchemaAdapterFactory::new(spark_options, None);
+        let adapter_factory = SparkPhysicalExprAdapterFactory::new(spark_options, None);
 
         let adapted_stream =
             stream.map_err(|e| DataFusionError::Execution(format!("Iceberg scan error: {}", e)));
@@ -177,8 +182,8 @@ impl IcebergScanExec {
         let wrapped_stream = IcebergStreamWrapper {
             inner: adapted_stream,
             schema: output_schema,
-            cached_adapter: None,
             adapter_factory,
+            cached: None,
             baseline_metrics: metrics.baseline,
         };
 
@@ -221,17 +226,23 @@ impl IcebergScanMetrics {
 
 /// Wrapper around iceberg-rust's stream that performs schema adaptation.
 /// Handles batches from multiple files that may have different Arrow schemas
-/// (metadata, field IDs, etc.). Caches schema adapters by source schema to avoid
-/// recreating them for every batch from the same file.
+/// (metadata, field IDs, etc.).
 struct IcebergStreamWrapper<S> {
     inner: S,
     schema: SchemaRef,
-    /// Cached schema adapter with its source schema. Created when schema changes.
-    cached_adapter: Option<(SchemaRef, Arc<dyn SchemaMapper>)>,
-    /// Factory for creating schema adapters
-    adapter_factory: SparkSchemaAdapterFactory,
+    /// Factory for creating adapters when file schema changes
+    adapter_factory: SparkPhysicalExprAdapterFactory,
+    /// Cached adapter and projection expressions for the current file schema,
+    /// reused across batches with the same schema
+    cached: Option<CachedProjection>,
     /// Metrics for output tracking
     baseline_metrics: BaselineMetrics,
+}
+
+/// Cached projection state: file schema, adapter, and pre-built projection expressions.
+struct CachedProjection {
+    file_schema: SchemaRef,
+    projection_exprs: Vec<Arc<dyn PhysicalExpr>>,
 }
 
 impl<S> Stream for IcebergStreamWrapper<S>
@@ -247,38 +258,35 @@ where
             Poll::Ready(Some(Ok(batch))) => {
                 let file_schema = batch.schema();
 
-                // Check if we need to create a new adapter for this file's schema
-                let needs_new_adapter = match &self.cached_adapter {
-                    Some((cached_schema, _)) => !Arc::ptr_eq(cached_schema, &file_schema),
-                    None => true,
+                // Reuse cached projection expressions if file schema hasn't changed.
+                // Batches from the same file share the same Arc<Schema> pointer,
+                // so pointer equality is sufficient here.
+                let projection_exprs = match &self.cached {
+                    Some(cached) if Arc::ptr_eq(&cached.file_schema, &file_schema) => {
+                        &cached.projection_exprs
+                    }
+                    _ => {
+                        let adapter = self
+                            .adapter_factory
+                            .create(Arc::clone(&self.schema), Arc::clone(&file_schema));
+                        let exprs =
+                            build_projection_expressions(&self.schema, &adapter).map_err(|e| {
+                                DataFusionError::Execution(format!(
+                                    "Failed to build projection expressions: {}",
+                                    e
+                                ))
+                            })?;
+                        self.cached = Some(CachedProjection {
+                            file_schema,
+                            projection_exprs: exprs,
+                        });
+                        &self.cached.as_ref().unwrap().projection_exprs
+                    }
                 };
 
-                if needs_new_adapter {
-                    let adapter = self
-                        .adapter_factory
-                        .create(Arc::clone(&self.schema), Arc::clone(&file_schema));
-
-                    match adapter.map_schema(file_schema.as_ref()) {
-                        Ok((schema_mapper, _projection)) => {
-                            self.cached_adapter = Some((file_schema, schema_mapper));
-                        }
-                        Err(e) => {
-                            return Poll::Ready(Some(Err(DataFusionError::Execution(format!(
-                                "Schema mapping failed: {}",
-                                e
-                            )))));
-                        }
-                    }
-                }
-
-                let result = self
-                    .cached_adapter
-                    .as_ref()
-                    .expect("cached_adapter should be initialized")
-                    .1
-                    .map_batch(batch)
+                let result = adapt_batch_with_expressions(batch, &self.schema, projection_exprs)
                     .map_err(|e| {
-                        DataFusionError::Execution(format!("Batch mapping failed: {}", e))
+                        DataFusionError::Execution(format!("Batch adaptation failed: {}", e))
                     });
 
                 Poll::Ready(Some(result))
@@ -308,4 +316,58 @@ impl DisplayAs for IcebergScanExec {
             self.tasks.len()
         )
     }
+}
+
+/// Build projection expressions that adapt batches from a file schema to the target schema.
+///
+/// The returned expressions can be cached and reused across multiple batches
+/// that share the same file schema, avoiding repeated expression construction.
+fn build_projection_expressions(
+    target_schema: &SchemaRef,
+    adapter: &Arc<dyn PhysicalExprAdapter>,
+) -> DFResult<Vec<Arc<dyn PhysicalExpr>>> {
+    target_schema
+        .fields()
+        .iter()
+        .enumerate()
+        .map(|(i, _field)| {
+            let col_expr: Arc<dyn PhysicalExpr> = Arc::new(Column::new_with_schema(
+                target_schema.field(i).name(),
+                target_schema.as_ref(),
+            )?);
+            adapter.rewrite(col_expr)
+        })
+        .collect::<DFResult<Vec<_>>>()
+}
+
+/// Adapt a batch to match the target schema using pre-built projection expressions.
+///
+/// The caller provides pre-built `projection_exprs` (from [`build_projection_expressions`])
+/// which can be cached and reused across multiple batches with the same file schema.
+fn adapt_batch_with_expressions(
+    batch: RecordBatch,
+    target_schema: &SchemaRef,
+    projection_exprs: &[Arc<dyn PhysicalExpr>],
+) -> DFResult<RecordBatch> {
+    // If schemas match, no adaptation needed
+    if Arc::ptr_eq(&batch.schema(), target_schema) {
+        return Ok(batch);
+    }
+
+    // Zero-column projection (e.g. SELECT count(*)) — preserve row count
+    if projection_exprs.is_empty() {
+        return Ok(RecordBatch::try_new_with_options(
+            Arc::clone(target_schema),
+            vec![],
+            &RecordBatchOptions::new().with_row_count(Some(batch.num_rows())),
+        )?);
+    }
+
+    // Evaluate expressions against batch
+    let columns: Vec<ArrayRef> = projection_exprs
+        .iter()
+        .map(|expr| expr.evaluate(&batch)?.into_array(batch.num_rows()))
+        .collect::<DFResult<Vec<_>>>()?;
+
+    RecordBatch::try_new(Arc::clone(target_schema), columns).map_err(|e| e.into())
 }

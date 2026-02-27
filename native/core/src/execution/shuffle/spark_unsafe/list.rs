@@ -51,7 +51,8 @@ impl SparkUnsafeObject for SparkUnsafeArray {
 impl SparkUnsafeArray {
     /// Creates a `SparkUnsafeArray` which points to the given address and size in bytes.
     pub fn new(addr: i64) -> Self {
-        // Read the number of elements from the first 8 bytes.
+        // SAFETY: addr points to valid Spark UnsafeArray data from the JVM.
+        // The first 8 bytes contain the element count as a little-endian i64.
         let slice: &[u8] = unsafe { std::slice::from_raw_parts(addr as *const u8, 8) };
         let num_elements = i64::from_le_bytes(slice.try_into().unwrap());
 
@@ -83,6 +84,9 @@ impl SparkUnsafeArray {
     /// Returns true if the null bit at the given index of the array is set.
     #[inline]
     pub(crate) fn is_null_at(&self, index: usize) -> bool {
+        // SAFETY: row_addr points to valid Spark UnsafeArray data. The null bitset starts
+        // at offset 8 and contains ceil(num_elements/64) * 8 bytes. The caller ensures
+        // index < num_elements, so word_offset is within the bitset region.
         unsafe {
             let mask: i64 = 1i64 << (index & 0x3f);
             let word_offset = (self.row_addr + 8 + (((index >> 6) as i64) << 3)) as *const i64;

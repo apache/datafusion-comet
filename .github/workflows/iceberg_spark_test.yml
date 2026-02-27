@@ -26,6 +26,7 @@ on:
     branches:
       - main
     paths-ignore:
+      - "benchmarks/**"
       - "doc/**"
       - "docs/**"
       - "**.md"
@@ -34,6 +35,7 @@ on:
       - "spark/src/test/scala/org/apache/spark/sql/benchmark/**"
   pull_request:
     paths-ignore:
+      - "benchmarks/**"
       - "doc/**"
       - "docs/**"
       - "**.md"
@@ -93,7 +95,7 @@ jobs:
           key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
 
       - name: Upload native library
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: native-lib-iceberg
           path: native/target/ci/libcomet.so
@@ -124,7 +126,7 @@ jobs:
           rust-version: ${{env.RUST_VERSION}}
           jdk-version: ${{ matrix.java-version }}
       - name: Download native library
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: native-lib-iceberg
           path: native/target/release/
@@ -168,7 +170,7 @@ jobs:
           rust-version: ${{env.RUST_VERSION}}
           jdk-version: ${{ matrix.java-version }}
       - name: Download native library
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: native-lib-iceberg
           path: native/target/release/
@@ -212,7 +214,7 @@ jobs:
           rust-version: ${{env.RUST_VERSION}}
           jdk-version: ${{ matrix.java-version }}
       - name: Download native library
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: native-lib-iceberg
           path: native/target/release/
@@ -256,7 +258,7 @@ jobs:
           rust-version: ${{env.RUST_VERSION}}
           jdk-version: ${{ matrix.java-version }}
       - name: Download native library
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: native-lib-iceberg
           path: native/target/release/
@@ -300,7 +302,7 @@ jobs:
           rust-version: ${{env.RUST_VERSION}}
           jdk-version: ${{ matrix.java-version }}
       - name: Download native library
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: native-lib-iceberg
           path: native/target/release/
@@ -344,7 +346,7 @@ jobs:
           rust-version: ${{env.RUST_VERSION}}
           jdk-version: ${{ matrix.java-version }}
       - name: Download native library
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: native-lib-iceberg
           path: native/target/release/
