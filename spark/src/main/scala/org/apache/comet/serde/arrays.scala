@@ -626,7 +626,7 @@ object CometArrayExists extends CometExpressionSerde[ArrayExists] {
     }
 
     expr.function match {
-      case LambdaFunction(body, Seq(elementVar: NamedLambdaVariable), _) =>
+      case LambdaFunction(body, Seq(_: NamedLambdaVariable), _) =>
         val bodyProto = exprToProto(body, inputs, binding)
         if (bodyProto.isEmpty) {
           withInfo(expr, body)
