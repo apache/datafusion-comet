@@ -38,7 +38,6 @@ import org.apache.spark.util.collection._
 
 import com.google.common.base.Objects
 
-import org.apache.comet.CometConf
 import org.apache.comet.parquet.{CometParquetFileFormat, CometParquetUtils}
 import org.apache.comet.serde.OperatorOuterClass.Operator
 
@@ -247,8 +246,7 @@ object CometNativeScanExec {
     // https://github.com/apache/arrow-datafusion-comet/issues/190
     def transform(arg: Any): AnyRef = arg match {
       case _: HadoopFsRelation =>
-        scanExec.relation.copy(fileFormat =
-          new CometParquetFileFormat(session, CometConf.SCAN_NATIVE_DATAFUSION))(session)
+        scanExec.relation.copy(fileFormat = new CometParquetFileFormat(session))(session)
       case other: AnyRef => other
       case null => null
     }
