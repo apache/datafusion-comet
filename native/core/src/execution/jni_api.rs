@@ -21,7 +21,9 @@ use super::{serde, utils::SparkArrowConvert};
 use crate::{
     errors::{try_unwrap_or_throw, CometError, CometResult},
     execution::{
-        metrics::utils::update_comet_metric, planner::PhysicalPlanner, serde::to_arrow_datatype,
+        metrics::utils::{build_metric_layout, update_comet_metric, MetricLayout},
+        planner::PhysicalPlanner,
+        serde::to_arrow_datatype,
         shuffle::spark_unsafe::row::process_sorted_row_partition, sort::RdxSort,
     },
     jvm_bridge::{jni_new_global_ref, JVMClasses},
@@ -173,6 +175,8 @@ struct ExecutionContext {
     pub memory_pool_config: MemoryPoolConfig,
     /// Whether to log memory usage on each call to execute_plan
     pub tracing_enabled: bool,
+    /// Pre-computed metric layout for flat array metric updates
+    pub metric_layout: Option<MetricLayout>,
 }
 
 /// Accept serialized query plan and return the address of the native query plan.
@@ -320,6 +324,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 explain_native,
                 memory_pool_config,
                 tracing_enabled,
+                metric_layout: None,
             });
 
             Ok(Box::into_raw(exec_context) as i64)
@@ -543,6 +548,11 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                 exec_context.root_op = Some(Arc::clone(&root_op));
                 exec_context.scans = scans;
 
+                // Build the flat metric layout for efficient metric updates
+                let metrics = exec_context.metrics.as_obj();
+                exec_context.metric_layout =
+                    Some(build_metric_layout(&mut env, metrics)?);
+
                 if exec_context.explain_native {
                     let formatted_plan_str =
                         DisplayableExecutionPlan::new(root_op.native_plan.as_ref()).indent(true);
@@ -674,9 +684,14 @@ pub extern "system" fn Java_org_apache_comet_Native_releasePlan(
 
 /// Updates the metrics of the query plan.
 fn update_metrics(env: &mut JNIEnv, exec_context: &mut ExecutionContext) -> CometResult<()> {
-    if let Some(native_query) = &exec_context.root_op {
+    if let Some(ref native_query) = exec_context.root_op {
+        let native_query = Arc::clone(native_query);
         let metrics = exec_context.metrics.as_obj();
-        update_comet_metric(env, metrics, native_query)
+        if let Some(ref mut layout) = exec_context.metric_layout {
+            update_comet_metric(env, metrics, &native_query, layout)
+        } else {
+            Ok(())
+        }
     } else {
         Ok(())
     }

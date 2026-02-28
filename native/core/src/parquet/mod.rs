@@ -47,7 +47,7 @@ use jni::{
 
 use self::util::jni::TypePromotionInfo;
 use crate::execution::jni_api::get_runtime;
-use crate::execution::metrics::utils::update_comet_metric;
+use crate::execution::metrics::utils::{build_metric_layout, update_comet_metric, MetricLayout};
 use crate::execution::operators::ExecutionError;
 use crate::execution::planner::PhysicalPlanner;
 use crate::execution::serde;
@@ -605,6 +605,7 @@ enum ParquetReaderState {
 struct BatchContext {
     native_plan: Arc<SparkPlan>,
     metrics_node: Arc<GlobalRef>,
+    metric_layout: MetricLayout,
     batch_stream: Option<SendableRecordBatchStream>,
     current_batch: Option<RecordBatch>,
     reader_state: ParquetReaderState,
@@ -780,9 +781,14 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
         let partition_index: usize = 0;
         let batch_stream = scan.execute(partition_index, session_ctx.task_ctx())?;
 
+        let metrics_global_ref = Arc::new(jni_new_global_ref!(env, metrics_node)?);
+        let metric_layout =
+            build_metric_layout(&mut env, metrics_global_ref.as_obj())?;
+
         let ctx = BatchContext {
             native_plan: Arc::new(SparkPlan::new(0, scan, vec![])),
-            metrics_node: Arc::new(jni_new_global_ref!(env, metrics_node)?),
+            metrics_node: metrics_global_ref,
+            metric_layout,
             batch_stream: Some(batch_stream),
             current_batch: None,
             reader_state: ParquetReaderState::Init,
@@ -825,6 +831,7 @@ pub extern "system" fn Java_org_apache_comet_parquet_Native_readNextRecordBatch(
                         &mut env,
                         context.metrics_node.as_obj(),
                         &context.native_plan,
+                        &mut context.metric_layout,
                     )?;
 
                     context.current_batch = None;

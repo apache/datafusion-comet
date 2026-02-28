@@ -30,7 +30,6 @@ fn main() -> Result<()> {
     prost_build::Config::new().out_dir(out_dir).compile_protos(
         &[
             "src/proto/expr.proto",
-            "src/proto/metric.proto",
             "src/proto/partitioning.proto",
             "src/proto/operator.proto",
             "src/proto/config.proto",
