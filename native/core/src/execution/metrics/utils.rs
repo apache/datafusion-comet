@@ -81,7 +81,7 @@ pub(crate) fn build_metric_layout(
 
     Ok(MetricLayout {
         node_indices,
-        values: vec![0i64; num_metrics],
+        values: vec![-1i64; num_metrics],
         jarray,
     })
 }

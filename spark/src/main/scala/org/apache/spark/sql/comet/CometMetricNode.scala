@@ -61,8 +61,15 @@ case class CometMetricNode(metrics: Map[String, SQLMetric], children: Seq[CometM
     (names.toArray, sqlMetrics.toArray, offsets.toArray)
   }
 
-  /** Pre-allocated array for native code to write metric values into. */
-  lazy val metricValuesArray: Array[Long] = new Array[Long](flatMetricNames.length)
+  /**
+   * Pre-allocated array for native code to write metric values into. Initialized to -1 (sentinel)
+   * so that JVM-only metrics that native doesn't produce are not overwritten.
+   */
+  lazy val metricValuesArray: Array[Long] = {
+    val arr = new Array[Long](flatMetricNames.length)
+    java.util.Arrays.fill(arr, -1L)
+    arr
+  }
 
   /** Returns the flattened metric names. Called from native once during setup. */
   def getMetricNames(): Array[String] = flatMetricNames
@@ -80,7 +87,11 @@ case class CometMetricNode(metrics: Map[String, SQLMetric], children: Seq[CometM
   def updateFromValues(): Unit = {
     var i = 0
     while (i < flatSQLMetrics.length) {
-      flatSQLMetrics(i).set(metricValuesArray(i))
+      val v = metricValuesArray(i)
+      if (v >= 0) {
+        flatSQLMetrics(i).set(v)
+        metricValuesArray(i) = -1L // reset sentinel for next cycle
+      }
       i += 1
     }
   }
