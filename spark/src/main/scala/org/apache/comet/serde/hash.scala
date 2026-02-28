@@ -69,33 +69,19 @@ object CometMurmur3Hash extends CometExpressionSerde[Murmur3Hash] {
 
 object CometSha2 extends CometExpressionSerde[Sha2] {
   override def getSupportLevel(expr: Sha2): SupportLevel = {
-    // If all children are foldable (constant/scalar), let Spark evaluate sha2
-    // to avoid relying on DataFusion support for purely scalar invocations.
-    if (expr.children.forall(_.foldable)) {
-      Unsupported(Some("sha2 with all scalar arguments is evaluated in Spark"))
-    } else {
-      Compatible()
-    }
+    // Currently, sha2 is not registered in the native engine, so we fall back to Spark
+    // for all cases until native support is available.
+    Unsupported(Some("sha2 function is not yet registered in native engine"))
   }
 
   override def convert(
       expr: Sha2,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    if (!HashUtils.isSupportedType(expr)) {
-      return None
-    }
-
-    // It's possible for spark to dynamically compute the number of bits from input
-    // expression, however DataFusion does not support that yet.
-    if (!expr.right.foldable) {
-      withInfo(expr, "For Sha2, non literal numBits is not supported")
-      return None
-    }
-
-    val leftExpr = exprToProtoInternal(expr.left, inputs, binding)
-    val numBitsExpr = exprToProtoInternal(expr.right, inputs, binding)
-    scalarFunctionExprToProtoWithReturnType("sha2", StringType, false, leftExpr, numBitsExpr)
+    // Currently, sha2 is not registered in the native engine registry.
+    // Fall back to Spark execution until native support is available.
+    withInfo(expr, "sha2 function is not yet registered in native engine")
+    None
   }
 }
 
