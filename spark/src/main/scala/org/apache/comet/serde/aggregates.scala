@@ -34,6 +34,9 @@ import org.apache.comet.shims.CometEvalModeUtil
 
 object CometMin extends CometAggregateExpressionSerde[Min] {
 
+  // Min has a simple intermediate buffer (single value) compatible between Spark and Comet
+  override def supportsSparkPartialCometFinal: Boolean = true
+
   override def convert(
       aggExpr: AggregateExpression,
       expr: Min,
@@ -81,6 +84,9 @@ object CometMin extends CometAggregateExpressionSerde[Min] {
 
 object CometMax extends CometAggregateExpressionSerde[Max] {
 
+  // Max has a simple intermediate buffer (single value) compatible between Spark and Comet
+  override def supportsSparkPartialCometFinal: Boolean = true
+
   override def convert(
       aggExpr: AggregateExpression,
       expr: Max,
@@ -127,6 +133,10 @@ object CometMax extends CometAggregateExpressionSerde[Max] {
 }
 
 object CometCount extends CometAggregateExpressionSerde[Count] {
+
+  // Count has a simple intermediate buffer (single Long) compatible between Spark and Comet
+  override def supportsSparkPartialCometFinal: Boolean = true
+
   override def convert(
       aggExpr: AggregateExpression,
       expr: Count,
@@ -306,6 +316,11 @@ object CometLast extends CometAggregateExpressionSerde[Last] {
 }
 
 object CometBitAndAgg extends CometAggregateExpressionSerde[BitAndAgg] {
+
+  // BitAnd has a simple intermediate buffer (single integral value)
+  // compatible between Spark and Comet
+  override def supportsSparkPartialCometFinal: Boolean = true
+
   override def convert(
       aggExpr: AggregateExpression,
       bitAnd: BitAndAgg,
@@ -340,6 +355,11 @@ object CometBitAndAgg extends CometAggregateExpressionSerde[BitAndAgg] {
 }
 
 object CometBitOrAgg extends CometAggregateExpressionSerde[BitOrAgg] {
+
+  // BitOr has a simple intermediate buffer (single integral value)
+  // compatible between Spark and Comet
+  override def supportsSparkPartialCometFinal: Boolean = true
+
   override def convert(
       aggExpr: AggregateExpression,
       bitOr: BitOrAgg,
@@ -374,6 +394,11 @@ object CometBitOrAgg extends CometAggregateExpressionSerde[BitOrAgg] {
 }
 
 object CometBitXOrAgg extends CometAggregateExpressionSerde[BitXorAgg] {
+
+  // BitXor has a simple intermediate buffer (single integral value)
+  // compatible between Spark and Comet
+  override def supportsSparkPartialCometFinal: Boolean = true
+
   override def convert(
       aggExpr: AggregateExpression,
       bitXor: BitXorAgg,
