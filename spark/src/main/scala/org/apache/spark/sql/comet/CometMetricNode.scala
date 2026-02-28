@@ -19,69 +19,81 @@
 
 package org.apache.spark.sql.comet
 
-import scala.jdk.CollectionConverters._
+import scala.collection.mutable.ArrayBuffer
 
 import org.apache.spark.SparkContext
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 
-import org.apache.comet.serde.Metric
-
 /**
- * A node carrying SQL metrics from SparkPlan, and metrics of its children. Native code will call
- * [[getChildNode]] and [[set]] to update the metrics.
+ * A node carrying SQL metrics from SparkPlan, and metrics of its children. Metrics are flattened
+ * into parallel arrays for efficient bulk transfer from native code via JNI.
  *
  * @param metrics
- *   the mapping between metric name of native operator to `SQLMetric` of Spark operator. For
- *   example, `numOutputRows` -> `SQLMetrics("numOutputRows")` means the native operator will
- *   update `numOutputRows` metric with the value of `SQLMetrics("numOutputRows")` in Spark
- *   operator.
+ *   the mapping between metric name of native operator to `SQLMetric` of Spark operator.
  */
 case class CometMetricNode(metrics: Map[String, SQLMetric], children: Seq[CometMetricNode])
     extends Logging {
 
   /**
-   * Gets a child node. Called from native.
+   * DFS flattening of the metric tree into parallel arrays. Within each node, metric names are
+   * sorted alphabetically for deterministic ordering. Returns (names, sqlMetrics, offsets) where
+   * offsets(i) is the start index of node i's metrics and offsets.length = numNodes + 1.
    */
-  def getChildNode(i: Int): CometMetricNode = {
-    if (i < 0 || i >= children.length) {
-      // TODO: throw an exception, e.g. IllegalArgumentException, instead?
-      return null
+  private lazy val (flatMetricNames, flatSQLMetrics, nodeOffsets) = {
+    val names = new ArrayBuffer[String]()
+    val sqlMetrics = new ArrayBuffer[SQLMetric]()
+    val offsets = new ArrayBuffer[Int]()
+
+    def walk(node: CometMetricNode): Unit = {
+      offsets += names.length
+      val sorted = node.metrics.toSeq.sortBy(_._1)
+      sorted.foreach { case (name, metric) =>
+        names += name
+        sqlMetrics += metric
+      }
+      node.children.foreach(walk)
     }
-    children(i)
+
+    walk(this)
+    offsets += names.length // sentinel
+    (names.toArray, sqlMetrics.toArray, offsets.toArray)
   }
 
   /**
-   * Update the value of a metric. This method will typically be called multiple times for the
-   * same metric during multiple calls to executePlan.
-   *
-   * @param metricName
-   *   the name of the metric at native operator.
-   * @param v
-   *   the value to set.
+   * Pre-allocated array for native code to write metric values into. Initialized to -1 (sentinel)
+   * so that JVM-only metrics that native doesn't produce are not overwritten.
    */
-  def set(metricName: String, v: Long): Unit = {
-    metrics.get(metricName) match {
-      case Some(metric) => metric.set(v)
-      case None =>
-        // no-op
-        logDebug(s"Non-existing metric: $metricName. Ignored")
-    }
+  lazy val metricValuesArray: Array[Long] = {
+    val arr = new Array[Long](flatMetricNames.length)
+    java.util.Arrays.fill(arr, -1L)
+    arr
   }
 
-  private def set_all(metricNode: Metric.NativeMetricNode): Unit = {
-    metricNode.getMetricsMap.forEach((name, value) => {
-      set(name, value)
-    })
-    metricNode.getChildrenList.asScala.zip(children).foreach { case (child, childNode) =>
-      childNode.set_all(child)
-    }
-  }
+  /** Returns the flattened metric names. Called from native once during setup. */
+  def getMetricNames(): Array[String] = flatMetricNames
 
-  def set_all_from_bytes(bytes: Array[Byte]): Unit = {
-    val metricNode = Metric.NativeMetricNode.parseFrom(bytes)
-    set_all(metricNode)
+  /** Returns node start offsets into the flat arrays. Called from native once during setup. */
+  def getNodeOffsets(): Array[Int] = nodeOffsets
+
+  /** Returns the pre-allocated values array. Called from native once during setup. */
+  def getValuesArray(): Array[Long] = metricValuesArray
+
+  /**
+   * Updates all SQLMetrics from the values array. Called from native after bulk-copying metric
+   * values via SetLongArrayRegion.
+   */
+  def updateFromValues(): Unit = {
+    var i = 0
+    while (i < flatSQLMetrics.length) {
+      val v = metricValuesArray(i)
+      if (v >= 0) {
+        flatSQLMetrics(i).set(v)
+        metricValuesArray(i) = -1L // reset sentinel for next cycle
+      }
+      i += 1
+    }
   }
 }
 
