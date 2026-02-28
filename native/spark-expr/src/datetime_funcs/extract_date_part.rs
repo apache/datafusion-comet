@@ -16,9 +16,10 @@
 // under the License.
 
 use crate::utils::array_with_timezone;
+use arrow::array::{Array, Int32Array};
 use arrow::compute::{date_part, DatePart};
 use arrow::datatypes::{DataType, TimeUnit::Microsecond};
-use datafusion::common::internal_datafusion_err;
+use datafusion::common::{internal_datafusion_err, ScalarValue};
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };
@@ -90,7 +91,8 @@ macro_rules! extract_date_part {
                         // When Spark's ConstantFolding is disabled, literal-only expressions like
                         // hour can reach the native engine as scalar inputs.
                         // Instead of failing and requiring JVM folding, we evaluate the scalar
-                        // natively by broadcasting it to a single-element array.
+                        // natively by broadcasting it to a single-element array and then
+                        // converting the result back to a scalar.
                         let array = scalar.clone().to_array_of_size(1)?;
                         let array = array_with_timezone(
                             array,
@@ -101,7 +103,18 @@ macro_rules! extract_date_part {
                             )),
                         )?;
                         let result = date_part(&array, DatePart::$date_part_variant)?;
-                        Ok(ColumnarValue::Array(result))
+                        let result_arr = result
+                            .as_any()
+                            .downcast_ref::<Int32Array>()
+                            .expect(concat!($fn_name, " should return Int32Array"));
+
+                        let scalar_result = if result_arr.is_null(0) {
+                            ScalarValue::Int32(None)
+                        } else {
+                            ScalarValue::Int32(Some(result_arr.value(0)))
+                        };
+
+                        Ok(ColumnarValue::Scalar(scalar_result))
                     }
                 }
             }
