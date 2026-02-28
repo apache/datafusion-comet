@@ -408,4 +408,25 @@ trait CommonStringExprs {
         None
     }
   }
+
+  def handleMinutesOfTime(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    if (expr.getClass.getSimpleName == "MinutesOfTime" && expr.children.nonEmpty) {
+      val childExpr = exprToProtoInternal(expr.children.head, inputs, binding)
+      childExpr.flatMap { ce =>
+        val builder = ExprOuterClass.Minute.newBuilder()
+        builder.setChild(ce)
+        builder.setTimezone("UTC")
+        Some(
+          ExprOuterClass.Expr
+            .newBuilder()
+            .setMinute(builder)
+            .build())
+      }
+    } else {
+      None
+    }
+  }
 }

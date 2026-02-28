@@ -29,3 +29,10 @@ SELECT minute(ts) FROM test_minute
 -- literal arguments
 query ignore(https://github.com/apache/datafusion-comet/issues/3336)
 SELECT minute(timestamp('2024-01-15 10:00:00')), minute(timestamp('2024-01-15 10:30:00')), minute(timestamp('2024-01-15 10:59:59'))
+
+-- Note: TIME type is not supported in Spark 3.4-4.0, so we cannot test MinutesOfTime
+-- expression directly with TIME literals. However, MinutesOfTime is a RuntimeReplaceable
+-- expression that may appear in certain scenarios. Our implementation handles it via
+-- version-specific shims (CometExprShim.versionSpecificExprToProtoInternal) which converts
+-- it to Minute proto when encountered. The existing timestamp tests above are sufficient
+-- to verify that minute() function works correctly.

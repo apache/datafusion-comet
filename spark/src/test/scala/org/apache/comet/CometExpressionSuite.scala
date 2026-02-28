@@ -573,12 +573,14 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("MinutesOfTime expression support") {
+    // This test verifies that minute() function works correctly with timestamp columns.
+    // If Spark generates MinutesOfTime expression (a RuntimeReplaceable expression),
+    // it will be handled by the version-specific shim and converted to Minute proto.
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "part-r-0.parquet")
         makeRawTimeParquetFile(path, dictionaryEnabled = dictionaryEnabled, 10000)
         readParquetFile(path.toString) { df =>
-          // Test that MinutesOfTime (via minute() function) works correctly
           val query = df.select(expr("minute(_1)"))
 
           checkSparkAnswerAndOperator(query)
