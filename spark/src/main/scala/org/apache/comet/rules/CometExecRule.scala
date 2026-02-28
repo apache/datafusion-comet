@@ -23,6 +23,7 @@ import scala.collection.mutable.ListBuffer
 
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{Divide, DoubleLiteral, EqualNullSafe, EqualTo, Expression, FloatLiteral, GreaterThan, GreaterThanOrEqual, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, NamedExpression, Remainder}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.sideBySide
@@ -31,7 +32,7 @@ import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, Comet
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, BroadcastQueryStageExec, ShuffleQueryStageExec}
-import org.apache.spark.sql.execution.aggregate.{HashAggregateExec, ObjectHashAggregateExec}
+import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
 import org.apache.spark.sql.execution.command.{DataWritingCommandExec, ExecutedCommandExec}
 import org.apache.spark.sql.execution.datasources.WriteFilesExec
 import org.apache.spark.sql.execution.datasources.csv.CSVFileFormat
@@ -113,6 +114,91 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
   }
 
   private def isCometNative(op: SparkPlan): Boolean = op.isInstanceOf[CometNativeExec]
+
+  /**
+   * Pre-processes the plan to ensure coordination between partial and final hash aggregates.
+   *
+   * This method walks the plan top-down to identify final hash aggregates that cannot be
+   * converted to Comet. For such cases, it finds and tags any corresponding partial aggregates
+   * with fallback reasons to prevent mixed Comet partial + Spark final aggregation.
+   *
+   * @param plan
+   *   The input plan to pre-process
+   * @return
+   *   The plan with appropriate fallback tags added
+   */
+  private def tagUnsupportedPartialAggregates(plan: SparkPlan): SparkPlan = {
+    plan.transformDown {
+      case finalAgg: BaseAggregateExec if hasFinalMode(finalAgg) =>
+        // Check if this final aggregate can be converted to Comet
+        val handler = allExecs
+          .get(finalAgg.getClass)
+          .map(_.asInstanceOf[CometOperatorSerde[SparkPlan]])
+
+        handler match {
+          case Some(serde) =>
+            // Get the actual support level and reason for the final aggregate
+            serde.getSupportLevel(finalAgg) match {
+              case Unsupported(reasonOpt) =>
+                // Final aggregate cannot be converted, extract the actual reason
+                val actualReason = reasonOpt.getOrElse("Final aggregate not supported by Comet")
+                val reason = s"Cannot convert final aggregate to Comet ($actualReason), " +
+                  "so partial aggregates must also use Spark to avoid mixed execution"
+                tagRelatedPartialAggregates(finalAgg, reason)
+              case Incompatible(reasonOpt) =>
+                // Final aggregate cannot be converted, extract the actual reason
+                val actualReason = reasonOpt.getOrElse("Final aggregate incompatible with Comet")
+                val reason = s"Cannot convert final aggregate to Comet ($actualReason), " +
+                  "so partial aggregates must also use Spark to avoid mixed execution"
+                tagRelatedPartialAggregates(finalAgg, reason)
+              case Compatible(_) =>
+                finalAgg
+            }
+          case _ =>
+            finalAgg
+        }
+      case other => other
+    }
+  }
+
+  /**
+   * Helper method to check if an aggregate has Final mode expressions.
+   */
+  private def hasFinalMode(agg: BaseAggregateExec): Boolean = {
+    agg.aggregateExpressions.exists(_.mode == Final)
+  }
+
+  /**
+   * Tags the first related partial aggregate in the subtree with fallback reasons. Stops
+   * transforming after finding and tagging the first partial aggregate to avoid affecting
+   * unrelated aggregates elsewhere in the tree.
+   */
+  private def tagRelatedPartialAggregates(plan: SparkPlan, reason: String): SparkPlan = {
+    var found = false
+
+    def transformOnce(node: SparkPlan): SparkPlan = {
+      if (found) {
+        node
+      } else {
+        node match {
+          case partialAgg: BaseAggregateExec if hasPartialMode(partialAgg) =>
+            found = true
+            withInfo(partialAgg, reason)
+          case other =>
+            other.withNewChildren(other.children.map(transformOnce))
+        }
+      }
+    }
+
+    transformOnce(plan)
+  }
+
+  /**
+   * Helper method to check if an aggregate has Partial or PartialMerge mode expressions.
+   */
+  private def hasPartialMode(agg: BaseAggregateExec): Boolean = {
+    agg.aggregateExpressions.exists(expr => expr.mode == Partial || expr.mode == PartialMerge)
+  }
 
   // spotless:off
 
@@ -261,6 +347,11 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         convertToComet(s, CometShuffleExchangeExec).getOrElse(s)
 
       case op =>
+        // Check if this operator has already been tagged with fallback reasons
+        if (hasExplainInfo(op)) {
+          return op
+        }
+
         // if all children are native (or if this is a leaf node) then see if there is a
         // registered handler for creating a fully native plan
         if (op.children.forall(_.isInstanceOf[CometNativeExec])) {
@@ -387,7 +478,10 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         normalizedPlan
       }
 
-      var newPlan = transform(planWithJoinRewritten)
+      // Pre-process the plan to ensure coordination between partial and final hash aggregates
+      val planWithAggregateCoordination = tagUnsupportedPartialAggregates(planWithJoinRewritten)
+
+      var newPlan = transform(planWithAggregateCoordination)
 
       // if the plan cannot be run fully natively then explain why (when appropriate
       // config is enabled)
