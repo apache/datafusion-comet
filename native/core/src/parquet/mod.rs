@@ -782,8 +782,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
         let batch_stream = scan.execute(partition_index, session_ctx.task_ctx())?;
 
         let metrics_global_ref = Arc::new(jni_new_global_ref!(env, metrics_node)?);
-        let metric_layout =
-            build_metric_layout(&mut env, metrics_global_ref.as_obj())?;
+        let metric_layout = build_metric_layout(&mut env, metrics_global_ref.as_obj())?;
 
         let ctx = BatchContext {
             native_plan: Arc::new(SparkPlan::new(0, scan, vec![])),

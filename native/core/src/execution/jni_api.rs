@@ -24,7 +24,8 @@ use crate::{
         metrics::utils::{build_metric_layout, update_comet_metric, MetricLayout},
         planner::PhysicalPlanner,
         serde::to_arrow_datatype,
-        shuffle::spark_unsafe::row::process_sorted_row_partition, sort::RdxSort,
+        shuffle::spark_unsafe::row::process_sorted_row_partition,
+        sort::RdxSort,
     },
     jvm_bridge::{jni_new_global_ref, JVMClasses},
 };
@@ -550,8 +551,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
 
                 // Build the flat metric layout for efficient metric updates
                 let metrics = exec_context.metrics.as_obj();
-                exec_context.metric_layout =
-                    Some(build_metric_layout(&mut env, metrics)?);
+                exec_context.metric_layout = Some(build_metric_layout(&mut env, metrics)?);
 
                 if exec_context.explain_native {
                     let formatted_plan_str =
