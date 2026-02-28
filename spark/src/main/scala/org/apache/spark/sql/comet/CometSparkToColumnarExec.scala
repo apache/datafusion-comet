@@ -104,15 +104,17 @@ case class CometSparkToColumnarExec(child: SparkPlan)
       child
         .executeColumnar()
         .mapPartitionsInternal { sparkBatches =>
+          val context = TaskContext.get()
           val arrowBatches =
             sparkBatches.flatMap { sparkBatch =>
-              val context = TaskContext.get()
+              val exportFn = ArrowCDataExport.makeExportFn(sparkBatch)
               CometArrowConverters.columnarBatchToArrowBatchIter(
                 sparkBatch,
                 schema,
                 maxRecordsPerBatch,
                 timeZoneId,
-                context)
+                context,
+                exportFn)
             }
           createTimingIter(arrowBatches, numInputRows, numOutputBatches, conversionTime)
         }
