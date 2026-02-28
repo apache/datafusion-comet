@@ -38,21 +38,21 @@ All benchmarks are run via `run.py`:
 python3 run.py --engine <engine> --benchmark <tpch|tpcds> [options]
 ```
 
-| Option                     | Description                                                            |
-| -------------------------- | ---------------------------------------------------------------------- |
-| `--engine`                 | Engine name (matches a TOML file in `engines/`)                        |
-| `--benchmark`              | `tpch` or `tpcds`                                                      |
-| `--iterations`             | Number of iterations (default: 1)                                      |
-| `--output`                 | Output directory (default: `.`)                                        |
-| `--query`                  | Run a single query number                                              |
-| `--no-restart`             | Skip Spark master/worker restart                                       |
-| `--dry-run`                | Print the spark-submit command without executing                       |
-| `--jfr`                    | Enable Java Flight Recorder profiling                                  |
-| `--jfr-dir`               | Directory for JFR output files (default: `/results/jfr`)               |
-| `--async-profiler`         | Enable async-profiler (profiles Java + native code)                    |
-| `--async-profiler-dir`     | Directory for async-profiler output (default: `/results/async-profiler`) |
-| `--async-profiler-event`   | Event type: `cpu`, `wall`, `alloc`, `lock`, etc. (default: `cpu`)      |
-| `--async-profiler-format`  | Output format: `flamegraph`, `jfr`, `collapsed`, `text` (default: `flamegraph`) |
+| Option                    | Description                                                                     |
+| ------------------------- | ------------------------------------------------------------------------------- |
+| `--engine`                | Engine name (matches a TOML file in `engines/`)                                 |
+| `--benchmark`             | `tpch` or `tpcds`                                                               |
+| `--iterations`            | Number of iterations (default: 1)                                               |
+| `--output`                | Output directory (default: `.`)                                                 |
+| `--query`                 | Run a single query number                                                       |
+| `--no-restart`            | Skip Spark master/worker restart                                                |
+| `--dry-run`               | Print the spark-submit command without executing                                |
+| `--jfr`                   | Enable Java Flight Recorder profiling                                           |
+| `--jfr-dir`               | Directory for JFR output files (default: `/results/jfr`)                        |
+| `--async-profiler`        | Enable async-profiler (profiles Java + native code)                             |
+| `--async-profiler-dir`    | Directory for async-profiler output (default: `/results/async-profiler`)        |
+| `--async-profiler-event`  | Event type: `cpu`, `wall`, `alloc`, `lock`, etc. (default: `cpu`)               |
+| `--async-profiler-format` | Output format: `flamegraph`, `jfr`, `collapsed`, `text` (default: `flamegraph`) |
 
 Available engines: `spark`, `comet`, `comet-iceberg`, `gluten`
 
