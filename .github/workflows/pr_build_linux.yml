@@ -102,7 +102,7 @@ jobs:
           RUSTFLAGS: "-Ctarget-cpu=x86-64-v3"
 
       - name: Upload native library
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: native-lib-linux
           path: native/target/ci/libcomet.so
@@ -294,7 +294,7 @@ jobs:
           jdk-version: ${{ matrix.profile.java_version }}
 
       - name: Download native library
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: native-lib-linux
           # Download to release/ since Maven's -Prelease expects libcomet.so there
@@ -340,7 +340,7 @@ jobs:
           jdk-version: 11
 
       - name: Download native library
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: native-lib-linux
           path: native/target/release/
@@ -398,7 +398,7 @@ jobs:
           jdk-version: 11
 
       - name: Download native library
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: native-lib-linux
           path: native/target/release/
