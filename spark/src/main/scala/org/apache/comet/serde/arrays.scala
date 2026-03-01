@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import scala.annotation.tailrec
 
-import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayFilter, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayRemove, ArrayRepeat, ArraysOverlap, ArrayUnion, Attribute, CreateArray, ElementAt, Expression, Flatten, GetArrayItem, IsNotNull, Literal, Reverse, Size}
+import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayFilter, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayPosition, ArrayRemove, ArrayRepeat, ArraysOverlap, ArrayUnion, Attribute, CreateArray, ElementAt, Expression, Flatten, GetArrayItem, IsNotNull, Literal, Reverse, Size}
 import org.apache.spark.sql.catalyst.util.GenericArrayData
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
@@ -655,6 +655,36 @@ object CometSize extends CometExpressionSerde[Size] {
     exprToProto(Literal(value, IntegerType), Seq.empty)
   }
 
+}
+
+object CometArrayPosition extends CometExpressionSerde[ArrayPosition] with ArraysBase {
+
+  override def convert(
+      expr: ArrayPosition,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    if (expr.children.forall(_.foldable)) {
+      withInfo(expr, "all arguments are literals, falling back to Spark")
+      return None
+    }
+    // Check if input types are supported
+    val inputTypes: Set[DataType] = expr.children.map(_.dataType).toSet
+    for (dt <- inputTypes) {
+      if (!isTypeSupported(dt)) {
+        withInfo(expr, s"data type not supported: $dt")
+        return None
+      }
+    }
+
+    val arrayExprProto = exprToProto(expr.left, inputs, binding)
+    val elementExprProto = exprToProto(expr.right, inputs, binding)
+
+    // Use spark_array_position which returns Int64 and 0 when not found
+    // (matching Spark's behavior)
+    val optExpr =
+      scalarFunctionExprToProto("spark_array_position", arrayExprProto, elementExprProto)
+    optExprWithInfo(optExpr, expr, expr.left, expr.right)
+  }
 }
 
 trait ArraysBase {
