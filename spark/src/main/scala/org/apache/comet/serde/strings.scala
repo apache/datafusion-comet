@@ -408,4 +408,37 @@ trait CommonStringExprs {
         None
     }
   }
+
+  def hoursOfTimeToProto(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    if (expr.children.nonEmpty) {
+      exprToProtoInternal(expr.children.head, inputs, binding) match {
+        case Some(childExpr) =>
+          val builder = ExprOuterClass.Hour.newBuilder()
+          builder.setChild(childExpr)
+          val timeZone =
+            try {
+              val timeZoneIdMethod = expr.getClass.getMethod("timeZoneId")
+              timeZoneIdMethod.invoke(expr).asInstanceOf[Option[String]].getOrElse("UTC")
+            } catch {
+              case _: NoSuchMethodException => "UTC"
+              case _: Exception => "UTC"
+            }
+          builder.setTimezone(timeZone)
+          Some(
+            ExprOuterClass.Expr
+              .newBuilder()
+              .setHour(builder)
+              .build())
+        case None =>
+          withInfo(expr, expr.children.head)
+          None
+      }
+    } else {
+      withInfo(expr, "HoursOfTime expression has no child")
+      None
+    }
+  }
 }

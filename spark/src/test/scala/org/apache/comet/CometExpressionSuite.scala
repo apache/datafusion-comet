@@ -601,6 +601,23 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("hourOfTime expression support") {
+    // This test verifies that hour() function works correctly with timestamp columns.
+    // If Spark generates HoursOfTime expression (a RuntimeReplaceable expression),
+    // it will be handled by the version-specific shim and converted to Hour proto.
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "part-r-0.parquet")
+        makeRawTimeParquetFile(path, dictionaryEnabled = dictionaryEnabled, 10000)
+        readParquetFile(path.toString) { df =>
+          val query = df.select(expr("hour(_1)"))
+
+          checkSparkAnswerAndOperator(query)
+        }
+      }
+    }
+  }
+
   test("cast timestamp and timestamp_ntz") {
     withSQLConf(
       SESSION_LOCAL_TIMEZONE.key -> "Asia/Kathmandu",
