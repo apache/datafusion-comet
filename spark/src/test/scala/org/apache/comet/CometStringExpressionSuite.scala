@@ -148,6 +148,31 @@ class CometStringExpressionSuite extends CometTestBase {
     }
   }
 
+  test("ilike") {
+    withSQLConf("spark.comet.caseConversion.enabled" -> "true") {
+      withParquetTable(Seq("Hello", "WORLD", "hello", "FooBar", null).map(Tuple1(_)), "tbl") {
+        checkSparkAnswerAndOperator("SELECT _1 ILIKE '%hello%' FROM tbl")
+        checkSparkAnswerAndOperator("SELECT _1 ILIKE 'H_llo' FROM tbl")
+        checkSparkAnswerAndOperator("SELECT _1 ILIKE '%WORLD%' FROM tbl")
+        checkSparkAnswerAndOperator("SELECT NULL ILIKE '%test%' FROM tbl")
+      }
+    }
+  }
+
+  test("ilike falls back when caseConversion is disabled") {
+    // ILIKE requires case-insensitive comparison which uses locale-specific
+    // case conversion (upper/lower). Rust's to_lowercase() follows Unicode
+    // default rules while Java uses locale-specific rules (e.g. Turkish I),
+    // so Comet falls back when caseConversion is disabled.
+    withSQLConf("spark.comet.caseConversion.enabled" -> "false") {
+      withParquetTable(Seq("Hello", "WORLD").map(Tuple1(_)), "tbl") {
+        checkSparkAnswerAndFallbackReason(
+          "SELECT _1 ILIKE '%hello%' FROM tbl",
+          "Comet is not compatible with Spark for case conversion")
+      }
+    }
+  }
+
   test("split string basic") {
     withSQLConf("spark.comet.expression.StringSplit.allowIncompatible" -> "true") {
       withParquetTable((0 until 5).map(i => (s"value$i,test$i", i)), "tbl") {
