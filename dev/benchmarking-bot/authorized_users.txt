@@ -1,0 +1,8 @@
+# GitHub usernames of authorized users
+# One username per line. Lines starting with # are comments.
+# Apache ID -> GitHub username
+andygrove             # agrove - Andrew Grove
+comphead              # comphead - Oleks V
+kazuyukitanimura      # kazuyukitanimura - Kazuyuki Tanimura
+mbutrovich            # mbutrovich - Matt Butrovich
+parthchandra          # parthc - Parth Chandra
