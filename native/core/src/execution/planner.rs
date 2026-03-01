@@ -2862,6 +2862,7 @@ fn parse_file_scan_tasks_from_common(
                     Ok(iceberg::scan::FileScanTaskDeleteFile {
                         file_path: del.file_path.clone(),
                         file_type,
+                        file_size_in_bytes: del.file_size_in_bytes,
                         partition_spec_id: del.partition_spec_id,
                         equality_ids: if del.equality_ids.is_empty() {
                             None
@@ -2975,6 +2976,7 @@ fn parse_file_scan_tasks_from_common(
                 .clone();
 
             Ok(iceberg::scan::FileScanTask {
+                file_size_in_bytes: proto_task.file_size_in_bytes,
                 data_file_path: proto_task.data_file_path.clone(),
                 start: proto_task.start,
                 length: proto_task.length,
