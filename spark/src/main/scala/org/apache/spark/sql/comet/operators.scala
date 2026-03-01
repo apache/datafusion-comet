@@ -1724,19 +1724,35 @@ object CometHashJoinExec extends CometOperatorSerde[HashJoin] with CometHashJoin
     doConvert(join, builder, childOp: _*)
 
   override def createExec(nativeOp: Operator, op: HashJoin): CometNativeExec = {
-    CometHashJoinExec(
-      nativeOp,
-      op,
-      op.output,
-      op.outputOrdering,
-      op.leftKeys,
-      op.rightKeys,
-      op.joinType,
-      op.condition,
-      op.buildSide,
-      op.left,
-      op.right,
-      SerializedPlan(None))
+    if (CometConf.COMET_EXEC_GRACE_HASH_JOIN_ENABLED.get()) {
+      CometGraceHashJoinExec(
+        nativeOp,
+        op,
+        op.output,
+        op.outputOrdering,
+        op.leftKeys,
+        op.rightKeys,
+        op.joinType,
+        op.condition,
+        op.buildSide,
+        op.left,
+        op.right,
+        SerializedPlan(None))
+    } else {
+      CometHashJoinExec(
+        nativeOp,
+        op,
+        op.output,
+        op.outputOrdering,
+        op.leftKeys,
+        op.rightKeys,
+        op.joinType,
+        op.condition,
+        op.buildSide,
+        op.left,
+        op.right,
+        SerializedPlan(None))
+    }
   }
 }
 
@@ -1793,6 +1809,61 @@ case class CometHashJoinExec(
 
   override lazy val metrics: Map[String, SQLMetric] =
     CometMetricNode.hashJoinMetrics(sparkContext)
+}
+
+case class CometGraceHashJoinExec(
+    override val nativeOp: Operator,
+    override val originalPlan: SparkPlan,
+    override val output: Seq[Attribute],
+    override val outputOrdering: Seq[SortOrder],
+    leftKeys: Seq[Expression],
+    rightKeys: Seq[Expression],
+    joinType: JoinType,
+    condition: Option[Expression],
+    buildSide: BuildSide,
+    override val left: SparkPlan,
+    override val right: SparkPlan,
+    override val serializedPlanOpt: SerializedPlan)
+    extends CometBinaryExec {
+
+  override def outputPartitioning: Partitioning = joinType match {
+    case _: InnerLike =>
+      PartitioningCollection(Seq(left.outputPartitioning, right.outputPartitioning))
+    case LeftOuter => left.outputPartitioning
+    case RightOuter => right.outputPartitioning
+    case FullOuter => UnknownPartitioning(left.outputPartitioning.numPartitions)
+    case LeftExistence(_) => left.outputPartitioning
+    case x =>
+      throw new IllegalArgumentException(s"GraceHashJoin should not take $x as the JoinType")
+  }
+
+  override def withNewChildrenInternal(newLeft: SparkPlan, newRight: SparkPlan): SparkPlan =
+    this.copy(left = newLeft, right = newRight)
+
+  override def stringArgs: Iterator[Any] =
+    Iterator(leftKeys, rightKeys, joinType, buildSide, condition, left, right)
+
+  override def equals(obj: Any): Boolean = {
+    obj match {
+      case other: CometGraceHashJoinExec =>
+        this.output == other.output &&
+        this.leftKeys == other.leftKeys &&
+        this.rightKeys == other.rightKeys &&
+        this.condition == other.condition &&
+        this.buildSide == other.buildSide &&
+        this.left == other.left &&
+        this.right == other.right &&
+        this.serializedPlanOpt == other.serializedPlanOpt
+      case _ =>
+        false
+    }
+  }
+
+  override def hashCode(): Int =
+    Objects.hashCode(output, leftKeys, rightKeys, condition, buildSide, left, right)
+
+  override lazy val metrics: Map[String, SQLMetric] =
+    CometMetricNode.graceHashJoinMetrics(sparkContext)
 }
 
 case class CometBroadcastHashJoinExec(

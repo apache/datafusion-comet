@@ -1783,6 +1783,7 @@ dependencies = [
 name = "datafusion-comet"
 version = "0.14.0"
 dependencies = [
+ "ahash 0.8.12",
  "arrow",
  "assertables",
  "async-trait",

@@ -21,6 +21,8 @@ pub mod expression_registry;
 pub mod macros;
 pub mod operator_registry;
 
+use log::info;
+
 use crate::execution::operators::init_csv_datasource_exec;
 use crate::execution::operators::IcebergScanExec;
 use crate::{
@@ -163,6 +165,8 @@ pub struct PhysicalPlanner {
     exec_context_id: i64,
     partition: i32,
     session_ctx: Arc<SessionContext>,
+    /// Spark configuration map, used to read comet-specific settings.
+    spark_conf: HashMap<String, String>,
 }
 
 impl Default for PhysicalPlanner {
@@ -177,6 +181,7 @@ impl PhysicalPlanner {
             exec_context_id: TEST_EXEC_CONTEXT_ID,
             session_ctx,
             partition,
+            spark_conf: HashMap::new(),
         }
     }
 
@@ -185,7 +190,12 @@ impl PhysicalPlanner {
             exec_context_id,
             partition: self.partition,
             session_ctx: Arc::clone(&self.session_ctx),
+            spark_conf: self.spark_conf,
         }
+    }
+
+    pub fn with_spark_conf(self, spark_conf: HashMap<String, String>) -> Self {
+        Self { spark_conf, ..self }
     }
 
     /// Return session context of this planner.
@@ -1565,6 +1575,67 @@ impl PhysicalPlanner {
 
                 let left = Arc::clone(&join_params.left.native_plan);
                 let right = Arc::clone(&join_params.right.native_plan);
+
+                // Check if Grace Hash Join is enabled
+                {
+                    use crate::execution::spark_config::{
+                        SparkConfig, COMET_GRACE_HASH_JOIN_ENABLED,
+                        COMET_GRACE_HASH_JOIN_FAST_PATH_THRESHOLD,
+                        COMET_GRACE_HASH_JOIN_NUM_PARTITIONS, SPARK_EXECUTOR_CORES,
+                    };
+                    let grace_enabled = self.spark_conf.get_bool(COMET_GRACE_HASH_JOIN_ENABLED);
+
+                    if grace_enabled {
+                        let num_partitions = self
+                            .spark_conf
+                            .get_usize(COMET_GRACE_HASH_JOIN_NUM_PARTITIONS, 16);
+                        let executor_cores =
+                            self.spark_conf.get_usize(SPARK_EXECUTOR_CORES, 1).max(1);
+                        // The configured threshold is the total budget across all
+                        // concurrent tasks. Divide by executor cores so each task's
+                        // fast-path hash table stays within its fair share.
+                        let fast_path_threshold = self
+                            .spark_conf
+                            .get_usize(COMET_GRACE_HASH_JOIN_FAST_PATH_THRESHOLD, 10 * 1024 * 1024)
+                            / executor_cores;
+
+                        let build_left = join.build_side == BuildSide::BuildLeft as i32;
+
+                        let grace_join =
+                            Arc::new(crate::execution::operators::GraceHashJoinExec::try_new(
+                                Arc::clone(&left),
+                                Arc::clone(&right),
+                                join_params.join_on,
+                                join_params.join_filter,
+                                &join_params.join_type,
+                                num_partitions,
+                                build_left,
+                                fast_path_threshold,
+                            )?);
+
+                        return Ok((
+                            scans,
+                            Arc::new(SparkPlan::new(
+                                spark_plan.plan_id,
+                                grace_join,
+                                vec![join_params.left, join_params.right],
+                            )),
+                        ));
+                    }
+                }
+
+                {
+                    use crate::execution::spark_config::{
+                        SparkConfig, COMET_GRACE_HASH_JOIN_ENABLED,
+                    };
+                    info!(
+                        "PLANNER: creating plain HashJoinExec (NOT GraceHashJoin). \
+                         join_type={:?}, build_side={:?}, grace_enabled={}",
+                        join_params.join_type,
+                        join.build_side,
+                        self.spark_conf.get_bool(COMET_GRACE_HASH_JOIN_ENABLED),
+                    );
+                }
 
                 let hash_join = Arc::new(HashJoinExec::try_new(
                     left,

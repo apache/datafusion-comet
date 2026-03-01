@@ -226,6 +226,33 @@ object CometMetricNode {
   }
 
   /**
+   * SQL Metrics for GraceHashJoin
+   */
+  def graceHashJoinMetrics(sc: SparkContext): Map[String, SQLMetric] = {
+    Map(
+      "build_time" ->
+        SQLMetrics.createNanoTimingMetric(sc, "Total time for partitioning build-side"),
+      "probe_time" ->
+        SQLMetrics.createNanoTimingMetric(sc, "Total time for partitioning probe-side"),
+      "join_time" ->
+        SQLMetrics.createNanoTimingMetric(sc, "Total time for per-partition joins"),
+      "spill_count" -> SQLMetrics.createMetric(sc, "Count of spills"),
+      "spilled_bytes" -> SQLMetrics.createSizeMetric(sc, "Total spilled bytes"),
+      "build_input_rows" ->
+        SQLMetrics.createMetric(sc, "Number of rows consumed by build-side"),
+      "build_input_batches" ->
+        SQLMetrics.createMetric(sc, "Number of batches consumed by build-side"),
+      "input_rows" ->
+        SQLMetrics.createMetric(sc, "Number of rows consumed by probe-side"),
+      "input_batches" ->
+        SQLMetrics.createMetric(sc, "Number of batches consumed by probe-side"),
+      "output_batches" -> SQLMetrics.createMetric(sc, "Number of batches produced"),
+      "output_rows" -> SQLMetrics.createMetric(sc, "Number of rows produced"),
+      "elapsed_compute" ->
+        SQLMetrics.createNanoTimingMetric(sc, "Total elapsed compute time"))
+  }
+
+  /**
    * SQL Metrics for DataFusion SortMergeJoin
    */
   def sortMergeJoinMetrics(sc: SparkContext): Map[String, SQLMetric] = {
