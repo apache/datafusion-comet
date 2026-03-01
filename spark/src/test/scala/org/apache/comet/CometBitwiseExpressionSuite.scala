@@ -198,4 +198,12 @@ class CometBitwiseExpressionSuite extends CometTestBase with AdaptiveSparkPlanHe
       }
     }
   }
+
+  test("shiftrightunsigned") {
+    withParquetTable(Seq((42, 2), (-1, 1), (255, 4), (0, 3), (Int.MinValue, 1)), "tbl") {
+      checkSparkAnswerAndOperator("SELECT shiftrightunsigned(_1, _2) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT shiftrightunsigned(-1, 1) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT shiftrightunsigned(NULL, 1) FROM tbl")
+    }
+  }
 }
