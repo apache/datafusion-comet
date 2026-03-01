@@ -395,4 +395,30 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
     // Test null handling
     checkSparkAnswerAndOperator("SELECT unix_date(NULL)")
   }
+
+  test("make_dt_interval") {
+    // The 4th arg (seconds) is Double, and Spark casts it to Decimal(18,6).
+    // Comet's decimal cast has known rounding differences, so allow it here.
+    withSQLConf("spark.comet.expression.Cast.allowIncompatible" -> "true") {
+      withParquetTable(Seq((1, 2, 3, 4.5), (0, 0, 0, 0.0), (10, 23, 59, 59.999)), "tbl") {
+        checkSparkAnswerAndOperator("SELECT make_dt_interval(_1, _2, _3, _4) FROM tbl")
+        checkSparkAnswerAndOperator("SELECT make_dt_interval(1, 2, 3) FROM tbl")
+        checkSparkAnswerAndOperator("SELECT make_dt_interval(1) FROM tbl")
+        checkSparkAnswerAndOperator("SELECT make_dt_interval() FROM tbl")
+      }
+    }
+  }
+
+  test("make_interval") {
+    // The 7th arg (seconds) is Double, and Spark casts it to Decimal(18,6).
+    // Comet's decimal cast has known rounding differences, so allow it here.
+    withSQLConf("spark.comet.expression.Cast.allowIncompatible" -> "true") {
+      withParquetTable(Seq((1, 2, 3, 4, 5, 6, 7.5), (0, 0, 0, 0, 0, 0, 0.0)), "tbl") {
+        checkSparkAnswerAndOperator("SELECT make_interval(_1, _2, _3, _4, _5, _6, _7) FROM tbl")
+        checkSparkAnswerAndOperator("SELECT make_interval(1, 2, 3) FROM tbl")
+        checkSparkAnswerAndOperator("SELECT make_interval(1) FROM tbl")
+        checkSparkAnswerAndOperator("SELECT make_interval() FROM tbl")
+      }
+    }
+  }
 }
