@@ -1,0 +1,96 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+name: Spark SQL Tests (native_writer)
+
+concurrency:
+  group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
+  cancel-in-progress: true
+
+on:
+  # manual trigger
+  # https://docs.github.com/en/actions/managing-workflow-runs/manually-running-a-workflow
+  workflow_dispatch:
+
+env:
+  RUST_VERSION: stable
+
+jobs:
+  spark-sql-native-writer:
+    strategy:
+      matrix:
+        os: [ubuntu-24.04]
+        java-version: [11]
+        spark-version: [{short: '3.4', full: '3.4.3'}, {short: '3.5', full: '3.5.8'}]
+        module:
+          # Core DataFrame Writer Test Suites
+          - {name: "sql/DataFrameReaderWriterSuite", args1: "", args2: "sql/testOnly org.apache.spark.sql.test.DataFrameReaderWriterSuite"}
+          - {name: "sql/DataFrameWriterV2Suite", args1: "", args2: "sql/testOnly org.apache.spark.sql.DataFrameWriterV2Suite"}
+          - {name: "sql/DataFrameSuite", args1: "", args2: "sql/testOnly org.apache.spark.sql.DataFrameSuite"}
+          - {name: "sql/DataFrameCallbackSuite", args1: "", args2: "sql/testOnly org.apache.spark.sql.util.DataFrameCallbackSuite"}
+          # Java Test Suites
+          - {name: "sql/JavaDataFrameReaderWriterSuite", args1: "", args2: "sql/testOnly test.org.apache.spark.sql.JavaDataFrameReaderWriterSuite"}
+          - {name: "sql/JavaDataFrameWriterV2Suite", args1: "", args2: "sql/testOnly test.org.apache.spark.sql.JavaDataFrameWriterV2Suite"}
+          # Format-Specific Writer Test Suites
+          - {name: "sql/FileFormatWriterSuite", args1: "", args2: "sql/testOnly org.apache.spark.sql.execution.datasources.FileFormatWriterSuite"}
+          - {name: "sql/FileWriterFactorySuite", args1: "", args2: "sql/testOnly org.apache.spark.sql.execution.datasources.v2.FileWriterFactorySuite"}
+          - {name: "sql/JDBCWriteSuite", args1: "", args2: "sql/testOnly org.apache.spark.sql.jdbc.JDBCWriteSuite"}
+          # Partitioning and Bucketing Writer Test Suites
+          - {name: "sql/PartitionedWriteSuite", args1: "", args2: "sql/testOnly org.apache.spark.sql.sources.PartitionedWriteSuite"}
+          - {name: "sql/BucketedWriteSuite", args1: "", args2: "sql/testOnly org.apache.spark.sql.sources.BucketedWriteSuite"}
+          - {name: "sql/BucketedWriteWithoutHiveSupportSuite", args1: "", args2: "sql/testOnly org.apache.spark.sql.sources.BucketedWriteWithoutHiveSupportSuite"}
+          # V1/V2 Write Command Test Suites
+          - {name: "sql/V1WriteCommandSuite", args1: "", args2: "sql/testOnly org.apache.spark.sql.execution.datasources.V1WriteCommandSuite"}
+          - {name: "sql/V1WriteFallbackSuite", args1: "", args2: "sql/testOnly org.apache.spark.sql.connector.V1WriteFallbackSuite"}
+          - {name: "sql/SaveIntoDataSourceCommandSuite", args1: "", args2: "sql/testOnly org.apache.spark.sql.execution.datasources.SaveIntoDataSourceCommandSuite"}
+          # Insert and Save/Load Test Suites
+          - {name: "sql/InsertSuite", args1: "", args2: "sql/testOnly org.apache.spark.sql.sources.InsertSuite"}
+          - {name: "sql/SaveLoadSuite", args1: "", args2: "sql/testOnly org.apache.spark.sql.sources.SaveLoadSuite"}
+          - {name: "sql/CreateTableAsSelectSuite", args1: "", args2: "sql/testOnly org.apache.spark.sql.sources.CreateTableAsSelectSuite"}
+          # Streaming Writer Test Suites
+          - {name: "sql/DataStreamReaderWriterSuite", args1: "", args2: "sql/testOnly org.apache.spark.sql.streaming.test.DataStreamReaderWriterSuite"}
+          - {name: "sql/FileStreamSinkV1Suite", args1: "", args2: "sql/testOnly org.apache.spark.sql.streaming.FileStreamSinkV1Suite"}
+          - {name: "sql/FileStreamSinkV2Suite", args1: "", args2: "sql/testOnly org.apache.spark.sql.streaming.FileStreamSinkV2Suite"}
+          - {name: "sql/ForeachWriterSuite", args1: "", args2: "sql/testOnly org.apache.spark.sql.execution.streaming.sources.ForeachWriterSuite"}
+          - {name: "sql/PythonForeachWriterSuite", args1: "", args2: "sql/testOnly org.apache.spark.sql.execution.python.PythonForeachWriterSuite"}
+          # Other Writer Test Suites
+          - {name: "sql/ArrowWriterSuite", args1: "", args2: "sql/testOnly org.apache.spark.sql.execution.arrow.ArrowWriterSuite"}
+      fail-fast: false
+    name: spark-sql-native-writer-${{ matrix.module.name }}/${{ matrix.os }}/spark-${{ matrix.spark-version.full }}/java-${{ matrix.java-version }}
+    runs-on: ${{ matrix.os }}
+    container:
+      image: amd64/rust
+    steps:
+      - uses: actions/checkout@v6
+      - name: Setup Rust & Java toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: ${{env.RUST_VERSION}}
+          jdk-version: ${{ matrix.java-version }}
+      - name: Setup Spark
+        uses: ./.github/actions/setup-spark-builder
+        with:
+          spark-version: ${{ matrix.spark-version.full }}
+          spark-short-version: ${{ matrix.spark-version.short }}
+      - name: Run Spark tests
+        run: |
+          cd apache-spark
+          rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups
+          ENABLE_COMET=true ENABLE_COMET_ONHEAP=true COMET_PARQUET_SCAN_IMPL=native_iceberg_compat ENABLE_COMET_WRITE=true COMET_OPERATOR_DATA_WRITING_COMMAND_ALLOW_INCOMPAT=true build/sbt -Dsbt.log.noformat=true ${{ matrix.module.args1 }} "${{ matrix.module.args2 }}"
+        env:
+          LC_ALL: "C.UTF-8"
+
