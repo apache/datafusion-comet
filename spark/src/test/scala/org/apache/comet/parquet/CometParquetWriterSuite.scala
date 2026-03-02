@@ -140,6 +140,39 @@ class CometParquetWriterSuite extends CometTestBase {
     }
   }
 
+  // Test for issue #3430: SPARK-48817 multi-insert with native writer in Spark 4.x
+  test("parquet write with multi-insert pattern") {
+    withTempPath { dir =>
+      val output1 = new File(dir, "output1.parquet").getAbsolutePath
+      val output2 = new File(dir, "output2.parquet").getAbsolutePath
+
+      withSQLConf(
+        CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
+        CometConf.getOperatorAllowIncompatConfigKey(classOf[DataWritingCommandExec]) -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true") {
+
+        // Create source data with repartition (simulating SPARK-48817 test pattern)
+        val sourceData = spark.range(1, 10).toDF("id").repartition(3)
+
+        // Write to first output
+        val plan1 = captureWritePlan(path => sourceData.write.parquet(path), output1)
+
+        // Write to second output (simulating multi-insert reuse pattern)
+        val plan2 = captureWritePlan(path => sourceData.write.parquet(path), output2)
+
+        // Verify both writes completed correctly
+        val result1 = spark.read.parquet(output1)
+        val result2 = spark.read.parquet(output2)
+        assert(result1.count() == 9)
+        assert(result2.count() == 9)
+
+        // Verify native write was used for both
+        assertHasCometNativeWriteExec(plan1)
+        assertHasCometNativeWriteExec(plan2)
+      }
+    }
+  }
+
   test("parquet write with map type") {
     withTempPath { dir =>
       val outputPath = new File(dir, "output.parquet").getAbsolutePath
