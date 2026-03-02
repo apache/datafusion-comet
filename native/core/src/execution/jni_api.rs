@@ -45,6 +45,8 @@ use datafusion_spark::function::bitwise::bitwise_not::SparkBitwiseNot;
 use datafusion_spark::function::datetime::date_add::SparkDateAdd;
 use datafusion_spark::function::datetime::date_sub::SparkDateSub;
 use datafusion_spark::function::datetime::last_day::SparkLastDay;
+use datafusion_spark::function::datetime::make_dt_interval::SparkMakeDtInterval;
+use datafusion_spark::function::datetime::make_interval::SparkMakeInterval;
 use datafusion_spark::function::datetime::next_day::SparkNextDay;
 use datafusion_spark::function::hash::crc32::SparkCrc32;
 use datafusion_spark::function::hash::sha1::SparkSha1;
@@ -400,6 +402,8 @@ fn register_datafusion_spark_function(session_ctx: &SessionContext) {
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkWidthBucket::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(MapFromEntries::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkCrc32::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkMakeDtInterval::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkMakeInterval::default()));
 }
 
 /// Prepares arrow arrays for output.
