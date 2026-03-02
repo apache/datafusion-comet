@@ -20,10 +20,11 @@ use crate::math_funcs::abs::abs;
 use crate::math_funcs::checked_arithmetic::{checked_add, checked_div, checked_mul, checked_sub};
 use crate::math_funcs::modulo_expr::spark_modulo;
 use crate::{
-    spark_ceil, spark_decimal_div, spark_decimal_integral_div, spark_floor, spark_isnan,
-    spark_lpad, spark_make_decimal, spark_read_side_padding, spark_round, spark_rpad, spark_unhex,
-    spark_unscaled_value, EvalMode, SparkBitwiseCount, SparkContains, SparkDateDiff,
-    SparkDateTrunc, SparkMakeDate, SparkSizeFunc, SparkStringSpace,
+    spark_ceil, spark_char_type_write_side_check, spark_decimal_div,
+    spark_decimal_integral_div, spark_floor, spark_isnan, spark_lpad, spark_make_decimal,
+    spark_read_side_padding, spark_round, spark_rpad, spark_unhex, spark_unscaled_value,
+    spark_varchar_type_write_side_check, EvalMode, SparkBitwiseCount, SparkContains,
+    SparkDateDiff, SparkDateTrunc, SparkMakeDate, SparkSizeFunc, SparkStringSpace,
 };
 use arrow::datatypes::DataType;
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
@@ -111,6 +112,14 @@ pub fn create_comet_physical_fun_with_eval_mode(
         "read_side_padding" => {
             let func = Arc::new(spark_read_side_padding);
             make_comet_scalar_udf!("read_side_padding", func, without data_type)
+        }
+        "char_type_write_side_check" => {
+            let func = Arc::new(spark_char_type_write_side_check);
+            make_comet_scalar_udf!("char_type_write_side_check", func, without data_type)
+        }
+        "varchar_type_write_side_check" => {
+            let func = Arc::new(spark_varchar_type_write_side_check);
+            make_comet_scalar_udf!("varchar_type_write_side_check", func, without data_type)
         }
         "rpad" => {
             let func = Arc::new(spark_rpad);

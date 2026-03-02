@@ -34,7 +34,11 @@ object CometStaticInvoke extends CometExpressionSerde[StaticInvoke] {
       : Map[(String, Class[_]), CometExpressionSerde[StaticInvoke]] =
     Map(
       ("readSidePadding", classOf[CharVarcharCodegenUtils]) -> CometScalarFunction(
-        "read_side_padding"))
+        "read_side_padding"),
+      ("charTypeWriteSideCheck", classOf[CharVarcharCodegenUtils]) -> CometScalarFunction(
+        "char_type_write_side_check"),
+      ("varcharTypeWriteSideCheck", classOf[CharVarcharCodegenUtils]) -> CometScalarFunction(
+        "varchar_type_write_side_check"))
 
   override def convert(
       expr: StaticInvoke,

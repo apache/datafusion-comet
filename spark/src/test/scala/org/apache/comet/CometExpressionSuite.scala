@@ -2252,6 +2252,32 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("charTypeWriteSideCheck") {
+    val table = "test"
+    withTable(table) {
+      sql(s"create table $table(col CHAR(5)) using parquet")
+      sql(s"insert into $table values('ab')")
+      sql(s"insert into $table values('abcde')")
+      sql(s"insert into $table values('abc  ')") // trailing spaces, equals limit after trim+pad
+      sql(s"insert into $table values('')")
+      // Read back — CHAR(5) should pad to 5 characters
+      checkSparkAnswerAndOperator(s"SELECT col FROM $table")
+    }
+  }
+
+  test("varcharTypeWriteSideCheck") {
+    val table = "test"
+    withTable(table) {
+      sql(s"create table $table(col VARCHAR(5)) using parquet")
+      sql(s"insert into $table values('ab')")
+      sql(s"insert into $table values('abcde')")
+      sql(s"insert into $table values('abc  ')") // trailing spaces within limit
+      sql(s"insert into $table values('')")
+      // Read back — VARCHAR(5) should NOT pad
+      checkSparkAnswerAndOperator(s"SELECT col FROM $table")
+    }
+  }
+
   test("isnan") {
     Seq("true", "false").foreach { dictionary =>
       withSQLConf("parquet.enable.dictionary" -> dictionary) {
