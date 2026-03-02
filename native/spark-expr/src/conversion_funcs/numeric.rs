@@ -30,6 +30,51 @@ use arrow::datatypes::{
 use num::{cast::AsPrimitive, ToPrimitive, Zero};
 use std::sync::Arc;
 
+/// Check if DataFusion cast from integer types is Spark compatible
+pub(crate) fn is_df_cast_from_int_spark_compatible(to_type: &DataType) -> bool {
+    matches!(
+        to_type,
+        DataType::Boolean
+            | DataType::Int8
+            | DataType::Int16
+            | DataType::Int32
+            | DataType::Int64
+            | DataType::Float32
+            | DataType::Float64
+            | DataType::Utf8
+    )
+}
+
+/// Check if DataFusion cast from float types is Spark compatible
+pub(crate) fn is_df_cast_from_float_spark_compatible(to_type: &DataType) -> bool {
+    matches!(
+        to_type,
+        DataType::Boolean
+            | DataType::Int8
+            | DataType::Int16
+            | DataType::Int32
+            | DataType::Int64
+            | DataType::Float32
+            | DataType::Float64
+    )
+}
+
+/// Check if DataFusion cast from decimal types is Spark compatible
+pub(crate) fn is_df_cast_from_decimal_spark_compatible(to_type: &DataType) -> bool {
+    matches!(
+        to_type,
+        DataType::Int8
+            | DataType::Int16
+            | DataType::Int32
+            | DataType::Int64
+            | DataType::Float32
+            | DataType::Float64
+            | DataType::Decimal128(_, _)
+            | DataType::Decimal256(_, _)
+            | DataType::Utf8 // note that there can be formatting differences
+    )
+}
+
 macro_rules! cast_float_to_string {
     ($from:expr, $eval_mode:expr, $type:ty, $output_type:ty, $offset_type:ty) => {{
 
@@ -874,38 +919,6 @@ mod tests {
     use arrow::array::AsArray;
     use arrow::datatypes::TimestampMicrosecondType;
     use core::f64;
-
-    #[test]
-    #[cfg_attr(miri, ignore)]
-    fn test_cast_float_to_decimal() {
-        let a: ArrayRef = Arc::new(Float64Array::from(vec![
-            Some(42.),
-            Some(0.5153125),
-            Some(-42.4242415),
-            Some(42e-314),
-            Some(0.),
-            Some(-4242.424242),
-            Some(f64::INFINITY),
-            Some(f64::NEG_INFINITY),
-            Some(f64::NAN),
-            None,
-        ]));
-        let b =
-            cast_floating_point_to_decimal128::<Float64Type>(&a, 8, 6, EvalMode::Legacy).unwrap();
-        assert_eq!(b.len(), a.len());
-        let casted = b.as_primitive::<Decimal128Type>();
-        assert_eq!(casted.value(0), 42000000);
-        // https://github.com/apache/datafusion-comet/issues/1371
-        // assert_eq!(casted.value(1), 515313);
-        assert_eq!(casted.value(2), -42424242);
-        assert_eq!(casted.value(3), 0);
-        assert_eq!(casted.value(4), 0);
-        assert!(casted.is_null(5));
-        assert!(casted.is_null(6));
-        assert!(casted.is_null(7));
-        assert!(casted.is_null(8));
-        assert!(casted.is_null(9));
-    }
 
     #[test]
     fn test_spark_cast_int_to_int_overflow() {

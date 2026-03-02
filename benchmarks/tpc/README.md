@@ -38,15 +38,17 @@ All benchmarks are run via `run.py`:
 python3 run.py --engine <engine> --benchmark <tpch|tpcds> [options]
 ```
 
-| Option         | Description                                      |
-| -------------- | ------------------------------------------------ |
-| `--engine`     | Engine name (matches a TOML file in `engines/`)  |
-| `--benchmark`  | `tpch` or `tpcds`                                |
-| `--iterations` | Number of iterations (default: 1)                |
-| `--output`     | Output directory (default: `.`)                  |
-| `--query`      | Run a single query number                        |
-| `--no-restart` | Skip Spark master/worker restart                 |
-| `--dry-run`    | Print the spark-submit command without executing |
+| Option         | Description                                              |
+| -------------- | -------------------------------------------------------- |
+| `--engine`     | Engine name (matches a TOML file in `engines/`)          |
+| `--benchmark`  | `tpch` or `tpcds`                                        |
+| `--iterations` | Number of iterations (default: 1)                        |
+| `--output`     | Output directory (default: `.`)                          |
+| `--query`      | Run a single query number                                |
+| `--no-restart` | Skip Spark master/worker restart                         |
+| `--dry-run`    | Print the spark-submit command without executing         |
+| `--jfr`        | Enable Java Flight Recorder profiling                    |
+| `--jfr-dir`    | Directory for JFR output files (default: `/results/jfr`) |
 
 Available engines: `spark`, `comet`, `comet-iceberg`, `gluten`
 
@@ -363,3 +365,30 @@ python3 generate-comparison.py --benchmark tpch \
     --title "TPC-H @ 100 GB: Parquet vs Iceberg" \
     comet-tpch-*.json comet-iceberg-tpch-*.json
 ```
+
+## Java Flight Recorder Profiling
+
+Use the `--jfr` flag to capture JFR profiles from the Spark driver and executors.
+JFR is built into JDK 11+ so no additional dependencies are needed.
+
+```shell
+python3 run.py --engine comet --benchmark tpch --jfr
+```
+
+JFR recordings are written to `/results/jfr/` by default (configurable with
+`--jfr-dir`). The driver writes `driver.jfr` and each executor writes
+`executor.jfr` (JFR appends the PID when multiple executors share a path).
+
+With Docker Compose, the `/results` volume is shared across all containers,
+so JFR files from both driver and executors are collected in
+`$RESULTS_DIR/jfr/` on the host:
+
+```shell
+docker compose -f benchmarks/tpc/infra/docker/docker-compose.yml \
+    run --rm bench \
+    python3 /opt/benchmarks/run.py \
+    --engine comet --benchmark tpch --output /results --no-restart --jfr
+```
+
+Open the `.jfr` files with [JDK Mission Control](https://jdk.java.net/jmc/),
+IntelliJ IDEA's profiler, or `jfr` CLI tool (`jfr summary driver.jfr`).

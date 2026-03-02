@@ -56,6 +56,7 @@ x-worker: &worker
     - SPARK_NO_DAEMONIZE=true
   mem_limit: ${WORKER_MEM_LIMIT:-32g}
   memswap_limit: ${WORKER_MEM_LIMIT:-32g}
+  stop_grace_period: 30s
 
 services:
   spark-master:
