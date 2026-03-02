@@ -496,10 +496,10 @@ V2 API for Parquet scans. The DataFusion-based implementations only support the 
 </ul>
 <p>The following shared limitation may produce incorrect results without falling back to Spark:</p>
 <ul class="simple">
-<li><p>No support for datetime rebasing detection or the <code class="docutils literal notranslate"><span class="pre">spark.comet.exceptionOnDatetimeRebase</span></code> configuration. When
-reading Parquet files containing dates or timestamps written before Spark 3.0 (which used a hybrid
-Julian/Gregorian calendar), dates/timestamps will be read as if they were written using the Proleptic Gregorian
-calendar. This may produce incorrect results for dates before October 15, 1582.</p></li>
+<li><p>No support for datetime rebasing. When reading Parquet files containing dates or timestamps written before
+Spark 3.0 (which used a hybrid Julian/Gregorian calendar), dates/timestamps will be read as if they were
+written using the Proleptic Gregorian calendar. This may produce incorrect results for dates before
+October 15, 1582.</p></li>
 </ul>
 <p>The <code class="docutils literal notranslate"><span class="pre">native_datafusion</span></code> scan has some additional limitations, mostly related to Parquet metadata. All of these
 cause Comet to fall back to Spark.</p>
