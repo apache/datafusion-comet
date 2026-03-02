@@ -22,6 +22,8 @@ package org.apache.comet.rules
 import scala.util.Random
 
 import org.apache.spark.sql._
+import org.apache.spark.sql.catalyst.expressions.AttributeReference
+import org.apache.spark.sql.catalyst.expressions.aggregate.{Average, BitAndAgg, BitOrAgg, BitXorAgg, Count, Max, Min, Sum}
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution._
@@ -29,8 +31,10 @@ import org.apache.spark.sql.execution.adaptive.QueryStageExec
 import org.apache.spark.sql.execution.aggregate.HashAggregateExec
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
+import org.apache.spark.sql.types.IntegerType
 
 import org.apache.comet.CometConf
+import org.apache.comet.serde.QueryPlanSerde
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 /**
@@ -157,7 +161,9 @@ class CometExecRuleSuite extends CometTestBase {
     }
   }
 
-  test("CometExecRule should not allow Spark partial and Comet final hash aggregate") {
+  test("CometExecRule should not allow Spark partial and Comet final for unsafe aggregates") {
+    // https://github.com/apache/datafusion-comet/issues/2894
+    // SUM is not safe for mixed execution due to potential overflow handling differences
     withTempView("test_data") {
       createTestDataFrame.createOrReplaceTempView("test_data")
 
@@ -173,12 +179,99 @@ class CometExecRuleSuite extends CometTestBase {
         CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
         val transformedPlan = applyCometExecRule(sparkPlan)
 
-        // if the partial aggregate cannot be converted to Comet, then neither should be
+        // SUM is not safe for mixed execution, so both partial and final should fall back
         assert(
           countOperators(transformedPlan, classOf[HashAggregateExec]) == originalHashAggCount)
         assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 0)
       }
     }
+  }
+
+  test("CometExecRule should allow Spark partial and Comet final for safe aggregates") {
+    // https://github.com/apache/datafusion-comet/issues/2894
+    // MIN, MAX, COUNT are safe for mixed execution (simple intermediate buffer)
+    withTempView("test_data") {
+      createTestDataFrame.createOrReplaceTempView("test_data")
+
+      val sparkPlan =
+        createSparkPlan(
+          spark,
+          "SELECT MIN(id), MAX(id), COUNT(*) FROM test_data GROUP BY (id % 3)")
+
+      // Count original Spark operators (should be 2: partial + final)
+      val originalHashAggCount = countOperators(sparkPlan, classOf[HashAggregateExec])
+      assert(originalHashAggCount == 2)
+
+      withSQLConf(
+        CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE.key -> "false",
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        val transformedPlan = applyCometExecRule(sparkPlan)
+
+        // MIN, MAX, COUNT support mixed execution, so final should run in Comet
+        // Partial stays in Spark (1 HashAggregateExec), final runs in Comet (1 CometHashAggregateExec)
+        assert(countOperators(transformedPlan, classOf[HashAggregateExec]) == 1)
+        assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 1)
+      }
+    }
+  }
+
+  test("QueryPlanSerde.aggSupportsMixedExecution should return true for safe aggregates") {
+    // Test aggregates that support Spark partial / Comet final execution
+    val testAttr = AttributeReference("id", IntegerType, nullable = true)()
+    assert(
+      QueryPlanSerde.aggSupportsMixedExecution(Min(testAttr)),
+      "Min should support mixed execution")
+    assert(
+      QueryPlanSerde.aggSupportsMixedExecution(Max(testAttr)),
+      "Max should support mixed execution")
+    assert(
+      QueryPlanSerde.aggSupportsMixedExecution(Count(testAttr)),
+      "Count should support mixed execution")
+    assert(
+      QueryPlanSerde.aggSupportsMixedExecution(BitAndAgg(testAttr)),
+      "BitAndAgg should support mixed execution")
+    assert(
+      QueryPlanSerde.aggSupportsMixedExecution(BitOrAgg(testAttr)),
+      "BitOrAgg should support mixed execution")
+    assert(
+      QueryPlanSerde.aggSupportsMixedExecution(BitXorAgg(testAttr)),
+      "BitXorAgg should support mixed execution")
+  }
+
+  test("QueryPlanSerde.aggSupportsMixedExecution should return true for bitwise aggregates") {
+    // Test bitwise aggregates that support Spark partial / Comet final execution
+    val testAttr = AttributeReference("id", IntegerType, nullable = true)()
+    assert(
+      QueryPlanSerde.aggSupportsMixedExecution(BitAndAgg(testAttr)),
+      "BitAndAgg should support mixed execution")
+    assert(
+      QueryPlanSerde.aggSupportsMixedExecution(BitOrAgg(testAttr)),
+      "BitOrAgg should support mixed execution")
+    assert(
+      QueryPlanSerde.aggSupportsMixedExecution(BitXorAgg(testAttr)),
+      "BitXorAgg should support mixed execution")
+  }
+
+  test("QueryPlanSerde.aggSupportsMixedExecution should return false for unsafe aggregates") {
+    // Test aggregates that don't support Spark partial / Comet final execution
+    val testAttr = AttributeReference("id", IntegerType, nullable = true)()
+    assert(
+      !QueryPlanSerde.aggSupportsMixedExecution(Sum(testAttr)),
+      "Sum should not support mixed execution")
+    assert(
+      !QueryPlanSerde.aggSupportsMixedExecution(Average(testAttr)),
+      "Average should not support mixed execution")
+  }
+
+  test(
+    "QueryPlanSerde.aggSupportsMixedExecution should return false for aggregates with default implementation") {
+    // Test with an aggregate function that's in the map but doesn't override supportsSparkPartialCometFinal
+    val testAttr = AttributeReference("id", IntegerType, nullable = true)()
+    val firstAgg = new org.apache.spark.sql.catalyst.expressions.aggregate.First(testAttr, true)
+    // First is in the map but doesn't override supportsSparkPartialCometFinal, so should return false
+    assert(
+      !QueryPlanSerde.aggSupportsMixedExecution(firstAgg),
+      "First should not support mixed execution (default false)")
   }
 
   test("CometExecRule should apply broadcast exchange transformations") {
