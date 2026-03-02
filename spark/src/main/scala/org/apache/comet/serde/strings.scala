@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import java.util.Locale
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Concat, ConcatWs, Expression, If, InitCap, IsNull, Left, Length, Like, Literal, Lower, RegExpReplace, Right, RLike, StringLPad, StringRepeat, StringRPad, StringSplit, Substring, Upper}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Concat, ConcatWs, Expression, If, ILike, InitCap, IsNull, Left, Length, Like, Literal, Lower, RegExpReplace, Right, RLike, StringLPad, StringRepeat, StringRPad, StringSplit, Substring, Upper}
 import org.apache.spark.sql.types.{BinaryType, DataTypes, LongType, StringType}
 import org.apache.spark.unsafe.types.UTF8String
 
@@ -235,6 +235,19 @@ object CometLike extends CometExpressionSerde[Like] {
       withInfo(expr, s"custom escape character ${expr.escapeChar} not supported in LIKE")
       None
     }
+  }
+}
+
+object CometILike extends CometExpressionSerde[ILike] {
+
+  override def convert(expr: ILike, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
+    if (expr.escapeChar != '\\') {
+      withInfo(expr, s"custom escape character ${expr.escapeChar} not supported in ILIKE")
+      return None
+    }
+    val childExpr = expr.children.map(exprToProtoInternal(_, inputs, binding))
+    val optExpr = scalarFunctionExprToProto("ilike", childExpr: _*)
+    optExprWithInfo(optExpr, expr, expr.children: _*)
   }
 }
 
