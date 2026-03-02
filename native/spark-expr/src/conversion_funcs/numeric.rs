@@ -16,11 +16,12 @@
 // under the License.
 
 use crate::conversion_funcs::utils::cast_overflow;
+use crate::conversion_funcs::utils::MICROS_PER_SECOND;
 use crate::{EvalMode, SparkError, SparkResult};
 use arrow::array::{
-    Array, ArrayRef, BooleanBuilder, Decimal128Array, Decimal128Builder, Float32Array,
+    Array, ArrayRef, AsArray, BooleanBuilder, Decimal128Array, Decimal128Builder, Float32Array,
     Float64Array, GenericStringArray, Int16Array, Int32Array, Int64Array, Int8Array,
-    OffsetSizeTrait, PrimitiveArray,
+    OffsetSizeTrait, PrimitiveArray, TimestampMicrosecondBuilder,
 };
 use arrow::datatypes::{
     is_validate_decimal_precision, ArrowPrimitiveType, DataType, Decimal128Type, Float32Type,
@@ -94,6 +95,47 @@ macro_rules! cast_float_to_string {
             }
 
         cast::<$offset_type>($from, $eval_mode)
+    }};
+}
+
+// eval mode is not needed since all ints can be implemented in binary format
+#[macro_export]
+macro_rules! cast_whole_num_to_binary {
+    ($array:expr, $primitive_type:ty, $byte_size:expr) => {{
+        let input_arr = $array
+            .as_any()
+            .downcast_ref::<$primitive_type>()
+            .ok_or_else(|| SparkError::Internal("Expected numeric array".to_string()))?;
+
+        let len = input_arr.len();
+        let mut builder = BinaryBuilder::with_capacity(len, len * $byte_size);
+
+        for i in 0..input_arr.len() {
+            if input_arr.is_null(i) {
+                builder.append_null();
+            } else {
+                builder.append_value(input_arr.value(i).to_be_bytes());
+            }
+        }
+
+        Ok(Arc::new(builder.finish()) as ArrayRef)
+    }};
+}
+
+macro_rules! cast_int_to_timestamp_impl {
+    ($array:expr, $builder:expr, $primitive_type:ty) => {{
+        let arr = $array.as_primitive::<$primitive_type>();
+        for i in 0..arr.len() {
+            if arr.is_null(i) {
+                $builder.append_null();
+            } else {
+                // saturating_mul limits to i64::MIN/MAX on overflow instead of panicking,
+                // which could occur when converting extreme values (e.g., Long.MIN_VALUE)
+                // matching spark behavior (irrespective of EvalMode)
+                let micros = (arr.value(i) as i64).saturating_mul(MICROS_PER_SECOND);
+                $builder.append_value(micros);
+            }
+        }
     }};
 }
 
@@ -803,10 +845,34 @@ pub(crate) fn spark_cast_nonintegral_numeric_to_integral(
     }
 }
 
+pub(crate) fn cast_int_to_timestamp(
+    array_ref: &ArrayRef,
+    target_tz: &Option<Arc<str>>,
+) -> SparkResult<ArrayRef> {
+    // Input is seconds since epoch, multiply by MICROS_PER_SECOND to get microseconds.
+    let mut builder = TimestampMicrosecondBuilder::with_capacity(array_ref.len());
+
+    match array_ref.data_type() {
+        DataType::Int8 => cast_int_to_timestamp_impl!(array_ref, builder, Int8Type),
+        DataType::Int16 => cast_int_to_timestamp_impl!(array_ref, builder, Int16Type),
+        DataType::Int32 => cast_int_to_timestamp_impl!(array_ref, builder, Int32Type),
+        DataType::Int64 => cast_int_to_timestamp_impl!(array_ref, builder, Int64Type),
+        dt => {
+            return Err(SparkError::Internal(format!(
+                "Unsupported type for cast_int_to_timestamp: {:?}",
+                dt
+            )))
+        }
+    }
+
+    Ok(Arc::new(builder.finish().with_timezone_opt(target_tz.clone())) as ArrayRef)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use arrow::array::AsArray;
+    use arrow::datatypes::TimestampMicrosecondType;
     use core::f64;
 
     #[test]
@@ -894,5 +960,131 @@ mod tests {
         assert_eq!(decimal_array.value(0), 10000); // 100 * 10^2
         assert_eq!(decimal_array.value(1), -10000); // -100 * 10^2
         assert!(decimal_array.is_null(2));
+    }
+    #[test]
+    fn test_cast_int_to_timestamp() {
+        let timezones: [Option<Arc<str>>; 6] = [
+            Some(Arc::from("UTC")),
+            Some(Arc::from("America/New_York")),
+            Some(Arc::from("America/Los_Angeles")),
+            Some(Arc::from("Europe/London")),
+            Some(Arc::from("Asia/Tokyo")),
+            Some(Arc::from("Australia/Sydney")),
+        ];
+
+        for tz in &timezones {
+            let int8_array: ArrayRef = Arc::new(Int8Array::from(vec![
+                Some(0),
+                Some(1),
+                Some(-1),
+                Some(127),
+                Some(-128),
+                None,
+            ]));
+
+            let result = cast_int_to_timestamp(&int8_array, tz).unwrap();
+            let ts_array = result.as_primitive::<TimestampMicrosecondType>();
+
+            assert_eq!(ts_array.value(0), 0);
+            assert_eq!(ts_array.value(1), 1_000_000);
+            assert_eq!(ts_array.value(2), -1_000_000);
+            assert_eq!(ts_array.value(3), 127_000_000);
+            assert_eq!(ts_array.value(4), -128_000_000);
+            assert!(ts_array.is_null(5));
+            assert_eq!(ts_array.timezone(), tz.as_ref().map(|s| s.as_ref()));
+
+            let int16_array: ArrayRef = Arc::new(Int16Array::from(vec![
+                Some(0),
+                Some(1),
+                Some(-1),
+                Some(32767),
+                Some(-32768),
+                None,
+            ]));
+
+            let result = cast_int_to_timestamp(&int16_array, tz).unwrap();
+            let ts_array = result.as_primitive::<TimestampMicrosecondType>();
+
+            assert_eq!(ts_array.value(0), 0);
+            assert_eq!(ts_array.value(1), 1_000_000);
+            assert_eq!(ts_array.value(2), -1_000_000);
+            assert_eq!(ts_array.value(3), 32_767_000_000_i64);
+            assert_eq!(ts_array.value(4), -32_768_000_000_i64);
+            assert!(ts_array.is_null(5));
+            assert_eq!(ts_array.timezone(), tz.as_ref().map(|s| s.as_ref()));
+
+            let int32_array: ArrayRef = Arc::new(Int32Array::from(vec![
+                Some(0),
+                Some(1),
+                Some(-1),
+                Some(1704067200),
+                None,
+            ]));
+
+            let result = cast_int_to_timestamp(&int32_array, tz).unwrap();
+            let ts_array = result.as_primitive::<TimestampMicrosecondType>();
+
+            assert_eq!(ts_array.value(0), 0);
+            assert_eq!(ts_array.value(1), 1_000_000);
+            assert_eq!(ts_array.value(2), -1_000_000);
+            assert_eq!(ts_array.value(3), 1_704_067_200_000_000_i64);
+            assert!(ts_array.is_null(4));
+            assert_eq!(ts_array.timezone(), tz.as_ref().map(|s| s.as_ref()));
+
+            let int64_array: ArrayRef = Arc::new(Int64Array::from(vec![
+                Some(0),
+                Some(1),
+                Some(-1),
+                Some(i64::MAX),
+                Some(i64::MIN),
+            ]));
+
+            let result = cast_int_to_timestamp(&int64_array, tz).unwrap();
+            let ts_array = result.as_primitive::<TimestampMicrosecondType>();
+
+            assert_eq!(ts_array.value(0), 0);
+            assert_eq!(ts_array.value(1), 1_000_000_i64);
+            assert_eq!(ts_array.value(2), -1_000_000_i64);
+            assert_eq!(ts_array.value(3), i64::MAX);
+            assert_eq!(ts_array.value(4), i64::MIN);
+            assert_eq!(ts_array.timezone(), tz.as_ref().map(|s| s.as_ref()));
+        }
+    }
+    #[test]
+    // Currently the cast function depending on `f64::powi`, which has unspecified precision according to the doc
+    // https://doc.rust-lang.org/std/primitive.f64.html#unspecified-precision.
+    // Miri deliberately apply random floating-point errors to these operations to expose bugs
+    // https://github.com/rust-lang/miri/issues/4395.
+    // The random errors may interfere with test cases at rounding edge, so we ignore it on miri for now.
+    // Once https://github.com/apache/datafusion-comet/issues/1371 is fixed, this should no longer be an issue.
+    #[cfg_attr(miri, ignore)]
+    fn test_cast_float_to_decimal() {
+        let a: ArrayRef = Arc::new(Float64Array::from(vec![
+            Some(42.),
+            Some(0.5153125),
+            Some(-42.4242415),
+            Some(42e-314),
+            Some(0.),
+            Some(-4242.424242),
+            Some(f64::INFINITY),
+            Some(f64::NEG_INFINITY),
+            Some(f64::NAN),
+            None,
+        ]));
+        let b =
+            cast_floating_point_to_decimal128::<Float64Type>(&a, 8, 6, EvalMode::Legacy).unwrap();
+        assert_eq!(b.len(), a.len());
+        let casted = b.as_primitive::<Decimal128Type>();
+        assert_eq!(casted.value(0), 42000000);
+        // https://github.com/apache/datafusion-comet/issues/1371
+        // assert_eq!(casted.value(1), 515313);
+        assert_eq!(casted.value(2), -42424242);
+        assert_eq!(casted.value(3), 0);
+        assert_eq!(casted.value(4), 0);
+        assert!(casted.is_null(5));
+        assert!(casted.is_null(6));
+        assert!(casted.is_null(7));
+        assert!(casted.is_null(8));
+        assert!(casted.is_null(9));
     }
 }
