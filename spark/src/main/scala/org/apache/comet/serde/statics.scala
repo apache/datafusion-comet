@@ -19,11 +19,13 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.Attribute
+import org.apache.spark.sql.catalyst.expressions.{Attribute, UrlCodec}
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
 import org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.serde.ExprOuterClass.Expr
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProtoWithReturnType}
 
 object CometStaticInvoke extends CometExpressionSerde[StaticInvoke] {
 
@@ -34,7 +36,8 @@ object CometStaticInvoke extends CometExpressionSerde[StaticInvoke] {
       : Map[(String, Class[_]), CometExpressionSerde[StaticInvoke]] =
     Map(
       ("readSidePadding", classOf[CharVarcharCodegenUtils]) -> CometScalarFunction(
-        "read_side_padding"))
+        "read_side_padding"),
+      ("decode", UrlCodec.getClass) -> CometUrlDecode)
 
   override def convert(
       expr: StaticInvoke,
@@ -50,5 +53,23 @@ object CometStaticInvoke extends CometExpressionSerde[StaticInvoke] {
           expr.children: _*)
         None
     }
+  }
+}
+
+/**
+ * Handler for UrlCodec.decode StaticInvoke (Spark 3.4+). Maps to datafusion-spark's built-in
+ * url_decode function.
+ */
+private object CometUrlDecode extends CometExpressionSerde[StaticInvoke] {
+
+  override def convert(
+      expr: StaticInvoke,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    // StaticInvoke args: [child, Literal("UTF-8")] — only serialize the first
+    val childExpr = exprToProtoInternal(expr.arguments.head, inputs, binding)
+    val optExpr =
+      scalarFunctionExprToProtoWithReturnType("url_decode", expr.dataType, false, childExpr)
+    optExprWithInfo(optExpr, expr, expr.arguments.head)
   }
 }

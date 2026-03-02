@@ -478,4 +478,35 @@ class CometStringExpressionSuite extends CometTestBase {
     }
   }
 
+  test("url_decode") {
+    val data = Seq(
+      "https%3A%2F%2Fspark.apache.org", // percent-encoded URL
+      "hello+world", // plus as space
+      "%E4%B8%AD%E6%96%87", // multi-byte UTF-8 (Chinese)
+      "no+encoding+needed", // spaces only
+      "%e4%b8%ad", // lowercase hex digits
+      "abc%20def%21%40%23", // mixed encoded/unencoded
+      "%F0%9F%94%A5", // 4-byte UTF-8 (emoji)
+      "already+decoded+%2B+literal+plus", // encoded plus sign (%2B)
+      "").map(Tuple1(_))
+    withParquetTable(data, "tbl") {
+      checkSparkAnswerAndOperator("SELECT url_decode(_1) FROM tbl")
+    }
+  }
+
+  test("url_decode - null handling") {
+    withParquetTable(
+      Seq(Some("hello+world"), None, Some("%E4%B8%AD")).map(v => Tuple1(v.orNull)),
+      "tbl") {
+      checkSparkAnswerAndOperator("SELECT url_decode(_1) FROM tbl")
+    }
+  }
+
+  test("url_decode - literals") {
+    withParquetTable(Seq(Tuple1(1)), "tbl") {
+      checkSparkAnswerAndOperator("SELECT url_decode('hello%20world') FROM tbl")
+      checkSparkAnswerAndOperator("SELECT url_decode('%E4%B8%AD%E6%96%87') FROM tbl")
+    }
+  }
+
 }
