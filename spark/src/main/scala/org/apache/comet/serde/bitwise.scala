@@ -19,10 +19,9 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions._
-import org.apache.spark.sql.types.{ByteType, IntegerType, LongType}
-
 import org.apache.comet.serde.QueryPlanSerde._
+import org.apache.spark.sql.catalyst.expressions._
+import org.apache.spark.sql.types.{ByteType, LongType}
 
 object CometBitwiseAnd extends CometExpressionSerde[BitwiseAnd] {
   override def convert(
