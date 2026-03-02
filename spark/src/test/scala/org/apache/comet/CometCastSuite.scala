@@ -437,10 +437,14 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast LongType to TimestampType") {
+    // Cast back to long avoids java.sql.Timestamp overflow during collect() for extreme values
     compatibleTimezones.foreach { tz =>
       withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
-        // Use useDFDiff to avoid collect() which fails on extreme timestamp values
-        castTest(generateLongs(), DataTypes.TimestampType, useDataFrameDiff = true)
+        withTable("t1") {
+          generateLongs().write.saveAsTable("t1")
+          val df = spark.sql("select a, cast(cast(a as timestamp) as long) from t1")
+          checkSparkAnswerAndOperator(df)
+        }
       }
     }
   }

@@ -528,6 +528,7 @@ macro_rules! cast_float_to_timestamp_impl {
                 $builder.append_null();
             } else {
                 let val = arr.value(i) as f64;
+                // Path 1: NaN/Infinity check - error says TIMESTAMP
                 if val.is_nan() || val.is_infinite() {
                     if $eval_mode == EvalMode::Ansi {
                         return Err(SparkError::CastInvalidValue {
@@ -538,8 +539,33 @@ macro_rules! cast_float_to_timestamp_impl {
                     }
                     $builder.append_null();
                 } else {
-                    let micros = (val * MICROS_PER_SECOND as f64) as i64;
-                    $builder.append_value(micros);
+                    // Path 2: Multiply then check overflow - error says BIGINT
+                    let micros = val * MICROS_PER_SECOND as f64;
+                    if micros.floor() <= i64::MAX as f64 && micros.ceil() >= i64::MIN as f64 {
+                        $builder.append_value(micros as i64);
+                    } else {
+                        if $eval_mode == EvalMode::Ansi {
+                            // Format to match Spark's format
+                            let value_str = if micros.is_infinite() {
+                                if micros.is_sign_positive() {
+                                    "Infinity".to_string()
+                                } else {
+                                    "-Infinity".to_string()
+                                }
+                            } else if micros.is_nan() {
+                                "NaN".to_string()
+                            } else {
+                                // Scientific notation with uppercase E and D suffix
+                                format!("{:e}", micros).to_uppercase() + "D"
+                            };
+                            return Err(SparkError::CastOverFlow {
+                                value: value_str,
+                                from_type: "DOUBLE".to_string(),
+                                to_type: "BIGINT".to_string(),
+                            });
+                        }
+                        $builder.append_null();
+                    }
                 }
             }
         }

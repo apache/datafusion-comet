@@ -1284,23 +1284,26 @@ abstract class CometTestBase
       df: => DataFrame,
       assertCometNative: Boolean = true): (Option[Throwable], Option[Throwable]) = {
 
-    var dfSpark: DataFrame = null
+    var expected: Try[Unit] = null
     withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-      dfSpark = datasetOfRows(spark, df.logicalPlan)
+      expected = Try(datasetOfRows(spark, df.logicalPlan).foreach(_ => ()))
     }
-    val dfComet = datasetOfRows(spark, df.logicalPlan)
-
-    // Compare schemas
-    assert(
-      dfSpark.schema == dfComet.schema,
-      s"Schema mismatch:\nSpark: ${dfSpark.schema}\nComet: ${dfComet.schema}")
-
-    val expected = Try(dfSpark.foreach(_ => ()))
-    val actual = Try(dfComet.foreach(_ => ()))
+    val actual = Try(datasetOfRows(spark, df.logicalPlan).foreach(_ => ()))
 
     (expected, actual) match {
       case (Success(_), Success(_)) =>
         // compare results and confirm that they match
+        var dfSpark: DataFrame = null
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          dfSpark = datasetOfRows(spark, df.logicalPlan)
+        }
+        val dfComet = datasetOfRows(spark, df.logicalPlan)
+
+        // Compare schemas
+        assert(
+          dfSpark.schema == dfComet.schema,
+          s"Schema mismatch:\nSpark: ${dfSpark.schema}\nComet: ${dfComet.schema}")
+
         val sparkMinusComet = dfSpark.exceptAll(dfComet)
         val cometMinusSpark = dfComet.exceptAll(dfSpark)
         val diffCount1 = sparkMinusComet.count()
