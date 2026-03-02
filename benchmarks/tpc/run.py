@@ -289,7 +289,8 @@ def build_spark_submit_cmd(config, benchmark, args):
                 file=sys.stderr,
             )
             sys.exit(1)
-        ap_lib = os.path.join(ap_home, "lib", "libasyncProfiler.so")
+        lib_ext = "dylib" if sys.platform == "darwin" else "so"
+        ap_lib = os.path.join(ap_home, "lib", f"libasyncProfiler.{lib_ext}")
         ap_dir = args.async_profiler_dir
         ap_event = args.async_profiler_event
         ap_fmt = args.async_profiler_format
