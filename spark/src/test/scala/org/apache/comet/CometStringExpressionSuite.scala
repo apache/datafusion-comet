@@ -136,12 +136,20 @@ class CometStringExpressionSuite extends CometTestBase {
             // all arguments are literal, so Spark constant folding will kick in
             // and pad function will not be evaluated by Comet
             checkSparkAnswerAndOperator(sql)
-          } else {
-            // Comet will fall back to Spark because the plan contains a staticinvoke instruction
-            // which is not supported
+          } else if (isLiteralStr) {
             checkSparkAnswerAndFallbackReason(
               sql,
-              s"Static invoke expression: $expr is not supported")
+              "Scalar values are not supported for the str argument")
+          } else if (!isLiteralLen) {
+            checkSparkAnswerAndFallbackReason(
+              sql,
+              "Only scalar values are supported for the len argument")
+          } else if (!isLiteralPad) {
+            checkSparkAnswerAndFallbackReason(
+              sql,
+              "Only scalar values are supported for the pad argument")
+          } else {
+            checkSparkAnswerAndOperator(sql)
           }
         }
       }
