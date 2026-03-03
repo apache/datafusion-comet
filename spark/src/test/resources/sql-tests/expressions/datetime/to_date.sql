@@ -27,7 +27,7 @@ INSERT INTO test_to_date VALUES ('2026-01-30'), ('2026-03-10'), (NULL)
 query
 SELECT col, to_date(col) FROM test_to_date
 
-                                  statement
+statement
 CREATE TABLE test_to_date_fmt(col STRING) USING parquet
 
 statement

@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::datetime_funcs::to_timestamp;
+use crate::datetime_funcs::{to_date, to_timestamp};
 use crate::hash_funcs::*;
 use crate::math_funcs::abs::abs;
 use crate::math_funcs::checked_arithmetic::{checked_add, checked_div, checked_mul, checked_sub};
@@ -176,6 +176,9 @@ pub fn create_comet_physical_fun_with_eval_mode(
         }
         "to_timestamp" => {
             make_comet_scalar_udf!("to_timestamp", to_timestamp, without data_type, fail_on_error)
+        }
+        "to_date" => {
+            make_comet_scalar_udf!("to_date", to_date, without data_type, fail_on_error)
         }
         "abs" => {
             let func = Arc::new(abs);

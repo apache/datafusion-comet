@@ -223,6 +223,36 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
     }
   }
 
+  test("to_date with DateType input passes through unchanged") {
+    withTempView("date_tbl") {
+      val schema = StructType(Seq(StructField("dt", DataTypes.DateType, nullable = true)))
+      val data = Seq(Row(java.sql.Date.valueOf("2026-01-30")), Row(null))
+
+      spark
+        .createDataFrame(spark.sparkContext.parallelize(data), schema)
+        .createOrReplaceTempView("date_tbl")
+
+      checkSparkAnswerAndOperator("SELECT dt, to_date(dt) FROM date_tbl")
+    }
+  }
+
+  test("to_date with TimestampType input truncates to date") {
+    withTempView("ts_tbl") {
+      val schema =
+        StructType(Seq(StructField("ts", DataTypes.TimestampType, nullable = true)))
+      val data = Seq(
+        Row(java.sql.Timestamp.valueOf("2026-01-30 04:17:52")),
+        Row(java.sql.Timestamp.valueOf("2026-03-10 23:59:59")),
+        Row(null))
+
+      spark
+        .createDataFrame(spark.sparkContext.parallelize(data), schema)
+        .createOrReplaceTempView("ts_tbl")
+
+      checkSparkAnswerAndOperator("SELECT ts, to_date(ts) FROM ts_tbl")
+    }
+  }
+
   test("unix_timestamp - timestamp input") {
     createTimestampTestData.createOrReplaceTempView("tbl")
     for (timezone <- Seq("UTC", "America/Los_Angeles")) {

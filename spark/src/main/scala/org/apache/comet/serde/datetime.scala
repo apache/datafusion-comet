@@ -22,7 +22,7 @@ package org.apache.comet.serde
 import java.util.Locale
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, DateAdd, DateDiff, DateFormatClass, DateSub, DayOfMonth, DayOfWeek, DayOfYear, GetDateField, GetTimestamp, Hour, LastDay, Literal, MakeDate, Minute, Month, NextDay, ParseToDate, Quarter, Second, TruncDate, TruncTimestamp, UnixDate, UnixTimestamp, WeekDay, WeekOfYear, Year}
-import org.apache.spark.sql.types.{DateType, IntegerType, StringType, TimestampType}
+import org.apache.spark.sql.types.{DateType, IntegerType, StringType, TimestampNTZType, TimestampType}
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
@@ -176,6 +176,19 @@ object CometQuarter extends CometExpressionSerde[Quarter] with CometExprGetDateF
   }
 }
 object CometGetTimestamp extends CometExpressionSerde[GetTimestamp] {
+
+  override def getSupportLevel(expr: GetTimestamp): SupportLevel = {
+    expr.left.dataType match {
+      case StringType | DateType | TimestampType => Compatible()
+      case _: TimestampNTZType =>
+        Unsupported(
+          Some(
+            "to_timestamp/to_date does not support TimestampNTZ input: " +
+              "timezone conversion would be incorrectly applied"))
+      case other =>
+        Unsupported(Some(s"to_timestamp/to_date does not support input type: $other"))
+    }
+  }
 
   /**
    * Convert a Spark expression into a protocol buffer representation that can be passed into
