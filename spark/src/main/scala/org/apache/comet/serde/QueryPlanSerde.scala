@@ -168,7 +168,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[StringReplace] -> CometScalarFunction("replace"),
     classOf[StringRPad] -> CometStringRPad,
     classOf[StringLPad] -> CometStringLPad,
-    classOf[StringSpace] -> CometScalarFunction("string_space"),
+    classOf[StringSpace] -> CometScalarFunction("space"),
     classOf[StringSplit] -> CometStringSplit,
     classOf[StringTranslate] -> CometScalarFunction("translate"),
     classOf[StringTrim] -> CometScalarFunction("trim"),
