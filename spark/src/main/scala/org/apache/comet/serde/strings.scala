@@ -425,7 +425,7 @@ trait CommonStringExprs {
           val timeZoneIdMethod = exprClass.getMethod("timeZoneId")
           timeZoneIdMethod.invoke(expr).asInstanceOf[Option[String]]
         } catch {
-          case _: NoSuchMethodException =>
+          case _: NoSuchMethodException | _: SecurityException =>
             try {
               val timeZoneIdField = exprClass.getField("timeZoneId")
               timeZoneIdField.get(expr).asInstanceOf[Option[String]]
