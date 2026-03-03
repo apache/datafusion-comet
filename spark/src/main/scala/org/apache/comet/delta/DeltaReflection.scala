@@ -73,7 +73,7 @@ object DeltaReflection extends Logging {
     } catch {
       case e: Exception =>
         logError(
-          "Delta reflection failure: Failed to get minReaderVersion from protocol: " +
+          "Delta reflection failure: Failed to get readerFeatures from protocol: " +
             s"${e.getMessage}")
         None
     }
