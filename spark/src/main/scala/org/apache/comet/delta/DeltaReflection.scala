@@ -46,9 +46,7 @@ object DeltaReflection extends Logging {
   }
 
   /**
-   * Gets the tasks from a SparkScan.
-   *
-   * The tasks() method is protected in SparkScan, requiring reflection to access.
+   * Gets the minimum reader version from a Delta Protocol object
    */
   def getMinReaderVersion(protocol: Any): Option[Int] = {
     try {
@@ -64,6 +62,9 @@ object DeltaReflection extends Logging {
     }
   }
 
+  /**
+   * Gets the list of reader features from a Delta Protocol object
+   */
   def getReaderFeatures(protocol: Any): Option[Set[String]] = {
     try {
       val field = protocol.getClass.getDeclaredField("readerFeatures")
