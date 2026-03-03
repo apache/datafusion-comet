@@ -133,3 +133,7 @@ harness = false
 [[bench]]
 name = "parquet_decode"
 harness = false
+
+[[bench]]
+name = "array_element_append"
+harness = false
