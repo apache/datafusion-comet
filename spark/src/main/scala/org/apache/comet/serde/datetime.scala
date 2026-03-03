@@ -554,29 +554,13 @@ trait CommonDateTimeExprs {
     }
 
     childOpt.flatMap { child =>
-      val timeZoneId = {
-        val exprClass = expr.getClass
-        try {
-          val timeZoneIdMethod = exprClass.getMethod("timeZoneId")
-          timeZoneIdMethod.invoke(expr).asInstanceOf[Option[String]]
-        } catch {
-          case _: NoSuchMethodException | _: SecurityException =>
-            try {
-              val timeZoneIdField = exprClass.getField("timeZoneId")
-              timeZoneIdField.get(expr).asInstanceOf[Option[String]]
-            } catch {
-              case _: NoSuchFieldException | _: SecurityException => None
-            }
-        }
-      }
-
       exprToProtoInternal(child, inputs, binding)
         .map { childExpr =>
           val builder = ExprOuterClass.Second.newBuilder()
           builder.setChild(childExpr)
 
-          val timeZone = timeZoneId.getOrElse("UTC")
-          builder.setTimezone(timeZone)
+          // SecondsOfTime does not carry a timeZoneId; assume UTC.
+          builder.setTimezone("UTC")
 
           ExprOuterClass.Expr
             .newBuilder()
