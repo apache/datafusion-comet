@@ -27,6 +27,7 @@ pub mod parquet_support;
 pub mod read;
 pub mod schema_adapter;
 
+mod cast_column;
 mod objectstore;
 
 use std::collections::HashMap;
@@ -765,7 +766,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
             required_schema,
             Some(data_schema),
             None,
-            None,
             object_store_url,
             file_groups,
             None,
@@ -778,16 +778,17 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
         )?;
 
         let partition_index: usize = 0;
-        let batch_stream = Some(scan.execute(partition_index, session_ctx.task_ctx())?);
+        let batch_stream = scan.execute(partition_index, session_ctx.task_ctx())?;
 
         let ctx = BatchContext {
             native_plan: Arc::new(SparkPlan::new(0, scan, vec![])),
             metrics_node: Arc::new(jni_new_global_ref!(env, metrics_node)?),
-            batch_stream,
+            batch_stream: Some(batch_stream),
             current_batch: None,
             reader_state: ParquetReaderState::Init,
         };
         let res = Box::new(ctx);
+
         Ok(Box::into_raw(res) as i64)
     })
 }

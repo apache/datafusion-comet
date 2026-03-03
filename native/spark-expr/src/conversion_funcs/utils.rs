@@ -117,12 +117,3 @@ pub fn cast_overflow(value: &str, from_type: &str, to_type: &str) -> SparkError 
         to_type: to_type.to_string(),
     }
 }
-
-#[inline]
-pub fn invalid_value(value: &str, from_type: &str, to_type: &str) -> SparkError {
-    SparkError::CastInvalidValue {
-        value: value.to_string(),
-        from_type: from_type.to_string(),
-        to_type: to_type.to_string(),
-    }
-}

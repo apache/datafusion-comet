@@ -17,4 +17,5 @@
 
 mod boolean;
 pub mod cast;
+mod string;
 mod utils;
