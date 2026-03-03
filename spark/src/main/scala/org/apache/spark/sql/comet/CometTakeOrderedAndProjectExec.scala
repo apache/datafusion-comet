@@ -133,12 +133,15 @@ case class CometTakeOrderedAndProjectExec(
           CometExecUtils.getNativeLimitRDD(childRDD, child.output, limit)
         } else {
           val numParts = childRDD.getNumPartitions
+          // Serialize the plan once before mapping to avoid repeated serialization per partition
+          val topK =
+            CometExecUtils
+              .getTopKNativePlan(child.output, sortOrder, child, limit)
+              .get
+          val serializedTopK = CometExec.serializeNativePlan(topK)
+          val numOutputCols = child.output.length
           childRDD.mapPartitionsWithIndexInternal { case (idx, iter) =>
-            val topK =
-              CometExecUtils
-                .getTopKNativePlan(child.output, sortOrder, child, limit)
-                .get
-            CometExec.getCometIterator(Seq(iter), child.output.length, topK, numParts, idx)
+            CometExec.getCometIterator(Seq(iter), numOutputCols, serializedTopK, numParts, idx)
           }
         }
 
@@ -154,11 +157,19 @@ case class CometTakeOrderedAndProjectExec(
         new CometShuffledBatchRDD(dep, readMetrics)
       }
 
+      // Serialize the plan once before mapping to avoid repeated serialization per partition
+      val topKAndProjection = CometExecUtils
+        .getProjectionNativePlan(projectList, child.output, sortOrder, child, limit, offset)
+        .get
+      val serializedTopKAndProjection = CometExec.serializeNativePlan(topKAndProjection)
+      val finalOutputLength = output.length
       singlePartitionRDD.mapPartitionsInternal { iter =>
-        val topKAndProjection = CometExecUtils
-          .getProjectionNativePlan(projectList, child.output, sortOrder, child, limit, offset)
-          .get
-        val it = CometExec.getCometIterator(Seq(iter), output.length, topKAndProjection, 1, 0)
+        val it = CometExec.getCometIterator(
+          Seq(iter),
+          finalOutputLength,
+          serializedTopKAndProjection,
+          1,
+          0)
         setSubqueries(it.id, this)
 
         Option(TaskContext.get()).foreach { context =>

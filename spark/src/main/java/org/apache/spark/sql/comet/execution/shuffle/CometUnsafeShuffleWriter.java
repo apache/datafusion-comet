@@ -258,7 +258,7 @@ public class CometUnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
             Math.min(
                 CometShuffleExternalSorter.MAXIMUM_PAGE_SIZE_BYTES, memoryManager.pageSizeBytes()));
     sorter =
-        new CometShuffleExternalSorter(
+        CometShuffleExternalSorter.create(
             allocator,
             blockManager,
             taskContext,

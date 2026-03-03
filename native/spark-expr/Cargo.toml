@@ -80,6 +80,26 @@ harness = false
 name = "padding"
 harness = false
 
+[[bench]]
+name = "date_trunc"
+harness = false
+
+[[bench]]
+name = "normalize_nan"
+harness = false
+
+[[bench]]
+name = "to_csv"
+harness = false
+
+[[bench]]
+name = "cast_int_to_timestamp"
+harness = false
+
 [[test]]
 name = "test_udf_registration"
 path = "tests/spark_expr_reg.rs"
+
+[[bench]]
+name = "cast_from_boolean"
+harness = false

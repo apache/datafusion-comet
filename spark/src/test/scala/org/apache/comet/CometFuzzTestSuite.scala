@@ -37,7 +37,7 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
     val df = spark.read.parquet(filename)
     df.createOrReplaceTempView("t1")
     val sql = "SELECT * FROM t1"
-    if (usingDataSourceExec) {
+    if (!usingLegacyNativeCometScan) {
       checkSparkAnswerAndOperator(sql)
     } else {
       checkSparkAnswer(sql)
@@ -59,7 +59,7 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
     val df = spark.read.parquet(filename)
     df.createOrReplaceTempView("t1")
     val sql = "SELECT * FROM t1 LIMIT 500"
-    if (usingDataSourceExec) {
+    if (!usingLegacyNativeCometScan) {
       checkSparkAnswerAndOperator(sql)
     } else {
       checkSparkAnswer(sql)
@@ -112,7 +112,7 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
             s"alter table t2 add column col2 $defaultValueType default $defaultValueString")
           // Verify that our default value matches Spark's answer
           val sql = "select col2 from t2"
-          if (usingDataSourceExec) {
+          if (!usingLegacyNativeCometScan) {
             checkSparkAnswerAndOperator(sql)
           } else {
             checkSparkAnswer(sql)
@@ -139,7 +139,7 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
       val sql = s"SELECT $col FROM t1 ORDER BY $col"
       // cannot run fully natively due to range partitioning and sort
       val (_, cometPlan) = checkSparkAnswer(sql)
-      if (usingDataSourceExec) {
+      if (!usingLegacyNativeCometScan) {
         assert(1 == collectNativeScans(cometPlan).length)
       }
     }
@@ -152,7 +152,7 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
     val sql = s"SELECT $allCols FROM t1 ORDER BY $allCols"
     // cannot run fully natively due to range partitioning and sort
     val (_, cometPlan) = checkSparkAnswer(sql)
-    if (usingDataSourceExec) {
+    if (!usingLegacyNativeCometScan) {
       assert(1 == collectNativeScans(cometPlan).length)
     }
   }
@@ -207,7 +207,7 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
     val df = spark.read.parquet(filename)
     val df2 = df.repartition(8, df.col("c0")).sort("c1")
     df2.collect()
-    if (usingDataSourceExec) {
+    if (!usingLegacyNativeCometScan) {
       val cometShuffles = collectCometShuffleExchanges(df2.queryExecution.executedPlan)
       val expectedNumCometShuffles = CometConf.COMET_NATIVE_SCAN_IMPL.get() match {
         case CometConf.SCAN_NATIVE_COMET =>
@@ -233,7 +233,7 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
       // cannot run fully native due to HashAggregate
       val sql = s"SELECT count(*) FROM t1 JOIN t2 ON t1.$col = t2.$col"
       val (_, cometPlan) = checkSparkAnswer(sql)
-      if (usingDataSourceExec) {
+      if (!usingLegacyNativeCometScan) {
         assert(2 == collectNativeScans(cometPlan).length)
       }
     }
@@ -255,7 +255,7 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
   }
 
   test("regexp_replace") {
-    withSQLConf(CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.key -> "true") {
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey("regexp") -> "true") {
       val df = spark.read.parquet(filename)
       df.createOrReplaceTempView("t1")
       // We want to make sure that the schema generator wasn't modified to accidentally omit

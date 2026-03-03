@@ -40,7 +40,11 @@ Comet can perform native scans of Delta tables when they do not have column mapp
 
 ### CSV
 
-Comet does not provide native CSV scan, but when `spark.comet.convert.csv.enabled` is enabled, data is immediately
+Comet provides experimental native CSV scan support. When `spark.comet.scan.csv.v2.enabled` is enabled, CSV files
+are read natively for improved performance. This feature is experimental and performance benefits are
+workload-dependent.
+
+Alternatively, when `spark.comet.convert.csv.enabled` is enabled, data from Spark's CSV reader is immediately
 converted into Arrow format, allowing native execution to happen after that.
 
 ### JSON

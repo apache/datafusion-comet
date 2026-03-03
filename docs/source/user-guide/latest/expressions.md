@@ -68,6 +68,7 @@ Expressions that are not Spark-compatible will fall back to Spark by default and
 | Contains        | Yes               |                                                                                                            |
 | EndsWith        | Yes               |                                                                                                            |
 | InitCap         | No                | Behavior is different in some cases, such as hyphenated names.                                             |
+| Left            | Yes               | Length argument must be a literal value                                                                    |
 | Length          | Yes               |                                                                                                            |
 | Like            | Yes               |                                                                                                            |
 | Lower           | No                | Results can vary depending on locale and character set. Requires `spark.comet.caseConversion.enabled=true` |
@@ -94,15 +95,20 @@ Expressions that are not Spark-compatible will fall back to Spark by default and
 | Expression     | SQL                          | Spark-Compatible? | Compatibility Notes                                                                                                  |
 | -------------- | ---------------------------- | ----------------- | -------------------------------------------------------------------------------------------------------------------- |
 | DateAdd        | `date_add`                   | Yes               |                                                                                                                      |
+| DateDiff       | `datediff`                   | Yes               |                                                                                                                      |
+| DateFormat     | `date_format`                | Yes               | Partial support. Only specific format patterns are supported.                                                        |
 | DateSub        | `date_sub`                   | Yes               |                                                                                                                      |
 | DatePart       | `date_part(field, source)`   | Yes               | Supported values of `field`: `year`/`month`/`week`/`day`/`dayofweek`/`dayofweek_iso`/`doy`/`quarter`/`hour`/`minute` |
 | Extract        | `extract(field FROM source)` | Yes               | Supported values of `field`: `year`/`month`/`week`/`day`/`dayofweek`/`dayofweek_iso`/`doy`/`quarter`/`hour`/`minute` |
 | FromUnixTime   | `from_unixtime`              | No                | Does not support format, supports only -8334601211038 <= sec <= 8210266876799                                        |
 | Hour           | `hour`                       | Yes               |                                                                                                                      |
+| LastDay        | `last_day`                   | Yes               |                                                                                                                      |
 | Minute         | `minute`                     | Yes               |                                                                                                                      |
 | Second         | `second`                     | Yes               |                                                                                                                      |
 | TruncDate      | `trunc`                      | Yes               |                                                                                                                      |
-| TruncTimestamp | `trunc_date`                 | Yes               |                                                                                                                      |
+| TruncTimestamp | `date_trunc`                 | Yes               |                                                                                                                      |
+| UnixDate       | `unix_date`                  | Yes               |                                                                                                                      |
+| UnixTimestamp  | `unix_timestamp`             | Yes               |                                                                                                                      |
 | Year           | `year`                       | Yes               |                                                                                                                      |
 | Month          | `month`                      | Yes               |                                                                                                                      |
 | DayOfMonth     | `day`/`dayofmonth`           | Yes               |                                                                                                                      |
@@ -163,6 +169,7 @@ Expressions that are not Spark-compatible will fall back to Spark by default and
 | ----------- | ----------------- |
 | Md5         | Yes               |
 | Murmur3Hash | Yes               |
+| Sha1        | Yes               |
 | Sha2        | Yes               |
 | XxHash64    | Yes               |
 
@@ -256,12 +263,13 @@ Comet supports using the following aggregate functions within window contexts wi
 
 ## Struct Expressions
 
-| Expression           | Spark-Compatible? |
-| -------------------- | ----------------- |
-| CreateNamedStruct    | Yes               |
-| GetArrayStructFields | Yes               |
-| GetStructField       | Yes               |
-| StructsToJson        | Yes               |
+| Expression           | Spark-Compatible? | Compatibility Notes                        |
+| -------------------- | ----------------- | ------------------------------------------ |
+| CreateNamedStruct    | Yes               |                                            |
+| GetArrayStructFields | Yes               |                                            |
+| GetStructField       | Yes               |                                            |
+| JsonToStructs        | No                | Partial support. Requires explicit schema. |
+| StructsToJson        | Yes               |                                            |
 
 ## Conversion Expressions
 

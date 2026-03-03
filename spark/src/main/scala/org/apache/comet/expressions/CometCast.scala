@@ -67,13 +67,33 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
       case _: Literal =>
         exprToProtoInternal(Literal.create(cast.eval(), cast.dataType), inputs, binding)
       case _ =>
-        val childExpr = exprToProtoInternal(cast.child, inputs, binding)
-        if (childExpr.isDefined) {
-          castToProto(cast, cast.timeZoneId, cast.dataType, childExpr.get, evalMode(cast))
+        if (isAlwaysCastToNull(cast.child.dataType, cast.dataType, evalMode(cast))) {
+          exprToProtoInternal(Literal.create(null, cast.dataType), inputs, binding)
         } else {
-          withInfo(cast, cast.child)
-          None
+          val childExpr = exprToProtoInternal(cast.child, inputs, binding)
+          if (childExpr.isDefined) {
+            castToProto(cast, cast.timeZoneId, cast.dataType, childExpr.get, evalMode(cast))
+          } else {
+            withInfo(cast, cast.child)
+            None
+          }
         }
+    }
+  }
+
+//  Some casts like date -> int/byte / long are always null. Terminate early in planning
+  private def isAlwaysCastToNull(
+      fromType: DataType,
+      toType: DataType,
+      evalMode: CometEvalMode.Value): Boolean = {
+    (fromType, toType) match {
+      case (
+            DataTypes.DateType,
+            DataTypes.BooleanType | DataTypes.ByteType | DataTypes.ShortType |
+            DataTypes.IntegerType | DataTypes.LongType | DataTypes.FloatType |
+            DataTypes.DoubleType | _: DecimalType) if evalMode == CometEvalMode.LEGACY =>
+        true
+      case _ => false
     }
   }
 
@@ -147,13 +167,13 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
       case (DataTypes.BooleanType, _) =>
         canCastFromBoolean(toType)
       case (DataTypes.ByteType, _) =>
-        canCastFromByte(toType)
+        canCastFromByte(toType, evalMode)
       case (DataTypes.ShortType, _) =>
-        canCastFromShort(toType)
+        canCastFromShort(toType, evalMode)
       case (DataTypes.IntegerType, _) =>
-        canCastFromInt(toType)
+        canCastFromInt(toType, evalMode)
       case (DataTypes.LongType, _) =>
-        canCastFromLong(toType)
+        canCastFromLong(toType, evalMode)
       case (DataTypes.FloatType, _) =>
         canCastFromFloat(toType)
       case (DataTypes.DoubleType, _) =>
@@ -168,6 +188,7 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
           }
         }
         Compatible()
+      case (DataTypes.DateType, toType) => canCastFromDate(toType, evalMode)
       case _ => unsupported(fromType, toType)
     }
   }
@@ -263,58 +284,76 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
 
   private def canCastFromBoolean(toType: DataType): SupportLevel = toType match {
     case DataTypes.ByteType | DataTypes.ShortType | DataTypes.IntegerType | DataTypes.LongType |
-        DataTypes.FloatType | DataTypes.DoubleType =>
+        DataTypes.FloatType | DataTypes.DoubleType | _: DecimalType =>
       Compatible()
     case _ => unsupported(DataTypes.BooleanType, toType)
   }
 
-  private def canCastFromByte(toType: DataType): SupportLevel = toType match {
-    case DataTypes.BooleanType =>
-      Compatible()
-    case DataTypes.ShortType | DataTypes.IntegerType | DataTypes.LongType =>
-      Compatible()
-    case DataTypes.FloatType | DataTypes.DoubleType | _: DecimalType =>
-      Compatible()
-    case _ =>
-      unsupported(DataTypes.ByteType, toType)
-  }
+  private def canCastFromByte(toType: DataType, evalMode: CometEvalMode.Value): SupportLevel =
+    toType match {
+      case DataTypes.BooleanType =>
+        Compatible()
+      case DataTypes.ShortType | DataTypes.IntegerType | DataTypes.LongType =>
+        Compatible()
+      case DataTypes.FloatType | DataTypes.DoubleType | _: DecimalType =>
+        Compatible()
+      case DataTypes.BinaryType if (evalMode == CometEvalMode.LEGACY) =>
+        Compatible()
+      case DataTypes.TimestampType =>
+        Compatible()
+      case _ =>
+        unsupported(DataTypes.ByteType, toType)
+    }
 
-  private def canCastFromShort(toType: DataType): SupportLevel = toType match {
-    case DataTypes.BooleanType =>
-      Compatible()
-    case DataTypes.ByteType | DataTypes.IntegerType | DataTypes.LongType =>
-      Compatible()
-    case DataTypes.FloatType | DataTypes.DoubleType | _: DecimalType =>
-      Compatible()
-    case _ =>
-      unsupported(DataTypes.ShortType, toType)
-  }
+  private def canCastFromShort(toType: DataType, evalMode: CometEvalMode.Value): SupportLevel =
+    toType match {
+      case DataTypes.BooleanType =>
+        Compatible()
+      case DataTypes.ByteType | DataTypes.IntegerType | DataTypes.LongType =>
+        Compatible()
+      case DataTypes.FloatType | DataTypes.DoubleType | _: DecimalType =>
+        Compatible()
+      case DataTypes.BinaryType if (evalMode == CometEvalMode.LEGACY) =>
+        Compatible()
+      case DataTypes.TimestampType =>
+        Compatible()
+      case _ =>
+        unsupported(DataTypes.ShortType, toType)
+    }
 
-  private def canCastFromInt(toType: DataType): SupportLevel = toType match {
-    case DataTypes.BooleanType =>
-      Compatible()
-    case DataTypes.ByteType | DataTypes.ShortType | DataTypes.LongType =>
-      Compatible()
-    case DataTypes.FloatType | DataTypes.DoubleType =>
-      Compatible()
-    case _: DecimalType =>
-      Compatible()
-    case _ =>
-      unsupported(DataTypes.IntegerType, toType)
-  }
+  private def canCastFromInt(toType: DataType, evalMode: CometEvalMode.Value): SupportLevel =
+    toType match {
+      case DataTypes.BooleanType =>
+        Compatible()
+      case DataTypes.ByteType | DataTypes.ShortType | DataTypes.LongType =>
+        Compatible()
+      case DataTypes.FloatType | DataTypes.DoubleType =>
+        Compatible()
+      case _: DecimalType =>
+        Compatible()
+      case DataTypes.BinaryType if (evalMode == CometEvalMode.LEGACY) => Compatible()
+      case DataTypes.TimestampType =>
+        Compatible()
+      case _ =>
+        unsupported(DataTypes.IntegerType, toType)
+    }
 
-  private def canCastFromLong(toType: DataType): SupportLevel = toType match {
-    case DataTypes.BooleanType =>
-      Compatible()
-    case DataTypes.ByteType | DataTypes.ShortType | DataTypes.IntegerType =>
-      Compatible()
-    case DataTypes.FloatType | DataTypes.DoubleType =>
-      Compatible()
-    case _: DecimalType =>
-      Compatible()
-    case _ =>
-      unsupported(DataTypes.LongType, toType)
-  }
+  private def canCastFromLong(toType: DataType, evalMode: CometEvalMode.Value): SupportLevel =
+    toType match {
+      case DataTypes.BooleanType =>
+        Compatible()
+      case DataTypes.ByteType | DataTypes.ShortType | DataTypes.IntegerType =>
+        Compatible()
+      case DataTypes.FloatType | DataTypes.DoubleType =>
+        Compatible()
+      case _: DecimalType =>
+        Compatible()
+      case DataTypes.BinaryType if (evalMode == CometEvalMode.LEGACY) => Compatible()
+      case DataTypes.TimestampType =>
+        Compatible()
+      case _ =>
+        unsupported(DataTypes.LongType, toType)
+    }
 
   private def canCastFromFloat(toType: DataType): SupportLevel = toType match {
     case DataTypes.BooleanType | DataTypes.DoubleType | DataTypes.ByteType | DataTypes.ShortType |
@@ -343,6 +382,17 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
       Compatible()
     case _ => Unsupported(Some(s"Cast from DecimalType to $toType is not supported"))
   }
+
+  private def canCastFromDate(toType: DataType, evalMode: CometEvalMode.Value): SupportLevel =
+    toType match {
+      case DataTypes.TimestampType =>
+        Compatible()
+      case DataTypes.BooleanType | DataTypes.ByteType | DataTypes.ShortType |
+          DataTypes.IntegerType | DataTypes.LongType | DataTypes.FloatType |
+          DataTypes.DoubleType | _: DecimalType if evalMode == CometEvalMode.LEGACY =>
+        Compatible()
+      case _ => Unsupported(Some(s"Cast from DateType to $toType is not supported"))
+    }
 
   private def unsupported(fromType: DataType, toType: DataType): Unsupported = {
     Unsupported(Some(s"Cast from $fromType to $toType is not supported"))

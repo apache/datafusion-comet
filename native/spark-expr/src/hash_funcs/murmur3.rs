@@ -183,7 +183,8 @@ pub fn create_murmur3_hashes<'a>(
         arrays,
         hashes_buffer,
         spark_compatible_murmur3_hash,
-        create_hashes_dictionary
+        create_hashes_dictionary,
+        create_murmur3_hashes
     );
     Ok(hashes_buffer)
 }

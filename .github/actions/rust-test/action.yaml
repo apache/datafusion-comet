@@ -21,11 +21,7 @@ description: "Run Rust tests"
 runs:
   using: "composite"
   steps:
-    - name: Check Cargo fmt
-      shell: bash
-      run: |
-        cd native
-        cargo fmt --all -- --check --color=never
+    # Note: cargo fmt check is now handled by the lint job that gates this workflow
 
     - name: Check Cargo clippy
       shell: bash

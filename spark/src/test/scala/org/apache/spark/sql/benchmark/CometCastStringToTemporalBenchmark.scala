@@ -24,14 +24,14 @@ case class CastStringToTemporalConfig(
     query: String,
     extraCometConfigs: Map[String, String] = Map.empty)
 
-// spotless:off
 /**
  * Benchmark to measure performance of Comet cast from String to temporal types. To run this
  * benchmark:
- * `SPARK_GENERATE_BENCHMARK_FILES=1 make benchmark-org.apache.spark.sql.benchmark.CometCastStringToTemporalBenchmark`
+ * {{{
+ *   SPARK_GENERATE_BENCHMARK_FILES=1 make benchmark-org.apache.spark.sql.benchmark.CometCastStringToTemporalBenchmark
+ * }}}
  * Results will be written to "spark/benchmarks/CometCastStringToTemporalBenchmark-**results.txt".
  */
-// spotless:on
 object CometCastStringToTemporalBenchmark extends CometBenchmarkBase {
 
   // Configuration for String to temporal cast benchmarks
@@ -52,12 +52,13 @@ object CometCastStringToTemporalBenchmark extends CometBenchmarkBase {
       "SELECT TRY_CAST(c1 AS TIMESTAMP) FROM parquetV1Table"))
 
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
-    val values = 1024 * 1024 * 10 // 10M rows
+    val values = 1024 * 1024 // 1M rows
 
     // Generate date data once with ~10% invalid values
     runBenchmarkWithTable("date data generation", values) { v =>
       withTempPath { dateDir =>
         withTempTable("parquetV1Table") {
+          // Data distribution: 10% invalid strings, 90% valid date strings spanning ~10 years
           prepareTable(
             dateDir,
             spark.sql(s"""
@@ -80,6 +81,7 @@ object CometCastStringToTemporalBenchmark extends CometBenchmarkBase {
     runBenchmarkWithTable("timestamp data generation", values) { v =>
       withTempPath { timestampDir =>
         withTempTable("parquetV1Table") {
+          // Data distribution: 10% invalid strings, 90% valid timestamp strings (1970 epoch range)
           prepareTable(
             timestampDir,
             spark.sql(s"""

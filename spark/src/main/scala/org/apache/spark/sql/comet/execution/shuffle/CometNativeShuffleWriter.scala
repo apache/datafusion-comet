@@ -31,7 +31,7 @@ import org.apache.spark.scheduler.MapStatus
 import org.apache.spark.shuffle.{IndexShuffleBlockResolver, ShuffleWriteMetricsReporter, ShuffleWriter}
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, Literal}
-import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, Partitioning, RangePartitioning, SinglePartition}
+import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, Partitioning, RangePartitioning, RoundRobinPartitioning, SinglePartition}
 import org.apache.spark.sql.comet.{CometExec, CometMetricNode}
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -131,6 +131,14 @@ class CometNativeShuffleWriter[K, V](
     metricsReporter.incBytesWritten(Files.size(tempDataFilePath))
     metricsReporter.incRecordsWritten(metricsOutputRows.value)
     metricsReporter.incWriteTime(metricsWriteTime.value)
+
+    // Report spill metrics to Spark's task metrics so they appear in
+    // Spark UI task summaries (not just SQL metrics)
+    val spilledBytes = nativeSQLMetrics.get("spilled_bytes").map(_.value).getOrElse(0L)
+    if (spilledBytes > 0) {
+      context.taskMetrics().incMemoryBytesSpilled(spilledBytes)
+      context.taskMetrics().incDiskBytesSpilled(spilledBytes)
+    }
 
     // commit
     shuffleBlockResolver.writeMetadataFileAndCommit(
@@ -283,6 +291,16 @@ class CometNativeShuffleWriter[K, V](
           val partitioningBuilder = PartitioningOuterClass.Partitioning.newBuilder()
           shuffleWriterBuilder.setPartitioning(
             partitioningBuilder.setRangePartition(partitioning).build())
+
+        case _: RoundRobinPartitioning =>
+          val partitioning = PartitioningOuterClass.RoundRobinPartition.newBuilder()
+          partitioning.setNumPartitions(outputPartitioning.numPartitions)
+          partitioning.setMaxHashColumns(
+            CometConf.COMET_EXEC_SHUFFLE_WITH_ROUND_ROBIN_PARTITIONING_MAX_HASH_COLUMNS.get())
+
+          val partitioningBuilder = PartitioningOuterClass.Partitioning.newBuilder()
+          shuffleWriterBuilder.setPartitioning(
+            partitioningBuilder.setRoundRobinPartition(partitioning).build())
 
         case _ =>
           throw new UnsupportedOperationException(

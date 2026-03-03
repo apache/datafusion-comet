@@ -229,8 +229,8 @@ object FuzzDataGenerator {
         Range(0, numRows).map(_ => {
           r.nextInt(20) match {
             case 0 if options.allowNull => null
-            case 1 => Float.NegativeInfinity
-            case 2 => Float.PositiveInfinity
+            case 1 if options.generateInfinity => Float.NegativeInfinity
+            case 2 if options.generateInfinity => Float.PositiveInfinity
             case 3 => Float.MinValue
             case 4 => Float.MaxValue
             case 5 => 0.0f
@@ -243,8 +243,8 @@ object FuzzDataGenerator {
         Range(0, numRows).map(_ => {
           r.nextInt(20) match {
             case 0 if options.allowNull => null
-            case 1 => Double.NegativeInfinity
-            case 2 => Double.PositiveInfinity
+            case 1 if options.generateInfinity => Double.NegativeInfinity
+            case 2 if options.generateInfinity => Double.PositiveInfinity
             case 3 => Double.MinValue
             case 4 => Double.MaxValue
             case 5 => 0.0
@@ -329,4 +329,5 @@ case class DataGenOptions(
     generateNaN: Boolean = true,
     baseDate: Long = FuzzDataGenerator.defaultBaseDate,
     customStrings: Seq[String] = Seq.empty,
-    maxStringLength: Int = 8)
+    maxStringLength: Int = 8,
+    generateInfinity: Boolean = true)

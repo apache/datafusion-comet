@@ -26,6 +26,7 @@ import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayDistinct, ArrayExcept, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayRepeat, ArraysOverlap, ArrayUnion}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions._
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.ArrayType
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
@@ -320,6 +321,38 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
             s"SELECT array_contains(cast(null as array<$typeName>), cast(null as $typeName)) FROM t2"))
         }
         checkSparkAnswerAndOperator(sql("SELECT array_contains(array(), 1) FROM t2"))
+      }
+    }
+  }
+
+  test("array_contains - NULL array returns NULL") {
+    // Test that array_contains returns NULL when the array argument is NULL
+    // This matches Spark's SQL three-valued logic behavior
+    withTempDir { dir =>
+      withTempView("t1") {
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = false, n = 100)
+        spark.read.parquet(path.toString).createOrReplaceTempView("t1")
+
+        // Test NULL array with non-null value
+        checkSparkAnswerAndOperator(
+          sql("SELECT array_contains(cast(null as array<int>), 1) FROM t1"))
+        checkSparkAnswerAndOperator(
+          sql("SELECT array_contains(cast(null as array<string>), 'test') FROM t1"))
+        checkSparkAnswerAndOperator(
+          sql("SELECT array_contains(cast(null as array<double>), 1.5) FROM t1"))
+
+        // Test NULL array with NULL value
+        checkSparkAnswerAndOperator(
+          sql("SELECT array_contains(cast(null as array<int>), cast(null as int)) FROM t1"))
+
+        // Test NULL array with column value
+        checkSparkAnswerAndOperator(
+          sql("SELECT array_contains(cast(null as array<int>), _2) FROM t1"))
+
+        // Test non-null array with values (to ensure fix doesn't break normal operation)
+        checkSparkAnswerAndOperator(sql("SELECT array_contains(array(1, 2, 3), 2) FROM t1"))
+        checkSparkAnswerAndOperator(sql("SELECT array_contains(array(1, 2, 3), 5) FROM t1"))
       }
     }
   }
@@ -868,6 +901,24 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
             "SELECT size(array(_2, _3, _4, _5, _6)) from t1 where _2 is not null order by _2, _3, _4, _5, _6"
           )
         ) // int arrays
+      }
+    }
+  }
+
+  test("size - respect to legacySizeOfNull") {
+    val table = "t1"
+    withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_ICEBERG_COMPAT) {
+      withTable(table) {
+        sql(s"create table $table(col array<string>) using parquet")
+        sql(s"insert into $table values(null)")
+        withSQLConf(SQLConf.LEGACY_SIZE_OF_NULL.key -> "false") {
+          checkSparkAnswerAndOperator(sql(s"select size(col) from $table"))
+        }
+        withSQLConf(
+          SQLConf.LEGACY_SIZE_OF_NULL.key -> "true",
+          SQLConf.ANSI_ENABLED.key -> "false") {
+          checkSparkAnswerAndOperator(sql(s"select size(col) from $table"))
+        }
       }
     }
   }

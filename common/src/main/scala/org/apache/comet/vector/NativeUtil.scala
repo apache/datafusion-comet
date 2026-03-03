@@ -79,6 +79,26 @@ class NativeUtil {
   }
 
   /**
+   * Exports a ColumnarBatch to Arrow FFI and returns the memory addresses.
+   *
+   * This is a convenience method that allocates Arrow structs, exports the batch, and returns
+   * just the memory addresses (without exposing the Arrow types).
+   *
+   * @param batch
+   *   the columnar batch to export
+   * @return
+   *   a tuple of (array addresses, schema addresses, number of rows)
+   */
+  def exportBatchToAddresses(batch: ColumnarBatch): (Array[Long], Array[Long], Int) = {
+    val numCols = batch.numCols()
+    val (arrays, schemas) = allocateArrowStructs(numCols)
+    val arrayAddrs = arrays.map(_.memoryAddress())
+    val schemaAddrs = schemas.map(_.memoryAddress())
+    val numRows = exportBatch(arrayAddrs, schemaAddrs, batch)
+    (arrayAddrs, schemaAddrs, numRows)
+  }
+
+  /**
    * Exports a Comet `ColumnarBatch` into a list of memory addresses that can be consumed by the
    * native execution.
    *

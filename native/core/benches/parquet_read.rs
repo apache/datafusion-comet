@@ -36,7 +36,7 @@ use comet::parquet::util::test_common::page_util::{
 };
 
 use perf::FlamegraphProfiler;
-use rand::{prelude::StdRng, Rng, SeedableRng};
+use rand::{prelude::StdRng, RngExt, SeedableRng};
 use zstd::zstd_safe::WriteBuf;
 
 fn bench(c: &mut Criterion) {
