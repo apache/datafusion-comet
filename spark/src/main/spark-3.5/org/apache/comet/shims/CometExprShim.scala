@@ -24,14 +24,14 @@ import org.apache.spark.sql.types.DataTypes
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
-import org.apache.comet.serde.{CommonStringExprs, Compatible, ExprOuterClass, Incompatible}
+import org.apache.comet.serde.{CommonDateTimeExprs, CommonStringExprs, Compatible, ExprOuterClass, Incompatible}
 import org.apache.comet.serde.ExprOuterClass.{BinaryOutputStyle, Expr}
 import org.apache.comet.serde.QueryPlanSerde.exprToProtoInternal
 
 /**
  * `CometExprShim` acts as a shim for parsing expressions from different Spark versions.
  */
-trait CometExprShim extends CommonStringExprs {
+trait CometExprShim extends CommonStringExprs with CommonDateTimeExprs {
   protected def evalMode(c: Cast): CometEvalMode.Value =
     CometEvalModeUtil.fromSparkEvalMode(c.evalMode)
 
@@ -91,8 +91,8 @@ trait CometExprShim extends CommonStringExprs {
 //        val optExpr = scalarFunctionExprToProto("width_bucket", childExprs: _*)
 //        optExprWithInfo(optExpr, wb, wb.children: _*)
 
-      case _ if expr.getClass.getSimpleName == "SecondOfTime" =>
-        secondOfTimeToProto(expr, inputs, binding)
+      case e if e.getClass.getName == "org.apache.spark.sql.catalyst.expressions.SecondsOfTime" =>
+        secondsOfTimeToProto(e, inputs, binding)
 
       case _ => None
     }

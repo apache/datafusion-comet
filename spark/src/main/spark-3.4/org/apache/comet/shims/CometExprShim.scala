@@ -21,16 +21,14 @@ package org.apache.comet.shims
 
 import org.apache.spark.sql.catalyst.expressions._
 
-import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.expressions.CometEvalMode
-import org.apache.comet.serde.CommonStringExprs
+import org.apache.comet.serde.{CommonDateTimeExprs, CommonStringExprs}
 import org.apache.comet.serde.ExprOuterClass.{BinaryOutputStyle, Expr}
-import org.apache.comet.serde.QueryPlanSerde.exprToProtoInternal
 
 /**
  * `CometExprShim` acts as a shim for parsing expressions from different Spark versions.
  */
-trait CometExprShim extends CommonStringExprs {
+trait CometExprShim extends CommonStringExprs with CommonDateTimeExprs {
   protected def evalMode(c: Cast): CometEvalMode.Value =
     CometEvalModeUtil.fromSparkEvalMode(c.evalMode)
 
@@ -45,8 +43,8 @@ trait CometExprShim extends CommonStringExprs {
         // Right child is the encoding expression.
         stringDecode(expr, s.charset, s.bin, inputs, binding)
 
-      case _ if expr.getClass.getSimpleName == "SecondOfTime" =>
-        secondOfTimeToProto(expr, inputs, binding)
+      case e if e.getClass.getName == "org.apache.spark.sql.catalyst.expressions.SecondsOfTime" =>
+        secondsOfTimeToProto(e, inputs, binding)
 
       case _ => None
     }

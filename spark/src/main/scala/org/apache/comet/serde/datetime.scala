@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import java.util.Locale
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, DateAdd, DateDiff, DateFormatClass, DateSub, DayOfMonth, DayOfWeek, DayOfYear, GetDateField, Hour, LastDay, Literal, MakeDate, Minute, Month, NextDay, Quarter, Second, TruncDate, TruncTimestamp, UnixDate, UnixTimestamp, WeekDay, WeekOfYear, Year}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, DateAdd, DateDiff, DateFormatClass, DateSub, DayOfMonth, DayOfWeek, DayOfYear, Expression, GetDateField, Hour, LastDay, Literal, MakeDate, Minute, Month, NextDay, Quarter, Second, TruncDate, TruncTimestamp, UnixDate, UnixTimestamp, WeekDay, WeekOfYear, Year}
 import org.apache.spark.sql.types.{DateType, IntegerType, StringType, TimestampType}
 import org.apache.spark.unsafe.types.UTF8String
 
@@ -538,6 +538,55 @@ object CometDateFormat extends CometExpressionSerde[DateFormatClass] {
       case None =>
         withInfo(expr, expr.left, expr.right)
         None
+    }
+  }
+}
+
+trait CommonDateTimeExprs {
+
+  def secondsOfTimeToProto(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    val childOpt = expr.children.headOption.orElse {
+      withInfo(expr, "SecondsOfTime has no child expression")
+      None
+    }
+
+    childOpt.flatMap { child =>
+      val timeZoneId = {
+        val exprClass = expr.getClass
+        try {
+          val timeZoneIdMethod = exprClass.getMethod("timeZoneId")
+          timeZoneIdMethod.invoke(expr).asInstanceOf[Option[String]]
+        } catch {
+          case _: NoSuchMethodException | _: SecurityException =>
+            try {
+              val timeZoneIdField = exprClass.getField("timeZoneId")
+              timeZoneIdField.get(expr).asInstanceOf[Option[String]]
+            } catch {
+              case _: NoSuchFieldException | _: SecurityException => None
+            }
+        }
+      }
+
+      exprToProtoInternal(child, inputs, binding)
+        .map { childExpr =>
+          val builder = ExprOuterClass.Second.newBuilder()
+          builder.setChild(childExpr)
+
+          val timeZone = timeZoneId.getOrElse("UTC")
+          builder.setTimezone(timeZone)
+
+          ExprOuterClass.Expr
+            .newBuilder()
+            .setSecond(builder)
+            .build()
+        }
+        .orElse {
+          withInfo(expr, child)
+          None
+        }
     }
   }
 }
