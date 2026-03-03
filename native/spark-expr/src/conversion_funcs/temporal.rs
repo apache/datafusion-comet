@@ -84,8 +84,8 @@ mod tests {
     #[test]
     fn test_cast_date_to_timestamp() {
         use crate::EvalMode;
-        use arrow::array::{Array, ArrayRef};
         use arrow::array::Date32Array;
+        use arrow::array::{Array, ArrayRef};
         use arrow::datatypes::TimestampMicrosecondType;
 
         // verifying epoch , DST change dates (US) and a null value (comprehensive tests on spark side)
