@@ -384,91 +384,83 @@ object CometStringSplit extends CometExpressionSerde[StringSplit] {
 }
 
 object CometParseUrl extends CometExpressionSerde[ParseUrl] {
+
+  // Class name of the Spark 4.0 internal evaluator embedded in the Invoke node that replaces
+  // ParseUrl at analysis time (RuntimeReplaceable). This constant is used as the dispatch key
+  // in QueryPlanSerde.invokeConvertersByTargetClassName.
   val invokeTargetClassName: String =
     "org.apache.spark.sql.catalyst.expressions.url.ParseUrlEvaluator"
 
-  private def parseUrlFailOnErrorFromInvoke(expr: Expression): Option[Boolean] = {
+  // ---------------------------------------------------------------------------
+  // Spark 4.0 Invoke path helpers
+  // ---------------------------------------------------------------------------
+
+  // Extracts the failOnError flag from the ParseUrlEvaluator instance embedded in the
+  // Invoke literal. Uses reflection because ParseUrlEvaluator is a private class.
+  // Falls back to SQLConf.get.ansiEnabled when reflection fails (evaluator is null, or
+  // the method has been renamed in a future Spark version).
+  private[serde] def failOnErrorFromInvoke(expr: Expression): Boolean =
     expr.children.headOption match {
       case Some(Literal(evaluator, objectType: ObjectType))
           if evaluator != null && objectType.cls.getName == invokeTargetClassName =>
         try {
-          val failOnErrorMethod = evaluator.getClass.getMethod("failOnError")
-          Some(failOnErrorMethod.invoke(evaluator).asInstanceOf[Boolean])
+          evaluator.getClass
+            .getMethod("failOnError")
+            .invoke(evaluator)
+            .asInstanceOf[Boolean]
         } catch {
-          case _: ReflectiveOperationException => Some(SQLConf.get.ansiEnabled)
+          case _: ReflectiveOperationException => SQLConf.get.ansiEnabled
         }
+      case _ =>
+        SQLConf.get.ansiEnabled
+    }
+
+  // Drops the leading ParseUrlEvaluator literal from the Invoke children list, leaving
+  // only the actual URL/part/key arguments.
+  private def dropEvaluatorLiteral(children: Seq[Expression]): Seq[Expression] =
+    children.headOption match {
       case Some(Literal(_, objectType: ObjectType))
           if objectType.cls.getName == invokeTargetClassName =>
-        Some(SQLConf.get.ansiEnabled)
+        children.drop(1)
       case _ =>
-        None
+        children
     }
-  }
 
-  private def dropParseUrlEvaluator(rawChildren: Seq[Expression]): Seq[Expression] = {
-    rawChildren.headOption match {
-      case Some(Literal(_, objectType: ObjectType))
-          if objectType.cls.getName == invokeTargetClassName =>
-        rawChildren.drop(1)
-      case _ =>
-        rawChildren
-    }
-  }
+  // ---------------------------------------------------------------------------
+  // Core serialization
+  // ---------------------------------------------------------------------------
 
-  private def failOnErrorFromChildren(rawChildren: Seq[Expression]): Option[Boolean] = {
-    rawChildren.lastOption.flatMap {
-      case Literal(value: Boolean, _) => Some(value)
-      case Literal(value: java.lang.Boolean, _) => Some(value.booleanValue())
-      case _ => None
-    }
-  }
-
-  private def convertInternal(
+  // Converts the parse_url/try_parse_url arguments into a proto Expr.
+  // `urlArgs` must already be stripped of the evaluator literal and the failOnError flag literal.
+  private def toProto(
       expr: Expression,
-      rawChildren: Seq[Expression],
-      failOnError: Option[Boolean],
+      urlArgs: Seq[Expression],
+      failOnError: Boolean,
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
-    val sanitizedChildren: Seq[Expression] = dropParseUrlEvaluator(rawChildren)
-    val parseUrlArgs: Seq[Expression] = sanitizedChildren.lastOption match {
-      case Some(Literal(_: Boolean, _)) => sanitizedChildren.dropRight(1)
-      case Some(Literal(_: java.lang.Boolean, _)) => sanitizedChildren.dropRight(1)
-      case _ => sanitizedChildren
-    }
-
-    val shouldFailOnError: Boolean =
-      failOnError.orElse(failOnErrorFromChildren(sanitizedChildren)).getOrElse(true)
-    val functionName: String = if (shouldFailOnError) {
-      "parse_url"
-    } else {
-      "try_parse_url"
-    }
-
-    val childExprs: Seq[Option[Expr]] = parseUrlArgs.map(exprToProtoInternal(_, inputs, binding))
-    val optExpr: Option[Expr] = scalarFunctionExprToProto(functionName, childExprs: _*)
-    optExprWithInfo(optExpr, expr, parseUrlArgs: _*)
+    val functionName = if (failOnError) "parse_url" else "try_parse_url"
+    val childExprs = urlArgs.map(exprToProtoInternal(_, inputs, binding))
+    val optExpr = scalarFunctionExprToProto(functionName, childExprs: _*)
+    optExprWithInfo(optExpr, expr, urlArgs: _*)
   }
 
-  def convertExpression(
+  // ---------------------------------------------------------------------------
+  // Public entry points
+  // ---------------------------------------------------------------------------
+
+  // Spark 3.5 path: ParseUrl is a concrete expression node with a `failOnError` field.
+  override def convert(expr: ParseUrl, inputs: Seq[Attribute], binding: Boolean): Option[Expr] =
+    toProto(expr, expr.children, expr.failOnError, inputs, binding)
+
+  // Spark 4.0 path: ParseUrl is replaced by Invoke(ParseUrlEvaluator, url, part[, key]).
+  // Called from QueryPlanSerde.convertInvokeExpression via invokeConvertersByTargetClassName.
+  def convertFromInvoke(
       expr: Expression,
       inputs: Seq[Attribute],
-      binding: Boolean,
-      failOnError: Option[Boolean] = None): Option[Expr] = {
-    expr.prettyName match {
-      case "parse_url" =>
-        convertInternal(expr, expr.children, failOnError, inputs, binding)
-      case "invoke" =>
-        failOnError
-          .orElse(parseUrlFailOnErrorFromInvoke(expr))
-          .flatMap(inferredFailOnError =>
-            convertInternal(expr, expr.children, Some(inferredFailOnError), inputs, binding))
-      case _ =>
-        None
-    }
-  }
-
-  override def convert(expr: ParseUrl, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
-    convertInternal(expr, expr.children, None, inputs, binding)
+      binding: Boolean): Option[Expr] = {
+    val failOnError = failOnErrorFromInvoke(expr)
+    val urlArgs = dropEvaluatorLiteral(expr.children)
+    toProto(expr, urlArgs, failOnError, inputs, binding)
   }
 }
 

@@ -25,6 +25,7 @@ statement
 INSERT INTO test_parse_url VALUES
   ('http://spark.apache.org/path?query=1'),
   ('https://spark.apache.org/path/to/page?query=1&k2=v2'),
+  ('ftp://user:pwd@ftp.example.com:21/files?x=1#frag'),
   (NULL)
 
 query
@@ -38,3 +39,26 @@ SELECT parse_url(url, 'PROTOCOL') FROM test_parse_url
 
 query
 SELECT parse_url(url, 'QUERY', 'query'), parse_url(url, 'QUERY', 'k2') FROM test_parse_url
+
+query
+SELECT parse_url(url, 'PATH') FROM test_parse_url
+
+query
+SELECT parse_url(url, 'FILE') FROM test_parse_url
+
+query
+SELECT parse_url(url, 'REF') FROM test_parse_url
+
+query
+SELECT parse_url(url, 'AUTHORITY') FROM test_parse_url
+
+query
+SELECT parse_url(url, 'USERINFO') FROM test_parse_url
+
+-- try_parse_url: same semantics as parse_url in ANSI mode but returns NULL instead of error
+-- on malformed input; tested here so it runs on both Spark 3.5 and 4.0
+query
+SELECT try_parse_url(url, 'HOST') FROM test_parse_url
+
+query
+SELECT try_parse_url(url, 'QUERY', 'x') FROM test_parse_url

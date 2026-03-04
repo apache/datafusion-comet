@@ -51,7 +51,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
   private val invokeConvertersByTargetClassName: Map[String, InvokeConverter] = Map(
     CometParseUrl.invokeTargetClassName ->
       ((expr: Expression, inputs: Seq[Attribute], binding: Boolean) =>
-        CometParseUrl.convertExpression(expr, inputs, binding)))
+        CometParseUrl.convertFromInvoke(expr, inputs, binding)))
 
   // Extracts the target object class name from an Invoke-like expression.
   private def invokeTargetClassName(expr: Expression): Option[String] = {
@@ -200,7 +200,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[StringReplace] -> CometScalarFunction("replace"),
     classOf[StringRPad] -> CometStringRPad,
     classOf[StringLPad] -> CometStringLPad,
-    classOf[StringSpace] -> CometScalarFunction("string_space"),
+    classOf[StringSpace] -> CometScalarFunction("space"),
     classOf[StringSplit] -> CometStringSplit,
     classOf[StringTranslate] -> CometScalarFunction("translate"),
     classOf[StringTrim] -> CometScalarFunction("trim"),
