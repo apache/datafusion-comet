@@ -262,7 +262,8 @@ message HashAggregate {
   repeated spark.spark_expression.Expr grouping_exprs = 1;
   repeated spark.spark_expression.AggExpr agg_exprs = 2;
   repeated spark.spark_expression.Expr result_exprs = 3;
-  AggregateMode mode = 5;
+  // Spark can have both partial and partialMerge together
+  repeated AggregateMode mode = 5;
 }
 
 message Limit {
@@ -311,7 +312,10 @@ message ParquetWriter {
 
 enum AggregateMode {
   Partial = 0;
-  Final = 1;
+  PartialMerge = 1;
+  Final = 2;
+  // Spark supports the COMPLETE but it a stub for now
+  Complete = 3;
 }
 
 message Expand {

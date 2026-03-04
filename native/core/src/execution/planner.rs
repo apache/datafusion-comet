@@ -859,7 +859,6 @@ impl PhysicalPlanner {
             OpStruct::HashAgg(agg) => {
                 assert_eq!(children.len(), 1);
                 let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
-
                 let group_exprs: PhyExprResult = agg
                     .grouping_exprs
                     .iter()
@@ -872,11 +871,15 @@ impl PhysicalPlanner {
                 let group_by = PhysicalGroupBy::new_single(group_exprs?);
                 let schema = child.schema();
 
-                let mode = if agg.mode == 0 {
-                    DFAggregateMode::Partial
-                } else {
+                // dbg!(agg);
+
+                let mode = if agg.mode.contains(&2) {
                     DFAggregateMode::Final
+                } else {
+                    DFAggregateMode::Partial
                 };
+
+                dbg!(&schema);
 
                 let agg_exprs: PhyAggResult = agg
                     .agg_exprs
