@@ -1234,8 +1234,7 @@ impl PhysicalPlanner {
             #[cfg(not(feature = "iceberg"))]
             OpStruct::IcebergScan(_) => Err(GeneralError(
                 "Iceberg support is not enabled. Rebuild with the 'iceberg' feature.".into(),
-            )
-            .into()),
+            )),
             OpStruct::ShuffleWriter(writer) => {
                 assert_eq!(children.len(), 1);
                 let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
