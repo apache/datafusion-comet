@@ -38,7 +38,7 @@ use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
 };
 use futures::{Stream, StreamExt, TryStreamExt};
-use iceberg::io::FileIO;
+use iceberg::io::{FileIO, FileIOBuilder, OpenDalStorageFactory, StorageFactory};
 
 use crate::execution::operators::ExecutionError;
 use crate::parquet::parquet_support::SparkParquetOptions;
@@ -191,20 +191,32 @@ impl IcebergScanExec {
         Ok(Box::pin(wrapped_stream))
     }
 
+    fn storage_factory_for(path: &str) -> Result<Arc<dyn StorageFactory>, DataFusionError> {
+        let scheme = path.split("://").next().unwrap_or("file");
+        match scheme {
+            "file" | "" => Ok(Arc::new(OpenDalStorageFactory::Fs)),
+            "s3" | "s3a" => Ok(Arc::new(OpenDalStorageFactory::S3 {
+                configured_scheme: scheme.to_string(),
+                customized_credential_load: None,
+            })),
+            _ => Err(DataFusionError::Execution(format!(
+                "Unsupported storage scheme: {scheme}"
+            ))),
+        }
+    }
+
     fn load_file_io(
         catalog_properties: &HashMap<String, String>,
         metadata_location: &str,
     ) -> Result<FileIO, DataFusionError> {
-        let mut file_io_builder = FileIO::from_path(metadata_location)
-            .map_err(|e| DataFusionError::Execution(format!("Failed to create FileIO: {}", e)))?;
+        let factory = Self::storage_factory_for(metadata_location)?;
+        let mut file_io_builder = FileIOBuilder::new(factory);
 
         for (key, value) in catalog_properties {
             file_io_builder = file_io_builder.with_prop(key, value);
         }
 
-        file_io_builder
-            .build()
-            .map_err(|e| DataFusionError::Execution(format!("Failed to build FileIO: {}", e)))
+        Ok(file_io_builder.build())
     }
 }
 
