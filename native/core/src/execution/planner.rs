@@ -22,7 +22,6 @@ pub mod macros;
 pub mod operator_registry;
 
 use crate::execution::operators::init_csv_datasource_exec;
-#[cfg(feature = "iceberg")]
 use crate::execution::operators::IcebergScanExec;
 use crate::{
     errors::ExpressionError,
@@ -74,7 +73,6 @@ use datafusion_comet_spark_expr::{
     create_comet_physical_fun, create_comet_physical_fun_with_eval_mode, BinaryOutputStyle,
     BloomFilterAgg, BloomFilterMightContain, CsvWriteOptions, EvalMode, SumInteger, ToCsv,
 };
-#[cfg(feature = "iceberg")]
 use iceberg::expr::Bind;
 
 use crate::execution::operators::ExecutionError::GeneralError;
@@ -107,7 +105,6 @@ use arrow::buffer::{BooleanBuffer, NullBuffer, OffsetBuffer};
 use arrow::row::{OwnedRow, RowConverter, SortField};
 use datafusion::common::utils::SingleRowListArrayBuilder;
 use datafusion::common::UnnestOptions;
-use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::limit::GlobalLimitExec;
 use datafusion::physical_plan::unnest::{ListUnnest, UnnestExec};
@@ -1194,7 +1191,6 @@ impl PhysicalPlanner {
                     Arc::new(SparkPlan::new(spark_plan.plan_id, Arc::new(scan), vec![])),
                 ))
             }
-            #[cfg(feature = "iceberg")]
             OpStruct::IcebergScan(scan) => {
                 // Extract common data and single partition's file tasks
                 // Per-partition injection happens in Scala before sending to native
@@ -1231,10 +1227,6 @@ impl PhysicalPlanner {
                     )),
                 ))
             }
-            #[cfg(not(feature = "iceberg"))]
-            OpStruct::IcebergScan(_) => Err(GeneralError(
-                "Iceberg support is not enabled. Rebuild with the 'iceberg' feature.".into(),
-            )),
             OpStruct::ShuffleWriter(writer) => {
                 assert_eq!(children.len(), 1);
                 let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
@@ -1522,42 +1514,17 @@ impl PhysicalPlanner {
                     NullEquality::NullEqualsNothing,
                 )?);
 
-                if join.filter.is_some() {
-                    // SMJ with join filter produces lots of tiny batches
-                    let coalesce_batches: Arc<dyn ExecutionPlan> =
-                        Arc::new(CoalesceBatchesExec::new(
-                            Arc::<SortMergeJoinExec>::clone(&join),
-                            self.session_ctx
-                                .state()
-                                .config_options()
-                                .execution
-                                .batch_size,
-                        ));
-                    Ok((
-                        scans,
-                        Arc::new(SparkPlan::new_with_additional(
-                            spark_plan.plan_id,
-                            coalesce_batches,
-                            vec![
-                                Arc::clone(&join_params.left),
-                                Arc::clone(&join_params.right),
-                            ],
-                            vec![join],
-                        )),
-                    ))
-                } else {
-                    Ok((
-                        scans,
-                        Arc::new(SparkPlan::new(
-                            spark_plan.plan_id,
-                            join,
-                            vec![
-                                Arc::clone(&join_params.left),
-                                Arc::clone(&join_params.right),
-                            ],
-                        )),
-                    ))
-                }
+                Ok((
+                    scans,
+                    Arc::new(SparkPlan::new(
+                        spark_plan.plan_id,
+                        join,
+                        vec![
+                            Arc::clone(&join_params.left),
+                            Arc::clone(&join_params.right),
+                        ],
+                    )),
+                ))
             }
             OpStruct::HashJoin(join) => {
                 let (join_params, scans) = self.parse_join_parameters(
@@ -2712,7 +2679,6 @@ fn convert_spark_types_to_arrow_schema(
     arrow_schema
 }
 
-#[cfg(feature = "iceberg")]
 /// Converts a protobuf PartitionValue to an iceberg Literal.
 ///
 fn partition_value_to_literal(
@@ -2798,7 +2764,6 @@ fn partition_value_to_literal(
 /// Uses the existing Struct::from_iter() API from iceberg-rust to construct the struct
 /// from the list of partition values.
 /// This can potentially be upstreamed to iceberg_rust
-#[cfg(feature = "iceberg")]
 fn partition_data_to_struct(
     proto_partition: &spark_operator::PartitionData,
 ) -> Result<iceberg::spec::Struct, ExecutionError> {
@@ -2818,7 +2783,6 @@ fn partition_data_to_struct(
 ///
 /// This function uses deduplication pools from the IcebergScanCommon to avoid redundant
 /// parsing of schemas, partition specs, partition types, name mappings, and other repeated data.
-#[cfg(feature = "iceberg")]
 fn parse_file_scan_tasks_from_common(
     proto_common: &spark_operator::IcebergScanCommon,
     proto_tasks: &[spark_operator::IcebergFileScanTask],
@@ -3267,7 +3231,6 @@ fn literal_to_array_ref(
 // always returns MIGHT_MATCH (never prunes row groups). These are handled by CometFilter post-scan.
 
 /// Converts a protobuf Spark expression to an Iceberg predicate for row-group filtering.
-#[cfg(feature = "iceberg")]
 fn convert_spark_expr_to_predicate(
     expr: &spark_expression::Expr,
 ) -> Option<iceberg::expr::Predicate> {
@@ -3399,7 +3362,6 @@ fn convert_spark_expr_to_predicate(
     }
 }
 
-#[cfg(feature = "iceberg")]
 fn convert_binary_to_predicate(
     left: &Option<Box<spark_expression::Expr>>,
     right: &Option<Box<spark_expression::Expr>>,
@@ -3448,7 +3410,6 @@ fn convert_binary_to_predicate(
     None
 }
 
-#[cfg(feature = "iceberg")]
 fn extract_column_reference(expr: &spark_expression::Expr) -> Option<String> {
     use spark_expression::expr::ExprStruct;
 
@@ -3458,7 +3419,6 @@ fn extract_column_reference(expr: &spark_expression::Expr) -> Option<String> {
     }
 }
 
-#[cfg(feature = "iceberg")]
 fn extract_literal_as_datum(expr: &spark_expression::Expr) -> Option<iceberg::spec::Datum> {
     use spark_expression::expr::ExprStruct;
 

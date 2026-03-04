@@ -280,7 +280,7 @@ impl ParquetWriterExec {
         output_file_path: &str,
         schema: SchemaRef,
         props: WriterProperties,
-        runtime_env: Arc<datafusion::execution::runtime_env::RuntimeEnv>,
+        _runtime_env: Arc<datafusion::execution::runtime_env::RuntimeEnv>,
         object_store_options: &HashMap<String, String>,
     ) -> Result<ParquetWriter> {
         // Parse URL and match on storage scheme directly
@@ -293,7 +293,7 @@ impl ParquetWriterExec {
             {
                 // Use prepare_object_store_with_configs to create and register the object store
                 let (_object_store_url, object_store_path) = prepare_object_store_with_configs(
-                    runtime_env,
+                    _runtime_env,
                     output_file_path.to_string(),
                     object_store_options,
                 )
