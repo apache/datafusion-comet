@@ -35,6 +35,9 @@ import org.apache.spark.storage.BlockManagerId
 import org.apache.spark.storage.ShuffleBlockFetcherIterator
 import org.apache.spark.util.CompletionIterator
 
+import org.apache.comet.{CometConf, Native}
+import org.apache.comet.vector.NativeUtil
+
 /**
  * Shuffle reader that reads data from the block manager. It reads Arrow-serialized data (IPC
  * format) and returns an iterator of ColumnarBatch.
@@ -86,8 +89,11 @@ class CometBlockStoreShuffleReader[K, C](
   /** Read the combined key-values for this reduce task */
   override def read(): Iterator[Product2[K, C]] = {
     var currentReadIterator: NativeBatchDecoderIterator = null
+    val nativeLib = new Native()
+    val nativeUtil = new NativeUtil()
+    val tracingEnabled = CometConf.COMET_TRACING_ENABLED.get()
 
-    // Closes last read iterator after the task is finished.
+    // Closes last read iterator and shared resources after the task is finished.
     // We need to close read iterator during iterating input streams,
     // instead of one callback per read iterator. Otherwise if there are too many
     // read iterators, it may blow up the call stack and cause OOM.
@@ -95,6 +101,7 @@ class CometBlockStoreShuffleReader[K, C](
       if (currentReadIterator != null) {
         currentReadIterator.close()
       }
+      nativeUtil.close()
     }
 
     val recordIter: Iterator[(Int, ColumnarBatch)] = fetchIterator
@@ -102,8 +109,12 @@ class CometBlockStoreShuffleReader[K, C](
         if (currentReadIterator != null) {
           currentReadIterator.close()
         }
-        currentReadIterator =
-          NativeBatchDecoderIterator(blockIdAndStream._2, context, dep.decodeTime)
+        currentReadIterator = NativeBatchDecoderIterator(
+          blockIdAndStream._2,
+          dep.decodeTime,
+          nativeLib,
+          nativeUtil,
+          tracingEnabled)
         currentReadIterator
       })
       .map(b => (0, b))

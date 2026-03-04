@@ -63,6 +63,32 @@ def is_remote_path(path):
     )
 
 
+def upload_local_dir_to_remote(spark, local_dir, remote_dir):
+    """Upload all files in a local directory to a remote path using Hadoop FS."""
+    hadoop_conf = spark._jsc.hadoopConfiguration()
+    local_path = spark._jvm.org.apache.hadoop.fs.Path(local_dir)
+    local_fs = local_path.getFileSystem(hadoop_conf)
+
+    if not local_fs.exists(local_path):
+        print(f"Skipping upload: {local_dir} does not exist")
+        return
+
+    remote_path = spark._jvm.org.apache.hadoop.fs.Path(remote_dir)
+    remote_fs = remote_path.getFileSystem(hadoop_conf)
+
+    statuses = local_fs.listStatus(local_path)
+    if not statuses:
+        print(f"Skipping upload: {local_dir} is empty")
+        return
+
+    for status in statuses:
+        src = status.getPath()
+        dst = spark._jvm.org.apache.hadoop.fs.Path(remote_dir, src.getName())
+        print(f"Uploading {src} -> {dst}")
+        remote_fs.copyFromLocalFile(False, True, src, dst)
+    print(f"Uploaded {len(statuses)} file(s) to {remote_dir}")
+
+
 def main(
     benchmark: str,
     data_path: str,
@@ -75,6 +101,9 @@ def main(
     query_num: int = None,
     write_path: str = None,
     options: Dict[str, str] = None,
+    jfr_dir: str = None,
+    async_profiler_dir: str = None,
+    profile_upload: str = None,
 ):
     if options is None:
         options = {}
@@ -213,6 +242,17 @@ def main(
         with open(results_path, "w") as f:
             f.write(result_str)
 
+    # Upload profiling artifacts to remote storage before the pod terminates
+    if profile_upload:
+        if jfr_dir:
+            upload_local_dir_to_remote(
+                spark, jfr_dir, f"{profile_upload}/jfr/"
+            )
+        if async_profiler_dir:
+            upload_local_dir_to_remote(
+                spark, async_profiler_dir, f"{profile_upload}/async-profiler/"
+            )
+
     spark.stop()
 
 
@@ -272,6 +312,18 @@ if __name__ == "__main__":
         "--write",
         help="Path to save query results as Parquet"
     )
+    parser.add_argument(
+        "--jfr-dir",
+        help="Local directory containing JFR profiling output"
+    )
+    parser.add_argument(
+        "--async-profiler-dir",
+        help="Local directory containing async-profiler output"
+    )
+    parser.add_argument(
+        "--profile-upload",
+        help="Remote path (e.g. s3a://bucket/path) to upload profiling artifacts"
+    )
     args = parser.parse_args()
 
     main(
@@ -286,4 +338,7 @@ if __name__ == "__main__":
         args.query,
         args.write,
         args.options,
+        args.jfr_dir,
+        args.async_profiler_dir,
+        args.profile_upload,
     )
