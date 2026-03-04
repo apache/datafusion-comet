@@ -29,7 +29,7 @@ TakeOrderedAndProject
                               :     :     :     :                 :     :     :  :- Project
                               :     :     :     :                 :     :     :  :  +- Filter
                               :     :     :     :                 :     :     :  :     +- ColumnarToRow
-                              :     :     :     :                 :     :     :  :        +-  Scan parquet spark_catalog.default.catalog_sales [COMET: Native DataFusion scan does not support subqueries/dynamic pruning]
+                              :     :     :     :                 :     :     :  :        +-  Scan parquet spark_catalog.default.catalog_sales [COMET: native_datafusion scan with DPP requires AQE to be enabled. DPP subqueries are not properly prepared in non-AQE mode.]
                               :     :     :     :                 :     :     :  :              +- SubqueryBroadcast
                               :     :     :     :                 :     :     :  :                 +- BroadcastExchange
                               :     :     :     :                 :     :     :  :                    +- CometColumnarToRow
@@ -39,7 +39,7 @@ TakeOrderedAndProject
                               :     :     :     :                 :     :     :  +- Project
                               :     :     :     :                 :     :     :     +- Filter
                               :     :     :     :                 :     :     :        +- ColumnarToRow
-                              :     :     :     :                 :     :     :           +-  Scan parquet spark_catalog.default.web_sales [COMET: Native DataFusion scan does not support subqueries/dynamic pruning]
+                              :     :     :     :                 :     :     :           +-  Scan parquet spark_catalog.default.web_sales [COMET: native_datafusion scan with DPP requires AQE to be enabled. DPP subqueries are not properly prepared in non-AQE mode.]
                               :     :     :     :                 :     :     :                 +- ReusedSubquery
                               :     :     :     :                 :     :     +- BroadcastExchange
                               :     :     :     :                 :     :        +- CometColumnarToRow
@@ -58,7 +58,7 @@ TakeOrderedAndProject
                               :     :     :     +- BroadcastExchange
                               :     :     :        +- Filter
                               :     :     :           +- ColumnarToRow
-                              :     :     :              +-  Scan parquet spark_catalog.default.store_sales [COMET: Native DataFusion scan does not support subqueries/dynamic pruning]
+                              :     :     :              +-  Scan parquet spark_catalog.default.store_sales [COMET: native_datafusion scan with DPP requires AQE to be enabled. DPP subqueries are not properly prepared in non-AQE mode.]
                               :     :     :                    +- SubqueryBroadcast
                               :     :     :                       +- BroadcastExchange
                               :     :     :                          +- CometColumnarToRow
