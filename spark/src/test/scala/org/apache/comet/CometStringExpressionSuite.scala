@@ -254,7 +254,8 @@ class CometStringExpressionSuite extends CometTestBase {
       Seq(
         ("http://spark.apache.org/path?query=1", 0),
         ("https://spark.apache.org/path/to/page?query=1&k2=v2", 1),
-        (null, 2)),
+        ("ftp://user:pwd@ftp.example.com:2121/files?x=1#frag", 2),
+        (null, 3)),
       "tbl_parse_url") {
 
       checkSparkAnswerAndOperator("SELECT parse_url(_1, 'HOST') FROM tbl_parse_url")
@@ -296,6 +297,11 @@ class CometStringExpressionSuite extends CometTestBase {
       }
     }
   }
+
+  // Note: try_parse_url is a Comet-internal DataFusion function name used when serializing
+  // parse_url with failOnError=false. It is not a registered Spark SQL function and cannot
+  // be called directly from SQL. The NULL-on-error behaviour is covered by the
+  // "parse_url with invalid URL in legacy mode" test above.
 
   test("Various String scalar functions") {
     val table = "names"

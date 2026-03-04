@@ -25,6 +25,7 @@ statement
 INSERT INTO test_parse_url VALUES
   ('http://spark.apache.org/path?query=1'),
   ('https://spark.apache.org/path/to/page?query=1&k2=v2'),
+  ('ftp://user:pwd@ftp.example.com:2121/files?x=1#frag'),
   (NULL)
 
 query
@@ -38,3 +39,23 @@ SELECT parse_url(url, 'PROTOCOL') FROM test_parse_url
 
 query
 SELECT parse_url(url, 'QUERY', 'query'), parse_url(url, 'QUERY', 'k2') FROM test_parse_url
+
+query
+SELECT parse_url(url, 'PATH') FROM test_parse_url
+
+query
+SELECT parse_url(url, 'FILE') FROM test_parse_url
+
+query
+SELECT parse_url(url, 'REF') FROM test_parse_url
+
+query
+SELECT parse_url(url, 'AUTHORITY') FROM test_parse_url
+
+query
+SELECT parse_url(url, 'USERINFO') FROM test_parse_url
+
+-- Note: try_parse_url is a Comet-internal DataFusion function name used when serializing
+-- parse_url with failOnError=false. It is not a registered Spark SQL function and cannot
+-- be called directly from SQL. The NULL-on-error behaviour is covered by the
+-- "parse_url with invalid URL in legacy mode" Scala test.
