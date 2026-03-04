@@ -264,6 +264,21 @@ class CometStringExpressionSuite extends CometTestBase {
         "SELECT parse_url(_1, 'QUERY', 'query'), parse_url(_1, 'QUERY', 'k2') FROM tbl_parse_url")
       checkSparkAnswerAndOperator("SELECT parse_url(_1, 'PATH') FROM tbl_parse_url")
       checkSparkAnswerAndOperator("SELECT parse_url(_1, 'FILE') FROM tbl_parse_url")
+      checkSparkAnswerAndOperator("SELECT parse_url(_1, 'REF') FROM tbl_parse_url")
+      checkSparkAnswerAndOperator("SELECT parse_url(_1, 'AUTHORITY') FROM tbl_parse_url")
+      checkSparkAnswerAndOperator("SELECT parse_url(_1, 'USERINFO') FROM tbl_parse_url")
+    }
+  }
+
+  test("parse_url in ANSI mode (Spark 3.5)") {
+    assume(!isSpark40Plus)
+
+    withParquetTable(
+      Seq(("http://spark.apache.org/path?query=1", 0), (null, 1)),
+      "tbl_parse_url_ansi") {
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+        checkSparkAnswerAndOperator("SELECT parse_url(_1, 'HOST') FROM tbl_parse_url_ansi")
+      }
     }
   }
 
