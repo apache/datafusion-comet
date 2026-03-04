@@ -110,7 +110,7 @@ COMMON_SPARK_CONF = {
     "spark.memory.offHeap.enabled": "true",
     "spark.memory.offHeap.size": "16g",
     "spark.eventLog.enabled": "true",
-    "spark.eventLog.dir": "/results/spark-events",
+    "spark.eventLog.dir": os.environ.get("SPARK_EVENT_LOG_DIR", "/tmp/spark-events"),
     "spark.hadoop.fs.s3a.impl": "org.apache.hadoop.fs.s3a.S3AFileSystem",
     "spark.hadoop.fs.s3a.aws.credentials.provider": "com.amazonaws.auth.DefaultAWSCredentialsProviderChain",
 }
@@ -261,6 +261,56 @@ def build_spark_submit_cmd(config, benchmark, args):
             val = "true" if val else "false"
         conf[resolve_env(key)] = resolve_env(str(val))
 
+    # JFR profiling: append to extraJavaOptions (preserving any existing values)
+    if args.jfr:
+        jfr_dir = args.jfr_dir
+        driver_jfr = (
+            f"-XX:StartFlightRecording=disk=true,dumponexit=true,"
+            f"filename={jfr_dir}/driver.jfr,settings=profile"
+        )
+        executor_jfr = (
+            f"-XX:StartFlightRecording=disk=true,dumponexit=true,"
+            f"filename={jfr_dir}/executor.jfr,settings=profile"
+        )
+        for spark_key, jfr_opts in [
+            ("spark.driver.extraJavaOptions", driver_jfr),
+            ("spark.executor.extraJavaOptions", executor_jfr),
+        ]:
+            existing = conf.get(spark_key, "")
+            conf[spark_key] = f"{existing} {jfr_opts}".strip()
+
+    # async-profiler: attach as a Java agent via -agentpath
+    if args.async_profiler:
+        ap_home = os.environ.get("ASYNC_PROFILER_HOME", "")
+        if not ap_home:
+            print(
+                "Error: ASYNC_PROFILER_HOME is not set. "
+                "Set it to the async-profiler installation directory.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        lib_ext = "dylib" if sys.platform == "darwin" else "so"
+        ap_lib = os.path.join(ap_home, "lib", f"libasyncProfiler.{lib_ext}")
+        ap_dir = args.async_profiler_dir
+        ap_event = args.async_profiler_event
+        ap_fmt = args.async_profiler_format
+        ext = {"flamegraph": "html", "jfr": "jfr", "collapsed": "txt", "text": "txt"}[ap_fmt]
+
+        driver_ap = (
+            f"-agentpath:{ap_lib}=start,event={ap_event},"
+            f"{ap_fmt},file={ap_dir}/driver.{ext}"
+        )
+        executor_ap = (
+            f"-agentpath:{ap_lib}=start,event={ap_event},"
+            f"{ap_fmt},file={ap_dir}/executor.{ext}"
+        )
+        for spark_key, ap_opts in [
+            ("spark.driver.extraJavaOptions", driver_ap),
+            ("spark.executor.extraJavaOptions", executor_ap),
+        ]:
+            existing = conf.get(spark_key, "")
+            conf[spark_key] = f"{existing} {ap_opts}".strip()
+
     for key, val in sorted(conf.items()):
         cmd += ["--conf", f"{key}={val}"]
 
@@ -357,6 +407,37 @@ def main():
         action="store_true",
         help="Print the spark-submit command without executing",
     )
+    parser.add_argument(
+        "--jfr",
+        action="store_true",
+        help="Enable Java Flight Recorder profiling for driver and executors",
+    )
+    parser.add_argument(
+        "--jfr-dir",
+        default="/results/jfr",
+        help="Directory for JFR output files (default: /results/jfr)",
+    )
+    parser.add_argument(
+        "--async-profiler",
+        action="store_true",
+        help="Enable async-profiler for driver and executors (profiles Java + native code)",
+    )
+    parser.add_argument(
+        "--async-profiler-dir",
+        default="/results/async-profiler",
+        help="Directory for async-profiler output files (default: /results/async-profiler)",
+    )
+    parser.add_argument(
+        "--async-profiler-event",
+        default="cpu",
+        help="async-profiler event type: cpu, wall, alloc, lock, etc. (default: cpu)",
+    )
+    parser.add_argument(
+        "--async-profiler-format",
+        default="flamegraph",
+        choices=["flamegraph", "jfr", "collapsed", "text"],
+        help="async-profiler output format (default: flamegraph)",
+    )
     args = parser.parse_args()
 
     config = load_engine_config(args.engine)
@@ -372,6 +453,13 @@ def main():
     # Restart Spark unless --no-restart or --dry-run
     if not args.no_restart and not args.dry_run:
         restart_spark()
+
+    # Create profiling output directories (skip for dry-run)
+    if not args.dry_run:
+        if args.jfr:
+            os.makedirs(args.jfr_dir, exist_ok=True)
+        if args.async_profiler:
+            os.makedirs(args.async_profiler_dir, exist_ok=True)
 
     cmd = build_spark_submit_cmd(config, args.benchmark, args)
 

@@ -16,19 +16,33 @@
 # under the License.
 
 [engine]
-name = "comet"
+name = "comet-iceberg-hashjoin"
 
 [env]
-required = ["COMET_JAR"]
+required = ["COMET_JAR", "ICEBERG_JAR", "ICEBERG_WAREHOUSE"]
+
+[env.defaults]
+ICEBERG_CATALOG = "local"
 
 [spark_submit]
-jars = ["$COMET_JAR"]
-driver_class_path = ["$COMET_JAR"]
+jars = ["$COMET_JAR", "$ICEBERG_JAR"]
+driver_class_path = ["$COMET_JAR", "$ICEBERG_JAR"]
 
 [spark_conf]
-"spark.driver.extraClassPath" = "$COMET_JAR"
-"spark.executor.extraClassPath" = "$COMET_JAR"
+"spark.driver.extraClassPath" = "$COMET_JAR:$ICEBERG_JAR"
+"spark.executor.extraClassPath" = "$COMET_JAR:$ICEBERG_JAR"
 "spark.plugins" = "org.apache.spark.CometPlugin"
 "spark.shuffle.manager" = "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager"
-"spark.comet.scan.impl" = "native_datafusion"
+"spark.comet.exec.replaceSortMergeJoin" = "true"
 "spark.comet.expression.Cast.allowIncompatible" = "true"
+"spark.comet.enabled" = "true"
+"spark.comet.exec.enabled" = "true"
+"spark.comet.scan.icebergNative.enabled" = "true"
+"spark.comet.explainFallback.enabled" = "true"
+"spark.sql.catalog.${ICEBERG_CATALOG}" = "org.apache.iceberg.spark.SparkCatalog"
+"spark.sql.catalog.${ICEBERG_CATALOG}.type" = "hadoop"
+"spark.sql.catalog.${ICEBERG_CATALOG}.warehouse" = "$ICEBERG_WAREHOUSE"
+"spark.sql.defaultCatalog" = "${ICEBERG_CATALOG}"
+
+[tpcbench_args]
+use_iceberg = true
