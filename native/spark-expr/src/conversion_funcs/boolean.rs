@@ -16,7 +16,7 @@
 // under the License.
 
 use crate::SparkResult;
-use arrow::array::{ArrayRef, AsArray, Decimal128Array};
+use arrow::array::{Array, ArrayRef, AsArray, Decimal128Array, TimestampMicrosecondBuilder};
 use arrow::datatypes::DataType;
 use std::sync::Arc;
 
@@ -28,7 +28,6 @@ pub fn is_df_cast_from_bool_spark_compatible(to_type: &DataType) -> bool {
     )
 }
 
-// only DF incompatible boolean cast
 pub fn cast_boolean_to_decimal(
     array: &ArrayRef,
     precision: u8,
@@ -43,6 +42,25 @@ pub fn cast_boolean_to_decimal(
     Ok(Arc::new(result.with_precision_and_scale(precision, scale)?))
 }
 
+pub(crate) fn cast_boolean_to_timestamp(
+    array_ref: &ArrayRef,
+    target_tz: &Option<Arc<str>>,
+) -> SparkResult<ArrayRef> {
+    let bool_array = array_ref.as_boolean();
+    let mut builder = TimestampMicrosecondBuilder::with_capacity(bool_array.len());
+
+    for i in 0..bool_array.len() {
+        if bool_array.is_null(i) {
+            builder.append_null();
+        } else {
+            let micros = if bool_array.value(i) { 1 } else { 0 };
+            builder.append_value(micros);
+        }
+    }
+
+    Ok(Arc::new(builder.finish().with_timezone_opt(target_tz.clone())) as ArrayRef)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -53,6 +71,7 @@ mod tests {
         Int64Array, Int8Array, StringArray,
     };
     use arrow::datatypes::DataType::Decimal128;
+    use arrow::datatypes::TimestampMicrosecondType;
     use std::sync::Arc;
 
     fn test_input_bool_array() -> ArrayRef {
@@ -192,5 +211,27 @@ mod tests {
         assert_eq!(arr.value(0), expected_arr.value(0));
         assert_eq!(arr.value(1), expected_arr.value(1));
         assert!(arr.is_null(2));
+    }
+
+    #[test]
+    fn test_cast_boolean_to_timestamp() {
+        let timezones: [Option<Arc<str>>; 3] = [
+            Some(Arc::from("UTC")),
+            Some(Arc::from("America/Los_Angeles")),
+            None,
+        ];
+
+        for tz in &timezones {
+            let bool_array: ArrayRef =
+                Arc::new(BooleanArray::from(vec![Some(true), Some(false), None]));
+
+            let result = cast_boolean_to_timestamp(&bool_array, tz).unwrap();
+            let ts_array = result.as_primitive::<TimestampMicrosecondType>();
+
+            assert_eq!(ts_array.value(0), 1); // true -> 1 microsecond
+            assert_eq!(ts_array.value(1), 0); // false -> 0 (epoch)
+            assert!(ts_array.is_null(2));
+            assert_eq!(ts_array.timezone(), tz.as_ref().map(|s| s.as_ref()));
+        }
     }
 }

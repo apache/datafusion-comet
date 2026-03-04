@@ -639,6 +639,10 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateDecimalsPrecision10Scale2(), DataTypes.TimestampType)
   }
 
+  test("cast DecimalType(38,10) to TimestampType") {
+    castTest(generateDecimalsPrecision38Scale18(), DataTypes.TimestampType)
+  }
+
   // CAST from StringType
 
   test("cast StringType to BooleanType") {
