@@ -25,11 +25,11 @@ you are investigating.
 
 ## Choosing a Profiling Tool
 
-| Tool | JVM Frames | Native (Rust) Frames | Install Required | Best For |
-| --- | --- | --- | --- | --- |
-| [async-profiler](https://github.com/async-profiler/async-profiler) | Yes | Yes | Yes | End-to-end Comet profiling with unified JVM + native flame graphs |
-| [Java Flight Recorder (JFR)](https://docs.oracle.com/en/java/javase/17/jfapi/) | Yes | No | No (JDK 11+) | GC pressure, allocations, thread contention, I/O — any JVM-level investigation |
-| [cargo-flamegraph](https://github.com/flamegraph-rs/flamegraph) | No | Yes | Yes | Isolated Rust micro-benchmarks without a JVM |
+| Tool                                                                           | JVM Frames | Native (Rust) Frames | Install Required | Best For                                                                       |
+| ------------------------------------------------------------------------------ | ---------- | -------------------- | ---------------- | ------------------------------------------------------------------------------ |
+| [async-profiler](https://github.com/async-profiler/async-profiler)             | Yes        | Yes                  | Yes              | End-to-end Comet profiling with unified JVM + native flame graphs              |
+| [Java Flight Recorder (JFR)](https://docs.oracle.com/en/java/javase/17/jfapi/) | Yes        | No                   | No (JDK 11+)     | GC pressure, allocations, thread contention, I/O — any JVM-level investigation |
+| [cargo-flamegraph](https://github.com/flamegraph-rs/flamegraph)                | No         | Yes                  | Yes              | Isolated Rust micro-benchmarks without a JVM                                   |
 
 **Recommendation:** Use **async-profiler** when profiling Spark queries with Comet enabled —
 it is the only tool that shows both JVM and native frames in a single flame graph.
@@ -88,21 +88,21 @@ spark-submit \
 
 ### Choosing an event type
 
-| Event | When to use |
-| --- | --- |
-| `cpu` | Default. Shows where CPU cycles are spent. Use for compute-bound queries. |
-| `wall` | Wall-clock time including blocked/waiting threads. Use to find JNI boundary overhead and I/O stalls. |
+| Event   | When to use                                                                                               |
+| ------- | --------------------------------------------------------------------------------------------------------- |
+| `cpu`   | Default. Shows where CPU cycles are spent. Use for compute-bound queries.                                 |
+| `wall`  | Wall-clock time including blocked/waiting threads. Use to find JNI boundary overhead and I/O stalls.      |
 | `alloc` | Heap allocation profiling. Use to find JVM allocation hotspots around Arrow FFI and columnar conversions. |
-| `lock` | Lock contention. Use when threads appear to spend time waiting on synchronized blocks or locks. |
+| `lock`  | Lock contention. Use when threads appear to spend time waiting on synchronized blocks or locks.           |
 
 ### Output formats
 
-| Format | Flag | Description |
-| --- | --- | --- |
-| HTML flame graph | `-f out.html` | Interactive flame graph (default and most useful). |
-| JFR | `-f out.jfr` | Viewable in JDK Mission Control or IntelliJ. |
-| Collapsed stacks | `-f out.collapsed` | For use with Brendan Gregg's FlameGraph scripts. |
-| Text summary | `-o text` | Flat list of hot methods. |
+| Format           | Flag               | Description                                        |
+| ---------------- | ------------------ | -------------------------------------------------- |
+| HTML flame graph | `-f out.html`      | Interactive flame graph (default and most useful). |
+| JFR              | `-f out.jfr`       | Viewable in JDK Mission Control or IntelliJ.       |
+| Collapsed stacks | `-f out.collapsed` | For use with Brendan Gregg's FlameGraph scripts.   |
+| Text summary     | `-o text`          | Flat list of hot methods.                          |
 
 ### Platform notes
 
@@ -163,13 +163,13 @@ jcmd <pid> JFR.stop name=profile filename=recording.jfr
 
 ### Useful JFR events for Comet debugging
 
-| Event | What it shows |
-| --- | --- |
-| `jdk.GCPhasePause` | GC pause durations — helps identify memory pressure from Arrow allocations. |
-| `jdk.ObjectAllocationInNewTLAB` / `jdk.ObjectAllocationOutsideTLAB` | Allocation hot spots. |
-| `jdk.JavaMonitorWait` / `jdk.ThreadPark` | Thread contention and lock waits. |
-| `jdk.FileRead` / `jdk.FileWrite` / `jdk.SocketRead` | I/O latency. |
-| `jdk.ExecutionSample` | CPU sampling (method profiling, similar to a flame graph). |
+| Event                                                               | What it shows                                                               |
+| ------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| `jdk.GCPhasePause`                                                  | GC pause durations — helps identify memory pressure from Arrow allocations. |
+| `jdk.ObjectAllocationInNewTLAB` / `jdk.ObjectAllocationOutsideTLAB` | Allocation hot spots.                                                       |
+| `jdk.JavaMonitorWait` / `jdk.ThreadPark`                            | Thread contention and lock waits.                                           |
+| `jdk.FileRead` / `jdk.FileWrite` / `jdk.SocketRead`                 | I/O latency.                                                                |
+| `jdk.ExecutionSample`                                               | CPU sampling (method profiling, similar to a flame graph).                  |
 
 ### Integrated benchmark profiling
 
