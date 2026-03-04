@@ -3232,7 +3232,7 @@ dependencies = [
 [[package]]
 name = "iceberg"
 version = "0.8.0"
-source = "git+https://github.com/mbutrovich/iceberg-rust?branch=df53-upgrade#71bc1ab8189860d00a0805db405431d806c03a26"
+source = "git+https://github.com/mbutrovich/iceberg-rust?branch=df53-upgrade#72fbebc4b0b9f5363accfb4707c52635306e5271"
 dependencies = [
  "anyhow",
  "apache-avro",
