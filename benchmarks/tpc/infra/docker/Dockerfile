@@ -61,8 +61,14 @@ COPY benchmarks/tpc/queries             /opt/benchmarks/queries
 COPY benchmarks/tpc/create-iceberg-tables.py /opt/benchmarks/create-iceberg-tables.py
 COPY benchmarks/tpc/generate-comparison.py   /opt/benchmarks/generate-comparison.py
 
-# Engine JARs are bind-mounted or copied in at runtime via --jars.
-# Data and query paths are also bind-mounted.
+# Optionally bake engine JARs into the image for Kubernetes mode.
+# Usage: docker build --build-arg COMET_JAR=path/to/comet.jar ...
+RUN mkdir -p /jars
+ARG COMET_JAR=""
+COPY benchmarks/tpc/infra/docker/Dockerfile ${COMET_JAR} /tmp/_stage/
+RUN if ls /tmp/_stage/*.jar 1>/dev/null 2>&1; then \
+        mv /tmp/_stage/*.jar /jars/comet.jar; \
+    fi && rm -rf /tmp/_stage
 
 WORKDIR /opt/benchmarks
 

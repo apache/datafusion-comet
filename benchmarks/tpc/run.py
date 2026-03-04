@@ -258,7 +258,15 @@ def build_spark_submit_cmd(config, benchmark, args):
     # --jars
     jars = config.get("spark_submit", {}).get("jars", [])
     if jars:
-        cmd += ["--jars", ",".join(resolve_env_in_list(jars))]
+        resolved_jars = resolve_env_in_list(jars)
+        if k8s_mode:
+            # Prefix absolute local paths with local:// so Spark uses the
+            # JAR baked into the container image instead of uploading it.
+            resolved_jars = [
+                f"local://{j}" if j.startswith("/") and "://" not in j else j
+                for j in resolved_jars
+            ]
+        cmd += ["--jars", ",".join(resolved_jars)]
 
     # --driver-class-path
     driver_cp = config.get("spark_submit", {}).get("driver_class_path", [])
@@ -282,10 +290,6 @@ def build_spark_submit_cmd(config, benchmark, args):
         bench_image = os.environ["BENCH_IMAGE"]
         conf["spark.kubernetes.container.image"] = bench_image
         conf["spark.kubernetes.authenticate.driver.serviceAccountName"] = "spark"
-        # Upload local files (JARs, etc.) to this path for K8s access
-        upload_path = os.environ.get("SPARK_UPLOAD_PATH", "")
-        if upload_path:
-            conf["spark.kubernetes.file.upload.path"] = upload_path
 
     # JFR profiling: append to extraJavaOptions (preserving any existing values)
     if args.jfr:

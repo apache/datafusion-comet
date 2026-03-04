@@ -22,6 +22,7 @@ name = "comet-iceberg-hashjoin"
 required = ["COMET_JAR", "ICEBERG_JAR", "ICEBERG_WAREHOUSE"]
 
 [env.defaults]
+COMET_JAR = "/jars/comet.jar"
 ICEBERG_CATALOG = "local"
 
 [spark_submit]

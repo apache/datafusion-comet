@@ -21,6 +21,9 @@ name = "comet-hashjoin"
 [env]
 required = ["COMET_JAR"]
 
+[env.defaults]
+COMET_JAR = "/jars/comet.jar"
+
 [spark_submit]
 jars = ["$COMET_JAR"]
 driver_class_path = ["$COMET_JAR"]

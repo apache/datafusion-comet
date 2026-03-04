@@ -44,10 +44,22 @@ kubectl apply -f benchmarks/tpc/infra/k8s/rbac.yaml -n <namespace>
 
 **2. Build and push the Docker image:**
 
+Build the Comet JAR on Linux (native libraries must match the container OS) and bake it
+into the image:
+
 ```shell
-docker build -t <registry>/comet-bench -f benchmarks/tpc/infra/docker/Dockerfile .
+# Build the Comet JAR (must be built on Linux for K8s pods)
+make release
+
+docker build \
+    --build-arg COMET_JAR=spark/target/comet-spark-spark3.5_2.12-*-SNAPSHOT.jar \
+    -t <registry>/comet-bench \
+    -f benchmarks/tpc/infra/docker/Dockerfile .
 docker push <registry>/comet-bench
 ```
+
+The JAR is installed at `/jars/comet.jar` inside the image. The `comet.toml` engine config
+defaults `COMET_JAR` to this path, so no extra environment variable is needed.
 
 **3. Set environment variables:**
 
@@ -105,11 +117,3 @@ spark.kubernetes.driver.podTemplateFile=benchmarks/tpc/infra/k8s/pod-template.ya
 spark.kubernetes.executor.podTemplateFile=benchmarks/tpc/infra/k8s/pod-template.yaml
 ```
 
-## Optional: File upload path
-
-If your engine JARs are local (not baked into the image), set `SPARK_UPLOAD_PATH` to an
-S3 path where Spark can stage files for K8s pods:
-
-```shell
-export SPARK_UPLOAD_PATH=s3a://my-bucket/spark-uploads/
-```
