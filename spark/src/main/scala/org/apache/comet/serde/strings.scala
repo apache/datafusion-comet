@@ -383,55 +383,53 @@ object CometStringSplit extends CometExpressionSerde[StringSplit] {
   }
 }
 
-object CometParseUrl extends CometExpressionSerde[ParseUrl] {
+object CometParseUrl
+    extends CometExpressionSerde[ParseUrl]
+    with CometInvokeExpressionSerde[ParseUrl] {
 
-  // Class name of the Spark 4.0 internal evaluator embedded in the Invoke node that replaces
-  // ParseUrl at analysis time (RuntimeReplaceable). This constant is used as the dispatch key
-  // in QueryPlanSerde.invokeConvertersByTargetClassName.
-  val invokeTargetClassName: String =
+  // In Spark 4.0, ParseUrl became RuntimeReplaceable and the analyser rewrites it to
+  // Invoke(ParseUrlEvaluator.evaluate, url, part[, key]).  The first child is a
+  // Literal(evaluator, ObjectType(ParseUrlEvaluator)).  This class name is the key
+  // used by QueryPlanSerde to route the Invoke node to this handler.
+  override val invokeTargetClassName: String =
     "org.apache.spark.sql.catalyst.expressions.url.ParseUrlEvaluator"
 
-  // ---------------------------------------------------------------------------
-  // Spark 4.0 Invoke path helpers
-  // ---------------------------------------------------------------------------
-
-  // Extracts the failOnError flag from the ParseUrlEvaluator instance embedded in the
-  // Invoke literal. Uses reflection because ParseUrlEvaluator is a private class.
-  // Falls back to SQLConf.get.ansiEnabled when reflection fails (evaluator is null, or
-  // the method has been renamed in a future Spark version).
-  private[serde] def failOnErrorFromInvoke(expr: Expression): Boolean =
-    expr.children.headOption match {
-      case Some(Literal(evaluator, objectType: ObjectType))
-          if evaluator != null && objectType.cls.getName == invokeTargetClassName =>
-        try {
-          evaluator.getClass
-            .getMethod("failOnError")
-            .invoke(evaluator)
-            .asInstanceOf[Boolean]
-        } catch {
-          case _: ReflectiveOperationException => SQLConf.get.ansiEnabled
-        }
-      case _ =>
-        SQLConf.get.ansiEnabled
+  // Extracts the failOnError flag from the ParseUrlEvaluator instance via reflection.
+  // Falls back to SQLConf.get.ansiEnabled when reflection is unavailable (null evaluator
+  // or renamed accessor in a future Spark version).
+  private def failOnErrorFromEvaluator(evaluator: AnyRef): Boolean =
+    try {
+      evaluator.getClass.getMethod("failOnError").invoke(evaluator).asInstanceOf[Boolean]
+    } catch {
+      case _: ReflectiveOperationException => SQLConf.get.ansiEnabled
     }
 
-  // Drops the leading ParseUrlEvaluator literal from the Invoke children list, leaving
-  // only the actual URL/part/key arguments.
-  private def dropEvaluatorLiteral(children: Seq[Expression]): Seq[Expression] =
-    children.headOption match {
-      case Some(Literal(_, objectType: ObjectType))
+  override def convertFromInvoke(
+      expr: ParseUrl,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    // The first child is Literal(evaluator, ObjectType(ParseUrlEvaluator)).
+    // Strip it and read failOnError from it; the remaining children are (url, part[, key]).
+    val (urlArgs, failOnError) = expr.children match {
+      case Literal(evaluator, objectType: ObjectType) +: rest
           if objectType.cls.getName == invokeTargetClassName =>
-        children.drop(1)
-      case _ =>
-        children
+        val foe =
+          if (evaluator != null) failOnErrorFromEvaluator(evaluator.asInstanceOf[AnyRef])
+          else SQLConf.get.ansiEnabled
+        (rest, foe)
+      case args =>
+        (args, SQLConf.get.ansiEnabled)
     }
+    toProto(expr, urlArgs, failOnError, inputs, binding)
+  }
 
-  // ---------------------------------------------------------------------------
-  // Core serialization
-  // ---------------------------------------------------------------------------
+  // In Spark 3.5, ParseUrl is a concrete expression node with a `failOnError` field
+  // that is directly accessible without reflection.
+  override def convert(expr: ParseUrl, inputs: Seq[Attribute], binding: Boolean): Option[Expr] =
+    toProto(expr, expr.children, expr.failOnError, inputs, binding)
 
-  // Converts the parse_url/try_parse_url arguments into a proto Expr.
-  // `urlArgs` must already be stripped of the evaluator literal and the failOnError flag literal.
+  // Serializes (url, part[, key]) arguments into the appropriate native function call.
+  // Uses parse_url (ANSI/strict) or try_parse_url (legacy/lenient) depending on failOnError.
   private def toProto(
       expr: Expression,
       urlArgs: Seq[Expression],
@@ -442,25 +440,6 @@ object CometParseUrl extends CometExpressionSerde[ParseUrl] {
     val childExprs = urlArgs.map(exprToProtoInternal(_, inputs, binding))
     val optExpr = scalarFunctionExprToProto(functionName, childExprs: _*)
     optExprWithInfo(optExpr, expr, urlArgs: _*)
-  }
-
-  // ---------------------------------------------------------------------------
-  // Public entry points
-  // ---------------------------------------------------------------------------
-
-  // Spark 3.5 path: ParseUrl is a concrete expression node with a `failOnError` field.
-  override def convert(expr: ParseUrl, inputs: Seq[Attribute], binding: Boolean): Option[Expr] =
-    toProto(expr, expr.children, expr.failOnError, inputs, binding)
-
-  // Spark 4.0 path: ParseUrl is replaced by Invoke(ParseUrlEvaluator, url, part[, key]).
-  // Called from QueryPlanSerde.convertInvokeExpression via invokeConvertersByTargetClassName.
-  def convertFromInvoke(
-      expr: Expression,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[Expr] = {
-    val failOnError = failOnErrorFromInvoke(expr)
-    val urlArgs = dropEvaluatorLiteral(expr.children)
-    toProto(expr, urlArgs, failOnError, inputs, binding)
   }
 }
 

@@ -44,14 +44,13 @@ import org.apache.comet.shims.CometExprShim
  */
 object QueryPlanSerde extends Logging with CometExprShim {
 
-  // Generic serializer contract for Spark Invoke expressions.
-  private type InvokeConverter = (Expression, Seq[Attribute], Boolean) => Option[Expr]
-
-  // Dispatch table keyed by the runtime class name stored in Invoke target ObjectType.
-  private val invokeConvertersByTargetClassName: Map[String, InvokeConverter] = Map(
-    CometParseUrl.invokeTargetClassName ->
-      ((expr: Expression, inputs: Seq[Attribute], binding: Boolean) =>
-        CometParseUrl.convertFromInvoke(expr, inputs, binding)))
+  // Registry of Invoke-expression handlers, keyed by the fully-qualified class name of the
+  // evaluator object embedded in the first Literal(_, ObjectType(...)) child of the Invoke node.
+  // To support a new RuntimeReplaceable expression rewritten to Invoke in Spark 4.0, implement
+  // CometInvokeExpressionSerde and add the object here.
+  private val invokeSerdeByTargetClassName
+      : Map[String, CometInvokeExpressionSerde[_ <: Expression]] =
+    Seq(CometParseUrl).map(s => s.invokeTargetClassName -> s).toMap
 
   // Extracts the target object class name from an Invoke-like expression.
   private def invokeTargetClassName(expr: Expression): Option[String] = {
@@ -63,17 +62,16 @@ object QueryPlanSerde extends Logging with CometExprShim {
     }
   }
 
-  // Routes Invoke expressions to a converter based on the target object class name.
+  // Routes Invoke expressions to a handler based on the target object class name.
   private def convertInvokeExpression(
       expr: Expression,
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] =
     for {
-      innerObjectTypeExpression <- invokeTargetClassName(expr)
-      invokeExpr <- invokeConvertersByTargetClassName.get(innerObjectTypeExpression)
-      expression <- invokeExpr(expr, inputs, binding)
-
-    } yield expression
+      targetClassName <- invokeTargetClassName(expr)
+      handler <- invokeSerdeByTargetClassName.get(targetClassName)
+      result <- handler.convertFromInvokeUnchecked(expr, inputs, binding)
+    } yield result
 
   private val arrayExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     classOf[ArrayAppend] -> CometArrayAppend,
