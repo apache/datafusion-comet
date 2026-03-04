@@ -1683,7 +1683,7 @@ dependencies = [
 [[package]]
 name = "datafusion"
 version = "53.0.0"
-source = "git+https://github.com/apache/datafusion?branch=branch-53#23e7a19186e71044a610e5bfcc4e647598bf557a"
+source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c08ccc8c7a7d1eaf39de39b4cbd61"
 dependencies = [
  "arrow",
  "arrow-schema",
@@ -1733,7 +1733,7 @@ dependencies = [
 [[package]]
 name = "datafusion-catalog"
 version = "53.0.0"
-source = "git+https://github.com/apache/datafusion?branch=branch-53#23e7a19186e71044a610e5bfcc4e647598bf557a"
+source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c08ccc8c7a7d1eaf39de39b4cbd61"
 dependencies = [
  "arrow",
  "async-trait",
@@ -1757,7 +1757,7 @@ dependencies = [
 [[package]]
 name = "datafusion-catalog-listing"
 version = "53.0.0"
-source = "git+https://github.com/apache/datafusion?branch=branch-53#23e7a19186e71044a610e5bfcc4e647598bf557a"
+source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c08ccc8c7a7d1eaf39de39b4cbd61"
 dependencies = [
  "arrow",
  "async-trait",
@@ -1896,7 +1896,7 @@ dependencies = [
 [[package]]
 name = "datafusion-common"
 version = "53.0.0"
-source = "git+https://github.com/apache/datafusion?branch=branch-53#23e7a19186e71044a610e5bfcc4e647598bf557a"
+source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c08ccc8c7a7d1eaf39de39b4cbd61"
 dependencies = [
  "ahash",
  "arrow",
@@ -1920,7 +1920,7 @@ dependencies = [
 [[package]]
 name = "datafusion-common-runtime"
 version = "53.0.0"
-source = "git+https://github.com/apache/datafusion?branch=branch-53#23e7a19186e71044a610e5bfcc4e647598bf557a"
+source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c08ccc8c7a7d1eaf39de39b4cbd61"
 dependencies = [
  "futures",
  "log",
@@ -1930,7 +1930,7 @@ dependencies = [
 [[package]]
 name = "datafusion-datasource"
 version = "53.0.0"
-source = "git+https://github.com/apache/datafusion?branch=branch-53#23e7a19186e71044a610e5bfcc4e647598bf557a"
+source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c08ccc8c7a7d1eaf39de39b4cbd61"
 dependencies = [
  "arrow",
  "async-compression",
@@ -1964,7 +1964,7 @@ dependencies = [
 [[package]]
 name = "datafusion-datasource-arrow"
 version = "53.0.0"
-source = "git+https://github.com/apache/datafusion?branch=branch-53#23e7a19186e71044a610e5bfcc4e647598bf557a"
+source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c08ccc8c7a7d1eaf39de39b4cbd61"
 dependencies = [
  "arrow",
  "arrow-ipc",
@@ -1987,7 +1987,7 @@ dependencies = [
 [[package]]
 name = "datafusion-datasource-csv"
 version = "53.0.0"
-source = "git+https://github.com/apache/datafusion?branch=branch-53#23e7a19186e71044a610e5bfcc4e647598bf557a"
+source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c08ccc8c7a7d1eaf39de39b4cbd61"
 dependencies = [
  "arrow",
  "async-trait",
@@ -2009,7 +2009,7 @@ dependencies = [
 [[package]]
 name = "datafusion-datasource-json"
 version = "53.0.0"
-source = "git+https://github.com/apache/datafusion?branch=branch-53#23e7a19186e71044a610e5bfcc4e647598bf557a"
+source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c08ccc8c7a7d1eaf39de39b4cbd61"
 dependencies = [
  "arrow",
  "async-trait",
@@ -2032,7 +2032,7 @@ dependencies = [
 [[package]]
 name = "datafusion-datasource-parquet"
 version = "53.0.0"
-source = "git+https://github.com/apache/datafusion?branch=branch-53#23e7a19186e71044a610e5bfcc4e647598bf557a"
+source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c08ccc8c7a7d1eaf39de39b4cbd61"
 dependencies = [
  "arrow",
  "async-trait",
@@ -2061,12 +2061,12 @@ dependencies = [
 [[package]]
 name = "datafusion-doc"
 version = "53.0.0"
-source = "git+https://github.com/apache/datafusion?branch=branch-53#23e7a19186e71044a610e5bfcc4e647598bf557a"
+source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c08ccc8c7a7d1eaf39de39b4cbd61"
 
 [[package]]
 name = "datafusion-execution"
 version = "53.0.0"
-source = "git+https://github.com/apache/datafusion?branch=branch-53#23e7a19186e71044a610e5bfcc4e647598bf557a"
+source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c08ccc8c7a7d1eaf39de39b4cbd61"
 dependencies = [
  "arrow",
  "arrow-buffer",
@@ -2089,7 +2089,7 @@ dependencies = [
 [[package]]
 name = "datafusion-expr"
 version = "53.0.0"
-source = "git+https://github.com/apache/datafusion?branch=branch-53#23e7a19186e71044a610e5bfcc4e647598bf557a"
+source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c08ccc8c7a7d1eaf39de39b4cbd61"
 dependencies = [
  "arrow",
  "async-trait",
@@ -2110,7 +2110,7 @@ dependencies = [
 [[package]]
 name = "datafusion-expr-common"
 version = "53.0.0"
-source = "git+https://github.com/apache/datafusion?branch=branch-53#23e7a19186e71044a610e5bfcc4e647598bf557a"
+source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c08ccc8c7a7d1eaf39de39b4cbd61"
 dependencies = [
  "arrow",
  "datafusion-common",
@@ -2122,7 +2122,7 @@ dependencies = [
 [[package]]
 name = "datafusion-functions"
 version = "53.0.0"
-source = "git+https://github.com/apache/datafusion?branch=branch-53#23e7a19186e71044a610e5bfcc4e647598bf557a"
+source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c08ccc8c7a7d1eaf39de39b4cbd61"
 dependencies = [
  "arrow",
  "arrow-buffer",
@@ -2153,7 +2153,7 @@ dependencies = [
 [[package]]
 name = "datafusion-functions-aggregate"
 version = "53.0.0"
-source = "git+https://github.com/apache/datafusion?branch=branch-53#23e7a19186e71044a610e5bfcc4e647598bf557a"
+source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c08ccc8c7a7d1eaf39de39b4cbd61"
 dependencies = [
  "ahash",
  "arrow",
@@ -2174,7 +2174,7 @@ dependencies = [
 [[package]]
 name = "datafusion-functions-aggregate-common"
 version = "53.0.0"
-source = "git+https://github.com/apache/datafusion?branch=branch-53#23e7a19186e71044a610e5bfcc4e647598bf557a"
+source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c08ccc8c7a7d1eaf39de39b4cbd61"
 dependencies = [
  "ahash",
  "arrow",
@@ -2186,7 +2186,7 @@ dependencies = [
 [[package]]
 name = "datafusion-functions-nested"
 version = "53.0.0"
-source = "git+https://github.com/apache/datafusion?branch=branch-53#23e7a19186e71044a610e5bfcc4e647598bf557a"
+source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c08ccc8c7a7d1eaf39de39b4cbd61"
 dependencies = [
  "arrow",
  "arrow-ord",
@@ -2210,7 +2210,7 @@ dependencies = [
 [[package]]
 name = "datafusion-functions-table"
 version = "53.0.0"
-source = "git+https://github.com/apache/datafusion?branch=branch-53#23e7a19186e71044a610e5bfcc4e647598bf557a"
+source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c08ccc8c7a7d1eaf39de39b4cbd61"
 dependencies = [
  "arrow",
  "async-trait",
@@ -2225,7 +2225,7 @@ dependencies = [
 [[package]]
 name = "datafusion-functions-window"
 version = "53.0.0"
-source = "git+https://github.com/apache/datafusion?branch=branch-53#23e7a19186e71044a610e5bfcc4e647598bf557a"
+source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c08ccc8c7a7d1eaf39de39b4cbd61"
 dependencies = [
  "arrow",
  "datafusion-common",
@@ -2242,7 +2242,7 @@ dependencies = [
 [[package]]
 name = "datafusion-functions-window-common"
 version = "53.0.0"
-source = "git+https://github.com/apache/datafusion?branch=branch-53#23e7a19186e71044a610e5bfcc4e647598bf557a"
+source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c08ccc8c7a7d1eaf39de39b4cbd61"
 dependencies = [
  "datafusion-common",
  "datafusion-physical-expr-common",
@@ -2251,7 +2251,7 @@ dependencies = [
 [[package]]
 name = "datafusion-macros"
 version = "53.0.0"
-source = "git+https://github.com/apache/datafusion?branch=branch-53#23e7a19186e71044a610e5bfcc4e647598bf557a"
+source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c08ccc8c7a7d1eaf39de39b4cbd61"
 dependencies = [
  "datafusion-doc",
  "quote",
@@ -2261,7 +2261,7 @@ dependencies = [
 [[package]]
 name = "datafusion-optimizer"
 version = "53.0.0"
-source = "git+https://github.com/apache/datafusion?branch=branch-53#23e7a19186e71044a610e5bfcc4e647598bf557a"
+source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c08ccc8c7a7d1eaf39de39b4cbd61"
 dependencies = [
  "arrow",
  "chrono",
@@ -2279,7 +2279,7 @@ dependencies = [
 [[package]]
 name = "datafusion-physical-expr"
 version = "53.0.0"
-source = "git+https://github.com/apache/datafusion?branch=branch-53#23e7a19186e71044a610e5bfcc4e647598bf557a"
+source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c08ccc8c7a7d1eaf39de39b4cbd61"
 dependencies = [
  "ahash",
  "arrow",
@@ -2301,7 +2301,7 @@ dependencies = [
 [[package]]
 name = "datafusion-physical-expr-adapter"
 version = "53.0.0"
-source = "git+https://github.com/apache/datafusion?branch=branch-53#23e7a19186e71044a610e5bfcc4e647598bf557a"
+source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c08ccc8c7a7d1eaf39de39b4cbd61"
 dependencies = [
  "arrow",
  "datafusion-common",
@@ -2315,7 +2315,7 @@ dependencies = [
 [[package]]
 name = "datafusion-physical-expr-common"
 version = "53.0.0"
-source = "git+https://github.com/apache/datafusion?branch=branch-53#23e7a19186e71044a610e5bfcc4e647598bf557a"
+source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c08ccc8c7a7d1eaf39de39b4cbd61"
 dependencies = [
  "ahash",
  "arrow",
@@ -2331,7 +2331,7 @@ dependencies = [
 [[package]]
 name = "datafusion-physical-optimizer"
 version = "53.0.0"
-source = "git+https://github.com/apache/datafusion?branch=branch-53#23e7a19186e71044a610e5bfcc4e647598bf557a"
+source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c08ccc8c7a7d1eaf39de39b4cbd61"
 dependencies = [
  "arrow",
  "datafusion-common",
@@ -2348,7 +2348,7 @@ dependencies = [
 [[package]]
 name = "datafusion-physical-plan"
 version = "53.0.0"
-source = "git+https://github.com/apache/datafusion?branch=branch-53#23e7a19186e71044a610e5bfcc4e647598bf557a"
+source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c08ccc8c7a7d1eaf39de39b4cbd61"
 dependencies = [
  "ahash",
  "arrow",
@@ -2379,7 +2379,7 @@ dependencies = [
 [[package]]
 name = "datafusion-pruning"
 version = "53.0.0"
-source = "git+https://github.com/apache/datafusion?branch=branch-53#23e7a19186e71044a610e5bfcc4e647598bf557a"
+source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c08ccc8c7a7d1eaf39de39b4cbd61"
 dependencies = [
  "arrow",
  "datafusion-common",
@@ -2395,7 +2395,7 @@ dependencies = [
 [[package]]
 name = "datafusion-session"
 version = "53.0.0"
-source = "git+https://github.com/apache/datafusion?branch=branch-53#23e7a19186e71044a610e5bfcc4e647598bf557a"
+source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c08ccc8c7a7d1eaf39de39b4cbd61"
 dependencies = [
  "async-trait",
  "datafusion-common",
@@ -2408,7 +2408,7 @@ dependencies = [
 [[package]]
 name = "datafusion-spark"
 version = "53.0.0"
-source = "git+https://github.com/apache/datafusion?branch=branch-53#23e7a19186e71044a610e5bfcc4e647598bf557a"
+source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c08ccc8c7a7d1eaf39de39b4cbd61"
 dependencies = [
  "arrow",
  "bigdecimal",
@@ -2434,7 +2434,7 @@ dependencies = [
 [[package]]
 name = "datafusion-sql"
 version = "53.0.0"
-source = "git+https://github.com/apache/datafusion?branch=branch-53#23e7a19186e71044a610e5bfcc4e647598bf557a"
+source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c08ccc8c7a7d1eaf39de39b4cbd61"
 dependencies = [
  "arrow",
  "bigdecimal",
@@ -3232,7 +3232,7 @@ dependencies = [
 [[package]]
 name = "iceberg"
 version = "0.8.0"
-source = "git+https://github.com/mbutrovich/iceberg-rust?branch=df53-upgrade#72fbebc4b0b9f5363accfb4707c52635306e5271"
+source = "git+https://github.com/mbutrovich/iceberg-rust?branch=df53-upgrade#646ab672a649322f3b140b0cf3dc76e26bb540a1"
 dependencies = [
  "anyhow",
  "apache-avro",
