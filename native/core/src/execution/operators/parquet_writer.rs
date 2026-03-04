@@ -27,9 +27,9 @@ use std::{
 };
 
 #[cfg(feature = "hdfs-opendal")]
-use std::io::Cursor;
-#[cfg(feature = "hdfs-opendal")]
 use opendal::Operator;
+#[cfg(feature = "hdfs-opendal")]
+use std::io::Cursor;
 
 use crate::execution::shuffle::CompressionCodec;
 use crate::parquet::parquet_support::is_hdfs_scheme;
