@@ -72,7 +72,7 @@ pub struct ScanExec {
     /// It is also used in unit test to mock the input data from JVM.
     pub batch: Arc<Mutex<Option<InputBatch>>>,
     /// Cache of expensive-to-compute plan properties
-    cache: PlanProperties,
+    cache: Arc<PlanProperties>,
     /// Metrics collector
     metrics: ExecutionPlanMetricsSet,
     /// Baseline metrics
@@ -95,14 +95,14 @@ impl ScanExec {
         // Build schema directly from data types since get_next now always unpacks dictionaries
         let schema = schema_from_data_types(&data_types);
 
-        let cache = PlanProperties::new(
+        let cache = Arc::new(PlanProperties::new(
             EquivalenceProperties::new(Arc::clone(&schema)),
             // The partitioning is not important because we are not using DataFusion's
             // query planner or optimizer
             Partitioning::UnknownPartitioning(1),
             EmissionType::Final,
             Boundedness::Bounded,
-        );
+        ));
 
         Ok(Self {
             exec_context_id,
@@ -417,7 +417,7 @@ impl ExecutionPlan for ScanExec {
         )))
     }
 
-    fn properties(&self) -> &PlanProperties {
+    fn properties(&self) -> &Arc<PlanProperties> {
         &self.cache
     }
 

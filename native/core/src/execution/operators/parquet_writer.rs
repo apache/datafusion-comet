@@ -208,7 +208,7 @@ pub struct ParquetWriterExec {
     /// Metrics
     metrics: ExecutionPlanMetricsSet,
     /// Cache for plan properties
-    cache: PlanProperties,
+    cache: Arc<PlanProperties>,
 }
 
 impl ParquetWriterExec {
@@ -228,12 +228,12 @@ impl ParquetWriterExec {
         // Preserve the input's partitioning so each partition writes its own file
         let input_partitioning = input.output_partitioning().clone();
 
-        let cache = PlanProperties::new(
+        let cache = Arc::new(PlanProperties::new(
             EquivalenceProperties::new(Arc::clone(&input.schema())),
             input_partitioning,
             EmissionType::Final,
             Boundedness::Bounded,
-        );
+        ));
 
         Ok(ParquetWriterExec {
             input,
@@ -405,11 +405,7 @@ impl ExecutionPlan for ParquetWriterExec {
         Some(self.metrics.clone_inner())
     }
 
-    fn statistics(&self) -> Result<Statistics> {
-        self.input.partition_statistics(None)
-    }
-
-    fn properties(&self) -> &PlanProperties {
+    fn properties(&self) -> &Arc<PlanProperties> {
         &self.cache
     }
 

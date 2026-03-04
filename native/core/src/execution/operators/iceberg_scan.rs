@@ -57,7 +57,7 @@ pub struct IcebergScanExec {
     /// Output schema after projection
     output_schema: SchemaRef,
     /// Cached execution plan properties
-    plan_properties: PlanProperties,
+    plan_properties: Arc<PlanProperties>,
     /// Catalog-specific configuration for FileIO
     catalog_properties: HashMap<String, String>,
     /// Pre-planned file scan tasks
@@ -92,13 +92,13 @@ impl IcebergScanExec {
         })
     }
 
-    fn compute_properties(schema: SchemaRef, num_partitions: usize) -> PlanProperties {
-        PlanProperties::new(
+    fn compute_properties(schema: SchemaRef, num_partitions: usize) -> Arc<PlanProperties> {
+        Arc::new(PlanProperties::new(
             EquivalenceProperties::new(schema),
             Partitioning::UnknownPartitioning(num_partitions),
             EmissionType::Incremental,
             Boundedness::Bounded,
-        )
+        ))
     }
 }
 
@@ -115,7 +115,7 @@ impl ExecutionPlan for IcebergScanExec {
         Arc::clone(&self.output_schema)
     }
 
-    fn properties(&self) -> &PlanProperties {
+    fn properties(&self) -> &Arc<PlanProperties> {
         &self.plan_properties
     }
 
@@ -269,7 +269,13 @@ where
                     _ => {
                         let adapter = self
                             .adapter_factory
-                            .create(Arc::clone(&self.schema), Arc::clone(&file_schema));
+                            .create(Arc::clone(&self.schema), Arc::clone(&file_schema))
+                            .map_err(|e| {
+                                DataFusionError::Execution(format!(
+                                    "Failed to create physical expr adapter: {}",
+                                    e
+                                ))
+                            })?;
                         let exprs =
                             build_projection_expressions(&self.schema, &adapter).map_err(|e| {
                                 DataFusionError::Execution(format!(
