@@ -35,6 +35,12 @@ mod tests {
             &session_state,
             None,
         )?);
+        let _ = session_state.register_udf(create_comet_physical_fun(
+            "aes_decrypt",
+            DataType::Binary,
+            &session_state,
+            None,
+        )?);
         let ctx = SessionContext::new_with_state(session_state);
 
         // 2. Execute SQL with literal values
