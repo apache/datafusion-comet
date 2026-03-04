@@ -36,7 +36,6 @@ use datafusion::{
         metrics::{ExecutionPlanMetricsSet, MetricsSet},
         stream::RecordBatchStreamAdapter,
         DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, SendableRecordBatchStream,
-        Statistics,
     },
 };
 use futures::{StreamExt, TryFutureExt, TryStreamExt};

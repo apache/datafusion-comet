@@ -79,7 +79,7 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-
 object_store_opendal = {version = "0.55.0", optional = true}
 hdfs-sys = {version = "0.3", optional = true, features = ["hdfs_3_3"]}
 opendal = { version ="0.55.0", optional = true, features = ["services-hdfs"] }
-iceberg = { workspace = true }
+iceberg = { workspace = true, optional = true }
 serde_json = "1.0"
 uuid = "1.21.0"
 
@@ -100,7 +100,8 @@ datafusion-functions-nested = { git = "https://github.com/apache/datafusion", br
 
 [features]
 backtrace = ["datafusion/backtrace"]
-default = ["hdfs-opendal"]
+default = []
+iceberg = ["dep:iceberg"]
 hdfs = ["datafusion-comet-objectstore-hdfs"]
 hdfs-opendal = ["opendal", "object_store_opendal", "hdfs-sys"]
 jemalloc = ["tikv-jemallocator", "tikv-jemalloc-ctl"]

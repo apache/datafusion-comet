@@ -22,12 +22,14 @@ use std::fmt::Debug;
 use jni::objects::GlobalRef;
 
 pub use copy::*;
+#[cfg(feature = "iceberg")]
 pub use iceberg_scan::*;
 pub use scan::*;
 
 mod copy;
 mod expand;
 pub use expand::ExpandExec;
+#[cfg(feature = "iceberg")]
 mod iceberg_scan;
 mod parquet_writer;
 pub use parquet_writer::ParquetWriterExec;

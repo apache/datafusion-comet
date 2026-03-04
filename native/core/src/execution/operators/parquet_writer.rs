@@ -23,16 +23,18 @@ use std::{
     fmt,
     fmt::{Debug, Formatter},
     fs::File,
-    io::Cursor,
     sync::Arc,
 };
 
+#[cfg(feature = "hdfs-opendal")]
+use std::io::Cursor;
+#[cfg(feature = "hdfs-opendal")]
 use opendal::Operator;
 
 use crate::execution::shuffle::CompressionCodec;
-use crate::parquet::parquet_support::{
-    create_hdfs_operator, is_hdfs_scheme, prepare_object_store_with_configs,
-};
+use crate::parquet::parquet_support::is_hdfs_scheme;
+#[cfg(feature = "hdfs-opendal")]
+use crate::parquet::parquet_support::{create_hdfs_operator, prepare_object_store_with_configs};
 use arrow::datatypes::{Schema, SchemaRef};
 use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
@@ -45,7 +47,7 @@ use datafusion::{
         metrics::{ExecutionPlanMetricsSet, MetricsSet},
         stream::RecordBatchStreamAdapter,
         DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, PlanProperties,
-        SendableRecordBatchStream, Statistics,
+        SendableRecordBatchStream,
     },
 };
 use futures::TryStreamExt;
@@ -64,6 +66,7 @@ enum ParquetWriter {
     /// Contains the arrow writer, HDFS operator, and destination path
     /// an Arrow writer writes to in-memory buffer the data converted to Parquet format
     /// The opendal::Writer is created lazily on first write
+    #[cfg(feature = "hdfs-opendal")]
     Remote(
         ArrowWriter<Cursor<Vec<u8>>>,
         Option<opendal::Writer>,
@@ -80,6 +83,7 @@ impl ParquetWriter {
     ) -> std::result::Result<(), parquet::errors::ParquetError> {
         match self {
             ParquetWriter::LocalFile(writer) => writer.write(batch),
+            #[cfg(feature = "hdfs-opendal")]
             ParquetWriter::Remote(
                 arrow_parquet_buffer_writer,
                 hdfs_writer_opt,
@@ -134,6 +138,7 @@ impl ParquetWriter {
                 writer.close()?;
                 Ok(())
             }
+            #[cfg(feature = "hdfs-opendal")]
             ParquetWriter::Remote(
                 arrow_parquet_buffer_writer,
                 mut hdfs_writer_opt,
@@ -284,7 +289,7 @@ impl ParquetWriterExec {
         })?;
 
         if is_hdfs_scheme(&url, object_store_options) {
-            // HDFS storage
+            #[cfg(feature = "hdfs-opendal")]
             {
                 // Use prepare_object_store_with_configs to create and register the object store
                 let (_object_store_url, object_store_path) = prepare_object_store_with_configs(
@@ -322,6 +327,12 @@ impl ParquetWriterExec {
                     None,
                     op,
                     object_store_path.to_string(),
+                ))
+            }
+            #[cfg(not(feature = "hdfs-opendal"))]
+            {
+                Err(DataFusionError::Execution(
+                    "HDFS support is not enabled. Rebuild with the 'hdfs-opendal' feature.".into(),
                 ))
             }
         } else if output_file_path.starts_with("file://")
