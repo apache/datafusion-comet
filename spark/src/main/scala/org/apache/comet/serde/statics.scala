@@ -22,10 +22,8 @@ package org.apache.comet.serde
 import org.apache.spark.sql.catalyst.expressions.{Attribute, ExpressionImplUtils}
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
 import org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils
-import org.apache.spark.sql.types.BooleanType
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProtoWithReturnType}
 
 object CometStaticInvoke extends CometExpressionSerde[StaticInvoke] {
 
@@ -37,7 +35,7 @@ object CometStaticInvoke extends CometExpressionSerde[StaticInvoke] {
     Map(
       ("readSidePadding", classOf[CharVarcharCodegenUtils]) -> CometScalarFunction(
         "read_side_padding"),
-      ("isLuhnNumber", classOf[ExpressionImplUtils]) -> CometLuhnCheck)
+      ("isLuhnNumber", classOf[ExpressionImplUtils]) -> CometScalarFunction("luhn_check"))
 
   override def convert(
       expr: StaticInvoke,
@@ -53,22 +51,5 @@ object CometStaticInvoke extends CometExpressionSerde[StaticInvoke] {
           expr.children: _*)
         None
     }
-  }
-}
-
-/**
- * Handler for ExpressionImplUtils.isLuhnNumber StaticInvoke (Spark 3.5+). Maps to
- * datafusion-spark's built-in luhn_check function.
- */
-private object CometLuhnCheck extends CometExpressionSerde[StaticInvoke] {
-
-  override def convert(
-      expr: StaticInvoke,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val childExpr = exprToProtoInternal(expr.arguments.head, inputs, binding)
-    val optExpr =
-      scalarFunctionExprToProtoWithReturnType("luhn_check", BooleanType, false, childExpr)
-    optExprWithInfo(optExpr, expr, expr.arguments.head)
   }
 }
