@@ -100,7 +100,7 @@ impl PhysicalExprAdapterFactory for SparkPhysicalExprAdapterFactory {
         &self,
         logical_file_schema: SchemaRef,
         physical_file_schema: SchemaRef,
-    ) -> Arc<dyn PhysicalExprAdapter> {
+    ) -> DataFusionResult<Arc<dyn PhysicalExprAdapter>> {
         // When case-insensitive, remap physical schema field names to match logical
         // field names. The DefaultPhysicalExprAdapter uses exact name matching, so
         // without this remapping, columns like "a" won't match logical "A" and will
@@ -145,16 +145,16 @@ impl PhysicalExprAdapterFactory for SparkPhysicalExprAdapterFactory {
         let default_adapter = default_factory.create(
             Arc::clone(&logical_file_schema),
             Arc::clone(&adapted_physical_schema),
-        );
+        )?;
 
-        Arc::new(SparkPhysicalExprAdapter {
+        Ok(Arc::new(SparkPhysicalExprAdapter {
             logical_file_schema,
             physical_file_schema: adapted_physical_schema,
             parquet_options: self.parquet_options.clone(),
             default_values: self.default_values.clone(),
             default_adapter,
             logical_to_physical_names,
-        })
+        }))
     }
 }
 

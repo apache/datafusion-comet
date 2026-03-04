@@ -477,7 +477,7 @@ pub(crate) fn prepare_object_store_with_configs(
     .map_err(|e| ExecutionError::GeneralError(e.to_string()))?;
 
     let object_store_url = ObjectStoreUrl::parse(url_key.clone())?;
-    runtime_env.register_object_store(&url, Arc::from(object_store));
+    runtime_env.register_object_store(&url, Arc::from(object_store) as Arc<dyn ObjectStore>);
     Ok((object_store_url, object_store_path))
 }
 
