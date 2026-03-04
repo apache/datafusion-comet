@@ -20,7 +20,7 @@ use arrow::datatypes::{DataType, Schema};
 use datafusion::common::{internal_err, Result};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ColumnarValue;
-use std::fmt::Formatter;
+use std::fmt::{Display, Formatter};
 use std::{hash::Hash, sync::Arc};
 
 /// This is similar to `UnKnownColumn` in DataFusion, but it has data type.
@@ -64,8 +64,8 @@ impl PhysicalExpr for UnboundColumn {
         self
     }
 
-    fn fmt_sql(&self, _: &mut Formatter<'_>) -> std::fmt::Result {
-        unimplemented!()
+    fn fmt_sql(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        Display::fmt(self, f)
     }
 
     /// Get the data type of this expression, given the schema of the input

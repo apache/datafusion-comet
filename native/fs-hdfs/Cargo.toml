@@ -52,5 +52,5 @@ url = "^2.2"
 log = "^0.4"
 
 [dev-dependencies]
-uuid = {version = "^1.20", features = ["v4"]}
-tempfile = "^3.25"
+uuid = {version = "^1.21", features = ["v4"]}
+tempfile = "^3.26"

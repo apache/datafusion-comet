@@ -15,7 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::cast::MICROS_PER_SECOND;
 use crate::SparkError;
 use arrow::array::{
     Array, ArrayRef, ArrowPrimitiveType, AsArray, GenericStringArray, PrimitiveArray,
@@ -26,6 +25,8 @@ use arrow::error::ArrowError;
 use datafusion::common::cast::as_generic_string_array;
 use num::integer::div_floor;
 use std::sync::Arc;
+
+pub(crate) const MICROS_PER_SECOND: i64 = 1000000;
 
 /// A fork & modified version of Arrow's `unary_dyn` which is being deprecated
 pub fn unary_dyn<F, T>(array: &ArrayRef, op: F) -> Result<ArrayRef, ArrowError>
@@ -112,15 +113,6 @@ fn trim_end(s: &str) -> &str {
 #[inline]
 pub fn cast_overflow(value: &str, from_type: &str, to_type: &str) -> SparkError {
     SparkError::CastOverFlow {
-        value: value.to_string(),
-        from_type: from_type.to_string(),
-        to_type: to_type.to_string(),
-    }
-}
-
-#[inline]
-pub fn invalid_value(value: &str, from_type: &str, to_type: &str) -> SparkError {
-    SparkError::CastInvalidValue {
         value: value.to_string(),
         from_type: from_type.to_string(),
         to_type: to_type.to_string(),
