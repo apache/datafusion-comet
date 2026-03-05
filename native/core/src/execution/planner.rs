@@ -392,19 +392,23 @@ impl PhysicalPlanner {
                 }
 
                 // Fuse Cast(Decimal128→Decimal128) + CheckOverflow into single rescale+check
+                // Only fuse when the Cast target type matches the CheckOverflow output type
                 if let Some(cast) = child.as_any().downcast_ref::<Cast>() {
                     if let (
                         DataType::Decimal128(p_out, s_out),
                         Ok(DataType::Decimal128(_p_in, s_in)),
                     ) = (&data_type, cast.child.data_type(&input_schema))
                     {
-                        return Ok(Arc::new(DecimalRescaleCheckOverflow::new(
-                            Arc::clone(&cast.child),
-                            s_in,
-                            *p_out,
-                            *s_out,
-                            fail_on_error,
-                        )));
+                        let cast_target = cast.data_type(&input_schema)?;
+                        if cast_target == data_type {
+                            return Ok(Arc::new(DecimalRescaleCheckOverflow::new(
+                                Arc::clone(&cast.child),
+                                s_in,
+                                *p_out,
+                                *s_out,
+                                fail_on_error,
+                            )));
+                        }
                     }
                 }
 
@@ -702,13 +706,13 @@ impl PhysicalPlanner {
         ) {
             (
                 DataFusionOperator::Plus | DataFusionOperator::Minus | DataFusionOperator::Multiply,
-                Ok(DataType::Decimal128(_p1, _s1)),
-                Ok(DataType::Decimal128(_p2, _s2)),
+                Ok(DataType::Decimal128(p1, s1)),
+                Ok(DataType::Decimal128(p2, s2)),
             ) if ((op == DataFusionOperator::Plus || op == DataFusionOperator::Minus)
-                && max(_s1, _s2) as u8 + max(_p1 - _s1 as u8, _p2 - _s2 as u8)
+                && max(s1, s2) as u8 + max(p1 - s1 as u8, p2 - s2 as u8)
                     >= DECIMAL128_MAX_PRECISION)
                 || (op == DataFusionOperator::Multiply
-                    && _p1 + _p2 >= DECIMAL128_MAX_PRECISION) =>
+                    && p1 + p2 >= DECIMAL128_MAX_PRECISION) =>
             {
                 let data_type = return_type.map(to_arrow_datatype).unwrap();
                 let (p_out, s_out) = match &data_type {

@@ -95,8 +95,13 @@ impl Display for DecimalRescaleCheckOverflow {
 }
 
 /// Maximum absolute value for a given decimal precision: 10^p - 1.
+/// Precision must be <= 38 (max for Decimal128).
 #[inline]
 fn precision_bound(precision: u8) -> i128 {
+    assert!(
+        precision <= 38,
+        "precision_bound: precision {precision} exceeds maximum 38"
+    );
     10i128.pow(precision as u32) - 1
 }
 
@@ -129,7 +134,7 @@ fn rescale_and_check(
         // divisor = 10^(-delta), half = divisor / 2
         let divisor = scale_factor; // already 10^abs(delta)
         let half = divisor / 2;
-        let sign = if value < 0 { -1i128 } else { 1i128 };
+        let sign = value.signum();
         (value + sign * half) / divisor
     } else {
         value
@@ -172,6 +177,14 @@ impl PhysicalExpr for DecimalRescaleCheckOverflow {
         let arg = self.child.evaluate(batch)?;
         let delta = self.output_scale - self.input_scale;
         let abs_delta = delta.unsigned_abs();
+        // If abs_delta > 38, the scale factor overflows i128. In that case,
+        // any non-zero value will overflow the output precision, so we treat
+        // it as an immediate overflow condition.
+        if abs_delta > 38 {
+            return Err(DataFusionError::Execution(format!(
+                "DecimalRescaleCheckOverflow: scale delta {delta} exceeds maximum supported range"
+            )));
+        }
         let scale_factor = 10i128.pow(abs_delta as u32);
         let bound = precision_bound(self.output_precision);
         let fail_on_error = self.fail_on_error;
@@ -202,11 +215,14 @@ impl PhysicalExpr for DecimalRescaleCheckOverflow {
                 Ok(ColumnarValue::Array(result))
             }
             ColumnarValue::Scalar(ScalarValue::Decimal128(v, _precision, _scale)) => {
-                let new_v = v.and_then(|val| {
-                    rescale_and_check(val, delta, scale_factor, bound, fail_on_error)
-                        .ok()
-                        .and_then(|r| if r == i128::MAX { None } else { Some(r) })
-                });
+                let new_v = match v {
+                    Some(val) => {
+                        let r = rescale_and_check(val, delta, scale_factor, bound, fail_on_error)
+                            .map_err(|e| DataFusionError::ArrowError(Box::new(e), None))?;
+                        if r == i128::MAX { None } else { Some(r) }
+                    }
+                    None => None,
+                };
                 Ok(ColumnarValue::Scalar(ScalarValue::Decimal128(
                     new_v, p_out, s_out,
                 )))
@@ -225,6 +241,12 @@ impl PhysicalExpr for DecimalRescaleCheckOverflow {
         self: Arc<Self>,
         children: Vec<Arc<dyn PhysicalExpr>>,
     ) -> datafusion::common::Result<Arc<dyn PhysicalExpr>> {
+        if children.len() != 1 {
+            return Err(DataFusionError::Internal(format!(
+                "DecimalRescaleCheckOverflow expects 1 child, got {}",
+                children.len()
+            )));
+        }
         Ok(Arc::new(DecimalRescaleCheckOverflow::new(
             Arc::clone(&children[0]),
             self.input_scale,
@@ -427,5 +449,30 @@ mod tests {
             }
             _ => panic!("expected decimal scalar"),
         }
+    }
+
+    #[test]
+    fn test_scalar_overflow_ansi_returns_error() {
+        // fail_on_error=true must propagate the error, not silently return None
+        let schema = Schema::new(vec![Field::new("col", DataType::Decimal128(38, 0), true)]);
+        let batch = RecordBatch::new_empty(Arc::new(schema));
+        let expr = DecimalRescaleCheckOverflow::new(
+            Arc::new(ScalarChild(Some(10), 38, 0)),
+            0,
+            3,
+            2,
+            true, // fail_on_error = true
+        );
+        let result = expr.evaluate(&batch);
+        assert!(result.is_err()); // must be error, not Ok(None)
+    }
+
+    #[test]
+    fn test_large_scale_delta_returns_error() {
+        // delta = output_scale - input_scale = 38 - (-1) = 39
+        // 10i128.pow(39) would overflow, so we must reject gracefully
+        let batch = make_batch(vec![Some(1)], 38, -1);
+        let result = eval_expr(&batch, -1, 38, 38, false);
+        assert!(result.is_err());
     }
 }

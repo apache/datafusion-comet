@@ -146,9 +146,10 @@ fn div_round_half_up(value: i256, divisor: i256) -> i256 {
 /// i256 constant for 10.
 const I256_TEN: i256 = i256::from_i128(10);
 
-/// Compute 10^exp as i256.
+/// Compute 10^exp as i256. Panics if exp > 76 (max representable power of 10 in i256).
 #[inline]
 fn i256_pow10(exp: u32) -> i256 {
+    assert!(exp <= 76, "i256_pow10: exponent {exp} exceeds maximum 76");
     let mut result = i256::ONE;
     for _ in 0..exp {
         result = result.wrapping_mul(I256_TEN);
@@ -212,9 +213,16 @@ impl PhysicalExpr for WideDecimalBinaryExpr {
                 let max_scale = std::cmp::max(s1, s2);
                 let l_scale_up = i256_pow10((max_scale - s1) as u32);
                 let r_scale_up = i256_pow10((max_scale - s2) as u32);
-                let need_rescale = s_out < max_scale;
-                let rescale_divisor = if need_rescale {
-                    i256_pow10((max_scale - s_out) as u32)
+                // After add/sub at max_scale, we may need to rescale to s_out
+                let scale_diff = max_scale as i16 - s_out as i16;
+                let (need_scale_down, need_scale_up) = (scale_diff > 0, scale_diff < 0);
+                let rescale_divisor = if need_scale_down {
+                    i256_pow10(scale_diff as u32)
+                } else {
+                    i256::ONE
+                };
+                let scale_up_factor = if need_scale_up {
+                    i256_pow10((-scale_diff) as u32)
                 } else {
                     i256::ONE
                 };
@@ -227,8 +235,10 @@ impl PhysicalExpr for WideDecimalBinaryExpr {
                         WideDecimalOp::Subtract => l256.wrapping_sub(r256),
                         _ => unreachable!(),
                     };
-                    let result = if need_rescale {
+                    let result = if need_scale_down {
                         div_round_half_up(raw, rescale_divisor)
+                    } else if need_scale_up {
+                        raw.wrapping_mul(scale_up_factor)
                     } else {
                         raw
                     };
@@ -273,6 +283,12 @@ impl PhysicalExpr for WideDecimalBinaryExpr {
         self: Arc<Self>,
         children: Vec<Arc<dyn PhysicalExpr>>,
     ) -> Result<Arc<dyn PhysicalExpr>> {
+        if children.len() != 2 {
+            return Err(datafusion::common::DataFusionError::Internal(format!(
+                "WideDecimalBinaryExpr expects 2 children, got {}",
+                children.len()
+            )));
+        }
         Ok(Arc::new(WideDecimalBinaryExpr::new(
             Arc::clone(&children[0]),
             Arc::clone(&children[1]),
@@ -498,5 +514,40 @@ mod tests {
         let result = eval_expr(&batch, WideDecimalOp::Add, 38, 0, EvalMode::Legacy).unwrap();
         let arr = result.as_primitive::<Decimal128Type>();
         assert_eq!(arr.value(0), max_val);
+    }
+
+    #[test]
+    fn test_add_scale_up_to_output() {
+        // When s_out > max(s1, s2), result must be scaled UP
+        // Decimal128(10, 2) + Decimal128(10, 2) with output scale 4
+        // 1.50 + 0.25 = 1.75, at scale 4 = 17500
+        let batch = make_batch(
+            vec![Some(150)], // 1.50
+            10,
+            2,
+            vec![Some(25)], // 0.25
+            10,
+            2,
+        );
+        let result = eval_expr(&batch, WideDecimalOp::Add, 38, 4, EvalMode::Legacy).unwrap();
+        let arr = result.as_primitive::<Decimal128Type>();
+        assert_eq!(arr.value(0), 17500); // 1.7500
+    }
+
+    #[test]
+    fn test_subtract_scale_up_to_output() {
+        // s_out (4) > max(s1, s2) (2) — verify scale-up path for subtract
+        let batch = make_batch(
+            vec![Some(300)], // 3.00
+            10,
+            2,
+            vec![Some(100)], // 1.00
+            10,
+            2,
+        );
+        let result =
+            eval_expr(&batch, WideDecimalOp::Subtract, 38, 4, EvalMode::Legacy).unwrap();
+        let arr = result.as_primitive::<Decimal128Type>();
+        assert_eq!(arr.value(0), 20000); // 2.0000
     }
 }
