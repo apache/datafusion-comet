@@ -25,7 +25,9 @@ Supports two data sources:
 
 import argparse
 from datetime import datetime
+import hashlib
 import json
+import os
 from pyspark.sql import SparkSession
 import time
 from typing import Dict
@@ -45,22 +47,34 @@ def dedup_columns(df):
     return df.toDF(*new_cols)
 
 
+def result_hash(rows):
+    """Compute a deterministic MD5 hash from collected rows."""
+    sorted_rows = sorted(rows, key=lambda r: str(r))
+    h = hashlib.md5()
+    for row in sorted_rows:
+        h.update(str(row).encode("utf-8"))
+    return h.hexdigest()
+
+
 def main(
     benchmark: str,
     data_path: str,
     catalog: str,
     database: str,
-    query_path: str,
     iterations: int,
     output: str,
     name: str,
     format: str,
     query_num: int = None,
     write_path: str = None,
-    options: Dict[str, str] = None
+    options: Dict[str, str] = None,
 ):
     if options is None:
         options = {}
+
+    query_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "queries", benchmark
+    )
 
     spark = SparkSession.builder \
         .appName(f"{name} benchmark derived from {benchmark}") \
@@ -94,7 +108,10 @@ def main(
             print(f"Registering table {table} from {source}")
             df = spark.table(source)
         else:
+            # Support both "customer/" and "customer.parquet/" layouts
             source = f"{data_path}/{table}.{format}"
+            if not os.path.exists(source):
+                source = f"{data_path}/{table}"
             print(f"Registering table {table} from {source}")
             df = spark.read.format(format).options(**options).load(source)
         df.createOrReplaceTempView(table)
@@ -104,7 +121,6 @@ def main(
     results = {
         'engine': 'datafusion-comet',
         'benchmark': benchmark,
-        'query_path': query_path,
         'spark_conf': conf_dict,
     }
     if using_iceberg:
@@ -156,14 +172,19 @@ def main(
                                 print(f"Results written to {output_path}")
                         else:
                             rows = df.collect()
-                            print(f"Query {query} returned {len(rows)} rows")
+                            row_count = len(rows)
+                            row_hash = result_hash(rows)
+                            print(f"Query {query} returned {row_count} rows, hash={row_hash}")
 
                 end_time = time.time()
                 elapsed = end_time - start_time
                 print(f"Query {query} took {elapsed:.2f} seconds")
 
-                query_timings = results.setdefault(query, [])
-                query_timings.append(elapsed)
+                query_result = results.setdefault(query, {"durations": []})
+                query_result["durations"].append(round(elapsed, 3))
+                if "row_count" not in query_result and not write_path:
+                    query_result["row_count"] = row_count
+                    query_result["result_hash"] = row_hash
 
         iter_end_time = time.time()
         print(f"\nIteration {iteration + 1} took {iter_end_time - iter_start_time:.2f} seconds")
@@ -216,10 +237,6 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
-        "--queries", required=True,
-        help="Path to query SQL files"
-    )
-    parser.add_argument(
         "--iterations", type=int, default=1,
         help="Number of iterations"
     )
@@ -246,12 +263,11 @@ if __name__ == "__main__":
         args.data,
         args.catalog,
         args.database,
-        args.queries,
         args.iterations,
         args.output,
         args.name,
         args.format,
         args.query,
         args.write,
-        args.options
+        args.options,
     )
