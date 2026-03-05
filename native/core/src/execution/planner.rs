@@ -1582,8 +1582,7 @@ impl PhysicalPlanner {
                 let num_partitions = self
                     .spark_conf
                     .get_usize(COMET_GRACE_HASH_JOIN_NUM_PARTITIONS, 16);
-                let executor_cores =
-                    self.spark_conf.get_usize(SPARK_EXECUTOR_CORES, 1).max(1);
+                let executor_cores = self.spark_conf.get_usize(SPARK_EXECUTOR_CORES, 1).max(1);
                 // The configured threshold is the total budget across all
                 // concurrent tasks. Divide by executor cores so each task's
                 // fast-path hash table stays within its fair share.
@@ -1594,17 +1593,16 @@ impl PhysicalPlanner {
 
                 let build_left = join.build_side == BuildSide::BuildLeft as i32;
 
-                let grace_join =
-                    Arc::new(crate::execution::operators::GraceHashJoinExec::try_new(
-                        Arc::clone(&left),
-                        Arc::clone(&right),
-                        join_params.join_on,
-                        join_params.join_filter,
-                        &join_params.join_type,
-                        num_partitions,
-                        build_left,
-                        fast_path_threshold,
-                    )?);
+                let grace_join = Arc::new(crate::execution::operators::GraceHashJoinExec::try_new(
+                    Arc::clone(&left),
+                    Arc::clone(&right),
+                    join_params.join_on,
+                    join_params.join_filter,
+                    &join_params.join_type,
+                    num_partitions,
+                    build_left,
+                    fast_path_threshold,
+                )?);
 
                 Ok((
                     scans,

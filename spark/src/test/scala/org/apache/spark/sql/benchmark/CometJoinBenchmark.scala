@@ -122,9 +122,7 @@ object CometJoinBenchmark extends CometBenchmarkBase {
 
     // 3. Comet Grace Hash Join (replace SMJ with ShuffledHashJoin, Comet executes with GHJ)
     benchmark.addCase("Comet Grace Hash Join") { _ =>
-      withSQLConf(
-        (cometBaseConf ++ Map(
-          CometConf.COMET_REPLACE_SMJ.key -> "true")).toSeq: _*) {
+      withSQLConf((cometBaseConf ++ Map(CometConf.COMET_REPLACE_SMJ.key -> "true")).toSeq: _*) {
         spark.sql(query).noop()
       }
     }
