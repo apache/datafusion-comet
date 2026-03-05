@@ -29,12 +29,12 @@ Supports all join types: Inner, Left, Right, Full, LeftSemi, LeftAnti, LeftMark,
 
 ## Configuration
 
-| Config Key | Type | Default | Description |
-| --- | --- | --- | --- |
-| `spark.comet.exec.replaceSortMergeJoin` | boolean | `false` | Replace SortMergeJoin with ShuffledHashJoin (enables GHJ) |
-| `spark.comet.exec.replaceSortMergeJoin.maxBuildSize` | long | `-1` | Max build-side bytes for SMJ replacement. `-1` = no limit |
-| `spark.comet.exec.graceHashJoin.numPartitions` | int | `16` | Number of hash partitions (buckets) |
-| `spark.comet.exec.graceHashJoin.fastPathThreshold` | int | `10485760` | Total fast-path budget in bytes, divided by executor cores |
+| Config Key                                           | Type    | Default    | Description                                                |
+| ---------------------------------------------------- | ------- | ---------- | ---------------------------------------------------------- |
+| `spark.comet.exec.replaceSortMergeJoin`              | boolean | `false`    | Replace SortMergeJoin with ShuffledHashJoin (enables GHJ)  |
+| `spark.comet.exec.replaceSortMergeJoin.maxBuildSize` | long    | `-1`       | Max build-side bytes for SMJ replacement. `-1` = no limit  |
+| `spark.comet.exec.graceHashJoin.numPartitions`       | int     | `16`       | Number of hash partitions (buckets)                        |
+| `spark.comet.exec.graceHashJoin.fastPathThreshold`   | int     | `10485760` | Total fast-path budget in bytes, divided by executor cores |
 
 ### SMJ Replacement Guard
 
@@ -273,18 +273,18 @@ When `build_left = false`, the `HashJoinExec` is created with swapped inputs and
 
 ## Metrics
 
-| Metric | Description |
-| --- | --- |
-| `build_time` | Time spent partitioning the build side |
-| `probe_time` | Time spent partitioning the probe side |
-| `spill_count` | Number of partition spill events |
-| `spilled_bytes` | Total bytes written to spill files |
-| `build_input_rows` | Total rows from build input |
-| `build_input_batches` | Total batches from build input |
-| `input_rows` | Total rows from probe input |
-| `input_batches` | Total batches from probe input |
-| `output_rows` | Total output rows |
-| `elapsed_compute` | Total compute time |
+| Metric                | Description                            |
+| --------------------- | -------------------------------------- |
+| `build_time`          | Time spent partitioning the build side |
+| `probe_time`          | Time spent partitioning the probe side |
+| `spill_count`         | Number of partition spill events       |
+| `spilled_bytes`       | Total bytes written to spill files     |
+| `build_input_rows`    | Total rows from build input            |
+| `build_input_batches` | Total batches from build input         |
+| `input_rows`          | Total rows from probe input            |
+| `input_batches`       | Total batches from probe input         |
+| `output_rows`         | Total output rows                      |
+| `elapsed_compute`     | Total compute time                     |
 
 ## Future Work
 
