@@ -305,6 +305,29 @@ object CometConf extends ShimCometConf {
   val COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("localTableScan", defaultValue = false)
 
+  val COMET_EXEC_GRACE_HASH_JOIN_NUM_PARTITIONS: ConfigEntry[Int] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.graceHashJoin.numPartitions")
+      .category(CATEGORY_EXEC)
+      .doc("The number of partitions (buckets) to use for Grace Hash Join. A higher number " +
+        "reduces the size of each partition but increases overhead.")
+      .intConf
+      .checkValue(v => v > 0, "The number of partitions must be positive.")
+      .createWithDefault(16)
+
+  val COMET_EXEC_GRACE_HASH_JOIN_FAST_PATH_THRESHOLD: ConfigEntry[Int] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.graceHashJoin.fastPathThreshold")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Total memory budget in bytes for Grace Hash Join fast-path hash tables across " +
+          "all concurrent tasks. This is divided by spark.executor.cores to get the per-task " +
+          "threshold. When a build side fits in memory and is smaller than the per-task " +
+          "threshold, the join executes as a single HashJoinExec without spilling. " +
+          "Set to 0 to disable the fast path. Larger values risk OOM because HashJoinExec " +
+          "creates non-spillable hash tables.")
+      .intConf
+      .checkValue(v => v >= 0, "The fast path threshold must be non-negative.")
+      .createWithDefault(10 * 1024 * 1024) // 10 MB
+
   val COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.columnarToRow.native.enabled")
       .category(CATEGORY_EXEC)
@@ -380,6 +403,18 @@ object CometConf extends ShimCometConf {
         s"for improved performance. This feature is not stable yet. $TUNING_GUIDE.")
       .booleanConf
       .createWithDefault(false)
+
+  val COMET_REPLACE_SMJ_MAX_BUILD_SIZE: ConfigEntry[Long] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.replaceSortMergeJoin.maxBuildSize")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Maximum estimated size in bytes of the build side for replacing SortMergeJoin " +
+          "with ShuffledHashJoin. When the build side's logical plan statistics exceed this " +
+          "threshold, the SortMergeJoin is kept because sort-merge join's streaming merge " +
+          "on pre-sorted data outperforms hash join's per-task hash table construction " +
+          "for large build sides. Set to -1 to disable this check and always replace.")
+      .longConf
+      .createWithDefault(-1L)
 
   val COMET_EXEC_SHUFFLE_WITH_HASH_PARTITIONING_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.native.shuffle.partitioning.hash.enabled")
