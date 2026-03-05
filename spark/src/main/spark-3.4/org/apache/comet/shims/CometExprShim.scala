@@ -43,7 +43,7 @@ trait CometExprShim extends CommonStringExprs with CommonDateTimeExprs {
         // Right child is the encoding expression.
         stringDecode(expr, s.charset, s.bin, inputs, binding)
 
-      case e if e.getClass.getName == "org.apache.spark.sql.catalyst.expressions.SecondsOfTime" =>
+      case _: SecondsOfTime =>
         secondsOfTimeToProto(e, inputs, binding)
 
       case _ => None
