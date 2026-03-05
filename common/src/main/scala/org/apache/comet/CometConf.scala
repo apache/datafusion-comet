@@ -414,6 +414,18 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_REPLACE_SMJ_MAX_BUILD_SIZE: ConfigEntry[Long] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.replaceSortMergeJoin.maxBuildSize")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Maximum estimated size in bytes of the build side for replacing SortMergeJoin " +
+          "with ShuffledHashJoin. When the build side's logical plan statistics exceed this " +
+          "threshold, the SortMergeJoin is kept because sort-merge join's streaming merge " +
+          "on pre-sorted data outperforms hash join's per-task hash table construction " +
+          "for large build sides. Set to -1 to disable this check and always replace.")
+      .longConf
+      .createWithDefault(-1L)
+
   val COMET_EXEC_SHUFFLE_WITH_HASH_PARTITIONING_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.native.shuffle.partitioning.hash.enabled")
       .category(CATEGORY_SHUFFLE)

@@ -24,7 +24,9 @@ import org.apache.spark.sql.catalyst.plans.{LeftAnti, LeftSemi}
 import org.apache.spark.sql.catalyst.plans.logical.Join
 import org.apache.spark.sql.execution.{SortExec, SparkPlan}
 import org.apache.spark.sql.execution.joins.{ShuffledHashJoinExec, SortMergeJoinExec}
+import org.apache.spark.sql.internal.SQLConf
 
+import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 
 /**
@@ -64,6 +66,28 @@ object RewriteJoin extends JoinSelectionHelper {
     case _ => plan
   }
 
+  /**
+   * Returns true if the build side is small enough to benefit from hash join over sort-merge
+   * join. When both sides are large, SMJ's streaming merge on pre-sorted data can outperform hash
+   * join's per-task hash table construction.
+   */
+  private def buildSideSmallEnough(smj: SortMergeJoinExec, buildSide: BuildSide): Boolean = {
+    val maxBuildSize = CometConf.COMET_REPLACE_SMJ_MAX_BUILD_SIZE.get()
+    if (maxBuildSize <= 0) {
+      return true // no limit
+    }
+    smj.logicalLink match {
+      case Some(join: Join) =>
+        val buildSize = buildSide match {
+          case BuildLeft => join.left.stats.sizeInBytes
+          case BuildRight => join.right.stats.sizeInBytes
+        }
+        buildSize <= maxBuildSize
+      case _ =>
+        true // no stats available, allow the rewrite
+    }
+  }
+
   def rewrite(plan: SparkPlan): SparkPlan = plan match {
     case smj: SortMergeJoinExec =>
       getSmjBuildSide(smj) match {
@@ -74,6 +98,12 @@ object RewriteJoin extends JoinSelectionHelper {
             smj,
             "Cannot rewrite SortMergeJoin to HashJoin: " +
               s"BuildRight with ${smj.joinType} is not supported")
+          plan
+        case Some(buildSide) if !buildSideSmallEnough(smj, buildSide) =>
+          withInfo(
+            smj,
+            "Cannot rewrite SortMergeJoin to HashJoin: " +
+              "build side exceeds spark.comet.exec.replaceSortMergeJoin.maxBuildSize")
           plan
         case Some(buildSide) =>
           ShuffledHashJoinExec(
