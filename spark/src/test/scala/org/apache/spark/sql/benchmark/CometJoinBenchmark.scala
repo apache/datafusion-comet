@@ -115,28 +115,16 @@ object CometJoinBenchmark extends CometBenchmarkBase {
       withSQLConf(
         (cometBaseConf ++ Map(
           CometConf.COMET_REPLACE_SMJ.key -> "false",
-          CometConf.COMET_EXEC_GRACE_HASH_JOIN_ENABLED.key -> "false",
           "spark.sql.join.preferSortMergeJoin" -> "true")).toSeq: _*) {
         spark.sql(query).noop()
       }
     }
 
-    // 3. Comet Hash Join (replace SMJ with ShuffledHashJoin, Comet executes)
-    benchmark.addCase("Comet Hash Join") { _ =>
-      withSQLConf(
-        (cometBaseConf ++ Map(
-          CometConf.COMET_REPLACE_SMJ.key -> "true",
-          CometConf.COMET_EXEC_GRACE_HASH_JOIN_ENABLED.key -> "false")).toSeq: _*) {
-        spark.sql(query).noop()
-      }
-    }
-
-    // 4. Comet Grace Hash Join (replace SMJ, use grace hash join)
+    // 3. Comet Grace Hash Join (replace SMJ with ShuffledHashJoin, Comet executes with GHJ)
     benchmark.addCase("Comet Grace Hash Join") { _ =>
       withSQLConf(
         (cometBaseConf ++ Map(
-          CometConf.COMET_REPLACE_SMJ.key -> "true",
-          CometConf.COMET_EXEC_GRACE_HASH_JOIN_ENABLED.key -> "true")).toSeq: _*) {
+          CometConf.COMET_REPLACE_SMJ.key -> "true")).toSeq: _*) {
         spark.sql(query).noop()
       }
     }

@@ -21,8 +21,6 @@ pub mod expression_registry;
 pub mod macros;
 pub mod operator_registry;
 
-use log::info;
-
 use crate::execution::operators::init_csv_datasource_exec;
 use crate::execution::operators::IcebergScanExec;
 use crate::{
@@ -63,7 +61,7 @@ use datafusion::{
     physical_plan::{
         aggregates::{AggregateMode as DFAggregateMode, PhysicalGroupBy},
         empty::EmptyExec,
-        joins::{utils::JoinFilter, HashJoinExec, PartitionMode, SortMergeJoinExec},
+        joins::{utils::JoinFilter, SortMergeJoinExec},
         limit::LocalLimitExec,
         projection::ProjectionExec,
         sorts::sort::SortExec,
@@ -1576,110 +1574,46 @@ impl PhysicalPlanner {
                 let left = Arc::clone(&join_params.left.native_plan);
                 let right = Arc::clone(&join_params.right.native_plan);
 
-                // Check if Grace Hash Join is enabled
-                {
-                    use crate::execution::spark_config::{
-                        SparkConfig, COMET_GRACE_HASH_JOIN_ENABLED,
-                        COMET_GRACE_HASH_JOIN_FAST_PATH_THRESHOLD,
-                        COMET_GRACE_HASH_JOIN_NUM_PARTITIONS, SPARK_EXECUTOR_CORES,
-                    };
-                    let grace_enabled = self.spark_conf.get_bool(COMET_GRACE_HASH_JOIN_ENABLED);
+                use crate::execution::spark_config::{
+                    SparkConfig, COMET_GRACE_HASH_JOIN_FAST_PATH_THRESHOLD,
+                    COMET_GRACE_HASH_JOIN_NUM_PARTITIONS, SPARK_EXECUTOR_CORES,
+                };
 
-                    if grace_enabled {
-                        let num_partitions = self
-                            .spark_conf
-                            .get_usize(COMET_GRACE_HASH_JOIN_NUM_PARTITIONS, 16);
-                        let executor_cores =
-                            self.spark_conf.get_usize(SPARK_EXECUTOR_CORES, 1).max(1);
-                        // The configured threshold is the total budget across all
-                        // concurrent tasks. Divide by executor cores so each task's
-                        // fast-path hash table stays within its fair share.
-                        let fast_path_threshold = self
-                            .spark_conf
-                            .get_usize(COMET_GRACE_HASH_JOIN_FAST_PATH_THRESHOLD, 10 * 1024 * 1024)
-                            / executor_cores;
+                let num_partitions = self
+                    .spark_conf
+                    .get_usize(COMET_GRACE_HASH_JOIN_NUM_PARTITIONS, 16);
+                let executor_cores =
+                    self.spark_conf.get_usize(SPARK_EXECUTOR_CORES, 1).max(1);
+                // The configured threshold is the total budget across all
+                // concurrent tasks. Divide by executor cores so each task's
+                // fast-path hash table stays within its fair share.
+                let fast_path_threshold = self
+                    .spark_conf
+                    .get_usize(COMET_GRACE_HASH_JOIN_FAST_PATH_THRESHOLD, 10 * 1024 * 1024)
+                    / executor_cores;
 
-                        let build_left = join.build_side == BuildSide::BuildLeft as i32;
+                let build_left = join.build_side == BuildSide::BuildLeft as i32;
 
-                        let grace_join =
-                            Arc::new(crate::execution::operators::GraceHashJoinExec::try_new(
-                                Arc::clone(&left),
-                                Arc::clone(&right),
-                                join_params.join_on,
-                                join_params.join_filter,
-                                &join_params.join_type,
-                                num_partitions,
-                                build_left,
-                                fast_path_threshold,
-                            )?);
+                let grace_join =
+                    Arc::new(crate::execution::operators::GraceHashJoinExec::try_new(
+                        Arc::clone(&left),
+                        Arc::clone(&right),
+                        join_params.join_on,
+                        join_params.join_filter,
+                        &join_params.join_type,
+                        num_partitions,
+                        build_left,
+                        fast_path_threshold,
+                    )?);
 
-                        return Ok((
-                            scans,
-                            Arc::new(SparkPlan::new(
-                                spark_plan.plan_id,
-                                grace_join,
-                                vec![join_params.left, join_params.right],
-                            )),
-                        ));
-                    }
-                }
-
-                {
-                    use crate::execution::spark_config::{
-                        SparkConfig, COMET_GRACE_HASH_JOIN_ENABLED,
-                    };
-                    info!(
-                        "PLANNER: creating plain HashJoinExec (NOT GraceHashJoin). \
-                         join_type={:?}, build_side={:?}, grace_enabled={}",
-                        join_params.join_type,
-                        join.build_side,
-                        self.spark_conf.get_bool(COMET_GRACE_HASH_JOIN_ENABLED),
-                    );
-                }
-
-                let hash_join = Arc::new(HashJoinExec::try_new(
-                    left,
-                    right,
-                    join_params.join_on,
-                    join_params.join_filter,
-                    &join_params.join_type,
-                    None,
-                    PartitionMode::Partitioned,
-                    // null doesn't equal to null in Spark join key. If the join key is
-                    // `EqualNullSafe`, Spark will rewrite it during planning.
-                    NullEquality::NullEqualsNothing,
-                )?);
-
-                // If the hash join is build right, we need to swap the left and right
-                if join.build_side == BuildSide::BuildLeft as i32 {
-                    Ok((
-                        scans,
-                        Arc::new(SparkPlan::new(
-                            spark_plan.plan_id,
-                            hash_join,
-                            vec![join_params.left, join_params.right],
-                        )),
-                    ))
-                } else {
-                    let swapped_hash_join =
-                        hash_join.as_ref().swap_inputs(PartitionMode::Partitioned)?;
-
-                    let mut additional_native_plans = vec![];
-                    if swapped_hash_join.as_any().is::<ProjectionExec>() {
-                        // a projection was added to the hash join
-                        additional_native_plans.push(Arc::clone(swapped_hash_join.children()[0]));
-                    }
-
-                    Ok((
-                        scans,
-                        Arc::new(SparkPlan::new_with_additional(
-                            spark_plan.plan_id,
-                            swapped_hash_join,
-                            vec![join_params.left, join_params.right],
-                            additional_native_plans,
-                        )),
-                    ))
-                }
+                Ok((
+                    scans,
+                    Arc::new(SparkPlan::new(
+                        spark_plan.plan_id,
+                        grace_join,
+                        vec![join_params.left, join_params.right],
+                    )),
+                ))
             }
             OpStruct::Window(wnd) => {
                 let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
@@ -3843,7 +3777,7 @@ mod tests {
 
         let (_scans, hash_join_exec) = planner.create_plan(&op_join, &mut vec![], 1).unwrap();
 
-        assert_eq!("HashJoinExec", hash_join_exec.native_plan.name());
+        assert_eq!("GraceHashJoinExec", hash_join_exec.native_plan.name());
         assert_eq!(2, hash_join_exec.children.len());
         assert_eq!("ScanExec", hash_join_exec.children[0].native_plan.name());
         assert_eq!("ScanExec", hash_join_exec.children[1].native_plan.name());

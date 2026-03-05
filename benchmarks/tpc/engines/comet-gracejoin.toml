@@ -33,7 +33,6 @@ driver_class_path = ["$COMET_JAR"]
 "spark.comet.scan.impl" = "native_datafusion"
 "spark.comet.exec.replaceSortMergeJoin" = "true"
 "spark.comet.exec.replaceSortMergeJoin.maxBuildSize" = "104857600"
-"spark.comet.exec.graceHashJoin.enabled" = "true"
 "spark.comet.exec.graceHashJoin.fastPathThreshold" = "34359738368"
 "spark.executor.cores" = "8"
 "spark.comet.expression.Cast.allowIncompatible" = "true"

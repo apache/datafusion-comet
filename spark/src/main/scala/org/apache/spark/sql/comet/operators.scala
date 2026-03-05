@@ -1724,35 +1724,19 @@ object CometHashJoinExec extends CometOperatorSerde[HashJoin] with CometHashJoin
     doConvert(join, builder, childOp: _*)
 
   override def createExec(nativeOp: Operator, op: HashJoin): CometNativeExec = {
-    if (CometConf.COMET_EXEC_GRACE_HASH_JOIN_ENABLED.get()) {
-      CometGraceHashJoinExec(
-        nativeOp,
-        op,
-        op.output,
-        op.outputOrdering,
-        op.leftKeys,
-        op.rightKeys,
-        op.joinType,
-        op.condition,
-        op.buildSide,
-        op.left,
-        op.right,
-        SerializedPlan(None))
-    } else {
-      CometHashJoinExec(
-        nativeOp,
-        op,
-        op.output,
-        op.outputOrdering,
-        op.leftKeys,
-        op.rightKeys,
-        op.joinType,
-        op.condition,
-        op.buildSide,
-        op.left,
-        op.right,
-        SerializedPlan(None))
-    }
+    CometGraceHashJoinExec(
+      nativeOp,
+      op,
+      op.output,
+      op.outputOrdering,
+      op.leftKeys,
+      op.rightKeys,
+      op.joinType,
+      op.condition,
+      op.buildSide,
+      op.left,
+      op.right,
+      SerializedPlan(None))
   }
 }
 

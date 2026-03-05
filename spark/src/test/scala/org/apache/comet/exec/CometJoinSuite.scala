@@ -452,7 +452,6 @@ class CometJoinSuite extends CometTestBase {
 
   // Common SQL config for Grace Hash Join tests
   private val graceHashJoinConf: Seq[(String, String)] = Seq(
-    CometConf.COMET_EXEC_GRACE_HASH_JOIN_ENABLED.key -> "true",
     CometConf.COMET_EXEC_GRACE_HASH_JOIN_NUM_PARTITIONS.key -> "4",
     "spark.sql.join.forceApplyShuffledHashJoin" -> "true",
     SQLConf.PREFER_SORTMERGEJOIN.key -> "false",
