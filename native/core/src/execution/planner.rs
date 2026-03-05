@@ -711,8 +711,7 @@ impl PhysicalPlanner {
             ) if ((op == DataFusionOperator::Plus || op == DataFusionOperator::Minus)
                 && max(s1, s2) as u8 + max(p1 - s1 as u8, p2 - s2 as u8)
                     >= DECIMAL128_MAX_PRECISION)
-                || (op == DataFusionOperator::Multiply
-                    && p1 + p2 >= DECIMAL128_MAX_PRECISION) =>
+                || (op == DataFusionOperator::Multiply && p1 + p2 >= DECIMAL128_MAX_PRECISION) =>
             {
                 let data_type = return_type.map(to_arrow_datatype).unwrap();
                 let (p_out, s_out) = match &data_type {

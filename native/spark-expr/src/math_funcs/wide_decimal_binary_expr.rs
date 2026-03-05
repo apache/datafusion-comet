@@ -545,8 +545,7 @@ mod tests {
             10,
             2,
         );
-        let result =
-            eval_expr(&batch, WideDecimalOp::Subtract, 38, 4, EvalMode::Legacy).unwrap();
+        let result = eval_expr(&batch, WideDecimalOp::Subtract, 38, 4, EvalMode::Legacy).unwrap();
         let arr = result.as_primitive::<Decimal128Type>();
         assert_eq!(arr.value(0), 20000); // 2.0000
     }

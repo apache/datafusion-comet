@@ -219,7 +219,11 @@ impl PhysicalExpr for DecimalRescaleCheckOverflow {
                     Some(val) => {
                         let r = rescale_and_check(val, delta, scale_factor, bound, fail_on_error)
                             .map_err(|e| DataFusionError::ArrowError(Box::new(e), None))?;
-                        if r == i128::MAX { None } else { Some(r) }
+                        if r == i128::MAX {
+                            None
+                        } else {
+                            Some(r)
+                        }
                     }
                     None => None,
                 };
