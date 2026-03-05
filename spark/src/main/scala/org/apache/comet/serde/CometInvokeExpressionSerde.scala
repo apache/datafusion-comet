@@ -35,11 +35,11 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression}
  *     first `Literal(_, ObjectType)` child of the `Invoke` node. This is the key used by
  *     [[QueryPlanSerde]] to route the node to the correct handler.
  *   - [[convertFromInvoke]] - the actual serialization logic, receiving the raw `Invoke`
- *     expression (unerased, with all children including the evaluator literal).
+ *     expression (with all children including the evaluator literal).
  *
  * To register a new handler, add the object to [[QueryPlanSerde.invokeSerdeByTargetClassName]].
  */
-trait CometInvokeExpressionSerde[T <: Expression] {
+trait CometInvokeExpressionSerde {
 
   /**
    * Fully-qualified class name of the private evaluator object held in the first child
@@ -63,19 +63,7 @@ trait CometInvokeExpressionSerde[T <: Expression] {
    *   responsible for calling `withInfo` to record the reason).
    */
   def convertFromInvoke(
-      expr: T,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[ExprOuterClass.Expr]
-
-  /**
-   * Unchecked entry point used by [[QueryPlanSerde]] to dispatch through an existential
-   * `CometInvokeExpressionSerde[_]`. Casts `expr` to `T` before delegating to
-   * [[convertFromInvoke]]. Only call this when you have already verified (via
-   * [[invokeTargetClassName]]) that the handler owns this `Invoke` node.
-   */
-  final def convertFromInvokeUnchecked(
       expr: Expression,
       inputs: Seq[Attribute],
-      binding: Boolean): Option[ExprOuterClass.Expr] =
-    convertFromInvoke(expr.asInstanceOf[T], inputs, binding)
+      binding: Boolean): Option[ExprOuterClass.Expr]
 }

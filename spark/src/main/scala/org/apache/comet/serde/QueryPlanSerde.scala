@@ -49,7 +49,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
   // To support a new RuntimeReplaceable expression rewritten to Invoke in Spark 4.0, implement
   // CometInvokeExpressionSerde and add the object here.
   private val invokeSerdeByTargetClassName
-      : Map[String, CometInvokeExpressionSerde[_ <: Expression]] =
+      : Map[String, CometInvokeExpressionSerde] =
     Seq(CometParseUrl).map(s => s.invokeTargetClassName -> s).toMap
 
   // Extracts the target object class name from an Invoke-like expression.
@@ -70,7 +70,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     for {
       targetClassName <- invokeTargetClassName(expr)
       handler <- invokeSerdeByTargetClassName.get(targetClassName)
-      result <- handler.convertFromInvokeUnchecked(expr, inputs, binding)
+      result <- handler.convertFromInvoke(expr, inputs, binding)
     } yield result
 
   private val arrayExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
