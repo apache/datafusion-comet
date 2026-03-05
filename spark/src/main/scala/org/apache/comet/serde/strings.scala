@@ -385,7 +385,7 @@ object CometStringSplit extends CometExpressionSerde[StringSplit] {
 
 object CometParseUrl
     extends CometExpressionSerde[ParseUrl]
-    with CometInvokeExpressionSerde[ParseUrl] {
+    with CometInvokeExpressionSerde {
 
   // In Spark 4.0, ParseUrl became RuntimeReplaceable and the analyser rewrites it to
   // Invoke(ParseUrlEvaluator.evaluate, url, part[, key]).  The first child is a
@@ -405,7 +405,7 @@ object CometParseUrl
     }
 
   override def convertFromInvoke(
-      expr: ParseUrl,
+      expr: Expression,
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
     // The first child is Literal(evaluator, ObjectType(ParseUrlEvaluator)).
