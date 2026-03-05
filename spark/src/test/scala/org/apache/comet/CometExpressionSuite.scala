@@ -1982,7 +1982,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               |('Spark SQL  ', 10, 1.2), (NULL, NULL, NULL), ('', 0, 0.0), ('苹果手机', NULL, 3.999999)
               |, ('Spark SQL  ', 10, 1.2), (NULL, NULL, NULL), ('', 0, 0.0), ('苹果手机', NULL, 3.999999)
               |""".stripMargin)
-          checkSparkAnswerAndOperator("""
+          // Use checkSparkAnswer instead of checkSparkAnswerAndOperator because sha2 falls back to Spark
+          checkSparkAnswer("""
               |select
               |md5(col), md5(cast(a as string)), md5(cast(b as string)),
               |hash(col), hash(col, 1), hash(col, 0), hash(col, a, b), hash(b, a, col),
@@ -2093,7 +2094,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             .insertInto(table)
           // with random generated data
           // disable cast(b as string) for now, as the cast from float to string may produce incompatible result
-          checkSparkAnswerAndOperator("""
+          // Use checkSparkAnswer instead of checkSparkAnswerAndOperator because sha2 falls back to Spark
+          checkSparkAnswer("""
               |select
               |md5(col), md5(cast(a as string)), --md5(cast(b as string)),
               |hash(col), hash(col, 1), hash(col, 0), hash(col, a, b), hash(b, a, col),
