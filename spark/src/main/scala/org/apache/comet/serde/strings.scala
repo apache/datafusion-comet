@@ -21,15 +21,16 @@ package org.apache.comet.serde
 
 import java.util.Locale
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Concat, ConcatWs, Expression, If, InitCap, IsNull, Left, Length, Like, Literal, Lower, RegExpReplace, Right, RLike, StringLPad, StringRepeat, StringRPad, StringSplit, Substring, Upper}
-import org.apache.spark.sql.types.{BinaryType, DataTypes, LongType, StringType}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Concat, ConcatWs, Expression, If, InitCap, IsNull, Left, Length, Like, Literal, Lower, ParseUrl, RegExpReplace, Right, RLike, StringLPad, StringRepeat, StringRPad, StringSplit, Substring, Upper}
+import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.types.{BinaryType, DataTypes, LongType, ObjectType, StringType}
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.expressions.{CometCast, CometEvalMode, RegExp}
 import org.apache.comet.serde.ExprOuterClass.Expr
-import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType}
+import org.apache.comet.serde.QueryPlanSerde._
 
 object CometStringRepeat extends CometExpressionSerde[StringRepeat] {
 
@@ -379,6 +380,66 @@ object CometStringSplit extends CometExpressionSerde[StringSplit] {
       regexExpr,
       limitExpr)
     optExprWithInfo(optExpr, expr, expr.str, expr.regex, expr.limit)
+  }
+}
+
+object CometParseUrl
+    extends CometExpressionSerde[ParseUrl]
+    with CometInvokeExpressionSerde {
+
+  // In Spark 4.0, ParseUrl became RuntimeReplaceable and the analyser rewrites it to
+  // Invoke(ParseUrlEvaluator.evaluate, url, part[, key]).  The first child is a
+  // Literal(evaluator, ObjectType(ParseUrlEvaluator)).  This class name is the key
+  // used by QueryPlanSerde to route the Invoke node to this handler.
+  override val invokeTargetClassName: String =
+    "org.apache.spark.sql.catalyst.expressions.url.ParseUrlEvaluator"
+
+  // Extracts the failOnError flag from the ParseUrlEvaluator instance via reflection.
+  // Falls back to SQLConf.get.ansiEnabled when reflection is unavailable (null evaluator
+  // or renamed accessor in a future Spark version).
+  private def failOnErrorFromEvaluator(evaluator: AnyRef): Boolean =
+    try {
+      evaluator.getClass.getMethod("failOnError").invoke(evaluator).asInstanceOf[Boolean]
+    } catch {
+      case _: ReflectiveOperationException => SQLConf.get.ansiEnabled
+    }
+
+  override def convertFromInvoke(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    // The first child is Literal(evaluator, ObjectType(ParseUrlEvaluator)).
+    // Strip it and read failOnError from it; the remaining children are (url, part[, key]).
+    val (urlArgs, failOnError) = expr.children match {
+      case Literal(evaluator, objectType: ObjectType) +: rest
+          if objectType.cls.getName == invokeTargetClassName =>
+        val foe =
+          if (evaluator != null) failOnErrorFromEvaluator(evaluator.asInstanceOf[AnyRef])
+          else SQLConf.get.ansiEnabled
+        (rest, foe)
+      case args =>
+        (args, SQLConf.get.ansiEnabled)
+    }
+    toProto(expr, urlArgs, failOnError, inputs, binding)
+  }
+
+  // In Spark 3.5, ParseUrl is a concrete expression node with a `failOnError` field
+  // that is directly accessible without reflection.
+  override def convert(expr: ParseUrl, inputs: Seq[Attribute], binding: Boolean): Option[Expr] =
+    toProto(expr, expr.children, expr.failOnError, inputs, binding)
+
+  // Serializes (url, part[, key]) arguments into the appropriate native function call.
+  // Uses parse_url (ANSI/strict) or try_parse_url (legacy/lenient) depending on failOnError.
+  private def toProto(
+      expr: Expression,
+      urlArgs: Seq[Expression],
+      failOnError: Boolean,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    val functionName = if (failOnError) "parse_url" else "try_parse_url"
+    val childExprs = urlArgs.map(exprToProtoInternal(_, inputs, binding))
+    val optExpr = scalarFunctionExprToProto(functionName, childExprs: _*)
+    optExprWithInfo(optExpr, expr, urlArgs: _*)
   }
 }
 
