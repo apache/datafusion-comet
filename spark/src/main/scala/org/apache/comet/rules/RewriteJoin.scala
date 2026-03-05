@@ -19,7 +19,7 @@
 
 package org.apache.comet.rules
 
-import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
+import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide, JoinSelectionHelper}
 import org.apache.spark.sql.catalyst.plans.logical.Join
 import org.apache.spark.sql.execution.{SortExec, SparkPlan}
 import org.apache.spark.sql.execution.joins.{ShuffledHashJoinExec, SortMergeJoinExec}
@@ -32,19 +32,30 @@ import org.apache.comet.CometSparkSessionExtensions.withInfo
  *
  * This rule replaces [[SortMergeJoinExec]] with [[ShuffledHashJoinExec]].
  */
-object RewriteJoin {
+object RewriteJoin extends JoinSelectionHelper {
 
+  /**
+   * Choose the build side for the hash join. GHJ supports all join types with either build side,
+   * but we must respect ShuffledHashJoinExec's constraints since the Spark node is validated
+   * before CometExecRule replaces it with GraceHashJoinExec.
+   */
   private def getSmjBuildSide(join: SortMergeJoinExec): BuildSide = {
-    join.logicalLink
+    val leftBuildable = canBuildShuffledHashJoinLeft(join.joinType)
+    val rightBuildable = canBuildShuffledHashJoinRight(join.joinType)
+    val preferred = join.logicalLink
       .flatMap {
         case join: Join => Some(getOptimalBuildSide(join))
         case _ => None
       }
-      .getOrElse {
-        // If smj has no logical link, or its logical link is not a join,
-        // then we always choose left as build side.
-        BuildLeft
-      }
+      .getOrElse(BuildLeft)
+    // Use the preferred side if allowed, otherwise use whichever side Spark allows
+    (preferred, leftBuildable, rightBuildable) match {
+      case (BuildLeft, true, _) => BuildLeft
+      case (BuildRight, _, true) => BuildRight
+      case (_, true, _) => BuildLeft
+      case (_, _, true) => BuildRight
+      case _ => BuildLeft // should not happen
+    }
   }
 
   private def removeSort(plan: SparkPlan) = plan match {
