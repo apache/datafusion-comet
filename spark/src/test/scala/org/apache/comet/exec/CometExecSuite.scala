@@ -692,7 +692,7 @@ class CometExecSuite extends CometTestBase {
         df.collect()
 
         val metrics = find(df.queryExecution.executedPlan) {
-          case _: CometHashJoinExec => true
+          case _: CometGraceHashJoinExec => true
           case _ => false
         }.map(_.metrics).get
 
@@ -700,8 +700,6 @@ class CometExecSuite extends CometTestBase {
         assert(metrics("build_time").value > 1L)
         assert(metrics.contains("build_input_batches"))
         assert(metrics("build_input_batches").value == 5L)
-        assert(metrics.contains("build_mem_used"))
-        assert(metrics("build_mem_used").value > 1L)
         assert(metrics.contains("build_input_rows"))
         assert(metrics("build_input_rows").value == 5L)
         assert(metrics.contains("input_batches"))
@@ -714,6 +712,8 @@ class CometExecSuite extends CometTestBase {
         assert(metrics("output_rows").value == 5L)
         assert(metrics.contains("join_time"))
         assert(metrics("join_time").value > 1L)
+        assert(metrics.contains("spill_count"))
+        assert(metrics("spill_count").value == 0)
       }
     }
   }
@@ -733,8 +733,6 @@ class CometExecSuite extends CometTestBase {
         assert(metrics("build_time").value > 1L)
         assert(metrics.contains("build_input_batches"))
         assert(metrics("build_input_batches").value == 25L)
-        assert(metrics.contains("build_mem_used"))
-        assert(metrics("build_mem_used").value > 1L)
         assert(metrics.contains("build_input_rows"))
         assert(metrics("build_input_rows").value == 25L)
         assert(metrics.contains("input_batches"))
