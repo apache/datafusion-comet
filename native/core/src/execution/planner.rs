@@ -383,12 +383,16 @@ impl PhysicalPlanner {
                 let fail_on_error = expr.fail_on_error;
 
                 // WideDecimalBinaryExpr already handles overflow — skip redundant check
+                // but only if its output type matches CheckOverflow's declared type
                 if child
                     .as_any()
                     .downcast_ref::<WideDecimalBinaryExpr>()
                     .is_some()
                 {
-                    return Ok(child);
+                    let child_type = child.data_type(&input_schema)?;
+                    if child_type == data_type {
+                        return Ok(child);
+                    }
                 }
 
                 // Fuse Cast(Decimal128→Decimal128) + CheckOverflow into single rescale+check

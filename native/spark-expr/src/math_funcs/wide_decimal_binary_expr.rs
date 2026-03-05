@@ -247,17 +247,25 @@ impl PhysicalExpr for WideDecimalBinaryExpr {
             }
             WideDecimalOp::Multiply => {
                 let natural_scale = s1 + s2;
-                let need_rescale = s_out < natural_scale;
-                let rescale_divisor = if need_rescale {
-                    i256_pow10((natural_scale - s_out) as u32)
+                let scale_diff = natural_scale as i16 - s_out as i16;
+                let (need_scale_down, need_scale_up) = (scale_diff > 0, scale_diff < 0);
+                let rescale_divisor = if need_scale_down {
+                    i256_pow10(scale_diff as u32)
+                } else {
+                    i256::ONE
+                };
+                let scale_up_factor = if need_scale_up {
+                    i256_pow10((-scale_diff) as u32)
                 } else {
                     i256::ONE
                 };
 
                 arrow::compute::kernels::arity::try_binary(left, right, |l, r| {
                     let raw = i256::from_i128(l).wrapping_mul(i256::from_i128(r));
-                    let result = if need_rescale {
+                    let result = if need_scale_down {
                         div_round_half_up(raw, rescale_divisor)
+                    } else if need_scale_up {
+                        raw.wrapping_mul(scale_up_factor)
                     } else {
                         raw
                     };
