@@ -53,7 +53,7 @@ regex = "1.12.3"
 thiserror = "2"
 object_store = { version = "0.12.3", features = ["gcp", "azure", "aws", "http"] }
 url = "2.2"
-aws-config = "1.8.14"
+aws-config = "1.8.15"
 aws-credential-types = "1.2.13"
 iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "b24ab63" }
 
