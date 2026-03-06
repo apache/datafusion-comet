@@ -20,8 +20,9 @@
 package org.apache.comet.serde
 
 import scala.annotation.tailrec
+import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayFilter, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayRemove, ArrayRepeat, ArraysOverlap, ArrayUnion, Attribute, CreateArray, ElementAt, Expression, Flatten, GetArrayItem, IsNotNull, Literal, Reverse, Size}
+import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayFilter, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayRemove, ArrayRepeat, ArraysOverlap, ArraysZip, ArrayUnion, Attribute, CreateArray, ElementAt, Expression, Flatten, GetArrayItem, IsNotNull, Literal, Reverse, Size}
 import org.apache.spark.sql.catalyst.util.GenericArrayData
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
@@ -655,6 +656,35 @@ object CometSize extends CometExpressionSerde[Size] {
     exprToProto(Literal(value, IntegerType), Seq.empty)
   }
 
+}
+
+object CometArraysZip extends CometExpressionSerde[ArraysZip] {
+  override def getSupportLevel(expr: ArraysZip): SupportLevel = {
+    expr.dataType match {
+      case _: ArrayType => Compatible()
+      case other =>
+        // this should be unreachable because Spark only supports array inputs
+        Unsupported(Some(s"Unsupported child data type: $other"))
+    }
+  }
+
+  override def convert(
+      expr: ArraysZip,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+
+    val exprChildren = expr.children.map(exprToProto(_, inputs, binding))
+    if (exprChildren.forall(_.isDefined)) {
+      val builder = ExprOuterClass.ArraysZip
+        .newBuilder()
+        .addAllChildren(exprChildren.map(_.get).asJava)
+
+      Some(ExprOuterClass.Expr.newBuilder().setArraysZip(builder).build())
+    } else {
+      withInfo(expr, expr.children: _*)
+      None
+    }
+  }
 }
 
 trait ArraysBase {
