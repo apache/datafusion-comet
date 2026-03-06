@@ -34,6 +34,10 @@ Comet accelerates Iceberg scans of Parquet files. See the [Iceberg Guide] for mo
 
 [Iceberg Guide]: iceberg.md
 
+### Delta Lake
+
+Comet can perform native scans of Delta tables when they do not have column mapping or deletion vectors enabled. Scans of Delta tables without these features are simply regular Spark parquet scans, so they follow the same behavior as the `parquet` format behavior described above. Scans of tables using these features may be supported in the future.
+
 ### CSV
 
 Comet provides experimental native CSV scan support. When `spark.comet.scan.csv.v2.enabled` is enabled, CSV files
