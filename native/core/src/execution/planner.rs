@@ -1577,6 +1577,7 @@ impl PhysicalPlanner {
                     // null doesn't equal to null in Spark join key. If the join key is
                     // `EqualNullSafe`, Spark will rewrite it during planning.
                     NullEquality::NullEqualsNothing,
+                    false,
                 )?);
 
                 // If the hash join is build right, we need to swap the left and right
