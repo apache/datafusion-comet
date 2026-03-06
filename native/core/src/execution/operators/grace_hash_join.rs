@@ -765,12 +765,153 @@ async fn execute_grace_hash_join(
         context.runtime_env().memory_pool.reserved(),
     );
 
+    // Optimistic fast path: if the fast path threshold is set, try buffering
+    // the build side without partitioning. This avoids the overhead of hash
+    // computation, prefix-sum, and per-partition take() for every build batch,
+    // which is wasted work when the build side fits in memory and the fast path
+    // is taken (the common case with a generous threshold).
+    if fast_path_threshold > 0 {
+        let build_result = {
+            let _timer = metrics.build_time.timer();
+            buffer_build_optimistic(build_stream, &mut reservation, &metrics).await?
+        };
+
+        match build_result {
+            BuildBufferResult::Complete(build_batches, actual_build_bytes)
+                if actual_build_bytes <= fast_path_threshold =>
+            {
+                // Fast path: all build data buffered, no memory pressure.
+                // Skip partitioning entirely and stream probe through HashJoinExec.
+                let total_build_rows: usize = build_batches.iter().map(|b| b.num_rows()).sum();
+                info!(
+                    "GHJ#{}: optimistic fast path — build side ({} rows, {} bytes). \
+                     Streaming probe directly through HashJoinExec. pool reserved={}",
+                    ghj_id,
+                    total_build_rows,
+                    actual_build_bytes,
+                    context.runtime_env().memory_pool.reserved(),
+                );
+
+                reservation.free();
+
+                // Wrap probe stream to count input_batches and input_rows
+                // (normally counted during partition_probe_side, which is
+                // skipped in the fast path).
+                let probe_input_batches = metrics.input_batches.clone();
+                let probe_input_rows = metrics.input_rows.clone();
+                let probe_schema_clone = Arc::clone(&probe_schema);
+                let counting_probe = probe_stream.inspect_ok(move |batch| {
+                    probe_input_batches.add(1);
+                    probe_input_rows.add(batch.num_rows());
+                });
+                let counting_probe: SendableRecordBatchStream = Box::pin(
+                    RecordBatchStreamAdapter::new(probe_schema_clone, counting_probe),
+                );
+
+                let stream = create_fast_path_stream(
+                    build_batches,
+                    counting_probe,
+                    &original_on,
+                    &filter,
+                    &join_type,
+                    build_left,
+                    &build_schema,
+                    &probe_schema,
+                    &context,
+                )?;
+
+                let output_metrics = metrics.baseline.clone();
+                let result_stream = stream.inspect_ok(move |batch| {
+                    output_metrics.record_output(batch.num_rows());
+                });
+
+                return Ok(result_stream.boxed());
+            }
+            result => {
+                // Build side too large for fast path, or memory pressure occurred.
+                // Partition the buffered batches offline and continue with slow path.
+                let (buffered_batches, remaining_stream) = match result {
+                    BuildBufferResult::Complete(batches, _) => (batches, None),
+                    BuildBufferResult::NeedPartition(batches, stream) => (batches, Some(stream)),
+                };
+
+                info!(
+                    "GHJ#{}: optimistic buffer fallback — partitioning {} buffered batches. \
+                     pool reserved={}",
+                    ghj_id,
+                    buffered_batches.len(),
+                    context.runtime_env().memory_pool.reserved(),
+                );
+
+                // Free reservation for buffered batches; partition_from_buffer
+                // and partition_build_side will re-track per-partition memory.
+                reservation.free();
+
+                let mut partitions: Vec<HashPartition> =
+                    (0..num_partitions).map(|_| HashPartition::new()).collect();
+                let mut scratch = ScratchSpace::default();
+
+                {
+                    let _timer = metrics.build_time.timer();
+                    partition_from_buffer(
+                        buffered_batches,
+                        &build_keys,
+                        num_partitions,
+                        &build_schema,
+                        &mut partitions,
+                        &mut reservation,
+                        &context,
+                        &metrics,
+                        &mut scratch,
+                    )?;
+
+                    // Continue reading remaining stream if optimistic buffer was interrupted
+                    if let Some(remaining) = remaining_stream {
+                        partition_build_side(
+                            remaining,
+                            &build_keys,
+                            num_partitions,
+                            &build_schema,
+                            &mut partitions,
+                            &mut reservation,
+                            &context,
+                            &metrics,
+                            &mut scratch,
+                        )
+                        .await?;
+                    }
+                }
+
+                return execute_slow_path(
+                    ghj_id,
+                    partitions,
+                    probe_stream,
+                    build_keys,
+                    probe_keys,
+                    original_on,
+                    filter,
+                    join_type,
+                    num_partitions,
+                    build_left,
+                    build_schema,
+                    probe_schema,
+                    context,
+                    metrics,
+                    reservation,
+                    scratch,
+                )
+                .await
+                .map(|s| s.boxed());
+            }
+        }
+    }
+
+    // Non-optimistic path: fast_path_threshold == 0 (disabled).
+    // Always partition the build side.
     let mut partitions: Vec<HashPartition> =
         (0..num_partitions).map(|_| HashPartition::new()).collect();
-
     let mut scratch = ScratchSpace::default();
 
-    // Phase 1: Partition the build side
     {
         let _timer = metrics.build_time.timer();
         partition_build_side(
@@ -787,143 +928,229 @@ async fn execute_grace_hash_join(
         .await?;
     }
 
-    // Log build-side partition summary
-    {
-        let pool = &context.runtime_env().memory_pool;
-        let total_build_rows: usize = partitions
-            .iter()
-            .flat_map(|p| p.build_batches.iter())
-            .map(|b| b.num_rows())
-            .sum();
-        let total_build_bytes: usize = partitions.iter().map(|p| p.build_mem_size).sum();
-        let spilled_count = partitions.iter().filter(|p| p.build_spilled()).count();
-        info!(
-            "GraceHashJoin: build phase complete. {} partitions ({} spilled), \
-             total build: {} rows, {} bytes. Memory pool reserved={}",
-            num_partitions,
-            spilled_count,
-            total_build_rows,
-            total_build_bytes,
-            pool.reserved(),
-        );
-        for (i, p) in partitions.iter().enumerate() {
-            if !p.build_batches.is_empty() || p.build_spilled() {
-                let rows: usize = p.build_batches.iter().map(|b| b.num_rows()).sum();
-                info!(
-                    "GraceHashJoin: partition[{}] build: {} batches, {} rows, {} bytes, spilled={}",
-                    i,
-                    p.build_batches.len(),
-                    rows,
-                    p.build_mem_size,
-                    p.build_spilled(),
-                );
+    execute_slow_path(
+        ghj_id,
+        partitions,
+        probe_stream,
+        build_keys,
+        probe_keys,
+        original_on,
+        filter,
+        join_type,
+        num_partitions,
+        build_left,
+        build_schema,
+        probe_schema,
+        context,
+        metrics,
+        reservation,
+        scratch,
+    )
+    .await
+    .map(|s| s.boxed())
+}
+
+/// Result of optimistic build-side buffering.
+enum BuildBufferResult {
+    /// All build batches buffered successfully with memory tracking.
+    Complete(Vec<RecordBatch>, usize),
+    /// Memory pressure occurred — returns buffered batches and remaining stream.
+    NeedPartition(Vec<RecordBatch>, SendableRecordBatchStream),
+}
+
+/// Buffer the build side without partitioning. Returns all batches and total bytes,
+/// or signals memory pressure with the partially-buffered data and remaining stream.
+async fn buffer_build_optimistic(
+    mut input: SendableRecordBatchStream,
+    reservation: &mut MutableReservation,
+    metrics: &GraceHashJoinMetrics,
+) -> DFResult<BuildBufferResult> {
+    let mut batches = Vec::new();
+    let mut total_bytes = 0usize;
+
+    while let Some(batch) = input.next().await {
+        let batch = batch?;
+        if batch.num_rows() == 0 {
+            continue;
+        }
+
+        metrics.build_input_batches.add(1);
+        metrics.build_input_rows.add(batch.num_rows());
+
+        let batch_size = batch.get_array_memory_size();
+
+        if reservation.try_grow(batch_size).is_err() {
+            // Memory pressure — return what we have and the remaining stream.
+            // The caller will partition the buffered data and continue streaming.
+            batches.push(batch);
+            return Ok(BuildBufferResult::NeedPartition(batches, input));
+        }
+
+        total_bytes += batch_size;
+        batches.push(batch);
+    }
+
+    Ok(BuildBufferResult::Complete(batches, total_bytes))
+}
+
+/// Partition already-buffered build batches into the partition structure.
+/// Used when the optimistic fast path falls back to the slow path.
+#[allow(clippy::too_many_arguments)]
+fn partition_from_buffer(
+    batches: Vec<RecordBatch>,
+    keys: &[Arc<dyn PhysicalExpr>],
+    num_partitions: usize,
+    schema: &SchemaRef,
+    partitions: &mut [HashPartition],
+    reservation: &mut MutableReservation,
+    context: &Arc<TaskContext>,
+    metrics: &GraceHashJoinMetrics,
+    scratch: &mut ScratchSpace,
+) -> DFResult<()> {
+    for batch in batches {
+        if batch.num_rows() == 0 {
+            continue;
+        }
+
+        let total_batch_size = batch.get_array_memory_size();
+        let total_rows = batch.num_rows();
+
+        scratch.compute_partitions(&batch, keys, num_partitions, 0)?;
+
+        #[allow(clippy::needless_range_loop)]
+        for part_idx in 0..num_partitions {
+            if scratch.partition_len(part_idx) == 0 {
+                continue;
+            }
+
+            let sub_rows = scratch.partition_len(part_idx);
+            let sub_batch = if sub_rows == total_rows {
+                batch.clone()
+            } else {
+                scratch.take_partition(&batch, part_idx)?.unwrap()
+            };
+            let batch_size = if total_rows > 0 {
+                (total_batch_size as u64 * sub_rows as u64 / total_rows as u64) as usize
+            } else {
+                0
+            };
+
+            if partitions[part_idx].build_spilled() {
+                if let Some(ref mut writer) = partitions[part_idx].build_spill_writer {
+                    writer.write_batch(&sub_batch)?;
+                }
+            } else {
+                if reservation.try_grow(batch_size).is_err() {
+                    info!(
+                        "GraceHashJoin: memory pressure during buffer partition, \
+                         spilling largest partition"
+                    );
+                    spill_largest_partition(partitions, schema, context, reservation, metrics)?;
+
+                    if reservation.try_grow(batch_size).is_err() {
+                        spill_partition_build(
+                            &mut partitions[part_idx],
+                            schema,
+                            context,
+                            reservation,
+                            metrics,
+                        )?;
+                        if let Some(ref mut writer) = partitions[part_idx].build_spill_writer {
+                            writer.write_batch(&sub_batch)?;
+                        }
+                        continue;
+                    }
+                }
+
+                partitions[part_idx].build_mem_size += batch_size;
+                partitions[part_idx].build_batches.push(sub_batch);
             }
         }
     }
 
-    // Fast path: if no build partitions spilled and the build side is
-    // genuinely tiny, skip probe partitioning and stream the probe directly
-    // through a single HashJoinExec. This avoids spilling gigabytes of
-    // probe data to disk for a trivial hash table (e.g. 10-row build side).
-    //
-    // The threshold uses actual batch sizes (not the unreliable proportional
-    // estimate). The configured value is divided by spark.executor.cores in
-    // the planner so each concurrent task gets its fair share.
-    // Configurable via spark.comet.exec.graceHashJoin.fastPathThreshold.
+    Ok(())
+}
 
+/// Create the fast-path HashJoinExec stream (no partitioning, no spilling).
+#[allow(clippy::too_many_arguments)]
+fn create_fast_path_stream(
+    build_data: Vec<RecordBatch>,
+    probe_stream: SendableRecordBatchStream,
+    original_on: &[(Arc<dyn PhysicalExpr>, Arc<dyn PhysicalExpr>)],
+    filter: &Option<JoinFilter>,
+    join_type: &JoinType,
+    build_left: bool,
+    build_schema: &SchemaRef,
+    probe_schema: &SchemaRef,
+    context: &Arc<TaskContext>,
+) -> DFResult<SendableRecordBatchStream> {
+    let build_source = memory_source_exec(build_data, build_schema)?;
+    let probe_source: Arc<dyn ExecutionPlan> = Arc::new(StreamSourceExec::new(
+        probe_stream,
+        Arc::clone(probe_schema),
+    ));
+
+    let (left_source, right_source): (Arc<dyn ExecutionPlan>, Arc<dyn ExecutionPlan>) =
+        if build_left {
+            (build_source, probe_source)
+        } else {
+            (probe_source, build_source)
+        };
+
+    if build_left {
+        let hash_join = HashJoinExec::try_new(
+            left_source,
+            right_source,
+            original_on.to_vec(),
+            filter.clone(),
+            join_type,
+            None,
+            PartitionMode::CollectLeft,
+            NullEquality::NullEqualsNothing,
+        )?;
+        hash_join.execute(0, context_for_join_output(context))
+    } else {
+        let hash_join = Arc::new(HashJoinExec::try_new(
+            left_source,
+            right_source,
+            original_on.to_vec(),
+            filter.clone(),
+            join_type,
+            None,
+            PartitionMode::CollectLeft,
+            NullEquality::NullEqualsNothing,
+        )?);
+        let swapped = hash_join.swap_inputs(PartitionMode::CollectLeft)?;
+        swapped.execute(0, context_for_join_output(context))
+    }
+}
+
+/// Execute the slow path: partition probe side, merge partitions, and join.
+#[allow(clippy::too_many_arguments)]
+async fn execute_slow_path(
+    ghj_id: usize,
+    mut partitions: Vec<HashPartition>,
+    probe_stream: SendableRecordBatchStream,
+    _build_keys: Vec<Arc<dyn PhysicalExpr>>,
+    probe_keys: Vec<Arc<dyn PhysicalExpr>>,
+    original_on: Vec<(Arc<dyn PhysicalExpr>, Arc<dyn PhysicalExpr>)>,
+    filter: Option<JoinFilter>,
+    join_type: JoinType,
+    num_partitions: usize,
+    build_left: bool,
+    build_schema: SchemaRef,
+    probe_schema: SchemaRef,
+    context: Arc<TaskContext>,
+    metrics: GraceHashJoinMetrics,
+    mut reservation: MutableReservation,
+    mut scratch: ScratchSpace,
+) -> DFResult<impl Stream<Item = DFResult<RecordBatch>>> {
     let build_spilled = partitions.iter().any(|p| p.build_spilled());
     let actual_build_bytes: usize = partitions
         .iter()
         .flat_map(|p| p.build_batches.iter())
         .map(|b| b.get_array_memory_size())
         .sum();
-
-    if !build_spilled && fast_path_threshold > 0 && actual_build_bytes <= fast_path_threshold {
-        let total_build_rows: usize = partitions
-            .iter()
-            .flat_map(|p| p.build_batches.iter())
-            .map(|b| b.num_rows())
-            .sum();
-        info!(
-            "GHJ#{}: fast path — build side tiny ({} rows, {} bytes). \
-             Streaming probe directly through HashJoinExec. pool reserved={}",
-            ghj_id,
-            total_build_rows,
-            actual_build_bytes,
-            context.runtime_env().memory_pool.reserved(),
-        );
-
-        // Release our reservation — HashJoinExec tracks its own memory.
-        reservation.free();
-
-        let build_data: Vec<RecordBatch> = partitions
-            .into_iter()
-            .flat_map(|p| p.build_batches)
-            .collect();
-
-        let build_source = memory_source_exec(build_data, &build_schema)?;
-
-        let probe_source: Arc<dyn ExecutionPlan> = Arc::new(StreamSourceExec::new(
-            probe_stream,
-            Arc::clone(&probe_schema),
-        ));
-
-        let (left_source, right_source): (Arc<dyn ExecutionPlan>, Arc<dyn ExecutionPlan>) =
-            if build_left {
-                (build_source, probe_source)
-            } else {
-                (probe_source, build_source)
-            };
-
-        info!(
-            "GraceHashJoin: FAST PATH creating HashJoinExec, \
-             build_left={}, actual_build_bytes={}",
-            build_left, actual_build_bytes,
-        );
-
-        let stream = if build_left {
-            let hash_join = HashJoinExec::try_new(
-                left_source,
-                right_source,
-                original_on,
-                filter,
-                &join_type,
-                None,
-                PartitionMode::CollectLeft,
-                NullEquality::NullEqualsNothing,
-            )?;
-            info!(
-                "GraceHashJoin: FAST PATH plan:\n{}",
-                DisplayableExecutionPlan::new(&hash_join).indent(true)
-            );
-            hash_join.execute(0, context_for_join_output(&context))?
-        } else {
-            let hash_join = Arc::new(HashJoinExec::try_new(
-                left_source,
-                right_source,
-                original_on,
-                filter,
-                &join_type,
-                None,
-                PartitionMode::CollectLeft,
-                NullEquality::NullEqualsNothing,
-            )?);
-            let swapped = hash_join.swap_inputs(PartitionMode::CollectLeft)?;
-            info!(
-                "GraceHashJoin: FAST PATH (swapped) plan:\n{}",
-                DisplayableExecutionPlan::new(swapped.as_ref()).indent(true)
-            );
-            swapped.execute(0, context_for_join_output(&context))?
-        };
-
-        let output_metrics = metrics.baseline.clone();
-        let result_stream = stream.inspect_ok(move |batch| {
-            output_metrics.record_output(batch.num_rows());
-        });
-
-        return Ok(result_stream.boxed());
-    }
-
     let total_build_rows: usize = partitions
         .iter()
         .flat_map(|p| p.build_batches.iter())

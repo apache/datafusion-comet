@@ -314,7 +314,7 @@ object CometConf extends ShimCometConf {
       .checkValue(v => v > 0, "The number of partitions must be positive.")
       .createWithDefault(16)
 
-  val COMET_EXEC_GRACE_HASH_JOIN_FAST_PATH_THRESHOLD: ConfigEntry[Int] =
+  val COMET_EXEC_GRACE_HASH_JOIN_FAST_PATH_THRESHOLD: ConfigEntry[Long] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.graceHashJoin.fastPathThreshold")
       .category(CATEGORY_EXEC)
       .doc(
@@ -324,9 +324,9 @@ object CometConf extends ShimCometConf {
           "threshold, the join executes as a single HashJoinExec without spilling. " +
           "Set to 0 to disable the fast path. Larger values risk OOM because HashJoinExec " +
           "creates non-spillable hash tables.")
-      .intConf
+      .longConf
       .checkValue(v => v >= 0, "The fast path threshold must be non-negative.")
-      .createWithDefault(10 * 1024 * 1024) // 10 MB
+      .createWithDefault(10L * 1024 * 1024) // 10 MB
 
   val COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.columnarToRow.native.enabled")
