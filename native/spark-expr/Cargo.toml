@@ -103,3 +103,7 @@ path = "tests/spark_expr_reg.rs"
 [[bench]]
 name = "cast_from_boolean"
 harness = false
+
+[[bench]]
+name = "wide_decimal"
+harness = false

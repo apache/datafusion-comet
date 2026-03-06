@@ -126,8 +126,9 @@ use datafusion_comet_proto::{
 use datafusion_comet_spark_expr::monotonically_increasing_id::MonotonicallyIncreasingId;
 use datafusion_comet_spark_expr::{
     ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Correlation, Covariance, CreateNamedStruct,
-    GetArrayStructFields, GetStructField, IfExpr, ListExtract, NormalizeNaNAndZero, RandExpr,
-    RandnExpr, SparkCastOptions, Stddev, SumDecimal, ToJson, UnboundColumn, Variance,
+    DecimalRescaleCheckOverflow, GetArrayStructFields, GetStructField, IfExpr, ListExtract,
+    NormalizeNaNAndZero, RandExpr, RandnExpr, SparkCastOptions, Stddev, SumDecimal, ToJson,
+    UnboundColumn, Variance, WideDecimalBinaryExpr, WideDecimalOp,
 };
 use itertools::Itertools;
 use jni::objects::GlobalRef;
@@ -376,9 +377,44 @@ impl PhysicalPlanner {
                 )))
             }
             ExprStruct::CheckOverflow(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
+                let child =
+                    self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
                 let data_type = to_arrow_datatype(expr.datatype.as_ref().unwrap());
                 let fail_on_error = expr.fail_on_error;
+
+                // WideDecimalBinaryExpr already handles overflow — skip redundant check
+                // but only if its output type matches CheckOverflow's declared type
+                if child
+                    .as_any()
+                    .downcast_ref::<WideDecimalBinaryExpr>()
+                    .is_some()
+                {
+                    let child_type = child.data_type(&input_schema)?;
+                    if child_type == data_type {
+                        return Ok(child);
+                    }
+                }
+
+                // Fuse Cast(Decimal128→Decimal128) + CheckOverflow into single rescale+check
+                // Only fuse when the Cast target type matches the CheckOverflow output type
+                if let Some(cast) = child.as_any().downcast_ref::<Cast>() {
+                    if let (
+                        DataType::Decimal128(p_out, s_out),
+                        Ok(DataType::Decimal128(_p_in, s_in)),
+                    ) = (&data_type, cast.child.data_type(&input_schema))
+                    {
+                        let cast_target = cast.data_type(&input_schema)?;
+                        if cast_target == data_type {
+                            return Ok(Arc::new(DecimalRescaleCheckOverflow::new(
+                                Arc::clone(&cast.child),
+                                s_in,
+                                *p_out,
+                                *s_out,
+                                fail_on_error,
+                            )));
+                        }
+                    }
+                }
 
                 Ok(Arc::new(CheckOverflow::new(
                     child,
@@ -682,23 +718,22 @@ impl PhysicalPlanner {
                 || (op == DataFusionOperator::Multiply && p1 + p2 >= DECIMAL128_MAX_PRECISION) =>
             {
                 let data_type = return_type.map(to_arrow_datatype).unwrap();
-                // For some Decimal128 operations, we need wider internal digits.
-                // Cast left and right to Decimal256 and cast the result back to Decimal128
-                let left = Arc::new(Cast::new(
-                    left,
-                    DataType::Decimal256(p1, s1),
-                    SparkCastOptions::new_without_timezone(EvalMode::Legacy, false),
-                ));
-                let right = Arc::new(Cast::new(
-                    right,
-                    DataType::Decimal256(p2, s2),
-                    SparkCastOptions::new_without_timezone(EvalMode::Legacy, false),
-                ));
-                let child = Arc::new(BinaryExpr::new(left, op, right));
-                Ok(Arc::new(Cast::new(
-                    child,
-                    data_type,
-                    SparkCastOptions::new_without_timezone(EvalMode::Legacy, false),
+                let (p_out, s_out) = match &data_type {
+                    DataType::Decimal128(p, s) => (*p, *s),
+                    dt => {
+                        return Err(ExecutionError::GeneralError(format!(
+                            "Expected Decimal128 return type, got {dt:?}"
+                        )))
+                    }
+                };
+                let wide_op = match op {
+                    DataFusionOperator::Plus => WideDecimalOp::Add,
+                    DataFusionOperator::Minus => WideDecimalOp::Subtract,
+                    DataFusionOperator::Multiply => WideDecimalOp::Multiply,
+                    _ => unreachable!(),
+                };
+                Ok(Arc::new(WideDecimalBinaryExpr::new(
+                    left, right, wide_op, p_out, s_out, eval_mode,
                 )))
             }
             (
