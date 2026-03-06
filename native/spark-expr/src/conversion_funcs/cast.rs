@@ -16,14 +16,15 @@
 // under the License.
 
 use crate::conversion_funcs::boolean::{
-    cast_boolean_to_decimal, is_df_cast_from_bool_spark_compatible,
+    cast_boolean_to_decimal, cast_boolean_to_timestamp, is_df_cast_from_bool_spark_compatible,
 };
 use crate::conversion_funcs::numeric::{
-    cast_float32_to_decimal128, cast_float64_to_decimal128, cast_int_to_decimal128,
-    cast_int_to_timestamp, is_df_cast_from_decimal_spark_compatible,
-    is_df_cast_from_float_spark_compatible, is_df_cast_from_int_spark_compatible,
-    spark_cast_decimal_to_boolean, spark_cast_float32_to_utf8, spark_cast_float64_to_utf8,
-    spark_cast_int_to_int, spark_cast_nonintegral_numeric_to_integral,
+    cast_decimal_to_timestamp, cast_float32_to_decimal128, cast_float64_to_decimal128,
+    cast_float_to_timestamp, cast_int_to_decimal128, cast_int_to_timestamp,
+    is_df_cast_from_decimal_spark_compatible, is_df_cast_from_float_spark_compatible,
+    is_df_cast_from_int_spark_compatible, spark_cast_decimal_to_boolean,
+    spark_cast_float32_to_utf8, spark_cast_float64_to_utf8, spark_cast_int_to_int,
+    spark_cast_nonintegral_numeric_to_integral,
 };
 use crate::conversion_funcs::string::{
     cast_string_to_date, cast_string_to_decimal, cast_string_to_float, cast_string_to_int,
@@ -384,6 +385,9 @@ pub(crate) fn cast_array(
             cast_boolean_to_decimal(&array, *precision, *scale)
         }
         (Int8 | Int16 | Int32 | Int64, Timestamp(_, tz)) => cast_int_to_timestamp(&array, tz),
+        (Float32 | Float64, Timestamp(_, tz)) => cast_float_to_timestamp(&array, tz, eval_mode),
+        (Boolean, Timestamp(_, tz)) => cast_boolean_to_timestamp(&array, tz),
+        (Decimal128(_, scale), Timestamp(_, tz)) => cast_decimal_to_timestamp(&array, tz, *scale),
         _ if cast_options.is_adapting_schema
             || is_datafusion_spark_compatible(&from_type, to_type) =>
         {
