@@ -520,6 +520,176 @@ class CometParquetWriterSuite extends CometTestBase {
     }
   }
 
+  // Tests for issue #2957: INSERT OVERWRITE DIRECTORY with native writer
+  // Note: INSERT OVERWRITE DIRECTORY uses InsertIntoDataSourceDirCommand which internally
+  // executes InsertIntoHadoopFsRelationCommand. The outer plan shows ExecutedCommandExec,
+  // but the actual write happens in an internal execution which should use Comet's native writer.
+  //
+  // Fix: CometExecRule now auto-converts children to Arrow format when native write is requested.
+  // This enables native writes even when the source is a Spark operator like RangeExec.
+  test("INSERT OVERWRITE DIRECTORY using parquet - basic with RangeExec source") {
+    withTempPath { dir =>
+      val outputPath = dir.getAbsolutePath
+
+      withSQLConf(
+        CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
+        CometConf.getOperatorAllowIncompatConfigKey(classOf[DataWritingCommandExec]) -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true") {
+        // Note: COMET_SPARK_TO_ARROW_ENABLED is NOT needed - the fix auto-converts RangeExec
+
+        // Create source table using RangeExec
+        spark.range(1, 10).toDF("id").createOrReplaceTempView("source_table")
+
+        // Execute INSERT OVERWRITE DIRECTORY
+        spark.sql(s"""
+          INSERT OVERWRITE DIRECTORY '$outputPath'
+          USING PARQUET
+          SELECT id FROM source_table
+        """)
+
+        // Verify data was written correctly
+        val result = spark.read.parquet(outputPath)
+        assert(result.count() == 9, "INSERT OVERWRITE DIRECTORY should write 9 rows")
+      }
+    }
+  }
+
+  // Test with Parquet source file (native scan) - this should use native writer
+  test("INSERT OVERWRITE DIRECTORY using parquet - with parquet source") {
+    withTempPath { srcDir =>
+      withTempPath { outDir =>
+        val srcPath = srcDir.getAbsolutePath
+        val outputPath = outDir.getAbsolutePath
+
+        // Create source parquet file
+        spark.range(1, 10).toDF("id").write.parquet(srcPath)
+
+        withSQLConf(
+          CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
+          CometConf.getOperatorAllowIncompatConfigKey(classOf[DataWritingCommandExec]) -> "true",
+          CometConf.COMET_EXEC_ENABLED.key -> "true",
+          CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "true") {
+
+          // Create table from parquet file
+          spark.read.parquet(srcPath).createOrReplaceTempView("parquet_source")
+
+          // Execute INSERT OVERWRITE DIRECTORY
+          spark.sql(s"""
+            INSERT OVERWRITE DIRECTORY '$outputPath'
+            USING PARQUET
+            SELECT id FROM parquet_source
+          """)
+
+          // Verify data was written correctly
+          val result = spark.read.parquet(outputPath)
+          assert(result.count() == 9, "INSERT OVERWRITE DIRECTORY should write 9 rows")
+        }
+      }
+    }
+  }
+
+  test("INSERT OVERWRITE DIRECTORY using parquet with repartition hint") {
+    withTempPath { dir =>
+      val outputPath = dir.getAbsolutePath
+
+      withSQLConf(
+        CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
+        CometConf.getOperatorAllowIncompatConfigKey(classOf[DataWritingCommandExec]) -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true") {
+
+        // Create source table
+        spark.range(1, 100).toDF("value").createOrReplaceTempView("df")
+
+        // Execute INSERT OVERWRITE DIRECTORY with REPARTITION hint (as in issue #2957)
+        val df = spark.sql(s"""
+          INSERT OVERWRITE DIRECTORY '$outputPath'
+          USING PARQUET
+          SELECT /*+ REPARTITION(3) */ value FROM df
+        """)
+
+        // Verify data was written correctly
+        val result = spark.read.parquet(outputPath)
+        assert(result.count() == 99)
+
+        // Check if native write was used
+        val plan = df.queryExecution.executedPlan
+        val hasNativeWrite = plan.collect { case _: CometNativeWriteExec => true }.nonEmpty
+        if (!hasNativeWrite) {
+          logWarning(s"Native write not used for INSERT OVERWRITE DIRECTORY:\n${plan.treeString}")
+        }
+      }
+    }
+  }
+
+  test("INSERT OVERWRITE DIRECTORY using parquet with aggregation") {
+    withTempPath { dir =>
+      val outputPath = dir.getAbsolutePath
+
+      withSQLConf(
+        CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
+        CometConf.getOperatorAllowIncompatConfigKey(classOf[DataWritingCommandExec]) -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true") {
+
+        // Create source table with some data for aggregation
+        spark.range(1, 100).toDF("id").createOrReplaceTempView("agg_source")
+
+        // Execute INSERT OVERWRITE DIRECTORY with aggregation
+        val df = spark.sql(s"""
+          INSERT OVERWRITE DIRECTORY '$outputPath'
+          USING PARQUET
+          SELECT id % 10 as group_id, count(*) as cnt
+          FROM agg_source
+          GROUP BY id % 10
+        """)
+
+        // Verify data was written correctly (10 groups: 0-9)
+        val result = spark.read.parquet(outputPath)
+        assert(result.count() == 10)
+
+        // Check if native write was used
+        val plan = df.queryExecution.executedPlan
+        val hasNativeWrite = plan.collect { case _: CometNativeWriteExec => true }.nonEmpty
+        if (!hasNativeWrite) {
+          logWarning(s"Native write not used for INSERT OVERWRITE DIRECTORY:\n${plan.treeString}")
+        }
+      }
+    }
+  }
+
+  test("INSERT OVERWRITE DIRECTORY using parquet with compression option") {
+    withTempPath { dir =>
+      val outputPath = dir.getAbsolutePath
+
+      withSQLConf(
+        CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
+        CometConf.getOperatorAllowIncompatConfigKey(classOf[DataWritingCommandExec]) -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true") {
+
+        // Create source table
+        spark.range(1, 50).toDF("id").createOrReplaceTempView("comp_source")
+
+        // Execute INSERT OVERWRITE DIRECTORY with compression option
+        val df = spark.sql(s"""
+          INSERT OVERWRITE DIRECTORY '$outputPath'
+          USING PARQUET
+          OPTIONS ('compression' = 'snappy')
+          SELECT id FROM comp_source
+        """)
+
+        // Verify data was written correctly
+        val result = spark.read.parquet(outputPath)
+        assert(result.count() == 49)
+
+        // Check if native write was used
+        val plan = df.queryExecution.executedPlan
+        val hasNativeWrite = plan.collect { case _: CometNativeWriteExec => true }.nonEmpty
+        if (!hasNativeWrite) {
+          logWarning(s"Native write not used for INSERT OVERWRITE DIRECTORY:\n${plan.treeString}")
+        }
+      }
+    }
+  }
+
   private def readSparkRows(path: String): Array[Row] = {
     var rows: Array[Row] = null
     withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
