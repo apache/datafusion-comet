@@ -977,7 +977,8 @@ pub(crate) fn cast_decimal_to_timestamp(
             builder.append_null();
         } else {
             let value = arr.value(i);
-            // Note: spark's big decimal 
+            // Note: spark's big decimal truncates to
+            // long value and does not throw error (in all leval modes)
             let value_256 = i256::from_i128(value);
             let micros_256 = value_256 * i256::from_i128(MICROS_PER_SECOND as i128);
             let ts = micros_256 / i256::from_i128(scale_factor);
