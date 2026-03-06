@@ -129,8 +129,10 @@ under the License.
          to provide InMemoryKMS class that is shaded below, to make Spark test happy. -->
     </dependency>
     <!-- We shade & relocate Arrow dependencies in comet-common, so comet-spark module no longer
-         depends on Arrow. However, when running `mvn test` we still need Arrow classes in the
-         classpath, since the Maven shading happens in 'package' phase which is after 'test' -->
+         depends on arrow-vector. However, arrow-c-data is used by ArrowCDataExport for zero-copy
+         conversion (provided scope since it may not be available in all runtime environments).
+         arrow-memory-unsafe is still needed for tests (Maven shading in common happens in
+         'package' phase which is after 'test'). -->
     <dependency>
       <groupId>org.apache.arrow</groupId>
       <artifactId>arrow-memory-unsafe</artifactId>
@@ -139,7 +141,7 @@ under the License.
     <dependency>
       <groupId>org.apache.arrow</groupId>
       <artifactId>arrow-c-data</artifactId>
-      <scope>test</scope>
+      <scope>provided</scope>
     </dependency>
     <dependency>
       <groupId>org.apache.hadoop</groupId>
