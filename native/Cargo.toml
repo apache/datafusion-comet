@@ -56,7 +56,7 @@ url = "2.2"
 aws-config = "1.8.14"
 aws-credential-types = "1.2.13"
 iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "854f66d" }
-iceberg-storage-opendal = { git = "https://github.com/apache/iceberg-rust", rev = "854f66d" }
+iceberg-storage-opendal = { git = "https://github.com/apache/iceberg-rust", rev = "854f66d", features = ["opendal-all"] }
 
 [profile.release]
 debug = true

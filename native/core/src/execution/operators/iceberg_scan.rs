@@ -193,13 +193,19 @@ impl IcebergScanExec {
     }
 
     fn storage_factory_for(path: &str) -> Result<Arc<dyn StorageFactory>, DataFusionError> {
-        let scheme = path.split("://").next().unwrap_or("file");
+        let scheme = if path.contains("://") {
+            path.split("://").next().unwrap_or("file")
+        } else {
+            "file"
+        };
         match scheme {
-            "file" | "" => Ok(Arc::new(OpenDalStorageFactory::Fs)),
+            "file" => Ok(Arc::new(OpenDalStorageFactory::Fs)),
             "s3" | "s3a" => Ok(Arc::new(OpenDalStorageFactory::S3 {
                 configured_scheme: scheme.to_string(),
                 customized_credential_load: None,
             })),
+            "gs" => Ok(Arc::new(OpenDalStorageFactory::Gcs)),
+            "oss" => Ok(Arc::new(OpenDalStorageFactory::Oss)),
             _ => Err(DataFusionError::Execution(format!(
                 "Unsupported storage scheme: {scheme}"
             ))),
