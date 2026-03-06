@@ -88,6 +88,7 @@ message Expr {
     UnixTimestamp unix_timestamp = 65;
     FromJson from_json = 66;
     ToCsv to_csv = 67;
+    ArraysZip arrays_zip = 68;
   }
 
   // Optional QueryContext for error reporting (contains SQL text and position)
@@ -476,4 +477,9 @@ message ArrayJoin {
 
 message Rand {
   int64 seed = 1;
+}
+
+message ArraysZip {
+  repeated Expr values = 1;
+  repeated string names = 2;
 }
