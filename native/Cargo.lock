@@ -3306,7 +3306,7 @@ dependencies = [
 [[package]]
 name = "iceberg"
 version = "0.8.0"
-source = "git+https://github.com/apache/iceberg-rust?rev=854f66d#854f66d371a59d218498de72b02db7d3282f2643"
+source = "git+https://github.com/mbutrovich/iceberg-rust?branch=double_open_fix#5dd2520f5353bcbbcfbd8c8f36d18e92845be1c8"
 dependencies = [
  "anyhow",
  "apache-avro",
@@ -3359,7 +3359,7 @@ dependencies = [
 [[package]]
 name = "iceberg-storage-opendal"
 version = "0.8.0"
-source = "git+https://github.com/apache/iceberg-rust?rev=854f66d#854f66d371a59d218498de72b02db7d3282f2643"
+source = "git+https://github.com/mbutrovich/iceberg-rust?branch=double_open_fix#5dd2520f5353bcbbcfbd8c8f36d18e92845be1c8"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5676,12 +5676,12 @@ checksum = "1b6b67fb9a61334225b5b790716f609cd58395f895b3fe8b328786812a40bc3b"
 
 [[package]]
 name = "socket2"
-version = "0.6.2"
+version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "86f4aa3ad99f2088c990dfa82d367e19cb29268ed67c574d10d0a4bfe71f07e0"
+checksum = "3a766e1110788c36f4fa1c2b71b387a7815aa65f88ce0229841826633d93723e"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
