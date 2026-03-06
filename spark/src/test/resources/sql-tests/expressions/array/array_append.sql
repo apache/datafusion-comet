@@ -35,5 +35,5 @@ query spark_answer_only
 SELECT array_append(array(1, 2, 3), val) FROM test_array_append
 
 -- literal + literal
-query ignore(https://github.com/apache/datafusion-comet/issues/3338)
+query
 SELECT array_append(array(1, 2, 3), 4), array_append(array(), 1), array_append(cast(NULL as array<int>), 1)

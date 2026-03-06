@@ -35,5 +35,5 @@ query spark_answer_only
 SELECT array_intersect(array(1, 2, 3), b) FROM test_array_intersect
 
 -- literal + literal
-query ignore(https://github.com/apache/datafusion-comet/issues/3338)
+query
 SELECT array_intersect(array(1, 2, 3), array(2, 3, 4)), array_intersect(array(1, 2), array(3, 4)), array_intersect(array(), array(1)), array_intersect(cast(NULL as array<int>), array(1))

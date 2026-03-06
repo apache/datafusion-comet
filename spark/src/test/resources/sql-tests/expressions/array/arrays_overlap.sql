@@ -35,5 +35,5 @@ query spark_answer_only
 SELECT arrays_overlap(array(1, 2, 3), b) FROM test_arrays_overlap
 
 -- literal + literal
-query ignore(https://github.com/apache/datafusion-comet/issues/3338)
+query
 SELECT arrays_overlap(array(1, 2, 3), array(3, 4, 5)), arrays_overlap(array(1, 2), array(3, 4)), arrays_overlap(array(), array(1)), arrays_overlap(cast(NULL as array<int>), array(1))
