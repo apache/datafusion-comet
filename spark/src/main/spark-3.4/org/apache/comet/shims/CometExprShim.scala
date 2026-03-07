@@ -22,13 +22,13 @@ package org.apache.comet.shims
 import org.apache.spark.sql.catalyst.expressions._
 
 import org.apache.comet.expressions.CometEvalMode
-import org.apache.comet.serde.CommonStringExprs
+import org.apache.comet.serde.{CommonDateTimeExprs, CommonStringExprs}
 import org.apache.comet.serde.ExprOuterClass.{BinaryOutputStyle, Expr}
 
 /**
  * `CometExprShim` acts as a shim for parsing expressions from different Spark versions.
  */
-trait CometExprShim extends CommonStringExprs {
+trait CometExprShim extends CommonStringExprs with CommonDateTimeExprs {
   protected def evalMode(c: Cast): CometEvalMode.Value =
     CometEvalModeUtil.fromSparkEvalMode(c.evalMode)
 
@@ -42,6 +42,10 @@ trait CometExprShim extends CommonStringExprs {
       case s: StringDecode =>
         // Right child is the encoding expression.
         stringDecode(expr, s.charset, s.bin, inputs, binding)
+
+      case _: UnaryExpression if expr.prettyName == "seconds_of_time" =>
+        // SecondsOfTime may not exist in all Spark versions, so we match by prettyName
+        secondsOfTimeToProto(expr, inputs, binding)
 
       case _ => None
     }
