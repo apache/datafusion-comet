@@ -15,6 +15,7 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
+-- Config: spark.comet.expression.ArrayIntersect.allowIncompatible=true
 -- ConfigMatrix: parquet.enable.dictionary=false,true
 
 statement
@@ -23,15 +24,15 @@ CREATE TABLE test_array_intersect(a array<int>, b array<int>) USING parquet
 statement
 INSERT INTO test_array_intersect VALUES (array(1, 2, 3), array(2, 3, 4)), (array(1, 2), array(3, 4)), (array(), array(1)), (NULL, array(1)), (array(1, NULL), array(NULL, 2))
 
-query spark_answer_only
+query
 SELECT array_intersect(a, b) FROM test_array_intersect
 
 -- column + literal
-query spark_answer_only
+query
 SELECT array_intersect(a, array(2, 3)) FROM test_array_intersect
 
 -- literal + column
-query spark_answer_only
+query
 SELECT array_intersect(array(1, 2, 3), b) FROM test_array_intersect
 
 -- literal + literal

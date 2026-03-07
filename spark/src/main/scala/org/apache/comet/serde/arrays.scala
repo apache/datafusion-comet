@@ -95,7 +95,12 @@ object CometArrayAppend extends CometExpressionSerde[ArrayAppend] {
     val keyExprProto = exprToProto(expr.children(1), inputs, binding)
 
     val arrayAppendScalarExpr =
-      scalarFunctionExprToProto("array_append", arrayExprProto, keyExprProto)
+      scalarFunctionExprToProtoWithReturnType(
+        "array_append",
+        ArrayType(elementType = elementType),
+        false,
+        arrayExprProto,
+        keyExprProto)
 
     val isNotNullExpr = createUnaryExpr(
       expr,
@@ -339,6 +344,7 @@ object CometArrayExcept extends CometExpressionSerde[ArrayExcept] with CometExpr
         return None
       }
     }
+    val elementType = expr.left.dataType.asInstanceOf[ArrayType].elementType
     val leftArrayExprProto = exprToProto(expr.left, inputs, binding)
     val rightArrayExprProto = exprToProto(expr.right, inputs, binding)
 
