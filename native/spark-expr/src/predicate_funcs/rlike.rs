@@ -21,7 +21,7 @@ use arrow::array::types::Int32Type;
 use arrow::array::{Array, BooleanArray, DictionaryArray, RecordBatch, StringArray};
 use arrow::compute::take;
 use arrow::datatypes::{DataType, Schema};
-use datafusion::common::{internal_err, Result};
+use datafusion::common::{internal_err, Result, ScalarValue};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ColumnarValue;
 use regex::Regex;
@@ -140,8 +140,30 @@ impl PhysicalExpr for RLike {
                 let array = self.is_match(inputs);
                 Ok(ColumnarValue::Array(Arc::new(array)))
             }
-            ColumnarValue::Scalar(_) => {
-                internal_err!("non scalar regexp patterns are not supported")
+            ColumnarValue::Scalar(scalar) => {
+                // Handle scalar input (all-literal RLIKE expressions)
+                // This case occurs when ConstantFolding is disabled and both
+                // the input string and pattern are literals
+                if scalar.is_null() {
+                    // NULL RLIKE pattern -> NULL result
+                    return Ok(ColumnarValue::Scalar(ScalarValue::Boolean(None)));
+                }
+
+                // Extract string value from scalar and match pattern
+                // We handle each type separately to avoid lifetime issues with Utf8View
+                let is_match = match scalar {
+                    ScalarValue::Utf8(Some(s)) => self.pattern.is_match(s.as_str()),
+                    ScalarValue::LargeUtf8(Some(s)) => self.pattern.is_match(s.as_str()),
+                    ScalarValue::Utf8View(Some(s)) => self.pattern.is_match(s.as_str()),
+                    _ => {
+                        return internal_err!(
+                            "RLike requires string type for input, got {:?}",
+                            scalar.data_type()
+                        );
+                    }
+                };
+
+                Ok(ColumnarValue::Scalar(ScalarValue::Boolean(Some(is_match))))
             }
         }
     }
