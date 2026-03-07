@@ -289,6 +289,7 @@ dependencies = [
  "arrow-select",
  "flatbuffers",
  "lz4_flex",
+ "zstd",
 ]
 
 [[package]]
@@ -1828,6 +1829,7 @@ dependencies = [
 name = "datafusion-comet"
 version = "0.14.0"
 dependencies = [
+ "ahash",
  "arrow",
  "assertables",
  "async-trait",
