@@ -27,7 +27,7 @@ import org.scalatest.Tag
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.analysis.UnresolvedRelation
-import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometGraceHashJoinExec}
+import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometHashJoinExec}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, Decimal, StructField, StructType}
 
@@ -592,13 +592,13 @@ class CometJoinSuite extends CometTestBase {
     }
   }
 
-  test("Grace HashJoin - plan shows CometGraceHashJoinExec") {
+  test("Grace HashJoin - plan shows CometHashJoinExec") {
     withSQLConf(graceHashJoinConf: _*) {
       withParquetTable((0 until 50).map(i => (i, i % 5)), "tbl_a") {
         withParquetTable((0 until 50).map(i => (i % 10, i + 2)), "tbl_b") {
           val df = sql(
             "SELECT /*+ SHUFFLE_HASH(tbl_a) */ * FROM tbl_a JOIN tbl_b ON tbl_a._2 = tbl_b._1")
-          checkSparkAnswerAndOperator(df, Seq(classOf[CometGraceHashJoinExec]))
+          checkSparkAnswerAndOperator(df, Seq(classOf[CometHashJoinExec]))
         }
       }
     }

@@ -1724,7 +1724,7 @@ object CometHashJoinExec extends CometOperatorSerde[HashJoin] with CometHashJoin
     doConvert(join, builder, childOp: _*)
 
   override def createExec(nativeOp: Operator, op: HashJoin): CometNativeExec = {
-    CometGraceHashJoinExec(
+    CometHashJoinExec(
       nativeOp,
       op,
       op.output,
@@ -1740,7 +1740,7 @@ object CometHashJoinExec extends CometOperatorSerde[HashJoin] with CometHashJoin
   }
 }
 
-case class CometGraceHashJoinExec(
+case class CometHashJoinExec(
     override val nativeOp: Operator,
     override val originalPlan: SparkPlan,
     override val output: Seq[Attribute],
@@ -1774,7 +1774,7 @@ case class CometGraceHashJoinExec(
 
   override def equals(obj: Any): Boolean = {
     obj match {
-      case other: CometGraceHashJoinExec =>
+      case other: CometHashJoinExec =>
         this.output == other.output &&
         this.leftKeys == other.leftKeys &&
         this.rightKeys == other.rightKeys &&

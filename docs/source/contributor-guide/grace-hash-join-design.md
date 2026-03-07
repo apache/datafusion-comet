@@ -52,7 +52,7 @@ The configured threshold is the total budget across all concurrent tasks on the 
 SortMergeJoinExec
     -> RewriteJoin converts to ShuffledHashJoinExec (removes input sorts)
     -> CometExecRule wraps as CometHashJoinExec
-    -> CometHashJoinExec.createExec() creates CometGraceHashJoinExec
+    -> CometHashJoinExec.createExec() creates CometHashJoinExec
     -> Serialized to protobuf via JNI
     -> PhysicalPlanner (Rust) creates GraceHashJoinExec
 ```

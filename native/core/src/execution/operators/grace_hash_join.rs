@@ -429,6 +429,10 @@ struct GraceHashJoinMetrics {
     input_rows: Count,
     /// Number of probe-side input batches
     input_batches: Count,
+    /// Number of output batches
+    output_batches: Count,
+    /// Time spent in per-partition joins
+    join_time: Time,
 }
 
 impl GraceHashJoinMetrics {
@@ -444,6 +448,8 @@ impl GraceHashJoinMetrics {
                 .counter("build_input_batches", partition),
             input_rows: MetricBuilder::new(metrics).counter("input_rows", partition),
             input_batches: MetricBuilder::new(metrics).counter("input_batches", partition),
+            output_batches: MetricBuilder::new(metrics).counter("output_batches", partition),
+            join_time: MetricBuilder::new(metrics).subset_time("join_time", partition),
         }
     }
 }
@@ -821,8 +827,12 @@ async fn execute_grace_hash_join(
                 )?;
 
                 let output_metrics = metrics.baseline.clone();
+                let output_batch_count = metrics.output_batches.clone();
+                let join_time = metrics.join_time.clone();
                 let result_stream = stream.inspect_ok(move |batch| {
+                    let _timer = join_time.timer();
                     output_metrics.record_output(batch.num_rows());
+                    output_batch_count.add(1);
                 });
 
                 return Ok(result_stream.boxed());
@@ -1072,7 +1082,7 @@ fn partition_from_buffer(
 }
 
 /// Create the fast-path HashJoinExec stream (no partitioning, no spilling).
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn create_fast_path_stream(
     build_data: Vec<RecordBatch>,
     probe_stream: SendableRecordBatchStream,
@@ -1303,6 +1313,8 @@ async fn execute_slow_path(
     drop(tx);
 
     let output_metrics = metrics.baseline.clone();
+    let output_batch_count = metrics.output_batches.clone();
+    let join_time = metrics.join_time.clone();
     let output_row_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let counter = Arc::clone(&output_row_count);
     let jt = join_type;
@@ -1311,7 +1323,9 @@ async fn execute_slow_path(
         rx.recv().await.map(|batch| (batch, rx))
     })
     .inspect_ok(move |batch| {
+        let _timer = join_time.timer();
         output_metrics.record_output(batch.num_rows());
+        output_batch_count.add(1);
         let prev = counter.fetch_add(batch.num_rows(), std::sync::atomic::Ordering::Relaxed);
         let new_total = prev + batch.num_rows();
         // Log every ~1M rows to detect exploding joins

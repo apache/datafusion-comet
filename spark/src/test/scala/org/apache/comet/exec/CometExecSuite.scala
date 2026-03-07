@@ -692,7 +692,7 @@ class CometExecSuite extends CometTestBase {
         df.collect()
 
         val metrics = find(df.queryExecution.executedPlan) {
-          case _: CometGraceHashJoinExec => true
+          case _: CometHashJoinExec => true
           case _ => false
         }.map(_.metrics).get
 
