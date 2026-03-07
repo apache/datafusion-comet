@@ -26,12 +26,14 @@ use jni::{
 #[allow(dead_code)] // we need to keep references to Java items to prevent GC
 pub struct CometMetricNode<'a> {
     pub class: JClass<'a>,
-    pub method_get_child_node: JMethodID,
-    pub method_get_child_node_ret: ReturnType,
-    pub method_set: JMethodID,
-    pub method_set_ret: ReturnType,
-    pub method_set_all_from_bytes: JMethodID,
-    pub method_set_all_from_bytes_ret: ReturnType,
+    pub method_get_metric_names: JMethodID,
+    pub method_get_metric_names_ret: ReturnType,
+    pub method_get_node_offsets: JMethodID,
+    pub method_get_node_offsets_ret: ReturnType,
+    pub method_get_values_array: JMethodID,
+    pub method_get_values_array_ret: ReturnType,
+    pub method_update_from_values: JMethodID,
+    pub method_update_from_values_ret: ReturnType,
 }
 
 impl<'a> CometMetricNode<'a> {
@@ -41,20 +43,30 @@ impl<'a> CometMetricNode<'a> {
         let class = env.find_class(Self::JVM_CLASS)?;
 
         Ok(CometMetricNode {
-            method_get_child_node: env.get_method_id(
+            method_get_metric_names: env.get_method_id(
                 Self::JVM_CLASS,
-                "getChildNode",
-                format!("(I)L{:};", Self::JVM_CLASS).as_str(),
+                "getMetricNames",
+                "()[Ljava/lang/String;",
             )?,
-            method_get_child_node_ret: ReturnType::Object,
-            method_set: env.get_method_id(Self::JVM_CLASS, "set", "(Ljava/lang/String;J)V")?,
-            method_set_ret: ReturnType::Primitive(Primitive::Void),
-            method_set_all_from_bytes: env.get_method_id(
+            method_get_metric_names_ret: ReturnType::Object,
+            method_get_node_offsets: env.get_method_id(
                 Self::JVM_CLASS,
-                "set_all_from_bytes",
-                "([B)V",
+                "getNodeOffsets",
+                "()[I",
             )?,
-            method_set_all_from_bytes_ret: ReturnType::Primitive(Primitive::Void),
+            method_get_node_offsets_ret: ReturnType::Object,
+            method_get_values_array: env.get_method_id(
+                Self::JVM_CLASS,
+                "getValuesArray",
+                "()[J",
+            )?,
+            method_get_values_array_ret: ReturnType::Object,
+            method_update_from_values: env.get_method_id(
+                Self::JVM_CLASS,
+                "updateFromValues",
+                "()V",
+            )?,
+            method_update_from_values_ret: ReturnType::Primitive(Primitive::Void),
             class,
         })
     }
