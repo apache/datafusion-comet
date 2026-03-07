@@ -91,8 +91,9 @@ trait CometExprShim extends CommonStringExprs with CommonDateTimeExprs {
 //        val optExpr = scalarFunctionExprToProto("width_bucket", childExprs: _*)
 //        optExprWithInfo(optExpr, wb, wb.children: _*)
 
-      case _: SecondsOfTime =>
-        secondsOfTimeToProto(e, inputs, binding)
+      case _: UnaryExpression if expr.prettyName == "seconds_of_time" =>
+        // SecondsOfTime may not exist in all Spark versions, so we match by prettyName
+        secondsOfTimeToProto(expr, inputs, binding)
 
       case _ => None
     }

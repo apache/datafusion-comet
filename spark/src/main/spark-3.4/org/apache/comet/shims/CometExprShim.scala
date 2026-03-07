@@ -43,8 +43,9 @@ trait CometExprShim extends CommonStringExprs with CommonDateTimeExprs {
         // Right child is the encoding expression.
         stringDecode(expr, s.charset, s.bin, inputs, binding)
 
-      case _: SecondsOfTime =>
-        secondsOfTimeToProto(e, inputs, binding)
+      case _: UnaryExpression if expr.prettyName == "seconds_of_time" =>
+        // SecondsOfTime may not exist in all Spark versions, so we match by prettyName
+        secondsOfTimeToProto(expr, inputs, binding)
 
       case _ => None
     }
