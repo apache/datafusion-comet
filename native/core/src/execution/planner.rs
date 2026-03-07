@@ -1304,6 +1304,7 @@ impl PhysicalPlanner {
                     codec,
                     self.partition,
                     writer.column_names.clone(),
+                    writer.partition_columns.clone(),
                     object_store_options,
                 )?);
 
