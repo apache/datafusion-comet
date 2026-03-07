@@ -38,17 +38,21 @@ All benchmarks are run via `run.py`:
 python3 run.py --engine <engine> --benchmark <tpch|tpcds> [options]
 ```
 
-| Option         | Description                                              |
-| -------------- | -------------------------------------------------------- |
-| `--engine`     | Engine name (matches a TOML file in `engines/`)          |
-| `--benchmark`  | `tpch` or `tpcds`                                        |
-| `--iterations` | Number of iterations (default: 1)                        |
-| `--output`     | Output directory (default: `.`)                          |
-| `--query`      | Run a single query number                                |
-| `--no-restart` | Skip Spark master/worker restart                         |
-| `--dry-run`    | Print the spark-submit command without executing         |
-| `--jfr`        | Enable Java Flight Recorder profiling                    |
-| `--jfr-dir`    | Directory for JFR output files (default: `/results/jfr`) |
+| Option                    | Description                                                                     |
+| ------------------------- | ------------------------------------------------------------------------------- |
+| `--engine`                | Engine name (matches a TOML file in `engines/`)                                 |
+| `--benchmark`             | `tpch` or `tpcds`                                                               |
+| `--iterations`            | Number of iterations (default: 1)                                               |
+| `--output`                | Output directory (default: `.`)                                                 |
+| `--query`                 | Run a single query number                                                       |
+| `--no-restart`            | Skip Spark master/worker restart                                                |
+| `--dry-run`               | Print the spark-submit command without executing                                |
+| `--jfr`                   | Enable Java Flight Recorder profiling                                           |
+| `--jfr-dir`               | Directory for JFR output files (default: `/results/jfr`)                        |
+| `--async-profiler`        | Enable async-profiler (profiles Java + native code)                             |
+| `--async-profiler-dir`    | Directory for async-profiler output (default: `/results/async-profiler`)        |
+| `--async-profiler-event`  | Event type: `cpu`, `wall`, `alloc`, `lock`, etc. (default: `cpu`)               |
+| `--async-profiler-format` | Output format: `flamegraph`, `jfr`, `collapsed`, `text` (default: `flamegraph`) |
 
 Available engines: `spark`, `comet`, `comet-iceberg`, `gluten`
 
@@ -392,3 +396,88 @@ docker compose -f benchmarks/tpc/infra/docker/docker-compose.yml \
 
 Open the `.jfr` files with [JDK Mission Control](https://jdk.java.net/jmc/),
 IntelliJ IDEA's profiler, or `jfr` CLI tool (`jfr summary driver.jfr`).
+
+## async-profiler Profiling
+
+Use the `--async-profiler` flag to capture profiles with
+[async-profiler](https://github.com/async-profiler/async-profiler). Unlike JFR,
+async-profiler can profile **both Java and native (Rust/C++) code** in the same
+flame graph, making it especially useful for profiling Comet workloads.
+
+### Prerequisites
+
+async-profiler must be installed on every node where the driver or executors run.
+Set `ASYNC_PROFILER_HOME` to the installation directory:
+
+```shell
+# Download and extract (Linux x64 example)
+wget https://github.com/async-profiler/async-profiler/releases/download/v3.0/async-profiler-3.0-linux-x64.tar.gz
+tar xzf async-profiler-3.0-linux-x64.tar.gz -C /opt/async-profiler --strip-components=1
+export ASYNC_PROFILER_HOME=/opt/async-profiler
+```
+
+On Linux, `perf_event_paranoid` must be set to allow profiling:
+
+```shell
+sudo sysctl kernel.perf_event_paranoid=1   # or 0 / -1 for full access
+sudo sysctl kernel.kptr_restrict=0          # optional: enable kernel symbols
+```
+
+### Basic usage
+
+```shell
+python3 run.py --engine comet --benchmark tpch --async-profiler
+```
+
+This produces HTML flame graphs in `/results/async-profiler/` by default
+(`driver.html` and `executor.html`).
+
+### Choosing events and output format
+
+```shell
+# Wall-clock profiling (includes time spent waiting/sleeping)
+python3 run.py --engine comet --benchmark tpch \
+    --async-profiler --async-profiler-event wall
+
+# Allocation profiling with JFR output
+python3 run.py --engine comet --benchmark tpch \
+    --async-profiler --async-profiler-event alloc --async-profiler-format jfr
+
+# Lock contention profiling
+python3 run.py --engine comet --benchmark tpch \
+    --async-profiler --async-profiler-event lock
+```
+
+| Event   | Description                                         |
+| ------- | --------------------------------------------------- |
+| `cpu`   | On-CPU time (default). Shows where CPU cycles go.   |
+| `wall`  | Wall-clock time. Includes threads that are blocked. |
+| `alloc` | Heap allocation profiling.                          |
+| `lock`  | Lock contention profiling.                          |
+
+| Format       | Extension | Description                              |
+| ------------ | --------- | ---------------------------------------- |
+| `flamegraph` | `.html`   | Interactive HTML flame graph (default).  |
+| `jfr`        | `.jfr`    | JFR format, viewable in JMC or IntelliJ. |
+| `collapsed`  | `.txt`    | Collapsed stacks for FlameGraph scripts. |
+| `text`       | `.txt`    | Flat text summary of hot methods.        |
+
+### Docker usage
+
+The Docker image includes async-profiler pre-installed at
+`/opt/async-profiler`. The `ASYNC_PROFILER_HOME` environment variable is
+already set in the compose files, so no extra configuration is needed:
+
+```shell
+docker compose -f benchmarks/tpc/infra/docker/docker-compose.yml \
+    run --rm bench \
+    python3 /opt/benchmarks/run.py \
+    --engine comet --benchmark tpch --output /results --no-restart --async-profiler
+```
+
+Output files are collected in `$RESULTS_DIR/async-profiler/` on the host.
+
+**Note:** On Linux, the Docker container needs `--privileged` or
+`SYS_PTRACE` capability and `perf_event_paranoid <= 1` on the host for
+`cpu`/`wall` events. Allocation (`alloc`) and lock (`lock`) events work
+without special privileges.

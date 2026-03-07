@@ -30,6 +30,7 @@
 #   ICEBERG_JAR        - Host path to Iceberg Spark runtime JAR
 #   BENCH_JAVA_HOME    - Java home inside container (default: /usr/lib/jvm/java-17-openjdk)
 #                        Set to /usr/lib/jvm/java-8-openjdk for Gluten
+#   ASYNC_PROFILER_HOME - async-profiler install path (default: /opt/async-profiler)
 
 x-volumes: &volumes
   - ${DATA_DIR:-/tmp/tpc-data}:/data:ro
@@ -95,5 +96,6 @@ services:
       - TPCH_DATA=/data
       - TPCDS_DATA=/data
       - SPARK_EVENT_LOG_DIR=/results/spark-events
+      - ASYNC_PROFILER_HOME=/opt/async-profiler
     mem_limit: 4g
     memswap_limit: 4g

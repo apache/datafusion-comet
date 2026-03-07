@@ -69,7 +69,7 @@ jobs:
   build-native:
     needs: lint
     name: Build Native Library
-    runs-on: ${{ github.repository_owner == 'apache' && format('runs-on={0},family=m8a,cpu=8,image=ubuntu24-full-x64,extras=s3-cache,disk=large,tag=datafusion-comet', github.run_id) || 'ubuntu-latest' }}
+    runs-on: ${{ github.repository_owner == 'apache' && format('runs-on={0},family=m8a+m7a+c8a,cpu=8,image=ubuntu24-full-x64,extras=s3-cache,disk=large,tag=datafusion-comet', github.run_id) || 'ubuntu-latest' }}
     container:
       image: amd64/rust
     steps:
@@ -102,7 +102,7 @@ jobs:
           RUSTFLAGS: "-Ctarget-cpu=x86-64-v3"
 
       - name: Upload native library
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: native-lib-linux
           path: native/target/ci/libcomet.so
@@ -122,7 +122,7 @@ jobs:
   linux-test-rust:
     needs: lint
     name: ubuntu-latest/rust-test
-    runs-on: ${{ github.repository_owner == 'apache' && format('runs-on={0},family=m8a,cpu=16,image=ubuntu24-full-x64,extras=s3-cache,disk=large,tag=datafusion-comet', github.run_id) || 'ubuntu-latest' }}
+    runs-on: ${{ github.repository_owner == 'apache' && format('runs-on={0},family=m8a+m7a+c8a,cpu=16,image=ubuntu24-full-x64,extras=s3-cache,disk=large,tag=datafusion-comet', github.run_id) || 'ubuntu-latest' }}
     container:
       image: amd64/rust
     steps:
@@ -277,7 +277,7 @@ jobs:
               org.apache.spark.sql.CometToPrettyStringSuite
       fail-fast: false
     name: ${{ matrix.profile.name }}/${{ matrix.profile.scan_impl }} [${{ matrix.suite.name }}]
-    runs-on: ${{ github.repository_owner == 'apache' && format('runs-on={0},family=m8a,cpu=16,image=ubuntu24-full-x64,extras=s3-cache,disk=large,tag=datafusion-comet', github.run_id) || 'ubuntu-latest' }}
+    runs-on: ${{ github.repository_owner == 'apache' && format('runs-on={0},family=m8a+m7a+c8a,cpu=16,image=ubuntu24-full-x64,extras=s3-cache,disk=large,tag=datafusion-comet', github.run_id) || 'ubuntu-latest' }}
     container:
       image: amd64/rust
       env:
@@ -294,7 +294,7 @@ jobs:
           jdk-version: ${{ matrix.profile.java_version }}
 
       - name: Download native library
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: native-lib-linux
           # Download to release/ since Maven's -Prelease expects libcomet.so there
@@ -325,7 +325,7 @@ jobs:
   verify-benchmark-results-tpch:
     needs: build-native
     name: Verify TPC-H Results
-    runs-on: ${{ github.repository_owner == 'apache' && format('runs-on={0},family=m8a,cpu=16,image=ubuntu24-full-x64,extras=s3-cache,disk=large,tag=datafusion-comet', github.run_id) || 'ubuntu-latest' }}
+    runs-on: ${{ github.repository_owner == 'apache' && format('runs-on={0},family=m8a+m7a+c8a,cpu=16,image=ubuntu24-full-x64,extras=s3-cache,disk=large,tag=datafusion-comet', github.run_id) || 'ubuntu-latest' }}
     container:
       image: amd64/rust
     steps:
@@ -340,7 +340,7 @@ jobs:
           jdk-version: 11
 
       - name: Download native library
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: native-lib-linux
           path: native/target/release/
@@ -379,7 +379,7 @@ jobs:
   verify-benchmark-results-tpcds:
     needs: build-native
     name: Verify TPC-DS Results (${{ matrix.join }})
-    runs-on: ${{ github.repository_owner == 'apache' && format('runs-on={0},family=m8a,cpu=16,image=ubuntu24-full-x64,extras=s3-cache,disk=large,tag=datafusion-comet', github.run_id) || 'ubuntu-latest' }}
+    runs-on: ${{ github.repository_owner == 'apache' && format('runs-on={0},family=m8a+m7a+c8a,cpu=16,image=ubuntu24-full-x64,extras=s3-cache,disk=large,tag=datafusion-comet', github.run_id) || 'ubuntu-latest' }}
     container:
       image: amd64/rust
     strategy:
@@ -398,7 +398,7 @@ jobs:
           jdk-version: 11
 
       - name: Download native library
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: native-lib-linux
           path: native/target/release/
