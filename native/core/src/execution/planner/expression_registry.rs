@@ -103,6 +103,8 @@ pub enum ExpressionType {
     Randn,
     SparkPartitionId,
     MonotonicallyIncreasingId,
+    ArrayExists,
+    LambdaVariable,
 
     // Time functions
     Hour,
@@ -184,6 +186,9 @@ impl ExpressionRegistry {
 
         // Register temporal expressions
         self.register_temporal_expressions();
+
+        // Register array expressions
+        self.register_array_expressions();
     }
 
     /// Register arithmetic expression builders
@@ -306,6 +311,18 @@ impl ExpressionRegistry {
         );
     }
 
+    /// Register array expression builders
+    fn register_array_expressions(&mut self) {
+        use crate::execution::expressions::array::*;
+
+        self.builders
+            .insert(ExpressionType::ArrayExists, Box::new(ArrayExistsBuilder));
+        self.builders.insert(
+            ExpressionType::LambdaVariable,
+            Box::new(LambdaVariableBuilder),
+        );
+    }
+
     /// Extract expression type from Spark protobuf expression
     fn get_expression_type(spark_expr: &Expr) -> Result<ExpressionType, ExecutionError> {
         match spark_expr.expr_struct.as_ref() {
@@ -370,6 +387,8 @@ impl ExpressionRegistry {
             Some(ExprStruct::MonotonicallyIncreasingId(_)) => {
                 Ok(ExpressionType::MonotonicallyIncreasingId)
             }
+            Some(ExprStruct::ArrayExists(_)) => Ok(ExpressionType::ArrayExists),
+            Some(ExprStruct::LambdaVariable(_)) => Ok(ExpressionType::LambdaVariable),
 
             Some(ExprStruct::Hour(_)) => Ok(ExpressionType::Hour),
             Some(ExprStruct::Minute(_)) => Ok(ExpressionType::Minute),

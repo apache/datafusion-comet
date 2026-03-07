@@ -18,6 +18,7 @@
 //! Native DataFusion expressions
 
 pub mod arithmetic;
+pub mod array;
 pub mod bitwise;
 pub mod comparison;
 pub mod logical;

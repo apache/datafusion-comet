@@ -88,6 +88,8 @@ message Expr {
     UnixTimestamp unix_timestamp = 65;
     FromJson from_json = 66;
     ToCsv to_csv = 67;
+    ArrayExists array_exists = 68;
+    LambdaVariable lambda_variable = 69;
   }
 }
 
@@ -439,4 +441,18 @@ message ArrayJoin {
 
 message Rand {
   int64 seed = 1;
+}
+
+message ArrayExists {
+  Expr array = 1;
+  Expr lambda_body = 2;
+  bool follow_three_valued_logic = 3;
+}
+
+// Currently only supports a single lambda variable per expression. The variable
+// is resolved by column index (always the last column in the expanded batch
+// constructed by ArrayExistsExpr). Extending to multi-argument lambdas
+// (e.g. transform(array, (x, i) -> ...)) would require adding an identifier.
+message LambdaVariable {
+  DataType datatype = 1;
 }
