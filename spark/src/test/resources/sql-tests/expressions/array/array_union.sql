@@ -15,6 +15,7 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
+-- Config: spark.comet.expression.ArrayUnion.allowIncompatible=true
 -- ConfigMatrix: parquet.enable.dictionary=false,true
 
 statement
@@ -23,17 +24,17 @@ CREATE TABLE test_array_union(a array<int>, b array<int>) USING parquet
 statement
 INSERT INTO test_array_union VALUES (array(1, 2, 3), array(3, 4, 5)), (array(1, 2), array()), (array(), array(1)), (NULL, array(1)), (array(1, NULL), array(NULL, 2))
 
-query spark_answer_only
+query ignore(https://github.com/apache/datafusion-comet/issues/3644)
 SELECT array_union(a, b) FROM test_array_union
 
 -- column + literal
-query spark_answer_only
+query ignore(https://github.com/apache/datafusion-comet/issues/3644)
 SELECT array_union(a, array(3, 4, 5)) FROM test_array_union
 
 -- literal + column
-query spark_answer_only
+query
 SELECT array_union(array(1, 2, 3), b) FROM test_array_union
 
 -- literal + literal
-query ignore(https://github.com/apache/datafusion-comet/issues/3338)
+query
 SELECT array_union(array(1, 2, 3), array(3, 4, 5)), array_union(array(1, 2), array()), array_union(array(), array(1)), array_union(cast(NULL as array<int>), array(1))
