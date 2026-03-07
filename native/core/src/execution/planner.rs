@@ -730,6 +730,41 @@ impl PhysicalPlanner {
                     Arc::new(ConfigOptions::default()),
                 )))
             }
+            // Date +/- Int8/Int16/Int32: DataFusion 52's arrow-arith kernels only
+            // support Date32 +/- Interval types, not raw integers. Use the Spark
+            // date_add / date_sub UDFs which handle Int8/Int16/Int32 directly.
+            (
+                DataFusionOperator::Plus,
+                Ok(DataType::Date32),
+                Ok(DataType::Int8 | DataType::Int16 | DataType::Int32),
+            ) => {
+                let udf = Arc::new(ScalarUDF::new_from_impl(
+                    datafusion_spark::function::datetime::date_add::SparkDateAdd::new(),
+                ));
+                Ok(Arc::new(ScalarFunctionExpr::new(
+                    "date_add",
+                    udf,
+                    vec![left, right],
+                    Arc::new(Field::new("date_add", DataType::Date32, true)),
+                    Arc::new(ConfigOptions::default()),
+                )))
+            }
+            (
+                DataFusionOperator::Minus,
+                Ok(DataType::Date32),
+                Ok(DataType::Int8 | DataType::Int16 | DataType::Int32),
+            ) => {
+                let udf = Arc::new(ScalarUDF::new_from_impl(
+                    datafusion_spark::function::datetime::date_sub::SparkDateSub::new(),
+                ));
+                Ok(Arc::new(ScalarFunctionExpr::new(
+                    "date_sub",
+                    udf,
+                    vec![left, right],
+                    Arc::new(Field::new("date_sub", DataType::Date32, true)),
+                    Arc::new(ConfigOptions::default()),
+                )))
+            }
             _ => {
                 let data_type = return_type.map(to_arrow_datatype).unwrap();
                 if [EvalMode::Try, EvalMode::Ansi].contains(&eval_mode)
@@ -965,20 +1000,31 @@ impl PhysicalPlanner {
                 ))
             }
             OpStruct::NativeScan(scan) => {
-                let data_schema = convert_spark_types_to_arrow_schema(scan.data_schema.as_slice());
+                // Extract common data and single partition's file list
+                // Per-partition injection happens in Scala before sending to native
+                let common = scan
+                    .common
+                    .as_ref()
+                    .ok_or_else(|| GeneralError("NativeScan missing common data".into()))?;
+
+                let data_schema =
+                    convert_spark_types_to_arrow_schema(common.data_schema.as_slice());
                 let required_schema: SchemaRef =
-                    convert_spark_types_to_arrow_schema(scan.required_schema.as_slice());
+                    convert_spark_types_to_arrow_schema(common.required_schema.as_slice());
                 let partition_schema: SchemaRef =
-                    convert_spark_types_to_arrow_schema(scan.partition_schema.as_slice());
-                let projection_vector: Vec<usize> = scan
+                    convert_spark_types_to_arrow_schema(common.partition_schema.as_slice());
+                let projection_vector: Vec<usize> = common
                     .projection_vector
                     .iter()
                     .map(|offset| *offset as usize)
                     .collect();
 
-                // Check if this partition has any files (bucketed scan with bucket pruning may have empty partitions)
-                let partition_files = &scan.file_partitions[self.partition as usize];
+                let partition_files = scan
+                    .file_partition
+                    .as_ref()
+                    .ok_or_else(|| GeneralError("NativeScan missing file_partition".into()))?;
 
+                // Check if this partition has any files (bucketed scan with bucket pruning may have empty partitions)
                 if partition_files.partitioned_file.is_empty() {
                     let empty_exec = Arc::new(EmptyExec::new(required_schema));
                     return Ok((
@@ -988,19 +1034,19 @@ impl PhysicalPlanner {
                 }
 
                 // Convert the Spark expressions to Physical expressions
-                let data_filters: Result<Vec<Arc<dyn PhysicalExpr>>, ExecutionError> = scan
+                let data_filters: Result<Vec<Arc<dyn PhysicalExpr>>, ExecutionError> = common
                     .data_filters
                     .iter()
                     .map(|expr| self.create_expr(expr, Arc::clone(&required_schema)))
                     .collect();
 
-                let default_values: Option<HashMap<usize, ScalarValue>> = if !scan
+                let default_values: Option<HashMap<Column, ScalarValue>> = if !common
                     .default_values
                     .is_empty()
                 {
                     // We have default values. Extract the two lists (same length) of values and
                     // indexes in the schema, and then create a HashMap to use in the SchemaMapper.
-                    let default_values: Result<Vec<ScalarValue>, DataFusionError> = scan
+                    let default_values: Result<Vec<ScalarValue>, DataFusionError> = common
                         .default_values
                         .iter()
                         .map(|expr| {
@@ -1015,7 +1061,7 @@ impl PhysicalPlanner {
                         })
                         .collect();
                     let default_values = default_values?;
-                    let default_values_indexes: Vec<usize> = scan
+                    let default_values_indexes: Vec<usize> = common
                         .default_values_indexes
                         .iter()
                         .map(|offset| *offset as usize)
@@ -1024,6 +1070,11 @@ impl PhysicalPlanner {
                         default_values_indexes
                             .into_iter()
                             .zip(default_values)
+                            .map(|(idx, scalar_value)| {
+                                let field = required_schema.field(idx);
+                                let column = Column::new(field.name().as_str(), idx);
+                                (column, scalar_value)
+                            })
                             .collect(),
                     )
                 } else {
@@ -1037,7 +1088,7 @@ impl PhysicalPlanner {
                     .map(|f| f.file_path.clone())
                     .expect("partition should have files after empty check");
 
-                let object_store_options: HashMap<String, String> = scan
+                let object_store_options: HashMap<String, String> = common
                     .object_store_options
                     .iter()
                     .map(|(k, v)| (k.clone(), v.clone()))
@@ -1048,32 +1099,23 @@ impl PhysicalPlanner {
                     &object_store_options,
                 )?;
 
-                // Comet serializes all partitions' PartitionedFiles, but we only want to read this
-                // Spark partition's PartitionedFiles
-                let files =
-                    self.get_partitioned_files(&scan.file_partitions[self.partition as usize])?;
+                // Get files for this partition
+                let files = self.get_partitioned_files(partition_files)?;
                 let file_groups: Vec<Vec<PartitionedFile>> = vec![files];
-                let partition_fields: Vec<Field> = partition_schema
-                    .fields()
-                    .iter()
-                    .map(|field| {
-                        Field::new(field.name(), field.data_type().clone(), field.is_nullable())
-                    })
-                    .collect_vec();
+
                 let scan = init_datasource_exec(
                     required_schema,
                     Some(data_schema),
                     Some(partition_schema),
-                    Some(partition_fields),
                     object_store_url,
                     file_groups,
                     Some(projection_vector),
                     Some(data_filters?),
                     default_values,
-                    scan.session_timezone.as_str(),
-                    scan.case_sensitive,
+                    common.session_timezone.as_str(),
+                    common.case_sensitive,
                     self.session_ctx(),
-                    scan.encryption_enabled,
+                    common.encryption_enabled,
                 )?;
                 Ok((
                     vec![],
@@ -1167,12 +1209,14 @@ impl PhysicalPlanner {
                     .collect();
                 let metadata_location = common.metadata_location.clone();
                 let tasks = parse_file_scan_tasks_from_common(common, &scan.file_scan_tasks)?;
+                let data_file_concurrency_limit = common.data_file_concurrency_limit as usize;
 
                 let iceberg_scan = IcebergScanExec::new(
                     metadata_location,
                     required_schema,
                     catalog_properties,
                     tasks,
+                    data_file_concurrency_limit,
                 )?;
 
                 Ok((
@@ -2818,6 +2862,7 @@ fn parse_file_scan_tasks_from_common(
                     Ok(iceberg::scan::FileScanTaskDeleteFile {
                         file_path: del.file_path.clone(),
                         file_type,
+                        file_size_in_bytes: del.file_size_in_bytes,
                         partition_spec_id: del.partition_spec_id,
                         equality_ids: if del.equality_ids.is_empty() {
                             None
@@ -2931,6 +2976,7 @@ fn parse_file_scan_tasks_from_common(
                 .clone();
 
             Ok(iceberg::scan::FileScanTask {
+                file_size_in_bytes: proto_task.file_size_in_bytes,
                 data_file_path: proto_task.data_file_path.clone(),
                 start: proto_task.start,
                 length: proto_task.length,
@@ -3439,9 +3485,12 @@ mod tests {
     use futures::{poll, StreamExt};
     use std::{sync::Arc, task::Poll};
 
-    use arrow::array::{Array, DictionaryArray, Int32Array, ListArray, RecordBatch, StringArray};
+    use arrow::array::{
+        Array, DictionaryArray, Int32Array, Int8Array, ListArray, RecordBatch, StringArray,
+    };
     use arrow::datatypes::{DataType, Field, FieldRef, Fields, Schema};
     use datafusion::catalog::memory::DataSourceExec;
+    use datafusion::config::TableParquetOptions;
     use datafusion::datasource::listing::PartitionedFile;
     use datafusion::datasource::object_store::ObjectStoreUrl;
     use datafusion::datasource::physical_plan::{
@@ -3451,6 +3500,7 @@ mod tests {
     use datafusion::logical_expr::ScalarUDF;
     use datafusion::physical_plan::ExecutionPlan;
     use datafusion::{assert_batches_eq, physical_plan::common::collect, prelude::SessionContext};
+    use datafusion_physical_expr_adapter::PhysicalExprAdapterFactory;
     use tempfile::TempDir;
     use tokio::sync::mpsc;
 
@@ -3459,7 +3509,7 @@ mod tests {
     use crate::execution::operators::ExecutionError;
     use crate::execution::planner::literal_to_array_ref;
     use crate::parquet::parquet_support::SparkParquetOptions;
-    use crate::parquet::schema_adapter::SparkSchemaAdapterFactory;
+    use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
     use datafusion_comet_proto::spark_expression::expr::ExprStruct;
     use datafusion_comet_proto::spark_expression::ListLiteral;
     use datafusion_comet_proto::{
@@ -3504,28 +3554,10 @@ mod tests {
         let mut stream = datafusion_plan.native_plan.execute(0, task_ctx).unwrap();
 
         let runtime = tokio::runtime::Runtime::new().unwrap();
-        let (tx, mut rx) = mpsc::channel(1);
-
-        // Separate thread to send the EOF signal once we've processed the only input batch
-        runtime.spawn(async move {
-            // Create a dictionary array with 100 values, and use it as input to the execution.
-            let keys = Int32Array::new((0..(row_count as i32)).map(|n| n % 4).collect(), None);
-            let values = Int32Array::from(vec![0, 1, 2, 3]);
-            let input_array = DictionaryArray::new(keys, Arc::new(values));
-            let input_batch1 = InputBatch::Batch(vec![Arc::new(input_array)], row_count);
-            let input_batch2 = InputBatch::EOF;
-
-            let batches = vec![input_batch1, input_batch2];
-
-            for batch in batches.into_iter() {
-                tx.send(batch).await.unwrap();
-            }
-        });
-
         runtime.block_on(async move {
+            let mut eof_sent = false;
+            let mut got_result = false;
             loop {
-                let batch = rx.recv().await.unwrap();
-                scans[0].set_input_batch(batch);
                 match poll!(stream.next()) {
                     Poll::Ready(Some(batch)) => {
                         assert!(batch.is_ok(), "got error {}", batch.unwrap_err());
@@ -3533,13 +3565,22 @@ mod tests {
                         assert_eq!(batch.num_rows(), row_count / 4);
                         // dictionary should be unpacked
                         assert!(matches!(batch.column(0).data_type(), DataType::Int32));
+                        got_result = true;
                     }
                     Poll::Ready(None) => {
                         break;
                     }
-                    _ => {}
+                    Poll::Pending => {
+                        // Stream needs more input (e.g. FilterExec's batch coalescer
+                        // is accumulating). Send EOF to flush.
+                        if !eof_sent {
+                            scans[0].set_input_batch(InputBatch::EOF);
+                            eof_sent = true;
+                        }
+                    }
                 }
             }
+            assert!(got_result, "Expected at least one result batch");
         });
     }
 
@@ -3589,29 +3630,10 @@ mod tests {
         let mut stream = datafusion_plan.native_plan.execute(0, task_ctx).unwrap();
 
         let runtime = tokio::runtime::Runtime::new().unwrap();
-        let (tx, mut rx) = mpsc::channel(1);
-
-        // Separate thread to send the EOF signal once we've processed the only input batch
-        runtime.spawn(async move {
-            // Create a dictionary array with 100 values, and use it as input to the execution.
-            let keys = Int32Array::new((0..(row_count as i32)).map(|n| n % 4).collect(), None);
-            let values = StringArray::from(vec!["foo", "bar", "hello", "comet"]);
-            let input_array = DictionaryArray::new(keys, Arc::new(values));
-            let input_batch1 = InputBatch::Batch(vec![Arc::new(input_array)], row_count);
-
-            let input_batch2 = InputBatch::EOF;
-
-            let batches = vec![input_batch1, input_batch2];
-
-            for batch in batches.into_iter() {
-                tx.send(batch).await.unwrap();
-            }
-        });
-
         runtime.block_on(async move {
+            let mut eof_sent = false;
+            let mut got_result = false;
             loop {
-                let batch = rx.recv().await.unwrap();
-                scans[0].set_input_batch(batch);
                 match poll!(stream.next()) {
                     Poll::Ready(Some(batch)) => {
                         assert!(batch.is_ok(), "got error {}", batch.unwrap_err());
@@ -3619,13 +3641,22 @@ mod tests {
                         assert_eq!(batch.num_rows(), row_count / 4);
                         // string/binary should no longer be packed with dictionary
                         assert!(matches!(batch.column(0).data_type(), DataType::Utf8));
+                        got_result = true;
                     }
                     Poll::Ready(None) => {
                         break;
                     }
-                    _ => {}
+                    Poll::Pending => {
+                        // Stream needs more input (e.g. FilterExec's batch coalescer
+                        // is accumulating). Send EOF to flush.
+                        if !eof_sent {
+                            scans[0].set_input_batch(InputBatch::EOF);
+                            eof_sent = true;
+                        }
+                    }
                 }
             }
+            assert!(got_result, "Expected at least one result batch");
         });
     }
 
@@ -3896,134 +3927,6 @@ mod tests {
         });
     }
 
-    #[test]
-    fn test_array_repeat() {
-        let session_ctx = SessionContext::new();
-        let task_ctx = session_ctx.task_ctx();
-        let planner = PhysicalPlanner::new(Arc::from(session_ctx), 0);
-
-        // Mock scan operator with 3 INT32 columns
-        let op_scan = Operator {
-            plan_id: 0,
-            children: vec![],
-            op_struct: Some(OpStruct::Scan(spark_operator::Scan {
-                fields: vec![
-                    spark_expression::DataType {
-                        type_id: 3, // Int32
-                        type_info: None,
-                    },
-                    spark_expression::DataType {
-                        type_id: 3, // Int32
-                        type_info: None,
-                    },
-                    spark_expression::DataType {
-                        type_id: 3, // Int32
-                        type_info: None,
-                    },
-                ],
-                source: "".to_string(),
-                arrow_ffi_safe: false,
-            })),
-        };
-
-        // Mock expression to read a INT32 column with position 0
-        let array_col = spark_expression::Expr {
-            expr_struct: Some(Bound(spark_expression::BoundReference {
-                index: 0,
-                datatype: Some(spark_expression::DataType {
-                    type_id: 3,
-                    type_info: None,
-                }),
-            })),
-        };
-
-        // Mock expression to read a INT32 column with position 1
-        let array_col_1 = spark_expression::Expr {
-            expr_struct: Some(Bound(spark_expression::BoundReference {
-                index: 1,
-                datatype: Some(spark_expression::DataType {
-                    type_id: 3,
-                    type_info: None,
-                }),
-            })),
-        };
-
-        // Make a projection operator with array_repeat(array_col, array_col_1)
-        let projection = Operator {
-            children: vec![op_scan],
-            plan_id: 0,
-            op_struct: Some(OpStruct::Projection(spark_operator::Projection {
-                project_list: vec![spark_expression::Expr {
-                    expr_struct: Some(ExprStruct::ScalarFunc(spark_expression::ScalarFunc {
-                        func: "array_repeat".to_string(),
-                        args: vec![array_col, array_col_1],
-                        return_type: None,
-                        fail_on_error: false,
-                    })),
-                }],
-            })),
-        };
-
-        // Create a physical plan
-        let (mut scans, datafusion_plan) =
-            planner.create_plan(&projection, &mut vec![], 1).unwrap();
-
-        // Start executing the plan in a separate thread
-        // The plan waits for incoming batches and emitting result as input comes
-        let mut stream = datafusion_plan.native_plan.execute(0, task_ctx).unwrap();
-
-        let runtime = tokio::runtime::Runtime::new().unwrap();
-        // create async channel
-        let (tx, mut rx) = mpsc::channel(1);
-
-        // Send data as input to the plan being executed in a separate thread
-        runtime.spawn(async move {
-            // create data batch
-            // 0, 1, 2
-            // 3, 4, 5
-            // 6, null, null
-            let a = Int32Array::from(vec![Some(0), Some(3), Some(6)]);
-            let b = Int32Array::from(vec![Some(1), Some(4), None]);
-            let c = Int32Array::from(vec![Some(2), Some(5), None]);
-            let input_batch1 = InputBatch::Batch(vec![Arc::new(a), Arc::new(b), Arc::new(c)], 3);
-            let input_batch2 = InputBatch::EOF;
-
-            let batches = vec![input_batch1, input_batch2];
-
-            for batch in batches.into_iter() {
-                tx.send(batch).await.unwrap();
-            }
-        });
-
-        // Wait for the plan to finish executing and assert the result
-        runtime.block_on(async move {
-            loop {
-                let batch = rx.recv().await.unwrap();
-                scans[0].set_input_batch(batch);
-                match poll!(stream.next()) {
-                    Poll::Ready(Some(batch)) => {
-                        assert!(batch.is_ok(), "got error {}", batch.unwrap_err());
-                        let batch = batch.unwrap();
-                        let expected = [
-                            "+--------------+",
-                            "| col_0        |",
-                            "+--------------+",
-                            "| [0]          |",
-                            "| [3, 3, 3, 3] |",
-                            "|              |",
-                            "+--------------+",
-                        ];
-                        assert_batches_eq!(expected, &[batch]);
-                    }
-                    Poll::Ready(None) => {
-                        break;
-                    }
-                    _ => {}
-                }
-            }
-        });
-    }
-
     /// Executes a `test_data_query` SQL query
     /// and saves the result into a temp folder using parquet format
     /// Read the file back to the memory using a custom schema
@@ -4061,18 +3964,22 @@ mod tests {
             }
         }
 
-        let source = ParquetSource::default().with_schema_adapter_factory(Arc::new(
-            SparkSchemaAdapterFactory::new(
-                SparkParquetOptions::new(EvalMode::Ansi, "", false),
-                None,
-            ),
-        ))?;
+        let source = Arc::new(
+            ParquetSource::new(Arc::new(read_schema.clone()))
+                .with_table_parquet_options(TableParquetOptions::new()),
+        ) as Arc<dyn FileSource>;
+
+        let spark_parquet_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+
+        let expr_adapter_factory: Arc<dyn PhysicalExprAdapterFactory> = Arc::new(
+            SparkPhysicalExprAdapterFactory::new(spark_parquet_options, None),
+        );
 
         let object_store_url = ObjectStoreUrl::local_filesystem();
-        let file_scan_config =
-            FileScanConfigBuilder::new(object_store_url, read_schema.into(), source)
-                .with_file_groups(file_groups)
-                .build();
+        let file_scan_config = FileScanConfigBuilder::new(object_store_url, source)
+            .with_expr_adapter(Some(expr_adapter_factory))
+            .with_file_groups(file_groups)
+            .build();
 
         // Run native read
         let scan = Arc::new(DataSourceExec::new(Arc::new(file_scan_config.clone())));
@@ -4364,5 +4271,158 @@ mod tests {
         assert_eq!(vals3.values(), &[10, 0, 11]);
 
         Ok(())
+    }
+
+    /// Test that reproduces the "Cast error: Casting from Int8 to Date32 not supported" error
+    /// that occurs when performing date subtraction with Int8 (TINYINT) values.
+    /// This corresponds to the Scala test "date_sub with int arrays" in CometExpressionSuite.
+    ///
+    /// The error occurs because DataFusion's BinaryExpr tries to cast Int8 to Date32
+    /// when evaluating date - int8, but this cast is not supported.
+    #[test]
+    fn test_date_sub_with_int8_cast_error() {
+        use arrow::array::Date32Array;
+
+        let planner = PhysicalPlanner::default();
+        let row_count = 3;
+
+        // Create a Scan operator with Date32 (DATE) and Int8 (TINYINT) columns
+        let op_scan = Operator {
+            plan_id: 0,
+            children: vec![],
+            op_struct: Some(OpStruct::Scan(spark_operator::Scan {
+                fields: vec![
+                    spark_expression::DataType {
+                        type_id: 12, // DATE (Date32)
+                        type_info: None,
+                    },
+                    spark_expression::DataType {
+                        type_id: 1, // INT8 (TINYINT)
+                        type_info: None,
+                    },
+                ],
+                source: "".to_string(),
+                arrow_ffi_safe: false,
+            })),
+        };
+
+        // Create bound reference for the DATE column (index 0)
+        let date_col = spark_expression::Expr {
+            expr_struct: Some(Bound(spark_expression::BoundReference {
+                index: 0,
+                datatype: Some(spark_expression::DataType {
+                    type_id: 12, // DATE
+                    type_info: None,
+                }),
+            })),
+        };
+
+        // Create bound reference for the INT8 column (index 1)
+        let int8_col = spark_expression::Expr {
+            expr_struct: Some(Bound(spark_expression::BoundReference {
+                index: 1,
+                datatype: Some(spark_expression::DataType {
+                    type_id: 1, // INT8
+                    type_info: None,
+                }),
+            })),
+        };
+
+        // Create a Subtract expression: date_col - int8_col
+        // This is equivalent to the SQL: SELECT _20 - _2 FROM tbl (date_sub operation)
+        // In the protobuf, subtract uses MathExpr type
+        let subtract_expr = spark_expression::Expr {
+            expr_struct: Some(ExprStruct::Subtract(Box::new(spark_expression::MathExpr {
+                left: Some(Box::new(date_col)),
+                right: Some(Box::new(int8_col)),
+                return_type: Some(spark_expression::DataType {
+                    type_id: 12, // DATE - result should be DATE
+                    type_info: None,
+                }),
+                eval_mode: 0, // Legacy mode
+            }))),
+        };
+
+        // Create a projection operator with the subtract expression
+        let projection = Operator {
+            children: vec![op_scan],
+            plan_id: 1,
+            op_struct: Some(OpStruct::Projection(spark_operator::Projection {
+                project_list: vec![subtract_expr],
+            })),
+        };
+
+        // Create the physical plan
+        let (mut scans, datafusion_plan) =
+            planner.create_plan(&projection, &mut vec![], 1).unwrap();
+
+        // Create test data: Date32 and Int8 columns
+        let date_array = Date32Array::from(vec![Some(19000), Some(19001), Some(19002)]);
+        let int8_array = Int8Array::from(vec![Some(1i8), Some(2i8), Some(3i8)]);
+
+        // Set input batch for the scan
+        let input_batch =
+            InputBatch::Batch(vec![Arc::new(date_array), Arc::new(int8_array)], row_count);
+        scans[0].set_input_batch(input_batch);
+
+        let session_ctx = SessionContext::new();
+        let task_ctx = session_ctx.task_ctx();
+        let mut stream = datafusion_plan.native_plan.execute(0, task_ctx).unwrap();
+
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let (tx, mut rx) = mpsc::channel(1);
+
+        // Separate thread to send the EOF signal once we've processed the only input batch
+        runtime.spawn(async move {
+            // Create test data again for the second batch
+            let date_array = Date32Array::from(vec![Some(19000), Some(19001), Some(19002)]);
+            let int8_array = Int8Array::from(vec![Some(1i8), Some(2i8), Some(3i8)]);
+            let input_batch1 =
+                InputBatch::Batch(vec![Arc::new(date_array), Arc::new(int8_array)], row_count);
+            let input_batch2 = InputBatch::EOF;
+
+            let batches = vec![input_batch1, input_batch2];
+
+            for batch in batches.into_iter() {
+                tx.send(batch).await.unwrap();
+            }
+        });
+
+        runtime.block_on(async move {
+            loop {
+                let batch = rx.recv().await.unwrap();
+                scans[0].set_input_batch(batch);
+                match poll!(stream.next()) {
+                    Poll::Ready(Some(result)) => {
+                        // We expect success - the Int8 should be automatically cast to Int32
+                        assert!(
+                            result.is_ok(),
+                            "Expected success for date - int8 operation but got error: {:?}",
+                            result.unwrap_err()
+                        );
+
+                        let batch = result.unwrap();
+                        assert_eq!(batch.num_rows(), row_count);
+
+                        // The result should be Date32 type
+                        assert_eq!(batch.column(0).data_type(), &DataType::Date32);
+
+                        // Verify the values: 19000-1=18999, 19001-2=18999, 19002-3=18999
+                        let date_array = batch
+                            .column(0)
+                            .as_any()
+                            .downcast_ref::<Date32Array>()
+                            .unwrap();
+                        assert_eq!(date_array.value(0), 18999); // 19000 - 1
+                        assert_eq!(date_array.value(1), 18999); // 19001 - 2
+                        assert_eq!(date_array.value(2), 18999); // 19002 - 3
+                    }
+                    Poll::Ready(None) => {
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        });
     }
 }

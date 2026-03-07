@@ -247,18 +247,41 @@ object CometArraysOverlap extends CometExpressionSerde[ArraysOverlap] {
 
 object CometArrayRepeat extends CometExpressionSerde[ArrayRepeat] {
 
-  override def getSupportLevel(expr: ArrayRepeat): SupportLevel = Incompatible(None)
-
   override def convert(
       expr: ArrayRepeat,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val leftArrayExprProto = exprToProto(expr.children.head, inputs, binding)
-    val rightArrayExprProto = exprToProto(expr.children(1), inputs, binding)
+    val elementProto = exprToProto(expr.left, inputs, binding)
+    val countProto = exprToProto(expr.right, inputs, binding)
+    val returnType = ArrayType(elementType = expr.left.dataType)
+    for {
+      countIsNotNullExpr <- countIsNotNullExpr(expr, inputs, binding)
+      arrayRepeatExprProto <- scalarFunctionExprToProto("array_repeat", elementProto, countProto)
+      nullLiteralExprProto <- exprToProtoInternal(Literal(null, returnType), inputs, binding)
+    } yield {
+      val caseWhenProto = ExprOuterClass.CaseWhen
+        .newBuilder()
+        .addWhen(countIsNotNullExpr)
+        .addThen(arrayRepeatExprProto)
+        .setElseExpr(nullLiteralExprProto)
+        .build()
+      ExprOuterClass.Expr
+        .newBuilder()
+        .setCaseWhen(caseWhenProto)
+        .build()
+    }
+  }
 
-    val arraysRepeatScalarExpr =
-      scalarFunctionExprToProto("array_repeat", leftArrayExprProto, rightArrayExprProto)
-    optExprWithInfo(arraysRepeatScalarExpr, expr, expr.children: _*)
+  private def countIsNotNullExpr(
+      expr: ArrayRepeat,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    createUnaryExpr(
+      expr,
+      expr.right,
+      inputs,
+      binding,
+      (builder, countExpr) => builder.setIsNotNull(countExpr))
   }
 }
 
