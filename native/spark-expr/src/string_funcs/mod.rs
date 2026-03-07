@@ -16,9 +16,9 @@
 // under the License.
 
 mod contains;
-mod string_space;
+mod split;
 mod substring;
 
 pub use contains::SparkContains;
-pub use string_space::SparkStringSpace;
+pub use split::spark_split;
 pub use substring::SubstringExpr;

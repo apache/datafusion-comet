@@ -23,7 +23,9 @@ import org.apache.spark.SparkConf
 import org.apache.spark.sql.comet.CometIcebergNativeScanExec
 import org.apache.spark.sql.execution.SparkPlan
 
-class IcebergReadFromS3Suite extends CometS3TestBase {
+import org.apache.comet.iceberg.RESTCatalogHelper
+
+class IcebergReadFromS3Suite extends CometS3TestBase with RESTCatalogHelper {
 
   override protected val testBucketName = "test-iceberg-bucket"
 
@@ -226,5 +228,75 @@ class IcebergReadFromS3Suite extends CometS3TestBase {
     checkIcebergNativeScan("SELECT * FROM s3_catalog.db.mor_delete_test ORDER BY id")
 
     spark.sql("DROP TABLE s3_catalog.db.mor_delete_test")
+  }
+
+  test("REST catalog credential vending rejects wrong credentials") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    val wrongCreds = Map(
+      "s3.access-key-id" -> "WRONG_ACCESS_KEY",
+      "s3.secret-access-key" -> "WRONG_SECRET_KEY",
+      "s3.endpoint" -> minioContainer.getS3URL,
+      "s3.path-style-access" -> "true")
+    val warehouse = s"s3a://$testBucketName/warehouse-bad-creds"
+
+    withRESTCatalog(vendedCredentials = wrongCreds, warehouseLocation = Some(warehouse)) {
+      (restUri, _, _) =>
+        withSQLConf(
+          "spark.sql.catalog.bad_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+          "spark.sql.catalog.bad_cat.catalog-impl" -> "org.apache.iceberg.rest.RESTCatalog",
+          "spark.sql.catalog.bad_cat.uri" -> restUri,
+          "spark.sql.catalog.bad_cat.warehouse" -> warehouse) {
+
+          spark.sql("CREATE NAMESPACE bad_cat.db")
+
+          // CREATE TABLE succeeds (metadata only, no S3 access needed)
+          spark.sql("CREATE TABLE bad_cat.db.test (id INT) USING iceberg")
+
+          // INSERT fails because S3FileIO uses the wrong vended credentials
+          val e = intercept[Exception] {
+            spark.sql("INSERT INTO bad_cat.db.test VALUES (1)")
+          }
+          assert(e.getMessage.contains("403"), s"Expected S3 403 error but got: ${e.getMessage}")
+        }
+    }
+  }
+
+  test("REST catalog credential vending with native Iceberg scan on S3") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    val vendedCreds = Map(
+      "s3.access-key-id" -> userName,
+      "s3.secret-access-key" -> password,
+      "s3.endpoint" -> minioContainer.getS3URL,
+      "s3.path-style-access" -> "true")
+    val warehouse = s"s3a://$testBucketName/warehouse-vending"
+
+    withRESTCatalog(vendedCredentials = vendedCreds, warehouseLocation = Some(warehouse)) {
+      (restUri, _, _) =>
+        withSQLConf(
+          "spark.sql.catalog.vend_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+          "spark.sql.catalog.vend_cat.catalog-impl" -> "org.apache.iceberg.rest.RESTCatalog",
+          "spark.sql.catalog.vend_cat.uri" -> restUri,
+          "spark.sql.catalog.vend_cat.warehouse" -> warehouse,
+          CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "true") {
+
+          spark.sql("CREATE NAMESPACE vend_cat.db")
+
+          spark.sql("""
+            CREATE TABLE vend_cat.db.simple (
+              id INT, name STRING, value DOUBLE
+            ) USING iceberg
+          """)
+          spark.sql("""
+            INSERT INTO vend_cat.db.simple
+            VALUES (1, 'Alice', 10.5), (2, 'Bob', 20.3), (3, 'Charlie', 30.7)
+          """)
+          checkIcebergNativeScan("SELECT * FROM vend_cat.db.simple ORDER BY id")
+
+          spark.sql("DROP TABLE vend_cat.db.simple")
+          spark.sql("DROP NAMESPACE vend_cat.db")
+        }
+    }
   }
 }

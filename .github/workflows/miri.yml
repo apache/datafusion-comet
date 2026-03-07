@@ -19,6 +19,8 @@ name: Run Miri Safety Checks
 
 on:
   push:
+    branches:
+      - main
     paths-ignore:
       - "doc/**"
       - "docs/**"
@@ -26,14 +28,16 @@ on:
       - "native/core/benches/**"
       - "native/spark-expr/benches/**"
       - "spark/src/test/scala/org/apache/spark/sql/benchmark/**"
-  pull_request:
-    paths-ignore:
-      - "doc/**"
-      - "docs/**"
-      - "**.md"
-      - "native/core/benches/**"
-      - "native/spark-expr/benches/**"
-      - "spark/src/test/scala/org/apache/spark/sql/benchmark/**"
+# Disabled until Miri compatibility is restored
+# https://github.com/apache/datafusion-comet/issues/3499
+#  pull_request:
+#    paths-ignore:
+#      - "doc/**"
+#      - "docs/**"
+#      - "**.md"
+#      - "native/core/benches/**"
+#      - "native/spark-expr/benches/**"
+#      - "spark/src/test/scala/org/apache/spark/sql/benchmark/**"
   # manual trigger
   # https://docs.github.com/en/actions/managing-workflow-runs/manually-running-a-workflow
   workflow_dispatch:
