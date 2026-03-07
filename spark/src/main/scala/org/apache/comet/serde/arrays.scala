@@ -344,7 +344,6 @@ object CometArrayExcept extends CometExpressionSerde[ArrayExcept] with CometExpr
         return None
       }
     }
-    val elementType = expr.left.dataType.asInstanceOf[ArrayType].elementType
     val leftArrayExprProto = exprToProto(expr.left, inputs, binding)
     val rightArrayExprProto = exprToProto(expr.right, inputs, binding)
 
