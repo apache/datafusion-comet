@@ -103,6 +103,7 @@ pub enum ExpressionType {
     Randn,
     SparkPartitionId,
     MonotonicallyIncreasingId,
+    ArraysZip,
 
     // Time functions
     Hour,
@@ -370,6 +371,7 @@ impl ExpressionRegistry {
             Some(ExprStruct::MonotonicallyIncreasingId(_)) => {
                 Ok(ExpressionType::MonotonicallyIncreasingId)
             }
+            Some(ExprStruct::ArraysZip(_)) => Ok(ExpressionType::ArraysZip),
 
             Some(ExprStruct::Hour(_)) => Ok(ExpressionType::Hour),
             Some(ExprStruct::Minute(_)) => Ok(ExpressionType::Minute),
