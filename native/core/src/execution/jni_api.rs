@@ -40,6 +40,7 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 use datafusion_comet_proto::spark_operator::Operator;
+use datafusion_spark::function::bitwise::bit_count::SparkBitCount;
 use datafusion_spark::function::bitwise::bit_get::SparkBitGet;
 use datafusion_spark::function::bitwise::bitwise_not::SparkBitwiseNot;
 use datafusion_spark::function::datetime::date_add::SparkDateAdd;
@@ -55,6 +56,7 @@ use datafusion_spark::function::math::hex::SparkHex;
 use datafusion_spark::function::math::width_bucket::SparkWidthBucket;
 use datafusion_spark::function::string::char::CharFunc;
 use datafusion_spark::function::string::concat::SparkConcat;
+use datafusion_spark::function::string::space::SparkSpace;
 use futures::poll;
 use futures::stream::StreamExt;
 use jni::objects::JByteBuffer;
@@ -400,6 +402,8 @@ fn register_datafusion_spark_function(session_ctx: &SessionContext) {
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkWidthBucket::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(MapFromEntries::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkCrc32::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSpace::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitCount::default()));
 }
 
 /// Prepares arrow arrays for output.

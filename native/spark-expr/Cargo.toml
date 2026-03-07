@@ -103,3 +103,7 @@ path = "tests/spark_expr_reg.rs"
 [[bench]]
 name = "cast_from_boolean"
 harness = false
+
+[[bench]]
+name = "cast_non_int_numeric_timestamp"
+harness = false
