@@ -318,15 +318,14 @@ object CometConf extends ShimCometConf {
     conf(s"$COMET_EXEC_CONFIG_PREFIX.graceHashJoin.fastPathThreshold")
       .category(CATEGORY_EXEC)
       .doc(
-        "Total memory budget in bytes for Grace Hash Join fast-path hash tables across " +
-          "all concurrent tasks. This is divided by spark.executor.cores to get the per-task " +
-          "threshold. When a build side fits in memory and is smaller than the per-task " +
-          "threshold, the join executes as a single HashJoinExec without spilling. " +
+        "Per-task memory budget in bytes for Grace Hash Join fast-path hash tables. " +
+          "When a build side fits in memory and is smaller than this threshold, " +
+          "the join executes as a single HashJoinExec without partitioning or spilling. " +
           "Set to 0 to disable the fast path. Larger values risk OOM because HashJoinExec " +
           "creates non-spillable hash tables.")
       .longConf
       .checkValue(v => v >= 0, "The fast path threshold must be non-negative.")
-      .createWithDefault(10L * 1024 * 1024) // 10 MB
+      .createWithDefault(64L * 1024 * 1024) // 64 MB
 
   val COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.columnarToRow.native.enabled")
@@ -414,7 +413,7 @@ object CometConf extends ShimCometConf {
           "on pre-sorted data outperforms hash join's per-task hash table construction " +
           "for large build sides. Set to -1 to disable this check and always replace.")
       .longConf
-      .createWithDefault(-1L)
+      .createWithDefault(100L * 1024 * 1024) // 100 MB
 
   val COMET_EXEC_SHUFFLE_WITH_HASH_PARTITIONING_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.native.shuffle.partitioning.hash.enabled")
