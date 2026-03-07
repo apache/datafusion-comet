@@ -50,8 +50,9 @@ Download a release from the [async-profiler releases page](https://github.com/as
 ```shell
 # Linux x64
 wget https://github.com/async-profiler/async-profiler/releases/download/v3.0/async-profiler-3.0-linux-x64.tar.gz
-tar xzf async-profiler-3.0-linux-x64.tar.gz -C /opt/async-profiler --strip-components=1
-export ASYNC_PROFILER_HOME=/opt/async-profiler
+mkdir -p $HOME/opt/async-profiler
+tar xzf async-profiler-3.0-linux-x64.tar.gz -C $HOME/opt/async-profiler --strip-components=1
+export ASYNC_PROFILER_HOME=$HOME/opt/async-profiler
 ```
 
 On macOS, download the appropriate `macos` archive instead.
@@ -81,10 +82,12 @@ You can also attach async-profiler as a Java agent at JVM startup:
 
 ```shell
 spark-submit \
-  --conf "spark.driver.extraJavaOptions=-agentpath:/opt/async-profiler/lib/libasyncProfiler.so=start,event=cpu,file=driver.html" \
-  --conf "spark.executor.extraJavaOptions=-agentpath:/opt/async-profiler/lib/libasyncProfiler.so=start,event=cpu,file=executor.html" \
+  --conf "spark.driver.extraJavaOptions=-agentpath:$ASYNC_PROFILER_HOME/lib/libasyncProfiler.so=start,event=cpu,file=driver.html,tree" \
+  --conf "spark.executor.extraJavaOptions=-agentpath:$ASYNC_PROFILER_HOME/lib/libasyncProfiler.so=start,event=cpu,file=executor.html,tree" \
   ...
 ```
+
+Note: If the executor is distributed then `executor.html` will be written on the remote node.
 
 ### Choosing an event type
 
@@ -120,7 +123,7 @@ resolved on macOS; Linux is recommended for the most complete flame graphs.
 ### Integrated benchmark profiling
 
 The TPC benchmark scripts in `benchmarks/tpc/` have built-in async-profiler support via
-the `--async-profiler` flag. See [benchmarks/tpc/README.md](../../benchmarks/tpc/README.md)
+the `--async-profiler` flag. See [benchmarks/tpc/README.md](https://github.com/apache/datafusion-comet/blob/main/benchmarks/tpc/README.md)
 for details.
 
 ## Profiling with Java Flight Recorder
@@ -174,7 +177,7 @@ jcmd <pid> JFR.stop name=profile filename=recording.jfr
 ### Integrated benchmark profiling
 
 The TPC benchmark scripts support `--jfr` for automatic JFR recording during benchmark
-runs. See [benchmarks/tpc/README.md](../../benchmarks/tpc/README.md) for details.
+runs. See [benchmarks/tpc/README.md](https://github.com/apache/datafusion-comet/blob/main/benchmarks/tpc/README.md) for details.
 
 ## Profiling Native Code with cargo-flamegraph
 
@@ -194,7 +197,7 @@ name = "shuffle_writer"
 harness = false
 ```
 
-These benchmarks are useful when for comparing performance between releases or between feature branches and the
+These benchmarks are useful for comparing performance between releases or between feature branches and the
 main branch to help prevent regressions in performance when adding new features or fixing bugs.
 
 Individual benchmarks can be run by name with the following command.
