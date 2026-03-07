@@ -62,7 +62,7 @@ the [Comet Supported Expressions Guide](expressions.md) for more information on 
 
 Comet uses the Rust regexp crate for evaluating regular expressions, and this has different behavior from Java's
 regular expression engine. Comet will fall back to Spark for patterns that are known to produce different results, but
-this can be overridden by setting `spark.comet.regexp.allowIncompatible=true`.
+this can be overridden by setting `spark.comet.expression.regexp.allowIncompatible=true`.
 
 ## Window Functions
 

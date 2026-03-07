@@ -24,9 +24,11 @@ import java.util.HashMap;
 import org.apache.spark.sql.types.StructType;
 import org.apache.spark.sql.vectorized.ColumnarBatch;
 
+import org.apache.comet.IcebergApi;
 import org.apache.comet.vector.CometVector;
 
 /** This class is a public interface used by Apache Iceberg to read batches using Comet */
+@IcebergApi
 public class IcebergCometBatchReader extends BatchReader {
   public IcebergCometBatchReader(int numColumns, StructType schema) {
     this.columnReaders = new AbstractColumnReader[numColumns];

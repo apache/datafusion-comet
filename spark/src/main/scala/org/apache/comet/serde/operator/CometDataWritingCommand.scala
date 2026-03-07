@@ -60,7 +60,7 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
           case _: ParquetFileFormat =>
             if (!cmd.outputPath.toString.startsWith("file:") && !cmd.outputPath.toString
                 .startsWith("hdfs:")) {
-              return Unsupported(Some("Only HDFS/local filesystems output paths are supported"))
+              return Unsupported(Some("Supported output filesystems: local, HDFS"))
             }
 
             if (cmd.bucketSpec.isDefined) {
