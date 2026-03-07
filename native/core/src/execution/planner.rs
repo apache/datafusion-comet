@@ -71,7 +71,8 @@ use datafusion::{
 };
 use datafusion_comet_spark_expr::{
     create_comet_physical_fun, create_comet_physical_fun_with_eval_mode, BinaryOutputStyle,
-    BloomFilterAgg, BloomFilterMightContain, CsvWriteOptions, EvalMode, SumInteger, ToCsv,
+    BloomFilterAgg, BloomFilterMightContain, CsvWriteOptions, EvalMode, SparkArraysZipFunc,
+    SumInteger, ToCsv,
 };
 use iceberg::expr::Bind;
 
@@ -96,6 +97,7 @@ use datafusion::physical_expr::LexOrdering;
 
 use crate::parquet::parquet_exec::init_datasource_exec;
 
+use crate::execution::planner::expression_registry::ExpressionType::ArraysZip;
 use arrow::array::{
     new_empty_array, Array, ArrayRef, BinaryBuilder, BooleanArray, Date32Array, Decimal128Array,
     Float32Array, Float64Array, Int16Array, Int32Array, Int64Array, Int8Array, ListArray,
@@ -603,6 +605,17 @@ impl PhysicalPlanner {
                     &options.timezone,
                     csv_write_options,
                 )))
+            }
+            ExprStruct::ArraysZip(expr) => {
+                assert!(!expr.children.is_empty());
+
+                let children = expr
+                    .children
+                    .iter()
+                    .map(|child| self.create_expr(child, Arc::clone(&input_schema)))
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                Ok(Arc::new(SparkArraysZipFunc::new(children)))
             }
             expr => Err(GeneralError(format!("Not implemented: {expr:?}"))),
         }

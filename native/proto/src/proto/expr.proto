@@ -88,6 +88,7 @@ message Expr {
     UnixTimestamp unix_timestamp = 65;
     FromJson from_json = 66;
     ToCsv to_csv = 67;
+    ArraysZip arrays_zip = 68;
   }
 }
 
@@ -439,4 +440,8 @@ message ArrayJoin {
 
 message Rand {
   int64 seed = 1;
+}
+
+message ArraysZip {
+  repeated Expr children = 1;
 }
