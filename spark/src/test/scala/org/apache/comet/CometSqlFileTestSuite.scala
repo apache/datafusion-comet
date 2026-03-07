@@ -90,7 +90,7 @@ class CometSqlFileTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               }
             } catch {
               case e: Exception =>
-                sys.error(s"Error executing SQL '$sql'. Reason: '${e.getMessage}''")
+                throw new RuntimeException(s"Error executing SQL '$sql'", e)
             }
           case SqlQuery(sql, mode, line) =>
             try {
@@ -126,7 +126,7 @@ class CometSqlFileTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
             } catch {
               case e: Exception =>
-                sys.error(s"Error executing SQL '$sql'. Reason: '${e.getMessage}''")
+                throw new RuntimeException(s"Error executing SQL '$sql'", e)
             }
         }
       }
