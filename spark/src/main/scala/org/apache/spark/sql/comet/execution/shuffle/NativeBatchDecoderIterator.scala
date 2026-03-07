@@ -23,11 +23,10 @@ import java.io.{EOFException, InputStream}
 import java.nio.{ByteBuffer, ByteOrder}
 import java.nio.channels.{Channels, ReadableByteChannel}
 
-import org.apache.spark.TaskContext
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
-import org.apache.comet.{CometConf, Native}
+import org.apache.comet.Native
 import org.apache.comet.vector.NativeUtil
 
 /**
@@ -37,25 +36,18 @@ import org.apache.comet.vector.NativeUtil
  */
 case class NativeBatchDecoderIterator(
     in: InputStream,
-    taskContext: TaskContext,
-    decodeTime: SQLMetric)
+    decodeTime: SQLMetric,
+    nativeLib: Native,
+    nativeUtil: NativeUtil,
+    tracingEnabled: Boolean)
     extends Iterator[ColumnarBatch] {
 
   private var isClosed = false
   private val longBuf = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN)
-  private val native = new Native()
-  private val nativeUtil = new NativeUtil()
-  private val tracingEnabled = CometConf.COMET_TRACING_ENABLED.get()
   private var currentBatch: ColumnarBatch = null
   private var batch = fetchNext()
 
   import NativeBatchDecoderIterator._
-
-  if (taskContext != null) {
-    taskContext.addTaskCompletionListener[Unit](_ => {
-      close()
-    })
-  }
 
   private val channel: ReadableByteChannel = if (in != null) {
     Channels.newChannel(in)
@@ -163,7 +155,7 @@ case class NativeBatchDecoderIterator(
     val batch = nativeUtil.getNextBatch(
       fieldCount,
       (arrayAddrs, schemaAddrs) => {
-        native.decodeShuffleBlock(
+        nativeLib.decodeShuffleBlock(
           dataBuf,
           bytesToRead.toInt,
           arrayAddrs,
@@ -183,7 +175,6 @@ case class NativeBatchDecoderIterator(
           currentBatch = null
         }
         in.close()
-        nativeUtil.close()
         resetDataBuf()
         isClosed = true
       }
