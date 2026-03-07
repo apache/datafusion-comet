@@ -169,9 +169,26 @@ under the License.
       <groupId>org.testcontainers</groupId>
       <artifactId>minio</artifactId>
     </dependency>
+    <!-- AWS SDK modules required by Iceberg's S3FileIO (see parent pom for details) -->
     <dependency>
       <groupId>software.amazon.awssdk</groupId>
       <artifactId>s3</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>software.amazon.awssdk</groupId>
+      <artifactId>sts</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>software.amazon.awssdk</groupId>
+      <artifactId>dynamodb</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>software.amazon.awssdk</groupId>
+      <artifactId>glue</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>software.amazon.awssdk</groupId>
+      <artifactId>kms</artifactId>
     </dependency>
     <!-- Jetty and Iceberg dependencies for testing native Iceberg scan -->
     <!-- Note: The specific versions are defined in profiles below based on Spark version -->
