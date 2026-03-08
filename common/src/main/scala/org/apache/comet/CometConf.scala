@@ -319,9 +319,9 @@ object CometConf extends ShimCometConf {
   val COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.sortMergeJoinWithJoinFilter.enabled")
       .category(CATEGORY_ENABLE_EXEC)
-      .doc("Support for Sort Merge Join with filter")
+      .doc("Experimental support for Sort Merge Join with filter")
       .booleanConf
-      .createWithDefault(true)
+      .createWithDefault(false)
 
   val COMET_TRACING_ENABLED: ConfigEntry[Boolean] = conf("spark.comet.tracing.enabled")
     .category(CATEGORY_TUNING)

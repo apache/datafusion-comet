@@ -1963,7 +1963,12 @@ object CometSortMergeJoinExec extends CometOperatorSerde[SortMergeJoinExec] {
       }
     }
 
-    if (join.condition.isDefined &&
+    val isSemiAnti = join.joinType match {
+      case LeftSemi | LeftAnti => true
+      case _ => false
+    }
+
+    if (join.condition.isDefined && !isSemiAnti &&
       !CometConf.COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED
         .get(join.conf)) {
       withInfo(
