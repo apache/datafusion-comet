@@ -60,8 +60,6 @@ case class CometNativeColumnarToRowExec(child: SparkPlan)
     extends ColumnarToRowTransition
     with CometPlan {
 
-  override def nodeName: String = "CometColumnarToRow"
-
   // supportsColumnar requires to be only called on driver side, see also SPARK-37779.
   assert(Utils.isInRunningSparkTask || child.supportsColumnar)
 
