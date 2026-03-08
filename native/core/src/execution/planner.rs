@@ -75,6 +75,7 @@ use datafusion_comet_spark_expr::{
 };
 use iceberg::expr::Bind;
 
+use crate::execution::joins::SemiAntiSortMergeJoinExec;
 use crate::execution::operators::ExecutionError::GeneralError;
 use crate::execution::shuffle::{CometPartitioning, CompressionCodec};
 use crate::execution::spark_plan::SparkPlan;
@@ -1571,53 +1572,87 @@ impl PhysicalPlanner {
                 let left = Arc::clone(&join_params.left.native_plan);
                 let right = Arc::clone(&join_params.right.native_plan);
 
-                let join = Arc::new(SortMergeJoinExec::try_new(
-                    Arc::clone(&left),
-                    Arc::clone(&right),
-                    join_params.join_on,
-                    join_params.join_filter,
+                let is_semi_anti = matches!(
                     join_params.join_type,
-                    sort_options,
-                    // null doesn't equal to null in Spark join key. If the join key is
-                    // `EqualNullSafe`, Spark will rewrite it during planning.
-                    NullEquality::NullEqualsNothing,
-                )?);
+                    DFJoinType::LeftSemi
+                        | DFJoinType::LeftAnti
+                        | DFJoinType::RightSemi
+                        | DFJoinType::RightAnti
+                );
 
-                if join.filter.is_some() {
-                    // SMJ with join filter produces lots of tiny batches
-                    let coalesce_batches: Arc<dyn ExecutionPlan> =
-                        Arc::new(CoalesceBatchesExec::new(
-                            Arc::<SortMergeJoinExec>::clone(&join),
-                            self.session_ctx
-                                .state()
-                                .config_options()
-                                .execution
-                                .batch_size,
-                        ));
-                    Ok((
-                        scans,
-                        Arc::new(SparkPlan::new_with_additional(
-                            spark_plan.plan_id,
-                            coalesce_batches,
-                            vec![
-                                Arc::clone(&join_params.left),
-                                Arc::clone(&join_params.right),
-                            ],
-                            vec![join],
-                        )),
-                    ))
-                } else {
+                if is_semi_anti {
+                    let join_exec: Arc<dyn ExecutionPlan> =
+                        Arc::new(SemiAntiSortMergeJoinExec::try_new(
+                            Arc::clone(&left),
+                            Arc::clone(&right),
+                            join_params.join_on,
+                            join_params.join_filter,
+                            join_params.join_type,
+                            sort_options,
+                            NullEquality::NullEqualsNothing,
+                        )?);
+                    // SemiAntiSortMergeJoinExec has an internal BatchCoalescer,
+                    // so no need for CoalesceBatchesExec wrapping.
                     Ok((
                         scans,
                         Arc::new(SparkPlan::new(
                             spark_plan.plan_id,
-                            join,
+                            join_exec,
                             vec![
                                 Arc::clone(&join_params.left),
                                 Arc::clone(&join_params.right),
                             ],
                         )),
                     ))
+                } else {
+                    let join = Arc::new(SortMergeJoinExec::try_new(
+                        Arc::clone(&left),
+                        Arc::clone(&right),
+                        join_params.join_on,
+                        join_params.join_filter,
+                        join_params.join_type,
+                        sort_options,
+                        // null doesn't equal to null in Spark join key. If the join key is
+                        // `EqualNullSafe`, Spark will rewrite it during planning.
+                        NullEquality::NullEqualsNothing,
+                    )?);
+
+                    if join.filter.is_some() {
+                        // SMJ with join filter produces lots of tiny batches
+                        let coalesce_batches: Arc<dyn ExecutionPlan> =
+                            Arc::new(CoalesceBatchesExec::new(
+                                Arc::<SortMergeJoinExec>::clone(&join),
+                                self.session_ctx
+                                    .state()
+                                    .config_options()
+                                    .execution
+                                    .batch_size,
+                            ));
+                        Ok((
+                            scans,
+                            Arc::new(SparkPlan::new_with_additional(
+                                spark_plan.plan_id,
+                                coalesce_batches,
+                                vec![
+                                    Arc::clone(&join_params.left),
+                                    Arc::clone(&join_params.right),
+                                ],
+                                vec![join],
+                            )),
+                        ))
+                    } else {
+                        Ok((
+                            scans,
+                            Arc::new(SparkPlan::new(
+                                spark_plan.plan_id,
+                                join,
+                                vec![
+                                    Arc::clone(&join_params.left),
+                                    Arc::clone(&join_params.right),
+                                ],
+                            )),
+                        ))
+                    }
                 }
             }
             OpStruct::HashJoin(join) => {

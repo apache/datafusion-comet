@@ -15,29 +15,12 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! PoC of vectorization execution through JNI to Rust.
-pub mod columnar_to_row;
-pub mod expressions;
-pub mod jni_api;
-pub(crate) mod joins;
-pub(crate) mod metrics;
-pub mod operators;
-pub(crate) mod planner;
-pub mod serde;
-pub mod shuffle;
-pub(crate) mod sort;
-pub(crate) mod spark_plan;
-pub use datafusion_comet_spark_expr::timezone;
-mod memory_pools;
-pub(crate) mod spark_config;
-pub(crate) mod tracing;
-pub(crate) mod utils;
+//! Specialized Sort Merge Join for Semi/Anti joins.
+//!
+//! Ported from Apache DataFusion. See [`SemiAntiSortMergeJoinExec`] for
+//! algorithm details and motivation.
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn it_works() {
-        let result = 2 + 2;
-        assert_eq!(result, 4);
-    }
-}
+pub use exec::SemiAntiSortMergeJoinExec;
+
+mod exec;
+mod stream;
