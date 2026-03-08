@@ -624,6 +624,16 @@ impl<'a> TypedElements<'a> {
                 let values_slice = $arr.values();
                 let byte_len = num_elements * $elem_size;
                 let src_start = start_idx * $elem_size;
+                debug_assert!(
+                    src_start + byte_len <= values_slice.len() * $elem_size,
+                    "bulk_copy_range: source slice out of bounds: src_start={}, byte_len={}, values_len={}",
+                    src_start, byte_len, values_slice.len() * $elem_size
+                );
+                debug_assert!(
+                    elements_start + byte_len <= buffer.len(),
+                    "bulk_copy_range: destination slice out of bounds: elements_start={}, byte_len={}, buffer_len={}",
+                    elements_start, byte_len, buffer.len()
+                );
                 let src_bytes = unsafe {
                     std::slice::from_raw_parts(
                         (values_slice.as_ptr() as *const u8).add(src_start),
