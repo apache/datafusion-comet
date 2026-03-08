@@ -36,6 +36,7 @@ import org.apache.spark.util.SerializableConfiguration
 
 import org.apache.comet.CometConf._
 import org.apache.comet.Tracing.withTrace
+import org.apache.comet.exceptions.CometQueryExecutionException
 import org.apache.comet.parquet.CometFileKeyUnwrapper
 import org.apache.comet.serde.Config.ConfigMap
 import org.apache.comet.vector.NativeUtil
@@ -151,6 +152,11 @@ class CometExecIterator(
             })
         })
     } catch {
+      // Handle CometQueryExecutionException with JSON payload first
+      case e: CometQueryExecutionException =>
+        logError(s"Native execution for task $taskAttemptId failed", e)
+        throw SparkErrorConverter.convertToSparkException(e)
+
       case e: CometNativeException =>
         // it is generally considered bad practice to log and then rethrow an
         // exception, but it really helps debugging to be able to see which task
