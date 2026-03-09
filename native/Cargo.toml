@@ -71,3 +71,7 @@ inherits = "release"
 lto = false          # Skip LTO for faster linking
 codegen-units = 16   # Parallel codegen (faster compile, slightly larger binary)
 # overflow-checks inherited as false from release
+
+[patch.crates-io]
+datafusion-spark = { git = "https://github.com/unknowntpo/datafusion", branch = "feat-str-to-map-52" }
+
