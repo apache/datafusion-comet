@@ -22,6 +22,8 @@ use arrow::array::{Array, BooleanArray, DictionaryArray, RecordBatch, StringArra
 use arrow::compute::take;
 use arrow::datatypes::{DataType, Schema};
 use datafusion::common::{internal_err, Result, ScalarValue};
+#[cfg(test)]
+use datafusion::physical_expr::expressions::Literal;
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ColumnarValue;
 use regex::Regex;
@@ -141,20 +143,14 @@ impl PhysicalExpr for RLike {
                 Ok(ColumnarValue::Array(Arc::new(array)))
             }
             ColumnarValue::Scalar(scalar) => {
-                // Handle scalar input (all-literal RLIKE expressions)
-                // This case occurs when ConstantFolding is disabled and both
-                // the input string and pattern are literals
                 if scalar.is_null() {
-                    // NULL RLIKE pattern -> NULL result
                     return Ok(ColumnarValue::Scalar(ScalarValue::Boolean(None)));
                 }
 
-                // Extract string value from scalar and match pattern
-                // We handle each type separately to avoid lifetime issues with Utf8View
                 let is_match = match scalar {
-                    ScalarValue::Utf8(Some(s)) => self.pattern.is_match(s.as_str()),
-                    ScalarValue::LargeUtf8(Some(s)) => self.pattern.is_match(s.as_str()),
-                    ScalarValue::Utf8View(Some(s)) => self.pattern.is_match(s.as_str()),
+                    ScalarValue::Utf8(Some(s))
+                    | ScalarValue::LargeUtf8(Some(s))
+                    | ScalarValue::Utf8View(Some(s)) => self.pattern.is_match(s.as_str()),
                     _ => {
                         return internal_err!(
                             "RLike requires string type for input, got {:?}",
@@ -185,5 +181,27 @@ impl PhysicalExpr for RLike {
 
     fn fmt_sql(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         Display::fmt(self, f)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_rlike_scalar_utf8_literal() {
+        let expr = RLike::try_new(
+            Arc::new(Literal::new(ScalarValue::Utf8(Some("Rose".to_string())))),
+            "R[a-z]+",
+        )
+        .unwrap();
+        let result = expr
+            .evaluate(&RecordBatch::new_empty(Arc::new(Schema::empty())))
+            .unwrap();
+        let ColumnarValue::Scalar(result) = result else {
+            panic!("expected scalar result");
+        };
+
+        assert_eq!(result, ScalarValue::Boolean(Some(true)));
     }
 }
