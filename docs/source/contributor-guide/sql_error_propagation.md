@@ -61,7 +61,7 @@ SQL Query (Spark/Scala)
 
 ## Step 1: Spark Serializes Query Context into Protobuf
 
-When Spark compiles a SQL query, it parses it and attaches *origin* information to every
+When Spark compiles a SQL query, it parses it and attaches _origin_ information to every
 expression — the line number, column offset, and the full SQL text.
 
 `QueryPlanSerde.scala` is the Scala code that converts Spark's physical execution plan into
@@ -447,16 +447,16 @@ SELECT a/b FROM t
 
 ## Key Data Structures: A Summary
 
-| Structure | Language | File | Purpose |
-|---|---|---|---|
-| `QueryContext` (proto) | Protobuf | `expr.proto` | Wire format for SQL location info |
-| `QueryContext` (Rust) | Rust | `query_context.rs` | In-memory SQL location info |
-| `QueryContextMap` | Rust | `query_context.rs` | Registry: expr_id → QueryContext |
-| `SparkError` | Rust | `error.rs` | Typed Rust enum matching all Spark error variants |
-| `SparkErrorWithContext` | Rust | `error.rs` | SparkError + optional QueryContext |
-| `CometQueryExecutionException` | Java | `CometQueryExecutionException.java` | JNI transport: carries JSON string |
-| `SparkErrorConverter` | Scala | `SparkErrorConverter.scala` | Parses JSON, creates real Spark exception |
-| `ShimSparkErrorConverter` | Scala | `ShimSparkErrorConverter.scala` | Per-Spark-version calls to `QueryExecutionErrors.*` |
+| Structure                      | Language | File                                | Purpose                                             |
+| ------------------------------ | -------- | ----------------------------------- | --------------------------------------------------- |
+| `QueryContext` (proto)         | Protobuf | `expr.proto`                        | Wire format for SQL location info                   |
+| `QueryContext` (Rust)          | Rust     | `query_context.rs`                  | In-memory SQL location info                         |
+| `QueryContextMap`              | Rust     | `query_context.rs`                  | Registry: expr_id → QueryContext                    |
+| `SparkError`                   | Rust     | `error.rs`                          | Typed Rust enum matching all Spark error variants   |
+| `SparkErrorWithContext`        | Rust     | `error.rs`                          | SparkError + optional QueryContext                  |
+| `CometQueryExecutionException` | Java     | `CometQueryExecutionException.java` | JNI transport: carries JSON string                  |
+| `SparkErrorConverter`          | Scala    | `SparkErrorConverter.scala`         | Parses JSON, creates real Spark exception           |
+| `ShimSparkErrorConverter`      | Scala    | `ShimSparkErrorConverter.scala`     | Per-Spark-version calls to `QueryExecutionErrors.*` |
 
 ---
 
@@ -467,6 +467,7 @@ can only provide a class name and a string message. The class name is fixed (alw
 `CometQueryExecutionException`), but the string payload can carry any structured data.
 
 JSON was chosen because:
+
 1. It is self-describing — the receiver can parse it without knowing the structure in advance.
 2. It is easy to add new fields without breaking old parsers.
 3. It maps cleanly to Scala's case class extraction (`json.extract[ErrorJson]`).
@@ -483,6 +484,7 @@ maintain.
 
 Each `SparkError` variant knows its own ANSI error class code (e.g. `"DIVIDE_BY_ZERO"`,
 `"CAST_INVALID_INPUT"`). This is used both:
+
 - In the JSON payload's `"errorClass"` field (so the Java side can pass it to
   `SparkException(errorClass = ...)` as a fallback)
 - In the legacy `exception_class()` method that maps to the right Java exception class (e.g.
@@ -506,4 +508,4 @@ Each `SparkError` variant knows its own ANSI error class code (e.g. `"DIVIDE_BY_
 
 ---
 
-*This document and its diagrams were written by [Claude](https://claude.ai) (Anthropic).*
+_This document and its diagrams were written by [Claude](https://claude.ai) (Anthropic)._
