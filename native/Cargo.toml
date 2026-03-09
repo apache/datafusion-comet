@@ -71,4 +71,5 @@ strip = "debuginfo"
 inherits = "release"
 lto = false          # Skip LTO for faster linking
 codegen-units = 16   # Parallel codegen (faster compile, slightly larger binary)
+debug-assertions = true
 # overflow-checks inherited as false from release
