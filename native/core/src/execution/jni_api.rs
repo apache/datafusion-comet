@@ -29,7 +29,7 @@ use crate::{
 use arrow::array::{Array, RecordBatch, UInt32Array};
 use arrow::compute::{take, TakeOptions};
 use arrow::datatypes::DataType as ArrowDataType;
-use datafusion::common::{Result as DataFusionResult, ScalarValue};
+use datafusion::common::{DataFusionError, Result as DataFusionResult, ScalarValue};
 use datafusion::execution::disk_manager::DiskManagerMode;
 use datafusion::execution::memory_pool::MemoryPool;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
@@ -59,6 +59,7 @@ use datafusion_spark::function::string::concat::SparkConcat;
 use datafusion_spark::function::string::space::SparkSpace;
 use futures::poll;
 use futures::stream::StreamExt;
+use futures::FutureExt;
 use jni::objects::JByteBuffer;
 use jni::sys::{jlongArray, JNI_FALSE};
 use jni::{
@@ -570,10 +571,29 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                     let (tx, rx) = mpsc::channel(2);
                     let mut stream = stream;
                     get_runtime().spawn(async move {
-                        while let Some(batch) = stream.next().await {
-                            if tx.send(batch).await.is_err() {
-                                break;
+                        let result = std::panic::AssertUnwindSafe(async {
+                            while let Some(batch) = stream.next().await {
+                                if tx.send(batch).await.is_err() {
+                                    break;
+                                }
                             }
+                        })
+                        .catch_unwind()
+                        .await;
+
+                        if let Err(panic) = result {
+                            let msg = match panic.downcast_ref::<&str>() {
+                                Some(s) => s.to_string(),
+                                None => match panic.downcast_ref::<String>() {
+                                    Some(s) => s.clone(),
+                                    None => "unknown panic".to_string(),
+                                },
+                            };
+                            let _ = tx
+                                .send(Err(DataFusionError::Execution(format!(
+                                    "native panic: {msg}"
+                                ))))
+                                .await;
                         }
                     });
                     exec_context.batch_receiver = Some(rx);

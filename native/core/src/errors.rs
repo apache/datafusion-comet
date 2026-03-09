@@ -145,7 +145,10 @@ pub enum CometError {
 }
 
 pub fn init() {
-    std::panic::set_hook(Box::new(|_panic_info| {
+    std::panic::set_hook(Box::new(|panic_info| {
+        // Log the panic message and location to stderr so it is visible in CI logs
+        // even if the exception message is lost crossing the FFI boundary
+        eprintln!("Comet native panic: {panic_info}");
         // Capture the backtrace for a panic
         *PANIC_BACKTRACE.lock().unwrap() =
             Some(std::backtrace::Backtrace::force_capture().to_string());
