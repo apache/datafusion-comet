@@ -626,8 +626,8 @@ impl<'a> TypedElements<'a> {
                 let src_start = start_idx * $elem_size;
                 debug_assert!(
                     src_start + byte_len <= values_slice.len() * $elem_size,
-                    "bulk_copy_range: source slice out of bounds: src_start={}, byte_len={}, values_len={}",
-                    src_start, byte_len, values_slice.len() * $elem_size
+                    "bulk_copy_range: source slice out of bounds: src_start={}, byte_len={}, values_len={}, elem_size={}",
+                    src_start, byte_len, values_slice.len() * $elem_size, $elem_size
                 );
                 debug_assert!(
                     elements_start + byte_len <= buffer.len(),
