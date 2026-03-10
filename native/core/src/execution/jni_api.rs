@@ -56,6 +56,7 @@ use datafusion_spark::function::math::hex::SparkHex;
 use datafusion_spark::function::math::width_bucket::SparkWidthBucket;
 use datafusion_spark::function::string::char::CharFunc;
 use datafusion_spark::function::string::concat::SparkConcat;
+use datafusion_spark::function::string::luhn_check::SparkLuhnCheck;
 use datafusion_spark::function::string::space::SparkSpace;
 use futures::poll;
 use futures::stream::StreamExt;
@@ -403,6 +404,7 @@ fn register_datafusion_spark_function(session_ctx: &SessionContext) {
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkWidthBucket::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(MapFromEntries::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkCrc32::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkLuhnCheck::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSpace::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitCount::default()));
 }
@@ -849,6 +851,13 @@ pub extern "system" fn Java_org_apache_comet_Native_sortRowPartitionsNative(
             tracing_enabled != JNI_FALSE,
             || {
                 // SAFETY: JVM unsafe memory allocation is aligned with long.
+                debug_assert!(address != 0, "sortRowPartitionsNative: null address");
+                debug_assert!(size >= 0, "sortRowPartitionsNative: negative size {size}");
+                debug_assert_eq!(
+                    (address as usize) % std::mem::align_of::<i64>(),
+                    0,
+                    "sortRowPartitionsNative: address not aligned to i64"
+                );
                 let array =
                     unsafe { std::slice::from_raw_parts_mut(address as *mut i64, size as usize) };
                 array.rdxsort();
