@@ -92,6 +92,10 @@ pub trait SparkUnsafeObject {
         let addr = self.get_element_offset(index, 1);
         // SAFETY: addr points to valid element data within the UnsafeRow/UnsafeArray region.
         // The caller ensures index is within bounds.
+        debug_assert!(
+            !addr.is_null(),
+            "get_boolean: null pointer at index {index}"
+        );
         unsafe { *addr != 0 }
     }
 
@@ -99,6 +103,7 @@ pub trait SparkUnsafeObject {
     fn get_byte(&self, index: usize) -> i8 {
         let addr = self.get_element_offset(index, 1);
         // SAFETY: addr points to valid element data (1 byte) within the row/array region.
+        debug_assert!(!addr.is_null(), "get_byte: null pointer at index {index}");
         let slice: &[u8] = unsafe { std::slice::from_raw_parts(addr, 1) };
         i8::from_le_bytes(slice.try_into().unwrap())
     }
@@ -107,6 +112,7 @@ pub trait SparkUnsafeObject {
     fn get_short(&self, index: usize) -> i16 {
         let addr = self.get_element_offset(index, 2);
         // SAFETY: addr points to valid element data (2 bytes) within the row/array region.
+        debug_assert!(!addr.is_null(), "get_short: null pointer at index {index}");
         let slice: &[u8] = unsafe { std::slice::from_raw_parts(addr, 2) };
         i16::from_le_bytes(slice.try_into().unwrap())
     }
@@ -115,6 +121,7 @@ pub trait SparkUnsafeObject {
     fn get_int(&self, index: usize) -> i32 {
         let addr = self.get_element_offset(index, 4);
         // SAFETY: addr points to valid element data (4 bytes) within the row/array region.
+        debug_assert!(!addr.is_null(), "get_int: null pointer at index {index}");
         let slice: &[u8] = unsafe { std::slice::from_raw_parts(addr, 4) };
         i32::from_le_bytes(slice.try_into().unwrap())
     }
@@ -123,6 +130,7 @@ pub trait SparkUnsafeObject {
     fn get_long(&self, index: usize) -> i64 {
         let addr = self.get_element_offset(index, 8);
         // SAFETY: addr points to valid element data (8 bytes) within the row/array region.
+        debug_assert!(!addr.is_null(), "get_long: null pointer at index {index}");
         let slice: &[u8] = unsafe { std::slice::from_raw_parts(addr, 8) };
         i64::from_le_bytes(slice.try_into().unwrap())
     }
@@ -131,6 +139,7 @@ pub trait SparkUnsafeObject {
     fn get_float(&self, index: usize) -> f32 {
         let addr = self.get_element_offset(index, 4);
         // SAFETY: addr points to valid element data (4 bytes) within the row/array region.
+        debug_assert!(!addr.is_null(), "get_float: null pointer at index {index}");
         let slice: &[u8] = unsafe { std::slice::from_raw_parts(addr, 4) };
         f32::from_le_bytes(slice.try_into().unwrap())
     }
@@ -139,6 +148,7 @@ pub trait SparkUnsafeObject {
     fn get_double(&self, index: usize) -> f64 {
         let addr = self.get_element_offset(index, 8);
         // SAFETY: addr points to valid element data (8 bytes) within the row/array region.
+        debug_assert!(!addr.is_null(), "get_double: null pointer at index {index}");
         let slice: &[u8] = unsafe { std::slice::from_raw_parts(addr, 8) };
         f64::from_le_bytes(slice.try_into().unwrap())
     }
@@ -149,6 +159,11 @@ pub trait SparkUnsafeObject {
         let addr = self.get_row_addr() + offset as i64;
         // SAFETY: addr points to valid UTF-8 string data within the variable-length region.
         // Offset and length are read from the fixed-length portion of the row/array.
+        debug_assert!(addr != 0, "get_string: null address at index {index}");
+        debug_assert!(
+            len >= 0,
+            "get_string: negative length {len} at index {index}"
+        );
         let slice: &[u8] = unsafe { std::slice::from_raw_parts(addr as *const u8, len as usize) };
 
         from_utf8(slice).unwrap()
@@ -160,6 +175,11 @@ pub trait SparkUnsafeObject {
         let addr = self.get_row_addr() + offset as i64;
         // SAFETY: addr points to valid binary data within the variable-length region.
         // Offset and length are read from the fixed-length portion of the row/array.
+        debug_assert!(addr != 0, "get_binary: null address at index {index}");
+        debug_assert!(
+            len >= 0,
+            "get_binary: negative length {len} at index {index}"
+        );
         unsafe { std::slice::from_raw_parts(addr as *const u8, len as usize) }
     }
 
@@ -167,6 +187,7 @@ pub trait SparkUnsafeObject {
     fn get_date(&self, index: usize) -> i32 {
         let addr = self.get_element_offset(index, 4);
         // SAFETY: addr points to valid element data (4 bytes) within the row/array region.
+        debug_assert!(!addr.is_null(), "get_date: null pointer at index {index}");
         let slice: &[u8] = unsafe { std::slice::from_raw_parts(addr, 4) };
         i32::from_le_bytes(slice.try_into().unwrap())
     }
@@ -175,6 +196,10 @@ pub trait SparkUnsafeObject {
     fn get_timestamp(&self, index: usize) -> i64 {
         let addr = self.get_element_offset(index, 8);
         // SAFETY: addr points to valid element data (8 bytes) within the row/array region.
+        debug_assert!(
+            !addr.is_null(),
+            "get_timestamp: null pointer at index {index}"
+        );
         let slice: &[u8] = unsafe { std::slice::from_raw_parts(addr, 8) };
         i64::from_le_bytes(slice.try_into().unwrap())
     }
@@ -287,10 +312,11 @@ impl SparkUnsafeRow {
         // SAFETY: row_addr points to valid Spark UnsafeRow data with at least
         // ceil(num_fields/64) * 8 bytes of null bitset. The caller ensures index < num_fields.
         // word_offset is within the bitset region since (index >> 6) << 3 < bitset size.
+        debug_assert!(self.row_addr != -1, "is_null_at: row not initialized");
         unsafe {
             let mask: i64 = 1i64 << (index & 0x3f);
             let word_offset = (self.row_addr + (((index >> 6) as i64) << 3)) as *const i64;
-            let word: i64 = *word_offset;
+            let word: i64 = word_offset.read_unaligned();
             (word & mask) != 0
         }
     }
@@ -300,11 +326,12 @@ impl SparkUnsafeRow {
         // SAFETY: row_addr points to valid Spark UnsafeRow data with at least
         // ceil(num_fields/64) * 8 bytes of null bitset. The caller ensures index < num_fields.
         // Writing is safe because we have mutable access and the memory is owned by the JVM.
+        debug_assert!(self.row_addr != -1, "set_not_null_at: row not initialized");
         unsafe {
             let mask: i64 = 1i64 << (index & 0x3f);
             let word_offset = (self.row_addr + (((index >> 6) as i64) << 3)) as *mut i64;
-            let word: i64 = *word_offset;
-            *word_offset = word & !mask;
+            let word: i64 = word_offset.read_unaligned();
+            word_offset.write_unaligned(word & !mask);
         }
     }
 }
@@ -498,6 +525,18 @@ fn append_columns(
             for i in row_start..row_end {
                 // SAFETY: row_addresses_ptr and row_sizes_ptr are JNI arrays with at least
                 // row_end elements. i is in [row_start, row_end) so the offset is in bounds.
+                debug_assert!(
+                    !row_addresses_ptr.is_null(),
+                    "append_columns: null row_addresses_ptr"
+                );
+                debug_assert!(
+                    !row_sizes_ptr.is_null(),
+                    "append_columns: null row_sizes_ptr"
+                );
+                debug_assert!(
+                    i < row_end,
+                    "append_columns: index {i} out of bounds (row_end={row_end})"
+                );
                 let row_addr = unsafe { *row_addresses_ptr.add(i) };
                 let row_size = unsafe { *row_sizes_ptr.add(i) };
                 row.point_to(row_addr, row_size);
@@ -630,6 +669,18 @@ fn append_columns(
             for i in row_start..row_end {
                 // SAFETY: row_addresses_ptr and row_sizes_ptr are JNI arrays with at least
                 // row_end elements. i is in [row_start, row_end) so the offset is in bounds.
+                debug_assert!(
+                    !row_addresses_ptr.is_null(),
+                    "append_columns: null row_addresses_ptr"
+                );
+                debug_assert!(
+                    !row_sizes_ptr.is_null(),
+                    "append_columns: null row_sizes_ptr"
+                );
+                debug_assert!(
+                    i < row_end,
+                    "append_columns: index {i} out of bounds (row_end={row_end})"
+                );
                 let row_addr = unsafe { *row_addresses_ptr.add(i) };
                 let row_size = unsafe { *row_sizes_ptr.add(i) };
                 row.point_to(row_addr, row_size);
@@ -652,6 +703,18 @@ fn append_columns(
             for i in row_start..row_end {
                 // SAFETY: row_addresses_ptr and row_sizes_ptr are JNI arrays with at least
                 // row_end elements. i is in [row_start, row_end) so the offset is in bounds.
+                debug_assert!(
+                    !row_addresses_ptr.is_null(),
+                    "append_columns: null row_addresses_ptr"
+                );
+                debug_assert!(
+                    !row_sizes_ptr.is_null(),
+                    "append_columns: null row_sizes_ptr"
+                );
+                debug_assert!(
+                    i < row_end,
+                    "append_columns: index {i} out of bounds (row_end={row_end})"
+                );
                 let row_addr = unsafe { *row_addresses_ptr.add(i) };
                 let row_size = unsafe { *row_sizes_ptr.add(i) };
                 row.point_to(row_addr, row_size);
@@ -681,6 +744,18 @@ fn append_columns(
             for i in row_start..row_end {
                 // SAFETY: row_addresses_ptr and row_sizes_ptr are JNI arrays with at least
                 // row_end elements. i is in [row_start, row_end) so the offset is in bounds.
+                debug_assert!(
+                    !row_addresses_ptr.is_null(),
+                    "append_columns: null row_addresses_ptr"
+                );
+                debug_assert!(
+                    !row_sizes_ptr.is_null(),
+                    "append_columns: null row_sizes_ptr"
+                );
+                debug_assert!(
+                    i < row_end,
+                    "append_columns: index {i} out of bounds (row_end={row_end})"
+                );
                 let row_addr = unsafe { *row_addresses_ptr.add(i) };
                 let row_size = unsafe { *row_sizes_ptr.add(i) };
                 row.point_to(row_addr, row_size);
@@ -968,7 +1043,6 @@ mod test {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)] // Unaligned memory access in SparkUnsafeRow
     fn test_append_null_struct_field_to_struct_builder() {
         let data_type = DataType::Struct(Fields::from(vec![
             Field::new("a", DataType::Boolean, true),
