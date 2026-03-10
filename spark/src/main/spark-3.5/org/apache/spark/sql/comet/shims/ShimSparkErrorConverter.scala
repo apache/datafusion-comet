@@ -23,7 +23,7 @@ import java.io.FileNotFoundException
 
 import scala.util.matching.Regex
 
-import org.apache.spark.{QueryContext, SparkException}
+import org.apache.spark.{QueryContext, SparkDateTimeException, SparkException}
 import org.apache.spark.sql.catalyst.trees.SQLQueryContext
 import org.apache.spark.sql.errors.QueryExecutionErrors
 import org.apache.spark.sql.types._
@@ -169,6 +169,22 @@ trait ShimSparkErrorConverter {
         Some(
           QueryExecutionErrors
             .invalidInputInCastToNumberError(targetType, str, sqlCtx(context)))
+
+      case "InvalidInputInCastToDatetime" =>
+        val expression =
+          s"'${params("value").toString.replace("\\", "\\\\").replace("'", "\\'")}'"
+        val sourceType = s""""${params("fromType").toString}""""
+        val targetType = s""""${params("toType").toString}""""
+        Some(
+          new SparkDateTimeException(
+            errorClass = "CAST_INVALID_INPUT",
+            messageParameters = Map(
+              "expression" -> expression,
+              "sourceType" -> sourceType,
+              "targetType" -> targetType,
+              "ansiConfig" -> "\"spark.sql.ansi.enabled\""),
+            context = context,
+            summary = summary))
 
       case "CastOverFlow" =>
         val fromType = getDataType(params("fromType").toString)

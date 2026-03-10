@@ -32,6 +32,19 @@ pub enum SparkError {
         to_type: String,
     },
 
+    /// Like CastInvalidValue but maps to SparkDateTimeException instead of SparkNumberFormatException.
+    /// Used for string → timestamp/date cast failures where Spark throws SparkDateTimeException
+    /// with the CAST_INVALID_INPUT error class.
+    #[error("[CAST_INVALID_INPUT] The value '{value}' of the type \"{from_type}\" cannot be cast to \"{to_type}\" \
+        because it is malformed. Correct the value as per the syntax, or change its target type. \
+        Use `try_cast` to tolerate malformed input and return NULL instead. If necessary \
+        set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error.")]
+    InvalidInputInCastToDatetime {
+        value: String,
+        from_type: String,
+        to_type: String,
+    },
+
     #[error("[NUMERIC_VALUE_OUT_OF_RANGE.WITH_SUGGESTION] {value} cannot be represented as Decimal({precision}, {scale}). If necessary set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error, and return NULL instead.")]
     NumericValueOutOfRange {
         value: String,
@@ -202,6 +215,7 @@ impl SparkError {
     fn error_type_name(&self) -> &'static str {
         match self {
             SparkError::CastInvalidValue { .. } => "CastInvalidValue",
+            SparkError::InvalidInputInCastToDatetime { .. } => "InvalidInputInCastToDatetime",
             SparkError::NumericValueOutOfRange { .. } => "NumericValueOutOfRange",
             SparkError::NumericOutOfRange { .. } => "NumericOutOfRange",
             SparkError::CastOverFlow { .. } => "CastOverFlow",
@@ -249,6 +263,11 @@ impl SparkError {
     fn params_as_json(&self) -> serde_json::Value {
         match self {
             SparkError::CastInvalidValue {
+                value,
+                from_type,
+                to_type,
+            }
+            | SparkError::InvalidInputInCastToDatetime {
                 value,
                 from_type,
                 to_type,
@@ -465,8 +484,11 @@ impl SparkError {
             // CastOverflow gets special handling with CastOverflowException
             SparkError::CastOverFlow { .. } => "org/apache/spark/sql/comet/CastOverflowException",
 
-            // NumberFormatException (for cast invalid input errors)
+            // NumberFormatException (for cast invalid input errors on numeric types)
             SparkError::CastInvalidValue { .. } => "org/apache/spark/SparkNumberFormatException",
+
+            // DateTimeException (for cast invalid input errors on datetime types)
+            SparkError::InvalidInputInCastToDatetime { .. } => "org/apache/spark/SparkDateTimeException",
 
             // ArrayIndexOutOfBoundsException
             SparkError::InvalidArrayIndex { .. }
@@ -509,6 +531,7 @@ impl SparkError {
         match self {
             // Cast errors
             SparkError::CastInvalidValue { .. } => Some("CAST_INVALID_INPUT"),
+            SparkError::InvalidInputInCastToDatetime { .. } => Some("CAST_INVALID_INPUT"),
             SparkError::CastOverFlow { .. } => Some("CAST_OVERFLOW"),
             SparkError::NumericValueOutOfRange { .. } => {
                 Some("NUMERIC_VALUE_OUT_OF_RANGE.WITH_SUGGESTION")

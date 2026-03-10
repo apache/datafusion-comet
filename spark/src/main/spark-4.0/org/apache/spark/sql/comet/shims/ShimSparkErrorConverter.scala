@@ -182,6 +182,13 @@ trait ShimSparkErrorConverter {
           QueryExecutionErrors
             .invalidInputInCastToNumberError(targetType, str, context.headOption.orNull))
 
+      case "InvalidInputInCastToDatetime" =>
+        val str = UTF8String.fromString(params("value").toString)
+        val targetType = getDataType(params("toType").toString)
+        Some(
+          QueryExecutionErrors
+            .invalidInputInCastToDatetimeError(str, targetType, context.headOption.orNull))
+
       case "CastOverFlow" =>
         val fromType = getDataType(params("fromType").toString)
         val toType = getDataType(params("toType").toString)
