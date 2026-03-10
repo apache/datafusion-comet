@@ -71,9 +71,7 @@ macro_rules! impl_append_to_builder {
                 // Use bulk copy when data is properly aligned, fall back to
                 // per-element unaligned reads otherwise
                 if (ptr as usize).is_multiple_of(std::mem::align_of::<$element_type>()) {
-                    let slice = unsafe {
-                        std::slice::from_raw_parts(ptr, num_elements)
-                    };
+                    let slice = unsafe { std::slice::from_raw_parts(ptr, num_elements) };
                     builder.append_slice(slice);
                 } else {
                     let mut ptr = ptr;
