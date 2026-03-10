@@ -49,6 +49,8 @@ macro_rules! impl_append_to_builder {
             if NULLABLE {
                 let mut ptr = self.element_offset as *const $element_type;
                 let null_words = self.null_bitset_ptr();
+                debug_assert!(!null_words.is_null(), "null_bitset_ptr is null");
+                debug_assert!(!ptr.is_null(), "element_offset pointer is null");
                 for idx in 0..num_elements {
                     let word_idx = idx >> 6;
                     let bit_idx = idx & 0x3f;
@@ -66,6 +68,7 @@ macro_rules! impl_append_to_builder {
                 }
             } else {
                 // SAFETY: element_offset points to contiguous data of length num_elements
+                debug_assert!(self.element_offset != 0, "element_offset is null");
                 let slice = unsafe {
                     std::slice::from_raw_parts(
                         self.element_offset as *const $element_type,
@@ -168,9 +171,17 @@ impl SparkUnsafeArray {
         }
 
         let mut ptr = self.element_offset as *const u8;
+        debug_assert!(
+            !ptr.is_null(),
+            "append_booleans: element_offset pointer is null"
+        );
 
         if NULLABLE {
             let null_words = self.null_bitset_ptr();
+            debug_assert!(
+                !null_words.is_null(),
+                "append_booleans: null_bitset_ptr is null"
+            );
             for idx in 0..num_elements {
                 let word_idx = idx >> 6;
                 let bit_idx = idx & 0x3f;
@@ -208,6 +219,14 @@ impl SparkUnsafeArray {
         if NULLABLE {
             let mut ptr = self.element_offset as *const i64;
             let null_words = self.null_bitset_ptr();
+            debug_assert!(
+                !null_words.is_null(),
+                "append_timestamps: null_bitset_ptr is null"
+            );
+            debug_assert!(
+                !ptr.is_null(),
+                "append_timestamps: element_offset pointer is null"
+            );
             for idx in 0..num_elements {
                 let word_idx = idx >> 6;
                 let bit_idx = idx & 0x3f;
@@ -225,6 +244,10 @@ impl SparkUnsafeArray {
             }
         } else {
             // SAFETY: element_offset points to contiguous i64 data of length num_elements
+            debug_assert!(
+                self.element_offset != 0,
+                "append_timestamps: element_offset is null"
+            );
             let slice = unsafe {
                 std::slice::from_raw_parts(self.element_offset as *const i64, num_elements)
             };
@@ -245,6 +268,14 @@ impl SparkUnsafeArray {
         if NULLABLE {
             let mut ptr = self.element_offset as *const i32;
             let null_words = self.null_bitset_ptr();
+            debug_assert!(
+                !null_words.is_null(),
+                "append_dates: null_bitset_ptr is null"
+            );
+            debug_assert!(
+                !ptr.is_null(),
+                "append_dates: element_offset pointer is null"
+            );
             for idx in 0..num_elements {
                 let word_idx = idx >> 6;
                 let bit_idx = idx & 0x3f;
@@ -262,6 +293,10 @@ impl SparkUnsafeArray {
             }
         } else {
             // SAFETY: element_offset points to contiguous i32 data of length num_elements
+            debug_assert!(
+                self.element_offset != 0,
+                "append_dates: element_offset is null"
+            );
             let slice = unsafe {
                 std::slice::from_raw_parts(self.element_offset as *const i32, num_elements)
             };

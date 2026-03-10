@@ -726,6 +726,11 @@ fn append_nested_struct_fields_field_major(
 macro_rules! read_row_at {
     ($row:expr, $row_addresses_ptr:expr, $row_sizes_ptr:expr, $i:expr) => {{
         // SAFETY: Caller guarantees pointers are valid for this index (see macro doc)
+        debug_assert!(
+            !$row_addresses_ptr.is_null(),
+            "read_row_at: null row_addresses_ptr"
+        );
+        debug_assert!(!$row_sizes_ptr.is_null(), "read_row_at: null row_sizes_ptr");
         let row_addr = unsafe { *$row_addresses_ptr.add($i) };
         let row_size = unsafe { *$row_sizes_ptr.add($i) };
         $row.point_to(row_addr, row_size);
