@@ -849,6 +849,13 @@ pub extern "system" fn Java_org_apache_comet_Native_sortRowPartitionsNative(
             tracing_enabled != JNI_FALSE,
             || {
                 // SAFETY: JVM unsafe memory allocation is aligned with long.
+                debug_assert!(address != 0, "sortRowPartitionsNative: null address");
+                debug_assert!(size >= 0, "sortRowPartitionsNative: negative size {size}");
+                debug_assert_eq!(
+                    (address as usize) % std::mem::align_of::<i64>(),
+                    0,
+                    "sortRowPartitionsNative: address not aligned to i64"
+                );
                 let array =
                     unsafe { std::slice::from_raw_parts_mut(address as *mut i64, size as usize) };
                 array.rdxsort();
