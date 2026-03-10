@@ -81,6 +81,9 @@ const MAX_RECURSION_DEPTH: usize = 3;
 /// sequential throughput while keeping per-partition memory overhead modest.
 const SPILL_IO_BUFFER_SIZE: usize = 1024 * 1024;
 
+/// Log progress every N probe rows accumulated.
+const PROBE_PROGRESS_MILESTONE_ROWS: usize = 5_000_000;
+
 /// Target number of rows per coalesced batch when reading spill files.
 /// Spill files contain many tiny sub-batches (from partitioning). Coalescing
 /// into larger batches reduces per-batch overhead in the hash join kernel
@@ -230,7 +233,7 @@ impl ExecutionPlan for SpillReaderExec {
         _partition: usize,
         _context: Arc<TaskContext>,
     ) -> DFResult<SendableRecordBatchStream> {
-        let schema = Arc::clone(&self.schema);
+        let stream_schema = Arc::clone(&self.schema);
         let coalesce_schema = Arc::clone(&self.schema);
         let path = self.spill_file.path().to_path_buf();
         // Move the spill file handle into the blocking closure to keep
@@ -315,7 +318,7 @@ impl ExecutionPlan for SpillReaderExec {
             rx.recv().await.map(|batch| (batch, rx))
         });
         Ok(Box::pin(RecordBatchStreamAdapter::new(
-            schema,
+            stream_schema,
             batch_stream,
         )))
     }
@@ -653,7 +656,6 @@ impl ExecutionPlan for GraceHashJoinExec {
         let num_partitions = self.num_partitions;
         let build_left = self.build_left;
         let fast_path_threshold = self.fast_path_threshold;
-        let output_schema = Arc::clone(&self.schema);
 
         let result_stream = futures::stream::once(async move {
             execute_grace_hash_join(
@@ -669,7 +671,6 @@ impl ExecutionPlan for GraceHashJoinExec {
                 fast_path_threshold,
                 build_schema,
                 probe_schema,
-                output_schema,
                 context,
                 join_metrics,
             )
@@ -750,7 +751,6 @@ async fn execute_grace_hash_join(
     fast_path_threshold: usize,
     build_schema: SchemaRef,
     probe_schema: SchemaRef,
-    _output_schema: SchemaRef,
     context: Arc<TaskContext>,
     metrics: GraceHashJoinMetrics,
 ) -> DFResult<impl Stream<Item = DFResult<RecordBatch>>> {
@@ -896,7 +896,6 @@ async fn execute_grace_hash_join(
                     ghj_id,
                     partitions,
                     probe_stream,
-                    build_keys,
                     probe_keys,
                     original_on,
                     filter,
@@ -942,7 +941,6 @@ async fn execute_grace_hash_join(
         ghj_id,
         partitions,
         probe_stream,
-        build_keys,
         probe_keys,
         original_on,
         filter,
@@ -1081,32 +1079,20 @@ fn partition_from_buffer(
     Ok(())
 }
 
-/// Create the fast-path HashJoinExec stream (no partitioning, no spilling).
-#[allow(clippy::too_many_arguments, clippy::type_complexity)]
-fn create_fast_path_stream(
-    build_data: Vec<RecordBatch>,
-    probe_stream: SendableRecordBatchStream,
-    original_on: &[(Arc<dyn PhysicalExpr>, Arc<dyn PhysicalExpr>)],
+/// Create and execute a HashJoinExec, handling build_left swap logic.
+///
+/// When `build_left` is true, the left source is the build side and CollectLeft
+/// mode works directly. When `build_left` is false, we create the join with
+/// the original left/right order then swap inputs so the right side is collected.
+fn execute_hash_join(
+    left_source: Arc<dyn ExecutionPlan>,
+    right_source: Arc<dyn ExecutionPlan>,
+    original_on: JoinOnRef<'_>,
     filter: &Option<JoinFilter>,
     join_type: &JoinType,
     build_left: bool,
-    build_schema: &SchemaRef,
-    probe_schema: &SchemaRef,
     context: &Arc<TaskContext>,
 ) -> DFResult<SendableRecordBatchStream> {
-    let build_source = memory_source_exec(build_data, build_schema)?;
-    let probe_source: Arc<dyn ExecutionPlan> = Arc::new(StreamSourceExec::new(
-        probe_stream,
-        Arc::clone(probe_schema),
-    ));
-
-    let (left_source, right_source): (Arc<dyn ExecutionPlan>, Arc<dyn ExecutionPlan>) =
-        if build_left {
-            (build_source, probe_source)
-        } else {
-            (probe_source, build_source)
-        };
-
     if build_left {
         let hash_join = HashJoinExec::try_new(
             left_source,
@@ -1135,13 +1121,49 @@ fn create_fast_path_stream(
     }
 }
 
+/// Create the fast-path HashJoinExec stream (no partitioning, no spilling).
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn create_fast_path_stream(
+    build_data: Vec<RecordBatch>,
+    probe_stream: SendableRecordBatchStream,
+    original_on: &[(Arc<dyn PhysicalExpr>, Arc<dyn PhysicalExpr>)],
+    filter: &Option<JoinFilter>,
+    join_type: &JoinType,
+    build_left: bool,
+    build_schema: &SchemaRef,
+    probe_schema: &SchemaRef,
+    context: &Arc<TaskContext>,
+) -> DFResult<SendableRecordBatchStream> {
+    let build_source = memory_source_exec(build_data, build_schema)?;
+    let probe_source: Arc<dyn ExecutionPlan> = Arc::new(StreamSourceExec::new(
+        probe_stream,
+        Arc::clone(probe_schema),
+    ));
+
+    let (left_source, right_source): (Arc<dyn ExecutionPlan>, Arc<dyn ExecutionPlan>) =
+        if build_left {
+            (build_source, probe_source)
+        } else {
+            (probe_source, build_source)
+        };
+
+    execute_hash_join(
+        left_source,
+        right_source,
+        original_on,
+        filter,
+        join_type,
+        build_left,
+        context,
+    )
+}
+
 /// Execute the slow path: partition probe side, merge partitions, and join.
 #[allow(clippy::too_many_arguments)]
 async fn execute_slow_path(
     ghj_id: usize,
     mut partitions: Vec<HashPartition>,
     probe_stream: SendableRecordBatchStream,
-    _build_keys: Vec<Arc<dyn PhysicalExpr>>,
     probe_keys: Vec<Arc<dyn PhysicalExpr>>,
     original_on: Vec<(Arc<dyn PhysicalExpr>, Arc<dyn PhysicalExpr>)>,
     filter: Option<JoinFilter>,
@@ -1222,8 +1244,7 @@ async fn execute_slow_path(
     }
 
     // Finish all open spill writers before reading back
-    let finished_partitions =
-        finish_spill_writers(partitions, &build_schema, &probe_schema, &metrics)?;
+    let finished_partitions = finish_spill_writers(partitions)?;
 
     // Merge adjacent partitions to reduce the number of HashJoinExec calls.
     // Compute desired partition count from total build bytes.
@@ -1480,10 +1501,7 @@ impl ScratchSpace {
 // ---------------------------------------------------------------------------
 
 /// Read record batches from a finished spill file.
-fn read_spilled_batches(
-    spill_file: &RefCountedTempFile,
-    _schema: &SchemaRef,
-) -> DFResult<Vec<RecordBatch>> {
+fn read_spilled_batches(spill_file: &RefCountedTempFile) -> DFResult<Vec<RecordBatch>> {
     let file = File::open(spill_file.path())
         .map_err(|e| DataFusionError::Execution(format!("Failed to open spill file: {e}")))?;
     let reader = BufReader::with_capacity(SPILL_IO_BUFFER_SIZE, file);
@@ -1725,9 +1743,9 @@ async fn partition_probe_side(
         if batch.num_rows() == 0 {
             continue;
         }
-        let prev_milestone = probe_rows_accumulated / 5_000_000;
+        let prev_milestone = probe_rows_accumulated / PROBE_PROGRESS_MILESTONE_ROWS;
         probe_rows_accumulated += batch.num_rows();
-        let new_milestone = probe_rows_accumulated / 5_000_000;
+        let new_milestone = probe_rows_accumulated / PROBE_PROGRESS_MILESTONE_ROWS;
         if new_milestone > prev_milestone {
             info!(
                 "GraceHashJoin: probe accumulation progress: {} rows, \
@@ -1853,12 +1871,7 @@ struct FinishedPartition {
 }
 
 /// Finish all open spill writers so files can be read back.
-fn finish_spill_writers(
-    partitions: Vec<HashPartition>,
-    _left_schema: &SchemaRef,
-    _right_schema: &SchemaRef,
-    _metrics: &GraceHashJoinMetrics,
-) -> DFResult<Vec<FinishedPartition>> {
+fn finish_spill_writers(partitions: Vec<HashPartition>) -> DFResult<Vec<FinishedPartition>> {
     let mut finished = Vec::with_capacity(partitions.len());
 
     for partition in partitions {
@@ -2015,12 +2028,11 @@ async fn join_single_partition(
     // Use spawn_blocking for spill reads to avoid blocking the async executor.
     let mut build_batches = partition.build_batches;
     if !partition.build_spill_files.is_empty() {
-        let schema = Arc::clone(&build_schema);
         let spill_files = partition.build_spill_files;
         let spilled = tokio::task::spawn_blocking(move || {
             let mut all = Vec::new();
             for spill_file in &spill_files {
-                all.extend(read_spilled_batches(spill_file, &schema)?);
+                all.extend(read_spilled_batches(spill_file)?);
             }
             Ok::<_, DataFusionError>(all)
         })
@@ -2159,7 +2171,7 @@ fn join_with_spilled_probe(
         );
         let mut probe_batches = probe_in_memory;
         for spill_file in &probe_spill_files {
-            probe_batches.extend(read_spilled_batches(spill_file, probe_schema)?);
+            probe_batches.extend(read_spilled_batches(spill_file)?);
         }
         return join_partition_recursive(
             build_batches,
@@ -2202,7 +2214,7 @@ fn join_with_spilled_probe(
         } else {
             let mut probe_batches = probe_in_memory;
             for spill_file in &probe_spill_files {
-                probe_batches.extend(read_spilled_batches(spill_file, probe_schema)?);
+                probe_batches.extend(read_spilled_batches(spill_file)?);
             }
             let probe_data = if probe_batches.is_empty() {
                 vec![RecordBatch::new_empty(Arc::clone(probe_schema))]
@@ -2231,40 +2243,15 @@ fn join_with_spilled_probe(
         },
     );
 
-    let stream = if build_left {
-        let hash_join = HashJoinExec::try_new(
-            left_source,
-            right_source,
-            original_on.to_vec(),
-            filter.clone(),
-            join_type,
-            None,
-            PartitionMode::CollectLeft,
-            NullEquality::NullEqualsNothing,
-        )?;
-        info!(
-            "GraceHashJoin: SPILLED PROBE PATH plan:\n{}",
-            DisplayableExecutionPlan::new(&hash_join).indent(true)
-        );
-        hash_join.execute(0, context_for_join_output(context))?
-    } else {
-        let hash_join = Arc::new(HashJoinExec::try_new(
-            left_source,
-            right_source,
-            original_on.to_vec(),
-            filter.clone(),
-            join_type,
-            None,
-            PartitionMode::CollectLeft,
-            NullEquality::NullEqualsNothing,
-        )?);
-        let swapped = hash_join.swap_inputs(PartitionMode::CollectLeft)?;
-        info!(
-            "GraceHashJoin: SPILLED PROBE PATH (swapped) plan:\n{}",
-            DisplayableExecutionPlan::new(swapped.as_ref()).indent(true)
-        );
-        swapped.execute(0, context_for_join_output(context))?
-    };
+    let stream = execute_hash_join(
+        left_source,
+        right_source,
+        original_on,
+        filter,
+        join_type,
+        build_left,
+        context,
+    )?;
 
     streams.push(stream);
     Ok(())
@@ -2415,52 +2402,54 @@ fn join_partition_recursive(
         (probe_source, build_source)
     };
 
-    let pool_before_join = context.runtime_env().memory_pool.reserved();
     info!(
         "GraceHashJoin: RECURSIVE PATH creating HashJoinExec at level={}, \
          build_left={}, build_size={}, probe_size={}, pool reserved={}",
-        recursion_level, build_left, build_size, probe_size, pool_before_join,
+        recursion_level,
+        build_left,
+        build_size,
+        probe_size,
+        context.runtime_env().memory_pool.reserved(),
     );
 
-    let stream = if build_left {
-        let hash_join = HashJoinExec::try_new(
-            left_source,
-            right_source,
-            original_on.to_vec(),
-            filter.clone(),
-            join_type,
-            None,
-            PartitionMode::CollectLeft,
-            NullEquality::NullEqualsNothing,
-        )?;
-        info!(
-            "GraceHashJoin: RECURSIVE PATH plan (level={}):\n{}",
-            recursion_level,
-            DisplayableExecutionPlan::new(&hash_join).indent(true)
-        );
-        hash_join.execute(0, context_for_join_output(context))?
-    } else {
-        let hash_join = Arc::new(HashJoinExec::try_new(
-            left_source,
-            right_source,
-            original_on.to_vec(),
-            filter.clone(),
-            join_type,
-            None,
-            PartitionMode::CollectLeft,
-            NullEquality::NullEqualsNothing,
-        )?);
-        let swapped = hash_join.swap_inputs(PartitionMode::CollectLeft)?;
-        info!(
-            "GraceHashJoin: RECURSIVE PATH (swapped, level={}) plan:\n{}",
-            recursion_level,
-            DisplayableExecutionPlan::new(swapped.as_ref()).indent(true)
-        );
-        swapped.execute(0, context_for_join_output(context))?
-    };
+    let stream = execute_hash_join(
+        left_source,
+        right_source,
+        original_on,
+        filter,
+        join_type,
+        build_left,
+        context,
+    )?;
 
     streams.push(stream);
     Ok(())
+}
+
+/// Distribute batches into sub-partitions by hashing key columns.
+fn sub_partition_batches(
+    batches: &[RecordBatch],
+    keys: &[Arc<dyn PhysicalExpr>],
+    num_partitions: usize,
+    recursion_level: usize,
+    scratch: &mut ScratchSpace,
+) -> DFResult<Vec<Vec<RecordBatch>>> {
+    let mut result: Vec<Vec<RecordBatch>> = (0..num_partitions).map(|_| Vec::new()).collect();
+    for batch in batches {
+        let total_rows = batch.num_rows();
+        scratch.compute_partitions(batch, keys, num_partitions, recursion_level)?;
+        for (i, sub_vec) in result.iter_mut().enumerate() {
+            if scratch.partition_len(i) == 0 {
+                continue;
+            }
+            if scratch.partition_len(i) == total_rows {
+                sub_vec.push(batch.clone());
+            } else if let Some(sub) = scratch.take_partition(batch, i)? {
+                sub_vec.push(sub);
+            }
+        }
+    }
+    Ok(result)
 }
 
 /// Repartition build and probe batches into sub-partitions using a different
@@ -2496,41 +2485,20 @@ fn repartition_and_join(
 
     let mut scratch = ScratchSpace::default();
 
-    // Sub-partition the build side
-    let mut build_sub: Vec<Vec<RecordBatch>> =
-        (0..num_sub_partitions).map(|_| Vec::new()).collect();
-    for batch in &build_batches {
-        let total_rows = batch.num_rows();
-        scratch.compute_partitions(batch, &build_keys, num_sub_partitions, recursion_level)?;
-        for (i, sub_vec) in build_sub.iter_mut().enumerate() {
-            if scratch.partition_len(i) == 0 {
-                continue;
-            }
-            if scratch.partition_len(i) == total_rows {
-                sub_vec.push(batch.clone());
-            } else if let Some(sub) = scratch.take_partition(batch, i)? {
-                sub_vec.push(sub);
-            }
-        }
-    }
-
-    // Sub-partition the probe side
-    let mut probe_sub: Vec<Vec<RecordBatch>> =
-        (0..num_sub_partitions).map(|_| Vec::new()).collect();
-    for batch in &probe_batches {
-        let total_rows = batch.num_rows();
-        scratch.compute_partitions(batch, &probe_keys, num_sub_partitions, recursion_level)?;
-        for (i, sub_vec) in probe_sub.iter_mut().enumerate() {
-            if scratch.partition_len(i) == 0 {
-                continue;
-            }
-            if scratch.partition_len(i) == total_rows {
-                sub_vec.push(batch.clone());
-            } else if let Some(sub) = scratch.take_partition(batch, i)? {
-                sub_vec.push(sub);
-            }
-        }
-    }
+    let build_sub = sub_partition_batches(
+        &build_batches,
+        &build_keys,
+        num_sub_partitions,
+        recursion_level,
+        &mut scratch,
+    )?;
+    let probe_sub = sub_partition_batches(
+        &probe_batches,
+        &probe_keys,
+        num_sub_partitions,
+        recursion_level,
+        &mut scratch,
+    )?;
 
     // Recursively join each sub-partition
     for (build_part, probe_part) in build_sub.into_iter().zip(probe_sub.into_iter()) {
