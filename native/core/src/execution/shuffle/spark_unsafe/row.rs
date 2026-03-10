@@ -106,8 +106,7 @@ pub trait SparkUnsafeObject {
         let addr = self.get_element_offset(index, 1);
         // SAFETY: addr points to valid element data (1 byte) within the row/array region.
         debug_assert!(!addr.is_null(), "get_byte: null pointer at index {index}");
-        let slice: &[u8] = unsafe { std::slice::from_raw_parts(addr, 1) };
-        i8::from_le_bytes(slice.try_into().unwrap())
+        unsafe { *(addr as *const i8) }
     }
 
     /// Returns short value at the given index of the object.
@@ -116,8 +115,7 @@ pub trait SparkUnsafeObject {
         let addr = self.get_element_offset(index, 2);
         // SAFETY: addr points to valid element data (2 bytes) within the row/array region.
         debug_assert!(!addr.is_null(), "get_short: null pointer at index {index}");
-        let slice: &[u8] = unsafe { std::slice::from_raw_parts(addr, 2) };
-        i16::from_le_bytes(slice.try_into().unwrap())
+        unsafe { *(addr as *const i16) }
     }
 
     /// Returns integer value at the given index of the object.
@@ -126,8 +124,7 @@ pub trait SparkUnsafeObject {
         let addr = self.get_element_offset(index, 4);
         // SAFETY: addr points to valid element data (4 bytes) within the row/array region.
         debug_assert!(!addr.is_null(), "get_int: null pointer at index {index}");
-        let slice: &[u8] = unsafe { std::slice::from_raw_parts(addr, 4) };
-        i32::from_le_bytes(slice.try_into().unwrap())
+        unsafe { *(addr as *const i32) }
     }
 
     /// Returns long value at the given index of the object.
@@ -136,8 +133,7 @@ pub trait SparkUnsafeObject {
         let addr = self.get_element_offset(index, 8);
         // SAFETY: addr points to valid element data (8 bytes) within the row/array region.
         debug_assert!(!addr.is_null(), "get_long: null pointer at index {index}");
-        let slice: &[u8] = unsafe { std::slice::from_raw_parts(addr, 8) };
-        i64::from_le_bytes(slice.try_into().unwrap())
+        unsafe { *(addr as *const i64) }
     }
 
     /// Returns float value at the given index of the object.
@@ -146,8 +142,7 @@ pub trait SparkUnsafeObject {
         let addr = self.get_element_offset(index, 4);
         // SAFETY: addr points to valid element data (4 bytes) within the row/array region.
         debug_assert!(!addr.is_null(), "get_float: null pointer at index {index}");
-        let slice: &[u8] = unsafe { std::slice::from_raw_parts(addr, 4) };
-        f32::from_le_bytes(slice.try_into().unwrap())
+        unsafe { *(addr as *const f32) }
     }
 
     /// Returns double value at the given index of the object.
@@ -156,8 +151,7 @@ pub trait SparkUnsafeObject {
         let addr = self.get_element_offset(index, 8);
         // SAFETY: addr points to valid element data (8 bytes) within the row/array region.
         debug_assert!(!addr.is_null(), "get_double: null pointer at index {index}");
-        let slice: &[u8] = unsafe { std::slice::from_raw_parts(addr, 8) };
-        f64::from_le_bytes(slice.try_into().unwrap())
+        unsafe { *(addr as *const f64) }
     }
 
     /// Returns string value at the given index of the object.
@@ -196,8 +190,7 @@ pub trait SparkUnsafeObject {
         let addr = self.get_element_offset(index, 4);
         // SAFETY: addr points to valid element data (4 bytes) within the row/array region.
         debug_assert!(!addr.is_null(), "get_date: null pointer at index {index}");
-        let slice: &[u8] = unsafe { std::slice::from_raw_parts(addr, 4) };
-        i32::from_le_bytes(slice.try_into().unwrap())
+        unsafe { *(addr as *const i32) }
     }
 
     /// Returns timestamp value at the given index of the object.
@@ -209,8 +202,7 @@ pub trait SparkUnsafeObject {
             !addr.is_null(),
             "get_timestamp: null pointer at index {index}"
         );
-        let slice: &[u8] = unsafe { std::slice::from_raw_parts(addr, 8) };
-        i64::from_le_bytes(slice.try_into().unwrap())
+        unsafe { *(addr as *const i64) }
     }
 
     /// Returns decimal value at the given index of the object.
