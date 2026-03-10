@@ -299,7 +299,7 @@ impl SparkUnsafeRow {
         unsafe {
             let mask: i64 = 1i64 << (index & 0x3f);
             let word_offset = (self.row_addr + (((index >> 6) as i64) << 3)) as *const i64;
-            let word: i64 = *word_offset;
+            let word: i64 = word_offset.read_unaligned();
             (word & mask) != 0
         }
     }
@@ -313,8 +313,8 @@ impl SparkUnsafeRow {
         unsafe {
             let mask: i64 = 1i64 << (index & 0x3f);
             let word_offset = (self.row_addr + (((index >> 6) as i64) << 3)) as *mut i64;
-            let word: i64 = *word_offset;
-            *word_offset = word & !mask;
+            let word: i64 = word_offset.read_unaligned();
+            word_offset.write_unaligned(word & !mask);
         }
     }
 }
@@ -1619,7 +1619,6 @@ mod test {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)] // Unaligned memory access in SparkUnsafeRow
     fn test_append_null_struct_field_to_struct_builder() {
         let data_type = DataType::Struct(Fields::from(vec![
             Field::new("a", DataType::Boolean, true),

@@ -138,7 +138,7 @@ impl SparkUnsafeArray {
         unsafe {
             let mask: i64 = 1i64 << (index & 0x3f);
             let word_offset = (self.row_addr + 8 + (((index >> 6) as i64) << 3)) as *const i64;
-            let word: i64 = *word_offset;
+            let word: i64 = word_offset.read_unaligned();
             (word & mask) != 0
         }
     }

@@ -55,7 +55,8 @@ object_store = { version = "0.12.3", features = ["gcp", "azure", "aws", "http"] 
 url = "2.2"
 aws-config = "1.8.14"
 aws-credential-types = "1.2.13"
-iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "b24ab63" }
+iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "854f66d" }
+iceberg-storage-opendal = { git = "https://github.com/apache/iceberg-rust", rev = "854f66d", features = ["opendal-all"] }
 
 [profile.release]
 debug = true
@@ -70,4 +71,6 @@ strip = "debuginfo"
 inherits = "release"
 lto = false          # Skip LTO for faster linking
 codegen-units = 16   # Parallel codegen (faster compile, slightly larger binary)
+debug-assertions = true
+panic = "unwind"     # Allow panics to be caught and logged across FFI boundary
 # overflow-checks inherited as false from release
