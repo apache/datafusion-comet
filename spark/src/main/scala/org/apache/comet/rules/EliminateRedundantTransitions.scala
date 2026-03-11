@@ -22,7 +22,7 @@ package org.apache.comet.rules
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.sideBySide
-import org.apache.spark.sql.comet.{CometCollectLimitExec, CometColumnarToRowExec, CometNativeColumnarToRowExec, CometNativeWriteExec, CometPlan, CometScanExec, CometSparkToColumnarExec}
+import org.apache.spark.sql.comet.{CometBatchScanExec, CometCollectLimitExec, CometColumnarToRowExec, CometNativeColumnarToRowExec, CometNativeWriteExec, CometPlan, CometScanExec, CometSparkToColumnarExec}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, RowToColumnarExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.QueryStageExec
@@ -140,7 +140,7 @@ case class EliminateRedundantTransitions(session: SparkSession) extends Rule[Spa
     val schema = child.schema
     val useNative = CometConf.COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED.get() &&
       CometNativeColumnarToRowExec.supportsSchema(schema) &&
-      !hasScanUsingMutableBuffers(child)
+      !hasScanIncompatibleWithNativeC2R(child)
 
     if (useNative) {
       CometNativeColumnarToRowExec(child)
@@ -150,19 +150,25 @@ case class EliminateRedundantTransitions(session: SparkSession) extends Rule[Spa
   }
 
   /**
-   * Checks if the plan contains a scan that uses mutable buffers. Native C2R is not compatible
-   * with such scans because the buffers may be modified after C2R reads them.
+   * Checks if the plan contains a scan that is incompatible with native C2R.
    *
-   * This includes:
-   *   - CometScanExec with native_iceberg_compat and partition columns - uses
-   *     ConstantColumnReader
+   * Native C2R exports raw Arrow arrays via FFI and processes them sequentially. This is
+   * incompatible with:
+   *
+   *   - CometBatchScanExec: wraps external readers (e.g., Iceberg) that may produce batches with
+   *     CometSelectionVector columns. The selection vector maps logical row indices to physical
+   *     row indices (used by Iceberg merge-on-read deletes). Native C2R exports the raw
+   *     underlying array without applying this mapping, causing it to read wrong rows.
+   *   - CometScanExec with native_iceberg_compat and partition columns: uses mutable
+   *     ConstantColumnReader buffers.
    */
-  private def hasScanUsingMutableBuffers(op: SparkPlan): Boolean = {
+  private def hasScanIncompatibleWithNativeC2R(op: SparkPlan): Boolean = {
     op match {
-      case c: QueryStageExec => hasScanUsingMutableBuffers(c.plan)
-      case c: ReusedExchangeExec => hasScanUsingMutableBuffers(c.child)
+      case c: QueryStageExec => hasScanIncompatibleWithNativeC2R(c.plan)
+      case c: ReusedExchangeExec => hasScanIncompatibleWithNativeC2R(c.child)
       case _ =>
         op.exists {
+          case _: CometBatchScanExec => true
           case scan: CometScanExec =>
             scan.scanImpl == CometConf.SCAN_NATIVE_ICEBERG_COMPAT &&
             scan.relation.partitionSchema.nonEmpty
