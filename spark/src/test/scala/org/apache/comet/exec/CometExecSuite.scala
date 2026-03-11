@@ -382,41 +382,6 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
-  // ignored: native_comet scan is no longer supported
-  ignore("ReusedExchangeExec should work on CometBroadcastExchangeExec with V2 scan") {
-    withSQLConf(
-      CometConf.COMET_EXEC_BROADCAST_FORCE_ENABLED.key -> "true",
-      CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET,
-      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
-      SQLConf.USE_V1_SOURCE_LIST.key -> "") {
-      withTempPath { path =>
-        spark
-          .range(5)
-          .withColumn("p", $"id" % 2)
-          .write
-          .mode("overwrite")
-          .partitionBy("p")
-          .parquet(path.toString)
-        withTempView("t") {
-          spark.read.parquet(path.toString).createOrReplaceTempView("t")
-          val df = sql("""
-              |SELECT t1.id, t2.id, t3.id
-              |FROM t AS t1
-              |JOIN t AS t2 ON t2.id = t1.id
-              |JOIN t AS t3 ON t3.id = t2.id
-              |WHERE t1.p = 1 AND t2.p = 1 AND t3.p = 1
-              |""".stripMargin)
-          val reusedPlan = ReuseExchangeAndSubquery.apply(df.queryExecution.executedPlan)
-          val reusedExchanges = collect(reusedPlan) { case r: ReusedExchangeExec =>
-            r
-          }
-          assert(reusedExchanges.size == 1)
-          assert(reusedExchanges.head.child.isInstanceOf[CometBroadcastExchangeExec])
-        }
-      }
-    }
-  }
-
   test("CometShuffleExchangeExec logical link should be correct") {
     withTempView("v") {
       spark.sparkContext
