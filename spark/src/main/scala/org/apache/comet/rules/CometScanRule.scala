@@ -307,6 +307,8 @@ case class CometScanRule(session: SparkSession)
         if (s.isCometEnabled && schemaSupported) {
           // When reading from Iceberg, we automatically enable type promotion
           SQLConf.get.setConfString(COMET_SCHEMA_EVOLUTION_ENABLED.key, "true")
+          // When reading from Iceberg, we automatically disable native columnar to row
+          SQLConf.get.setConfString(COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED.key, "false")
           CometBatchScanExec(
             scanExec.clone().asInstanceOf[BatchScanExec],
             runtimeFilters = scanExec.runtimeFilters)
