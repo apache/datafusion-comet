@@ -32,6 +32,8 @@ impl SparkUnsafeMap {
     pub(crate) fn new(addr: i64, size: i32) -> Self {
         // SAFETY: addr points to valid Spark UnsafeMap data from the JVM.
         // The first 8 bytes contain the key array size as a little-endian i64.
+        debug_assert!(addr != 0, "SparkUnsafeMap::new: null address");
+        debug_assert!(size >= 0, "SparkUnsafeMap::new: negative size {size}");
         let slice: &[u8] = unsafe { std::slice::from_raw_parts(addr as *const u8, 8) };
         let key_array_size = i64::from_le_bytes(slice.try_into().unwrap());
 
