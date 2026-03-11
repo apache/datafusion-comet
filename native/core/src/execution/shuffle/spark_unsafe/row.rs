@@ -1687,9 +1687,12 @@ mod test {
         let mut row = SparkUnsafeRow::new_with_num_fields(1);
         // 8 bytes null bitset + 8 bytes field value = 16 bytes
         // Set bit 0 in the null bitset to mark field 0 as null
-        let mut data = [0u8; 16];
-        data[0] = 1;
-        row.point_to_slice(&data);
+        // Use aligned buffer to match real Spark UnsafeRow layout (8-byte aligned)
+        #[repr(align(8))]
+        struct Aligned([u8; 16]);
+        let mut data = Aligned([0u8; 16]);
+        data.0[0] = 1;
+        row.point_to_slice(&data.0);
         append_field(&data_type, &mut struct_builder, &row, 0).expect("append field");
         struct_builder.append_null();
         let struct_array = struct_builder.finish();
