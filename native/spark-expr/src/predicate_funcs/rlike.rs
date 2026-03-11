@@ -22,8 +22,6 @@ use arrow::array::{Array, BooleanArray, DictionaryArray, RecordBatch, StringArra
 use arrow::compute::take;
 use arrow::datatypes::{DataType, Schema};
 use datafusion::common::{internal_err, Result, ScalarValue};
-#[cfg(test)]
-use datafusion::physical_expr::expressions::Literal;
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ColumnarValue;
 use regex::Regex;
@@ -187,6 +185,7 @@ impl PhysicalExpr for RLike {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use datafusion::physical_expr::expressions::Literal;
 
     #[test]
     fn test_rlike_scalar_utf8_literal() {
