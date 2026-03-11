@@ -1837,6 +1837,7 @@ dependencies = [
  "crc32fast",
  "criterion",
  "datafusion",
+ "datafusion-comet-jvm-bridge",
  "datafusion-comet-objectstore-hdfs",
  "datafusion-comet-proto",
  "datafusion-comet-spark-expr",
@@ -1900,6 +1901,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "datafusion-comet-jvm-bridge"
+version = "0.14.0"
+dependencies = [
+ "arrow",
+ "assertables",
+ "datafusion",
+ "jni",
+ "lazy_static",
+ "log",
+ "once_cell",
+ "parquet",
+ "paste",
+ "prost",
+ "regex",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "datafusion-comet-objectstore-hdfs"
 version = "0.14.0"
 dependencies = [
@@ -1931,6 +1952,7 @@ dependencies = [
  "chrono-tz",
  "criterion",
  "datafusion",
+ "datafusion-comet-jvm-bridge",
  "futures",
  "hex",
  "num",

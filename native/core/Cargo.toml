@@ -68,6 +68,7 @@ regex = { workspace = true }
 crc32fast = "1.3.2"
 simd-adler32 = "0.3.7"
 datafusion-comet-spark-expr = { workspace = true }
+datafusion-comet-jvm-bridge = { workspace = true }
 datafusion-comet-proto = { workspace = true }
 object_store = { workspace = true }
 url = { workspace = true }

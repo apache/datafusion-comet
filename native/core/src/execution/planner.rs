@@ -23,16 +23,13 @@ pub mod operator_registry;
 
 use crate::execution::operators::init_csv_datasource_exec;
 use crate::execution::operators::IcebergScanExec;
-use crate::{
-    errors::ExpressionError,
-    execution::{
-        expressions::subquery::Subquery,
-        operators::{ExecutionError, ExpandExec, ParquetWriterExec, ScanExec},
-        planner::expression_registry::ExpressionRegistry,
-        planner::operator_registry::OperatorRegistry,
-        serde::to_arrow_datatype,
-        shuffle::ShuffleWriterExec,
-    },
+use crate::execution::{
+    expressions::subquery::Subquery,
+    operators::{ExecutionError, ExpandExec, ParquetWriterExec, ScanExec},
+    planner::expression_registry::ExpressionRegistry,
+    planner::operator_registry::OperatorRegistry,
+    serde::to_arrow_datatype,
+    shuffle::ShuffleWriterExec,
 };
 use arrow::compute::CastOptions;
 use arrow::datatypes::{DataType, Field, FieldRef, Schema, TimeUnit, DECIMAL128_MAX_PRECISION};
@@ -2623,24 +2620,6 @@ impl PhysicalPlanner {
             .with_distinct(false)
             .build()
             .map_err(|e| e.into())
-    }
-}
-
-impl From<DataFusionError> for ExecutionError {
-    fn from(value: DataFusionError) -> Self {
-        ExecutionError::DataFusionError(value.message().to_string())
-    }
-}
-
-impl From<ExecutionError> for DataFusionError {
-    fn from(value: ExecutionError) -> Self {
-        DataFusionError::Execution(value.to_string())
-    }
-}
-
-impl From<ExpressionError> for DataFusionError {
-    fn from(value: ExpressionError) -> Self {
-        DataFusionError::Execution(value.to_string())
     }
 }
 

@@ -40,6 +40,7 @@ macro_rules! jni_map_error {
 }
 
 /// Macro for converting Rust types to JNI types.
+#[macro_export]
 macro_rules! jvalues {
     ($($args:expr,)* $(,)?) => {{
         &[$(jni::objects::JValue::from($args).as_jni()),*] as &[jni::sys::jvalue]
@@ -53,6 +54,7 @@ macro_rules! jvalues {
 /// metric_node is the Java object on which the method is called.
 /// add is the method name.
 /// jname and value are the arguments.
+#[macro_export]
 macro_rules! jni_call {
     ($env:expr, $clsname:ident($obj:expr).$method:ident($($args:expr),* $(,)?) -> $ret:ty) => {{
         let method_id = paste::paste! {
@@ -61,7 +63,7 @@ macro_rules! jni_call {
         let ret_type = paste::paste! {
             $crate::jvm_bridge::JVMClasses::get().[<$clsname>].[<method_ $method _ret>]
         }.clone();
-        let args = $crate::jvm_bridge::jvalues!($($args,)*);
+        let args = $crate::jvalues!($($args,)*);
 
         // Call the JVM method and obtain the returned value
         let ret = $env.call_method_unchecked($obj, method_id, ret_type, args);
@@ -70,13 +72,14 @@ macro_rules! jni_call {
         let result = if let Some(exception) = $crate::jvm_bridge::check_exception($env)? {
             Err(exception.into())
         } else {
-            $crate::jvm_bridge::jni_map_error!($env, ret)
+            $crate::jni_map_error!($env, ret)
         };
 
-        result.and_then(|result| $crate::jvm_bridge::jni_map_error!($env, <$ret>::try_from(result)))
+        result.and_then(|result| $crate::jni_map_error!($env, <$ret>::try_from(result)))
     }}
 }
 
+#[macro_export]
 macro_rules! jni_static_call {
     ($env:expr, $clsname:ident.$method:ident($($args:expr),* $(,)?) -> $ret:ty) => {{
         let clazz = &paste::paste! {
@@ -88,7 +91,7 @@ macro_rules! jni_static_call {
         let ret_type = paste::paste! {
             $crate::jvm_bridge::JVMClasses::get().[<$clsname>].[<method_ $method _ret>]
         }.clone();
-        let args = $crate::jvm_bridge::jvalues!($($args,)*);
+        let args = $crate::jvalues!($($args,)*);
 
         // Call the JVM static method and obtain the returned value
         let ret = $env.call_static_method_unchecked(clazz, method_id, ret_type, args);
@@ -97,11 +100,19 @@ macro_rules! jni_static_call {
         let result = if let Some(exception) = $crate::jvm_bridge::check_exception($env)? {
             Err(exception.into())
         } else {
-            $crate::jvm_bridge::jni_map_error!($env, ret)
+            $crate::jni_map_error!($env, ret)
         };
 
-        result.and_then(|result| $crate::jvm_bridge::jni_map_error!($env, <$ret>::try_from(result)))
+        result.and_then(|result| $crate::jni_map_error!($env, <$ret>::try_from(result)))
     }}
+}
+
+/// Macro for creating a new global reference.
+#[macro_export]
+macro_rules! jni_new_global_ref {
+    ($env:expr, $obj:expr) => {{
+        $crate::jni_map_error!($env, $env.new_global_ref($obj))
+    }};
 }
 
 /// Wrapper for JString. Because we cannot implement `TryFrom` trait for `JString` as they
@@ -155,19 +166,6 @@ impl<'a> TryFrom<JValueOwned<'a>> for BinaryWrapper<'a> {
         }
     }
 }
-
-/// Macro for creating a new global reference.
-macro_rules! jni_new_global_ref {
-    ($env:expr, $obj:expr) => {{
-        $crate::jni_map_error!($env, $env.new_global_ref($obj))
-    }};
-}
-
-pub(crate) use jni_call;
-pub(crate) use jni_map_error;
-pub(crate) use jni_new_global_ref;
-pub(crate) use jni_static_call;
-pub(crate) use jvalues;
 
 mod comet_exec;
 pub use comet_exec::*;
@@ -287,7 +285,7 @@ impl JVMClasses<'_> {
     }
 }
 
-pub(crate) fn check_exception(env: &mut JNIEnv) -> CometResult<Option<CometError>> {
+pub fn check_exception(env: &mut JNIEnv) -> CometResult<Option<CometError>> {
     let result = if env.exception_check()? {
         let exception = env.exception_occurred()?;
         env.exception_clear()?;
@@ -380,10 +378,7 @@ fn get_throwable_message(
 /// this converts it into a `CometError::JavaException` with the exception class name
 /// and exception message. This error can then be populated to the JVM side to let
 /// users know the cause of the native side error.
-pub(crate) fn convert_exception(
-    env: &mut JNIEnv,
-    throwable: &JThrowable,
-) -> CometResult<CometError> {
+pub fn convert_exception(env: &mut JNIEnv, throwable: &JThrowable) -> CometResult<CometError> {
     let cache = JVMClasses::get();
     let exception_class_name_str = get_throwable_class_name(env, cache, throwable)?;
     let message_str = get_throwable_message(env, cache, throwable)?;
