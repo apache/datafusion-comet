@@ -17,6 +17,7 @@ docs/source/_static/images/comet-dataflow.excalidraw
 docs/source/contributor-guide/benchmark-results/**/*.json
 docs/logos/*.png
 docs/logos/*.svg
+docs/source/contributor-guide/*.svg
 rust-toolchain
 spark/src/test/resources/tpcds-extended/q*.sql
 spark/src/test/resources/tpcds-query-results/*.out
