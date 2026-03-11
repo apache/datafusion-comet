@@ -197,8 +197,7 @@ mod tests {
         ];
 
         for scalar in scalars {
-            let expr =
-                RLike::try_new(Arc::new(Literal::new(scalar.clone())), pattern).unwrap();
+            let expr = RLike::try_new(Arc::new(Literal::new(scalar.clone())), pattern).unwrap();
             let result = expr
                 .evaluate(&RecordBatch::new_empty(Arc::new(Schema::empty())))
                 .unwrap();
@@ -209,11 +208,8 @@ mod tests {
         }
 
         // Null input should produce a null boolean result
-        let expr = RLike::try_new(
-            Arc::new(Literal::new(ScalarValue::Utf8(None))),
-            pattern,
-        )
-        .unwrap();
+        let expr =
+            RLike::try_new(Arc::new(Literal::new(ScalarValue::Utf8(None))), pattern).unwrap();
         let result = expr
             .evaluate(&RecordBatch::new_empty(Arc::new(Schema::empty())))
             .unwrap();
