@@ -21,6 +21,9 @@ concurrency:
   group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 # No paths-ignore: this workflow must run for ALL changes including docs
 on:
   push:
