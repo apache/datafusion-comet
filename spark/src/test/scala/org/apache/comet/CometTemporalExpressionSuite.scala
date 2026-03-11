@@ -58,6 +58,13 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
     checkSparkAnswerAndFallbackReason(
       "SELECT c0, trunc(c0, c1) from tbl order by c0, c1",
       "Invalid format strings will throw an exception instead of returning NULL")
+
+    // Disable constant folding to ensure literal expressions are executed by Comet
+    withSQLConf(
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+        "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+      checkSparkAnswerAndOperator("SELECT trunc(DATE('2024-06-15'), 'year')")
+    }
   }
 
   test("date_trunc (TruncTimestamp) - reading from DataFrame") {
@@ -82,6 +89,13 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
       checkSparkAnswerAndFallbackReason(
         "SELECT c0, date_trunc(fmt, c0) from tbl order by c0, fmt",
         "Invalid format strings will throw an exception instead of returning NULL")
+
+      // Disable constant folding to ensure literal expressions are executed by Comet
+      withSQLConf(
+        SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+          "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+        checkSparkAnswerAndOperator("SELECT date_trunc('year', TIMESTAMP '2024-06-15 10:30:45')")
+      }
     }
   }
 

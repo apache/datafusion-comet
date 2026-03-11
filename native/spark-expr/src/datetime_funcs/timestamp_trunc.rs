@@ -111,19 +111,30 @@ impl PhysicalExpr for TimestampTruncExpr {
         let timestamp = self.child.evaluate(batch)?;
         let format = self.format.evaluate(batch)?;
         let tz = self.timezone.clone();
-        match (timestamp, format) {
-            (ColumnarValue::Array(ts), ColumnarValue::Scalar(Utf8(Some(format)))) => {
+
+        let num_rows = match &timestamp {
+            ColumnarValue::Array(array) => array.len(),
+            ColumnarValue::Scalar(_) => match &format {
+                ColumnarValue::Array(array) => array.len(),
+                ColumnarValue::Scalar(_) => 1,
+            },
+        };
+
+        let ts_arr = timestamp.into_array(num_rows)?;
+
+        match format {
+            ColumnarValue::Scalar(Utf8(Some(format))) => {
                 let ts = array_with_timezone(
-                    ts,
+                    ts_arr,
                     tz.clone(),
                     Some(&DataType::Timestamp(Microsecond, Some(tz.into()))),
                 )?;
                 let result = timestamp_trunc_dyn(&ts, format)?;
                 Ok(ColumnarValue::Array(result))
             }
-            (ColumnarValue::Array(ts), ColumnarValue::Array(formats)) => {
+            ColumnarValue::Array(formats) => {
                 let ts = array_with_timezone(
-                    ts,
+                    ts_arr,
                     tz.clone(),
                     Some(&DataType::Timestamp(Microsecond, Some(tz.into()))),
                 )?;
@@ -131,9 +142,8 @@ impl PhysicalExpr for TimestampTruncExpr {
                 Ok(ColumnarValue::Array(result))
             }
             _ => Err(DataFusionError::Execution(
-                "Invalid input to function TimestampTrunc. \
-                    Expected (PrimitiveArray<TimestampMicrosecondType>, Scalar, String) or \
-                    (PrimitiveArray<TimestampMicrosecondType>, StringArray, String)"
+                "Invalid format input to function TimestampTrunc. \
+                    Expected Scalar or StringArray"
                     .to_string(),
             )),
         }

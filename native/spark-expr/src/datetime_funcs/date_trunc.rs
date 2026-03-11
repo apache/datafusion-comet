@@ -67,18 +67,28 @@ impl ScalarUDFImpl for SparkDateTrunc {
 
     fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
         let [date, format] = take_function_args(self.name(), args.args)?;
-        match (date, format) {
-            (ColumnarValue::Array(date), ColumnarValue::Scalar(Utf8(Some(format)))) => {
-                let result = date_trunc_dyn(&date, format)?;
+        let num_rows = [&date, &format]
+            .iter()
+            .find_map(|arg| match arg {
+                ColumnarValue::Array(array) => Some(array.len()),
+                ColumnarValue::Scalar(_) => None,
+            })
+            .unwrap_or(1);
+
+        let date_arr = date.into_array(num_rows)?;
+
+        match format {
+            ColumnarValue::Scalar(Utf8(Some(format))) => {
+                let result = date_trunc_dyn(&date_arr, format)?;
                 Ok(ColumnarValue::Array(result))
             }
-            (ColumnarValue::Array(date), ColumnarValue::Array(formats)) => {
-                let result = date_trunc_array_fmt_dyn(&date, &formats)?;
+            ColumnarValue::Array(formats) => {
+                let result = date_trunc_array_fmt_dyn(&date_arr, &formats)?;
                 Ok(ColumnarValue::Array(result))
             }
             _ => Err(DataFusionError::Execution(
-                "Invalid input to function DateTrunc. Expected (PrimitiveArray<Date32>, Scalar) or \
-                    (PrimitiveArray<Date32>, StringArray)".to_string(),
+                "Invalid format input to function DateTrunc. Expected Scalar or StringArray"
+                    .to_string(),
             )),
         }
     }
