@@ -479,3 +479,93 @@ pub fn append_list_element(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use arrow::array::builder::Int32Builder;
+    use arrow::array::Array;
+
+    /// Helper to create a SparkUnsafeArray buffer with i32 elements.
+    /// Layout: 8 bytes num_elements + null bitset + element data.
+    fn create_i32_array_buffer(values: &[i32], null_indices: &[usize]) -> Vec<u8> {
+        let num_elements = values.len();
+        let null_bitset_words = num_elements.div_ceil(64);
+        let header_size = 8 + null_bitset_words * 8;
+        let data_size = num_elements * 4;
+        let mut buffer = vec![0u8; header_size + data_size];
+
+        buffer[0..8].copy_from_slice(&(num_elements as i64).to_le_bytes());
+
+        for &idx in null_indices {
+            let word_offset = 8 + (idx / 64) * 8;
+            let current =
+                i64::from_le_bytes(buffer[word_offset..word_offset + 8].try_into().unwrap());
+            let updated = current | (1i64 << (idx % 64));
+            buffer[word_offset..word_offset + 8].copy_from_slice(&updated.to_le_bytes());
+        }
+
+        for (i, &val) in values.iter().enumerate() {
+            let offset = header_size + i * 4;
+            buffer[offset..offset + 4].copy_from_slice(&val.to_le_bytes());
+        }
+
+        buffer
+    }
+
+    /// Test that SparkUnsafeArray works correctly when placed at a misaligned
+    /// address. This is a regression test for a bug where `SparkUnsafeArray::new`
+    /// used a direct pointer dereference `*(addr as *const i64)` which panics
+    /// on non-8-byte-aligned addresses. Nested arrays within Spark UnsafeRow
+    /// can be at arbitrary offsets.
+    #[test]
+    fn test_misaligned_array_construction() {
+        let values = vec![10i32, 20, 30, 40, 50];
+        let buffer = create_i32_array_buffer(&values, &[]);
+
+        // Place the array data at a 4-byte-aligned but not 8-byte-aligned offset
+        // by prepending 4 bytes. This simulates a nested array within a row
+        // where preceding fields cause misalignment.
+        let mut misaligned_buf = vec![0u8; 4 + buffer.len()];
+        misaligned_buf[4..].copy_from_slice(&buffer);
+        let misaligned_addr = misaligned_buf.as_ptr() as usize + 4;
+        assert_ne!(misaligned_addr % 8, 0, "address should not be 8-byte aligned");
+
+        let array = SparkUnsafeArray::new(misaligned_addr as i64);
+        assert_eq!(array.get_num_elements(), 5);
+
+        let mut builder = Int32Builder::with_capacity(5);
+        append_to_builder::<false>(&DataType::Int32, &mut builder, &array).unwrap();
+        let result = builder.finish();
+        assert_eq!(result.len(), 5);
+        for (i, &expected) in values.iter().enumerate() {
+            assert_eq!(result.value(i), expected);
+        }
+    }
+
+    /// Test misaligned array with nullable elements.
+    #[test]
+    fn test_misaligned_array_with_nulls() {
+        let values = vec![100i32, 0, 300, 0, 500];
+        let null_indices = vec![1, 3];
+        let buffer = create_i32_array_buffer(&values, &null_indices);
+
+        let mut misaligned_buf = vec![0u8; 4 + buffer.len()];
+        misaligned_buf[4..].copy_from_slice(&buffer);
+        let misaligned_addr = misaligned_buf.as_ptr() as usize + 4;
+        assert_ne!(misaligned_addr % 8, 0);
+
+        let array = SparkUnsafeArray::new(misaligned_addr as i64);
+        assert_eq!(array.get_num_elements(), 5);
+
+        let mut builder = Int32Builder::with_capacity(5);
+        append_to_builder::<true>(&DataType::Int32, &mut builder, &array).unwrap();
+        let result = builder.finish();
+        assert_eq!(result.len(), 5);
+        assert_eq!(result.value(0), 100);
+        assert!(result.is_null(1));
+        assert_eq!(result.value(2), 300);
+        assert!(result.is_null(3));
+        assert_eq!(result.value(4), 500);
+    }
+}
