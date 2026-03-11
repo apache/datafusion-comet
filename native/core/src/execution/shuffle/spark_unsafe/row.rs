@@ -1145,8 +1145,7 @@ fn append_struct_fields_field_major(
                         } else {
                             nested_builder.append(true);
                             nested_is_null.push(false);
-                            let inner =
-                                nested_row.get_struct(field_idx, nested_fields.len());
+                            let inner = nested_row.get_struct(field_idx, nested_fields.len());
                             nested_nested_addrs.push(inner.get_row_addr());
                             nested_nested_sizes.push(inner.get_row_size());
                         }
