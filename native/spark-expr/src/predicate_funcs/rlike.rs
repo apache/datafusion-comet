@@ -148,7 +148,7 @@ impl PhysicalExpr for RLike {
                 let is_match = match scalar {
                     ScalarValue::Utf8(Some(s))
                     | ScalarValue::LargeUtf8(Some(s))
-                    | ScalarValue::Utf8View(Some(s)) => self.pattern.is_match(s.as_str()),
+                    | ScalarValue::Utf8View(Some(s)) => self.pattern.is_match(&s),
                     _ => {
                         return internal_err!(
                             "RLike requires string type for input, got {:?}",
