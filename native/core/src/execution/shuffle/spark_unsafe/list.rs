@@ -19,7 +19,10 @@ use crate::{
     errors::CometError,
     execution::shuffle::spark_unsafe::{
         map::append_map_elements,
-        row::{append_field, downcast_builder_ref, SparkUnsafeObject, SparkUnsafeRow},
+        row::{
+            append_field, downcast_builder_ref, impl_primitive_accessors, SparkUnsafeObject,
+            SparkUnsafeRow,
+        },
     },
 };
 use arrow::array::{
@@ -101,6 +104,10 @@ impl SparkUnsafeObject for SparkUnsafeArray {
     fn get_element_offset(&self, index: usize, element_size: usize) -> *const u8 {
         (self.element_offset + (index * element_size) as i64) as *const u8
     }
+
+    // SparkUnsafeArray base address may be unaligned when nested within a row's variable-length
+    // region, so we must use ptr::read_unaligned() for all typed accesses.
+    impl_primitive_accessors!(read_unaligned);
 }
 
 impl SparkUnsafeArray {
