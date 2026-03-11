@@ -46,31 +46,44 @@ macro_rules! impl_append_to_builder {
                 return;
             }
 
-            // SAFETY: element_offset points to contiguous, naturally aligned data of
-            // length num_elements. Alignment is guaranteed by SparkUnsafeArray layout:
-            // header is 8 + ceil(n/64)*8 bytes (always 8-byte aligned), and elements
-            // are at element_size stride from an aligned base.
+            // SAFETY: element_offset points to contiguous element data of length num_elements.
             debug_assert!(self.element_offset != 0, "element_offset is null");
             let ptr = self.element_offset as *const $element_type;
-            debug_assert!(
-                (ptr as usize).is_multiple_of(std::mem::align_of::<$element_type>()),
-                "element_offset is not properly aligned"
-            );
-            let values = unsafe { std::slice::from_raw_parts(ptr, num_elements) };
+            let aligned =
+                (ptr as usize).is_multiple_of(std::mem::align_of::<$element_type>());
 
             if NULLABLE {
                 let null_words = self.null_bitset_ptr();
                 debug_assert!(!null_words.is_null(), "null_bitset_ptr is null");
-                for (idx, &val) in values.iter().enumerate() {
-                    // SAFETY: null_words has ceil(num_elements/64) words, idx < num_elements
-                    if unsafe { Self::is_null_in_bitset(null_words, idx) } {
-                        builder.append_null();
-                    } else {
-                        builder.append_value(val);
+                if aligned {
+                    let values = unsafe { std::slice::from_raw_parts(ptr, num_elements) };
+                    for (idx, &val) in values.iter().enumerate() {
+                        if unsafe { Self::is_null_in_bitset(null_words, idx) } {
+                            builder.append_null();
+                        } else {
+                            builder.append_value(val);
+                        }
+                    }
+                } else {
+                    let mut ptr = ptr;
+                    for idx in 0..num_elements {
+                        if unsafe { Self::is_null_in_bitset(null_words, idx) } {
+                            builder.append_null();
+                        } else {
+                            builder.append_value(unsafe { ptr.read_unaligned() });
+                        }
+                        ptr = unsafe { ptr.add(1) };
                     }
                 }
-            } else {
+            } else if aligned {
+                let values = unsafe { std::slice::from_raw_parts(ptr, num_elements) };
                 builder.append_slice(values);
+            } else {
+                let mut ptr = ptr;
+                for _ in 0..num_elements {
+                    builder.append_value(unsafe { ptr.read_unaligned() });
+                    ptr = unsafe { ptr.add(1) };
+                }
             }
         }
     };
@@ -221,17 +234,12 @@ impl SparkUnsafeArray {
             return;
         }
 
-        // SAFETY: element_offset points to contiguous, naturally aligned i64 data.
         debug_assert!(
             self.element_offset != 0,
             "append_timestamps: element_offset is null"
         );
         let ptr = self.element_offset as *const i64;
-        debug_assert!(
-            (ptr as usize).is_multiple_of(std::mem::align_of::<i64>()),
-            "append_timestamps: element_offset is not properly aligned"
-        );
-        let values = unsafe { std::slice::from_raw_parts(ptr, num_elements) };
+        let aligned = (ptr as usize).is_multiple_of(std::mem::align_of::<i64>());
 
         if NULLABLE {
             let null_words = self.null_bitset_ptr();
@@ -239,16 +247,35 @@ impl SparkUnsafeArray {
                 !null_words.is_null(),
                 "append_timestamps: null_bitset_ptr is null"
             );
-            for (idx, &val) in values.iter().enumerate() {
-                // SAFETY: null_words has ceil(num_elements/64) words, idx < num_elements
-                if unsafe { Self::is_null_in_bitset(null_words, idx) } {
-                    builder.append_null();
-                } else {
-                    builder.append_value(val);
+            if aligned {
+                let values = unsafe { std::slice::from_raw_parts(ptr, num_elements) };
+                for (idx, &val) in values.iter().enumerate() {
+                    if unsafe { Self::is_null_in_bitset(null_words, idx) } {
+                        builder.append_null();
+                    } else {
+                        builder.append_value(val);
+                    }
+                }
+            } else {
+                let mut ptr = ptr;
+                for idx in 0..num_elements {
+                    if unsafe { Self::is_null_in_bitset(null_words, idx) } {
+                        builder.append_null();
+                    } else {
+                        builder.append_value(unsafe { ptr.read_unaligned() });
+                    }
+                    ptr = unsafe { ptr.add(1) };
                 }
             }
-        } else {
+        } else if aligned {
+            let values = unsafe { std::slice::from_raw_parts(ptr, num_elements) };
             builder.append_slice(values);
+        } else {
+            let mut ptr = ptr;
+            for _ in 0..num_elements {
+                builder.append_value(unsafe { ptr.read_unaligned() });
+                ptr = unsafe { ptr.add(1) };
+            }
         }
     }
 
@@ -262,17 +289,12 @@ impl SparkUnsafeArray {
             return;
         }
 
-        // SAFETY: element_offset points to contiguous, naturally aligned i32 data.
         debug_assert!(
             self.element_offset != 0,
             "append_dates: element_offset is null"
         );
         let ptr = self.element_offset as *const i32;
-        debug_assert!(
-            (ptr as usize).is_multiple_of(std::mem::align_of::<i32>()),
-            "append_dates: element_offset is not properly aligned"
-        );
-        let values = unsafe { std::slice::from_raw_parts(ptr, num_elements) };
+        let aligned = (ptr as usize).is_multiple_of(std::mem::align_of::<i32>());
 
         if NULLABLE {
             let null_words = self.null_bitset_ptr();
@@ -280,16 +302,35 @@ impl SparkUnsafeArray {
                 !null_words.is_null(),
                 "append_dates: null_bitset_ptr is null"
             );
-            for (idx, &val) in values.iter().enumerate() {
-                // SAFETY: null_words has ceil(num_elements/64) words, idx < num_elements
-                if unsafe { Self::is_null_in_bitset(null_words, idx) } {
-                    builder.append_null();
-                } else {
-                    builder.append_value(val);
+            if aligned {
+                let values = unsafe { std::slice::from_raw_parts(ptr, num_elements) };
+                for (idx, &val) in values.iter().enumerate() {
+                    if unsafe { Self::is_null_in_bitset(null_words, idx) } {
+                        builder.append_null();
+                    } else {
+                        builder.append_value(val);
+                    }
+                }
+            } else {
+                let mut ptr = ptr;
+                for idx in 0..num_elements {
+                    if unsafe { Self::is_null_in_bitset(null_words, idx) } {
+                        builder.append_null();
+                    } else {
+                        builder.append_value(unsafe { ptr.read_unaligned() });
+                    }
+                    ptr = unsafe { ptr.add(1) };
                 }
             }
-        } else {
+        } else if aligned {
+            let values = unsafe { std::slice::from_raw_parts(ptr, num_elements) };
             builder.append_slice(values);
+        } else {
+            let mut ptr = ptr;
+            for _ in 0..num_elements {
+                builder.append_value(unsafe { ptr.read_unaligned() });
+                ptr = unsafe { ptr.add(1) };
+            }
         }
     }
 }
