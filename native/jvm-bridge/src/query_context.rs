@@ -155,7 +155,8 @@ impl QueryContext {
     }
 
     /// Returns the SQL fragment that caused the error.
-    pub fn fragment(&self) -> String {
+    #[cfg(test)]
+    fn fragment(&self) -> String {
         let start_char = self.start_index.max(0) as usize;
         let stop_char = (self.stop_index + 1).max(0) as usize;
 

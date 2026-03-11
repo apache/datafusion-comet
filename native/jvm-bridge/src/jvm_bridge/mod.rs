@@ -188,13 +188,13 @@ pub struct JVMClasses<'a> {
     /// Cached JClass for "java.lang.Throwable"
     java_lang_throwable: JClass<'a>,
     /// Cached method ID for "java.lang.Object#getClass"
-    pub object_get_class_method: JMethodID,
+    object_get_class_method: JMethodID,
     /// Cached method ID for "java.lang.Class#getName"
-    pub class_get_name_method: JMethodID,
+    class_get_name_method: JMethodID,
     /// Cached method ID for "java.lang.Throwable#getMessage"
-    pub throwable_get_message_method: JMethodID,
+    throwable_get_message_method: JMethodID,
     /// Cached method ID for "java.lang.Throwable#getCause"
-    pub throwable_get_cause_method: JMethodID,
+    throwable_get_cause_method: JMethodID,
 
     /// The CometMetricNode class. Used for updating the metrics.
     pub comet_metric_node: CometMetricNode<'a>,

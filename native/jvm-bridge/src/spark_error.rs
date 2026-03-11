@@ -437,7 +437,7 @@ impl SparkError {
     }
 
     /// Returns the appropriate Spark exception class for this error
-    pub fn exception_class(&self) -> &'static str {
+    pub(crate) fn exception_class(&self) -> &'static str {
         match self {
             // ArithmeticException
             SparkError::DivideByZero
@@ -493,7 +493,7 @@ impl SparkError {
     }
 
     /// Returns the Spark error class code for this error
-    pub fn error_class(&self) -> Option<&'static str> {
+    fn error_class(&self) -> Option<&'static str> {
         match self {
             // Cast errors
             SparkError::CastInvalidValue { .. } => Some("CAST_INVALID_INPUT"),
