@@ -65,14 +65,18 @@ fn build_old_expr(
         left_col,
         DataType::Decimal256(p1, s1),
         cast_opts.clone(),
+        None,
+        None,
     ));
     let right_cast = Arc::new(Cast::new(
         right_col,
         DataType::Decimal256(p2, s2),
         cast_opts.clone(),
+        None,
+        None,
     ));
     let binary = Arc::new(BinaryExpr::new(left_cast, op, right_cast));
-    Arc::new(Cast::new(binary, out_type, cast_opts))
+    Arc::new(Cast::new(binary, out_type, cast_opts, None, None))
 }
 
 /// New approach: single fused WideDecimalBinaryExpr.

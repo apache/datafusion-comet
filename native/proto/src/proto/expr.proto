@@ -89,6 +89,37 @@ message Expr {
     FromJson from_json = 66;
     ToCsv to_csv = 67;
   }
+
+  // Optional QueryContext for error reporting (contains SQL text and position)
+  optional QueryContext query_context = 90;
+
+  // Unique expression ID for context lookup during error creation
+  optional uint64 expr_id = 91;
+}
+
+// QueryContext provides SQL query context for error messages.
+// Mirrors Spark's SQLQueryContext for rich error reporting.
+message QueryContext {
+  // Full SQL query text
+  string sql_text = 1;
+
+  // Character offset where expression starts (0-based)
+  int32 start_index = 2;
+
+  // Character offset where expression ends (0-based, inclusive)
+  int32 stop_index = 3;
+
+  // Type of SQL object (e.g., "VIEW", "Project", "Filter")
+  optional string object_type = 4;
+
+  // Name of object (e.g., view name, column name)
+  optional string object_name = 5;
+
+  // Line number in SQL query (1-based)
+  int32 line = 6;
+
+  // Column position within the line (0-based)
+  int32 start_position = 7;
 }
 
 message AggExpr {
@@ -109,6 +140,12 @@ message AggExpr {
     Correlation correlation = 15;
     BloomFilterAgg bloomFilterAgg = 16;
   }
+
+  // Optional QueryContext for error reporting (contains SQL text and position)
+  optional QueryContext query_context = 90;
+
+  // Unique expression ID for context lookup during error creation
+  optional uint64 expr_id = 91;
 }
 
 enum StatisticsType {

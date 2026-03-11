@@ -80,6 +80,7 @@ object_store_opendal = {version = "0.55.0", optional = true}
 hdfs-sys = {version = "0.3", optional = true, features = ["hdfs_3_3"]}
 opendal = { version ="0.55.0", optional = true, features = ["services-hdfs"] }
 iceberg = { workspace = true }
+iceberg-storage-opendal = { workspace = true }
 serde_json = "1.0"
 uuid = "1.21.0"
 
@@ -132,4 +133,8 @@ harness = false
 
 [[bench]]
 name = "parquet_decode"
+harness = false
+
+[[bench]]
+name = "array_element_append"
 harness = false
