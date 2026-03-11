@@ -16,6 +16,7 @@
 // under the License.
 
 use arrow::array::{Array, Date32Array, Int32Array};
+use arrow::compute::cast;
 use arrow::compute::kernels::arity::binary;
 use arrow::datatypes::DataType;
 use datafusion::common::{utils::take_function_args, DataFusionError, Result};
@@ -66,6 +67,10 @@ impl ScalarUDFImpl for SparkDateDiff {
 
     fn return_type(&self, _: &[DataType]) -> Result<DataType> {
         Ok(DataType::Int32)
+    }
+
+    fn aliases(&self) -> &[String] {
+        &self.aliases
     }
 
     fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
