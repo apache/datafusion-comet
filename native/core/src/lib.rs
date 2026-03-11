@@ -91,6 +91,9 @@ pub extern "system" fn Java_org_apache_comet_NativeBase_init(
     // Initialize the error handling to capture panic backtraces
     errors::init();
 
+    // Register SparkError handler for JNI exception throwing
+    errors::register_external_error_handler(handle_spark_error);
+
     try_unwrap_or_throw(&e, |mut env| {
         let path: String = env.get_string(&log_conf_path)?.into();
 
@@ -117,6 +120,33 @@ pub extern "system" fn Java_org_apache_comet_NativeBase_init(
         info!("Comet native library version {comet_version} initialized");
         Ok(())
     })
+}
+
+/// Handle SparkError variants in DataFusionError::External for JNI exception throwing.
+/// Returns true if the error was handled.
+fn handle_spark_error(
+    error: &(dyn std::error::Error + Send + Sync + 'static),
+    env: &mut JNIEnv,
+) -> bool {
+    use datafusion_comet_spark_expr::{SparkError, SparkErrorWithContext};
+
+    if let Some(spark_error_with_ctx) = error.downcast_ref::<SparkErrorWithContext>() {
+        let json_message = spark_error_with_ctx.to_json();
+        let _ = env.throw_new(
+            "org/apache/comet/exceptions/CometQueryExecutionException",
+            json_message,
+        );
+        return true;
+    }
+    if let Some(spark_error) = error.downcast_ref::<SparkError>() {
+        let json_message = spark_error.to_json();
+        let _ = env.throw_new(
+            "org/apache/comet/exceptions/CometQueryExecutionException",
+            json_message,
+        );
+        return true;
+    }
+    false
 }
 
 const LOG_PATTERN: &str = "{d(%y/%m/%d %H:%M:%S)} {l} {f}: {m}{n}";

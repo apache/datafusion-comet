@@ -15,10 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! JVM bridge and error types for Apache DataFusion Comet.
+//! JVM bridge for Apache DataFusion Comet.
 //!
-//! This crate provides the JNI/JVM interaction layer and common error types
-//! used across Comet's native Rust crates.
+//! This crate provides the JNI/JVM interaction layer used across Comet's native Rust crates.
 
 #![allow(clippy::result_large_err)]
 
@@ -27,11 +26,6 @@ use once_cell::sync::OnceCell;
 
 pub mod errors;
 pub mod jvm_bridge;
-pub mod query_context;
-pub mod spark_error;
-
-pub use query_context::{create_query_context_map, QueryContext, QueryContextMap};
-pub use spark_error::{SparkError, SparkErrorWithContext, SparkResult};
 
 /// Global reference to the Java VM, initialized during native library setup.
 pub static JAVA_VM: OnceCell<JavaVM> = OnceCell::new();

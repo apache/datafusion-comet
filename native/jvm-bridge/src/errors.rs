@@ -37,12 +37,27 @@ use std::{
 // lifetime checker won't let us.
 use jni::sys::{jboolean, jbyte, jchar, jdouble, jfloat, jint, jlong, jobject, jshort};
 
-use crate::spark_error::{SparkError, SparkErrorWithContext};
 use jni::objects::{GlobalRef, JThrowable};
 use jni::JNIEnv;
 use lazy_static::lazy_static;
+use once_cell::sync::OnceCell;
 use parquet::errors::ParquetError;
 use thiserror::Error;
+
+/// Handler for DataFusionError::External errors during JNI exception throwing.
+/// Returns true if the error was handled (exception thrown), false to fall through
+/// to the default handler.
+pub type ExternalErrorHandler =
+    fn(error: &(dyn std::error::Error + Send + Sync + 'static), env: &mut JNIEnv) -> bool;
+
+static EXTERNAL_ERROR_HANDLER: OnceCell<ExternalErrorHandler> = OnceCell::new();
+
+/// Register a handler for DataFusionError::External errors.
+/// This allows the core crate to register SparkError-specific handling
+/// without the jvm-bridge crate needing to know about SparkError.
+pub fn register_external_error_handler(handler: ExternalErrorHandler) {
+    let _ = EXTERNAL_ERROR_HANDLER.set(handler);
+}
 
 lazy_static! {
     static ref PANIC_BACKTRACE: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
@@ -89,11 +104,6 @@ pub enum CometError {
 
     #[error("Comet Internal Error: {0}")]
     Internal(String),
-
-    /// CometError::Spark is typically used in native code to emulate the same errors
-    /// that Spark would return
-    #[error(transparent)]
-    Spark(SparkError),
 
     #[error(transparent)]
     Arrow {
@@ -313,10 +323,6 @@ impl jni::errors::ToException for CometError {
                 class: "java/lang/NullPointerException".to_string(),
                 msg: self.to_string(),
             },
-            CometError::Spark(spark_err) => Exception {
-                class: spark_err.exception_class().to_string(),
-                msg: spark_err.to_string(),
-            },
             CometError::NumberIntFormat { source: s } => Exception {
                 class: "java/lang/NumberFormatException".to_string(),
                 msg: s.to_string(),
@@ -483,35 +489,27 @@ fn throw_exception(env: &mut JNIEnv, error: &CometError, backtrace: Option<Strin
                         throwable,
                     },
             } => env.throw(<&JThrowable>::from(throwable.as_obj())),
-            // Handle DataFusion errors containing SparkError - serialize to JSON
+            // Handle DataFusion errors containing external errors (e.g. SparkError)
             CometError::DataFusion {
                 msg: _,
                 source: DataFusionError::External(e),
             } => {
-                // Try SparkErrorWithContext first (includes context)
-                if let Some(spark_error_with_ctx) = e.downcast_ref::<SparkErrorWithContext>() {
-                    let json_message = spark_error_with_ctx.to_json();
-                    env.throw_new(
-                        "org/apache/comet/exceptions/CometQueryExecutionException",
-                        json_message,
-                    )
-                } else if let Some(spark_error) = e.downcast_ref::<SparkError>() {
-                    // Fall back to plain SparkError (no context)
-                    throw_spark_error_as_json(env, spark_error)
-                } else {
-                    // Not a SparkError, use generic exception
-                    let exception = error.to_exception();
-                    match backtrace {
-                        Some(backtrace_string) => env.throw_new(
-                            exception.class,
-                            to_stacktrace_string(exception.msg, backtrace_string).unwrap(),
-                        ),
-                        _ => env.throw_new(exception.class, exception.msg),
+                // Try registered handler first (e.g. SparkError handling from core)
+                if let Some(handler) = EXTERNAL_ERROR_HANDLER.get() {
+                    if handler(e.as_ref(), env) {
+                        return;
                     }
                 }
+                // Fall through to generic exception
+                let exception = error.to_exception();
+                match backtrace {
+                    Some(backtrace_string) => env.throw_new(
+                        exception.class,
+                        to_stacktrace_string(exception.msg, backtrace_string).unwrap(),
+                    ),
+                    _ => env.throw_new(exception.class, exception.msg),
+                }
             }
-            // Handle direct SparkError - serialize to JSON
-            CometError::Spark(spark_error) => throw_spark_error_as_json(env, spark_error),
             _ => {
                 let exception = error.to_exception();
                 match backtrace {
@@ -525,21 +523,6 @@ fn throw_exception(env: &mut JNIEnv, error: &CometError, backtrace: Option<Strin
         }
         .expect("Thrown exception")
     }
-}
-
-/// Throws a CometQueryExecutionException with JSON-encoded SparkError
-fn throw_spark_error_as_json(
-    env: &mut JNIEnv,
-    spark_error: &SparkError,
-) -> jni::errors::Result<()> {
-    // Serialize error to JSON
-    let json_message = spark_error.to_json();
-
-    // Throw CometQueryExecutionException with JSON message
-    env.throw_new(
-        "org/apache/comet/exceptions/CometQueryExecutionException",
-        json_message,
-    )
 }
 
 #[derive(Debug, Error)]

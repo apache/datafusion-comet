@@ -1912,8 +1912,6 @@ dependencies = [
  "paste",
  "prost",
  "regex",
- "serde",
- "serde_json",
  "thiserror 2.0.18",
 ]
 
@@ -1949,13 +1947,14 @@ dependencies = [
  "chrono-tz",
  "criterion",
  "datafusion",
- "datafusion-comet-jvm-bridge",
  "futures",
  "hex",
  "num",
  "rand 0.10.0",
  "regex",
+ "serde",
  "serde_json",
+ "thiserror 2.0.18",
  "tokio",
  "twox-hash",
 ]
