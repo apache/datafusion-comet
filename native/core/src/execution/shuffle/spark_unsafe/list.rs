@@ -109,8 +109,9 @@ impl SparkUnsafeArray {
         // SAFETY: addr points to valid Spark UnsafeArray data from the JVM.
         // The first 8 bytes contain the element count as a little-endian i64.
         debug_assert!(addr != 0, "SparkUnsafeArray::new: null address");
-        // SAFETY: Spark UnsafeArray stores element count as the first 8 bytes, 8-byte aligned.
-        let num_elements = unsafe { *(addr as *const i64) };
+        // SAFETY: Spark UnsafeArray stores element count as the first 8 bytes.
+        // Use read_unaligned because nested arrays may not be 8-byte aligned.
+        let num_elements = unsafe { (addr as *const i64).read_unaligned() };
 
         if num_elements < 0 {
             panic!("Negative number of elements: {num_elements}");
