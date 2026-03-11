@@ -529,7 +529,11 @@ mod test {
         let mut misaligned_buf = vec![0u8; 4 + buffer.len()];
         misaligned_buf[4..].copy_from_slice(&buffer);
         let misaligned_addr = misaligned_buf.as_ptr() as usize + 4;
-        assert_ne!(misaligned_addr % 8, 0, "address should not be 8-byte aligned");
+        assert_ne!(
+            misaligned_addr % 8,
+            0,
+            "address should not be 8-byte aligned"
+        );
 
         let array = SparkUnsafeArray::new(misaligned_addr as i64);
         assert_eq!(array.get_num_elements(), 5);
