@@ -31,7 +31,7 @@ pub mod query_context;
 pub mod spark_error;
 
 pub use query_context::{create_query_context_map, QueryContext, QueryContextMap};
-pub use spark_error::{decimal_overflow_error, SparkError, SparkErrorWithContext, SparkResult};
+pub use spark_error::{SparkError, SparkErrorWithContext, SparkResult};
 
 /// Global reference to the Java VM, initialized during native library setup.
 pub static JAVA_VM: OnceCell<JavaVM> = OnceCell::new();

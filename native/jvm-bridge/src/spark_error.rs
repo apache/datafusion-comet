@@ -565,25 +565,6 @@ impl SparkError {
     }
 }
 
-/// Convert decimal overflow to SparkError::NumericValueOutOfRange.
-///
-/// Creates the appropriate SparkError when a decimal value exceeds the precision limit for Decimal128 storage.
-///
-/// # Arguments
-/// * `value` - The i128 decimal value that overflowed
-/// * `precision` - The target precision
-/// * `scale` - The scale of the decimal
-///
-/// # Returns
-/// SparkError::NumericValueOutOfRange with the value, precision, and scale
-pub fn decimal_overflow_error(value: i128, precision: u8, scale: i8) -> SparkError {
-    SparkError::NumericValueOutOfRange {
-        value: value.to_string(),
-        precision,
-        scale,
-    }
-}
-
 pub type SparkResult<T> = Result<T, SparkError>;
 
 /// Wrapper that adds QueryContext to SparkError

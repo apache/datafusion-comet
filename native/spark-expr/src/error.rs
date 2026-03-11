@@ -17,5 +17,14 @@
 
 // Re-export SparkError types from jvm-bridge crate
 pub use datafusion_comet_jvm_bridge::spark_error::{
-    decimal_overflow_error, SparkError, SparkErrorWithContext, SparkResult,
+    SparkError, SparkErrorWithContext, SparkResult,
 };
+
+/// Convert decimal overflow to SparkError::NumericValueOutOfRange.
+pub fn decimal_overflow_error(value: i128, precision: u8, scale: i8) -> SparkError {
+    SparkError::NumericValueOutOfRange {
+        value: value.to_string(),
+        precision,
+        scale,
+    }
+}
