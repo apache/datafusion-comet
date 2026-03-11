@@ -188,10 +188,30 @@ mod tests {
     use datafusion::physical_expr::expressions::Literal;
 
     #[test]
-    fn test_rlike_scalar_utf8_literal() {
+    fn test_rlike_scalar_string_variants() {
+        let pattern = "R[a-z]+";
+        let scalars = [
+            ScalarValue::Utf8(Some("Rose".to_string())),
+            ScalarValue::LargeUtf8(Some("Rose".to_string())),
+            ScalarValue::Utf8View(Some("Rose".to_string())),
+        ];
+
+        for scalar in scalars {
+            let expr =
+                RLike::try_new(Arc::new(Literal::new(scalar.clone())), pattern).unwrap();
+            let result = expr
+                .evaluate(&RecordBatch::new_empty(Arc::new(Schema::empty())))
+                .unwrap();
+            let ColumnarValue::Scalar(result) = result else {
+                panic!("expected scalar result");
+            };
+            assert_eq!(result, ScalarValue::Boolean(Some(true)));
+        }
+
+        // Null input should produce a null boolean result
         let expr = RLike::try_new(
-            Arc::new(Literal::new(ScalarValue::Utf8(Some("Rose".to_string())))),
-            "R[a-z]+",
+            Arc::new(Literal::new(ScalarValue::Utf8(None))),
+            pattern,
         )
         .unwrap();
         let result = expr
@@ -200,7 +220,18 @@ mod tests {
         let ColumnarValue::Scalar(result) = result else {
             panic!("expected scalar result");
         };
+        assert_eq!(result, ScalarValue::Boolean(None));
+    }
 
-        assert_eq!(result, ScalarValue::Boolean(Some(true)));
+    #[test]
+    fn test_rlike_scalar_non_string_error() {
+        let expr = RLike::try_new(
+            Arc::new(Literal::new(ScalarValue::Boolean(Some(true)))),
+            "R[a-z]+",
+        )
+        .unwrap();
+
+        let result = expr.evaluate(&RecordBatch::new_empty(Arc::new(Schema::empty())));
+        assert!(result.is_err());
     }
 }
