@@ -22,30 +22,30 @@
 The following Spark operators are currently replaced with native versions. Query stages that contain any operators
 not supported by Comet will fall back to regular Spark execution.
 
-| Operator                          | Spark-Compatible? | Compatibility Notes                                                                                                |
-| --------------------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------ |
-| BatchScanExec                     | Yes               | Supports Parquet files and Apache Iceberg Parquet scans. See the [Comet Compatibility Guide] for more information. |
-| BroadcastExchangeExec             | Yes               |                                                                                                                    |
-| BroadcastHashJoinExec             | Yes               |                                                                                                                    |
-| CoalesceExec                      | Yes               |                                                                                                                    |
-| CollectLimitExec                  | Yes               |                                                                                                                    |
-| ExpandExec                        | Yes               |                                                                                                                    |
-| FileSourceScanExec                | Yes               | Supports Parquet files. See the [Comet Compatibility Guide] for more information.                                  |
-| FilterExec                        | Yes               |                                                                                                                    |
-| GenerateExec                      | Yes               | Supports `explode` generator only.                                                                                 |
-| GlobalLimitExec                   | Yes               |                                                                                                                    |
-| HashAggregateExec                 | Yes               |                                                                                                                    |
-| InsertIntoHadoopFsRelationCommand | No                | Experimental support for native Parquet writes. Disabled by default.                                               |
-| LocalLimitExec                    | Yes               |                                                                                                                    |
-| LocalTableScanExec                | No                | Experimental and disabled by default.                                                                              |
-| ObjectHashAggregateExec           | Yes               | Supports a limited number of aggregates, such as `bloom_filter_agg`.                                               |
-| ProjectExec                       | Yes               |                                                                                                                    |
-| ShuffleExchangeExec               | Yes               |                                                                                                                    |
-| ShuffledHashJoinExec              | Yes               |                                                                                                                    |
-| SortExec                          | Yes               |                                                                                                                    |
-| SortMergeJoinExec                 | Yes               |                                                                                                                    |
-| TakeOrderedAndProjectExec         | Yes               |                                                                                                                    |
-| UnionExec                         | Yes               |                                                                                                                    |
-| WindowExec                        | No                | Disabled by default due to known correctness issues.                                                               |
+| Operator                          | Notes                                                                                                              |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| BatchScanExec                     | Supports Parquet files and Apache Iceberg Parquet scans. See the [Comet Compatibility Guide] for more information. |
+| BroadcastExchangeExec             |                                                                                                                    |
+| BroadcastHashJoinExec             |                                                                                                                    |
+| CoalesceExec                      |                                                                                                                    |
+| CollectLimitExec                  |                                                                                                                    |
+| ExpandExec                        |                                                                                                                    |
+| FileSourceScanExec                | Supports Parquet files. See the [Comet Compatibility Guide] for more information.                                  |
+| FilterExec                        |                                                                                                                    |
+| GenerateExec                      | Supports `explode` generator only.                                                                                 |
+| GlobalLimitExec                   |                                                                                                                    |
+| HashAggregateExec                 |                                                                                                                    |
+| InsertIntoHadoopFsRelationCommand | Not Spark compatible. Experimental support for native Parquet writes. Disabled by default.                         |
+| LocalLimitExec                    |                                                                                                                    |
+| LocalTableScanExec                | Not Spark compatible. Experimental and disabled by default.                                                        |
+| ObjectHashAggregateExec           | Supports a limited number of aggregates, such as `bloom_filter_agg`.                                               |
+| ProjectExec                       |                                                                                                                    |
+| ShuffleExchangeExec               |                                                                                                                    |
+| ShuffledHashJoinExec              |                                                                                                                    |
+| SortExec                          |                                                                                                                    |
+| SortMergeJoinExec                 |                                                                                                                    |
+| TakeOrderedAndProjectExec         |                                                                                                                    |
+| UnionExec                         |                                                                                                                    |
+| WindowExec                        | Not Spark compatible. Disabled by default due to known correctness issues.                                         |
 
 [Comet Compatibility Guide]: compatibility.md
