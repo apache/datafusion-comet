@@ -74,6 +74,7 @@ Expressions that are not Spark-compatible will fall back to Spark by default and
 | Lower           | No                | Results can vary depending on locale and character set. Requires `spark.comet.caseConversion.enabled=true` |
 | OctetLength     | Yes               |                                                                                                            |
 | Reverse         | Yes               |                                                                                                            |
+| Right           | Yes               | Length argument must be a literal value                                                                    |
 | RLike           | No                | Uses Rust regexp engine, which has different behavior to Java regexp engine                                |
 | StartsWith      | Yes               |                                                                                                            |
 | StringInstr     | Yes               |                                                                                                            |
@@ -82,6 +83,7 @@ Expressions that are not Spark-compatible will fall back to Spark by default and
 | StringLPad      | Yes               |                                                                                                            |
 | StringRPad      | Yes               |                                                                                                            |
 | StringSpace     | Yes               |                                                                                                            |
+| StringSplit     | No                | Regex engine differences between Java and Rust                                                             |
 | StringTranslate | Yes               |                                                                                                            |
 | StringTrim      | Yes               |                                                                                                            |
 | StringTrimBoth  | Yes               |                                                                                                            |
@@ -98,12 +100,14 @@ Expressions that are not Spark-compatible will fall back to Spark by default and
 | DateDiff       | `datediff`                   | Yes               |                                                                                                                      |
 | DateFormat     | `date_format`                | Yes               | Partial support. Only specific format patterns are supported.                                                        |
 | DateSub        | `date_sub`                   | Yes               |                                                                                                                      |
-| DatePart       | `date_part(field, source)`   | Yes               | Supported values of `field`: `year`/`month`/`week`/`day`/`dayofweek`/`dayofweek_iso`/`doy`/`quarter`/`hour`/`minute` |
-| Extract        | `extract(field FROM source)` | Yes               | Supported values of `field`: `year`/`month`/`week`/`day`/`dayofweek`/`dayofweek_iso`/`doy`/`quarter`/`hour`/`minute` |
+| DatePart       | `date_part(field, source)`   | Yes               | Spark decomposes into individual functions. Supported values of `field`: `year`/`month`/`week`/`day`/`dayofweek`/`dayofweek_iso`/`doy`/`quarter`/`hour`/`minute` |
+| Extract        | `extract(field FROM source)` | Yes               | Spark decomposes into individual functions. Supported values of `field`: `year`/`month`/`week`/`day`/`dayofweek`/`dayofweek_iso`/`doy`/`quarter`/`hour`/`minute` |
 | FromUnixTime   | `from_unixtime`              | No                | Does not support format, supports only -8334601211038 <= sec <= 8210266876799                                        |
 | Hour           | `hour`                       | Yes               |                                                                                                                      |
 | LastDay        | `last_day`                   | Yes               |                                                                                                                      |
+| MakeDate       | `make_date`                  | Yes               |                                                                                                                      |
 | Minute         | `minute`                     | Yes               |                                                                                                                      |
+| NextDay        | `next_day`                   | Yes               |                                                                                                                      |
 | Second         | `second`                     | Yes               |                                                                                                                      |
 | TruncDate      | `trunc`                      | Yes               |                                                                                                                      |
 | TruncTimestamp | `date_trunc`                 | Yes               |                                                                                                                      |
@@ -128,7 +132,6 @@ Expressions that are not Spark-compatible will fall back to Spark by default and
 | Asin           | `asin`    | Yes               |                                   |
 | Atan           | `atan`    | Yes               |                                   |
 | Atan2          | `atan2`   | Yes               |                                   |
-| BRound         | `bround`  | Yes               |                                   |
 | Ceil           | `ceil`    | Yes               |                                   |
 | Cos            | `cos`     | Yes               |                                   |
 | Cosh           | `cosh`    | Yes               |                                   |
@@ -156,10 +159,6 @@ Expressions that are not Spark-compatible will fall back to Spark by default and
 | Subtract       | `-`       | Yes               |                                   |
 | Tan            | `tan`     | Yes               |                                   |
 | Tanh           | `tanh`    | Yes               |                                   |
-| TryAdd         | `try_add` | Yes               | Only integer inputs are supported |
-| TryDivide      | `try_div` | Yes               | Only integer inputs are supported |
-| TryMultiply    | `try_mul` | Yes               | Only integer inputs are supported |
-| TrySubtract    | `try_sub` | Yes               | Only integer inputs are supported |
 | UnaryMinus     | `-`       | Yes               |                                   |
 | Unhex          | `unhex`   | Yes               |                                   |
 
@@ -167,6 +166,7 @@ Expressions that are not Spark-compatible will fall back to Spark by default and
 
 | Expression  | Spark-Compatible? |
 | ----------- | ----------------- |
+| Crc32       | Yes               |
 | Md5         | Yes               |
 | Murmur3Hash | Yes               |
 | Sha1        | Yes               |
@@ -194,8 +194,8 @@ Expressions that are not Spark-compatible will fall back to Spark by default and
 | BitAndAgg     |            | Yes                       |                                                                  |
 | BitOrAgg      |            | Yes                       |                                                                  |
 | BitXorAgg     |            | Yes                       |                                                                  |
-| BoolAnd       | `bool_and` | Yes                       |                                                                  |
-| BoolOr        | `bool_or`  | Yes                       |                                                                  |
+| BoolAnd       | `bool_and` | Yes                       | Spark decomposes to Min/Max on boolean columns                   |
+| BoolOr        | `bool_or`  | Yes                       | Spark decomposes to Min/Max on boolean columns                   |
 | Corr          |            | Yes                       |                                                                  |
 | Count         |            | Yes                       |                                                                  |
 | CovPopulation |            | Yes                       |                                                                  |
@@ -250,16 +250,19 @@ Comet supports using the following aggregate functions within window contexts wi
 | ElementAt      | Yes               | Input must be an array. Map inputs are not supported.                                                                                                                                     |
 | Flatten        | Yes               |                                                                                                                                                                                           |
 | GetArrayItem   | Yes               |                                                                                                                                                                                           |
+| Size           | Yes               | Only array inputs are supported. Map inputs are not supported.                                                                                                                            |
 
 ## Map Expressions
 
-| Expression    | Spark-Compatible? |
-| ------------- | ----------------- |
-| GetMapValue   | Yes               |
-| MapKeys       | Yes               |
-| MapEntries    | Yes               |
-| MapValues     | Yes               |
-| MapFromArrays | Yes               |
+| Expression     | Spark-Compatible? | Compatibility Notes                         |
+| -------------- | ----------------- | ------------------------------------------- |
+| GetMapValue    | Yes               |                                             |
+| MapContainsKey | Yes               |                                             |
+| MapEntries     | Yes               |                                             |
+| MapFromArrays  | Yes               |                                             |
+| MapFromEntries | No                | Binary key or value types are not supported |
+| MapKeys        | Yes               |                                             |
+| MapValues      | Yes               |                                             |
 
 ## Struct Expressions
 
@@ -268,8 +271,9 @@ Comet supports using the following aggregate functions within window contexts wi
 | CreateNamedStruct    | Yes               |                                            |
 | GetArrayStructFields | Yes               |                                            |
 | GetStructField       | Yes               |                                            |
-| JsonToStructs        | No                | Partial support. Requires explicit schema. |
-| StructsToJson        | Yes               |                                            |
+| JsonToStructs        | No                | Partial support. Requires explicit schema.                         |
+| StructsToCsv         | No                | Complex, Date, Timestamp, and Binary types may produce differences |
+| StructsToJson        | Yes               |                                                                    |
 
 ## Conversion Expressions
 

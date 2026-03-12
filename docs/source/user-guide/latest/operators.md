@@ -27,6 +27,8 @@ not supported by Comet will fall back to regular Spark execution.
 | BatchScanExec                     | Yes               | Supports Parquet files and Apache Iceberg Parquet scans. See the [Comet Compatibility Guide] for more information. |
 | BroadcastExchangeExec             | Yes               |                                                                                                                    |
 | BroadcastHashJoinExec             | Yes               |                                                                                                                    |
+| CoalesceExec                      | Yes               |                                                                                                                    |
+| CollectLimitExec                  | Yes               |                                                                                                                    |
 | ExpandExec                        | Yes               |                                                                                                                    |
 | FileSourceScanExec                | Yes               | Supports Parquet files. See the [Comet Compatibility Guide] for more information.                                  |
 | FilterExec                        | Yes               |                                                                                                                    |
@@ -42,6 +44,7 @@ not supported by Comet will fall back to regular Spark execution.
 | ShuffledHashJoinExec              | Yes               |                                                                                                                    |
 | SortExec                          | Yes               |                                                                                                                    |
 | SortMergeJoinExec                 | Yes               |                                                                                                                    |
+| TakeOrderedAndProjectExec         | Yes               |                                                                                                                    |
 | UnionExec                         | Yes               |                                                                                                                    |
 | WindowExec                        | No                | Disabled by default due to known correctness issues.                                                               |
 
