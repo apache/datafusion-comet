@@ -157,7 +157,7 @@ code. Instead, Comet relies on reflection to extract `FileScanTask`s from Iceber
 then serialized to Comet's native execution engine (see
 [PR #2528](https://github.com/apache/datafusion-comet/pull/2528)).
 
-The example below uses Spark's package downloader to retrieve Comet 0.12.0 and Iceberg
+The example below uses Spark's package downloader to retrieve Comet 0.14.0 and Iceberg
 1.8.1, but Comet has been tested with Iceberg 1.5, 1.7, 1.8, and 1.10. The key configuration
 to enable fully-native Iceberg is `spark.comet.scan.icebergNative.enabled=true`. This
 configuration should **not** be used with the hybrid Iceberg configuration
@@ -165,7 +165,7 @@ configuration should **not** be used with the hybrid Iceberg configuration
 
 ```shell
 $SPARK_HOME/bin/spark-shell \
-    --packages org.apache.datafusion:comet-spark-spark3.5_2.12:0.12.0,org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.8.1,org.apache.iceberg:iceberg-core:1.8.1 \
+    --packages org.apache.datafusion:comet-spark-spark3.5_2.12:0.14.0,org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.8.1,org.apache.iceberg:iceberg-core:1.8.1 \
     --repositories https://repo1.maven.org/maven2/ \
     --conf spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions \
     --conf spark.sql.catalog.spark_catalog=org.apache.iceberg.spark.SparkCatalog \
@@ -237,7 +237,7 @@ configure Spark to use a REST catalog with Comet's native Iceberg scan:
 
 ```shell
 $SPARK_HOME/bin/spark-shell \
-    --packages org.apache.datafusion:comet-spark-spark3.5_2.12:0.12.0,org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.8.1,org.apache.iceberg:iceberg-core:1.8.1 \
+    --packages org.apache.datafusion:comet-spark-spark3.5_2.12:0.14.0,org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.8.1,org.apache.iceberg:iceberg-core:1.8.1 \
     --repositories https://repo1.maven.org/maven2/ \
     --conf spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions \
     --conf spark.sql.catalog.rest_cat=org.apache.iceberg.spark.SparkCatalog \
