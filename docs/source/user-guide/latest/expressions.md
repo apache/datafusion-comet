@@ -124,43 +124,48 @@ Expressions that are not Spark-compatible will fall back to Spark by default and
 
 ## Math Expressions
 
-| Expression     | SQL      | Spark-Compatible? | Compatibility Notes |
-| -------------- | -------- | ----------------- | ------------------- |
-| Abs            | `abs`    | Yes               |                     |
-| Acos           | `acos`   | Yes               |                     |
-| Add            | `+`      | Yes               |                     |
-| Asin           | `asin`   | Yes               |                     |
-| Atan           | `atan`   | Yes               |                     |
-| Atan2          | `atan2`  | Yes               |                     |
-| Ceil           | `ceil`   | Yes               |                     |
-| Cos            | `cos`    | Yes               |                     |
-| Cosh           | `cosh`   | Yes               |                     |
-| Cot            | `cot`    | Yes               |                     |
-| Divide         | `/`      | Yes               |                     |
-| Exp            | `exp`    | Yes               |                     |
-| Expm1          | `expm1`  | Yes               |                     |
-| Floor          | `floor`  | Yes               |                     |
-| Hex            | `hex`    | Yes               |                     |
-| IntegralDivide | `div`    | Yes               |                     |
-| IsNaN          | `isnan`  | Yes               |                     |
-| Log            | `log`    | Yes               |                     |
-| Log2           | `log2`   | Yes               |                     |
-| Log10          | `log10`  | Yes               |                     |
-| Multiply       | `*`      | Yes               |                     |
-| Pow            | `power`  | Yes               |                     |
-| Rand           | `rand`   | Yes               |                     |
-| Randn          | `randn`  | Yes               |                     |
-| Remainder      | `%`      | Yes               |                     |
-| Round          | `round`  | Yes               |                     |
-| Signum         | `signum` | Yes               |                     |
-| Sin            | `sin`    | Yes               |                     |
-| Sinh           | `sinh`   | Yes               |                     |
-| Sqrt           | `sqrt`   | Yes               |                     |
-| Subtract       | `-`      | Yes               |                     |
-| Tan            | `tan`    | Yes               |                     |
-| Tanh           | `tanh`   | Yes               |                     |
-| UnaryMinus     | `-`      | Yes               |                     |
-| Unhex          | `unhex`  | Yes               |                     |
+| Expression     | SQL       | Spark-Compatible? | Compatibility Notes               |
+| -------------- | --------- | ----------------- | --------------------------------- |
+| Abs            | `abs`     | Yes               |                                   |
+| Acos           | `acos`    | Yes               |                                   |
+| Add            | `+`       | Yes               |                                   |
+| Asin           | `asin`    | Yes               |                                   |
+| Atan           | `atan`    | Yes               |                                   |
+| Atan2          | `atan2`   | Yes               |                                   |
+| BRound         | `bround`  | Yes               |                                   |
+| Ceil           | `ceil`    | Yes               |                                   |
+| Cos            | `cos`     | Yes               |                                   |
+| Cosh           | `cosh`    | Yes               |                                   |
+| Cot            | `cot`     | Yes               |                                   |
+| Divide         | `/`       | Yes               |                                   |
+| Exp            | `exp`     | Yes               |                                   |
+| Expm1          | `expm1`   | Yes               |                                   |
+| Floor          | `floor`   | Yes               |                                   |
+| Hex            | `hex`     | Yes               |                                   |
+| IntegralDivide | `div`     | Yes               |                                   |
+| IsNaN          | `isnan`   | Yes               |                                   |
+| Log            | `log`     | Yes               |                                   |
+| Log2           | `log2`    | Yes               |                                   |
+| Log10          | `log10`   | Yes               |                                   |
+| Multiply       | `*`       | Yes               |                                   |
+| Pow            | `power`   | Yes               |                                   |
+| Rand           | `rand`    | Yes               |                                   |
+| Randn          | `randn`   | Yes               |                                   |
+| Remainder      | `%`       | Yes               |                                   |
+| Round          | `round`   | Yes               |                                   |
+| Signum         | `signum`  | Yes               |                                   |
+| Sin            | `sin`     | Yes               |                                   |
+| Sinh           | `sinh`    | Yes               |                                   |
+| Sqrt           | `sqrt`    | Yes               |                                   |
+| Subtract       | `-`       | Yes               |                                   |
+| Tan            | `tan`     | Yes               |                                   |
+| Tanh           | `tanh`    | Yes               |                                   |
+| TryAdd         | `try_add` | Yes               | Only integer inputs are supported |
+| TryDivide      | `try_div` | Yes               | Only integer inputs are supported |
+| TryMultiply    | `try_mul` | Yes               | Only integer inputs are supported |
+| TrySubtract    | `try_sub` | Yes               | Only integer inputs are supported |
+| UnaryMinus     | `-`       | Yes               |                                   |
+| Unhex          | `unhex`   | Yes               |                                   |
 
 ## Hashing Functions
 
@@ -233,7 +238,7 @@ Comet supports using the following aggregate functions within window contexts wi
 | -------------- | ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | ArrayAppend    | No                |                                                                                                                                                                                           |
 | ArrayCompact   | No                |                                                                                                                                                                                           |
-| ArrayContains  | Yes               |                                                                                                                                                                                           |
+| ArrayContains  | No                | Returns null instead of false for empty arrays with literal values ([#3346](https://github.com/apache/datafusion-comet/issues/3346))                                                      |
 | ArrayDistinct  | No                | Behaves differently than spark. Comet first sorts then removes duplicates while Spark preserves the original order.                                                                       |
 | ArrayExcept    | No                |                                                                                                                                                                                           |
 | ArrayFilter    | Yes               | Only supports case where function is `IsNotNull`                                                                                                                                          |
@@ -242,7 +247,7 @@ Comet supports using the following aggregate functions within window contexts wi
 | ArrayJoin      | No                |                                                                                                                                                                                           |
 | ArrayMax       | Yes               |                                                                                                                                                                                           |
 | ArrayMin       | Yes               |                                                                                                                                                                                           |
-| ArrayRemove    | Yes               |                                                                                                                                                                                           |
+| ArrayRemove    | No                | Returns null when element is null instead of removing null elements ([#3173](https://github.com/apache/datafusion-comet/issues/3173))                                                     |
 | ArrayRepeat    | No                |                                                                                                                                                                                           |
 | ArrayUnion     | No                | Behaves differently than spark. Comet sorts the input arrays before performing the union, while Spark preserves the order of the first array and appends unique elements from the second. |
 | ArraysOverlap  | No                |                                                                                                                                                                                           |
