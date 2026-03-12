@@ -56,8 +56,12 @@ use mimalloc::MiMalloc;
 
 // Re-export from jvm-bridge crate for internal use
 pub use datafusion_comet_jvm_bridge::errors;
-pub use datafusion_comet_jvm_bridge::jvm_bridge;
 pub use datafusion_comet_jvm_bridge::JAVA_VM;
+
+/// Re-export jvm-bridge items under the `jvm_bridge` name for convenience.
+pub mod jvm_bridge {
+    pub use datafusion_comet_jvm_bridge::*;
+}
 
 use errors::{try_unwrap_or_throw, CometError, CometResult};
 
