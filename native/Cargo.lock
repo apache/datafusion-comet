@@ -1884,6 +1884,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "datafusion-comet-common"
+version = "0.14.0"
+dependencies = [
+ "arrow",
+ "datafusion",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "datafusion-comet-fs-hdfs3"
 version = "0.1.12"
 dependencies = [
@@ -1905,7 +1916,7 @@ dependencies = [
  "arrow",
  "assertables",
  "datafusion",
- "datafusion-comet-spark-errors",
+ "datafusion-comet-common",
  "jni",
  "lazy_static",
  "once_cell",
@@ -1939,17 +1950,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "datafusion-comet-spark-errors"
-version = "0.14.0"
-dependencies = [
- "arrow",
- "datafusion",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
-]
-
-[[package]]
 name = "datafusion-comet-spark-expr"
 version = "0.14.0"
 dependencies = [
@@ -1959,7 +1959,7 @@ dependencies = [
  "chrono-tz",
  "criterion",
  "datafusion",
- "datafusion-comet-spark-errors",
+ "datafusion-comet-common",
  "futures",
  "hex",
  "num",

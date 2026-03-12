@@ -16,8 +16,8 @@
 # under the License.
 
 [package]
-name = "datafusion-comet-spark-errors"
-description = "Apache DataFusion Comet: Spark error types"
+name = "datafusion-comet-common"
+description = "Apache DataFusion Comet: common types shared across crates"
 version = { workspace = true }
 homepage = { workspace = true }
 repository = { workspace = true }
@@ -36,5 +36,5 @@ serde_json = "1.0"
 thiserror = { workspace = true }
 
 [lib]
-name = "datafusion_comet_spark_errors"
+name = "datafusion_comet_common"
 path = "src/lib.rs"

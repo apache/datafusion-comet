@@ -15,5 +15,5 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Re-export all query context types from the spark-errors crate
-pub use datafusion_comet_spark_errors::{create_query_context_map, QueryContext, QueryContextMap};
+// Re-export all query context types from the common crate
+pub use datafusion_comet_common::{create_query_context_map, QueryContext, QueryContextMap};

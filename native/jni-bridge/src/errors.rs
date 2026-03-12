@@ -19,7 +19,7 @@
 
 use arrow::error::ArrowError;
 use datafusion::common::DataFusionError;
-use datafusion_comet_spark_errors::{SparkError, SparkErrorWithContext};
+use datafusion_comet_common::{SparkError, SparkErrorWithContext};
 use jni::errors::{Exception, ToException};
 use regex::Regex;
 

@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Re-export all error types from the spark-errors crate
-pub use datafusion_comet_spark_errors::{
+// Re-export all error types from the common crate
+pub use datafusion_comet_common::{
     decimal_overflow_error, SparkError, SparkErrorWithContext, SparkResult,
 };
