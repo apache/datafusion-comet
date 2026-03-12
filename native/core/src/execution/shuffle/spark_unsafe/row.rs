@@ -255,8 +255,15 @@ impl SparkUnsafeObject for SparkUnsafeRow {
         self.row_addr
     }
 
-    fn get_element_offset(&self, index: usize, _: usize) -> *const u8 {
-        (self.row_addr + self.row_bitset_width + (index * 8) as i64) as *const u8
+    fn get_element_offset(&self, index: usize, element_size: usize) -> *const u8 {
+        let offset = self.row_bitset_width + (index * 8) as i64;
+        debug_assert!(
+            self.row_size >= 0 && offset + element_size as i64 <= self.row_size as i64,
+            "get_element_offset: access at offset {offset} with size {element_size} \
+             exceeds row_size {} for index {index}",
+            self.row_size
+        );
+        (self.row_addr + offset) as *const u8
     }
 }
 
@@ -1659,7 +1666,10 @@ mod test {
         let fields = Fields::from(vec![Field::new("st", data_type.clone(), true)]);
         let mut struct_builder = StructBuilder::from_fields(fields, 1);
         let mut row = SparkUnsafeRow::new_with_num_fields(1);
-        let data = [0; 8];
+        // 8 bytes null bitset + 8 bytes field value = 16 bytes
+        // Set bit 0 in the null bitset to mark field 0 as null
+        let mut data = [0u8; 16];
+        data[0] = 1;
         row.point_to_slice(&data);
         append_field(&data_type, &mut struct_builder, &row, 0).expect("append field");
         struct_builder.append_null();

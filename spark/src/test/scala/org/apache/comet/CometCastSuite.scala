@@ -1205,14 +1205,8 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
            |USING parquet
          """.stripMargin)
       sql("INSERT INTO TABLE tab1 SELECT named_struct('col1','1','col2','2')")
-      if (!usingLegacyNativeCometScan) {
-        checkSparkAnswerAndOperator(
-          "SELECT CAST(s AS struct<field1:string, field2:string>) AS new_struct FROM tab1")
-      } else {
-        // Should just fall back to Spark since non-DataSourceExec scan does not support nested types.
-        checkSparkAnswer(
-          "SELECT CAST(s AS struct<field1:string, field2:string>) AS new_struct FROM tab1")
-      }
+      checkSparkAnswerAndOperator(
+        "SELECT CAST(s AS struct<field1:string, field2:string>) AS new_struct FROM tab1")
     }
   }
 
