@@ -58,6 +58,18 @@ Expressions that are not 100% Spark-compatible will fall back to Spark by defaul
 `spark.comet.expression.EXPRNAME.allowIncompatible=true`, where `EXPRNAME` is the Spark expression class name. See
 the [Comet Supported Expressions Guide](expressions.md) for more information on this configuration setting.
 
+## Array Functions
+
+### ArraysOverlap
+
+Comet's `arrays_overlap` implementation follows Spark's null handling semantics: when no common non-null elements
+exist but either array contains null elements, the result is `null` rather than `false`. This matches Spark's
+three-valued logic where `arrays_overlap(array(1, null), array(null, 2))` returns `null`.
+
+Comet currently uses `ScalarValue`-based comparison for complex element types (structs, nested arrays), which may
+have subtle differences from Spark's equality semantics for these types. Primitive and string element types use
+native comparisons that match Spark.
+
 ## Regular Expressions
 
 Comet uses the Rust regexp crate for evaluating regular expressions, and this has different behavior from Java's

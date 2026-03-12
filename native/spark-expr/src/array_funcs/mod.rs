@@ -16,11 +16,13 @@
 // under the License.
 
 mod array_insert;
+mod arrays_overlap;
 mod get_array_struct_fields;
 mod list_extract;
 mod size;
 
 pub use array_insert::ArrayInsert;
+pub use arrays_overlap::spark_arrays_overlap;
 pub use get_array_struct_fields::GetArrayStructFields;
 pub use list_extract::ListExtract;
 pub use size::{spark_size, SparkSizeFunc};
