@@ -18,7 +18,7 @@
 use crate::utils::array_with_timezone;
 use arrow::datatypes::{DataType, Schema, TimeUnit::Microsecond};
 use arrow::record_batch::RecordBatch;
-use datafusion::common::{DataFusionError, ScalarValue::Utf8};
+use datafusion::common::{DataFusionError, ScalarValue, ScalarValue::Utf8};
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::physical_expr::PhysicalExpr;
 use std::hash::Hash;
@@ -111,39 +111,39 @@ impl PhysicalExpr for TimestampTruncExpr {
         let timestamp = self.child.evaluate(batch)?;
         let format = self.format.evaluate(batch)?;
         let tz = self.timezone.clone();
-
-        let num_rows = match &timestamp {
-            ColumnarValue::Array(array) => array.len(),
-            ColumnarValue::Scalar(_) => match &format {
-                ColumnarValue::Array(array) => array.len(),
-                ColumnarValue::Scalar(_) => 1,
-            },
-        };
-
-        let ts_arr = timestamp.into_array(num_rows)?;
-
-        match format {
-            ColumnarValue::Scalar(Utf8(Some(format))) => {
+        match (timestamp, format) {
+            (ColumnarValue::Array(ts), ColumnarValue::Scalar(Utf8(Some(format)))) => {
                 let ts = array_with_timezone(
-                    ts_arr,
+                    ts,
                     tz.clone(),
                     Some(&DataType::Timestamp(Microsecond, Some(tz.into()))),
                 )?;
                 let result = timestamp_trunc_dyn(&ts, format)?;
                 Ok(ColumnarValue::Array(result))
             }
-            ColumnarValue::Array(formats) => {
+            (ColumnarValue::Array(ts), ColumnarValue::Array(formats)) => {
                 let ts = array_with_timezone(
-                    ts_arr,
+                    ts,
                     tz.clone(),
                     Some(&DataType::Timestamp(Microsecond, Some(tz.into()))),
                 )?;
                 let result = timestamp_trunc_array_fmt_dyn(&ts, &formats)?;
                 Ok(ColumnarValue::Array(result))
             }
+            (ColumnarValue::Scalar(ts_scalar), ColumnarValue::Scalar(Utf8(Some(format)))) => {
+                let ts_arr = ts_scalar.to_array()?;
+                let ts = array_with_timezone(
+                    ts_arr,
+                    tz.clone(),
+                    Some(&DataType::Timestamp(Microsecond, Some(tz.into()))),
+                )?;
+                let result = timestamp_trunc_dyn(&ts, format)?;
+                let scalar = ScalarValue::try_from_array(&result, 0)?;
+                Ok(ColumnarValue::Scalar(scalar))
+            }
             _ => Err(DataFusionError::Execution(
-                "Invalid format input to function TimestampTrunc. \
-                    Expected Scalar or StringArray"
+                "Invalid input to function TimestampTrunc. \
+                    Expected (Timestamp, Utf8)"
                     .to_string(),
             )),
         }

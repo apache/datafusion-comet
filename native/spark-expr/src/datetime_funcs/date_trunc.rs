@@ -16,7 +16,9 @@
 // under the License.
 
 use arrow::datatypes::DataType;
-use datafusion::common::{utils::take_function_args, DataFusionError, Result, ScalarValue::Utf8};
+use datafusion::common::{
+    utils::take_function_args, DataFusionError, Result, ScalarValue, ScalarValue::Utf8,
+};
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };
@@ -67,28 +69,23 @@ impl ScalarUDFImpl for SparkDateTrunc {
 
     fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
         let [date, format] = take_function_args(self.name(), args.args)?;
-        let num_rows = [&date, &format]
-            .iter()
-            .find_map(|arg| match arg {
-                ColumnarValue::Array(array) => Some(array.len()),
-                ColumnarValue::Scalar(_) => None,
-            })
-            .unwrap_or(1);
-
-        let date_arr = date.into_array(num_rows)?;
-
-        match format {
-            ColumnarValue::Scalar(Utf8(Some(format))) => {
-                let result = date_trunc_dyn(&date_arr, format)?;
+        match (date, format) {
+            (ColumnarValue::Array(date), ColumnarValue::Scalar(Utf8(Some(format)))) => {
+                let result = date_trunc_dyn(&date, format)?;
                 Ok(ColumnarValue::Array(result))
             }
-            ColumnarValue::Array(formats) => {
-                let result = date_trunc_array_fmt_dyn(&date_arr, &formats)?;
+            (ColumnarValue::Array(date), ColumnarValue::Array(formats)) => {
+                let result = date_trunc_array_fmt_dyn(&date, &formats)?;
                 Ok(ColumnarValue::Array(result))
+            }
+            (ColumnarValue::Scalar(date_scalar), ColumnarValue::Scalar(Utf8(Some(format)))) => {
+                let date_arr = date_scalar.to_array()?;
+                let result = date_trunc_dyn(&date_arr, format)?;
+                let scalar = ScalarValue::try_from_array(&result, 0)?;
+                Ok(ColumnarValue::Scalar(scalar))
             }
             _ => Err(DataFusionError::Execution(
-                "Invalid format input to function DateTrunc. Expected Scalar or StringArray"
-                    .to_string(),
+                "Invalid input to function DateTrunc. Expected (Date32, Utf8)".to_string(),
             )),
         }
     }
