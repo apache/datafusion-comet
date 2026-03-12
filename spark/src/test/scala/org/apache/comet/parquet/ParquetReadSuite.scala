@@ -35,6 +35,7 @@ import org.apache.parquet.example.data.simple.SimpleGroup
 import org.apache.parquet.schema.MessageTypeParser
 import org.apache.spark.SparkException
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
+import org.apache.spark.sql.catalyst.expressions.GetArrayItem
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.comet.{CometNativeScanExec, CometScanExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
@@ -43,8 +44,6 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 import com.google.common.primitives.UnsignedLong
-
-import org.apache.spark.sql.catalyst.expressions.GetArrayItem
 
 import org.apache.comet.CometConf
 
@@ -1509,8 +1508,7 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
             scanMode => {
               withSQLConf(
                 CometConf.COMET_NATIVE_SCAN_IMPL.key -> scanMode,
-                CometConf.getExprAllowIncompatConfigKey(
-                  classOf[GetArrayItem]) -> "true") {
+                CometConf.getExprAllowIncompatConfigKey(classOf[GetArrayItem]) -> "true") {
                 checkSparkAnswerAndOperator(sql("select * from complex_types"))
                 // First level
                 checkSparkAnswerAndOperator(sql(
