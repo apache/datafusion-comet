@@ -15,5 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Re-export all query context types from the spark-errors crate
-pub use datafusion_comet_spark_errors::{create_query_context_map, QueryContext, QueryContextMap};
+mod error;
+mod query_context;
+
+pub use error::{decimal_overflow_error, SparkError, SparkErrorWithContext, SparkResult};
+pub use query_context::{create_query_context_map, QueryContext, QueryContextMap};

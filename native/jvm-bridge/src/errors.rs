@@ -19,6 +19,7 @@
 
 use arrow::error::ArrowError;
 use datafusion::common::DataFusionError;
+use datafusion_comet_spark_errors::{SparkError, SparkErrorWithContext};
 use jni::errors::{Exception, ToException};
 use regex::Regex;
 
@@ -40,24 +41,8 @@ use jni::sys::{jboolean, jbyte, jchar, jdouble, jfloat, jint, jlong, jobject, js
 use jni::objects::{GlobalRef, JThrowable};
 use jni::JNIEnv;
 use lazy_static::lazy_static;
-use once_cell::sync::OnceCell;
 use parquet::errors::ParquetError;
 use thiserror::Error;
-
-/// Handler for DataFusionError::External errors during JNI exception throwing.
-/// Returns true if the error was handled (exception thrown), false to fall through
-/// to the default handler.
-pub type ExternalErrorHandler =
-    fn(error: &(dyn std::error::Error + Send + Sync + 'static), env: &mut JNIEnv) -> bool;
-
-static EXTERNAL_ERROR_HANDLER: OnceCell<ExternalErrorHandler> = OnceCell::new();
-
-/// Register a handler for DataFusionError::External errors.
-/// This allows the core crate to register SparkError-specific handling
-/// without the jvm-bridge crate needing to know about SparkError.
-pub fn register_external_error_handler(handler: ExternalErrorHandler) {
-    let _ = EXTERNAL_ERROR_HANDLER.set(handler);
-}
 
 lazy_static! {
     static ref PANIC_BACKTRACE: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
@@ -489,25 +474,33 @@ fn throw_exception(env: &mut JNIEnv, error: &CometError, backtrace: Option<Strin
                         throwable,
                     },
             } => env.throw(<&JThrowable>::from(throwable.as_obj())),
-            // Handle DataFusion errors containing external errors (e.g. SparkError)
+            // Handle DataFusion errors containing SparkError or SparkErrorWithContext
             CometError::DataFusion {
                 msg: _,
                 source: DataFusionError::External(e),
             } => {
-                // Try registered handler first (e.g. SparkError handling from core)
-                if let Some(handler) = EXTERNAL_ERROR_HANDLER.get() {
-                    if handler(e.as_ref(), env) {
-                        return;
+                if let Some(spark_error_with_ctx) = e.downcast_ref::<SparkErrorWithContext>() {
+                    let json_message = spark_error_with_ctx.to_json();
+                    env.throw_new(
+                        "org/apache/comet/exceptions/CometQueryExecutionException",
+                        json_message,
+                    )
+                } else if let Some(spark_error) = e.downcast_ref::<SparkError>() {
+                    let json_message = spark_error.to_json();
+                    env.throw_new(
+                        "org/apache/comet/exceptions/CometQueryExecutionException",
+                        json_message,
+                    )
+                } else {
+                    // Fall through to generic exception
+                    let exception = error.to_exception();
+                    match backtrace {
+                        Some(backtrace_string) => env.throw_new(
+                            exception.class,
+                            to_stacktrace_string(exception.msg, backtrace_string).unwrap(),
+                        ),
+                        _ => env.throw_new(exception.class, exception.msg),
                     }
-                }
-                // Fall through to generic exception
-                let exception = error.to_exception();
-                match backtrace {
-                    Some(backtrace_string) => env.throw_new(
-                        exception.class,
-                        to_stacktrace_string(exception.msg, backtrace_string).unwrap(),
-                    ),
-                    _ => env.throw_new(exception.class, exception.msg),
                 }
             }
             _ => {
