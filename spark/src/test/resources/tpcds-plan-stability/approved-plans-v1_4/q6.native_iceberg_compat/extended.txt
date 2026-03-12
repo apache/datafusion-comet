@@ -23,11 +23,11 @@ CometColumnarToRow
                      :     :           +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
                      :     :                 +- SubqueryBroadcast
                      :     :                    +- BroadcastExchange
-                     :     :                       +- CometColumnarToRow
+                     :     :                       +- CometNativeColumnarToRow
                      :     :                          +- CometProject
                      :     :                             +- CometFilter
                      :     :                                :  +- Subquery
-                     :     :                                :     +- CometColumnarToRow
+                     :     :                                :     +- CometNativeColumnarToRow
                      :     :                                :        +- CometHashAggregate
                      :     :                                :           +- CometExchange
                      :     :                                :              +- CometHashAggregate

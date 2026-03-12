@@ -88,57 +88,74 @@ pub trait SparkUnsafeObject {
     }
 
     /// Returns boolean value at the given index of the object.
+    #[inline]
     fn get_boolean(&self, index: usize) -> bool {
         let addr = self.get_element_offset(index, 1);
         // SAFETY: addr points to valid element data within the UnsafeRow/UnsafeArray region.
         // The caller ensures index is within bounds.
+        debug_assert!(
+            !addr.is_null(),
+            "get_boolean: null pointer at index {index}"
+        );
         unsafe { *addr != 0 }
     }
 
     /// Returns byte value at the given index of the object.
+    #[inline]
     fn get_byte(&self, index: usize) -> i8 {
         let addr = self.get_element_offset(index, 1);
         // SAFETY: addr points to valid element data (1 byte) within the row/array region.
+        debug_assert!(!addr.is_null(), "get_byte: null pointer at index {index}");
         let slice: &[u8] = unsafe { std::slice::from_raw_parts(addr, 1) };
         i8::from_le_bytes(slice.try_into().unwrap())
     }
 
     /// Returns short value at the given index of the object.
+    #[inline]
     fn get_short(&self, index: usize) -> i16 {
         let addr = self.get_element_offset(index, 2);
         // SAFETY: addr points to valid element data (2 bytes) within the row/array region.
+        debug_assert!(!addr.is_null(), "get_short: null pointer at index {index}");
         let slice: &[u8] = unsafe { std::slice::from_raw_parts(addr, 2) };
         i16::from_le_bytes(slice.try_into().unwrap())
     }
 
     /// Returns integer value at the given index of the object.
+    #[inline]
     fn get_int(&self, index: usize) -> i32 {
         let addr = self.get_element_offset(index, 4);
         // SAFETY: addr points to valid element data (4 bytes) within the row/array region.
+        debug_assert!(!addr.is_null(), "get_int: null pointer at index {index}");
         let slice: &[u8] = unsafe { std::slice::from_raw_parts(addr, 4) };
         i32::from_le_bytes(slice.try_into().unwrap())
     }
 
     /// Returns long value at the given index of the object.
+    #[inline]
     fn get_long(&self, index: usize) -> i64 {
         let addr = self.get_element_offset(index, 8);
         // SAFETY: addr points to valid element data (8 bytes) within the row/array region.
+        debug_assert!(!addr.is_null(), "get_long: null pointer at index {index}");
         let slice: &[u8] = unsafe { std::slice::from_raw_parts(addr, 8) };
         i64::from_le_bytes(slice.try_into().unwrap())
     }
 
     /// Returns float value at the given index of the object.
+    #[inline]
     fn get_float(&self, index: usize) -> f32 {
         let addr = self.get_element_offset(index, 4);
         // SAFETY: addr points to valid element data (4 bytes) within the row/array region.
+        debug_assert!(!addr.is_null(), "get_float: null pointer at index {index}");
         let slice: &[u8] = unsafe { std::slice::from_raw_parts(addr, 4) };
         f32::from_le_bytes(slice.try_into().unwrap())
     }
 
     /// Returns double value at the given index of the object.
+    #[inline]
     fn get_double(&self, index: usize) -> f64 {
         let addr = self.get_element_offset(index, 8);
         // SAFETY: addr points to valid element data (8 bytes) within the row/array region.
+        debug_assert!(!addr.is_null(), "get_double: null pointer at index {index}");
         let slice: &[u8] = unsafe { std::slice::from_raw_parts(addr, 8) };
         f64::from_le_bytes(slice.try_into().unwrap())
     }
@@ -149,6 +166,11 @@ pub trait SparkUnsafeObject {
         let addr = self.get_row_addr() + offset as i64;
         // SAFETY: addr points to valid UTF-8 string data within the variable-length region.
         // Offset and length are read from the fixed-length portion of the row/array.
+        debug_assert!(addr != 0, "get_string: null address at index {index}");
+        debug_assert!(
+            len >= 0,
+            "get_string: negative length {len} at index {index}"
+        );
         let slice: &[u8] = unsafe { std::slice::from_raw_parts(addr as *const u8, len as usize) };
 
         from_utf8(slice).unwrap()
@@ -160,21 +182,33 @@ pub trait SparkUnsafeObject {
         let addr = self.get_row_addr() + offset as i64;
         // SAFETY: addr points to valid binary data within the variable-length region.
         // Offset and length are read from the fixed-length portion of the row/array.
+        debug_assert!(addr != 0, "get_binary: null address at index {index}");
+        debug_assert!(
+            len >= 0,
+            "get_binary: negative length {len} at index {index}"
+        );
         unsafe { std::slice::from_raw_parts(addr as *const u8, len as usize) }
     }
 
     /// Returns date value at the given index of the object.
+    #[inline]
     fn get_date(&self, index: usize) -> i32 {
         let addr = self.get_element_offset(index, 4);
         // SAFETY: addr points to valid element data (4 bytes) within the row/array region.
+        debug_assert!(!addr.is_null(), "get_date: null pointer at index {index}");
         let slice: &[u8] = unsafe { std::slice::from_raw_parts(addr, 4) };
         i32::from_le_bytes(slice.try_into().unwrap())
     }
 
     /// Returns timestamp value at the given index of the object.
+    #[inline]
     fn get_timestamp(&self, index: usize) -> i64 {
         let addr = self.get_element_offset(index, 8);
         // SAFETY: addr points to valid element data (8 bytes) within the row/array region.
+        debug_assert!(
+            !addr.is_null(),
+            "get_timestamp: null pointer at index {index}"
+        );
         let slice: &[u8] = unsafe { std::slice::from_raw_parts(addr, 8) };
         i64::from_le_bytes(slice.try_into().unwrap())
     }
@@ -221,8 +255,15 @@ impl SparkUnsafeObject for SparkUnsafeRow {
         self.row_addr
     }
 
-    fn get_element_offset(&self, index: usize, _: usize) -> *const u8 {
-        (self.row_addr + self.row_bitset_width + (index * 8) as i64) as *const u8
+    fn get_element_offset(&self, index: usize, element_size: usize) -> *const u8 {
+        let offset = self.row_bitset_width + (index * 8) as i64;
+        debug_assert!(
+            self.row_size >= 0 && offset + element_size as i64 <= self.row_size as i64,
+            "get_element_offset: access at offset {offset} with size {element_size} \
+             exceeds row_size {} for index {index}",
+            self.row_size
+        );
+        (self.row_addr + offset) as *const u8
     }
 }
 
@@ -287,10 +328,11 @@ impl SparkUnsafeRow {
         // SAFETY: row_addr points to valid Spark UnsafeRow data with at least
         // ceil(num_fields/64) * 8 bytes of null bitset. The caller ensures index < num_fields.
         // word_offset is within the bitset region since (index >> 6) << 3 < bitset size.
+        debug_assert!(self.row_addr != -1, "is_null_at: row not initialized");
         unsafe {
             let mask: i64 = 1i64 << (index & 0x3f);
             let word_offset = (self.row_addr + (((index >> 6) as i64) << 3)) as *const i64;
-            let word: i64 = *word_offset;
+            let word: i64 = word_offset.read_unaligned();
             (word & mask) != 0
         }
     }
@@ -299,22 +341,45 @@ impl SparkUnsafeRow {
     pub fn set_not_null_at(&mut self, index: usize) {
         // SAFETY: row_addr points to valid Spark UnsafeRow data with at least
         // ceil(num_fields/64) * 8 bytes of null bitset. The caller ensures index < num_fields.
+        // word_offset is within the bitset region since (index >> 6) << 3 < bitset size.
         // Writing is safe because we have mutable access and the memory is owned by the JVM.
+        debug_assert!(self.row_addr != -1, "set_not_null_at: row not initialized");
         unsafe {
             let mask: i64 = 1i64 << (index & 0x3f);
             let word_offset = (self.row_addr + (((index >> 6) as i64) << 3)) as *mut i64;
-            let word: i64 = *word_offset;
-            *word_offset = word & !mask;
+            let word: i64 = word_offset.read_unaligned();
+            word_offset.write_unaligned(word & !mask);
         }
     }
 }
 
 macro_rules! downcast_builder_ref {
-    ($builder_type:ty, $builder:expr) => {
+    ($builder_type:ty, $builder:expr) => {{
+        let actual_type_id = $builder.as_any().type_id();
         $builder
             .as_any_mut()
             .downcast_mut::<$builder_type>()
-            .expect(stringify!($builder_type))
+            .ok_or_else(|| {
+                CometError::Internal(format!(
+                    "Failed to downcast builder: expected {}, got {:?}",
+                    stringify!($builder_type),
+                    actual_type_id
+                ))
+            })?
+    }};
+}
+
+macro_rules! get_field_builder {
+    ($struct_builder:expr, $builder_type:ty, $idx:expr) => {
+        $struct_builder
+            .field_builder::<$builder_type>($idx)
+            .ok_or_else(|| {
+                CometError::Internal(format!(
+                    "Failed to get field builder at index {}: expected {}",
+                    $idx,
+                    stringify!($builder_type)
+                ))
+            })?
     };
 }
 
@@ -337,7 +402,7 @@ pub(super) fn append_field(
     /// A macro for generating code of appending value into field builder of Arrow struct builder.
     macro_rules! append_field_to_builder {
         ($builder_type:ty, $accessor:expr) => {{
-            let field_builder = struct_builder.field_builder::<$builder_type>(idx).unwrap();
+            let field_builder = get_field_builder!(struct_builder, $builder_type, idx);
 
             if row.is_null_row() {
                 // The row is null.
@@ -410,7 +475,7 @@ pub(super) fn append_field(
         }
         DataType::Struct(fields) => {
             // Appending value into struct field builder of Arrow struct builder.
-            let field_builder = struct_builder.field_builder::<StructBuilder>(idx).unwrap();
+            let field_builder = get_field_builder!(struct_builder, StructBuilder, idx);
 
             let nested_row = if row.is_null_row() || row.is_null_at(idx) {
                 // The row is null, or the field in the row is null, i.e., a null nested row.
@@ -427,9 +492,11 @@ pub(super) fn append_field(
             }
         }
         DataType::Map(field, _) => {
-            let field_builder = struct_builder
-                .field_builder::<MapBuilder<Box<dyn ArrayBuilder>, Box<dyn ArrayBuilder>>>(idx)
-                .unwrap();
+            let field_builder = get_field_builder!(
+                struct_builder,
+                MapBuilder<Box<dyn ArrayBuilder>, Box<dyn ArrayBuilder>>,
+                idx
+            );
 
             if row.is_null_row() {
                 // The row is null.
@@ -447,9 +514,8 @@ pub(super) fn append_field(
             }
         }
         DataType::List(field) => {
-            let field_builder = struct_builder
-                .field_builder::<ListBuilder<Box<dyn ArrayBuilder>>>(idx)
-                .unwrap();
+            let field_builder =
+                get_field_builder!(struct_builder, ListBuilder<Box<dyn ArrayBuilder>>, idx);
 
             if row.is_null_row() {
                 // The row is null.
@@ -474,7 +540,667 @@ pub(super) fn append_field(
     Ok(())
 }
 
+/// Appends nested struct fields to the struct builder using field-major order.
+/// This is a helper function for processing nested struct fields recursively.
+///
+/// Unlike `append_struct_fields_field_major`, this function takes slices of row addresses,
+/// sizes, and null flags directly, without needing to navigate from a parent row.
+#[allow(clippy::redundant_closure_call)]
+fn append_nested_struct_fields_field_major(
+    row_addresses: &[jlong],
+    row_sizes: &[jint],
+    struct_is_null: &[bool],
+    struct_builder: &mut StructBuilder,
+    fields: &arrow::datatypes::Fields,
+) -> Result<(), CometError> {
+    let num_rows = row_addresses.len();
+    let mut row = SparkUnsafeRow::new_with_num_fields(fields.len());
+
+    // Helper macro for processing primitive fields
+    macro_rules! process_field {
+        ($builder_type:ty, $field_idx:expr, $get_value:expr) => {{
+            let field_builder = get_field_builder!(struct_builder, $builder_type, $field_idx);
+
+            for row_idx in 0..num_rows {
+                if struct_is_null[row_idx] {
+                    // Struct is null, field is also null
+                    field_builder.append_null();
+                } else {
+                    let row_addr = row_addresses[row_idx];
+                    let row_size = row_sizes[row_idx];
+                    row.point_to(row_addr, row_size);
+
+                    if row.is_null_at($field_idx) {
+                        field_builder.append_null();
+                    } else {
+                        field_builder.append_value($get_value(&row, $field_idx));
+                    }
+                }
+            }
+        }};
+    }
+
+    // Process each field across all rows
+    for (field_idx, field) in fields.iter().enumerate() {
+        match field.data_type() {
+            DataType::Boolean => {
+                process_field!(BooleanBuilder, field_idx, |row: &SparkUnsafeRow, idx| row
+                    .get_boolean(idx));
+            }
+            DataType::Int8 => {
+                process_field!(Int8Builder, field_idx, |row: &SparkUnsafeRow, idx| row
+                    .get_byte(idx));
+            }
+            DataType::Int16 => {
+                process_field!(Int16Builder, field_idx, |row: &SparkUnsafeRow, idx| row
+                    .get_short(idx));
+            }
+            DataType::Int32 => {
+                process_field!(Int32Builder, field_idx, |row: &SparkUnsafeRow, idx| row
+                    .get_int(idx));
+            }
+            DataType::Int64 => {
+                process_field!(Int64Builder, field_idx, |row: &SparkUnsafeRow, idx| row
+                    .get_long(idx));
+            }
+            DataType::Float32 => {
+                process_field!(Float32Builder, field_idx, |row: &SparkUnsafeRow, idx| row
+                    .get_float(idx));
+            }
+            DataType::Float64 => {
+                process_field!(Float64Builder, field_idx, |row: &SparkUnsafeRow, idx| row
+                    .get_double(idx));
+            }
+            DataType::Date32 => {
+                process_field!(Date32Builder, field_idx, |row: &SparkUnsafeRow, idx| row
+                    .get_date(idx));
+            }
+            DataType::Timestamp(TimeUnit::Microsecond, _) => {
+                process_field!(
+                    TimestampMicrosecondBuilder,
+                    field_idx,
+                    |row: &SparkUnsafeRow, idx| row.get_timestamp(idx)
+                );
+            }
+            DataType::Binary => {
+                let field_builder = get_field_builder!(struct_builder, BinaryBuilder, field_idx);
+
+                for row_idx in 0..num_rows {
+                    if struct_is_null[row_idx] {
+                        field_builder.append_null();
+                    } else {
+                        let row_addr = row_addresses[row_idx];
+                        let row_size = row_sizes[row_idx];
+                        row.point_to(row_addr, row_size);
+
+                        if row.is_null_at(field_idx) {
+                            field_builder.append_null();
+                        } else {
+                            field_builder.append_value(row.get_binary(field_idx));
+                        }
+                    }
+                }
+            }
+            DataType::Utf8 => {
+                let field_builder = get_field_builder!(struct_builder, StringBuilder, field_idx);
+
+                for row_idx in 0..num_rows {
+                    if struct_is_null[row_idx] {
+                        field_builder.append_null();
+                    } else {
+                        let row_addr = row_addresses[row_idx];
+                        let row_size = row_sizes[row_idx];
+                        row.point_to(row_addr, row_size);
+
+                        if row.is_null_at(field_idx) {
+                            field_builder.append_null();
+                        } else {
+                            field_builder.append_value(row.get_string(field_idx));
+                        }
+                    }
+                }
+            }
+            DataType::Decimal128(p, _) => {
+                let p = *p;
+                let field_builder =
+                    get_field_builder!(struct_builder, Decimal128Builder, field_idx);
+
+                for row_idx in 0..num_rows {
+                    if struct_is_null[row_idx] {
+                        field_builder.append_null();
+                    } else {
+                        let row_addr = row_addresses[row_idx];
+                        let row_size = row_sizes[row_idx];
+                        row.point_to(row_addr, row_size);
+
+                        if row.is_null_at(field_idx) {
+                            field_builder.append_null();
+                        } else {
+                            field_builder.append_value(row.get_decimal(field_idx, p));
+                        }
+                    }
+                }
+            }
+            DataType::Struct(nested_fields) => {
+                let nested_builder = get_field_builder!(struct_builder, StructBuilder, field_idx);
+
+                // Collect nested struct addresses and sizes in one pass, building validity
+                let mut nested_addresses: Vec<jlong> = Vec::with_capacity(num_rows);
+                let mut nested_sizes: Vec<jint> = Vec::with_capacity(num_rows);
+                let mut nested_is_null: Vec<bool> = Vec::with_capacity(num_rows);
+
+                for row_idx in 0..num_rows {
+                    if struct_is_null[row_idx] {
+                        // Parent struct is null, nested struct is also null
+                        nested_builder.append_null();
+                        nested_is_null.push(true);
+                        nested_addresses.push(0);
+                        nested_sizes.push(0);
+                    } else {
+                        let row_addr = row_addresses[row_idx];
+                        let row_size = row_sizes[row_idx];
+                        row.point_to(row_addr, row_size);
+
+                        if row.is_null_at(field_idx) {
+                            nested_builder.append_null();
+                            nested_is_null.push(true);
+                            nested_addresses.push(0);
+                            nested_sizes.push(0);
+                        } else {
+                            nested_builder.append(true);
+                            nested_is_null.push(false);
+                            // Get nested struct address and size
+                            let nested_row = row.get_struct(field_idx, nested_fields.len());
+                            nested_addresses.push(nested_row.get_row_addr());
+                            nested_sizes.push(nested_row.get_row_size());
+                        }
+                    }
+                }
+
+                // Recursively process nested struct fields in field-major order
+                append_nested_struct_fields_field_major(
+                    &nested_addresses,
+                    &nested_sizes,
+                    &nested_is_null,
+                    nested_builder,
+                    nested_fields,
+                )?;
+            }
+            // For list and map, fall back to append_field since they have variable-length elements
+            dt @ (DataType::List(_) | DataType::Map(_, _)) => {
+                for row_idx in 0..num_rows {
+                    if struct_is_null[row_idx] {
+                        let null_row = SparkUnsafeRow::default();
+                        append_field(dt, struct_builder, &null_row, field_idx)?;
+                    } else {
+                        let row_addr = row_addresses[row_idx];
+                        let row_size = row_sizes[row_idx];
+                        row.point_to(row_addr, row_size);
+                        append_field(dt, struct_builder, &row, field_idx)?;
+                    }
+                }
+            }
+            _ => {
+                unreachable!(
+                    "Unsupported data type of struct field: {:?}",
+                    field.data_type()
+                )
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Reads row address and size from JVM-provided pointer arrays and points the row to that data.
+///
+/// # Safety
+/// Caller must ensure row_addresses_ptr and row_sizes_ptr are valid for index i.
+/// This is guaranteed when called from append_columns with indices in [row_start, row_end).
+macro_rules! read_row_at {
+    ($row:expr, $row_addresses_ptr:expr, $row_sizes_ptr:expr, $i:expr) => {{
+        // SAFETY: Caller guarantees pointers are valid for this index (see macro doc)
+        debug_assert!(
+            !$row_addresses_ptr.is_null(),
+            "read_row_at: null row_addresses_ptr"
+        );
+        debug_assert!(!$row_sizes_ptr.is_null(), "read_row_at: null row_sizes_ptr");
+        let row_addr = unsafe { *$row_addresses_ptr.add($i) };
+        let row_size = unsafe { *$row_sizes_ptr.add($i) };
+        $row.point_to(row_addr, row_size);
+    }};
+}
+
+/// Appends a batch of list values to the list builder with a single type dispatch.
+/// This moves type dispatch from O(rows) to O(1), significantly improving performance
+/// for large batches.
+#[allow(clippy::too_many_arguments)]
+fn append_list_column_batch(
+    row_addresses_ptr: *mut jlong,
+    row_sizes_ptr: *mut jint,
+    row_start: usize,
+    row_end: usize,
+    schema: &[DataType],
+    column_idx: usize,
+    element_type: &DataType,
+    list_builder: &mut ListBuilder<Box<dyn ArrayBuilder>>,
+) -> Result<(), CometError> {
+    let mut row = SparkUnsafeRow::new(schema);
+
+    // Helper macro for primitive element types - gets builder fresh each iteration
+    // to avoid borrow conflicts with list_builder.append()
+    macro_rules! process_primitive_lists {
+        ($builder_type:ty, $append_fn:ident) => {{
+            for i in row_start..row_end {
+                read_row_at!(row, row_addresses_ptr, row_sizes_ptr, i);
+
+                if row.is_null_at(column_idx) {
+                    list_builder.append_null();
+                } else {
+                    let array = row.get_array(column_idx);
+                    // Get values builder fresh each iteration to avoid borrow conflict
+                    let values_builder = list_builder
+                        .values()
+                        .as_any_mut()
+                        .downcast_mut::<$builder_type>()
+                        .expect(stringify!($builder_type));
+                    array.$append_fn::<true>(values_builder);
+                    list_builder.append(true);
+                }
+            }
+        }};
+    }
+
+    match element_type {
+        DataType::Boolean => {
+            process_primitive_lists!(BooleanBuilder, append_booleans_to_builder);
+        }
+        DataType::Int8 => {
+            process_primitive_lists!(Int8Builder, append_bytes_to_builder);
+        }
+        DataType::Int16 => {
+            process_primitive_lists!(Int16Builder, append_shorts_to_builder);
+        }
+        DataType::Int32 => {
+            process_primitive_lists!(Int32Builder, append_ints_to_builder);
+        }
+        DataType::Int64 => {
+            process_primitive_lists!(Int64Builder, append_longs_to_builder);
+        }
+        DataType::Float32 => {
+            process_primitive_lists!(Float32Builder, append_floats_to_builder);
+        }
+        DataType::Float64 => {
+            process_primitive_lists!(Float64Builder, append_doubles_to_builder);
+        }
+        DataType::Date32 => {
+            process_primitive_lists!(Date32Builder, append_dates_to_builder);
+        }
+        DataType::Timestamp(TimeUnit::Microsecond, _) => {
+            process_primitive_lists!(TimestampMicrosecondBuilder, append_timestamps_to_builder);
+        }
+        // For complex element types, fall back to per-row dispatch
+        _ => {
+            for i in row_start..row_end {
+                read_row_at!(row, row_addresses_ptr, row_sizes_ptr, i);
+
+                if row.is_null_at(column_idx) {
+                    list_builder.append_null();
+                } else {
+                    append_list_element(element_type, list_builder, &row.get_array(column_idx))?;
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Appends a batch of map values to the map builder with a single type dispatch.
+/// This moves type dispatch from O(rows × 2) to O(2), improving performance for maps.
+#[allow(clippy::too_many_arguments)]
+fn append_map_column_batch(
+    row_addresses_ptr: *mut jlong,
+    row_sizes_ptr: *mut jint,
+    row_start: usize,
+    row_end: usize,
+    schema: &[DataType],
+    column_idx: usize,
+    field: &arrow::datatypes::FieldRef,
+    map_builder: &mut MapBuilder<Box<dyn ArrayBuilder>, Box<dyn ArrayBuilder>>,
+) -> Result<(), CometError> {
+    let mut row = SparkUnsafeRow::new(schema);
+    let (key_field, value_field, _) = get_map_key_value_fields(field)?;
+    let key_type = key_field.data_type();
+    let value_type = value_field.data_type();
+
+    // Helper macro for processing maps with primitive key/value types
+    // Uses scoped borrows to avoid borrow checker conflicts
+    macro_rules! process_primitive_maps {
+        ($key_builder:ty, $key_append:ident, $val_builder:ty, $val_append:ident) => {{
+            for i in row_start..row_end {
+                read_row_at!(row, row_addresses_ptr, row_sizes_ptr, i);
+
+                if row.is_null_at(column_idx) {
+                    map_builder.append(false)?;
+                } else {
+                    let map = row.get_map(column_idx);
+                    // Process keys in a scope so borrow ends
+                    {
+                        let keys_builder = map_builder
+                            .keys()
+                            .as_any_mut()
+                            .downcast_mut::<$key_builder>()
+                            .expect(stringify!($key_builder));
+                        map.keys.$key_append::<false>(keys_builder);
+                    }
+                    // Process values in a scope so borrow ends
+                    {
+                        let values_builder = map_builder
+                            .values()
+                            .as_any_mut()
+                            .downcast_mut::<$val_builder>()
+                            .expect(stringify!($val_builder));
+                        map.values.$val_append::<true>(values_builder);
+                    }
+                    map_builder.append(true)?;
+                }
+            }
+        }};
+    }
+
+    // Optimize common map type combinations
+    match (key_type, value_type) {
+        // Map<Int64, Int64>
+        (DataType::Int64, DataType::Int64) => {
+            process_primitive_maps!(
+                Int64Builder,
+                append_longs_to_builder,
+                Int64Builder,
+                append_longs_to_builder
+            );
+        }
+        // Map<Int64, Float64>
+        (DataType::Int64, DataType::Float64) => {
+            process_primitive_maps!(
+                Int64Builder,
+                append_longs_to_builder,
+                Float64Builder,
+                append_doubles_to_builder
+            );
+        }
+        // Map<Int32, Int32>
+        (DataType::Int32, DataType::Int32) => {
+            process_primitive_maps!(
+                Int32Builder,
+                append_ints_to_builder,
+                Int32Builder,
+                append_ints_to_builder
+            );
+        }
+        // Map<Int32, Int64>
+        (DataType::Int32, DataType::Int64) => {
+            process_primitive_maps!(
+                Int32Builder,
+                append_ints_to_builder,
+                Int64Builder,
+                append_longs_to_builder
+            );
+        }
+        // For other types, fall back to per-row dispatch
+        _ => {
+            for i in row_start..row_end {
+                read_row_at!(row, row_addresses_ptr, row_sizes_ptr, i);
+
+                if row.is_null_at(column_idx) {
+                    map_builder.append(false)?;
+                } else {
+                    append_map_elements(field, map_builder, &row.get_map(column_idx))?;
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Appends struct fields to the struct builder using field-major order.
+/// This processes one field at a time across all rows, which moves type dispatch
+/// outside the row loop (O(fields) dispatches instead of O(rows × fields)).
+#[allow(clippy::redundant_closure_call, clippy::too_many_arguments)]
+fn append_struct_fields_field_major(
+    row_addresses_ptr: *mut jlong,
+    row_sizes_ptr: *mut jint,
+    row_start: usize,
+    row_end: usize,
+    parent_row: &mut SparkUnsafeRow,
+    column_idx: usize,
+    struct_builder: &mut StructBuilder,
+    fields: &arrow::datatypes::Fields,
+) -> Result<(), CometError> {
+    let num_rows = row_end - row_start;
+    let num_fields = fields.len();
+
+    // First pass: Build struct validity and collect which structs are null
+    // We use a Vec<bool> for simplicity; could use a bitset for better memory
+    let mut struct_is_null = Vec::with_capacity(num_rows);
+
+    for i in row_start..row_end {
+        read_row_at!(parent_row, row_addresses_ptr, row_sizes_ptr, i);
+
+        let is_null = parent_row.is_null_at(column_idx);
+        struct_is_null.push(is_null);
+
+        if is_null {
+            struct_builder.append_null();
+        } else {
+            struct_builder.append(true);
+        }
+    }
+
+    // Helper macro for processing primitive fields
+    macro_rules! process_field {
+        ($builder_type:ty, $field_idx:expr, $get_value:expr) => {{
+            let field_builder = get_field_builder!(struct_builder, $builder_type, $field_idx);
+
+            for (row_idx, i) in (row_start..row_end).enumerate() {
+                if struct_is_null[row_idx] {
+                    // Struct is null, field is also null
+                    field_builder.append_null();
+                } else {
+                    read_row_at!(parent_row, row_addresses_ptr, row_sizes_ptr, i);
+                    let nested_row = parent_row.get_struct(column_idx, num_fields);
+
+                    if nested_row.is_null_at($field_idx) {
+                        field_builder.append_null();
+                    } else {
+                        field_builder.append_value($get_value(&nested_row, $field_idx));
+                    }
+                }
+            }
+        }};
+    }
+
+    // Second pass: Process each field across all rows
+    for (field_idx, field) in fields.iter().enumerate() {
+        match field.data_type() {
+            DataType::Boolean => {
+                process_field!(BooleanBuilder, field_idx, |row: &SparkUnsafeRow, idx| row
+                    .get_boolean(idx));
+            }
+            DataType::Int8 => {
+                process_field!(Int8Builder, field_idx, |row: &SparkUnsafeRow, idx| row
+                    .get_byte(idx));
+            }
+            DataType::Int16 => {
+                process_field!(Int16Builder, field_idx, |row: &SparkUnsafeRow, idx| row
+                    .get_short(idx));
+            }
+            DataType::Int32 => {
+                process_field!(Int32Builder, field_idx, |row: &SparkUnsafeRow, idx| row
+                    .get_int(idx));
+            }
+            DataType::Int64 => {
+                process_field!(Int64Builder, field_idx, |row: &SparkUnsafeRow, idx| row
+                    .get_long(idx));
+            }
+            DataType::Float32 => {
+                process_field!(Float32Builder, field_idx, |row: &SparkUnsafeRow, idx| row
+                    .get_float(idx));
+            }
+            DataType::Float64 => {
+                process_field!(Float64Builder, field_idx, |row: &SparkUnsafeRow, idx| row
+                    .get_double(idx));
+            }
+            DataType::Date32 => {
+                process_field!(Date32Builder, field_idx, |row: &SparkUnsafeRow, idx| row
+                    .get_date(idx));
+            }
+            DataType::Timestamp(TimeUnit::Microsecond, _) => {
+                process_field!(
+                    TimestampMicrosecondBuilder,
+                    field_idx,
+                    |row: &SparkUnsafeRow, idx| row.get_timestamp(idx)
+                );
+            }
+            DataType::Binary => {
+                let field_builder = get_field_builder!(struct_builder, BinaryBuilder, field_idx);
+
+                for (row_idx, i) in (row_start..row_end).enumerate() {
+                    if struct_is_null[row_idx] {
+                        field_builder.append_null();
+                    } else {
+                        read_row_at!(parent_row, row_addresses_ptr, row_sizes_ptr, i);
+                        let nested_row = parent_row.get_struct(column_idx, num_fields);
+
+                        if nested_row.is_null_at(field_idx) {
+                            field_builder.append_null();
+                        } else {
+                            field_builder.append_value(nested_row.get_binary(field_idx));
+                        }
+                    }
+                }
+            }
+            DataType::Utf8 => {
+                let field_builder = get_field_builder!(struct_builder, StringBuilder, field_idx);
+
+                for (row_idx, i) in (row_start..row_end).enumerate() {
+                    if struct_is_null[row_idx] {
+                        field_builder.append_null();
+                    } else {
+                        read_row_at!(parent_row, row_addresses_ptr, row_sizes_ptr, i);
+                        let nested_row = parent_row.get_struct(column_idx, num_fields);
+
+                        if nested_row.is_null_at(field_idx) {
+                            field_builder.append_null();
+                        } else {
+                            field_builder.append_value(nested_row.get_string(field_idx));
+                        }
+                    }
+                }
+            }
+            DataType::Decimal128(p, _) => {
+                let p = *p;
+                let field_builder =
+                    get_field_builder!(struct_builder, Decimal128Builder, field_idx);
+
+                for (row_idx, i) in (row_start..row_end).enumerate() {
+                    if struct_is_null[row_idx] {
+                        field_builder.append_null();
+                    } else {
+                        read_row_at!(parent_row, row_addresses_ptr, row_sizes_ptr, i);
+                        let nested_row = parent_row.get_struct(column_idx, num_fields);
+
+                        if nested_row.is_null_at(field_idx) {
+                            field_builder.append_null();
+                        } else {
+                            field_builder.append_value(nested_row.get_decimal(field_idx, p));
+                        }
+                    }
+                }
+            }
+            // For nested structs, apply field-major processing recursively
+            DataType::Struct(nested_fields) => {
+                let nested_builder = get_field_builder!(struct_builder, StructBuilder, field_idx);
+
+                // Collect nested struct addresses and sizes in one pass, building validity
+                let mut nested_addresses: Vec<jlong> = Vec::with_capacity(num_rows);
+                let mut nested_sizes: Vec<jint> = Vec::with_capacity(num_rows);
+                let mut nested_is_null: Vec<bool> = Vec::with_capacity(num_rows);
+
+                for (row_idx, i) in (row_start..row_end).enumerate() {
+                    if struct_is_null[row_idx] {
+                        // Parent struct is null, nested struct is also null
+                        nested_builder.append_null();
+                        nested_is_null.push(true);
+                        nested_addresses.push(0);
+                        nested_sizes.push(0);
+                    } else {
+                        read_row_at!(parent_row, row_addresses_ptr, row_sizes_ptr, i);
+                        let parent_struct = parent_row.get_struct(column_idx, num_fields);
+
+                        if parent_struct.is_null_at(field_idx) {
+                            nested_builder.append_null();
+                            nested_is_null.push(true);
+                            nested_addresses.push(0);
+                            nested_sizes.push(0);
+                        } else {
+                            nested_builder.append(true);
+                            nested_is_null.push(false);
+                            // Get nested struct address and size
+                            let nested_row =
+                                parent_struct.get_struct(field_idx, nested_fields.len());
+                            nested_addresses.push(nested_row.get_row_addr());
+                            nested_sizes.push(nested_row.get_row_size());
+                        }
+                    }
+                }
+
+                // Recursively process nested struct fields in field-major order
+                append_nested_struct_fields_field_major(
+                    &nested_addresses,
+                    &nested_sizes,
+                    &nested_is_null,
+                    nested_builder,
+                    nested_fields,
+                )?;
+            }
+            // For list and map, fall back to append_field since they have variable-length elements
+            dt @ (DataType::List(_) | DataType::Map(_, _)) => {
+                for (row_idx, i) in (row_start..row_end).enumerate() {
+                    if struct_is_null[row_idx] {
+                        let null_row = SparkUnsafeRow::default();
+                        append_field(dt, struct_builder, &null_row, field_idx)?;
+                    } else {
+                        read_row_at!(parent_row, row_addresses_ptr, row_sizes_ptr, i);
+                        let nested_row = parent_row.get_struct(column_idx, num_fields);
+                        append_field(dt, struct_builder, &nested_row, field_idx)?;
+                    }
+                }
+            }
+            _ => {
+                unreachable!(
+                    "Unsupported data type of struct field: {:?}",
+                    field.data_type()
+                )
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Appends column of top rows to the given array builder.
+///
+/// # Safety
+///
+/// The caller must ensure:
+/// - `row_addresses_ptr` points to an array of at least `row_end` jlong values
+/// - `row_sizes_ptr` points to an array of at least `row_end` jint values
+/// - Each address in `row_addresses_ptr[row_start..row_end]` points to valid Spark UnsafeRow data
+/// - The memory remains valid for the duration of this function call
+///
+/// These invariants are guaranteed when called from JNI with arrays provided by the JVM.
 #[allow(clippy::redundant_closure_call, clippy::too_many_arguments)]
 fn append_columns(
     row_addresses_ptr: *mut jlong,
@@ -496,11 +1222,7 @@ fn append_columns(
             let mut row = SparkUnsafeRow::new(schema);
 
             for i in row_start..row_end {
-                // SAFETY: row_addresses_ptr and row_sizes_ptr are JNI arrays with at least
-                // row_end elements. i is in [row_start, row_end) so the offset is in bounds.
-                let row_addr = unsafe { *row_addresses_ptr.add(i) };
-                let row_size = unsafe { *row_sizes_ptr.add(i) };
-                row.point_to(row_addr, row_size);
+                read_row_at!(row, row_addresses_ptr, row_sizes_ptr, i);
 
                 let is_null = row.is_null_at(column_idx);
 
@@ -625,51 +1347,31 @@ fn append_columns(
                 MapBuilder<Box<dyn ArrayBuilder>, Box<dyn ArrayBuilder>>,
                 builder
             );
-            let mut row = SparkUnsafeRow::new(schema);
-
-            for i in row_start..row_end {
-                // SAFETY: row_addresses_ptr and row_sizes_ptr are JNI arrays with at least
-                // row_end elements. i is in [row_start, row_end) so the offset is in bounds.
-                let row_addr = unsafe { *row_addresses_ptr.add(i) };
-                let row_size = unsafe { *row_sizes_ptr.add(i) };
-                row.point_to(row_addr, row_size);
-
-                let is_null = row.is_null_at(column_idx);
-
-                if is_null {
-                    // The map is null.
-                    // Append a null value to the map builder.
-                    map_builder.append(false)?;
-                } else {
-                    append_map_elements(field, map_builder, &row.get_map(column_idx))?
-                }
-            }
+            // Use batched processing for better performance
+            append_map_column_batch(
+                row_addresses_ptr,
+                row_sizes_ptr,
+                row_start,
+                row_end,
+                schema,
+                column_idx,
+                field,
+                map_builder,
+            )?;
         }
         DataType::List(field) => {
             let list_builder = downcast_builder_ref!(ListBuilder<Box<dyn ArrayBuilder>>, builder);
-            let mut row = SparkUnsafeRow::new(schema);
-
-            for i in row_start..row_end {
-                // SAFETY: row_addresses_ptr and row_sizes_ptr are JNI arrays with at least
-                // row_end elements. i is in [row_start, row_end) so the offset is in bounds.
-                let row_addr = unsafe { *row_addresses_ptr.add(i) };
-                let row_size = unsafe { *row_sizes_ptr.add(i) };
-                row.point_to(row_addr, row_size);
-
-                let is_null = row.is_null_at(column_idx);
-
-                if is_null {
-                    // The list is null.
-                    // Append a null value to the list builder.
-                    list_builder.append_null();
-                } else {
-                    append_list_element(
-                        field.data_type(),
-                        list_builder,
-                        &row.get_array(column_idx),
-                    )?
-                }
-            }
+            // Use batched processing for better performance
+            append_list_column_batch(
+                row_addresses_ptr,
+                row_sizes_ptr,
+                row_start,
+                row_end,
+                schema,
+                column_idx,
+                field.data_type(),
+                list_builder,
+            )?;
         }
         DataType::Struct(fields) => {
             let struct_builder = builder
@@ -678,29 +1380,17 @@ fn append_columns(
                 .expect("StructBuilder");
             let mut row = SparkUnsafeRow::new(schema);
 
-            for i in row_start..row_end {
-                // SAFETY: row_addresses_ptr and row_sizes_ptr are JNI arrays with at least
-                // row_end elements. i is in [row_start, row_end) so the offset is in bounds.
-                let row_addr = unsafe { *row_addresses_ptr.add(i) };
-                let row_size = unsafe { *row_sizes_ptr.add(i) };
-                row.point_to(row_addr, row_size);
-
-                let is_null = row.is_null_at(column_idx);
-
-                let nested_row = if is_null {
-                    // The struct is null.
-                    // Append a null value to the struct builder and field builders.
-                    struct_builder.append_null();
-                    SparkUnsafeRow::default()
-                } else {
-                    struct_builder.append(true);
-                    row.get_struct(column_idx, fields.len())
-                };
-
-                for (idx, field) in fields.into_iter().enumerate() {
-                    append_field(field.data_type(), struct_builder, &nested_row, idx)?;
-                }
-            }
+            // Use field-major processing to avoid per-row type dispatch
+            append_struct_fields_field_major(
+                row_addresses_ptr,
+                row_sizes_ptr,
+                row_start,
+                row_end,
+                &mut row,
+                column_idx,
+                struct_builder,
+                fields,
+            )?;
         }
         _ => {
             unreachable!("Unsupported data type of column: {:?}", dt)
@@ -968,7 +1658,6 @@ mod test {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)] // Unaligned memory access in SparkUnsafeRow
     fn test_append_null_struct_field_to_struct_builder() {
         let data_type = DataType::Struct(Fields::from(vec![
             Field::new("a", DataType::Boolean, true),
@@ -977,7 +1666,10 @@ mod test {
         let fields = Fields::from(vec![Field::new("st", data_type.clone(), true)]);
         let mut struct_builder = StructBuilder::from_fields(fields, 1);
         let mut row = SparkUnsafeRow::new_with_num_fields(1);
-        let data = [0; 8];
+        // 8 bytes null bitset + 8 bytes field value = 16 bytes
+        // Set bit 0 in the null bitset to mark field 0 as null
+        let mut data = [0u8; 16];
+        data[0] = 1;
         row.point_to_slice(&data);
         append_field(&data_type, &mut struct_builder, &row, 0).expect("append field");
         struct_builder.append_null();

@@ -324,7 +324,21 @@ fn cast_string_to_decimal128_impl(
 
     Ok(Arc::new(
         decimal_builder
-            .with_precision_and_scale(precision, scale)?
+            .with_precision_and_scale(precision, scale)
+            .map_err(|e| {
+                if matches!(e, arrow::error::ArrowError::InvalidArgumentError(_))
+                    && e.to_string().contains("too large to store in a Decimal128")
+                {
+                    // Fallback error handling
+                    SparkError::NumericValueOutOfRange {
+                        value: "overflow".to_string(),
+                        precision,
+                        scale,
+                    }
+                } else {
+                    SparkError::Arrow(Arc::new(e))
+                }
+            })?
             .finish(),
     ))
 }
@@ -375,7 +389,21 @@ fn cast_string_to_decimal256_impl(
 
     Ok(Arc::new(
         decimal_builder
-            .with_precision_and_scale(precision, scale)?
+            .with_precision_and_scale(precision, scale)
+            .map_err(|e| {
+                if matches!(e, arrow::error::ArrowError::InvalidArgumentError(_))
+                    && e.to_string().contains("too large to store in a Decimal128")
+                {
+                    // Fallback error handling
+                    SparkError::NumericValueOutOfRange {
+                        value: "overflow".to_string(),
+                        precision,
+                        scale,
+                    }
+                } else {
+                    SparkError::Arrow(Arc::new(e))
+                }
+            })?
             .finish(),
     ))
 }
