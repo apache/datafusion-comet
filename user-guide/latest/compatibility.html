@@ -497,6 +497,61 @@ will make relevant operations fall back to Spark.</p>
 <p>Expressions that are not 100% Spark-compatible will fall back to Spark by default and can be enabled by setting
 <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.EXPRNAME.allowIncompatible=true</span></code>, where <code class="docutils literal notranslate"><span class="pre">EXPRNAME</span></code> is the Spark expression class name. See
 the <a class="reference internal" href="expressions.html"><span class="std std-doc">Comet Supported Expressions Guide</span></a> for more information on this configuration setting.</p>
+<section id="array-expressions">
+<h3>Array Expressions<a class="headerlink" href="#array-expressions" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p><strong>ArrayContains</strong>: Returns null instead of false for empty arrays with literal values.
+<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3346">#3346</a></p></li>
+<li><p><strong>ArrayRemove</strong>: Returns null when the element to remove is null, instead of removing null elements from the array.
+<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3173">#3173</a></p></li>
+<li><p><strong>GetArrayItem</strong>: Known correctness issues with index handling, including off-by-one errors and incorrect results
+with dynamic (non-literal) index values.
+<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3330">#3330</a>,
+<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3332">#3332</a></p></li>
+<li><p><strong>ArraysOverlap</strong>: Inconsistent behavior when arrays contain NULL values.
+<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3645">#3645</a>,
+<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2036">#2036</a></p></li>
+<li><p><strong>ArrayUnion</strong>: Sorts input arrays before performing the union, while Spark preserves the order of the first array
+and appends unique elements from the second.
+<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3644">#3644</a></p></li>
+</ul>
+</section>
+<section id="date-time-expressions">
+<h3>Date/Time Expressions<a class="headerlink" href="#date-time-expressions" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p><strong>Hour, Minute, Second</strong>: Incorrectly apply timezone conversion to TimestampNTZ inputs. TimestampNTZ stores local
+time without timezone, so no conversion should be applied. These expressions work correctly with Timestamp inputs.
+<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3180">#3180</a></p></li>
+<li><p><strong>TruncTimestamp (date_trunc)</strong>: Produces incorrect results when used with non-UTC timezones. Compatible when
+timezone is UTC.
+<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2649">#2649</a></p></li>
+</ul>
+</section>
+<section id="math-expressions">
+<h3>Math Expressions<a class="headerlink" href="#math-expressions" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p><strong>Ceil, Floor</strong>: Incorrect results for Decimal type inputs.
+<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/1729">#1729</a></p></li>
+<li><p><strong>Tan</strong>: <code class="docutils literal notranslate"><span class="pre">tan(-0.0)</span></code> produces <code class="docutils literal notranslate"><span class="pre">0.0</span></code> instead of <code class="docutils literal notranslate"><span class="pre">-0.0</span></code>.
+<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/1897">#1897</a></p></li>
+</ul>
+</section>
+<section id="aggregate-expressions">
+<h3>Aggregate Expressions<a class="headerlink" href="#aggregate-expressions" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p><strong>Corr</strong>: Returns null instead of NaN in some edge cases.
+<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2646">#2646</a></p></li>
+<li><p><strong>First, Last</strong>: These functions are not deterministic. When <code class="docutils literal notranslate"><span class="pre">ignoreNulls</span></code> is set, results may not match Spark.
+<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/1630">#1630</a></p></li>
+</ul>
+</section>
+<section id="struct-expressions">
+<h3>Struct Expressions<a class="headerlink" href="#struct-expressions" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p><strong>StructsToJson (to_json)</strong>: Does not support <code class="docutils literal notranslate"><span class="pre">+Infinity</span></code> and <code class="docutils literal notranslate"><span class="pre">-Infinity</span></code> for numeric types (float, double).
+<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3016">#3016</a></p></li>
+</ul>
+</section>
 </section>
 <section id="regular-expressions">
 <h2>Regular Expressions<a class="headerlink" href="#regular-expressions" title="Link to this heading">#</a></h2>

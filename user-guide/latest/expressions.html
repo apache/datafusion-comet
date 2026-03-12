@@ -735,8 +735,8 @@ of expressions that be disabled.</p>
 </tr>
 <tr class="row-odd"><td><p>Hour</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">hour</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
+<td><p>No</p></td>
+<td><p>Incorrectly applies timezone conversion to TimestampNTZ inputs (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3180">#3180</a>)</p></td>
 </tr>
 <tr class="row-even"><td><p>LastDay</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">last_day</span></code></p></td>
@@ -745,13 +745,13 @@ of expressions that be disabled.</p>
 </tr>
 <tr class="row-odd"><td><p>Minute</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">minute</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
+<td><p>No</p></td>
+<td><p>Incorrectly applies timezone conversion to TimestampNTZ inputs (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3180">#3180</a>)</p></td>
 </tr>
 <tr class="row-even"><td><p>Second</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">second</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
+<td><p>No</p></td>
+<td><p>Incorrectly applies timezone conversion to TimestampNTZ inputs (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3180">#3180</a>)</p></td>
 </tr>
 <tr class="row-odd"><td><p>TruncDate</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">trunc</span></code></p></td>
@@ -760,8 +760,8 @@ of expressions that be disabled.</p>
 </tr>
 <tr class="row-even"><td><p>TruncTimestamp</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">date_trunc</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
+<td><p>No</p></td>
+<td><p>Incorrect results in non-UTC timezones (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2649">#2649</a>)</p></td>
 </tr>
 <tr class="row-odd"><td><p>UnixDate</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">unix_date</span></code></p></td>
@@ -865,8 +865,8 @@ of expressions that be disabled.</p>
 </tr>
 <tr class="row-odd"><td><p>Ceil</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">ceil</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
+<td><p>No</p></td>
+<td><p>Incorrect results for Decimal type inputs (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/1729">#1729</a>)</p></td>
 </tr>
 <tr class="row-even"><td><p>Cos</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">cos</span></code></p></td>
@@ -900,8 +900,8 @@ of expressions that be disabled.</p>
 </tr>
 <tr class="row-even"><td><p>Floor</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">floor</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
+<td><p>No</p></td>
+<td><p>Incorrect results for Decimal type inputs (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/1729">#1729</a>)</p></td>
 </tr>
 <tr class="row-odd"><td><p>Hex</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">hex</span></code></p></td>
@@ -990,8 +990,8 @@ of expressions that be disabled.</p>
 </tr>
 <tr class="row-even"><td><p>Tan</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">tan</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
+<td><p>No</p></td>
+<td><p>tan(-0.0) produces incorrect result (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/1897">#1897</a>)</p></td>
 </tr>
 <tr class="row-odd"><td><p>Tanh</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">tanh</span></code></p></td>
@@ -1149,8 +1149,8 @@ of expressions that be disabled.</p>
 </tr>
 <tr class="row-even"><td><p>Corr</p></td>
 <td><p></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
+<td><p>No</p></td>
+<td><p>Returns null instead of NaN in some edge cases (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2646">#2646</a>)</p></td>
 </tr>
 <tr class="row-odd"><td><p>Count</p></td>
 <td><p></p></td>
@@ -1271,8 +1271,8 @@ of expressions that be disabled.</p>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>ArrayContains</p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
+<td><p>No</p></td>
+<td><p>Returns null instead of false for empty arrays with literal values (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3346">#3346</a>)</p></td>
 </tr>
 <tr class="row-odd"><td><p>ArrayDistinct</p></td>
 <td><p>No</p></td>
@@ -1307,8 +1307,8 @@ of expressions that be disabled.</p>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>ArrayRemove</p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
+<td><p>No</p></td>
+<td><p>Returns null when element is null instead of removing null elements (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3173">#3173</a>)</p></td>
 </tr>
 <tr class="row-even"><td><p>ArrayRepeat</p></td>
 <td><p>No</p></td>
@@ -1335,8 +1335,8 @@ of expressions that be disabled.</p>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>GetArrayItem</p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
+<td><p>No</p></td>
+<td><p>Known correctness issues with index handling (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3330">#3330</a>, <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3332">#3332</a>)</p></td>
 </tr>
 </tbody>
 </table>
@@ -1397,8 +1397,8 @@ of expressions that be disabled.</p>
 <td><p>Partial support. Requires explicit schema.</p></td>
 </tr>
 <tr class="row-even"><td><p>StructsToJson</p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
+<td><p>No</p></td>
+<td><p>Does not support Infinity/-Infinity for numeric types (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3016">#3016</a>)</p></td>
 </tr>
 </tbody>
 </table>
