@@ -29,6 +29,8 @@ import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.ArrayType
 
+import org.apache.spark.sql.catalyst.expressions.{ArrayContains, ArrayRemove, GetArrayItem}
+
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
 import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.serde.{CometArrayExcept, CometArrayRemove, CometArrayReverse, CometFlatten}
@@ -37,6 +39,7 @@ import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOpti
 class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("array_remove - integer") {
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[ArrayRemove]) -> "true") {
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempView("t1") {
         withTempDir { dir =>
@@ -52,9 +55,11 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
         }
       }
     }
+    }
   }
 
   test("array_remove - test all types (native Parquet reader)") {
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[ArrayRemove]) -> "true") {
     withTempDir { dir =>
       withTempView("t1") {
         val path = new Path(dir.toURI.toString, "test.parquet")
@@ -118,6 +123,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
         }
       }
     }
+    }
   }
 
   test("array_remove - fallback for unsupported type struct") {
@@ -129,7 +135,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
         sql("SELECT array(struct(_1, _2)) as a, struct(_1, _2) as b FROM t1")
           .createOrReplaceTempView("t2")
         val expectedFallbackReason =
-          "data type not supported: ArrayType(StructType(StructField(_1,BooleanType,true),StructField(_2,ByteType,true)),false)"
+          "is not fully compatible with Spark"
         checkSparkAnswerAndFallbackReason(
           sql("SELECT array_remove(a, b) FROM t2"),
           expectedFallbackReason)
@@ -245,8 +251,9 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   }
 
   test("array_contains - int values") {
-    withTempDir { dir =>
-      withTempView("t1") {
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[ArrayContains]) -> "true") {
+      withTempDir { dir =>
+        withTempView("t1") {
         val path = new Path(dir.toURI.toString, "test.parquet")
         makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = false, n = 10000)
         spark.read.parquet(path.toString).createOrReplaceTempView("t1");
@@ -256,13 +263,15 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
           spark.sql("SELECT array_contains((CASE WHEN _2 =_3 THEN array(_4) END), _4) FROM t1"));
       }
     }
+    }
   }
 
   test("array_contains - test all types (native Parquet reader)") {
-    withTempDir { dir =>
-      withTempView("t1", "t2", "t3") {
-        val path = new Path(dir.toURI.toString, "test.parquet")
-        val filename = path.toString
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[ArrayContains]) -> "true") {
+      withTempDir { dir =>
+        withTempView("t1", "t2", "t3") {
+          val path = new Path(dir.toURI.toString, "test.parquet")
+          val filename = path.toString
         val random = new Random(42)
         withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
           ParquetGenerator.makeParquetFile(
@@ -295,6 +304,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
           checkSparkAnswer(sql("SELECT array_contains(a, b) FROM t3"))
         }
       }
+    }
     }
   }
 

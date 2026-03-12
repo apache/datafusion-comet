@@ -44,6 +44,8 @@ import org.apache.spark.sql.types._
 
 import com.google.common.primitives.UnsignedLong
 
+import org.apache.spark.sql.catalyst.expressions.GetArrayItem
+
 import org.apache.comet.CometConf
 
 abstract class ParquetReadSuite extends CometTestBase {
@@ -1505,7 +1507,10 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
         withParquetTable(path.toUri.toString, "complex_types") {
           Seq(CometConf.SCAN_NATIVE_DATAFUSION, CometConf.SCAN_NATIVE_ICEBERG_COMPAT).foreach(
             scanMode => {
-              withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> scanMode) {
+              withSQLConf(
+                CometConf.COMET_NATIVE_SCAN_IMPL.key -> scanMode,
+                CometConf.getExprAllowIncompatConfigKey(
+                  classOf[GetArrayItem]) -> "true") {
                 checkSparkAnswerAndOperator(sql("select * from complex_types"))
                 // First level
                 checkSparkAnswerAndOperator(sql(
