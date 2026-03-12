@@ -24,7 +24,7 @@ import scala.util.Random
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayDistinct, ArrayExcept, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayRepeat, ArraysOverlap, ArrayUnion}
-import org.apache.spark.sql.catalyst.expressions.{ArrayContains, ArrayRemove, GetArrayItem}
+import org.apache.spark.sql.catalyst.expressions.{ArrayContains, ArrayRemove}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
