@@ -1837,7 +1837,7 @@ dependencies = [
  "crc32fast",
  "criterion",
  "datafusion",
- "datafusion-comet-jvm-bridge",
+ "datafusion-comet-jni-bridge",
  "datafusion-comet-objectstore-hdfs",
  "datafusion-comet-proto",
  "datafusion-comet-spark-expr",
@@ -1899,7 +1899,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "datafusion-comet-jvm-bridge"
+name = "datafusion-comet-jni-bridge"
 version = "0.14.0"
 dependencies = [
  "arrow",

@@ -27,7 +27,7 @@
 extern crate core;
 
 #[macro_use]
-extern crate datafusion_comet_jvm_bridge;
+extern crate datafusion_comet_jni_bridge;
 
 use jni::{
     objects::{JClass, JString},
@@ -55,12 +55,12 @@ use tikv_jemallocator::Jemalloc;
 use mimalloc::MiMalloc;
 
 // Re-export from jvm-bridge crate for internal use
-pub use datafusion_comet_jvm_bridge::errors;
-pub use datafusion_comet_jvm_bridge::JAVA_VM;
+pub use datafusion_comet_jni_bridge::errors;
+pub use datafusion_comet_jni_bridge::JAVA_VM;
 
 /// Re-export jvm-bridge items under the `jvm_bridge` name for convenience.
 pub mod jvm_bridge {
-    pub use datafusion_comet_jvm_bridge::*;
+    pub use datafusion_comet_jni_bridge::*;
 }
 
 use errors::{try_unwrap_or_throw, CometError, CometResult};

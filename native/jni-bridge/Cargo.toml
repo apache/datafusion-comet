@@ -16,12 +16,12 @@
 # under the License.
 
 [package]
-name = "datafusion-comet-jvm-bridge"
+name = "datafusion-comet-jni-bridge"
 version = { workspace = true }
 homepage = "https://datafusion.apache.org/comet"
 repository = "https://github.com/apache/datafusion-comet"
 authors = ["Apache DataFusion <dev@datafusion.apache.org>"]
-description = "Apache DataFusion Comet: JVM bridge"
+description = "Apache DataFusion Comet: JNI bridge"
 readme = "README.md"
 license = "Apache-2.0"
 edition = "2021"

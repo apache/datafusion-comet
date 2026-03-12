@@ -15,9 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! JVM bridge for Apache DataFusion Comet.
+//! JNI bridge for Apache DataFusion Comet.
 //!
-//! This crate provides the JNI/JVM interaction layer used across Comet's native Rust crates.
+//! This crate provides the JNI interaction layer used across Comet's native Rust crates.
 
 #![allow(clippy::result_large_err)]
 
