@@ -28,7 +28,7 @@ import org.scalatest.Tag
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
-import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, FromUnixTime, Literal, TruncDate, TruncTimestamp}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, Ceil, Floor, FromUnixTime, GetArrayItem, Literal, StructsToJson, Tan, TruncDate, TruncTimestamp}
 import org.apache.spark.sql.catalyst.optimizer.SimplifyExtractValueOps
 import org.apache.spark.sql.comet.CometProjectExec
 import org.apache.spark.sql.execution.{ProjectExec, SparkPlan}
@@ -666,34 +666,36 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("date_trunc") {
-    Seq(true, false).foreach { dictionaryEnabled =>
-      withTempDir { dir =>
-        val path = new Path(dir.toURI.toString, "timestamp_trunc.parquet")
-        makeRawTimeParquetFile(path, dictionaryEnabled = dictionaryEnabled, 10000)
-        withParquetTable(path.toString, "timetbl") {
-          Seq(
-            "YEAR",
-            "YYYY",
-            "YY",
-            "MON",
-            "MONTH",
-            "MM",
-            "QUARTER",
-            "WEEK",
-            "DAY",
-            "DD",
-            "HOUR",
-            "MINUTE",
-            "SECOND",
-            "MILLISECOND",
-            "MICROSECOND").foreach { format =>
-            checkSparkAnswerAndOperator(
-              "SELECT " +
-                s"date_trunc('$format', _0), " +
-                s"date_trunc('$format', _1), " +
-                s"date_trunc('$format', _2), " +
-                s"date_trunc('$format', _4) " +
-                " from timetbl")
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[TruncTimestamp]) -> "true") {
+      Seq(true, false).foreach { dictionaryEnabled =>
+        withTempDir { dir =>
+          val path = new Path(dir.toURI.toString, "timestamp_trunc.parquet")
+          makeRawTimeParquetFile(path, dictionaryEnabled = dictionaryEnabled, 10000)
+          withParquetTable(path.toString, "timetbl") {
+            Seq(
+              "YEAR",
+              "YYYY",
+              "YY",
+              "MON",
+              "MONTH",
+              "MM",
+              "QUARTER",
+              "WEEK",
+              "DAY",
+              "DD",
+              "HOUR",
+              "MINUTE",
+              "SECOND",
+              "MILLISECOND",
+              "MICROSECOND").foreach { format =>
+              checkSparkAnswerAndOperator(
+                "SELECT " +
+                  s"date_trunc('$format', _0), " +
+                  s"date_trunc('$format', _1), " +
+                  s"date_trunc('$format', _2), " +
+                  s"date_trunc('$format', _4) " +
+                  " from timetbl")
+            }
           }
         }
       }
@@ -701,7 +703,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("date_trunc with timestamp_ntz") {
-    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true") {
+    withSQLConf(
+      CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true",
+      CometConf.getExprAllowIncompatConfigKey(classOf[TruncTimestamp]) -> "true") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>
           val path = new Path(dir.toURI.toString, "timestamp_trunc.parquet")
@@ -770,7 +774,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       Seq(false, true).foreach { conversionEnabled =>
         withSQLConf(
           SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> "INT96",
-          SQLConf.PARQUET_INT96_TIMESTAMP_CONVERSION.key -> conversionEnabled.toString) {
+          SQLConf.PARQUET_INT96_TIMESTAMP_CONVERSION.key -> conversionEnabled.toString,
+          CometConf.getExprAllowIncompatConfigKey(classOf[TruncTimestamp]) -> "true") {
           withTempPath { path =>
             Seq
               .tabulate(N)(_ => ts)
@@ -1312,39 +1317,41 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("various math scalar functions") {
     val data = doubleValues.map(n => (n, n))
-    withParquetTable(data, "tbl") {
-      // expressions with single arg
-      for (expr <- Seq(
-          "acos",
-          "asin",
-          "atan",
-          "cos",
-          "cosh",
-          "exp",
-          "ln",
-          "log10",
-          "log2",
-          "sin",
-          "sinh",
-          "sqrt",
-          "tan",
-          "tanh",
-          "cot")) {
-        val (_, cometPlan) =
-          checkSparkAnswerAndOperatorWithTol(sql(s"SELECT $expr(_1), $expr(_2) FROM tbl"))
-        val cometProjectExecs = collect(cometPlan) { case op: CometProjectExec =>
-          op
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[Tan]) -> "true") {
+      withParquetTable(data, "tbl") {
+        // expressions with single arg
+        for (expr <- Seq(
+            "acos",
+            "asin",
+            "atan",
+            "cos",
+            "cosh",
+            "exp",
+            "ln",
+            "log10",
+            "log2",
+            "sin",
+            "sinh",
+            "sqrt",
+            "tan",
+            "tanh",
+            "cot")) {
+          val (_, cometPlan) =
+            checkSparkAnswerAndOperatorWithTol(sql(s"SELECT $expr(_1), $expr(_2) FROM tbl"))
+          val cometProjectExecs = collect(cometPlan) { case op: CometProjectExec =>
+            op
+          }
+          assert(cometProjectExecs.length == 1, expr)
         }
-        assert(cometProjectExecs.length == 1, expr)
-      }
-      // expressions with two args
-      for (expr <- Seq("atan2", "pow")) {
-        val (_, cometPlan) =
-          checkSparkAnswerAndOperatorWithTol(sql(s"SELECT $expr(_1, _2) FROM tbl"))
-        val cometProjectExecs = collect(cometPlan) { case op: CometProjectExec =>
-          op
+        // expressions with two args
+        for (expr <- Seq("atan2", "pow")) {
+          val (_, cometPlan) =
+            checkSparkAnswerAndOperatorWithTol(sql(s"SELECT $expr(_1, _2) FROM tbl"))
+          val cometProjectExecs = collect(cometPlan) { case op: CometProjectExec =>
+            op
+          }
+          assert(cometProjectExecs.length == 1, expr)
         }
-        assert(cometProjectExecs.length == 1, expr)
       }
     }
   }
@@ -1408,7 +1415,10 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("ceil and floor") {
     Seq("true", "false").foreach { dictionary =>
-      withSQLConf("parquet.enable.dictionary" -> dictionary) {
+      withSQLConf(
+        "parquet.enable.dictionary" -> dictionary,
+        CometConf.getExprAllowIncompatConfigKey(classOf[Ceil]) -> "true",
+        CometConf.getExprAllowIncompatConfigKey(classOf[Floor]) -> "true") {
         withParquetTable(
           (-5 until 5).map(i => (i.toDouble + 0.3, i.toDouble + 0.8)),
           "tbl",
@@ -2199,24 +2209,26 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("to_json") {
     // TODO fix for Spark 4.0.0
     assume(!isSpark40Plus)
-    Seq(true, false).foreach { dictionaryEnabled =>
-      withParquetTable(
-        (0 until 100).map(i => {
-          val str = if (i % 2 == 0) {
-            "even"
-          } else {
-            "odd"
-          }
-          (i.toByte, i.toShort, i, i.toLong, i * 1.2f, -i * 1.2d, str, i.toString)
-        }),
-        "tbl",
-        withDictionary = dictionaryEnabled) {
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[StructsToJson]) -> "true") {
+      Seq(true, false).foreach { dictionaryEnabled =>
+        withParquetTable(
+          (0 until 100).map(i => {
+            val str = if (i % 2 == 0) {
+              "even"
+            } else {
+              "odd"
+            }
+            (i.toByte, i.toShort, i, i.toLong, i * 1.2f, -i * 1.2d, str, i.toString)
+          }),
+          "tbl",
+          withDictionary = dictionaryEnabled) {
 
-        val fields = Range(1, 8).map(n => s"'col$n', _$n").mkString(", ")
+          val fields = Range(1, 8).map(n => s"'col$n', _$n").mkString(", ")
 
-        checkSparkAnswerAndOperator(s"SELECT to_json(named_struct($fields)) FROM tbl")
-        checkSparkAnswerAndOperator(
-          s"SELECT to_json(named_struct('nested', named_struct($fields))) FROM tbl")
+          checkSparkAnswerAndOperator(s"SELECT to_json(named_struct($fields)) FROM tbl")
+          checkSparkAnswerAndOperator(
+            s"SELECT to_json(named_struct('nested', named_struct($fields))) FROM tbl")
+        }
       }
     }
   }
@@ -2224,28 +2236,30 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("to_json escaping of field names and string values") {
     // TODO fix for Spark 4.0.0
     assume(!isSpark40Plus)
-    val gen = new DataGenerator(new Random(42))
-    val chars = "\\'\"abc\t\r\n\f\b"
-    Seq(true, false).foreach { dictionaryEnabled =>
-      withParquetTable(
-        (0 until 100).map(i => {
-          val str1 = gen.generateString(chars, 8)
-          val str2 = gen.generateString(chars, 8)
-          (i.toString, str1, str2)
-        }),
-        "tbl",
-        withDictionary = dictionaryEnabled) {
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[StructsToJson]) -> "true") {
+      val gen = new DataGenerator(new Random(42))
+      val chars = "\\'\"abc\t\r\n\f\b"
+      Seq(true, false).foreach { dictionaryEnabled =>
+        withParquetTable(
+          (0 until 100).map(i => {
+            val str1 = gen.generateString(chars, 8)
+            val str2 = gen.generateString(chars, 8)
+            (i.toString, str1, str2)
+          }),
+          "tbl",
+          withDictionary = dictionaryEnabled) {
 
-        val fields = Range(1, 3)
-          .map(n => {
-            val columnName = s"""column "$n""""
-            s"'$columnName', _$n"
-          })
-          .mkString(", ")
+          val fields = Range(1, 3)
+            .map(n => {
+              val columnName = s"""column "$n""""
+              s"'$columnName', _$n"
+            })
+            .mkString(", ")
 
-        checkSparkAnswerAndOperator(
-          """SELECT 'column "1"' x, """ +
-            s"to_json(named_struct($fields)) FROM tbl ORDER BY x")
+          checkSparkAnswerAndOperator(
+            """SELECT 'column "1"' x, """ +
+              s"to_json(named_struct($fields)) FROM tbl ORDER BY x")
+        }
       }
     }
   }
@@ -2253,24 +2267,26 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("to_json unicode") {
     // TODO fix for Spark 4.0.0
     assume(!isSpark40Plus)
-    Seq(true, false).foreach { dictionaryEnabled =>
-      withParquetTable(
-        (0 until 100).map(i => {
-          (i.toString, "\uD83E\uDD11", "\u018F")
-        }),
-        "tbl",
-        withDictionary = dictionaryEnabled) {
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[StructsToJson]) -> "true") {
+      Seq(true, false).foreach { dictionaryEnabled =>
+        withParquetTable(
+          (0 until 100).map(i => {
+            (i.toString, "\uD83E\uDD11", "\u018F")
+          }),
+          "tbl",
+          withDictionary = dictionaryEnabled) {
 
-        val fields = Range(1, 3)
-          .map(n => {
-            val columnName = s"""column "$n""""
-            s"'$columnName', _$n"
-          })
-          .mkString(", ")
+          val fields = Range(1, 3)
+            .map(n => {
+              val columnName = s"""column "$n""""
+              s"'$columnName', _$n"
+            })
+            .mkString(", ")
 
-        checkSparkAnswerAndOperator(
-          """SELECT 'column "1"' x, """ +
-            s"to_json(named_struct($fields)) FROM tbl ORDER BY x")
+          checkSparkAnswerAndOperator(
+            """SELECT 'column "1"' x, """ +
+              s"to_json(named_struct($fields)) FROM tbl ORDER BY x")
+        }
       }
     }
   }
@@ -2571,7 +2587,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           withSQLConf(
             SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString(),
             // Prevent the optimizer from collapsing an extract value of a create array
-            SQLConf.OPTIMIZER_EXCLUDED_RULES.key -> SimplifyExtractValueOps.ruleName) {
+            SQLConf.OPTIMIZER_EXCLUDED_RULES.key -> SimplifyExtractValueOps.ruleName,
+            CometConf.getExprAllowIncompatConfigKey(classOf[GetArrayItem]) -> "true") {
             val df = spark.read.parquet(path.toString)
 
             val stringArray = df.select(array(col("_8"), col("_8"), lit(null)).alias("arr"))
