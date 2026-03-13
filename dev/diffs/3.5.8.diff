@@ -965,7 +965,7 @@ index 3cf2bfd17ab..49728c35c42 100644
        SQLConf.ANSI_ENABLED.key -> "true") {
        withTable("t") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/StringFunctionsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/StringFunctionsSuite.scala
-index fa1a64460fc..1d2e215d6a3 100644
+index fa1a64460fc..134f0db1fb8 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/StringFunctionsSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/StringFunctionsSuite.scala
 @@ -17,6 +17,8 @@
@@ -2184,30 +2184,10 @@ index 8e88049f51e..49f2001dc6b 100644
          case _ =>
            throw new AnalysisException("Can not match ParquetTable in the query.")
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
-index 8ed9ef1630e..f312174b182 100644
+index 8ed9ef1630e..eed2a6f5ad5 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
-@@ -1064,7 +1064,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
-     }
-   }
- 
--  test("SPARK-35640: read binary as timestamp should throw schema incompatible error") {
-+  test("SPARK-35640: read binary as timestamp should throw schema incompatible error",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3311")) {
-     val data = (1 to 4).map(i => Tuple1(i.toString))
-     val readSchema = StructType(Seq(StructField("_1", DataTypes.TimestampType)))
- 
-@@ -1075,7 +1076,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
-     }
-   }
- 
--  test("SPARK-35640: int as long should throw schema incompatible error") {
-+  test("SPARK-35640: int as long should throw schema incompatible error",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3311")) {
-     val data = (1 to 4).map(i => Tuple1(i))
-     val readSchema = StructType(Seq(StructField("_1", DataTypes.LongType)))
- 
-@@ -1345,7 +1347,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
+@@ -1345,7 +1345,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
      }
    }
  
