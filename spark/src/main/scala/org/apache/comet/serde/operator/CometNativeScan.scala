@@ -174,6 +174,8 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
       commonBuilder.addAllPartitionSchema(partitionSchema.toIterable.asJava)
       commonBuilder.setSessionTimezone(scan.conf.getConfString("spark.sql.session.timeZone"))
       commonBuilder.setCaseSensitive(scan.conf.getConf[Boolean](SQLConf.CASE_SENSITIVE))
+      commonBuilder.setSchemaEvolutionEnabled(
+        CometConf.COMET_SCHEMA_EVOLUTION_ENABLED.get(scan.conf))
 
       // Collect S3/cloud storage configurations
       val hadoopConf = scan.relation.sparkSession.sessionState

@@ -775,6 +775,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
             case_sensitive != JNI_FALSE,
             session_ctx,
             encryption_enabled,
+            true, // schema_evolution_enabled (always true for iceberg_compat)
         )?;
 
         let partition_index: usize = 0;

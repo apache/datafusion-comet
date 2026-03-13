@@ -76,6 +76,9 @@ pub struct SparkParquetOptions {
     pub use_legacy_date_timestamp_or_ntz: bool,
     // Whether schema field names are case sensitive
     pub case_sensitive: bool,
+    /// Whether schema evolution (type promotion) is enabled. When false, the adapter
+    /// should reject type mismatches between file schema and table schema.
+    pub schema_evolution_enabled: bool,
 }
 
 impl SparkParquetOptions {
@@ -88,6 +91,7 @@ impl SparkParquetOptions {
             use_decimal_128: false,
             use_legacy_date_timestamp_or_ntz: false,
             case_sensitive: false,
+            schema_evolution_enabled: true,
         }
     }
 
@@ -100,6 +104,7 @@ impl SparkParquetOptions {
             use_decimal_128: false,
             use_legacy_date_timestamp_or_ntz: false,
             case_sensitive: false,
+            schema_evolution_enabled: true,
         }
     }
 }

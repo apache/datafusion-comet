@@ -1213,6 +1213,7 @@ impl PhysicalPlanner {
                     common.case_sensitive,
                     self.session_ctx(),
                     common.encryption_enabled,
+                    common.schema_evolution_enabled,
                 )?;
                 Ok((
                     vec![],

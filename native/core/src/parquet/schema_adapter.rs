@@ -19,7 +19,7 @@ use crate::parquet::cast_column::CometCastColumnExpr;
 use crate::parquet::parquet_support::{spark_parquet_convert, SparkParquetOptions};
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNode};
-use datafusion::common::Result as DataFusionResult;
+use datafusion::common::{DataFusionError, Result as DataFusionResult};
 use datafusion::physical_expr::expressions::Column;
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ColumnarValue;
@@ -95,12 +95,61 @@ fn remap_physical_schema_names(
     Arc::new(Schema::new(remapped_fields))
 }
 
+/// Check if the logical (table) schema and physical (file) schema have type
+/// mismatches. Returns an error message describing the first mismatch found,
+/// or None if all types match.
+fn detect_schema_mismatch(
+    logical_schema: &SchemaRef,
+    physical_schema: &SchemaRef,
+    case_sensitive: bool,
+) -> Option<String> {
+    for logical_field in logical_schema.fields() {
+        let physical_field = if case_sensitive {
+            physical_schema
+                .fields()
+                .iter()
+                .find(|f| f.name() == logical_field.name())
+        } else {
+            physical_schema
+                .fields()
+                .iter()
+                .find(|f| f.name().to_lowercase() == logical_field.name().to_lowercase())
+        };
+        if let Some(physical_field) = physical_field {
+            if logical_field.data_type() != physical_field.data_type() {
+                return Some(format!(
+                    "Parquet column cannot be converted. \
+                     Column: [{}], Expected: {}, Found: {} \
+                     (schema evolution is disabled)",
+                    logical_field.name(),
+                    logical_field.data_type(),
+                    physical_field.data_type()
+                ));
+            }
+        }
+    }
+    None
+}
+
 impl PhysicalExprAdapterFactory for SparkPhysicalExprAdapterFactory {
     fn create(
         &self,
         logical_file_schema: SchemaRef,
         physical_file_schema: SchemaRef,
     ) -> Arc<dyn PhysicalExprAdapter> {
+        // When schema evolution is disabled, check for type mismatches between the
+        // logical (table) schema and the physical (file) schema. If any column has
+        // a different type, store the error to be raised during rewrite().
+        let schema_mismatch_error = if !self.parquet_options.schema_evolution_enabled {
+            detect_schema_mismatch(
+                &logical_file_schema,
+                &physical_file_schema,
+                self.parquet_options.case_sensitive,
+            )
+        } else {
+            None
+        };
+
         // When case-insensitive, remap physical schema field names to match logical
         // field names. The DefaultPhysicalExprAdapter uses exact name matching, so
         // without this remapping, columns like "a" won't match logical "A" and will
@@ -154,6 +203,7 @@ impl PhysicalExprAdapterFactory for SparkPhysicalExprAdapterFactory {
             default_values: self.default_values.clone(),
             default_adapter,
             logical_to_physical_names,
+            schema_mismatch_error,
         })
     }
 }
@@ -183,10 +233,18 @@ struct SparkPhysicalExprAdapter {
     /// physical names so that downstream reassign_expr_columns can find
     /// columns in the actual stream schema.
     logical_to_physical_names: Option<HashMap<String, String>>,
+    /// When schema evolution is disabled and file/table types differ, this
+    /// holds the error message to return from rewrite().
+    schema_mismatch_error: Option<String>,
 }
 
 impl PhysicalExprAdapter for SparkPhysicalExprAdapter {
     fn rewrite(&self, expr: Arc<dyn PhysicalExpr>) -> DataFusionResult<Arc<dyn PhysicalExpr>> {
+        // When schema evolution is disabled and types differ, reject the read
+        if let Some(err) = &self.schema_mismatch_error {
+            return Err(DataFusionError::Plan(err.clone()));
+        }
+
         // First let the default adapter handle column remapping, missing columns,
         // and simple scalar type casts. Then replace DataFusion's CastColumnExpr
         // with Spark-compatible equivalents.
@@ -496,11 +554,51 @@ mod test {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn parquet_schema_mismatch_rejected_when_evolution_disabled() {
+        let file_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("name", DataType::Utf8, false),
+        ]));
+
+        let ids = Arc::new(Int32Array::from(vec![1, 2, 3])) as Arc<dyn arrow::array::Array>;
+        let names = Arc::new(StringArray::from(vec!["Alice", "Bob", "Charlie"]))
+            as Arc<dyn arrow::array::Array>;
+        let batch = RecordBatch::try_new(Arc::clone(&file_schema), vec![ids, names]).unwrap();
+
+        // Read as Int64 (widening) with schema evolution disabled
+        let required_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("name", DataType::Utf8, false),
+        ]));
+
+        let result =
+            roundtrip_with_schema_evolution(&batch, required_schema.clone(), false).await;
+        assert!(result.is_err(), "Expected error when schema evolution is disabled");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("schema evolution is disabled"),
+            "Error should mention schema evolution: {err_msg}"
+        );
+
+        // Same read with schema evolution enabled should succeed
+        let result = roundtrip_with_schema_evolution(&batch, required_schema, true).await;
+        assert!(result.is_ok(), "Expected success when schema evolution is enabled");
+    }
+
     /// Create a Parquet file containing a single batch and then read the batch back using
     /// the specified required_schema. This will cause the PhysicalExprAdapter code to be used.
     async fn roundtrip(
         batch: &RecordBatch,
         required_schema: SchemaRef,
+    ) -> Result<RecordBatch, DataFusionError> {
+        roundtrip_with_schema_evolution(batch, required_schema, true).await
+    }
+
+    async fn roundtrip_with_schema_evolution(
+        batch: &RecordBatch,
+        required_schema: SchemaRef,
+        schema_evolution_enabled: bool,
     ) -> Result<RecordBatch, DataFusionError> {
         let filename = get_temp_filename();
         let filename = filename.as_path().as_os_str().to_str().unwrap().to_string();
@@ -513,6 +611,7 @@ mod test {
 
         let mut spark_parquet_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
         spark_parquet_options.allow_cast_unsigned_ints = true;
+        spark_parquet_options.schema_evolution_enabled = schema_evolution_enabled;
 
         // Create expression adapter factory for Spark-compatible schema adaptation
         let expr_adapter_factory: Arc<dyn PhysicalExprAdapterFactory> = Arc::new(

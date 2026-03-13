@@ -72,12 +72,14 @@ pub(crate) fn init_datasource_exec(
     case_sensitive: bool,
     session_ctx: &Arc<SessionContext>,
     encryption_enabled: bool,
+    schema_evolution_enabled: bool,
 ) -> Result<Arc<DataSourceExec>, ExecutionError> {
     let (table_parquet_options, spark_parquet_options) = get_options(
         session_timezone,
         case_sensitive,
         &object_store_url,
         encryption_enabled,
+        schema_evolution_enabled,
     );
 
     // Determine the schema and projection to use for ParquetSource.
@@ -181,6 +183,7 @@ fn get_options(
     case_sensitive: bool,
     object_store_url: &ObjectStoreUrl,
     encryption_enabled: bool,
+    schema_evolution_enabled: bool,
 ) -> (TableParquetOptions, SparkParquetOptions) {
     let mut table_parquet_options = TableParquetOptions::new();
     table_parquet_options.global.pushdown_filters = true;
@@ -190,6 +193,7 @@ fn get_options(
         SparkParquetOptions::new(EvalMode::Legacy, session_timezone, false);
     spark_parquet_options.allow_cast_unsigned_ints = true;
     spark_parquet_options.case_sensitive = case_sensitive;
+    spark_parquet_options.schema_evolution_enabled = schema_evolution_enabled;
 
     if encryption_enabled {
         table_parquet_options.crypto.configure_factory(
