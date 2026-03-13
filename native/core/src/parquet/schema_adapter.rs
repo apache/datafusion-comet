@@ -572,9 +572,11 @@ mod test {
             Field::new("name", DataType::Utf8, false),
         ]));
 
-        let result =
-            roundtrip_with_schema_evolution(&batch, required_schema.clone(), false).await;
-        assert!(result.is_err(), "Expected error when schema evolution is disabled");
+        let result = roundtrip_with_schema_evolution(&batch, required_schema.clone(), false).await;
+        assert!(
+            result.is_err(),
+            "Expected error when schema evolution is disabled"
+        );
         let err_msg = result.unwrap_err().to_string();
         assert!(
             err_msg.contains("schema evolution is disabled"),
@@ -583,7 +585,10 @@ mod test {
 
         // Same read with schema evolution enabled should succeed
         let result = roundtrip_with_schema_evolution(&batch, required_schema, true).await;
-        assert!(result.is_ok(), "Expected success when schema evolution is enabled");
+        assert!(
+            result.is_ok(),
+            "Expected success when schema evolution is enabled"
+        );
     }
 
     /// Create a Parquet file containing a single batch and then read the batch back using
