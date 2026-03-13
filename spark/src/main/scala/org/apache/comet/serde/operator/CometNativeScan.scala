@@ -61,7 +61,7 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
     // Check for both PlanExpression (dynamic DPP with subqueries) and
     // DynamicPruningExpression (covers static DPP resolved to literals).
     if (scanExec.partitionFilters.exists(isDynamicPruningFilter)) {
-      withInfo(scanExec, "Native DataFusion scan does not support dynamic partition pruning")
+      withInfo(scanExec, "Native DataFusion scan does not support subqueries/dynamic pruning")
     }
 
     if (SQLConf.get.ignoreCorruptFiles ||
