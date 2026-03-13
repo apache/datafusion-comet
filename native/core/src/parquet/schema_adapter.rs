@@ -95,6 +95,16 @@ fn remap_physical_schema_names(
     Arc::new(Schema::new(remapped_fields))
 }
 
+/// Returns true if the two types differ only in timestamp timezone metadata
+/// (e.g., Timestamp(us, Some("UTC")) vs Timestamp(us, None)). This is not a
+/// real schema evolution — the adapter handles it as a metadata-only relabeling.
+fn is_timestamp_timezone_only_diff(logical: &DataType, physical: &DataType) -> bool {
+    matches!(
+        (logical, physical),
+        (DataType::Timestamp(lu, _), DataType::Timestamp(pu, _)) if lu == pu
+    )
+}
+
 /// Check if the logical (table) schema and physical (file) schema have type
 /// mismatches. Returns an error message describing the first mismatch found,
 /// or None if all types match.
@@ -116,7 +126,12 @@ fn detect_schema_mismatch(
                 .find(|f| f.name().to_lowercase() == logical_field.name().to_lowercase())
         };
         if let Some(physical_field) = physical_field {
-            if logical_field.data_type() != physical_field.data_type() {
+            if logical_field.data_type() != physical_field.data_type()
+                && !is_timestamp_timezone_only_diff(
+                    logical_field.data_type(),
+                    physical_field.data_type(),
+                )
+            {
                 return Some(format!(
                     "Parquet column cannot be converted. \
                      Column: [{}], Expected: {}, Found: {} \
@@ -572,7 +587,8 @@ mod test {
             Field::new("name", DataType::Utf8, false),
         ]));
 
-        let result = roundtrip_with_schema_evolution(&batch, required_schema.clone(), false).await;
+        let result =
+            roundtrip_with_schema_evolution(&batch, Arc::clone(&required_schema), false).await;
         assert!(
             result.is_err(),
             "Expected error when schema evolution is disabled"
