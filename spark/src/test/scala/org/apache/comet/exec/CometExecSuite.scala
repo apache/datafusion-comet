@@ -146,6 +146,42 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("DPP fallback with native_datafusion scan") {
+    withTempDir { path =>
+      val factPath = s"${path.getAbsolutePath}/fact.parquet"
+      val dimPath = s"${path.getAbsolutePath}/dim.parquet"
+      withSQLConf(CometConf.COMET_EXEC_ENABLED.key -> "false") {
+        val one_day = 24 * 60 * 60000
+        val fact = Range(0, 100)
+          .map(i => (i, new java.sql.Date(System.currentTimeMillis() + i * one_day), i.toString))
+          .toDF("fact_id", "fact_date", "fact_str")
+        fact.write.partitionBy("fact_date").parquet(factPath)
+        val dim = Range(0, 10)
+          .map(i => (i, new java.sql.Date(System.currentTimeMillis() + i * one_day), i.toString))
+          .toDF("dim_id", "dim_date", "dim_str")
+        dim.write.parquet(dimPath)
+      }
+
+      Seq("parquet").foreach { v1List =>
+        withSQLConf(
+          SQLConf.USE_V1_SOURCE_LIST.key -> v1List,
+          CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
+          CometConf.COMET_DPP_FALLBACK_ENABLED.key -> "false") {
+          spark.read.parquet(factPath).createOrReplaceTempView("dpp_fact")
+          spark.read.parquet(dimPath).createOrReplaceTempView("dpp_dim")
+          val df =
+            spark.sql(
+              "select * from dpp_fact join dpp_dim on fact_date = dim_date where dim_id > 7")
+          val (_, cometPlan) = checkSparkAnswer(df)
+          val infos = new ExtendedExplainInfo().generateExtendedInfo(cometPlan)
+          assert(
+            infos.contains("dynamic partition pruning"),
+            s"Expected native_datafusion to fall back for DPP but got:\n$infos")
+        }
+      }
+    }
+  }
+
   test("ShuffleQueryStageExec could be direct child node of CometBroadcastExchangeExec") {
     withSQLConf(CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
       val table = "src"
