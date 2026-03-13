@@ -453,7 +453,7 @@ index f33432ddb6f..42eb9fd1cb7 100644
    test("static scan metrics",
 -    DisableAdaptiveExecution("DPP in AQE must reuse broadcast")) {
 +    DisableAdaptiveExecution("DPP in AQE must reuse broadcast"),
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3313")) {
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/3313")) {
      withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true",
        SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "false",
        SQLConf.EXCHANGE_REUSE_ENABLED.key -> "false") {
@@ -476,7 +476,7 @@ index a206e97c353..79813d8e259 100644
  
 -  test("explain formatted - check presence of subquery in case of DPP") {
 +  test("explain formatted - check presence of subquery in case of DPP",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3313")) {
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/3313")) {
      withTable("df1", "df2") {
        withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true",
          SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "false",
@@ -536,7 +536,7 @@ index 93275487f29..510e3087e0f 100644
    Seq("parquet", "orc").foreach { format =>
 -    test(s"Spark native readers should respect spark.sql.caseSensitive - ${format}") {
 +    test(s"Spark native readers should respect spark.sql.caseSensitive - ${format}",
-+      IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3311")) {
++      IgnoreComet("https://github.com/apache/datafusion-comet/issues/3311")) {
        withTempDir { dir =>
          val tableName = s"spark_25132_${format}_native"
          val tableDir = dir.getCanonicalPath + s"/$tableName"
@@ -609,7 +609,7 @@ index 00000000000..1ee842b6f62
 + */
 +case class IgnoreComet(reason: String) extends Tag("DisableComet")
 +case class IgnoreCometNativeIcebergCompat(reason: String) extends Tag("DisableComet")
-+case class IgnoreCometNativeDataFusion(reason: String) extends Tag("DisableComet")
++case class IgnoreComet(reason: String) extends Tag("DisableComet")
 +case class IgnoreCometNativeScan(reason: String) extends Tag("DisableComet")
 +
 +/**
@@ -1142,7 +1142,7 @@ index cfc8b2cc845..b7c234e1437 100644
  
  import org.apache.spark.SparkConf
 -import org.apache.spark.sql.{AnalysisException, QueryTest}
-+import org.apache.spark.sql.{AnalysisException, IgnoreCometNativeDataFusion, QueryTest}
++import org.apache.spark.sql.{AnalysisException, IgnoreComet, QueryTest}
  import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 +import org.apache.spark.sql.comet.{CometNativeScanExec, CometScanExec}
  import org.apache.spark.sql.connector.catalog.{SupportsRead, SupportsWrite, Table, TableCapability}
@@ -1154,7 +1154,7 @@ index cfc8b2cc845..b7c234e1437 100644
  
 -  test("Fallback Parquet V2 to V1") {
 +  test("Fallback Parquet V2 to V1",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3315")) {
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/3315")) {
      Seq("parquet", classOf[ParquetDataSourceV2].getCanonicalName).foreach { format =>
        withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> format) {
          val commands = ArrayBuffer.empty[(String, LogicalPlan)]
@@ -1430,7 +1430,7 @@ index a1147c16cc8..c7a29496328 100644
  
  import org.apache.spark.{SparkArithmeticException, SparkException, SparkFileNotFoundException}
  import org.apache.spark.sql._
-+import org.apache.spark.sql.IgnoreCometNativeDataFusion
++import org.apache.spark.sql.IgnoreComet
  import org.apache.spark.sql.catalyst.TableIdentifier
  import org.apache.spark.sql.catalyst.expressions.{Add, Alias, Divide}
  import org.apache.spark.sql.catalyst.parser.ParseException
@@ -1440,7 +1440,7 @@ index a1147c16cc8..c7a29496328 100644
  
 -  test("alter temporary view should follow current storeAnalyzedPlanForView config") {
 +  test("alter temporary view should follow current storeAnalyzedPlanForView config",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3314")) {
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/3314")) {
      withTable("t") {
        Seq(2, 3, 1).toDF("c1").write.format("parquet").saveAsTable("t")
        withView("v1") {
@@ -2070,7 +2070,7 @@ index 8e88049f51e..49f2001dc6b 100644
  
 -  test("SPARK-31026: Parquet predicate pushdown for fields having dots in the names") {
 +  test("SPARK-31026: Parquet predicate pushdown for fields having dots in the names",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3320")) {
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/3320")) {
      import testImplicits._
  
      withAllParquetReaders {
@@ -2091,7 +2091,7 @@ index 8e88049f51e..49f2001dc6b 100644
  
 -  test("Filters should be pushed down for Parquet readers at row group level") {
 +  test("Filters should be pushed down for Parquet readers at row group level",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3320")) {
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/3320")) {
      import testImplicits._
  
      withSQLConf(
@@ -2133,7 +2133,7 @@ index 8e88049f51e..49f2001dc6b 100644
  
 -  test("SPARK-25207: exception when duplicate fields in case-insensitive mode") {
 +  test("SPARK-25207: exception when duplicate fields in case-insensitive mode",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3311")) {
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/3311")) {
      withTempPath { dir =>
        val count = 10
        val tableName = "spark_25207"
@@ -2193,7 +2193,7 @@ index 8ed9ef1630e..f312174b182 100644
  
 -  test("SPARK-35640: read binary as timestamp should throw schema incompatible error") {
 +  test("SPARK-35640: read binary as timestamp should throw schema incompatible error",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3311")) {
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/3311")) {
      val data = (1 to 4).map(i => Tuple1(i.toString))
      val readSchema = StructType(Seq(StructField("_1", DataTypes.TimestampType)))
  
@@ -2203,7 +2203,7 @@ index 8ed9ef1630e..f312174b182 100644
  
 -  test("SPARK-35640: int as long should throw schema incompatible error") {
 +  test("SPARK-35640: int as long should throw schema incompatible error",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3311")) {
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/3311")) {
      val data = (1 to 4).map(i => Tuple1(i))
      val readSchema = StructType(Seq(StructField("_1", DataTypes.LongType)))
  
@@ -2227,7 +2227,7 @@ index f6472ba3d9d..ce39ebb52e6 100644
  
 -  test("SPARK-36182: can't read TimestampLTZ as TimestampNTZ") {
 +  test("SPARK-36182: can't read TimestampLTZ as TimestampNTZ",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3311")) {
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/3311")) {
      val data = (1 to 1000).map { i =>
        val ts = new java.sql.Timestamp(i)
        Row(ts)
@@ -2247,7 +2247,7 @@ index f6472ba3d9d..ce39ebb52e6 100644
  
 -  test("SPARK-34212 Parquet should read decimals correctly") {
 +  test("SPARK-34212 Parquet should read decimals correctly",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3311")) {
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/3311")) {
      def readParquet(schema: String, path: File): DataFrame = {
        spark.read.schema(schema).parquet(path.toString)
      }
@@ -2277,7 +2277,7 @@ index f6472ba3d9d..ce39ebb52e6 100644
  
 -  test("row group skipping doesn't overflow when reading into larger type") {
 +  test("row group skipping doesn't overflow when reading into larger type",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3311")) {
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/3311")) {
      withTempPath { path =>
        Seq(0).toDF("a").write.parquet(path.toString)
        // The vectorized and non-vectorized readers will produce different exceptions, we don't need
@@ -2393,7 +2393,7 @@ index 3f47c5e506f..92a5eafec84 100644
  import org.apache.parquet.schema.Type._
  
  import org.apache.spark.SparkException
-+import org.apache.spark.sql.{IgnoreComet, IgnoreCometNativeDataFusion}
++import org.apache.spark.sql.{IgnoreComet, IgnoreComet}
  import org.apache.spark.sql.catalyst.expressions.Cast.toSQLType
  import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException
  import org.apache.spark.sql.functions.desc
@@ -2413,7 +2413,7 @@ index 3f47c5e506f..92a5eafec84 100644
  
 -  test("schema mismatch failure error message for parquet vectorized reader") {
 +  test("schema mismatch failure error message for parquet vectorized reader",
-+      IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3311")) {
++      IgnoreComet("https://github.com/apache/datafusion-comet/issues/3311")) {
      withTempPath { dir =>
        val e = testSchemaMismatch(dir.getCanonicalPath, vectorizedReaderEnabled = true)
        assert(e.getCause.isInstanceOf[SparkException])
@@ -2423,7 +2423,7 @@ index 3f47c5e506f..92a5eafec84 100644
  
 -  test("SPARK-45604: schema mismatch failure error on timestamp_ntz to array<timestamp_ntz>") {
 +  test("SPARK-45604: schema mismatch failure error on timestamp_ntz to array<timestamp_ntz>",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3311")) {
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/3311")) {
      import testImplicits._
  
      withTempPath { dir =>
@@ -2939,7 +2939,7 @@ index b5cf13a9c12..ac17603fb7f 100644
  import org.apache.spark.{SparkException, TestUtils}
  import org.apache.spark.internal.Logging
 -import org.apache.spark.sql.{AnalysisException, Column, DataFrame, Dataset, Row, SaveMode}
-+import org.apache.spark.sql.{AnalysisException, Column, DataFrame, Dataset, IgnoreCometNativeDataFusion, Row, SaveMode}
++import org.apache.spark.sql.{AnalysisException, Column, DataFrame, Dataset, IgnoreComet, Row, SaveMode}
  import org.apache.spark.sql.catalyst.InternalRow
  import org.apache.spark.sql.catalyst.expressions.{Literal, Rand, Randn, Shuffle, Uuid}
  import org.apache.spark.sql.catalyst.plans.logical.{CTERelationDef, CTERelationRef, LocalRelation}
@@ -2949,7 +2949,7 @@ index b5cf13a9c12..ac17603fb7f 100644
  
 -  test("SPARK-41198: input row calculation with CTE") {
 +  test("SPARK-41198: input row calculation with CTE",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3315")) {
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/3315")) {
      withTable("parquet_tbl", "parquet_streaming_tbl") {
        spark.range(0, 10).selectExpr("id AS col1", "id AS col2")
          .write.format("parquet").saveAsTable("parquet_tbl")
@@ -2959,7 +2959,7 @@ index b5cf13a9c12..ac17603fb7f 100644
  
 -  test("SPARK-41199: input row calculation with mixed-up of DSv1 and DSv2 streaming sources") {
 +  test("SPARK-41199: input row calculation with mixed-up of DSv1 and DSv2 streaming sources",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3315")) {
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/3315")) {
      withTable("parquet_streaming_tbl") {
        val streamInput = MemoryStream[Int]
        val streamDf = streamInput.toDF().selectExpr("value AS key", "value AS value_stream")
@@ -2972,7 +2972,7 @@ index 8f099c31e6b..ce4b7ad25b3 100644
  import org.scalatest.concurrent.PatienceConfiguration.Timeout
  
 -import org.apache.spark.sql.SaveMode
-+import org.apache.spark.sql.{IgnoreCometNativeDataFusion, SaveMode}
++import org.apache.spark.sql.{IgnoreComet, SaveMode}
  import org.apache.spark.sql.connector.catalog.Identifier
  import org.apache.spark.sql.execution.streaming.MemoryStream
  import org.apache.spark.sql.streaming.test.{InMemoryStreamTable, InMemoryStreamTableCatalog}
@@ -2982,7 +2982,7 @@ index 8f099c31e6b..ce4b7ad25b3 100644
  
 -  test("self-union, DSv1, read via DataStreamReader API") {
 +  test("self-union, DSv1, read via DataStreamReader API",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3401")) {
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/3401")) {
      withTempPath { dir =>
        val dataLocation = dir.getAbsolutePath
        spark.range(1, 4).write.format("parquet").save(dataLocation)
@@ -2992,7 +2992,7 @@ index 8f099c31e6b..ce4b7ad25b3 100644
  
 -  test("self-union, DSv1, read via table API") {
 +  test("self-union, DSv1, read via table API",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3401")) {
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/3401")) {
      withTable("parquet_streaming_tbl") {
        spark.sql("CREATE TABLE parquet_streaming_tbl (key integer) USING parquet")
  
@@ -3060,7 +3060,7 @@ index e937173a590..7d20538bc68 100644
 +        return
 +      }
 +      if (isNativeDataFusion &&
-+        testTags.exists(_.isInstanceOf[IgnoreCometNativeDataFusion])) {
++        testTags.exists(_.isInstanceOf[IgnoreComet])) {
 +        ignore(testName + " (disabled for NATIVE_DATAFUSION)", testTags: _*)(testFun)
 +        return
 +      }
