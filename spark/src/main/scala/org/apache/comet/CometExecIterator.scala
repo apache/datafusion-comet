@@ -258,7 +258,7 @@ class CometExecIterator(
   }
 
   private def traceMemoryUsage(): Unit = {
-    nativeLib.logMemoryUsage("jvm_heapUsed", memoryMXBean.getHeapMemoryUsage.getUsed)
+    nativeLib.logMemoryUsage("jvm_heap_used", memoryMXBean.getHeapMemoryUsage.getUsed)
     val totalTaskMemory = cometTaskMemoryManager.internal.getMemoryConsumptionForThisTask
     val cometTaskMemory = cometTaskMemoryManager.getUsed
     val sparkTaskMemory = totalTaskMemory - cometTaskMemory

@@ -233,8 +233,9 @@ final class CometBypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V>
       }
 
       Native _native = new Native();
+      String shuffleMemKey = "comet_shuffle_" + Thread.currentThread().getId();
       if (tracingEnabled) {
-        _native.logMemoryUsage("comet_shuffle_", allocator.getUsed());
+        _native.logMemoryUsage(shuffleMemKey, allocator.getUsed());
       }
 
       long spillRecords = 0;
@@ -247,7 +248,7 @@ final class CometBypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V>
       }
 
       if (tracingEnabled) {
-        _native.logMemoryUsage("comet_shuffle_", allocator.getUsed());
+        _native.logMemoryUsage(shuffleMemKey, allocator.getUsed());
       }
 
       if (outputRows != spillRecords) {
