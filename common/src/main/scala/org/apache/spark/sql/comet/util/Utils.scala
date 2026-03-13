@@ -271,7 +271,7 @@ object Utils extends CometTypeShim {
           throw new SparkException(
             s"Comet execution only takes Arrow Arrays, but got ${c.getClass}. " +
               "This typically happens when a Comet scan falls back to Spark due to unsupported " +
-              "data types (e.g., complex types like structs, arrays, or maps with native_comet). " +
+              "data types (e.g., complex types like structs, arrays, or maps). " +
               "To resolve this, you can: " +
               "(1) enable spark.comet.scan.allowIncompatible=true to use a compatible native " +
               "scan variant, or " +

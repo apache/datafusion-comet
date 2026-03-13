@@ -34,7 +34,13 @@ fn criterion_benchmark(c: &mut Criterion) {
     // Float32 -> Timestamp
     let batch_f32 = create_float32_batch();
     let expr_f32 = Arc::new(Column::new("a", 0));
-    let cast_f32_to_ts = Cast::new(expr_f32, timestamp_type.clone(), spark_cast_options.clone());
+    let cast_f32_to_ts = Cast::new(
+        expr_f32,
+        timestamp_type.clone(),
+        spark_cast_options.clone(),
+        None,
+        None,
+    );
     group.bench_function("cast_f32_to_timestamp", |b| {
         b.iter(|| cast_f32_to_ts.evaluate(&batch_f32).unwrap());
     });
@@ -42,7 +48,13 @@ fn criterion_benchmark(c: &mut Criterion) {
     // Float64 -> Timestamp
     let batch_f64 = create_float64_batch();
     let expr_f64 = Arc::new(Column::new("a", 0));
-    let cast_f64_to_ts = Cast::new(expr_f64, timestamp_type.clone(), spark_cast_options.clone());
+    let cast_f64_to_ts = Cast::new(
+        expr_f64,
+        timestamp_type.clone(),
+        spark_cast_options.clone(),
+        None,
+        None,
+    );
     group.bench_function("cast_f64_to_timestamp", |b| {
         b.iter(|| cast_f64_to_ts.evaluate(&batch_f64).unwrap());
     });
@@ -54,6 +66,8 @@ fn criterion_benchmark(c: &mut Criterion) {
         expr_bool,
         timestamp_type.clone(),
         spark_cast_options.clone(),
+        None,
+        None,
     );
     group.bench_function("cast_bool_to_timestamp", |b| {
         b.iter(|| cast_bool_to_ts.evaluate(&batch_bool).unwrap());
@@ -66,6 +80,8 @@ fn criterion_benchmark(c: &mut Criterion) {
         expr_decimal,
         timestamp_type.clone(),
         spark_cast_options.clone(),
+        None,
+        None,
     );
     group.bench_function("cast_decimal_to_timestamp", |b| {
         b.iter(|| cast_decimal_to_ts.evaluate(&batch_decimal).unwrap());

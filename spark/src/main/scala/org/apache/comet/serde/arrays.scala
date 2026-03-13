@@ -35,6 +35,12 @@ object CometArrayRemove
     with CometExprShim
     with ArraysBase {
 
+  override def getSupportLevel(expr: ArrayRemove): SupportLevel =
+    Incompatible(
+      Some(
+        "Returns null when element is null instead of removing null elements" +
+          " (https://github.com/apache/datafusion-comet/issues/3173)"))
+
   override def convert(
       expr: ArrayRemove,
       inputs: Seq[Attribute],
@@ -95,7 +101,12 @@ object CometArrayAppend extends CometExpressionSerde[ArrayAppend] {
     val keyExprProto = exprToProto(expr.children(1), inputs, binding)
 
     val arrayAppendScalarExpr =
-      scalarFunctionExprToProto("array_append", arrayExprProto, keyExprProto)
+      scalarFunctionExprToProtoWithReturnType(
+        "array_append",
+        ArrayType(elementType = elementType),
+        false,
+        arrayExprProto,
+        keyExprProto)
 
     val isNotNullExpr = createUnaryExpr(
       expr,
@@ -126,6 +137,13 @@ object CometArrayAppend extends CometExpressionSerde[ArrayAppend] {
 }
 
 object CometArrayContains extends CometExpressionSerde[ArrayContains] {
+
+  override def getSupportLevel(expr: ArrayContains): SupportLevel =
+    Incompatible(
+      Some(
+        "Returns null instead of false for empty arrays with literal values" +
+          " (https://github.com/apache/datafusion-comet/issues/3346)"))
+
   override def convert(
       expr: ArrayContains,
       inputs: Seq[Attribute],
@@ -467,6 +485,14 @@ object CometCreateArray extends CometExpressionSerde[CreateArray] {
 }
 
 object CometGetArrayItem extends CometExpressionSerde[GetArrayItem] {
+
+  override def getSupportLevel(expr: GetArrayItem): SupportLevel =
+    Incompatible(
+      Some(
+        "Known correctness issues with index handling" +
+          " (https://github.com/apache/datafusion-comet/issues/3330," +
+          " https://github.com/apache/datafusion-comet/issues/3332)"))
+
   override def convert(
       expr: GetArrayItem,
       inputs: Seq[Attribute],

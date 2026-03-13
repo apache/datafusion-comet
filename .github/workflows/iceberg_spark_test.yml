@@ -48,6 +48,7 @@ on:
 
 env:
   RUST_VERSION: stable
+  RUST_BACKTRACE: 1
 
 jobs:
   # Build native library once and share with all test jobs
