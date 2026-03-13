@@ -19,19 +19,23 @@
 
 package org.apache.spark.sql.comet
 
+import java.io.{ByteArrayInputStream, ByteArrayOutputStream, DataInputStream}
+import java.nio.channels.Channels
 import java.util.UUID
-import java.util.concurrent.{Future, TimeoutException, TimeUnit}
+import java.util.concurrent.{ConcurrentHashMap, Future, TimeoutException, TimeUnit}
 
 import scala.concurrent.{ExecutionContext, Promise}
 import scala.concurrent.duration.NANOSECONDS
 import scala.util.control.NonFatal
 
-import org.apache.spark.{broadcast, Partition, SparkContext, SparkException, TaskContext}
+import org.apache.spark.{broadcast, Partition, SparkContext, SparkEnv, SparkException, TaskContext}
+import org.apache.spark.io.CompressionCodec
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.catalyst.plans.logical.Statistics
 import org.apache.spark.sql.catalyst.plans.physical.{BroadcastMode, BroadcastPartitioning, Partitioning}
+import org.apache.spark.sql.comet.execution.arrow.ArrowReaderIterator
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.errors.QueryExecutionErrors
 import org.apache.spark.sql.execution.{ColumnarToRowExec, SparkPlan, SQLExecution}
@@ -311,8 +315,46 @@ class CometBatchRDD(
 
   override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
     val partition = split.asInstanceOf[CometBatchPartition]
-    partition.value.value.toIterator
-      .flatMap(Utils.decodeBatches(_, this.getClass.getSimpleName))
+    val broadcastId = partition.value.id
+    val decompressedBytes = CometBatchRDD.decompressedCache.computeIfAbsent(
+      broadcastId,
+      _ => {
+        val codec = CompressionCodec.createCodec(SparkEnv.get.conf)
+        partition.value.value.map { chunkedBuffer =>
+          val cbbis = chunkedBuffer.toInputStream()
+          val ins = codec.compressedInputStream(cbbis)
+          val baos = new ByteArrayOutputStream()
+          val buf = new Array[Byte](8192)
+          var n = ins.read(buf)
+          while (n != -1) {
+            baos.write(buf, 0, n)
+            n = ins.read(buf)
+          }
+          ins.close()
+          baos.toByteArray
+        }
+      })
+    decompressedBytes.iterator.flatMap { bytes =>
+      new ArrowReaderIterator(
+        Channels.newChannel(new ByteArrayInputStream(bytes)),
+        this.getClass.getSimpleName)
+    }
+  }
+}
+
+object CometBatchRDD {
+
+  /**
+   * Executor-level cache of decompressed broadcast data keyed by broadcast ID. This avoids
+   * repeated LZ4 decompression when multiple tasks on the same executor process the same
+   * broadcast relation. Each entry stores decompressed Arrow IPC byte arrays.
+   */
+  private[comet] val decompressedCache =
+    new ConcurrentHashMap[Long, Array[Array[Byte]]]()
+
+  /** Invalidate cached decompressed data for a broadcast. */
+  def invalidateCache(broadcastId: Long): Unit = {
+    decompressedCache.remove(broadcastId)
   }
 }
 

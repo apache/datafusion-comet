@@ -1663,6 +1663,12 @@ impl PhysicalPlanner {
                 let left = Arc::clone(&join_params.left.native_plan);
                 let right = Arc::clone(&join_params.right.native_plan);
 
+                let partition_mode = if join.is_broadcast {
+                    PartitionMode::CollectLeft
+                } else {
+                    PartitionMode::Partitioned
+                };
+
                 let hash_join = Arc::new(HashJoinExec::try_new(
                     left,
                     right,
@@ -1670,7 +1676,7 @@ impl PhysicalPlanner {
                     join_params.join_filter,
                     &join_params.join_type,
                     None,
-                    PartitionMode::Partitioned,
+                    partition_mode,
                     // null doesn't equal to null in Spark join key. If the join key is
                     // `EqualNullSafe`, Spark will rewrite it during planning.
                     NullEquality::NullEqualsNothing,
@@ -1688,7 +1694,7 @@ impl PhysicalPlanner {
                     ))
                 } else {
                     let swapped_hash_join =
-                        hash_join.as_ref().swap_inputs(PartitionMode::Partitioned)?;
+                        hash_join.as_ref().swap_inputs(partition_mode)?;
 
                     let mut additional_native_plans = vec![];
                     if swapped_hash_join.as_any().is::<ProjectionExec>() {
@@ -3905,6 +3911,7 @@ mod tests {
                 join_type: 0,
                 condition: None,
                 build_side: 0,
+                is_broadcast: false,
             })),
         };
 

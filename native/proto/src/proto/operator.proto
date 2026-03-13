@@ -334,6 +334,7 @@ message HashJoin {
   JoinType join_type = 3;
   optional spark.spark_expression.Expr condition = 4;
   BuildSide build_side = 5;
+  bool is_broadcast = 6;
 }
 
 message SortMergeJoin {
