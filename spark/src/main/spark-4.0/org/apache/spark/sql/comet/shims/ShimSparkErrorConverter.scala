@@ -251,6 +251,18 @@ trait ShimSparkErrorConverter {
           QueryExecutionErrors.withoutSuggestionIntervalArithmeticOverflowError(
             context.headOption.orNull))
 
+      case "SchemaColumnConvertNotSupported" =>
+        val column = params.getOrElse("column", "").toString
+        val logicalType = params.getOrElse("logicalType", "").toString
+        val physicalType = params.getOrElse("physicalType", "").toString
+        Some(
+          QueryExecutionErrors.unsupportedSchemaColumnConvertError(
+            "unknown",
+            column,
+            logicalType,
+            physicalType,
+            null))
+
       case _ =>
         // Unknown error type - return None to trigger fallback
         None

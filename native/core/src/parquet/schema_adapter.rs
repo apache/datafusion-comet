@@ -24,7 +24,7 @@ use datafusion::physical_expr::expressions::Column;
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ColumnarValue;
 use datafusion::scalar::ScalarValue;
-use datafusion_comet_spark_expr::{Cast, SparkCastOptions};
+use datafusion_comet_spark_expr::{Cast, SparkCastOptions, SparkError};
 use datafusion_physical_expr_adapter::{
     replace_columns_with_literals, DefaultPhysicalExprAdapterFactory, PhysicalExprAdapter,
     PhysicalExprAdapterFactory,
@@ -143,7 +143,7 @@ fn is_type_promotion(logical: &DataType, physical: &DataType) -> bool {
 }
 
 /// Check if the logical (table) schema and physical (file) schema have type
-/// promotions that constitute schema evolution. Returns an error message for
+/// promotions that constitute schema evolution. Returns a SparkError for
 /// the first real type mismatch found, or None if schemas are compatible.
 /// Ignores differences that the adapter handles natively (timestamp timezone/unit,
 /// list/map/struct field names and nullability).
@@ -151,7 +151,7 @@ fn detect_schema_mismatch(
     logical_schema: &SchemaRef,
     physical_schema: &SchemaRef,
     case_sensitive: bool,
-) -> Option<String> {
+) -> Option<SparkError> {
     for logical_field in logical_schema.fields() {
         let physical_field = if case_sensitive {
             physical_schema
@@ -166,14 +166,11 @@ fn detect_schema_mismatch(
         };
         if let Some(physical_field) = physical_field {
             if is_type_promotion(logical_field.data_type(), physical_field.data_type()) {
-                return Some(format!(
-                    "Parquet column cannot be converted. \
-                     Column: [{}], Expected: {}, Found: {} \
-                     (schema evolution is disabled)",
-                    logical_field.name(),
-                    logical_field.data_type(),
-                    physical_field.data_type()
-                ));
+                return Some(SparkError::SchemaColumnConvertNotSupported {
+                    column: logical_field.name().clone(),
+                    logical_type: logical_field.data_type().to_string(),
+                    physical_type: physical_field.data_type().to_string(),
+                });
             }
         }
     }
@@ -284,14 +281,14 @@ struct SparkPhysicalExprAdapter {
     logical_to_physical_names: Option<HashMap<String, String>>,
     /// When schema evolution is disabled and file/table types differ, this
     /// holds the error message to return from rewrite().
-    schema_mismatch_error: Option<String>,
+    schema_mismatch_error: Option<SparkError>,
 }
 
 impl PhysicalExprAdapter for SparkPhysicalExprAdapter {
     fn rewrite(&self, expr: Arc<dyn PhysicalExpr>) -> DataFusionResult<Arc<dyn PhysicalExpr>> {
         // When schema evolution is disabled and types differ, reject the read
         if let Some(err) = &self.schema_mismatch_error {
-            return Err(DataFusionError::Plan(err.clone()));
+            return Err(DataFusionError::External(Box::new(err.clone())));
         }
 
         // First let the default adapter handle column remapping, missing columns,
@@ -629,8 +626,8 @@ mod test {
         );
         let err_msg = result.unwrap_err().to_string();
         assert!(
-            err_msg.contains("schema evolution is disabled"),
-            "Error should mention schema evolution: {err_msg}"
+            err_msg.contains("Parquet column cannot be converted"),
+            "Error should mention column conversion: {err_msg}"
         );
 
         // Same read with schema evolution enabled should succeed

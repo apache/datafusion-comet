@@ -239,6 +239,18 @@ trait ShimSparkErrorConverter {
           QueryExecutionErrors
             .intervalArithmeticOverflowError("Interval arithmetic overflow", "", sqlCtx(context)))
 
+      case "SchemaColumnConvertNotSupported" =>
+        val column = params.getOrElse("column", "").toString
+        val logicalType = params.getOrElse("logicalType", "").toString
+        val physicalType = params.getOrElse("physicalType", "").toString
+        Some(
+          QueryExecutionErrors.unsupportedSchemaColumnConvertError(
+            "unknown",
+            column,
+            logicalType,
+            physicalType,
+            null))
+
       case _ =>
         None
     }

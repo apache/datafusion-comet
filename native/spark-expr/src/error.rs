@@ -166,6 +166,13 @@ pub enum SparkError {
     #[error("[SCALAR_SUBQUERY_TOO_MANY_ROWS] Scalar subquery returned more than one row.")]
     ScalarSubqueryTooManyRows,
 
+    #[error("[_LEGACY_ERROR_TEMP_2063] Parquet column cannot be converted. Column: [{column}], Expected: {logical_type}, Found: {physical_type}")]
+    SchemaColumnConvertNotSupported {
+        column: String,
+        logical_type: String,
+        physical_type: String,
+    },
+
     #[error("ArrowError: {0}.")]
     Arrow(Arc<ArrowError>),
 
@@ -236,6 +243,7 @@ impl SparkError {
             SparkError::InvalidRegexGroupIndex { .. } => "InvalidRegexGroupIndex",
             SparkError::DatatypeCannotOrder { .. } => "DatatypeCannotOrder",
             SparkError::ScalarSubqueryTooManyRows => "ScalarSubqueryTooManyRows",
+            SparkError::SchemaColumnConvertNotSupported { .. } => "SchemaColumnConvertNotSupported",
             SparkError::Arrow(_) => "Arrow",
             SparkError::Internal(_) => "Internal",
         }
@@ -421,6 +429,17 @@ impl SparkError {
                     "dataType": data_type,
                 })
             }
+            SparkError::SchemaColumnConvertNotSupported {
+                column,
+                logical_type,
+                physical_type,
+            } => {
+                serde_json::json!({
+                    "column": column,
+                    "logicalType": logical_type,
+                    "physicalType": physical_type,
+                })
+            }
             SparkError::Arrow(e) => {
                 serde_json::json!({
                     "message": e.to_string(),
@@ -486,6 +505,11 @@ impl SparkError {
             // IllegalArgumentException
             SparkError::DatatypeCannotOrder { .. }
             | SparkError::InvalidUtf8String { .. } => "org/apache/spark/SparkIllegalArgumentException",
+
+            // Schema mismatch - this becomes SparkException via QueryExecutionErrors
+            SparkError::SchemaColumnConvertNotSupported { .. } => {
+                "org/apache/spark/SparkException"
+            }
 
             // Generic errors
             SparkError::Arrow(_) | SparkError::Internal(_) => "org/apache/spark/SparkException",
@@ -558,6 +582,9 @@ impl SparkError {
 
             // Subquery errors
             SparkError::ScalarSubqueryTooManyRows => Some("SCALAR_SUBQUERY_TOO_MANY_ROWS"),
+
+            // Schema mismatch
+            SparkError::SchemaColumnConvertNotSupported { .. } => Some("_LEGACY_ERROR_TEMP_2063"),
 
             // Generic errors (no error class)
             SparkError::Arrow(_) | SparkError::Internal(_) => None,
