@@ -63,6 +63,51 @@ cause Comet to fall back to Spark.
   The `native_datafusion` scan does not use Spark's `FileScanRDD`, so these functions cannot populate their values.
 - No support for `ignoreMissingFiles` or `ignoreCorruptFiles` being set to `true`
 
+### Known Behavioral Differences with `native_datafusion`
+
+The `native_datafusion` scan has several known behavioral differences compared to Spark. These are tracked in
+GitHub issues and cause some Spark SQL tests to be ignored when running with `native_datafusion` enabled.
+
+**Schema incompatibility handling ([#3311]).**
+Spark throws a `SparkException` when reading Parquet files with certain schema mismatches (e.g., incompatible type
+changes between writer and reader schemas). The `native_datafusion` implementation handles some of these cases
+gracefully through DataFusion's type widening support, or throws errors with different exception types and messages.
+This also affects INT96 timestamp detection for `TimestampLTZ`/`TimestampNTZ` types.
+
+**Dynamic Partition Pruning ([#3313]).**
+Dynamic Partition Pruning (DPP) does not work correctly with the `native_datafusion` scan. The `CometNativeScan`
+plan node produced by `native_datafusion` may bypass or be incompatible with Spark's DPP filter injection. This
+can result in test failures and potentially suboptimal query performance when DPP would otherwise apply.
+
+**Missing files error handling ([#3314]).**
+When files are deleted or become unavailable between planning and execution, the `native_datafusion` scan produces
+different error behavior than Spark. The native reader throws an "Object at location ... not found" error instead of
+the Spark-expected behavior (which may silently skip missing files depending on configuration). The fallback check
+for `ignoreMissingFiles` may not trigger correctly in all cases.
+
+**Plan structure differences ([#3315]).**
+The `native_datafusion` scan produces different plan nodes and partitioning information than Spark expects.
+`CometNativeScan` is used instead of `CometScanExec` or `FileSourceScanExec`, and `UnknownPartitioning` is reported
+instead of preserving the original partitioning information. This can cause failures in tests that assert on plan
+structure, partitioning, or broadcast join selection.
+
+**Plan serialization crashes ([#3320]).**
+Some query patterns can cause `CometNativeExec` to be executed without a serialized plan, resulting in a
+`CometRuntimeException`. This occurs when `CometNativeScan` is included in a plan but plan serialization to the
+native side did not happen, typically because the query is executed in a non-standard way that bypasses the normal
+`CometSparkSessionExtensions` hooks (e.g., certain filter push-down test patterns).
+
+**Streaming self-union ([#3401]).**
+Streaming queries that perform a self-union using the DataSource V1 API return no results when using the
+`native_datafusion` scan. This affects structured streaming workloads that union a stream with itself.
+
+[#3311]: https://github.com/apache/datafusion-comet/issues/3311
+[#3313]: https://github.com/apache/datafusion-comet/issues/3313
+[#3314]: https://github.com/apache/datafusion-comet/issues/3314
+[#3315]: https://github.com/apache/datafusion-comet/issues/3315
+[#3320]: https://github.com/apache/datafusion-comet/issues/3320
+[#3401]: https://github.com/apache/datafusion-comet/issues/3401
+
 The `native_iceberg_compat` scan has the following additional limitation that may produce incorrect results
 without falling back to Spark:
 
