@@ -108,6 +108,12 @@ fn is_type_promotion(logical: &DataType, physical: &DataType) -> bool {
         (Timestamp(_, _), Timestamp(_, _)) => false,
         // Timestamp to/from Int64 (nanosAsLong) is handled by the adapter
         (Timestamp(_, _), Int64) | (Int64, Timestamp(_, _)) => false,
+        // Unsigned-to-signed mappings are Parquet physical type conversions, not evolution.
+        // Parquet UINT_8→Spark ShortType, UINT_16→IntegerType, UINT_32→LongType,
+        // UINT_64→Decimal(20,0). The adapter handles these via allow_cast_unsigned_ints.
+        (_, UInt8 | UInt16 | UInt32 | UInt64) => false,
+        // FixedSizeBinary→Binary is a Parquet FIXED_LEN_BYTE_ARRAY mapping
+        (Binary, FixedSizeBinary(_)) | (LargeBinary, FixedSizeBinary(_)) => false,
         // Complex types: compare element types recursively, ignore field metadata
         (List(l), List(p)) | (LargeList(l), LargeList(p)) => {
             is_type_promotion(l.data_type(), p.data_type())
