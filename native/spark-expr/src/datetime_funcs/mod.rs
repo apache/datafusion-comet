@@ -16,6 +16,7 @@
 // under the License.
 
 mod date_diff;
+mod date_from_unix_date;
 mod date_trunc;
 mod extract_date_part;
 mod make_date;
@@ -23,6 +24,7 @@ mod timestamp_trunc;
 mod unix_timestamp;
 
 pub use date_diff::SparkDateDiff;
+pub use date_from_unix_date::SparkDateFromUnixDate;
 pub use date_trunc::SparkDateTrunc;
 pub use extract_date_part::SparkHour;
 pub use extract_date_part::SparkMinute;
