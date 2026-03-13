@@ -256,12 +256,14 @@ trait ShimSparkErrorConverter {
         val logicalType = params.getOrElse("logicalType", "").toString
         val physicalType = params.getOrElse("physicalType", "").toString
         Some(
-          QueryExecutionErrors.unsupportedSchemaColumnConvertError(
-            "unknown",
-            column,
-            logicalType,
-            physicalType,
-            null))
+          new SparkException(
+            errorClass = "FAILED_READ_FILE.PARQUET_COLUMN_DATA_TYPE_MISMATCH",
+            messageParameters = Map(
+              "filePath" -> "unknown",
+              "column" -> column,
+              "logicalType" -> logicalType,
+              "physicalType" -> physicalType),
+            cause = null))
 
       case _ =>
         // Unknown error type - return None to trigger fallback
