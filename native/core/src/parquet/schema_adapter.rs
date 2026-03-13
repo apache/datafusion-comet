@@ -95,19 +95,52 @@ fn remap_physical_schema_names(
     Arc::new(Schema::new(remapped_fields))
 }
 
-/// Returns true if the two types differ only in timestamp timezone metadata
-/// (e.g., Timestamp(us, Some("UTC")) vs Timestamp(us, None)). This is not a
-/// real schema evolution — the adapter handles it as a metadata-only relabeling.
-fn is_timestamp_timezone_only_diff(logical: &DataType, physical: &DataType) -> bool {
-    matches!(
-        (logical, physical),
-        (DataType::Timestamp(lu, _), DataType::Timestamp(pu, _)) if lu == pu
-    )
+/// Returns true if the two types represent a real type promotion that constitutes
+/// schema evolution (e.g., Int32→Int64, Float32→Float64). Returns false for
+/// differences the adapter handles natively (timestamp timezone/unit changes,
+/// list/map/struct field name or nullability differences).
+fn is_type_promotion(logical: &DataType, physical: &DataType) -> bool {
+    use DataType::*;
+    match (logical, physical) {
+        // Same type — no promotion
+        (a, b) if a == b => false,
+        // Timestamp differences (unit, timezone) are handled by the adapter
+        (Timestamp(_, _), Timestamp(_, _)) => false,
+        // Timestamp to/from Int64 (nanosAsLong) is handled by the adapter
+        (Timestamp(_, _), Int64) | (Int64, Timestamp(_, _)) => false,
+        // Complex types: compare element types recursively, ignore field metadata
+        (List(l), List(p)) | (LargeList(l), LargeList(p)) => {
+            is_type_promotion(l.data_type(), p.data_type())
+        }
+        (Map(lf, _), Map(pf, _)) => {
+            // Map entries have key and value fields
+            let l_entries = lf.data_type();
+            let p_entries = pf.data_type();
+            if let (Struct(l_fields), Struct(p_fields)) = (l_entries, p_entries) {
+                l_fields
+                    .iter()
+                    .zip(p_fields.iter())
+                    .any(|(lf, pf)| is_type_promotion(lf.data_type(), pf.data_type()))
+            } else {
+                true
+            }
+        }
+        (Struct(l_fields), Struct(p_fields)) => l_fields.iter().any(|lf| {
+            p_fields
+                .iter()
+                .find(|pf| pf.name() == lf.name())
+                .is_some_and(|pf| is_type_promotion(lf.data_type(), pf.data_type()))
+        }),
+        // Different base scalar types — this is real type promotion
+        _ => true,
+    }
 }
 
 /// Check if the logical (table) schema and physical (file) schema have type
-/// mismatches. Returns an error message describing the first mismatch found,
-/// or None if all types match.
+/// promotions that constitute schema evolution. Returns an error message for
+/// the first real type mismatch found, or None if schemas are compatible.
+/// Ignores differences that the adapter handles natively (timestamp timezone/unit,
+/// list/map/struct field names and nullability).
 fn detect_schema_mismatch(
     logical_schema: &SchemaRef,
     physical_schema: &SchemaRef,
@@ -126,12 +159,7 @@ fn detect_schema_mismatch(
                 .find(|f| f.name().to_lowercase() == logical_field.name().to_lowercase())
         };
         if let Some(physical_field) = physical_field {
-            if logical_field.data_type() != physical_field.data_type()
-                && !is_timestamp_timezone_only_diff(
-                    logical_field.data_type(),
-                    physical_field.data_type(),
-                )
-            {
+            if is_type_promotion(logical_field.data_type(), physical_field.data_type()) {
                 return Some(format!(
                     "Parquet column cannot be converted. \
                      Column: [{}], Expected: {}, Found: {} \
