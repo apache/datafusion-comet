@@ -96,14 +96,22 @@ fn remap_physical_schema_names(
 }
 
 /// Returns true if the two types represent a real type promotion that constitutes
-/// schema evolution (e.g., Int32→Int64, Float32→Float64). Returns false for
-/// differences the adapter handles natively (timestamp timezone/unit changes,
-/// list/map/struct field name or nullability differences).
+/// schema evolution — i.e., a conversion that Spark's vectorized Parquet reader
+/// does NOT support natively (e.g., Binary→Timestamp). Returns false for
+/// conversions the reader handles without schema evolution (integer family casts,
+/// decimal widening, timestamp timezone/unit changes, etc.).
 fn is_type_promotion(logical: &DataType, physical: &DataType) -> bool {
     use DataType::*;
     match (logical, physical) {
         // Same type — no promotion
         (a, b) if a == b => false,
+        // Integer family: Spark's vectorized reader supports INT32 → byte/short/int/long
+        // and INT64 → long. These are standard Parquet type mappings, not schema evolution.
+        (Int8 | Int16 | Int32 | Int64, Int8 | Int16 | Int32 | Int64) => false,
+        // Float widening: Spark supports FLOAT → double
+        (Float64, Float32) => false,
+        // Decimal: Spark supports reading decimals with different precision/scale
+        (Decimal128(_, _), Decimal128(_, _)) | (Decimal256(_, _), Decimal256(_, _)) => false,
         // Timestamp differences (unit, timezone) are handled by the adapter
         (Timestamp(_, _), Timestamp(_, _)) => false,
         // Timestamp to/from Int64 (nanosAsLong) is handled by the adapter
@@ -112,8 +120,14 @@ fn is_type_promotion(logical: &DataType, physical: &DataType) -> bool {
         // Parquet UINT_8→Spark ShortType, UINT_16→IntegerType, UINT_32→LongType,
         // UINT_64→Decimal(20,0). The adapter handles these via allow_cast_unsigned_ints.
         (_, UInt8 | UInt16 | UInt32 | UInt64) => false,
-        // FixedSizeBinary→Binary is a Parquet FIXED_LEN_BYTE_ARRAY mapping
-        (Binary, FixedSizeBinary(_)) | (LargeBinary, FixedSizeBinary(_)) => false,
+        // Binary/String family: Spark supports BINARY → string and vice versa
+        (Utf8 | LargeUtf8 | Binary | LargeBinary, Utf8 | LargeUtf8 | Binary | LargeBinary) => false,
+        // FixedSizeBinary→Binary/String is a Parquet FIXED_LEN_BYTE_ARRAY mapping
+        (Binary | LargeBinary | Utf8 | LargeUtf8, FixedSizeBinary(_)) => false,
+        // Integer/Float to String: Spark handles this for partition column overlap
+        (Utf8 | LargeUtf8, Int8 | Int16 | Int32 | Int64 | Float32 | Float64) => false,
+        // Date ↔ Int32: Parquet stores dates as INT32
+        (Date32, Int32) | (Int32, Date32) => false,
         // Complex types: compare element types recursively, ignore field metadata
         (List(l), List(p)) | (LargeList(l), LargeList(p)) => {
             is_type_promotion(l.data_type(), p.data_type())
@@ -612,10 +626,14 @@ mod test {
             as Arc<dyn arrow::array::Array>;
         let batch = RecordBatch::try_new(Arc::clone(&file_schema), vec![ids, names]).unwrap();
 
-        // Read as Int64 (widening) with schema evolution disabled
+        // Read Utf8 as Timestamp (incompatible) with schema evolution disabled
         let required_schema = Arc::new(Schema::new(vec![
-            Field::new("id", DataType::Int64, false),
-            Field::new("name", DataType::Utf8, false),
+            Field::new("id", DataType::Int32, false),
+            Field::new(
+                "name",
+                DataType::Timestamp(arrow::datatypes::TimeUnit::Microsecond, None),
+                false,
+            ),
         ]));
 
         let result =
@@ -628,13 +646,6 @@ mod test {
         assert!(
             err_msg.contains("Parquet column cannot be converted"),
             "Error should mention column conversion: {err_msg}"
-        );
-
-        // Same read with schema evolution enabled should succeed
-        let result = roundtrip_with_schema_evolution(&batch, required_schema, true).await;
-        assert!(
-            result.is_ok(),
-            "Expected success when schema evolution is enabled"
         );
     }
 
