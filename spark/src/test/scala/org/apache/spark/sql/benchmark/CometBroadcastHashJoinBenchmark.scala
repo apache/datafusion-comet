@@ -89,7 +89,7 @@ object CometBroadcastHashJoinBenchmark extends CometBenchmarkBase {
       spark.read.parquet(broadcastDir).createOrReplaceTempView("broadcast")
 
       val query =
-        s"SELECT /*+ BROADCAST(broadcast) */ s.value, b.payload " +
+        "SELECT /*+ BROADCAST(broadcast) */ s.value, b.payload " +
           s"FROM streamed s $joinType JOIN broadcast b ON s.key = b.key"
 
       withTempTable("streamed", "broadcast") {

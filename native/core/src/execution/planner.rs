@@ -1693,8 +1693,7 @@ impl PhysicalPlanner {
                         )),
                     ))
                 } else {
-                    let swapped_hash_join =
-                        hash_join.as_ref().swap_inputs(partition_mode)?;
+                    let swapped_hash_join = hash_join.as_ref().swap_inputs(partition_mode)?;
 
                     let mut additional_native_plans = vec![];
                     if swapped_hash_join.as_any().is::<ProjectionExec>() {

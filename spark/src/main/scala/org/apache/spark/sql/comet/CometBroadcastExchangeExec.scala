@@ -19,7 +19,7 @@
 
 package org.apache.spark.sql.comet
 
-import java.io.{ByteArrayInputStream, ByteArrayOutputStream, DataInputStream}
+import java.io.{ByteArrayInputStream, ByteArrayOutputStream}
 import java.nio.channels.Channels
 import java.util.UUID
 import java.util.concurrent.{ConcurrentHashMap, Future, TimeoutException, TimeUnit}
@@ -36,7 +36,6 @@ import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.catalyst.plans.logical.Statistics
 import org.apache.spark.sql.catalyst.plans.physical.{BroadcastMode, BroadcastPartitioning, Partitioning}
 import org.apache.spark.sql.comet.execution.arrow.ArrowReaderIterator
-import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.errors.QueryExecutionErrors
 import org.apache.spark.sql.execution.{ColumnarToRowExec, SparkPlan, SQLExecution}
 import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, ShuffleQueryStageExec}
