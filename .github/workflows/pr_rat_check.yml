@@ -37,7 +37,7 @@ jobs:
     name: RAT License Check
     runs-on: ubuntu-slim
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Set up Java
         uses: actions/setup-java@v4
         with:
