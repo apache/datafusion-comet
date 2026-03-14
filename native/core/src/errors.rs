@@ -418,10 +418,7 @@ fn throw_exception(env: &mut JNIEnv, error: &CometError, backtrace: Option<Strin
                     if error_msg.contains("not found")
                         && error_msg.contains("No such file or directory")
                     {
-                        let spark_error =
-                            SparkError::FileNotFound {
-                                message: error_msg,
-                            };
+                        let spark_error = SparkError::FileNotFound { message: error_msg };
                         throw_spark_error_as_json(env, &spark_error)
                     } else {
                         // Not a SparkError, use generic exception
@@ -444,9 +441,7 @@ fn throw_exception(env: &mut JNIEnv, error: &CometError, backtrace: Option<Strin
                 if error_msg.contains("not found")
                     && error_msg.contains("No such file or directory")
                 {
-                    let spark_error = SparkError::FileNotFound {
-                        message: error_msg,
-                    };
+                    let spark_error = SparkError::FileNotFound { message: error_msg };
                     throw_spark_error_as_json(env, &spark_error)
                 } else {
                     let exception = error.to_exception();
