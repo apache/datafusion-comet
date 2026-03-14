@@ -19,11 +19,15 @@
 
 package org.apache.comet.vector
 
+import java.nio.channels.ReadableByteChannel
+
 import scala.collection.mutable
+import scala.collection.mutable.ArrayBuffer
 
 import org.apache.arrow.c.{ArrowArray, ArrowImporter, ArrowSchema, CDataDictionaryProvider, Data}
-import org.apache.arrow.vector.VectorSchemaRoot
-import org.apache.arrow.vector.dictionary.DictionaryProvider
+import org.apache.arrow.vector.{FieldVector, VectorSchemaRoot}
+import org.apache.arrow.vector.dictionary.{Dictionary, DictionaryProvider}
+import org.apache.arrow.vector.ipc.ArrowStreamReader
 import org.apache.spark.SparkException
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -309,5 +313,67 @@ object NativeUtil {
       CometVector.getVector(vector, true, provider)
     }
     new ColumnarBatch(vectors.toArray, arrowRoot.getRowCount)
+  }
+
+  /**
+   * Reads all Arrow IPC batches from a channel and returns them as an array of independent
+   * ColumnarBatch objects. Each batch's vectors are transferred to new allocations so they don't
+   * reference the stream reader's internal state and can be safely cached and reused.
+   */
+  def materializeBatches(channel: ReadableByteChannel): Array[ColumnarBatch] = {
+    val allocator = CometArrowAllocator
+    val allBatches = new ArrayBuffer[ColumnarBatch]()
+    val arrowReader = new ArrowStreamReader(channel, allocator)
+
+    // Lazily copy dictionaries on first batch load
+    var dictProvider: DictionaryProvider = null
+
+    while (arrowReader.loadNextBatch()) {
+      if (dictProvider == null) {
+        dictProvider = copyDictionaries(arrowReader)
+      }
+
+      val root = arrowReader.getVectorSchemaRoot
+      val numRows = root.getRowCount
+
+      // Transfer each field vector to an independent allocation.
+      // transfer() moves buffer ownership, leaving the originals empty for reuse
+      // by the next loadNextBatch() call.
+      val fieldVectors = new java.util.ArrayList[FieldVector]()
+      root.getFieldVectors.forEach { vec =>
+        val tp = vec.getTransferPair(allocator)
+        tp.transfer()
+        fieldVectors.add(tp.getTo.asInstanceOf[FieldVector])
+      }
+
+      val newRoot = new VectorSchemaRoot(fieldVectors)
+      newRoot.setRowCount(numRows)
+      allBatches += rootAsBatch(newRoot, dictProvider)
+    }
+
+    arrowReader.close()
+    allBatches.toArray
+  }
+
+  /**
+   * Copy dictionary vectors from the reader's provider so they persist after the reader is
+   * closed. If there are no dictionaries, returns the reader itself as a no-op provider.
+   */
+  private def copyDictionaries(reader: ArrowStreamReader): DictionaryProvider = {
+    val dictIds = reader.getDictionaryIds
+    if (dictIds.isEmpty) {
+      return reader
+    }
+
+    val allocator = CometArrowAllocator
+    val copiedDicts = new java.util.ArrayList[Dictionary]()
+    dictIds.forEach { id =>
+      val dict = reader.lookup(id)
+      val tp = dict.getVector.getTransferPair(allocator)
+      tp.transfer()
+      copiedDicts.add(new Dictionary(tp.getTo.asInstanceOf[FieldVector], dict.getEncoding))
+    }
+    new DictionaryProvider.MapDictionaryProvider(
+      copiedDicts.toArray(new Array[Dictionary](0)): _*)
   }
 }
