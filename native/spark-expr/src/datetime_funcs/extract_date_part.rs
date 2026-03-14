@@ -16,7 +16,6 @@
 // under the License.
 
 use crate::utils::array_with_timezone;
-use arrow::array::{Array, Int32Array};
 use arrow::compute::{date_part, DatePart};
 use arrow::datatypes::{DataType, TimeUnit::Microsecond};
 use datafusion::common::{internal_datafusion_err, ScalarValue};
@@ -103,16 +102,7 @@ macro_rules! extract_date_part {
                             )),
                         )?;
                         let result = date_part(&array, DatePart::$date_part_variant)?;
-                        let result_arr = result
-                            .as_any()
-                            .downcast_ref::<Int32Array>()
-                            .expect(concat!($fn_name, " should return Int32Array"));
-
-                        let scalar_result = if result_arr.is_null(0) {
-                            ScalarValue::Int32(None)
-                        } else {
-                            ScalarValue::Int32(Some(result_arr.value(0)))
-                        };
+                        let scalar_result = ScalarValue::try_from_array(&result, 0)?;
 
                         Ok(ColumnarValue::Scalar(scalar_result))
                     }

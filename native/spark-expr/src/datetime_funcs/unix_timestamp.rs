@@ -16,7 +16,7 @@
 // under the License.
 
 use crate::utils::array_with_timezone;
-use arrow::array::{Array, AsArray, Int64Array, PrimitiveArray};
+use arrow::array::{Array, AsArray, PrimitiveArray};
 use arrow::compute::cast;
 use arrow::datatypes::{DataType, Int64Type, TimeUnit::Microsecond};
 use datafusion::common::{internal_datafusion_err, DataFusionError, ScalarValue};
@@ -95,16 +95,7 @@ impl ScalarUDFImpl for SparkUnixTimestamp {
                     }
                 };
 
-                let int64_array = result_array
-                    .as_any()
-                    .downcast_ref::<Int64Array>()
-                    .expect("unix_timestamp should return Int64Array");
-
-                let scalar_result = if int64_array.is_null(0) {
-                    ScalarValue::Int64(None)
-                } else {
-                    ScalarValue::Int64(Some(int64_array.value(0)))
-                };
+                let scalar_result = ScalarValue::try_from_array(&result_array, 0)?;
 
                 Ok(ColumnarValue::Scalar(scalar_result))
             }
