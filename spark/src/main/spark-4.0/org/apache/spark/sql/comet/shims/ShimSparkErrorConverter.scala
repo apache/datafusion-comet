@@ -254,9 +254,16 @@ trait ShimSparkErrorConverter {
             context.headOption.orNull))
 
       case "FileNotFound" =>
+        val msg = params("message").toString
+        // Extract file path from native error message and format like Hadoop's
+        // FileNotFoundException: "File <path> does not exist"
+        val path = "Object at location (.+?) not found".r
+          .findFirstMatchIn(msg)
+          .map(_.group(1))
+          .getOrElse(msg)
         Some(
           QueryExecutionErrors.readCurrentFileNotFoundError(
-            new FileNotFoundException(params("message").toString)))
+            new FileNotFoundException(s"File $path does not exist")))
 
       case _ =>
         // Unknown error type - return None to trigger fallback
