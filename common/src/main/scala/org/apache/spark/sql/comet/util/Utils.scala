@@ -279,7 +279,7 @@ object Utils extends CometTypeShim with Logging {
       // since merging dictionaries across batches is not supported.
       if (hasDictionary) {
         logInfo(
-          s"Broadcast coalesce falling back to per-batch serialization due to " +
+          "Broadcast coalesce falling back to per-batch serialization due to " +
             s"dictionary-encoded vectors (${decoded.length} batches)")
         return decoded.flatMap { batch =>
           serializeBatches(Iterator(batch)).map(_._2)
