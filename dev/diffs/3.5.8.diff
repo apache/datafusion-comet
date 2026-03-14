@@ -502,7 +502,7 @@ index a206e97c353..79813d8e259 100644
  
    test("SPARK-35884: Explain Formatted") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/FileBasedDataSourceSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/FileBasedDataSourceSuite.scala
-index 93275487f29..510e3087e0f 100644
+index 93275487f29..55902457a16 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/FileBasedDataSourceSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/FileBasedDataSourceSuite.scala
 @@ -23,6 +23,7 @@ import java.nio.file.{Files, StandardOpenOption}
@@ -521,16 +521,7 @@ index 93275487f29..510e3087e0f 100644
  import org.apache.spark.sql.execution.{FileSourceScanLike, SimpleMode}
  import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
  import org.apache.spark.sql.execution.datasources.FilePartition
-@@ -250,6 +252,8 @@ class FileBasedDataSourceSuite extends QueryTest
-               case "" => "_LEGACY_ERROR_TEMP_2062"
-               case _ => "_LEGACY_ERROR_TEMP_2055"
-             }
-+            // native_datafusion Parquet scan cannot throw a SparkFileNotFoundException
-+            assume(CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_DATAFUSION)
-             checkErrorMatchPVals(
-               exception = intercept[SparkException] {
-                 testIgnoreMissingFiles(options)
-@@ -639,7 +643,8 @@ class FileBasedDataSourceSuite extends QueryTest
+@@ -639,7 +641,8 @@ class FileBasedDataSourceSuite extends QueryTest
    }
  
    Seq("parquet", "orc").foreach { format =>
@@ -540,7 +531,7 @@ index 93275487f29..510e3087e0f 100644
        withTempDir { dir =>
          val tableName = s"spark_25132_${format}_native"
          val tableDir = dir.getCanonicalPath + s"/$tableName"
-@@ -955,6 +960,7 @@ class FileBasedDataSourceSuite extends QueryTest
+@@ -955,6 +958,7 @@ class FileBasedDataSourceSuite extends QueryTest
              assert(bJoinExec.isEmpty)
              val smJoinExec = collect(joinedDF.queryExecution.executedPlan) {
                case smJoin: SortMergeJoinExec => smJoin
@@ -548,7 +539,7 @@ index 93275487f29..510e3087e0f 100644
              }
              assert(smJoinExec.nonEmpty)
            }
-@@ -1015,6 +1021,7 @@ class FileBasedDataSourceSuite extends QueryTest
+@@ -1015,6 +1019,7 @@ class FileBasedDataSourceSuite extends QueryTest
  
            val fileScan = df.queryExecution.executedPlan collectFirst {
              case BatchScanExec(_, f: FileScan, _, _, _, _) => f
@@ -556,7 +547,7 @@ index 93275487f29..510e3087e0f 100644
            }
            assert(fileScan.nonEmpty)
            assert(fileScan.get.partitionFilters.nonEmpty)
-@@ -1056,6 +1063,7 @@ class FileBasedDataSourceSuite extends QueryTest
+@@ -1056,6 +1061,7 @@ class FileBasedDataSourceSuite extends QueryTest
  
            val fileScan = df.queryExecution.executedPlan collectFirst {
              case BatchScanExec(_, f: FileScan, _, _, _, _) => f
@@ -564,7 +555,7 @@ index 93275487f29..510e3087e0f 100644
            }
            assert(fileScan.nonEmpty)
            assert(fileScan.get.partitionFilters.isEmpty)
-@@ -1240,6 +1248,9 @@ class FileBasedDataSourceSuite extends QueryTest
+@@ -1240,6 +1246,9 @@ class FileBasedDataSourceSuite extends QueryTest
            val filters = df.queryExecution.executedPlan.collect {
              case f: FileSourceScanLike => f.dataFilters
              case b: BatchScanExec => b.scan.asInstanceOf[FileScan].dataFilters
@@ -965,7 +956,7 @@ index 3cf2bfd17ab..49728c35c42 100644
        SQLConf.ANSI_ENABLED.key -> "true") {
        withTable("t") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/StringFunctionsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/StringFunctionsSuite.scala
-index fa1a64460fc..1d2e215d6a3 100644
+index fa1a64460fc..134f0db1fb8 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/StringFunctionsSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/StringFunctionsSuite.scala
 @@ -17,6 +17,8 @@
@@ -1423,7 +1414,7 @@ index 47679ed7865..9ffbaecb98e 100644
      assert(collectWithSubqueries(plan) { case s: SortAggregateExec => s }.length == sortAggCount)
    }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/SQLViewSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/SQLViewSuite.scala
-index a1147c16cc8..c7a29496328 100644
+index a1147c16cc8..90085de90d4 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/SQLViewSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/SQLViewSuite.scala
 @@ -19,6 +19,7 @@ package org.apache.spark.sql.execution
@@ -1434,16 +1425,6 @@ index a1147c16cc8..c7a29496328 100644
  import org.apache.spark.sql.catalyst.TableIdentifier
  import org.apache.spark.sql.catalyst.expressions.{Add, Alias, Divide}
  import org.apache.spark.sql.catalyst.parser.ParseException
-@@ -968,7 +969,8 @@ abstract class SQLViewSuite extends QueryTest with SQLTestUtils {
-     }
-   }
- 
--  test("alter temporary view should follow current storeAnalyzedPlanForView config") {
-+  test("alter temporary view should follow current storeAnalyzedPlanForView config",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3314")) {
-     withTable("t") {
-       Seq(2, 3, 1).toDF("c1").write.format("parquet").saveAsTable("t")
-       withView("v1") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/SQLWindowFunctionSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/SQLWindowFunctionSuite.scala
 index eec396b2e39..bf3f1c769d6 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/SQLWindowFunctionSuite.scala
@@ -2038,7 +2019,7 @@ index 07e2849ce6f..3e73645b638 100644
        ParquetOutputFormat.WRITER_VERSION -> ParquetProperties.WriterVersion.PARQUET_2_0.toString
      )
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFilterSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFilterSuite.scala
-index 8e88049f51e..49f2001dc6b 100644
+index 8e88049f51e..e21a5797996 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFilterSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFilterSuite.scala
 @@ -1095,7 +1095,11 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
@@ -2127,17 +2108,7 @@ index 8e88049f51e..49f2001dc6b 100644
      val schema = StructType(Seq(
        StructField("a", IntegerType, nullable = false)
      ))
-@@ -1933,7 +1949,8 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
-     }
-   }
- 
--  test("SPARK-25207: exception when duplicate fields in case-insensitive mode") {
-+  test("SPARK-25207: exception when duplicate fields in case-insensitive mode",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3311")) {
-     withTempPath { dir =>
-       val count = 10
-       val tableName = "spark_25207"
-@@ -1984,7 +2001,8 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
+@@ -1984,7 +2000,8 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
      }
    }
  
@@ -2147,7 +2118,7 @@ index 8e88049f51e..49f2001dc6b 100644
      // block 1:
      //                      null count  min                                       max
      // page-0                         0  0                                         99
-@@ -2044,7 +2062,8 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
+@@ -2044,7 +2061,8 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
      }
    }
  
@@ -2157,7 +2128,7 @@ index 8e88049f51e..49f2001dc6b 100644
      withTempPath { dir =>
        val path = dir.getCanonicalPath
        spark.range(100).selectExpr("id * 2 AS id")
-@@ -2276,7 +2295,11 @@ class ParquetV1FilterSuite extends ParquetFilterSuite {
+@@ -2276,7 +2294,11 @@ class ParquetV1FilterSuite extends ParquetFilterSuite {
            assert(pushedParquetFilters.exists(_.getClass === filterClass),
              s"${pushedParquetFilters.map(_.getClass).toList} did not contain ${filterClass}.")
  
@@ -2170,7 +2141,7 @@ index 8e88049f51e..49f2001dc6b 100644
          } else {
            assert(selectedFilters.isEmpty, "There is filter pushed down")
          }
-@@ -2336,7 +2359,11 @@ class ParquetV2FilterSuite extends ParquetFilterSuite {
+@@ -2336,7 +2358,11 @@ class ParquetV2FilterSuite extends ParquetFilterSuite {
            assert(pushedParquetFilters.exists(_.getClass === filterClass),
              s"${pushedParquetFilters.map(_.getClass).toList} did not contain ${filterClass}.")
  
