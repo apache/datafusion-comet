@@ -32,7 +32,9 @@ import org.apache.arrow.vector.dictionary.DictionaryProvider
 import org.apache.arrow.vector.ipc.ArrowStreamWriter
 import org.apache.arrow.vector.types._
 import org.apache.arrow.vector.types.pojo.{ArrowType, Field, FieldType, Schema}
+import org.apache.arrow.vector.util.VectorSchemaRootAppender
 import org.apache.spark.{SparkEnv, SparkException}
+import org.apache.spark.internal.Logging
 import org.apache.spark.io.CompressionCodec
 import org.apache.spark.sql.comet.execution.arrow.ArrowReaderIterator
 import org.apache.spark.sql.types._
@@ -43,7 +45,7 @@ import org.apache.comet.Constants.COMET_CONF_DIR_ENV
 import org.apache.comet.shims.CometTypeShim
 import org.apache.comet.vector.CometVector
 
-object Utils extends CometTypeShim {
+object Utils extends CometTypeShim with Logging {
   def getConfPath(confFileName: String): String = {
     sys.env
       .get(COMET_CONF_DIR_ENV)
@@ -250,6 +252,75 @@ object Utils extends CometTypeShim {
     val ins = new DataInputStream(codec.compressedInputStream(cbbis))
     // batches are in Arrow IPC format
     new ArrowReaderIterator(Channels.newChannel(ins), source)
+  }
+
+  /**
+   * Coalesces many small ChunkedByteBuffers (one per source partition) into a single
+   * ChunkedByteBuffer containing one Arrow IPC stream with one record batch. This avoids each
+   * consumer partition having to deserialize N separate streams.
+   */
+  def coalesceBroadcastBatches(input: Iterator[ChunkedByteBuffer]): Array[ChunkedByteBuffer] = {
+    val decoded = input.flatMap(decodeBatches(_, "broadcast-coalesce")).toArray
+    if (decoded.isEmpty) {
+      return Array.empty
+    }
+
+    try {
+      var hasDictionary = false
+      val sourceRoots = decoded.map { batch =>
+        val (fieldVectors, providerOpt) = getBatchFieldVectors(batch)
+        if (providerOpt.isDefined) {
+          hasDictionary = true
+        }
+        new VectorSchemaRoot(fieldVectors.asJava)
+      }
+
+      // Fall back to per-batch serialization if any batch has dictionary-encoded vectors,
+      // since merging dictionaries across batches is not supported.
+      if (hasDictionary) {
+        logInfo(
+          s"Broadcast coalesce falling back to per-batch serialization due to " +
+            s"dictionary-encoded vectors (${decoded.length} batches)")
+        return decoded.flatMap { batch =>
+          serializeBatches(Iterator(batch)).map(_._2)
+        }
+      }
+
+      val allocator = org.apache.comet.CometArrowAllocator
+        .newChildAllocator("broadcast-coalesce", 0, Long.MaxValue)
+      try {
+        val schema = sourceRoots.head.getSchema
+        val targetRoot = VectorSchemaRoot.create(schema, allocator)
+        try {
+          VectorSchemaRootAppender.append(targetRoot, sourceRoots: _*)
+
+          val expectedRows = decoded.map(_.numRows().toLong).sum
+          assert(
+            targetRoot.getRowCount.toLong == expectedRows,
+            s"Row count mismatch after coalesce: ${targetRoot.getRowCount} != $expectedRows")
+
+          logInfo(
+            s"Coalesced ${decoded.length} broadcast batches into 1 " +
+              s"($expectedRows rows)")
+
+          val codec = CompressionCodec.createCodec(SparkEnv.get.conf)
+          val cbbos = new ChunkedByteBufferOutputStream(1024 * 1024, ByteBuffer.allocate)
+          val out = new DataOutputStream(codec.compressedOutputStream(cbbos))
+          val writer = new ArrowStreamWriter(targetRoot, null, Channels.newChannel(out))
+          writer.start()
+          writer.writeBatch()
+          writer.close()
+
+          Array(cbbos.toChunkedByteBuffer)
+        } finally {
+          targetRoot.close()
+        }
+      } finally {
+        allocator.close()
+      }
+    } finally {
+      decoded.foreach(_.close())
+    }
   }
 
   def getBatchFieldVectors(
