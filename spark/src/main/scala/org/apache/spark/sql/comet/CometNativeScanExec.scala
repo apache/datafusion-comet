@@ -202,8 +202,14 @@ case class CometNativeScanExec(
 
   override def hashCode(): Int = Objects.hashCode(originalPlan, serializedPlanOpt)
 
-  override lazy val metrics: Map[String, SQLMetric] =
-    CometMetricNode.nativeScanMetrics(session.sparkContext)
+  override lazy val metrics: Map[String, SQLMetric] = {
+    val nativeMetrics = CometMetricNode.nativeScanMetrics(session.sparkContext)
+    // Map native metric names to Spark metric names
+    nativeMetrics.get("output_rows") match {
+      case Some(metric) => nativeMetrics + ("numOutputRows" -> metric)
+      case None => nativeMetrics
+    }
+  }
 
   /**
    * See [[org.apache.spark.sql.execution.DataSourceScanExec.inputRDDs]]. Only used for tests.
