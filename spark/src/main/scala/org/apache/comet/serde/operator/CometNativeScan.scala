@@ -23,7 +23,7 @@ import scala.collection.mutable.ListBuffer
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.internal.Logging
-import org.apache.spark.sql.catalyst.expressions.{DynamicPruningExpression, Expression, Literal, PlanExpression}
+import org.apache.spark.sql.catalyst.expressions.{Expression, Literal, PlanExpression}
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
 import org.apache.spark.sql.comet.{CometNativeExec, CometNativeScanExec, CometScanExec}
 import org.apache.spark.sql.execution.FileSourceScanExec
@@ -84,7 +84,7 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
   }
 
   private def isDynamicPruningFilter(e: Expression): Boolean =
-    e.isInstanceOf[DynamicPruningExpression] || e.exists(_.isInstanceOf[PlanExpression[_]])
+    e.exists(_.isInstanceOf[PlanExpression[_]])
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] = None
 
