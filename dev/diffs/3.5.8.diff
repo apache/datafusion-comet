@@ -1133,6 +1133,31 @@ index d269290e616..13726a31e07 100644
                  }.isDefined === sortExpected)
                }
              }
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/connector/FileDataSourceV2FallBackSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/connector/FileDataSourceV2FallBackSuite.scala
+index cfc8b2cc845..c4be7eb3731 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/connector/FileDataSourceV2FallBackSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/connector/FileDataSourceV2FallBackSuite.scala
+@@ -21,6 +21,7 @@ import scala.collection.mutable.ArrayBuffer
+ import org.apache.spark.SparkConf
+ import org.apache.spark.sql.{AnalysisException, QueryTest}
+ import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
++import org.apache.spark.sql.comet.{CometNativeScanExec, CometScanExec}
+ import org.apache.spark.sql.connector.catalog.{SupportsRead, SupportsWrite, Table, TableCapability}
+ import org.apache.spark.sql.connector.read.ScanBuilder
+ import org.apache.spark.sql.connector.write.{LogicalWriteInfo, WriteBuilder}
+@@ -184,7 +185,11 @@ class FileDataSourceV2FallBackSuite extends QueryTest with SharedSparkSession {
+             val df = spark.read.format(format).load(path.getCanonicalPath)
+             checkAnswer(df, inputData.toDF())
+             assert(
+-              df.queryExecution.executedPlan.exists(_.isInstanceOf[FileSourceScanExec]))
++              df.queryExecution.executedPlan.exists {
++                case _: FileSourceScanExec | _: CometScanExec | _: CometNativeScanExec => true
++                case _ => false
++              }
++            )
+           }
+         } finally {
+           spark.listenerManager.unregister(listener)
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/connector/KeyGroupedPartitioningSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/connector/KeyGroupedPartitioningSuite.scala
 index 71e030f535e..d5ae6cbf3d5 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/connector/KeyGroupedPartitioningSuite.scala
