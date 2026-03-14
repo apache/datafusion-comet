@@ -35,6 +35,7 @@ import org.apache.parquet.example.data.simple.SimpleGroup
 import org.apache.parquet.schema.MessageTypeParser
 import org.apache.spark.SparkException
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
+import org.apache.spark.sql.catalyst.expressions.GetArrayItem
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.comet.{CometNativeScanExec, CometScanExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
@@ -1505,7 +1506,9 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
         withParquetTable(path.toUri.toString, "complex_types") {
           Seq(CometConf.SCAN_NATIVE_DATAFUSION, CometConf.SCAN_NATIVE_ICEBERG_COMPAT).foreach(
             scanMode => {
-              withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> scanMode) {
+              withSQLConf(
+                CometConf.COMET_NATIVE_SCAN_IMPL.key -> scanMode,
+                CometConf.getExprAllowIncompatConfigKey(classOf[GetArrayItem]) -> "true") {
                 checkSparkAnswerAndOperator(sql("select * from complex_types"))
                 // First level
                 checkSparkAnswerAndOperator(sql(
