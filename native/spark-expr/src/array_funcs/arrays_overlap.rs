@@ -306,14 +306,10 @@ mod tests {
 
     #[test]
     fn test_no_overlap() -> Result<()> {
-        let left = ListArray::from_iter_primitive::<Int32Type, _, _>(vec![Some(vec![
-            Some(1),
-            Some(2),
-        ])]);
-        let right = ListArray::from_iter_primitive::<Int32Type, _, _>(vec![Some(vec![
-            Some(3),
-            Some(4),
-        ])]);
+        let left =
+            ListArray::from_iter_primitive::<Int32Type, _, _>(vec![Some(vec![Some(1), Some(2)])]);
+        let right =
+            ListArray::from_iter_primitive::<Int32Type, _, _>(vec![Some(vec![Some(3), Some(4)])]);
         let result = arrays_overlap_inner(&left, &right)?;
         assert!(!result.value(0));
         assert!(!result.is_null(0));
@@ -341,14 +337,10 @@ mod tests {
     #[test]
     fn test_null_only_overlap_returns_null() -> Result<()> {
         // array(1, NULL) vs array(NULL, 2): no common non-null, but both have nulls -> null
-        let left = ListArray::from_iter_primitive::<Int32Type, _, _>(vec![Some(vec![
-            Some(1),
-            None,
-        ])]);
-        let right = ListArray::from_iter_primitive::<Int32Type, _, _>(vec![Some(vec![
-            None,
-            Some(2),
-        ])]);
+        let left =
+            ListArray::from_iter_primitive::<Int32Type, _, _>(vec![Some(vec![Some(1), None])]);
+        let right =
+            ListArray::from_iter_primitive::<Int32Type, _, _>(vec![Some(vec![None, Some(2)])]);
         let result = arrays_overlap_inner(&left, &right)?;
         assert!(result.is_null(0));
         Ok(())
@@ -379,10 +371,10 @@ mod tests {
         // Matches the issue: 5 rows
         let left = ListArray::from_iter_primitive::<Int32Type, _, _>(vec![
             Some(vec![Some(1), Some(2), Some(3)]), // overlap with right -> true
-            Some(vec![Some(1), Some(2)]),           // no overlap -> false
-            Some(vec![]),                           // empty -> false
+            Some(vec![Some(1), Some(2)]),          // no overlap -> false
+            Some(vec![]),                          // empty -> false
             None,                                  // null array -> null
-            Some(vec![Some(1), None]),              // null but no overlap -> null
+            Some(vec![Some(1), None]),             // null but no overlap -> null
         ]);
         let right = ListArray::from_iter_primitive::<Int32Type, _, _>(vec![
             Some(vec![Some(3), Some(4), Some(5)]),
