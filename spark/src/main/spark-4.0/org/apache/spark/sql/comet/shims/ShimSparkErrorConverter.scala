@@ -19,6 +19,8 @@
 
 package org.apache.spark.sql.comet.shims
 
+import java.io.FileNotFoundException
+
 import org.apache.spark.QueryContext
 import org.apache.spark.SparkException
 import org.apache.spark.sql.errors.QueryExecutionErrors
@@ -250,6 +252,11 @@ trait ShimSparkErrorConverter {
         Some(
           QueryExecutionErrors.withoutSuggestionIntervalArithmeticOverflowError(
             context.headOption.orNull))
+
+      case "FileNotFound" =>
+        Some(
+          QueryExecutionErrors.readCurrentFileNotFoundError(
+            new FileNotFoundException(params("message").toString)))
 
       case _ =>
         // Unknown error type - return None to trigger fallback

@@ -19,6 +19,8 @@
 
 package org.apache.spark.sql.comet.shims
 
+import java.io.FileNotFoundException
+
 import org.apache.spark.{QueryContext, SparkException}
 import org.apache.spark.sql.catalyst.trees.SQLQueryContext
 import org.apache.spark.sql.errors.QueryExecutionErrors
@@ -242,6 +244,11 @@ trait ShimSparkErrorConverter {
         Some(
           QueryExecutionErrors
             .intervalArithmeticOverflowError("Interval arithmetic overflow", "", sqlCtx(context)))
+
+      case "FileNotFound" =>
+        Some(
+          QueryExecutionErrors.readCurrentFileNotFoundError(
+            new FileNotFoundException(params("message").toString)))
 
       case _ =>
         None

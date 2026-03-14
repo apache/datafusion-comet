@@ -413,7 +413,42 @@ fn throw_exception(env: &mut JNIEnv, error: &CometError, backtrace: Option<Strin
                     // Fall back to plain SparkError (no context)
                     throw_spark_error_as_json(env, spark_error)
                 } else {
-                    // Not a SparkError, use generic exception
+                    // Check for file-not-found errors from object store
+                    let error_msg = e.to_string();
+                    if error_msg.contains("not found")
+                        && error_msg.contains("No such file or directory")
+                    {
+                        let spark_error =
+                            SparkError::FileNotFound {
+                                message: error_msg,
+                            };
+                        throw_spark_error_as_json(env, &spark_error)
+                    } else {
+                        // Not a SparkError, use generic exception
+                        let exception = error.to_exception();
+                        match backtrace {
+                            Some(backtrace_string) => env.throw_new(
+                                exception.class,
+                                to_stacktrace_string(exception.msg, backtrace_string).unwrap(),
+                            ),
+                            _ => env.throw_new(exception.class, exception.msg),
+                        }
+                    }
+                }
+            }
+            // Handle direct SparkError - serialize to JSON
+            CometError::Spark(spark_error) => throw_spark_error_as_json(env, spark_error),
+            _ => {
+                // Check for file-not-found errors that may arrive through other wrapping paths
+                let error_msg = error.to_string();
+                if error_msg.contains("not found")
+                    && error_msg.contains("No such file or directory")
+                {
+                    let spark_error = SparkError::FileNotFound {
+                        message: error_msg,
+                    };
+                    throw_spark_error_as_json(env, &spark_error)
+                } else {
                     let exception = error.to_exception();
                     match backtrace {
                         Some(backtrace_string) => env.throw_new(
@@ -422,18 +457,6 @@ fn throw_exception(env: &mut JNIEnv, error: &CometError, backtrace: Option<Strin
                         ),
                         _ => env.throw_new(exception.class, exception.msg),
                     }
-                }
-            }
-            // Handle direct SparkError - serialize to JSON
-            CometError::Spark(spark_error) => throw_spark_error_as_json(env, spark_error),
-            _ => {
-                let exception = error.to_exception();
-                match backtrace {
-                    Some(backtrace_string) => env.throw_new(
-                        exception.class,
-                        to_stacktrace_string(exception.msg, backtrace_string).unwrap(),
-                    ),
-                    _ => env.throw_new(exception.class, exception.msg),
                 }
             }
         }
