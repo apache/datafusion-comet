@@ -80,6 +80,7 @@ object_store_opendal = {version = "0.55.0", optional = true}
 hdfs-sys = {version = "0.3", optional = true, features = ["hdfs_3_3"]}
 opendal = { version ="0.55.0", optional = true, features = ["services-hdfs"] }
 iceberg = { workspace = true }
+iceberg-storage-opendal = { workspace = true }
 serde_json = "1.0"
 uuid = "1.21.0"
 
@@ -96,7 +97,7 @@ jni = { version = "0.21", features = ["invocation"] }
 lazy_static = "1.4"
 assertables = "9"
 hex = "0.4.3"
-datafusion-functions-nested = { version = "52.0.0" }
+datafusion-functions-nested = { version = "52.3.0" }
 
 [features]
 backtrace = ["datafusion/backtrace"]
@@ -132,4 +133,8 @@ harness = false
 
 [[bench]]
 name = "parquet_decode"
+harness = false
+
+[[bench]]
+name = "array_element_append"
 harness = false

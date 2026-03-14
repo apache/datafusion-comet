@@ -19,7 +19,7 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Abs, Atan2, Attribute, Ceil, CheckOverflow, Expression, Floor, Hex, If, LessThanOrEqual, Literal, Log, Log10, Log2, Unhex}
+import org.apache.spark.sql.catalyst.expressions.{Abs, Atan2, Attribute, Ceil, CheckOverflow, Expression, Floor, Hex, If, LessThanOrEqual, Literal, Log, Log10, Log2, Tan, Unhex}
 import org.apache.spark.sql.types.{DecimalType, NumericType}
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
@@ -38,6 +38,18 @@ object CometAtan2 extends CometExpressionSerde[Atan2] {
 }
 
 object CometCeil extends CometExpressionSerde[Ceil] {
+
+  override def getSupportLevel(expr: Ceil): SupportLevel = {
+    expr.child.dataType match {
+      case _: DecimalType =>
+        Incompatible(
+          Some(
+            "Incorrect results for Decimal type inputs" +
+              " (https://github.com/apache/datafusion-comet/issues/1729)"))
+      case _ => Compatible()
+    }
+  }
+
   override def convert(
       expr: Ceil,
       inputs: Seq[Attribute],
@@ -58,6 +70,18 @@ object CometCeil extends CometExpressionSerde[Ceil] {
 }
 
 object CometFloor extends CometExpressionSerde[Floor] {
+
+  override def getSupportLevel(expr: Floor): SupportLevel = {
+    expr.child.dataType match {
+      case _: DecimalType =>
+        Incompatible(
+          Some(
+            "Incorrect results for Decimal type inputs" +
+              " (https://github.com/apache/datafusion-comet/issues/1729)"))
+      case _ => Compatible()
+    }
+  }
+
   override def convert(
       expr: Floor,
       inputs: Seq[Attribute],
@@ -171,6 +195,24 @@ object CometAbs extends CometExpressionSerde[Abs] with MathExprBase {
         childExpr,
         failOnErrorExpr)
     optExprWithInfo(optExpr, expr, expr.child)
+  }
+}
+
+object CometTan extends CometExpressionSerde[Tan] {
+
+  override def getSupportLevel(expr: Tan): SupportLevel =
+    Incompatible(
+      Some(
+        "tan(-0.0) produces incorrect result" +
+          " (https://github.com/apache/datafusion-comet/issues/1897)"))
+
+  override def convert(
+      expr: Tan,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val childExpr = expr.children.map(exprToProtoInternal(_, inputs, binding))
+    val optExpr = scalarFunctionExprToProto("tan", childExpr: _*)
+    optExprWithInfo(optExpr, expr, expr.children: _*)
   }
 }
 

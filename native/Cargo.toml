@@ -38,10 +38,10 @@ arrow = { version = "57.3.0", features = ["prettyprint", "ffi", "chrono-tz"] }
 async-trait = { version = "0.1" }
 bytes = { version = "1.11.1" }
 parquet = { version = "57.3.0", default-features = false, features = ["experimental"] }
-datafusion = { version = "52.1.0", default-features = false, features = ["unicode_expressions", "crypto_expressions", "nested_expressions", "parquet"] }
-datafusion-datasource = { version = "52.1.0" }
-datafusion-physical-expr-adapter = { version = "52.1.0" }
-datafusion-spark = { version = "52.1.0" }
+datafusion = { version = "52.3.0", default-features = false, features = ["unicode_expressions", "crypto_expressions", "nested_expressions", "parquet"] }
+datafusion-datasource = { version = "52.3.0" }
+datafusion-physical-expr-adapter = { version = "52.3.0" }
+datafusion-spark = { version = "52.3.0" }
 datafusion-comet-spark-expr = { path = "spark-expr" }
 datafusion-comet-proto = { path = "proto" }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
@@ -55,7 +55,8 @@ object_store = { version = "0.12.3", features = ["gcp", "azure", "aws", "http"] 
 url = "2.2"
 aws-config = "1.8.14"
 aws-credential-types = "1.2.13"
-iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "b24ab63" }
+iceberg = { git = "https://github.com/apache/iceberg-rust", tag = "v0.9.0-rc.1" }
+iceberg-storage-opendal = { git = "https://github.com/apache/iceberg-rust", tag = "v0.9.0-rc.1", features = ["opendal-all"] }
 
 [profile.release]
 debug = true
@@ -70,4 +71,6 @@ strip = "debuginfo"
 inherits = "release"
 lto = false          # Skip LTO for faster linking
 codegen-units = 16   # Parallel codegen (faster compile, slightly larger binary)
+debug-assertions = true
+panic = "unwind"     # Allow panics to be caught and logged across FFI boundary
 # overflow-checks inherited as false from release

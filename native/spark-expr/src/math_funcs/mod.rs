@@ -26,6 +26,7 @@ mod negative;
 mod round;
 pub(crate) mod unhex;
 mod utils;
+mod wide_decimal_binary_expr;
 
 pub use ceil::spark_ceil;
 pub use div::spark_decimal_div;
@@ -36,3 +37,4 @@ pub use modulo_expr::create_modulo_expr;
 pub use negative::{create_negate_expr, NegativeExpr};
 pub use round::spark_round;
 pub use unhex::spark_unhex;
+pub use wide_decimal_binary_expr::{WideDecimalBinaryExpr, WideDecimalOp};
