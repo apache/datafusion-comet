@@ -19,8 +19,6 @@
 
 package org.apache.spark.sql.comet.shims
 
-import java.io.FileNotFoundException
-
 import org.apache.spark.QueryContext
 import org.apache.spark.SparkException
 import org.apache.spark.SparkFileNotFoundException
