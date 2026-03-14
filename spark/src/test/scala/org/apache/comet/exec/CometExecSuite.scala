@@ -175,7 +175,7 @@ class CometExecSuite extends CometTestBase {
           val (_, cometPlan) = checkSparkAnswer(df)
           val infos = new ExtendedExplainInfo().generateExtendedInfo(cometPlan)
           assert(
-            infos.contains("dynamic partition pruning"),
+            infos.contains("subqueries/dynamic pruning"),
             s"Expected native_datafusion to fall back for DPP but got:\n$infos")
         }
       }
