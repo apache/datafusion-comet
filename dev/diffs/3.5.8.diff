@@ -76,7 +76,7 @@ index 27ae10b3d59..78e69902dfd 100644
      val extensionConfClassNames = sparkContext.getConf.get(StaticSQLConf.SPARK_SESSION_EXTENSIONS)
        .getOrElse(Seq.empty)
 +    val extensionClassNames = extensionConfClassNames ++ loadCometExtension(sparkContext)
-     extensionConfClassNames.foreach { extensionConfClassName =>
+     extensionClassNames.foreach { extensionConfClassName =>
        try {
          val extensionConfClass = Utils.classForName(extensionConfClassName)
 @@ -1396,4 +1405,12 @@ object SparkSession extends Logging {
