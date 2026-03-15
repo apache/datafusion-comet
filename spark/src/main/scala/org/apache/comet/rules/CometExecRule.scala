@@ -47,7 +47,7 @@ import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
-import org.apache.comet.{CometConf, CometExplainInfo, ExtendedExplainInfo}
+import org.apache.comet.{CometConf, CometExplainInfo, CometMetricsListener, ExtendedExplainInfo}
 import org.apache.comet.CometConf.{COMET_SPARK_TO_ARROW_ENABLED, COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST}
 import org.apache.comet.CometSparkSessionExtensions._
 import org.apache.comet.rules.CometExecRule.allExecs
@@ -386,6 +386,8 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       } else {
         normalizedPlan
       }
+
+      CometMetricsListener.ensureRegistered(session)
 
       var newPlan = transform(planWithJoinRewritten)
 

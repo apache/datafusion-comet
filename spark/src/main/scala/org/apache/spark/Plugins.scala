@@ -57,6 +57,9 @@ class CometDriverPlugin extends DriverPlugin with Logging with ShimCometDriverPl
     // register CometSparkSessionExtensions if it isn't already registered
     CometDriverPlugin.registerCometSessionExtension(sc.conf)
 
+    // Register Comet metrics source
+    sc.env.metricsSystem.registerSource(CometSource)
+
     if (CometSparkSessionExtensions.shouldOverrideMemoryConf(sc.getConf)) {
       val execMemOverhead = if (sc.getConf.contains(EXECUTOR_MEMORY_OVERHEAD.key)) {
         sc.getConf.getSizeAsMb(EXECUTOR_MEMORY_OVERHEAD.key)
