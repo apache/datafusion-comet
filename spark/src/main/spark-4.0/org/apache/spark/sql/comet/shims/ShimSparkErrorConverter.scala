@@ -19,12 +19,18 @@
 
 package org.apache.spark.sql.comet.shims
 
+import scala.util.matching.Regex
+
 import org.apache.spark.QueryContext
 import org.apache.spark.SparkException
 import org.apache.spark.SparkFileNotFoundException
 import org.apache.spark.sql.errors.QueryExecutionErrors
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
+
+object ShimSparkErrorConverter {
+  val ObjectLocationPattern: Regex = "Object at location (.+?) not found".r
+}
 
 /**
  * Spark 4.0-specific implementation for converting error types to proper Spark exceptions.
@@ -256,7 +262,7 @@ trait ShimSparkErrorConverter {
         val msg = params("message").toString
         // Extract file path from native error message and format like Hadoop's
         // FileNotFoundException: "File <path> does not exist"
-        val path = "Object at location (.+?) not found".r
+        val path = ShimSparkErrorConverter.ObjectLocationPattern
           .findFirstMatchIn(msg)
           .map(_.group(1))
           .getOrElse(msg)
