@@ -157,7 +157,6 @@ case class CometBroadcastExchangeExec(
 
         // Coalesce many small per-partition buffers into a single buffer so each
         // consumer partition only deserializes one Arrow IPC stream.
-        // May produce multiple buffers if dictionary-encoded vectors are present.
         val batches = Utils.coalesceBroadcastBatches(input)
 
         val dataSize = batches.map(_.size).sum

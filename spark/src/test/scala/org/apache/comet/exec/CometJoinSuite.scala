@@ -383,4 +383,59 @@ class CometJoinSuite extends CometTestBase {
         """.stripMargin))
     }
   }
+
+  test("Broadcast hash join build-side batch coalescing") {
+    // Use many shuffle partitions to produce many small broadcast batches,
+    // then verify that coalescing reduces the build-side batch count to 1 per task.
+    val numPartitions = 512
+    withSQLConf(
+      CometConf.COMET_BATCH_SIZE.key -> "100",
+      SQLConf.PREFER_SORTMERGEJOIN.key -> "false",
+      "spark.sql.join.forceApplyShuffledHashJoin" -> "true",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.SHUFFLE_PARTITIONS.key -> numPartitions.toString) {
+      withParquetTable((0 until 10000).map(i => (i, i % 5)), "tbl_a") {
+        withParquetTable((0 until 10000).map(i => (i % 10, i + 2)), "tbl_b") {
+          // Force a shuffle on tbl_a before broadcast so the broadcast source has
+          // numPartitions partitions, not just the number of parquet files.
+          val query =
+            s"""SELECT /*+ BROADCAST(a) */ *
+               |FROM (SELECT /*+ REPARTITION($numPartitions) */ * FROM tbl_a) a
+               |JOIN tbl_b ON a._2 = tbl_b._1""".stripMargin
+
+          // First verify correctness
+          val df = sql(query)
+          checkSparkAnswerAndOperator(
+            df,
+            Seq(classOf[CometBroadcastExchangeExec], classOf[CometBroadcastHashJoinExec]))
+
+          // Run again and check metrics on the executed plan
+          val df2 = sql(query)
+          df2.collect()
+
+          val joins = collect(df2.queryExecution.executedPlan) {
+            case j: CometBroadcastHashJoinExec => j
+          }
+          assert(joins.nonEmpty, "Expected CometBroadcastHashJoinExec in plan")
+
+          val join = joins.head
+          val buildBatches = join.metrics("build_input_batches").value
+          val buildRows = join.metrics("build_input_rows").value
+
+          // Without coalescing, build_input_batches would be ~numPartitions per task,
+          // totaling ~numPartitions * numPartitions across all tasks.
+          // With coalescing, each task gets 1 batch, so total ≈ numPartitions.
+          // scalastyle:off println
+          println(s"Build-side metrics: batches=$buildBatches, rows=$buildRows")
+          // scalastyle:on println
+          assert(
+            buildBatches <= numPartitions,
+            s"Expected at most $numPartitions build batches (1 per task), got $buildBatches. " +
+              "Broadcast batch coalescing may not be working.")
+        }
+      }
+    }
+  }
 }
