@@ -287,13 +287,21 @@ object Utils extends CometTypeShim with Logging {
           val channel = Channels.newChannel(ins)
           val reader = new ArrowStreamReader(channel, allocator)
           try {
-            // Dictionary-encoded columns would be unsafe to coalesce because each
+            // Comet decodes dictionaries during execution, so this shouldn't happen.
+            // If it does, fall back to the original uncoalesced buffers because each
             // partition can have a different dictionary, and appending index vectors
             // would silently mix indices from incompatible dictionaries.
-            // DataFusion decodes dictionaries during execution, so this shouldn't happen.
-            assert(
-              reader.getDictionaryVectors.isEmpty,
-              "Cannot coalesce dictionary-encoded broadcast batches")
+            if (!reader.getDictionaryVectors.isEmpty) {
+              logWarning(
+                "Unexpected dictionary-encoded column during BroadcastExchange coalescing; " +
+                  "skipping coalesce")
+              reader.close()
+              if (targetRoot != null) {
+                targetRoot.close()
+                targetRoot = null
+              }
+              return (buffers, 0L, 0L)
+            }
             while (reader.loadNextBatch()) {
               val sourceRoot = reader.getVectorSchemaRoot
               if (targetRoot == null) {
@@ -322,7 +330,7 @@ object Utils extends CometTypeShim with Logging {
         val outCodec = CompressionCodec.createCodec(SparkEnv.get.conf)
         val cbbos = new ChunkedByteBufferOutputStream(1024 * 1024, ByteBuffer.allocate)
         val out = new DataOutputStream(outCodec.compressedOutputStream(cbbos))
-        // null provider is safe here because we assert no dictionary-encoded columns above
+        // null provider is safe here because we check for dictionary-encoded columns above
         val writer = new ArrowStreamWriter(targetRoot, null, Channels.newChannel(out))
         try {
           writer.start()
