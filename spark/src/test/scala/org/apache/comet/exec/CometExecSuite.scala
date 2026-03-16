@@ -474,6 +474,10 @@ class CometExecSuite extends CometTestBase {
           val expected = (0 until numParts).flatMap(_ => (0 until 5).map(i => i + 1)).sorted
 
           assert(rowContents === expected)
+
+          val metrics = nativeBroadcast.metrics
+          assert(metrics("numCoalescedBatches").value == 5L)
+          assert(metrics("numCoalescedRows").value == 5L)
         }
       }
     }
