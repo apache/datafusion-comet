@@ -220,7 +220,10 @@ object CometSortArray extends CometExpressionSerde[SortArray] {
         true
       case _: DateType | _: TimestampType | _: TimestampNTZType =>
         true
-      case _: NullType =>
+      // DataFusion's array_sort compares nested arrays through Arrow's rank kernel.
+      // That kernel does not support Struct or Null child values,
+      // so array<array<struct<...>>> and array<array<null>> would fail at runtime.
+      case _: NullType if !nestedInArray =>
         true
       case _: BooleanType | _: BinaryType | _: StringType =>
         true
