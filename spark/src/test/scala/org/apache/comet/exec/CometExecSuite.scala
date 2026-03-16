@@ -497,6 +497,10 @@ class CometExecSuite extends CometTestBase {
           }.get.asInstanceOf[CometBroadcastExchangeExec]
           val rows = nativeBroadcast.executeCollect()
           assert(rows.isEmpty)
+
+          val metrics = nativeBroadcast.metrics
+          assert(metrics("numCoalescedBatches").value == 0L)
+          assert(metrics("numCoalescedRows").value == 0L)
         }
       }
     }
