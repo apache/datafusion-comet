@@ -52,14 +52,10 @@ object CometArrayExpressionBenchmark extends CometBenchmarkBase {
                |  cast((value + 5) % 100 as int) as search_val
                |FROM $tbl""".stripMargin))
 
-        val extraConfigs =
-          Map("spark.comet.expression.ArrayPosition.allowIncompatible" -> "true")
-
         runExpressionBenchmark(
           "array_position - int array",
           values,
-          "SELECT array_position(int_arr, search_val) FROM parquetV1Table",
-          extraConfigs)
+          "SELECT array_position(int_arr, search_val) FROM parquetV1Table")
       }
     }
 
@@ -84,14 +80,10 @@ object CometArrayExpressionBenchmark extends CometBenchmarkBase {
                |  cast((value + 5) % 100 as string) as search_val
                |FROM $tbl""".stripMargin))
 
-        val extraConfigs =
-          Map("spark.comet.expression.ArrayPosition.allowIncompatible" -> "true")
-
         runExpressionBenchmark(
           "array_position - string array",
           values,
-          "SELECT array_position(str_arr, search_val) FROM parquetV1Table",
-          extraConfigs)
+          "SELECT array_position(str_arr, search_val) FROM parquetV1Table")
       }
     }
   }

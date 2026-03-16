@@ -15,7 +15,6 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Config: spark.comet.expression.ArrayPosition.allowIncompatible=true
 -- ConfigMatrix: parquet.enable.dictionary=false,true
 
 statement
@@ -188,7 +187,7 @@ INSERT INTO test_ap_nan VALUES
   (array(cast(1.0 as float), cast('NaN' as float), cast(2.0 as float)), cast('NaN' as float)),
   (array(cast(1.0 as float), cast(2.0 as float)), cast('NaN' as float))
 
-query ignore(NaN equality: IEEE 754 says NaN != NaN but Spark treats NaN == NaN)
+query
 SELECT array_position(arr, val) FROM test_ap_nan
 
 -- decimal arrays

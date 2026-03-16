@@ -86,6 +86,27 @@ macro_rules! find_position_primitive {
     }};
 }
 
+/// Float-aware comparison that treats NaN == NaN (matching Spark's ordering.equiv() semantics).
+macro_rules! find_position_float {
+    ($list_items:expr, $element:expr, $row_index:expr, $arrow_type:ty) => {{
+        let items = $list_items.as_primitive::<$arrow_type>();
+        let search = $element.as_primitive::<$arrow_type>();
+        let search_val = search.value($row_index);
+        let search_is_nan = search_val.is_nan();
+        let mut pos: i64 = 0;
+        for i in 0..items.len() {
+            if !items.is_null(i) {
+                let item_val = items.value(i);
+                if (search_is_nan && item_val.is_nan()) || item_val == search_val {
+                    pos = (i + 1) as i64;
+                    break;
+                }
+            }
+        }
+        pos
+    }};
+}
+
 fn find_position_in_row(
     list_items: &ArrayRef,
     element: &ArrayRef,
@@ -109,12 +130,8 @@ fn find_position_in_row(
         DataType::Int16 => find_position_primitive!(list_items, element, row_index, Int16Type),
         DataType::Int32 => find_position_primitive!(list_items, element, row_index, Int32Type),
         DataType::Int64 => find_position_primitive!(list_items, element, row_index, Int64Type),
-        DataType::Float32 => {
-            find_position_primitive!(list_items, element, row_index, Float32Type)
-        }
-        DataType::Float64 => {
-            find_position_primitive!(list_items, element, row_index, Float64Type)
-        }
+        DataType::Float32 => find_position_float!(list_items, element, row_index, Float32Type),
+        DataType::Float64 => find_position_float!(list_items, element, row_index, Float64Type),
         DataType::Decimal128(_, _) => {
             find_position_primitive!(list_items, element, row_index, Decimal128Type)
         }
