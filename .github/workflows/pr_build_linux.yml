@@ -88,6 +88,7 @@ jobs:
             maven_opts: "-Pspark-4.0"
       fail-fast: false
     steps:
+      - uses: runs-on/action@cd2b598b0515d39d78c38a02d529db87d2196d1e  # v2.0.3
       - uses: actions/checkout@v6
 
       - name: Setup Rust & Java toolchain
