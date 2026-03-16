@@ -31,6 +31,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.comet.CometConf
 
 class CometJoinSuite extends CometTestBase {
+
   import testImplicits._
 
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
@@ -359,27 +360,27 @@ class CometJoinSuite extends CometTestBase {
       checkSparkAnswer(left.join(right, ($"left.N" === $"right.N") && ($"right.N" =!= 3), "full"))
 
       checkSparkAnswer(sql("""
-            |SELECT l.a, count(*)
-            |FROM allNulls l FULL OUTER JOIN upperCaseData r ON (l.a = r.N)
-            |GROUP BY l.a
+          |SELECT l.a, count(*)
+          |FROM allNulls l FULL OUTER JOIN upperCaseData r ON (l.a = r.N)
+          |GROUP BY l.a
         """.stripMargin))
 
       checkSparkAnswer(sql("""
-            |SELECT r.N, count(*)
-            |FROM allNulls l FULL OUTER JOIN upperCaseData r ON (l.a = r.N)
-            |GROUP BY r.N
+          |SELECT r.N, count(*)
+          |FROM allNulls l FULL OUTER JOIN upperCaseData r ON (l.a = r.N)
+          |GROUP BY r.N
           """.stripMargin))
 
       checkSparkAnswer(sql("""
-            |SELECT l.N, count(*)
-            |FROM upperCaseData l FULL OUTER JOIN allNulls r ON (l.N = r.a)
-            |GROUP BY l.N
+          |SELECT l.N, count(*)
+          |FROM upperCaseData l FULL OUTER JOIN allNulls r ON (l.N = r.a)
+          |GROUP BY l.N
           """.stripMargin))
 
       checkSparkAnswer(sql("""
-            |SELECT r.a, count(*)
-            |FROM upperCaseData l FULL OUTER JOIN allNulls r ON (l.N = r.a)
-            |GROUP BY r.a
+          |SELECT r.a, count(*)
+          |FROM upperCaseData l FULL OUTER JOIN allNulls r ON (l.N = r.a)
+          |GROUP BY r.a
         """.stripMargin))
     }
   }
@@ -422,7 +423,6 @@ class CometJoinSuite extends CometTestBase {
 
           val join = joins.head
           val buildBatches = join.metrics("build_input_batches").value
-          val buildRows = join.metrics("build_input_rows").value
 
           // Without coalescing, build_input_batches would be ~numPartitions per task,
           // totaling ~numPartitions * numPartitions across all tasks.
@@ -444,9 +444,7 @@ class CometJoinSuite extends CometTestBase {
           assert(
             coalescedBatches >= numPartitions,
             s"Expected at least $numPartitions coalesced batches, got $coalescedBatches")
-          assert(
-            coalescedRows == buildRows,
-            s"Expected $buildRows coalesced rows, got $coalescedRows")
+          assert(coalescedRows == 10000, s"Expected 10000 coalesced rows, got $coalescedRows")
         }
       }
     }
