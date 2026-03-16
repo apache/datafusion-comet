@@ -664,6 +664,8 @@ object CometSize extends CometExpressionSerde[Size] {
 
 object CometArrayPosition extends CometExpressionSerde[ArrayPosition] with ArraysBase {
 
+  override def getSupportLevel(expr: ArrayPosition): SupportLevel = Incompatible(None)
+
   override def convert(
       expr: ArrayPosition,
       inputs: Seq[Attribute],

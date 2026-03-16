@@ -22,7 +22,7 @@ mod list_extract;
 mod size;
 
 pub use array_insert::ArrayInsert;
-pub use array_position::{spark_array_position, SparkArrayPositionFunc};
+pub use array_position::SparkArrayPositionFunc;
 pub use get_array_struct_fields::GetArrayStructFields;
 pub use list_extract::ListExtract;
 pub use size::{spark_size, SparkSizeFunc};
