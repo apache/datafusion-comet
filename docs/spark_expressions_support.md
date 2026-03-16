@@ -234,7 +234,7 @@
 
 ### hash_funcs
 
-- [ ] crc32
+- [x] crc32
 - [ ] hash
 - [x] md5
 - [ ] sha
@@ -272,11 +272,11 @@
 - [ ] element_at
 - [ ] map
 - [ ] map_concat
-- [ ] map_contains_key
+- [x] map_contains_key
 - [ ] map_entries
 - [ ] map_from_arrays
 - [ ] map_from_entries
-- [ ] map_keys
+- [x] map_keys
 - [ ] map_values
 - [ ] str_to_map
 - [ ] try_element_at
@@ -349,7 +349,7 @@
 - [x] try_multiply
 - [x] try_subtract
 - [x] unhex
-- [ ] width_bucket
+- [x] width_bucket
 
 ### misc_funcs
 

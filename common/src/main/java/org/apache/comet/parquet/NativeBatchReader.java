@@ -448,7 +448,8 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
           // TODO(SPARK-40059): Allow users to include columns named
           //                    FileFormat.ROW_INDEX_TEMPORARY_COLUMN_NAME in their schemas.
           long[] rowIndices = FileReader.getRowIndices(blocks);
-          columnReaders[i] = new RowIndexColumnReader(nonPartitionFields[i], capacity, rowIndices);
+          columnReaders[i] =
+              new ArrowRowIndexColumnReader(nonPartitionFields[i], capacity, rowIndices);
           hasRowIndexColumn = true;
           missingColumns[i] = true;
         } else if (optFileField.isPresent()) {
@@ -473,8 +474,8 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
                       + filePath);
             }
             if (field.isPrimitive()) {
-              ConstantColumnReader reader =
-                  new ConstantColumnReader(nonPartitionFields[i], capacity, useDecimal128);
+              ArrowConstantColumnReader reader =
+                  new ArrowConstantColumnReader(nonPartitionFields[i], capacity, useDecimal128);
               columnReaders[i] = reader;
               missingColumns[i] = true;
             } else {
@@ -492,8 +493,9 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
         for (int i = fields.size(); i < columnReaders.length; i++) {
           int fieldIndex = i - fields.size();
           StructField field = partitionFields[fieldIndex];
-          ConstantColumnReader reader =
-              new ConstantColumnReader(field, capacity, partitionValues, fieldIndex, useDecimal128);
+          ArrowConstantColumnReader reader =
+              new ArrowConstantColumnReader(
+                  field, capacity, partitionValues, fieldIndex, useDecimal128);
           columnReaders[i] = reader;
         }
       }

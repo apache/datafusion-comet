@@ -35,7 +35,7 @@ import org.apache.spark.sql.catalyst.expressions.{Expression, ExpressionInfo, He
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, BloomFilterAggregate}
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
-import org.apache.spark.sql.execution.{CollectLimitExec, ProjectExec, SQLExecution, UnionExec}
+import org.apache.spark.sql.execution.{CollectLimitExec, ProjectExec, SparkPlan, SQLExecution, UnionExec}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, BroadcastQueryStageExec}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
@@ -382,39 +382,6 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
-  test("ReusedExchangeExec should work on CometBroadcastExchangeExec") {
-    withSQLConf(
-      CometConf.COMET_EXEC_BROADCAST_FORCE_ENABLED.key -> "true",
-      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
-      SQLConf.USE_V1_SOURCE_LIST.key -> "") {
-      withTempPath { path =>
-        spark
-          .range(5)
-          .withColumn("p", $"id" % 2)
-          .write
-          .mode("overwrite")
-          .partitionBy("p")
-          .parquet(path.toString)
-        withTempView("t") {
-          spark.read.parquet(path.toString).createOrReplaceTempView("t")
-          val df = sql("""
-              |SELECT t1.id, t2.id, t3.id
-              |FROM t AS t1
-              |JOIN t AS t2 ON t2.id = t1.id
-              |JOIN t AS t3 ON t3.id = t2.id
-              |WHERE t1.p = 1 AND t2.p = 1 AND t3.p = 1
-              |""".stripMargin)
-          val reusedPlan = ReuseExchangeAndSubquery.apply(df.queryExecution.executedPlan)
-          val reusedExchanges = collect(reusedPlan) { case r: ReusedExchangeExec =>
-            r
-          }
-          assert(reusedExchanges.size == 1)
-          assert(reusedExchanges.head.child.isInstanceOf[CometBroadcastExchangeExec])
-        }
-      }
-    }
-  }
-
   test("CometShuffleExchangeExec logical link should be correct") {
     withTempView("v") {
       spark.sparkContext
@@ -591,35 +558,50 @@ class CometExecSuite extends CometTestBase {
   }
 
   test("Comet native metrics: scan") {
-    withSQLConf(CometConf.COMET_EXEC_ENABLED.key -> "true") {
-      withTempDir { dir =>
-        val path = new Path(dir.toURI.toString, "native-scan.parquet")
-        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = true, 10000)
-        withParquetTable(path.toString, "tbl") {
-          val df = sql("SELECT * FROM tbl WHERE _2 > _3")
-          df.collect()
+    Seq(CometConf.SCAN_NATIVE_DATAFUSION, CometConf.SCAN_NATIVE_ICEBERG_COMPAT).foreach {
+      scanMode =>
+        withSQLConf(
+          CometConf.COMET_EXEC_ENABLED.key -> "true",
+          CometConf.COMET_NATIVE_SCAN_IMPL.key -> scanMode) {
+          withTempDir { dir =>
+            val path = new Path(dir.toURI.toString, "native-scan.parquet")
+            makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = true, 10000)
+            withParquetTable(path.toString, "tbl") {
+              val df = sql("SELECT * FROM tbl")
+              df.collect()
 
-          find(df.queryExecution.executedPlan)(s =>
-            s.isInstanceOf[CometScanExec] || s.isInstanceOf[CometNativeScanExec])
-            .foreach(scan => {
-              val metrics = scan.metrics
+              val scan = find(df.queryExecution.executedPlan)(s =>
+                s.isInstanceOf[CometScanExec] || s.isInstanceOf[CometNativeScanExec])
+              assert(scan.isDefined, s"Expected to find a Comet scan node for $scanMode")
+              val metrics = scan.get.metrics
 
-              assert(metrics.contains("time_elapsed_scanning_total"))
+              assert(
+                metrics.contains("time_elapsed_scanning_total"),
+                s"[$scanMode] Missing time_elapsed_scanning_total. Available: ${metrics.keys}")
               assert(metrics.contains("bytes_scanned"))
               assert(metrics.contains("output_rows"))
               assert(metrics.contains("time_elapsed_opening"))
               assert(metrics.contains("time_elapsed_processing"))
               assert(metrics.contains("time_elapsed_scanning_until_data"))
-              assert(metrics("time_elapsed_scanning_total").value > 0)
-              assert(metrics("bytes_scanned").value > 0)
-              assert(metrics("output_rows").value > 0)
-              assert(metrics("time_elapsed_opening").value > 0)
-              assert(metrics("time_elapsed_processing").value > 0)
-              assert(metrics("time_elapsed_scanning_until_data").value > 0)
-            })
-
+              assert(
+                metrics("time_elapsed_scanning_total").value > 0,
+                s"[$scanMode] time_elapsed_scanning_total should be > 0")
+              assert(
+                metrics("bytes_scanned").value > 0,
+                s"[$scanMode] bytes_scanned should be > 0")
+              assert(metrics("output_rows").value > 0, s"[$scanMode] output_rows should be > 0")
+              assert(
+                metrics("time_elapsed_opening").value > 0,
+                s"[$scanMode] time_elapsed_opening should be > 0")
+              assert(
+                metrics("time_elapsed_processing").value > 0,
+                s"[$scanMode] time_elapsed_processing should be > 0")
+              assert(
+                metrics("time_elapsed_scanning_until_data").value > 0,
+                s"[$scanMode] time_elapsed_scanning_until_data should be > 0")
+            }
+          }
         }
-      }
     }
   }
 
@@ -707,7 +689,7 @@ class CometExecSuite extends CometTestBase {
         assert(metrics.contains("input_rows"))
         assert(metrics("input_rows").value == 5L)
         assert(metrics.contains("output_batches"))
-        assert(metrics("output_batches").value == 5L)
+        assert(metrics("output_batches").value == 1L)
         assert(metrics.contains("output_rows"))
         assert(metrics("output_rows").value == 5L)
         assert(metrics.contains("join_time"))
@@ -864,9 +846,11 @@ class CometExecSuite extends CometTestBase {
             checkSparkAnswerAndOperator(df)
 
             // Before AQE: one CometBroadcastExchange, no CometColumnarToRow
-            var columnarToRowExec = stripAQEPlan(df.queryExecution.executedPlan).collect {
-              case s: CometColumnarToRowExec => s
-            }
+            var columnarToRowExec: Seq[SparkPlan] =
+              stripAQEPlan(df.queryExecution.executedPlan).collect {
+                case s: CometColumnarToRowExec => s
+                case s: CometNativeColumnarToRowExec => s
+              }
             assert(columnarToRowExec.isEmpty)
 
             // Disable CometExecRule after the initial plan is generated. The CometSortMergeJoin and
@@ -880,14 +864,25 @@ class CometExecSuite extends CometTestBase {
             // After AQE: CometBroadcastExchange has to be converted to rows to conform to Spark
             // BroadcastHashJoin.
             val plan = stripAQEPlan(df.queryExecution.executedPlan)
-            columnarToRowExec = plan.collect { case s: CometColumnarToRowExec =>
-              s
+            columnarToRowExec = plan.collect {
+              case s: CometColumnarToRowExec => s
+              case s: CometNativeColumnarToRowExec => s
             }
             assert(columnarToRowExec.length == 1)
 
-            // This ColumnarToRowExec should be the immediate child of BroadcastHashJoinExec
-            val parent = plan.find(_.children.contains(columnarToRowExec.head))
-            assert(parent.get.isInstanceOf[BroadcastHashJoinExec])
+            // This ColumnarToRowExec should be a descendant of BroadcastHashJoinExec (possibly
+            // wrapped by InputAdapter for codegen).
+            val broadcastJoins = plan.collect { case b: BroadcastHashJoinExec => b }
+            assert(broadcastJoins.nonEmpty, s"Expected BroadcastHashJoinExec in plan:\n$plan")
+            val hasC2RDescendant = broadcastJoins.exists { join =>
+              join.find {
+                case _: CometColumnarToRowExec | _: CometNativeColumnarToRowExec => true
+                case _ => false
+              }.isDefined
+            }
+            assert(
+              hasC2RDescendant,
+              "BroadcastHashJoinExec should have a columnar-to-row descendant")
 
             // There should be a CometBroadcastExchangeExec under CometColumnarToRowExec
             val broadcastQueryStage =

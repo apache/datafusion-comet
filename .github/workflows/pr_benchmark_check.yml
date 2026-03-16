@@ -26,6 +26,8 @@ concurrency:
 
 on:
   push:
+    branches:
+      - main
     paths:
       - "native/core/benches/**"
       - "native/spark-expr/benches/**"
@@ -39,6 +41,7 @@ on:
 
 env:
   RUST_VERSION: stable
+  RUST_BACKTRACE: 1
 
 jobs:
   benchmark-check:

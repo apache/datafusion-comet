@@ -20,7 +20,7 @@
 package org.apache.comet.serde
 
 import org.apache.spark.sql.catalyst.expressions._
-import org.apache.spark.sql.types.{ByteType, IntegerType, LongType}
+import org.apache.spark.sql.types.{ByteType, LongType}
 
 import org.apache.comet.serde.QueryPlanSerde._
 
@@ -140,14 +140,4 @@ object CometBitwiseGet extends CometExpressionSerde[BitwiseGet] {
   }
 }
 
-object CometBitwiseCount extends CometExpressionSerde[BitwiseCount] {
-  override def convert(
-      expr: BitwiseCount,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val childProto = exprToProto(expr.child, inputs, binding)
-    val bitCountScalarExpr =
-      scalarFunctionExprToProtoWithReturnType("bit_count", IntegerType, false, childProto)
-    optExprWithInfo(bitCountScalarExpr, expr, expr.children: _*)
-  }
-}
+object CometBitwiseCount extends CometScalarFunction[BitwiseCount]("bit_count")

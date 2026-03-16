@@ -174,8 +174,6 @@ object GenerateDocs {
       w.write("\n".getBytes)
     }
 
-    w.write("<!-- prettier-ignore-end -->\n".getBytes)
-
     // Write annotations if any
     if (annotations.nonEmpty) {
       w.write("\n**Notes:**\n".getBytes)
@@ -183,6 +181,8 @@ object GenerateDocs {
         w.write(s"- **$from -> $to**: $note\n".getBytes)
       }
     }
+
+    w.write("<!-- prettier-ignore-end -->\n".getBytes)
   }
 
   /** Read file into memory */

@@ -36,6 +36,7 @@ import org.apache.spark.util.SerializableConfiguration
 
 import org.apache.comet.CometConf._
 import org.apache.comet.Tracing.withTrace
+import org.apache.comet.exceptions.CometQueryExecutionException
 import org.apache.comet.parquet.CometFileKeyUnwrapper
 import org.apache.comet.serde.Config.ConfigMap
 import org.apache.comet.vector.NativeUtil
@@ -151,6 +152,11 @@ class CometExecIterator(
             })
         })
     } catch {
+      // Handle CometQueryExecutionException with JSON payload first
+      case e: CometQueryExecutionException =>
+        logError(s"Native execution for task $taskAttemptId failed", e)
+        throw SparkErrorConverter.convertToSparkException(e)
+
       case e: CometNativeException =>
         // it is generally considered bad practice to log and then rethrow an
         // exception, but it really helps debugging to be able to see which task
@@ -270,8 +276,19 @@ object CometExecIterator extends Logging {
   def serializeCometSQLConfs(): Array[Byte] = {
     val builder = ConfigMap.newBuilder()
     cometSqlConfs.foreach { case (k, v) =>
-      builder.putEntries(k, v)
+      if (k.startsWith(s"${CometConf.COMET_PREFIX}.datafusion.")) {
+        if (CometConf.COMET_RESPECT_DATAFUSION_CONFIGS.get(SQLConf.get)) {
+          builder.putEntries(k, v)
+        }
+      } else {
+        builder.putEntries(k, v)
+      }
     }
+    // Inject the resolved executor cores so the native side can use it
+    // for tokio runtime thread count
+    val executorCores = numDriverOrExecutorCores(SparkEnv.get.conf)
+    builder.putEntries("spark.executor.cores", executorCores.toString)
+
     builder.build().toByteArray
   }
 

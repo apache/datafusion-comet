@@ -74,16 +74,6 @@ build_native() {
     cd native && cargo build && cd ..
 }
 
-# Install Comet for a specific Spark version
-install_for_spark_version() {
-    local spark_version=$1
-    echo ""
-    echo "=============================================="
-    echo "[INFO] Installing Comet for Spark $spark_version"
-    echo "=============================================="
-    ./mvnw install -DskipTests -Pspark-$spark_version
-}
-
 # Regenerate golden files for a specific Spark version
 regenerate_golden_files() {
     local spark_version=$1
@@ -94,12 +84,12 @@ regenerate_golden_files() {
     echo "=============================================="
 
     echo "[INFO] Running CometTPCDSV1_4_PlanStabilitySuite..."
-    SPARK_GENERATE_GOLDEN_FILES=1 ./mvnw -pl spark \
+    SPARK_GENERATE_GOLDEN_FILES=1 ./mvnw \
         -Dsuites="org.apache.spark.sql.comet.CometTPCDSV1_4_PlanStabilitySuite" \
         -Pspark-$spark_version -nsu test
 
     echo "[INFO] Running CometTPCDSV2_7_PlanStabilitySuite..."
-    SPARK_GENERATE_GOLDEN_FILES=1 ./mvnw -pl spark \
+    SPARK_GENERATE_GOLDEN_FILES=1 ./mvnw \
         -Dsuites="org.apache.spark.sql.comet.CometTPCDSV2_7_PlanStabilitySuite" \
         -Pspark-$spark_version -nsu test
 }
@@ -158,9 +148,8 @@ main() {
         versions=("3.4" "3.5" "4.0")
     fi
 
-    # Install and regenerate for each version
+    # Regenerate for each version
     for version in "${versions[@]}"; do
-        install_for_spark_version "$version"
         regenerate_golden_files "$version"
     done
 

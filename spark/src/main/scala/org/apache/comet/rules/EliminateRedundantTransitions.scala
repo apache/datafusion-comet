@@ -22,7 +22,7 @@ package org.apache.comet.rules
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.sideBySide
-import org.apache.spark.sql.comet.{CometCollectLimitExec, CometColumnarToRowExec, CometNativeColumnarToRowExec, CometNativeWriteExec, CometPlan, CometSparkToColumnarExec}
+import org.apache.spark.sql.comet.{CometCollectLimitExec, CometColumnarToRowExec, CometNativeColumnarToRowExec, CometNativeWriteExec, CometPlan, CometScanExec, CometSparkToColumnarExec}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, RowToColumnarExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.QueryStageExec
@@ -139,12 +139,35 @@ case class EliminateRedundantTransitions(session: SparkSession) extends Rule[Spa
   private def createColumnarToRowExec(child: SparkPlan): SparkPlan = {
     val schema = child.schema
     val useNative = CometConf.COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED.get() &&
-      CometNativeColumnarToRowExec.supportsSchema(schema)
+      CometNativeColumnarToRowExec.supportsSchema(schema) &&
+      !hasScanUsingMutableBuffers(child)
 
     if (useNative) {
       CometNativeColumnarToRowExec(child)
     } else {
       CometColumnarToRowExec(child)
+    }
+  }
+
+  /**
+   * Checks if the plan contains a scan that uses mutable buffers. Native C2R is not compatible
+   * with such scans because the buffers may be modified after C2R reads them.
+   *
+   * This includes:
+   *   - CometScanExec with native_iceberg_compat and partition columns - uses
+   *     ConstantColumnReader
+   */
+  private def hasScanUsingMutableBuffers(op: SparkPlan): Boolean = {
+    op match {
+      case c: QueryStageExec => hasScanUsingMutableBuffers(c.plan)
+      case c: ReusedExchangeExec => hasScanUsingMutableBuffers(c.child)
+      case _ =>
+        op.exists {
+          case scan: CometScanExec =>
+            scan.scanImpl == CometConf.SCAN_NATIVE_ICEBERG_COMPAT &&
+            scan.relation.partitionSchema.nonEmpty
+          case _ => false
+        }
     }
   }
 }

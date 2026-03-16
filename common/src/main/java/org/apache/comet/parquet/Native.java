@@ -22,6 +22,7 @@ package org.apache.comet.parquet;
 import java.nio.ByteBuffer;
 import java.util.Map;
 
+import org.apache.comet.IcebergApi;
 import org.apache.comet.NativeBase;
 
 public final class Native extends NativeBase {
@@ -143,6 +144,7 @@ public final class Native extends NativeBase {
    *
    * @param handle the handle to the native Parquet column reader
    */
+  @IcebergApi
   public static native void resetBatch(long handle);
 
   /**
@@ -221,12 +223,14 @@ public final class Native extends NativeBase {
   public static native void setDecimal(long handle, byte[] value);
 
   /** Set position of row index vector for Iceberg Metadata Column */
+  @IcebergApi
   public static native void setPosition(long handle, long value, int size);
 
   /** Set row index vector for Spark row index metadata column and return vector size */
   public static native int setIndices(long handle, long offset, int size, long[] indices);
 
   /** Set deleted info for Iceberg Metadata Column */
+  @IcebergApi
   public static native void setIsDeleted(long handle, boolean[] isDeleted);
 
   /**
