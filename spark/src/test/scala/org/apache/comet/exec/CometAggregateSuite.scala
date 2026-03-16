@@ -1292,6 +1292,34 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("bitwise aggregates allow Spark partial and Comet final") {
+    withSQLConf(
+      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
+      CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE.key -> "false",
+      CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> "true",
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+      val table = "bitwise_mixed"
+      withTable(table) {
+        sql(
+          s"create table $table(col1 long, col2 int, col3 short, col4 byte, grp int) using parquet")
+        sql(
+          s"insert into $table values" +
+            "(4, 1, 1, 3, 0), (4, 1, 1, 3, 0), (3, 3, 1, 4, 1)," +
+            " (2, 4, 2, 5, 1), (1, 3, 2, 6, 0)")
+
+        // Partial aggregate stays in Spark, final aggregate runs in Comet.
+        checkSparkAnswerAndNumOfAggregates(
+          s"SELECT grp, BIT_AND(col1), BIT_OR(col1), BIT_XOR(col1)," +
+            " BIT_AND(col2), BIT_OR(col2), BIT_XOR(col2)," +
+            " BIT_AND(col3), BIT_OR(col3), BIT_XOR(col3)," +
+            " BIT_AND(col4), BIT_OR(col4), BIT_XOR(col4)" +
+            s" FROM $table GROUP BY grp",
+          1)
+      }
+    }
+  }
+
   def setupAndTestAggregates(
       table: String,
       data: Seq[(Any, Any, Any)],
