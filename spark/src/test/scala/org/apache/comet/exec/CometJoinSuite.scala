@@ -444,7 +444,9 @@ class CometJoinSuite extends CometTestBase {
           assert(
             coalescedBatches >= numPartitions,
             s"Expected at least $numPartitions coalesced batches, got $coalescedBatches")
-          assert(coalescedRows == 10000, s"Expected 10000 coalesced rows, got $coalescedRows")
+          assert(
+            coalescedRows == buildRows,
+            s"Expected $buildRows coalesced rows, got $coalescedRows")
         }
       }
     }
