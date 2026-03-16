@@ -486,13 +486,6 @@ object CometCreateArray extends CometExpressionSerde[CreateArray] {
 
 object CometGetArrayItem extends CometExpressionSerde[GetArrayItem] {
 
-  override def getSupportLevel(expr: GetArrayItem): SupportLevel =
-    Incompatible(
-      Some(
-        "Known correctness issues with index handling" +
-          " (https://github.com/apache/datafusion-comet/issues/3330," +
-          " https://github.com/apache/datafusion-comet/issues/3332)"))
-
   override def convert(
       expr: GetArrayItem,
       inputs: Seq[Attribute],

@@ -26,7 +26,7 @@ INSERT INTO test_get_array_item VALUES (array(10, 20, 30), 0), (array(10, 20, 30
 query spark_answer_only
 SELECT arr[0], arr[1], arr[2] FROM test_get_array_item
 
-query ignore(https://github.com/apache/datafusion-comet/issues/3332)
+query spark_answer_only
 SELECT arr[idx] FROM test_get_array_item
 
 -- literal arguments
