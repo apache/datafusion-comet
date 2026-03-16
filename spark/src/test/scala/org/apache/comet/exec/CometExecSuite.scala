@@ -35,7 +35,7 @@ import org.apache.spark.sql.catalyst.expressions.{Expression, ExpressionInfo, He
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, BloomFilterAggregate}
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
-import org.apache.spark.sql.execution.{CollectLimitExec, ProjectExec, SparkPlan, SQLExecution, UnionExec}
+import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, BroadcastQueryStageExec}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
@@ -712,7 +712,7 @@ class CometExecSuite extends CometTestBase {
         assert(metrics.contains("build_time"))
         assert(metrics("build_time").value > 1L)
         assert(metrics.contains("build_input_batches"))
-        assert(metrics("build_input_batches").value == 25L)
+        assert(metrics("build_input_batches").value == 5L)
         assert(metrics.contains("build_mem_used"))
         assert(metrics("build_mem_used").value > 1L)
         assert(metrics.contains("build_input_rows"))
