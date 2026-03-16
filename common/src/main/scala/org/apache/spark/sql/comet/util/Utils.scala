@@ -260,9 +260,9 @@ object Utils extends CometTypeShim with Logging {
    * deserializes N separate Arrow IPC streams (one per source partition), which dominates
    * build-side time when partition counts are high (e.g. 200+ partitions in TPC-H Q18).
    *
-   * We decode and append all source batches into one VectorSchemaRoot on the driver,
-   * then re-serialize once via ArrowStreamWriter. This is done on the driver (not per-task)
-   * so the cost is paid once rather than once per consumer partition.
+   * We decode and append all source batches into one VectorSchemaRoot on the driver, then
+   * re-serialize once via ArrowStreamWriter. This is done on the driver (not per-task) so the
+   * cost is paid once rather than once per consumer partition.
    */
   def coalesceBroadcastBatches(input: Iterator[ChunkedByteBuffer]): Array[ChunkedByteBuffer] = {
     val buffers = input.filterNot(_.size == 0).toArray
