@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import java.util.Locale
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Concat, Expression, If, InitCap, IsNull, Left, Length, Like, Literal, Lower, RegExpReplace, Right, RLike, StringLPad, StringRepeat, StringRPad, StringSplit, Substring, Upper}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Concat, ConcatWs, Expression, If, InitCap, IsNull, Left, Length, Like, Literal, Lower, RegExpReplace, Right, RLike, StringLPad, StringRepeat, StringRPad, StringSplit, Substring, Upper}
 import org.apache.spark.sql.types.{BinaryType, DataTypes, LongType, StringType}
 import org.apache.spark.unsafe.types.UTF8String
 
@@ -199,6 +199,27 @@ object CometConcat extends CometScalarFunction[Concat]("concat") {
   }
 }
 
+object CometConcatWs extends CometExpressionSerde[ConcatWs] {
+
+  override def convert(expr: ConcatWs, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
+    expr.children.headOption match {
+      // Match Spark behavior: when the separator is NULL, the result of concat_ws is NULL.
+      case Some(Literal(null, _)) =>
+        val nullLiteral = Literal.create(null, expr.dataType)
+        exprToProtoInternal(nullLiteral, inputs, binding)
+
+      case _ if expr.children.forall(_.foldable) =>
+        // Fall back to Spark for all-literal args so ConstantFolding can handle it
+        withInfo(expr, "all arguments are foldable")
+        None
+
+      case _ =>
+        // For all other cases, use the generic scalar function implementation.
+        CometScalarFunction[ConcatWs]("concat_ws").convert(expr, inputs, binding)
+    }
+  }
+}
+
 object CometLike extends CometExpressionSerde[Like] {
 
   override def convert(expr: Like, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
@@ -223,11 +244,11 @@ object CometRLike extends CometExpressionSerde[RLike] {
     expr.right match {
       case Literal(pattern, DataTypes.StringType) =>
         if (!RegExp.isSupportedPattern(pattern.toString) &&
-          !CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.get()) {
+          !CometConf.isExprAllowIncompat("regexp")) {
           withInfo(
             expr,
             s"Regexp pattern $pattern is not compatible with Spark. " +
-              s"Set ${CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.key}=true " +
+              s"Set ${CometConf.getExprAllowIncompatConfigKey("regexp")}=true " +
               "to allow it anyway.")
           None
         } else {
@@ -298,11 +319,11 @@ object CometStringLPad extends CometExpressionSerde[StringLPad] {
 object CometRegExpReplace extends CometExpressionSerde[RegExpReplace] {
   override def getSupportLevel(expr: RegExpReplace): SupportLevel = {
     if (!RegExp.isSupportedPattern(expr.regexp.toString) &&
-      !CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.get()) {
+      !CometConf.isExprAllowIncompat("regexp")) {
       withInfo(
         expr,
         s"Regexp pattern ${expr.regexp} is not compatible with Spark. " +
-          s"Set ${CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.key}=true " +
+          s"Set ${CometConf.getExprAllowIncompatConfigKey("regexp")}=true " +
           "to allow it anyway.")
       return Incompatible()
     }

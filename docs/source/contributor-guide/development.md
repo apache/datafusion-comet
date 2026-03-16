@@ -28,6 +28,79 @@ under the License.
 ├── spark      <- Spark integration
 ```
 
+## Threading Architecture
+
+Comet's native execution runs on a shared tokio multi-threaded runtime. Understanding this
+architecture is important because it affects how you write native operators and JVM callbacks.
+
+### How execution works
+
+Spark calls into native code via JNI from an **executor task thread**. There are two execution
+paths depending on whether the plan reads data from the JVM:
+
+**Async I/O path (no JVM data sources, e.g. Iceberg scans):** The DataFusion stream is spawned
+onto a tokio worker thread and batches are delivered to the executor thread via an `mpsc` channel.
+The executor thread parks in `blocking_recv()` until the next batch is ready. This avoids
+busy-polling on I/O-bound workloads.
+
+**JVM data source path (ScanExec present):** The executor thread calls `block_on()` and polls the
+DataFusion stream directly, interleaving `pull_input_batches()` calls on `Poll::Pending` to feed
+data from the JVM into ScanExec operators.
+
+In both cases, DataFusion operators execute on **tokio worker threads**, not on the Spark executor
+task thread. All Spark tasks on an executor share one tokio runtime.
+
+### Rules for native code
+
+**Do not use `thread_local!` or assume thread identity.** Tokio may run your operator's `poll`
+method on any worker thread, and may move it between threads across polls. Any state must live
+in the operator struct or be shared via `Arc`.
+
+**JNI calls work from any thread, but have overhead.** `JVMClasses::get_env()` calls
+`AttachCurrentThread`, which acquires JVM internal locks. The `AttachGuard` detaches the thread
+when dropped. Repeated attach/detach cycles on tokio workers add overhead, so avoid calling
+into the JVM on hot paths during stream execution.
+
+**Do not call `TaskContext.get()` from JVM callbacks during execution.** Spark's `TaskContext` is
+a `ThreadLocal` on the executor task thread. JVM methods invoked from tokio worker threads will
+see `null`. If you need task metadata, capture it at construction time (in `createPlan` or
+operator setup) and store it in the operator. See `CometTaskMemoryManager` for an example — it
+captures `TaskContext.get().taskMemoryManager()` in its constructor and uses the stored reference
+thereafter.
+
+**Memory pool operations call into the JVM.** `CometUnifiedMemoryPool` and `CometFairMemoryPool`
+call `acquireMemory()` / `releaseMemory()` via JNI whenever DataFusion operators grow or shrink
+memory reservations. This happens on whatever thread the operator is executing on. These calls
+are thread-safe (they use stored `GlobalRef`s, not thread-locals), but they do trigger
+`AttachCurrentThread`.
+
+**Scalar subqueries call into the JVM.** `Subquery::evaluate()` calls static methods on
+`CometScalarSubquery` via JNI. These use a static `HashMap`, not thread-locals, so they are
+safe from any thread.
+
+**Parquet encryption calls into the JVM.** `CometKeyRetriever::retrieve_key()` calls the JVM
+to unwrap decryption keys during Parquet reads. It uses a stored `GlobalRef` and a cached
+`JMethodID`, so it is safe from any thread.
+
+### The tokio runtime
+
+The runtime is created once per executor JVM in a `Lazy<Runtime>` static:
+
+- **Worker threads:** `num_cpus` by default, configurable via `COMET_WORKER_THREADS`
+- **Max blocking threads:** 512 by default, configurable via `COMET_MAX_BLOCKING_THREADS`
+- All async I/O (S3, HTTP, Parquet reads) runs on worker threads as non-blocking futures
+
+### Summary of what is safe and what is not
+
+| Pattern                                   | Safe?  | Notes                                    |
+| ----------------------------------------- | ------ | ---------------------------------------- |
+| `Arc<T>` shared across operators          | Yes    | Standard Rust thread safety              |
+| `JVMClasses::get_env()` from tokio worker | Yes    | Attaches thread to JVM automatically     |
+| `thread_local!` in operator code          | **No** | Tokio moves tasks between threads        |
+| `TaskContext.get()` in JVM callback       | **No** | Returns `null` on non-executor threads   |
+| Storing `JNIEnv` in an operator           | **No** | `JNIEnv` is thread-specific              |
+| Capturing state at plan creation time     | Yes    | Runs on executor thread, store in struct |
+
 ## Development Setup
 
 1. Make sure `JAVA_HOME` is set and point to JDK using [support matrix](../user-guide/latest/installation.md)

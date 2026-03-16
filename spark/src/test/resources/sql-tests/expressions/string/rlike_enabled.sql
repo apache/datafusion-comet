@@ -16,7 +16,7 @@
 -- under the License.
 
 -- Test RLIKE with regexp allowIncompatible enabled (happy path)
--- Config: spark.comet.regexp.allowIncompatible=true
+-- Config: spark.comet.expression.regexp.allowIncompatible=true
 -- ConfigMatrix: parquet.enable.dictionary=false,true
 
 statement
@@ -35,5 +35,5 @@ query
 SELECT s RLIKE '' FROM test_rlike_enabled
 
 -- literal arguments
-query ignore(https://github.com/apache/datafusion-comet/issues/3343)
+query
 SELECT 'hello' RLIKE '^[a-z]+$', '12345' RLIKE '^[a-z]+$', '' RLIKE '', NULL RLIKE 'a'

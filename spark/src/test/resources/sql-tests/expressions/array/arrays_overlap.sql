@@ -15,6 +15,7 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
+-- Config: spark.comet.expression.ArraysOverlap.allowIncompatible=true
 -- ConfigMatrix: parquet.enable.dictionary=false,true
 
 statement
@@ -23,17 +24,17 @@ CREATE TABLE test_arrays_overlap(a array<int>, b array<int>) USING parquet
 statement
 INSERT INTO test_arrays_overlap VALUES (array(1, 2, 3), array(3, 4, 5)), (array(1, 2), array(3, 4)), (array(), array(1)), (NULL, array(1)), (array(1, NULL), array(NULL, 2))
 
-query spark_answer_only
+query ignore(https://github.com/apache/datafusion-comet/issues/3645)
 SELECT arrays_overlap(a, b) FROM test_arrays_overlap
 
 -- column + literal
-query spark_answer_only
+query ignore(https://github.com/apache/datafusion-comet/issues/3645)
 SELECT arrays_overlap(a, array(3, 4, 5)) FROM test_arrays_overlap
 
 -- literal + column
-query spark_answer_only
+query
 SELECT arrays_overlap(array(1, 2, 3), b) FROM test_arrays_overlap
 
 -- literal + literal
-query ignore(https://github.com/apache/datafusion-comet/issues/3338)
+query
 SELECT arrays_overlap(array(1, 2, 3), array(3, 4, 5)), arrays_overlap(array(1, 2), array(3, 4)), arrays_overlap(array(), array(1)), arrays_overlap(cast(NULL as array<int>), array(1))

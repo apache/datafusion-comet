@@ -33,6 +33,7 @@ datafusion = { workspace = true }
 chrono-tz = { workspace = true }
 num = { workspace = true }
 regex = { workspace = true }
+serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = { workspace = true }
 futures = { workspace = true }
@@ -92,6 +93,22 @@ harness = false
 name = "to_csv"
 harness = false
 
+[[bench]]
+name = "cast_int_to_timestamp"
+harness = false
+
 [[test]]
 name = "test_udf_registration"
 path = "tests/spark_expr_reg.rs"
+
+[[bench]]
+name = "cast_from_boolean"
+harness = false
+
+[[bench]]
+name = "wide_decimal"
+harness = false
+
+[[bench]]
+name = "cast_non_int_numeric_timestamp"
+harness = false
