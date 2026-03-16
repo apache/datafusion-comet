@@ -256,14 +256,21 @@ object Utils extends CometTypeShim with Logging {
   }
 
   /**
-   * Coalesces many small ChunkedByteBuffers (one per source partition) into a single
-   * ChunkedByteBuffer. Without coalescing, each consumer task in a broadcast hash join
-   * deserializes N separate Arrow IPC streams (one per source partition), which dominates
-   * build-side time when partition counts are high (e.g. 200+ partitions in TPC-H Q18).
+   * Coalesces many small Arrow IPC batches into a single batch for broadcasting.
    *
-   * We decode and append all source batches into one VectorSchemaRoot on the driver, then
-   * re-serialize once via ArrowStreamWriter. This is done on the driver (not per-task) so the
-   * cost is paid once rather than once per consumer partition.
+   * Why this is necessary: The broadcast exchange collects shuffle output by calling
+   * getByteArrayRdd, which serializes each ColumnarBatch independently into its own
+   * ChunkedByteBuffer. The shuffle reader (CometBlockStoreShuffleReader) produces one
+   * ColumnarBatch per shuffle block, and there is one block per writer task per output partition.
+   * So with W writer tasks and P output partitions, the broadcast collects up to W * P tiny
+   * batches. For example, with 400 writer tasks and 500 partitions, 1M rows would arrive as ~200K
+   * batches of ~5 rows each.
+   *
+   * Without coalescing, every consumer task in the broadcast join would independently deserialize
+   * all of these tiny Arrow IPC streams, paying per-stream overhead (schema parsing, buffer
+   * allocation) for each one. With coalescing, we decode and append all batches into one
+   * VectorSchemaRoot on the driver, then re-serialize once. Each consumer task then deserializes
+   * a single Arrow IPC stream.
    */
   def coalesceBroadcastBatches(
       input: Iterator[ChunkedByteBuffer]): (Array[ChunkedByteBuffer], Long, Long) = {

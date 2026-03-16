@@ -161,8 +161,11 @@ case class CometBroadcastExchangeExec(
         val beforeBuild = System.nanoTime()
         longMetric("collectTime") += NANOSECONDS.toMillis(beforeBuild - beforeCollect)
 
-        // Coalesce many small per-partition buffers into a single buffer so each
-        // consumer partition only deserializes one Arrow IPC stream.
+        // Coalesce the many small per-shuffle-block buffers into a single buffer.
+        // Without this, each consumer task deserializes one Arrow IPC stream per
+        // shuffle block (one per writer task per partition), which is very expensive
+        // when there are hundreds of writer tasks and partitions. See the scaladoc
+        // on coalesceBroadcastBatches for details.
         val (batches, coalescedBatches, coalescedRows) = Utils.coalesceBroadcastBatches(input)
         longMetric("numCoalescedBatches") += coalescedBatches
         longMetric("numCoalescedRows") += coalescedRows
