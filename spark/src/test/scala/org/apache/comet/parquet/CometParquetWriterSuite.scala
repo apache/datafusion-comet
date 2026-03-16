@@ -27,6 +27,7 @@ import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.comet.{CometBatchScanExec, CometNativeScanExec, CometNativeWriteExec, CometScanExec}
 import org.apache.spark.sql.execution.{FileSourceScanExec, QueryExecution, SparkPlan}
 import org.apache.spark.sql.execution.command.DataWritingCommandExec
+import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.StructType
 
@@ -141,34 +142,47 @@ class CometParquetWriterSuite extends CometTestBase {
   }
 
   // Test for issue #3430: SPARK-48817 multi-insert with native writer in Spark 4.x
+  // Uses SQL multi-insert syntax to produce a plan with ReusedExchangeExec,
+  // which exercises the producesArrowData() path in CometExecRule.
   test("parquet write with multi-insert pattern") {
-    withTempPath { dir =>
-      val output1 = new File(dir, "output1.parquet").getAbsolutePath
-      val output2 = new File(dir, "output2.parquet").getAbsolutePath
+    withSQLConf(
+      CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
+      CometConf.getOperatorAllowIncompatConfigKey(classOf[DataWritingCommandExec]) -> "true",
+      CometConf.COMET_EXEC_ENABLED.key -> "true",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
 
-      withSQLConf(
-        CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
-        CometConf.getOperatorAllowIncompatConfigKey(classOf[DataWritingCommandExec]) -> "true",
-        CometConf.COMET_EXEC_ENABLED.key -> "true") {
+      withTable("src", "dst1", "dst2") {
+        sql("CREATE TABLE src(c1 INT) USING PARQUET")
+        sql("INSERT INTO src VALUES (1), (2), (3)")
+        sql("CREATE TABLE dst1(c1 INT) USING PARQUET")
+        sql("CREATE TABLE dst2(c1 INT) USING PARQUET")
 
-        // Create source data with repartition (simulating SPARK-48817 test pattern)
-        val sourceData = spark.range(1, 10).toDF("id").repartition(3)
+        // Multi-insert: single plan inserts from one source into two tables.
+        // The REPARTITION hint forces a shuffle exchange that Spark reuses
+        // via ReusedExchangeExec for the second insert.
+        val multiInsertDf = sql("""
+            |FROM (SELECT /*+ REPARTITION(3) */ c1 FROM src)
+            |INSERT OVERWRITE TABLE dst1 SELECT c1
+            |INSERT OVERWRITE TABLE dst2 SELECT c1
+          """.stripMargin)
+        val plan = multiInsertDf.queryExecution.executedPlan
 
-        // Write to first output
-        val plan1 = captureWritePlan(path => sourceData.write.parquet(path), output1)
+        // Assert that the plan contains ReusedExchangeExec, proving
+        // we are exercising the multi-insert reuse path
+        val reusedExchanges = plan.collect { case r: ReusedExchangeExec => r }
+        assert(
+          reusedExchanges.nonEmpty,
+          s"Expected ReusedExchangeExec in the multi-insert plan, but found none:\n${plan.treeString}")
 
-        // Write to second output (simulating multi-insert reuse pattern)
-        val plan2 = captureWritePlan(path => sourceData.write.parquet(path), output2)
+        // Assert native write was used
+        val nativeWrites = plan.collect { case n: CometNativeWriteExec => n }
+        assert(
+          nativeWrites.nonEmpty,
+          s"Expected CometNativeWriteExec in the plan, but found none:\n${plan.treeString}")
 
-        // Verify both writes completed correctly
-        val result1 = spark.read.parquet(output1)
-        val result2 = spark.read.parquet(output2)
-        assert(result1.count() == 9)
-        assert(result2.count() == 9)
-
-        // Verify native write was used for both
-        assertHasCometNativeWriteExec(plan1)
-        assertHasCometNativeWriteExec(plan2)
+        // Verify data correctness
+        checkAnswer(sql("SELECT c1 FROM dst1 ORDER BY c1"), Seq(Row(1), Row(2), Row(3)))
+        checkAnswer(sql("SELECT c1 FROM dst2 ORDER BY c1"), Seq(Row(1), Row(2), Row(3)))
       }
     }
   }
