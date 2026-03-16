@@ -26,7 +26,7 @@ import java.nio.channels.Channels
 import scala.jdk.CollectionConverters._
 
 import org.apache.arrow.c.CDataDictionaryProvider
-import org.apache.arrow.vector.{BigIntVector, BitVector, DateDayVector, DecimalVector, FieldVector, FixedSizeBinaryVector, Float4Vector, Float8Vector, IntVector, NullVector, SmallIntVector, TimeStampMicroTZVector, TimeStampMicroVector, TinyIntVector, ValueVector, VarBinaryVector, VarCharVector, VectorSchemaRoot}
+import org.apache.arrow.vector._
 import org.apache.arrow.vector.complex.{ListVector, MapVector, StructVector}
 import org.apache.arrow.vector.dictionary.DictionaryProvider
 import org.apache.arrow.vector.ipc.{ArrowStreamReader, ArrowStreamWriter}
@@ -234,6 +234,7 @@ object Utils extends CometTypeShim with Logging {
 
   /**
    * Decodes the byte arrays back to ColumnarBatchs and put them into buffer.
+   *
    * @param bytes
    *   the serialized batches
    * @param source
@@ -264,10 +265,11 @@ object Utils extends CometTypeShim with Logging {
    * re-serialize once via ArrowStreamWriter. This is done on the driver (not per-task) so the
    * cost is paid once rather than once per consumer partition.
    */
-  def coalesceBroadcastBatches(input: Iterator[ChunkedByteBuffer]): Array[ChunkedByteBuffer] = {
+  def coalesceBroadcastBatches(
+      input: Iterator[ChunkedByteBuffer]): (Array[ChunkedByteBuffer], Long, Long) = {
     val buffers = input.filterNot(_.size == 0).toArray
     if (buffers.isEmpty) {
-      return Array.empty
+      return (Array.empty, 0L, 0L)
     }
 
     val allocator = org.apache.comet.CometArrowAllocator
@@ -308,7 +310,7 @@ object Utils extends CometTypeShim with Logging {
         }
 
         if (targetRoot == null) {
-          return Array.empty
+          return (Array.empty, 0L, 0L)
         }
 
         assert(
@@ -320,7 +322,7 @@ object Utils extends CometTypeShim with Logging {
         val outCodec = CompressionCodec.createCodec(SparkEnv.get.conf)
         val cbbos = new ChunkedByteBufferOutputStream(1024 * 1024, ByteBuffer.allocate)
         val out = new DataOutputStream(outCodec.compressedOutputStream(cbbos))
-        // null provider is safe here — we assert no dictionary-encoded columns above
+        // null provider is safe here because we assert no dictionary-encoded columns above
         val writer = new ArrowStreamWriter(targetRoot, null, Channels.newChannel(out))
         try {
           writer.start()
@@ -329,7 +331,7 @@ object Utils extends CometTypeShim with Logging {
           writer.close()
         }
 
-        Array(cbbos.toChunkedByteBuffer)
+        (Array(cbbos.toChunkedByteBuffer), batchCount.toLong, totalRows)
       } finally {
         if (targetRoot != null) {
           targetRoot.close()

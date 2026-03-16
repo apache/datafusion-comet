@@ -427,13 +427,24 @@ class CometJoinSuite extends CometTestBase {
           // Without coalescing, build_input_batches would be ~numPartitions per task,
           // totaling ~numPartitions * numPartitions across all tasks.
           // With coalescing, each task gets 1 batch, so total ≈ numPartitions.
-          // scalastyle:off println
-          println(s"Build-side metrics: batches=$buildBatches, rows=$buildRows")
-          // scalastyle:on println
           assert(
             buildBatches <= numPartitions,
             s"Expected at most $numPartitions build batches (1 per task), got $buildBatches. " +
               "Broadcast batch coalescing may not be working.")
+
+          val broadcasts = collect(df2.queryExecution.executedPlan) {
+            case b: CometBroadcastExchangeExec => b
+          }
+          assert(broadcasts.nonEmpty, "Expected CometBroadcastExchangeExec in plan")
+
+          val broadcast = broadcasts.head
+          val coalescedBatches = broadcast.metrics("numCoalescedBatches").value
+          val coalescedRows = broadcast.metrics("numCoalescedRows").value
+
+          assert(
+            coalescedBatches >= numPartitions,
+            s"Expected at least $numPartitions coalesced batches, got $coalescedBatches")
+          assert(coalescedRows == 10000, s"Expected 10000 coalesced rows, got $coalescedRows")
         }
       }
     }
