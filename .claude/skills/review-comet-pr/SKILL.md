@@ -52,6 +52,7 @@ For expression PRs, check how similar expressions are implemented in the codebas
 **For any PR that adds or modifies an expression, you must read the Spark source code to understand the canonical behavior.** This is the authoritative reference for what Comet must match.
 
 1. **Clone or update the Spark repo:**
+
    ```bash
    # Clone if not already present (use /tmp to avoid polluting the workspace)
    if [ ! -d /tmp/spark ]; then
@@ -60,6 +61,7 @@ For expression PRs, check how similar expressions are implemented in the codebas
    ```
 
 2. **Find the expression implementation in Spark:**
+
    ```bash
    # Search for the expression class (e.g., for "Conv", "Hex", "Substring")
    find /tmp/spark/sql/catalyst/src/main/scala -name "*.scala" | xargs grep -l "case class <ExpressionName>"
@@ -73,6 +75,7 @@ For expression PRs, check how similar expressions are implemented in the codebas
    - ANSI mode branches (look for `SQLConf.get.ansiEnabled` or `failOnError`).
 
 4. **Read the Spark tests for the expression:**
+
    ```bash
    # Find test files
    find /tmp/spark/sql -name "*.scala" -path "*/test/*" | xargs grep -l "<ExpressionName>"
@@ -181,6 +184,7 @@ SELECT known_buggy_expr(v) FROM test_table
 ```
 
 **Running SQL file tests:**
+
 ```bash
 # All SQL file tests
 ./mvnw test -Dsuites="org.apache.comet.CometSqlFileTestSuite" -Dtest=none
@@ -272,11 +276,13 @@ Present your review as guidance for the reviewer. Structure your output as:
 ## Review Tone and Style
 
 Write reviews that sound human and conversational. Avoid:
+
 - Robotic or formulaic language
 - Em dashes. Use separate sentences instead.
 - Semicolons. Use separate sentences instead.
 
 Instead:
+
 - Write in flowing paragraphs using simple grammar
 - Keep sentences short and separate rather than joining them with punctuation
 - Be kind and constructive, even when raising concerns
