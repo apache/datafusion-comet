@@ -320,6 +320,7 @@ object Utils extends CometTypeShim with Logging {
         val outCodec = CompressionCodec.createCodec(SparkEnv.get.conf)
         val cbbos = new ChunkedByteBufferOutputStream(1024 * 1024, ByteBuffer.allocate)
         val out = new DataOutputStream(outCodec.compressedOutputStream(cbbos))
+        // null provider is safe here — we assert no dictionary-encoded columns above
         val writer = new ArrowStreamWriter(targetRoot, null, Channels.newChannel(out))
         try {
           writer.start()
