@@ -19,6 +19,8 @@
 
 package org.apache.spark.sql.benchmark
 
+import org.apache.comet.CometConf
+
 // spotless:off
 /**
  * Benchmark to measure performance of Comet array expressions. To run this benchmark:
@@ -52,10 +54,14 @@ object CometArrayExpressionBenchmark extends CometBenchmarkBase {
                |  cast((value + 5) % 100 as int) as search_val
                |FROM $tbl""".stripMargin))
 
+        val nativeScanConfig =
+          Map(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION)
+
         runExpressionBenchmark(
           "array_position - int array",
           values,
-          "SELECT array_position(int_arr, search_val) FROM parquetV1Table")
+          "SELECT array_position(int_arr, search_val) FROM parquetV1Table",
+          nativeScanConfig)
       }
     }
 
@@ -80,10 +86,14 @@ object CometArrayExpressionBenchmark extends CometBenchmarkBase {
                |  cast((value + 5) % 100 as string) as search_val
                |FROM $tbl""".stripMargin))
 
+        val nativeScanConfig =
+          Map(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION)
+
         runExpressionBenchmark(
           "array_position - string array",
           values,
-          "SELECT array_position(str_arr, search_val) FROM parquetV1Table")
+          "SELECT array_position(str_arr, search_val) FROM parquetV1Table",
+          nativeScanConfig)
       }
     }
   }
