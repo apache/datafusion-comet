@@ -39,9 +39,9 @@ object CometSource extends Source {
 
   val NATIVE_OPERATORS: Counter =
     metricRegistry.counter(MetricRegistry.name("operators", "native"))
-  val SPARK_OPERATORS = metricRegistry.counter(MetricRegistry.name("operators", "spark"))
-  val QUERIES_PLANNED = metricRegistry.counter(MetricRegistry.name("queries", "planned"))
-  val TRANSITIONS = metricRegistry.counter(MetricRegistry.name("transitions"))
+  val SPARK_OPERATORS: Counter = metricRegistry.counter(MetricRegistry.name("operators", "spark"))
+  val QUERIES_PLANNED: Counter = metricRegistry.counter(MetricRegistry.name("queries", "planned"))
+  val TRANSITIONS: Counter = metricRegistry.counter(MetricRegistry.name("transitions"))
 
   metricRegistry.register(
     MetricRegistry.name("acceleration", "ratio"),
