@@ -19,13 +19,14 @@ use arrow::array::{
     Array, ArrayRef, AsArray, BooleanArray, GenericListArray, Int64Array, OffsetSizeTrait,
 };
 use arrow::datatypes::{
-    DataType, Date32Type, Decimal128Type, Float32Type, Float64Type, Int16Type, Int32Type,
-    Int64Type, Int8Type, TimestampMicrosecondType,
+    ArrowPrimitiveType, DataType, Date32Type, Decimal128Type, Float32Type, Float64Type, Int16Type,
+    Int32Type, Int64Type, Int8Type, TimestampMicrosecondType,
 };
 use datafusion::common::{exec_err, DataFusionError, Result as DataFusionResult, ScalarValue};
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };
+use num::Float;
 use std::any::Any;
 use std::sync::Arc;
 
@@ -36,7 +37,6 @@ fn spark_array_position(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFus
         return exec_err!("array_position function takes exactly two arguments");
     }
 
-    // Convert all arguments to arrays for consistent processing
     let len = args
         .iter()
         .fold(Option::<usize>::None, |acc, arg| match arg {
@@ -68,122 +68,8 @@ fn array_position_inner(args: &[ArrayRef]) -> Result<ArrayRef, DataFusionError> 
     }
 }
 
-/// Find the 1-based position of `search_val` in a typed primitive array.
-/// Returns 0 if not found.
-macro_rules! find_position_primitive {
-    ($list_items:expr, $element:expr, $row_index:expr, $arrow_type:ty) => {{
-        let items = $list_items.as_primitive::<$arrow_type>();
-        let search = $element.as_primitive::<$arrow_type>();
-        let search_val = search.value($row_index);
-        let mut pos: i64 = 0;
-        for i in 0..items.len() {
-            if !items.is_null(i) && items.value(i) == search_val {
-                pos = (i + 1) as i64;
-                break;
-            }
-        }
-        pos
-    }};
-}
-
-/// Float-aware comparison that treats NaN == NaN (matching Spark's ordering.equiv() semantics).
-macro_rules! find_position_float {
-    ($list_items:expr, $element:expr, $row_index:expr, $arrow_type:ty) => {{
-        let items = $list_items.as_primitive::<$arrow_type>();
-        let search = $element.as_primitive::<$arrow_type>();
-        let search_val = search.value($row_index);
-        let search_is_nan = search_val.is_nan();
-        let mut pos: i64 = 0;
-        for i in 0..items.len() {
-            if !items.is_null(i) {
-                let item_val = items.value(i);
-                if (search_is_nan && item_val.is_nan()) || item_val == search_val {
-                    pos = (i + 1) as i64;
-                    break;
-                }
-            }
-        }
-        pos
-    }};
-}
-
-fn find_position_in_row(
-    list_items: &ArrayRef,
-    element: &ArrayRef,
-    row_index: usize,
-) -> Result<i64, DataFusionError> {
-    let pos = match list_items.data_type() {
-        DataType::Boolean => {
-            let items = list_items.as_any().downcast_ref::<BooleanArray>().unwrap();
-            let search = element.as_any().downcast_ref::<BooleanArray>().unwrap();
-            let search_val = search.value(row_index);
-            let mut pos: i64 = 0;
-            for i in 0..items.len() {
-                if !items.is_null(i) && items.value(i) == search_val {
-                    pos = (i + 1) as i64;
-                    break;
-                }
-            }
-            pos
-        }
-        DataType::Int8 => find_position_primitive!(list_items, element, row_index, Int8Type),
-        DataType::Int16 => find_position_primitive!(list_items, element, row_index, Int16Type),
-        DataType::Int32 => find_position_primitive!(list_items, element, row_index, Int32Type),
-        DataType::Int64 => find_position_primitive!(list_items, element, row_index, Int64Type),
-        DataType::Float32 => find_position_float!(list_items, element, row_index, Float32Type),
-        DataType::Float64 => find_position_float!(list_items, element, row_index, Float64Type),
-        DataType::Decimal128(_, _) => {
-            find_position_primitive!(list_items, element, row_index, Decimal128Type)
-        }
-        DataType::Date32 => {
-            find_position_primitive!(list_items, element, row_index, Date32Type)
-        }
-        DataType::Timestamp(arrow::datatypes::TimeUnit::Microsecond, _) => {
-            find_position_primitive!(list_items, element, row_index, TimestampMicrosecondType)
-        }
-        DataType::Utf8 => {
-            let items = list_items.as_string::<i32>();
-            let search = element.as_string::<i32>();
-            let search_val = search.value(row_index);
-            let mut pos: i64 = 0;
-            for i in 0..items.len() {
-                if !items.is_null(i) && items.value(i) == search_val {
-                    pos = (i + 1) as i64;
-                    break;
-                }
-            }
-            pos
-        }
-        DataType::LargeUtf8 => {
-            let items = list_items.as_string::<i64>();
-            let search = element.as_string::<i64>();
-            let search_val = search.value(row_index);
-            let mut pos: i64 = 0;
-            for i in 0..items.len() {
-                if !items.is_null(i) && items.value(i) == search_val {
-                    pos = (i + 1) as i64;
-                    break;
-                }
-            }
-            pos
-        }
-        // Fallback to ScalarValue for complex types (nested arrays, etc.)
-        _ => {
-            let element_scalar = ScalarValue::try_from_array(element, row_index)?;
-            let mut pos: i64 = 0;
-            for i in 0..list_items.len() {
-                let item_scalar = ScalarValue::try_from_array(list_items, i)?;
-                if !item_scalar.is_null() && element_scalar == item_scalar {
-                    pos = (i + 1) as i64;
-                    break;
-                }
-            }
-            pos
-        }
-    };
-    Ok(pos)
-}
-
+/// Searches for an element in a list array using the flat values buffer and offsets directly,
+/// avoiding per-row subarray allocation. Dispatches to typed fast paths by element data type.
 fn generic_array_position<O: OffsetSizeTrait>(
     array: &ArrayRef,
     element: &ArrayRef,
@@ -193,19 +79,216 @@ fn generic_array_position<O: OffsetSizeTrait>(
         .downcast_ref::<GenericListArray<O>>()
         .unwrap();
 
-    let mut data = Vec::with_capacity(list_array.len());
+    let values = list_array.values();
+    let offsets = list_array.offsets();
+    let elem_type = values.data_type().clone();
 
-    for row_index in 0..list_array.len() {
-        if list_array.is_null(row_index) || element.is_null(row_index) {
-            data.push(None);
-        } else {
-            let list_array_row = list_array.value(row_index);
-            let position = find_position_in_row(&list_array_row, element, row_index)?;
-            data.push(Some(position));
+    match &elem_type {
+        DataType::Boolean => {
+            position_boolean::<O>(list_array, offsets, values, element)
         }
+        DataType::Int8 => position_primitive::<O, Int8Type>(list_array, offsets, values, element),
+        DataType::Int16 => position_primitive::<O, Int16Type>(list_array, offsets, values, element),
+        DataType::Int32 => position_primitive::<O, Int32Type>(list_array, offsets, values, element),
+        DataType::Int64 => position_primitive::<O, Int64Type>(list_array, offsets, values, element),
+        DataType::Float32 => {
+            position_float::<O, Float32Type>(list_array, offsets, values, element)
+        }
+        DataType::Float64 => {
+            position_float::<O, Float64Type>(list_array, offsets, values, element)
+        }
+        DataType::Decimal128(_, _) => {
+            position_primitive::<O, Decimal128Type>(list_array, offsets, values, element)
+        }
+        DataType::Date32 => {
+            position_primitive::<O, Date32Type>(list_array, offsets, values, element)
+        }
+        DataType::Timestamp(arrow::datatypes::TimeUnit::Microsecond, _) => {
+            position_primitive::<O, TimestampMicrosecondType>(
+                list_array, offsets, values, element,
+            )
+        }
+        DataType::Utf8 => position_string::<O, i32>(list_array, offsets, values, element),
+        DataType::LargeUtf8 => position_string::<O, i64>(list_array, offsets, values, element),
+        // Fallback to ScalarValue for complex types (nested arrays, etc.)
+        _ => position_fallback::<O>(list_array, offsets, values, element),
+    }
+}
+
+/// Fast path for primitive types: downcast once, iterate using offsets into the flat buffer.
+fn position_primitive<O: OffsetSizeTrait, T: ArrowPrimitiveType>(
+    list_array: &GenericListArray<O>,
+    offsets: &arrow::buffer::OffsetBuffer<O>,
+    values: &ArrayRef,
+    element: &ArrayRef,
+) -> Result<ArrayRef, DataFusionError>
+where
+    T::Native: PartialEq,
+{
+    let values_typed = values.as_primitive::<T>();
+    let element_typed = element.as_primitive::<T>();
+    let num_rows = list_array.len();
+    let mut result = Vec::with_capacity(num_rows);
+
+    for (row_index, w) in offsets.windows(2).enumerate() {
+        if list_array.is_null(row_index) || element.is_null(row_index) {
+            result.push(None);
+            continue;
+        }
+        let start = w[0].as_usize();
+        let end = w[1].as_usize();
+        let search_val = element_typed.value(row_index);
+        let mut pos: i64 = 0;
+        for i in start..end {
+            if !values_typed.is_null(i) && values_typed.value(i) == search_val {
+                pos = (i - start + 1) as i64;
+                break;
+            }
+        }
+        result.push(Some(pos));
     }
 
-    Ok(Arc::new(Int64Array::from(data)))
+    Ok(Arc::new(Int64Array::from(result)))
+}
+
+/// Float path: same as primitive but treats NaN == NaN (Spark's ordering.equiv() semantics).
+fn position_float<O: OffsetSizeTrait, T: ArrowPrimitiveType>(
+    list_array: &GenericListArray<O>,
+    offsets: &arrow::buffer::OffsetBuffer<O>,
+    values: &ArrayRef,
+    element: &ArrayRef,
+) -> Result<ArrayRef, DataFusionError>
+where
+    T::Native: PartialEq + num::Float,
+{
+    let values_typed = values.as_primitive::<T>();
+    let element_typed = element.as_primitive::<T>();
+    let num_rows = list_array.len();
+    let mut result = Vec::with_capacity(num_rows);
+
+    for (row_index, w) in offsets.windows(2).enumerate() {
+        if list_array.is_null(row_index) || element.is_null(row_index) {
+            result.push(None);
+            continue;
+        }
+        let start = w[0].as_usize();
+        let end = w[1].as_usize();
+        let search_val = element_typed.value(row_index);
+        let search_is_nan = search_val.is_nan();
+        let mut pos: i64 = 0;
+        for i in start..end {
+            if !values_typed.is_null(i) {
+                let v = values_typed.value(i);
+                if (search_is_nan && v.is_nan()) || v == search_val {
+                    pos = (i - start + 1) as i64;
+                    break;
+                }
+            }
+        }
+        result.push(Some(pos));
+    }
+
+    Ok(Arc::new(Int64Array::from(result)))
+}
+
+/// Boolean path.
+fn position_boolean<O: OffsetSizeTrait>(
+    list_array: &GenericListArray<O>,
+    offsets: &arrow::buffer::OffsetBuffer<O>,
+    values: &ArrayRef,
+    element: &ArrayRef,
+) -> Result<ArrayRef, DataFusionError> {
+    let values_typed = values.as_any().downcast_ref::<BooleanArray>().unwrap();
+    let element_typed = element.as_any().downcast_ref::<BooleanArray>().unwrap();
+    let num_rows = list_array.len();
+    let mut result = Vec::with_capacity(num_rows);
+
+    for (row_index, w) in offsets.windows(2).enumerate() {
+        if list_array.is_null(row_index) || element.is_null(row_index) {
+            result.push(None);
+            continue;
+        }
+        let start = w[0].as_usize();
+        let end = w[1].as_usize();
+        let search_val = element_typed.value(row_index);
+        let mut pos: i64 = 0;
+        for i in start..end {
+            if !values_typed.is_null(i) && values_typed.value(i) == search_val {
+                pos = (i - start + 1) as i64;
+                break;
+            }
+        }
+        result.push(Some(pos));
+    }
+
+    Ok(Arc::new(Int64Array::from(result)))
+}
+
+/// String path: downcast once, iterate using offsets into the flat string buffer.
+fn position_string<O: OffsetSizeTrait, S: OffsetSizeTrait>(
+    list_array: &GenericListArray<O>,
+    offsets: &arrow::buffer::OffsetBuffer<O>,
+    values: &ArrayRef,
+    element: &ArrayRef,
+) -> Result<ArrayRef, DataFusionError> {
+    let values_typed = values.as_string::<S>();
+    let element_typed = element.as_string::<S>();
+    let num_rows = list_array.len();
+    let mut result = Vec::with_capacity(num_rows);
+
+    for (row_index, w) in offsets.windows(2).enumerate() {
+        if list_array.is_null(row_index) || element.is_null(row_index) {
+            result.push(None);
+            continue;
+        }
+        let start = w[0].as_usize();
+        let end = w[1].as_usize();
+        let search_val = element_typed.value(row_index);
+        let mut pos: i64 = 0;
+        for i in start..end {
+            if !values_typed.is_null(i) && values_typed.value(i) == search_val {
+                pos = (i - start + 1) as i64;
+                break;
+            }
+        }
+        result.push(Some(pos));
+    }
+
+    Ok(Arc::new(Int64Array::from(result)))
+}
+
+/// Fallback for complex types (nested arrays, structs, etc.) using ScalarValue comparison.
+fn position_fallback<O: OffsetSizeTrait>(
+    list_array: &GenericListArray<O>,
+    offsets: &arrow::buffer::OffsetBuffer<O>,
+    values: &ArrayRef,
+    element: &ArrayRef,
+) -> Result<ArrayRef, DataFusionError> {
+    let num_rows = list_array.len();
+    let mut result = Vec::with_capacity(num_rows);
+
+    for (row_index, w) in offsets.windows(2).enumerate() {
+        if list_array.is_null(row_index) || element.is_null(row_index) {
+            result.push(None);
+            continue;
+        }
+        let start = w[0].as_usize();
+        let end = w[1].as_usize();
+        let search_scalar = ScalarValue::try_from_array(element, row_index)?;
+        let mut pos: i64 = 0;
+        for i in start..end {
+            if !values.is_null(i) {
+                let item_scalar = ScalarValue::try_from_array(values, i)?;
+                if search_scalar == item_scalar {
+                    pos = (i - start + 1) as i64;
+                    break;
+                }
+            }
+        }
+        result.push(Some(pos));
+    }
+
+    Ok(Arc::new(Int64Array::from(result)))
 }
 
 #[derive(Debug, Hash, Eq, PartialEq)]
