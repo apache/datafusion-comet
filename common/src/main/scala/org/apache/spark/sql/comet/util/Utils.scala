@@ -286,13 +286,13 @@ object Utils extends CometTypeShim with Logging {
       var totalRows = 0L
       var batchCount = 0
 
+      val codec = CompressionCodec.createCodec(SparkEnv.get.conf)
       try {
         for (bytes <- buffers) {
-          val codec = CompressionCodec.createCodec(SparkEnv.get.conf)
-          val cbbis = bytes.toInputStream()
-          val ins = new DataInputStream(codec.compressedInputStream(cbbis))
-          val channel = Channels.newChannel(ins)
-          val reader = new ArrowStreamReader(channel, allocator)
+          val compressedInputStream =
+            new DataInputStream(codec.compressedInputStream(bytes.toInputStream()))
+          val reader =
+            new ArrowStreamReader(Channels.newChannel(compressedInputStream), allocator)
           try {
             // Comet decodes dictionaries during execution, so this shouldn't happen.
             // If it does, fall back to the original uncoalesced buffers because each
@@ -334,11 +334,11 @@ object Utils extends CometTypeShim with Logging {
 
         logInfo(s"Coalesced $batchCount broadcast batches into 1 ($totalRows rows)")
 
-        val outCodec = CompressionCodec.createCodec(SparkEnv.get.conf)
-        val cbbos = new ChunkedByteBufferOutputStream(1024 * 1024, ByteBuffer.allocate)
-        val out = new DataOutputStream(outCodec.compressedOutputStream(cbbos))
-        // null provider is safe here because we check for dictionary-encoded columns above
-        val writer = new ArrowStreamWriter(targetRoot, null, Channels.newChannel(out))
+        val outputStream = new ChunkedByteBufferOutputStream(1024 * 1024, ByteBuffer.allocate)
+        val compressedOutputStream =
+          new DataOutputStream(codec.compressedOutputStream(outputStream))
+        val writer =
+          new ArrowStreamWriter(targetRoot, null, Channels.newChannel(compressedOutputStream))
         try {
           writer.start()
           writer.writeBatch()
@@ -346,7 +346,7 @@ object Utils extends CometTypeShim with Logging {
           writer.close()
         }
 
-        (Array(cbbos.toChunkedByteBuffer), batchCount.toLong, totalRows)
+        (Array(outputStream.toChunkedByteBuffer), batchCount.toLong, totalRows)
       } finally {
         if (targetRoot != null) {
           targetRoot.close()
