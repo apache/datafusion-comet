@@ -1,0 +1,37 @@
+CometColumnarToRow
++- CometHashAggregate
+   +- CometExchange
+      +- CometHashAggregate
+         +- CometProject
+            +- CometSortMergeJoin
+               :- CometSort
+               :  +- CometHashAggregate
+               :     +- CometExchange
+               :        +- CometHashAggregate
+               :           +- CometProject
+               :              +- CometBroadcastHashJoin
+               :                 :- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
+               :                 :     +- SubqueryBroadcast
+               :                 :        +- BroadcastExchange
+               :                 :           +- CometColumnarToRow
+               :                 :              +- CometProject
+               :                 :                 +- CometFilter
+               :                 :                    +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+               :                 +- CometBroadcastExchange
+               :                    +- CometProject
+               :                       +- CometFilter
+               :                          +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+               +- CometSort
+                  +- CometHashAggregate
+                     +- CometExchange
+                        +- CometHashAggregate
+                           +- CometProject
+                              +- CometBroadcastHashJoin
+                                 :- CometScan [native_iceberg_compat] parquet spark_catalog.default.catalog_sales
+                                 :     +- ReusedSubquery
+                                 +- CometBroadcastExchange
+                                    +- CometProject
+                                       +- CometFilter
+                                          +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+
+Comet accelerated 30 out of 33 eligible operators (90%). Final plan contains 2 transitions between Spark and Comet.

@@ -1,0 +1,61 @@
+ Project [COMET: ]
+:  :- Subquery
+:  :  +- CometColumnarToRow
+:  :     +- CometProject
+:  :        +- CometHashAggregate
+:  :           +- CometExchange
+:  :              +- CometHashAggregate
+:  :                 +- CometProject
+:  :                    +- CometFilter
+:  :                       +- CometNativeScan parquet spark_catalog.default.store_sales
+:  :- ReusedSubquery
+:  :- ReusedSubquery
+:  :- Subquery
+:  :  +- CometColumnarToRow
+:  :     +- CometProject
+:  :        +- CometHashAggregate
+:  :           +- CometExchange
+:  :              +- CometHashAggregate
+:  :                 +- CometProject
+:  :                    +- CometFilter
+:  :                       +- CometNativeScan parquet spark_catalog.default.store_sales
+:  :- ReusedSubquery
+:  :- ReusedSubquery
+:  :- Subquery
+:  :  +- CometColumnarToRow
+:  :     +- CometProject
+:  :        +- CometHashAggregate
+:  :           +- CometExchange
+:  :              +- CometHashAggregate
+:  :                 +- CometProject
+:  :                    +- CometFilter
+:  :                       +- CometNativeScan parquet spark_catalog.default.store_sales
+:  :- ReusedSubquery
+:  :- ReusedSubquery
+:  :- Subquery
+:  :  +- CometColumnarToRow
+:  :     +- CometProject
+:  :        +- CometHashAggregate
+:  :           +- CometExchange
+:  :              +- CometHashAggregate
+:  :                 +- CometProject
+:  :                    +- CometFilter
+:  :                       +- CometNativeScan parquet spark_catalog.default.store_sales
+:  :- ReusedSubquery
+:  :- ReusedSubquery
+:  :- Subquery
+:  :  +- CometColumnarToRow
+:  :     +- CometProject
+:  :        +- CometHashAggregate
+:  :           +- CometExchange
+:  :              +- CometHashAggregate
+:  :                 +- CometProject
+:  :                    +- CometFilter
+:  :                       +- CometNativeScan parquet spark_catalog.default.store_sales
+:  :- ReusedSubquery
+:  +- ReusedSubquery
++- CometColumnarToRow
+   +- CometFilter
+      +- CometNativeScan parquet spark_catalog.default.reason
+
+Comet accelerated 37 out of 53 eligible operators (69%). Final plan contains 6 transitions between Spark and Comet.
