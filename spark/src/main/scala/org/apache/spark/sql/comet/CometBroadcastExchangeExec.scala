@@ -77,7 +77,13 @@ case class CometBroadcastExchangeExec(
     "numOutputRows" -> SQLMetrics.createMetric(sparkContext, "number of output rows"),
     "collectTime" -> SQLMetrics.createTimingMetric(sparkContext, "time to collect"),
     "buildTime" -> SQLMetrics.createTimingMetric(sparkContext, "time to build"),
-    "broadcastTime" -> SQLMetrics.createTimingMetric(sparkContext, "time to broadcast"))
+    "broadcastTime" -> SQLMetrics.createTimingMetric(sparkContext, "time to broadcast"),
+    "numCoalescedBatches" -> SQLMetrics.createMetric(
+      sparkContext,
+      "number of coalesced batches for broadcast"),
+    "numCoalescedRows" -> SQLMetrics.createMetric(
+      sparkContext,
+      "number of coalesced rows for broadcast"))
 
   override def doCanonicalize(): SparkPlan = {
     CometBroadcastExchangeExec(null, null, mode, child.canonicalized)
@@ -155,7 +161,14 @@ case class CometBroadcastExchangeExec(
         val beforeBuild = System.nanoTime()
         longMetric("collectTime") += NANOSECONDS.toMillis(beforeBuild - beforeCollect)
 
-        val batches = input.toArray
+        // Coalesce the many small per-shuffle-block buffers into a single buffer.
+        // Without this, each consumer task deserializes one Arrow IPC stream per
+        // shuffle block (one per writer task per partition), which is very expensive
+        // when there are hundreds of writer tasks and partitions. See the scaladoc
+        // on coalesceBroadcastBatches for details.
+        val (batches, coalescedBatches, coalescedRows) = Utils.coalesceBroadcastBatches(input)
+        longMetric("numCoalescedBatches") += coalescedBatches
+        longMetric("numCoalescedRows") += coalescedRows
 
         val dataSize = batches.map(_.size).sum
 
