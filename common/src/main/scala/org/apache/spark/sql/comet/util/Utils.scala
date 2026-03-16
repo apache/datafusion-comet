@@ -256,8 +256,13 @@ object Utils extends CometTypeShim with Logging {
 
   /**
    * Coalesces many small ChunkedByteBuffers (one per source partition) into a single
-   * ChunkedByteBuffer containing one Arrow IPC stream with one record batch. This avoids each
-   * consumer partition having to deserialize N separate streams.
+   * ChunkedByteBuffer. Without coalescing, each consumer task in a broadcast hash join
+   * deserializes N separate Arrow IPC streams (one per source partition), which dominates
+   * build-side time when partition counts are high (e.g. 200+ partitions in TPC-H Q18).
+   *
+   * We decode and append all source batches into one VectorSchemaRoot on the driver,
+   * then re-serialize once via ArrowStreamWriter. This is done on the driver (not per-task)
+   * so the cost is paid once rather than once per consumer partition.
    */
   def coalesceBroadcastBatches(input: Iterator[ChunkedByteBuffer]): Array[ChunkedByteBuffer] = {
     val buffers = input.filterNot(_.size == 0).toArray
@@ -280,10 +285,18 @@ object Utils extends CometTypeShim with Logging {
           val channel = Channels.newChannel(ins)
           val reader = new ArrowStreamReader(channel, allocator)
           try {
+            // Dictionary-encoded columns would be unsafe to coalesce because each
+            // partition can have a different dictionary, and appending index vectors
+            // would silently mix indices from incompatible dictionaries.
+            // DataFusion decodes dictionaries during execution, so this shouldn't happen.
+            assert(
+              reader.getDictionaryVectors.isEmpty,
+              "Cannot coalesce dictionary-encoded broadcast batches")
             while (reader.loadNextBatch()) {
               val sourceRoot = reader.getVectorSchemaRoot
               if (targetRoot == null) {
                 targetRoot = VectorSchemaRoot.create(sourceRoot.getSchema, allocator)
+                targetRoot.allocateNew()
               }
               VectorSchemaRootAppender.append(targetRoot, sourceRoot)
               totalRows += sourceRoot.getRowCount
@@ -308,9 +321,12 @@ object Utils extends CometTypeShim with Logging {
         val cbbos = new ChunkedByteBufferOutputStream(1024 * 1024, ByteBuffer.allocate)
         val out = new DataOutputStream(outCodec.compressedOutputStream(cbbos))
         val writer = new ArrowStreamWriter(targetRoot, null, Channels.newChannel(out))
-        writer.start()
-        writer.writeBatch()
-        writer.close()
+        try {
+          writer.start()
+          writer.writeBatch()
+        } finally {
+          writer.close()
+        }
 
         Array(cbbos.toChunkedByteBuffer)
       } finally {
