@@ -406,18 +406,12 @@ class CometJoinSuite extends CometTestBase {
                |FROM (SELECT /*+ REPARTITION($numPartitions) */ * FROM tbl_a) a
                |JOIN tbl_b ON a._2 = tbl_b._1""".stripMargin
 
-          // First verify correctness
-          val df = sql(query)
-          checkSparkAnswerAndOperator(
-            df,
+          val (_, cometPlan) = checkSparkAnswerAndOperator(
+            sql(query),
             Seq(classOf[CometBroadcastExchangeExec], classOf[CometBroadcastHashJoinExec]))
 
-          // Run again and check metrics on the executed plan
-          val df2 = sql(query)
-          df2.collect()
-
-          val joins = collect(df2.queryExecution.executedPlan) {
-            case j: CometBroadcastHashJoinExec => j
+          val joins = collect(cometPlan) { case j: CometBroadcastHashJoinExec =>
+            j
           }
           assert(joins.nonEmpty, "Expected CometBroadcastHashJoinExec in plan")
 
@@ -432,8 +426,8 @@ class CometJoinSuite extends CometTestBase {
             s"Expected at most $numPartitions build batches (1 per task), got $buildBatches. " +
               "Broadcast batch coalescing may not be working.")
 
-          val broadcasts = collect(df2.queryExecution.executedPlan) {
-            case b: CometBroadcastExchangeExec => b
+          val broadcasts = collect(cometPlan) { case b: CometBroadcastExchangeExec =>
+            b
           }
           assert(broadcasts.nonEmpty, "Expected CometBroadcastExchangeExec in plan")
 
