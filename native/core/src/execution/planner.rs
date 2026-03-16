@@ -1187,7 +1187,7 @@ impl PhysicalPlanner {
                     common.encryption_enabled,
                 )?;
                 let scan: Arc<dyn ExecutionPlan> =
-                    Arc::new(ScanMemoryLogExec::new(scan, self.partition));
+                    Arc::new(ScanMemoryLogExec::new(scan, self.partition, partition_count));
                 Ok((
                     vec![],
                     Arc::new(SparkPlan::new(spark_plan.plan_id, scan, vec![])),
