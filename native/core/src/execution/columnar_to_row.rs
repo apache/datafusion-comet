@@ -624,6 +624,16 @@ impl<'a> TypedElements<'a> {
                 let values_slice = $arr.values();
                 let byte_len = num_elements * $elem_size;
                 let src_start = start_idx * $elem_size;
+                debug_assert!(
+                    src_start + byte_len <= values_slice.len() * $elem_size,
+                    "bulk_copy_range: source slice out of bounds: src_start={}, byte_len={}, values_len={}, elem_size={}",
+                    src_start, byte_len, values_slice.len() * $elem_size, $elem_size
+                );
+                debug_assert!(
+                    elements_start + byte_len <= buffer.len(),
+                    "bulk_copy_range: destination slice out of bounds: elements_start={}, byte_len={}, buffer_len={}",
+                    elements_start, byte_len, buffer.len()
+                );
                 let src_bytes = unsafe {
                     std::slice::from_raw_parts(
                         (values_slice.as_ptr() as *const u8).add(src_start),
@@ -1068,7 +1078,19 @@ impl ColumnarToRowContext {
                     })?;
                 Ok(Arc::new(decimal_array))
             }
-            _ => Ok(Arc::clone(array)),
+            _ => {
+                // For any other type mismatch, attempt an Arrow cast.
+                // This handles cases like Int32 → Date32 (which can happen when Spark
+                // generates default column values using the physical storage type rather
+                // than the logical type).
+                let options = CastOptions::default();
+                cast_with_options(array, schema_type, &options).map_err(|e| {
+                    CometError::Internal(format!(
+                        "Failed to cast array from {:?} to {:?}: {}",
+                        actual_type, schema_type, e
+                    ))
+                })
+            }
         }
     }
 

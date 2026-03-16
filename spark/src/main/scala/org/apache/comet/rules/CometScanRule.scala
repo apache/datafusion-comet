@@ -49,7 +49,7 @@ import org.apache.comet.iceberg.{CometIcebergNativeScanMetadata, IcebergReflecti
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.parquet.{Native, SupportsComet}
 import org.apache.comet.parquet.CometParquetUtils.{encryptionEnabled, isEncryptionConfigSupported}
-import org.apache.comet.serde.operator.CometNativeScan
+import org.apache.comet.serde.operator.{CometIcebergNativeScan, CometNativeScan}
 import org.apache.comet.shims.{CometTypeShim, ShimFileFormat, ShimSubqueryBroadcast}
 
 /**
@@ -307,6 +307,8 @@ case class CometScanRule(session: SparkSession)
         if (s.isCometEnabled && schemaSupported) {
           // When reading from Iceberg, we automatically enable type promotion
           SQLConf.get.setConfString(COMET_SCHEMA_EVOLUTION_ENABLED.key, "true")
+          // When reading from Iceberg, we automatically disable native columnar to row
+          SQLConf.get.setConfString(COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED.key, "false")
           CometBatchScanExec(
             scanExec.clone().asInstanceOf[BatchScanExec],
             runtimeFilters = scanExec.runtimeFilters)
@@ -387,9 +389,18 @@ case class CometScanRule(session: SparkSession)
 
             val hadoopS3Options = NativeConfig.extractObjectStoreOptions(hadoopConf, effectiveUri)
 
-            val catalogProperties =
-              org.apache.comet.serde.operator.CometIcebergNativeScan
-                .hadoopToIcebergS3Properties(hadoopS3Options)
+            val hadoopDerivedProperties =
+              CometIcebergNativeScan.hadoopToIcebergS3Properties(hadoopS3Options)
+
+            // Extract vended credentials from FileIO (REST catalog credential vending).
+            // FileIO properties take precedence over Hadoop-derived properties because
+            // they contain per-table credentials vended by the REST catalog.
+            val fileIOProperties = tableOpt
+              .flatMap(IcebergReflection.getFileIOProperties)
+              .map(CometIcebergNativeScan.filterStorageProperties)
+              .getOrElse(Map.empty)
+
+            val catalogProperties = hadoopDerivedProperties ++ fileIOProperties
 
             val result = CometIcebergNativeScanMetadata
               .extract(scanExec.scan, effectiveLocation, catalogProperties)

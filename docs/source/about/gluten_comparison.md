@@ -86,7 +86,7 @@ on your existing Spark jobs.
 
 ![tpch_allqueries_comet_gluten.png](/_static/images/tpch_allqueries_comet_gluten.png)
 
-The scripts that were used to generate these results can be found [here](https://github.com/apache/datafusion-comet/tree/main/dev/benchmarks).
+The scripts that were used to generate these results can be found [here](https://github.com/apache/datafusion-comet/tree/main/benchmarks/tpc).
 
 ## Ease of Development & Contributing
 

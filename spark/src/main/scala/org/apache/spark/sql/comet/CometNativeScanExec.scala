@@ -38,7 +38,6 @@ import org.apache.spark.util.collection._
 
 import com.google.common.base.Objects
 
-import org.apache.comet.CometConf
 import org.apache.comet.parquet.{CometParquetFileFormat, CometParquetUtils}
 import org.apache.comet.serde.OperatorOuterClass.Operator
 
@@ -203,8 +202,14 @@ case class CometNativeScanExec(
 
   override def hashCode(): Int = Objects.hashCode(originalPlan, serializedPlanOpt)
 
-  override lazy val metrics: Map[String, SQLMetric] =
-    CometMetricNode.nativeScanMetrics(session.sparkContext)
+  override lazy val metrics: Map[String, SQLMetric] = {
+    val nativeMetrics = CometMetricNode.nativeScanMetrics(session.sparkContext)
+    // Map native metric names to Spark metric names
+    nativeMetrics.get("output_rows") match {
+      case Some(metric) => nativeMetrics + ("numOutputRows" -> metric)
+      case None => nativeMetrics
+    }
+  }
 
   /**
    * See [[org.apache.spark.sql.execution.DataSourceScanExec.inputRDDs]]. Only used for tests.
@@ -247,8 +252,7 @@ object CometNativeScanExec {
     // https://github.com/apache/arrow-datafusion-comet/issues/190
     def transform(arg: Any): AnyRef = arg match {
       case _: HadoopFsRelation =>
-        scanExec.relation.copy(fileFormat =
-          new CometParquetFileFormat(session, CometConf.SCAN_NATIVE_DATAFUSION))(session)
+        scanExec.relation.copy(fileFormat = new CometParquetFileFormat(session))(session)
       case other: AnyRef => other
       case null => null
     }

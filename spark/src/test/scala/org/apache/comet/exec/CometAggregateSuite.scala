@@ -24,6 +24,7 @@ import scala.util.Random
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.Cast
+import org.apache.spark.sql.catalyst.expressions.aggregate.Corr
 import org.apache.spark.sql.catalyst.optimizer.EliminateSorts
 import org.apache.spark.sql.comet.CometHashAggregateExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
@@ -1319,7 +1320,9 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("covariance & correlation") {
-    withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
+    withSQLConf(
+      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.getExprAllowIncompatConfigKey(classOf[Corr]) -> "true") {
       Seq("jvm", "native").foreach { cometShuffleMode =>
         withSQLConf(CometConf.COMET_SHUFFLE_MODE.key -> cometShuffleMode) {
           Seq(true, false).foreach { dictionary =>
