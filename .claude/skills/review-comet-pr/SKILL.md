@@ -295,7 +295,3 @@ Instead:
 ## Do Not Post Comments
 
 **IMPORTANT: Never post comments or reviews on the PR directly.** This skill is for providing guidance to a human reviewer. Present all findings and suggested comments to the user. The user will decide what to post.
-
-## No AI Disclosure
-
-Do not add any AI disclosure or "generated with AI" footer to review text.
