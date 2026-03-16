@@ -25,7 +25,7 @@ use arrow::datatypes::{
     i256, is_validate_decimal_precision, DataType, Date32Type, Decimal256Type, Float32Type,
     Float64Type, Int16Type, Int32Type, Int64Type, Int8Type, TimestampMicrosecondType,
 };
-use chrono::{DateTime, NaiveDate, TimeZone, Timelike};
+use chrono::{DateTime, NaiveDate, TimeZone, Timelike, Utc};
 use num::traits::CheckedNeg;
 use num::{CheckedSub, Integer};
 use regex::Regex;
@@ -34,9 +34,13 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 macro_rules! cast_utf8_to_timestamp {
-    ($array:expr, $eval_mode:expr, $array_type:ty, $cast_method:ident, $tz:expr) => {{
+    ($array:expr, $eval_mode:expr, $array_type:ty, $cast_method:ident, $tz:expr, $with_tz:expr) => {{
         let len = $array.len();
-        let mut cast_array = PrimitiveArray::<$array_type>::builder(len).with_timezone("UTC");
+        let mut cast_array = if let Some(tz_str) = $with_tz {
+            PrimitiveArray::<$array_type>::builder(len).with_timezone(tz_str)
+        } else {
+            PrimitiveArray::<$array_type>::builder(len)
+        };
         for i in 0..len {
             if $array.is_null(i) {
                 cast_array.append_null()
@@ -665,16 +669,28 @@ pub(crate) fn cast_string_to_timestamp(
         .downcast_ref::<GenericStringArray<i32>>()
         .expect("Expected a string array");
 
-    let tz = &timezone::Tz::from_str(timezone_str).unwrap();
-
     let cast_array: ArrayRef = match to_type {
-        DataType::Timestamp(_, _) => {
+        DataType::Timestamp(_, Some(_)) => {
+            let tz = &timezone::Tz::from_str(timezone_str).unwrap();
             cast_utf8_to_timestamp!(
                 string_array,
                 eval_mode,
                 TimestampMicrosecondType,
                 timestamp_parser,
-                tz
+                tz,
+                Some("UTC")
+            )
+        }
+        DataType::Timestamp(_, None) => {
+            // TimestampNTZ: reuse timestamp_parser with Utc (identity timezone),
+            // but don't set timezone metadata on the output array
+            cast_utf8_to_timestamp!(
+                string_array,
+                eval_mode,
+                TimestampMicrosecondType,
+                timestamp_parser,
+                &Utc,
+                None::<&str>
             )
         }
         _ => unreachable!("Invalid data type {:?} in cast from string", to_type),
@@ -1340,7 +1356,8 @@ mod tests {
             eval_mode,
             TimestampMicrosecondType,
             timestamp_parser,
-            tz
+            tz,
+            Some("UTC")
         );
 
         assert_eq!(
@@ -1348,6 +1365,94 @@ mod tests {
             &DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()))
         );
         assert_eq!(result.len(), 4);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_cast_string_to_timestamp_ntz() {
+        let array: ArrayRef = Arc::new(StringArray::from(vec![
+            Some("2020-01-01T12:34:56.123456"),
+            Some("not_a_timestamp"),
+            Some("2020-01-01"),
+        ]));
+
+        let string_array = array
+            .as_any()
+            .downcast_ref::<GenericStringArray<i32>>()
+            .expect("Expected a string array");
+
+        let eval_mode = EvalMode::Legacy;
+        let result = cast_utf8_to_timestamp!(
+            &string_array,
+            eval_mode,
+            TimestampMicrosecondType,
+            timestamp_parser,
+            &Utc,
+            None::<&str>
+        );
+
+        // Key assertion: TimestampNTZ should have NO timezone
+        assert_eq!(
+            result.data_type(),
+            &DataType::Timestamp(TimeUnit::Microsecond, None)
+        );
+        assert_eq!(result.len(), 3);
+
+        // Verify the actual values are not timezone-converted
+        let ts_array = result
+            .as_any()
+            .downcast_ref::<PrimitiveArray<TimestampMicrosecondType>>()
+            .expect("Expected a timestamp array");
+
+        // 2020-01-01T12:34:56.123456 as naive epoch micros
+        assert_eq!(ts_array.value(0), 1577882096123456);
+        // "not_a_timestamp" is invalid and should be null
+        assert!(ts_array.is_null(1));
+        // 2020-01-01 as naive epoch micros (midnight)
+        assert_eq!(ts_array.value(2), 1577836800000000);
+    }
+
+    #[test]
+    fn test_cast_string_to_timestamp_ntz_via_cast_array() -> DataFusionResult<()> {
+        let array: ArrayRef = Arc::new(StringArray::from(vec![
+            Some("2020-01-01T12:34:56.123456"),
+            Some("T2"),
+        ]));
+
+        let timezone = "America/New_York".to_string();
+        let cast_options = SparkCastOptions::new(EvalMode::Legacy, &timezone, false);
+
+        // Cast to Timestamp with timezone
+        let result_tz = cast_array(
+            Arc::clone(&array),
+            &DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+            &cast_options,
+        )?;
+        assert_eq!(
+            *result_tz.data_type(),
+            DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()))
+        );
+
+        // Cast to TimestampNTZ (no timezone)
+        let result_ntz = cast_array(
+            Arc::clone(&array),
+            &DataType::Timestamp(TimeUnit::Microsecond, None),
+            &cast_options,
+        )?;
+        assert_eq!(
+            *result_ntz.data_type(),
+            DataType::Timestamp(TimeUnit::Microsecond, None)
+        );
+
+        // The NTZ result should NOT have timezone metadata
+        let ntz_array = result_ntz
+            .as_any()
+            .downcast_ref::<PrimitiveArray<TimestampMicrosecondType>>()
+            .expect("Expected a timestamp array");
+        // 2020-01-01T12:34:56.123456 stored as-is (no timezone conversion)
+        assert_eq!(ntz_array.value(0), 1577882096123456);
+
+        Ok(())
     }
 
     #[test]
