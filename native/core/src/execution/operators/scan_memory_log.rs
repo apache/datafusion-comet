@@ -63,17 +63,20 @@ fn jemalloc_thread_stats() -> (u64, u64) {
     (0, 0)
 }
 
-/// Process-wide jemalloc allocated bytes.
+/// Process-wide jemalloc stats: (allocated, active, resident).
 #[cfg(feature = "jemalloc")]
-fn jemalloc_process_allocated() -> u64 {
+fn jemalloc_process_stats() -> (u64, u64, u64) {
     use tikv_jemalloc_ctl::{epoch, stats};
     epoch::advance().ok();
-    stats::allocated::read().unwrap_or(0) as u64
+    let allocat = stats::allocated::read().unwrap_or(0) as u64;
+    let active = stats::active::read().unwrap_or(0) as u64;
+    let resident = stats::resident::read().unwrap_or(0) as u64;
+    (allocated, active, resident)
 }
 
 #[cfg(not(feature = "jemalloc"))]
-fn jemalloc_process_allocated() -> u64 {
-    0
+fn jemalloc_process_stats() -> (u64, u64, u64) {
+    (0, 0, 0)
 }
 
 fn update_atomic_max(atomic: &AtomicU64, value: u64) {
@@ -178,6 +181,7 @@ impl ExecutionPlan for ScanMemoryLogExec {
         let baseline_metrics = BaselineMetrics::new(&self.metrics, partition);
         Ok(Box::pin(ScanMemoryLogStream {
             child: child_stream,
+            child_plan: Arc::clone(&self.child),
             context,
             spark_partition: self.spark_partition,
             logged: false,
@@ -205,6 +209,8 @@ impl ExecutionPlan for ScanMemoryLogExec {
 
 struct ScanMemoryLogStream {
     child: SendableRecordBatchStream,
+    /// Reference to child plan to read its metrics at EOF
+    child_plan: Arc<dyn ExecutionPlan>,
     context: Arc<TaskContext>,
     spark_partition: i32,
     logged: bool,
@@ -240,36 +246,48 @@ impl Stream for ScanMemoryLogStream {
             Poll::Ready(None) if !self.logged => {
                 self.logged = true;
                 let pool = self.context.memory_pool();
-                let process_allocated = jemalloc_process_allocated();
-                let net = self.thread_total_allocated as i64
-                    - self.thread_total_deallocated as i64;
+                let (process_allocated, process_active, process_resident) =
+                    jemalloc_process_stats();
+                let net = self.thread_total_allocated as i64 - self.thread_total_deallocated as i64;
+
+                // Read bytes_scanned from child plan's metrics
+                let bytes_scanned = self
+                    .child_plan
+                    .metrics()
+                    .map(|m| {
+                        m.iter()
+                            .filter(|metric| metric.value().name() == "bytes_scanned")
+                            .map(|metric| metric.value().as_usize())
+                            .sum::<usize>()
+                    })
+                    .unwrap_or(0);
 
                 // Accumulate into global aggregates
-                AGG_THREAD_ALLOCATED
-                    .fetch_add(self.thread_total_allocated, Ordering::Relaxed);
-                AGG_THREAD_DEALLOCATED
-                    .fetch_add(self.thread_total_deallocated, Ordering::Relaxed);
+                AGG_THREAD_ALLOCATED.fetch_add(self.thread_total_allocated, Ordering::Relaxed);
+                AGG_THREAD_DEALLOCATED.fetch_add(self.thread_total_deallocated, Ordering::Relaxed);
                 update_atomic_max(&AGG_PEAK_PROCESS_ALLOCATED, process_allocated);
                 AGG_TOTAL_ROWS.fetch_add(self.total_rows as u64, Ordering::Relaxed);
-                let completed =
-                    AGG_COMPLETED_PARTITIONS.fetch_add(1, Ordering::Relaxed) + 1;
+                let completed = AGG_COMPLETED_PARTITIONS.fetch_add(1, Ordering::Relaxed) + 1;
 
                 log::info!(
                     "ScanMemoryLogExec spark_partition={}: scan complete, \
-                     batches={}, rows={}, \
+                     batches={}, rows={}, bytes_scanned={}, \
                      memory_pool_reserved={}, \
                      thread: allocated={}, deallocated={}, net={}, \
-                     process_allocated={} | \
+                     process: allocated={}, active={}, resident={} | \
                      aggregate(n={}): thread_allocated={}, thread_deallocated={}, \
                      thread_net={}, max_process_allocated={}, total_rows={}",
                     self.spark_partition,
                     self.batch_count,
                     self.total_rows,
+                    bytes_scanned,
                     pool.reserved(),
                     self.thread_total_allocated,
                     self.thread_total_deallocated,
                     net,
                     process_allocated,
+                    process_active,
+                    process_resident,
                     completed,
                     AGG_THREAD_ALLOCATED.load(Ordering::Relaxed),
                     AGG_THREAD_DEALLOCATED.load(Ordering::Relaxed),
