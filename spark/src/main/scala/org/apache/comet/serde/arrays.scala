@@ -664,7 +664,10 @@ object CometSize extends CometExpressionSerde[Size] {
 
 object CometArrayPosition extends CometExpressionSerde[ArrayPosition] with ArraysBase {
 
-  override def getSupportLevel(expr: ArrayPosition): SupportLevel = Incompatible(None)
+  override def getSupportLevel(expr: ArrayPosition): SupportLevel =
+    Incompatible(Some(
+      "element comparison uses IEEE 754 equality where NaN != NaN, " +
+        "but Spark treats NaN as equal to NaN"))
 
   override def convert(
       expr: ArrayPosition,
