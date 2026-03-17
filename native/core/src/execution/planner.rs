@@ -88,8 +88,8 @@ use datafusion::datasource::listing::PartitionedFile;
 use datafusion::logical_expr::type_coercion::functions::fields_with_udf;
 use datafusion::logical_expr::type_coercion::other::get_coerce_type_for_case_expression;
 use datafusion::logical_expr::{
-    AggregateUDF, ReturnFieldArgs, ScalarUDF, WindowFrame, WindowFrameBound, WindowFrameUnits,
-    WindowFunctionDefinition,
+    AggregateUDF, ReturnFieldArgs, ScalarUDF, TypeSignature, WindowFrame, WindowFrameBound,
+    WindowFrameUnits, WindowFunctionDefinition,
 };
 use datafusion::physical_expr::expressions::{Literal, StatsType};
 use datafusion::physical_expr::window::WindowExpr;
@@ -2549,14 +2549,44 @@ impl PhysicalPlanner {
                         other => other,
                     };
                     let func = self.session_ctx.udf(fun_name)?;
-                    let input_fields: Vec<_> = input_expr_types
+
+                    // Type coercion strategy:
+                    //
+                    // In DF52, Comet used coerce_types() which returns NotImplemented
+                    // for most UDFs, so input types were kept unchanged. In DF53,
+                    // fields_with_udf() runs full coercion which aggressively promotes
+                    // types (e.g. Utf8 to Utf8View via Variadic signatures, Int32 to Int64
+                    // via Exact signatures). This breaks Comet's native implementations.
+                    //
+                    // Strategy:
+                    // 1. Try coerce_types() — only UDFs that explicitly implement it
+                    //    will return Ok. Same as DF52 behavior.
+                    // 2. For "well-supported" signatures (Coercible, String, Numeric,
+                    //    Comparable), use fields_with_udf(). These preserve input types
+                    //    (e.g. Utf8 stays Utf8, not promoted to Utf8View).
+                    // 3. For all other signatures (Variadic, Exact, etc.), keep original
+                    //    types unchanged. Same as DF52 behavior.
+                    let coerced_types = match func.coerce_types(&input_expr_types) {
+                        Ok(types) => types,
+                        Err(_) if needs_fields_coercion(&func.signature().type_signature) => {
+                            let input_fields: Vec<_> = input_expr_types
+                                .iter()
+                                .enumerate()
+                                .map(|(i, dt)| {
+                                    Arc::new(Field::new(format!("arg{i}"), dt.clone(), true))
+                                })
+                                .collect();
+                            let arg_fields = fields_with_udf(&input_fields, func.as_ref())?;
+                            arg_fields.iter().map(|f| f.data_type().clone()).collect()
+                        }
+                        Err(_) => input_expr_types.clone(),
+                    };
+
+                    let arg_fields: Vec<_> = coerced_types
                         .iter()
                         .enumerate()
                         .map(|(i, dt)| Arc::new(Field::new(format!("arg{i}"), dt.clone(), true)))
                         .collect();
-                    let arg_fields = fields_with_udf(&input_fields, func.as_ref())?;
-                    let coerced_types: Vec<_> =
-                        arg_fields.iter().map(|f| f.data_type().clone()).collect();
 
                     // TODO this should try and find scalar
                     let arguments = args
@@ -2612,9 +2642,32 @@ impl PhysicalPlanner {
             fun_name,
             fun_expr,
             args.to_vec(),
-            Arc::new(Field::new(fun_name, data_type, true)),
+            Arc::new(Field::new(fun_name, data_type.clone(), true)),
             Arc::new(ConfigOptions::default()),
         ));
+
+        // DF53 changed some UDFs (e.g. md5) to return StringViewArray at execution
+        // time (apache/datafusion#20045). Comet does not yet support view types, so
+        // cast the result back to the non-view variant.
+        let scalar_expr = match data_type {
+            DataType::Utf8View => Arc::new(CastExpr::new(
+                scalar_expr,
+                DataType::Utf8,
+                Some(CastOptions {
+                    safe: false,
+                    ..Default::default()
+                }),
+            )) as Arc<dyn PhysicalExpr>,
+            DataType::BinaryView => Arc::new(CastExpr::new(
+                scalar_expr,
+                DataType::Binary,
+                Some(CastOptions {
+                    safe: false,
+                    ..Default::default()
+                }),
+            )) as Arc<dyn PhysicalExpr>,
+            _ => scalar_expr,
+        };
 
         Ok(scalar_expr)
     }
@@ -3591,6 +3644,24 @@ fn extract_literal_as_datum(expr: &spark_expression::Expr) -> Option<iceberg::sp
             }
         }
         _ => None,
+    }
+}
+
+/// Returns true for signature types that need fields_with_udf() for coercion.
+///
+/// "Well-supported" signatures (Coercible, String, Numeric, Comparable) preserve
+/// input types naturally (e.g. Utf8 stays Utf8) and need fields_with_udf() because
+/// they don't implement coerce_types(). Other signatures (Variadic, Exact, etc.)
+/// should keep original types to match DF52 behavior and avoid unwanted promotions
+/// like Utf8 to Utf8View or Int32 to Int64.
+fn needs_fields_coercion(sig: &TypeSignature) -> bool {
+    match sig {
+        TypeSignature::Coercible(_)
+        | TypeSignature::String(_)
+        | TypeSignature::Numeric(_)
+        | TypeSignature::Comparable(_) => true,
+        TypeSignature::OneOf(sigs) => sigs.iter().any(needs_fields_coercion),
+        _ => false,
     }
 }
 
