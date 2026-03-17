@@ -478,7 +478,10 @@ fn throw_spark_error_as_json(
 
 /// Try to convert a DataFusion "Unable to get field named" error into a SparkError.
 /// DataFusion produces this error when reading Parquet files with duplicate field names
-/// in case-insensitive mode (e.g., file has columns "b" and "B", query requests "b").
+/// in case-insensitive mode. For example, if a Parquet file has columns "B" and "b",
+/// DataFusion may deduplicate them and report: Unable to get field named "b". Valid
+/// fields: ["A", "B"]. When the requested field has a case-insensitive match among the
+/// valid fields, we convert this to Spark's _LEGACY_ERROR_TEMP_2093 error.
 fn try_convert_duplicate_field_error(error_msg: &str) -> Option<SparkError> {
     // Match: Schema error: Unable to get field named "X". Valid fields: [...]
     lazy_static! {
@@ -488,26 +491,28 @@ fn try_convert_duplicate_field_error(error_msg: &str) -> Option<SparkError> {
     if let Some(caps) = FIELD_RE.captures(error_msg) {
         let requested_field = caps.get(1)?.as_str();
         let requested_lower = requested_field.to_lowercase();
-        // Parse all field names from the Valid fields list: ["A", "B", "b"]
+        // Parse field names from the Valid fields list: ["A", "B"] or [A, B, b]
         let valid_fields_raw = caps.get(2)?.as_str();
         let all_fields: Vec<String> = valid_fields_raw
             .split(',')
             .map(|s| s.trim().trim_matches('"').to_string())
             .collect();
-        // Filter to only fields that match case-insensitively (the actual duplicates).
-        // Spark's ParquetReadSupport.matchCaseInsensitiveField only reports fields
-        // from its case-insensitive map, not all schema fields.
-        let matched: Vec<String> = all_fields
+        // Find fields that match case-insensitively
+        let mut matched: Vec<String> = all_fields
             .into_iter()
             .filter(|f| f.to_lowercase() == requested_lower)
             .collect();
-        // Only treat as a duplicate-field error if there are 2+ case-insensitive matches
-        if matched.len() < 2 {
+        // Need at least one case-insensitive match to treat this as a duplicate field error.
+        // DataFusion may deduplicate columns case-insensitively, so the valid fields list
+        // might contain only one variant (e.g. "B" when file has both "B" and "b").
+        // If requested field differs from the match, both existed in the original file.
+        if matched.is_empty() {
             return None;
         }
-        // Spark passes the original table schema field name (uppercase "B") as
-        // requiredFieldName. We don't have that here, so use the requested field
-        // name as-is, which is what DataFusion resolved.
+        // Add the requested field name if it's not already in the list (different case)
+        if !matched.iter().any(|f| f == requested_field) {
+            matched.push(requested_field.to_string());
+        }
         let required_field_name = requested_field.to_string();
         let matched_fields = format!("[{}]", matched.join(", "));
         Some(SparkError::DuplicateFieldCaseInsensitive {
