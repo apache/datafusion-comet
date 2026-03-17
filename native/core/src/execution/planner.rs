@@ -85,6 +85,7 @@ use datafusion::common::{
     JoinType as DFJoinType, NullEquality, ScalarValue,
 };
 use datafusion::datasource::listing::PartitionedFile;
+use datafusion::logical_expr::type_coercion::functions::fields_with_udf;
 use datafusion::logical_expr::type_coercion::other::get_coerce_type_for_case_expression;
 use datafusion::logical_expr::{
     AggregateUDF, ReturnFieldArgs, ScalarUDF, WindowFrame, WindowFrameBound, WindowFrameUnits,
@@ -2548,15 +2549,14 @@ impl PhysicalPlanner {
                         other => other,
                     };
                     let func = self.session_ctx.udf(fun_name)?;
-                    let coerced_types = func
-                        .coerce_types(&input_expr_types)
-                        .unwrap_or_else(|_| input_expr_types.clone());
-
-                    let arg_fields = coerced_types
+                    let input_fields: Vec<_> = input_expr_types
                         .iter()
                         .enumerate()
                         .map(|(i, dt)| Arc::new(Field::new(format!("arg{i}"), dt.clone(), true)))
-                        .collect::<Vec<_>>();
+                        .collect();
+                    let arg_fields = fields_with_udf(&input_fields, func.as_ref())?;
+                    let coerced_types: Vec<_> =
+                        arg_fields.iter().map(|f| f.data_type().clone()).collect();
 
                     // TODO this should try and find scalar
                     let arguments = args
@@ -4058,6 +4058,9 @@ mod tests {
     #[test]
     fn test_array_repeat() {
         let session_ctx = SessionContext::new();
+        session_ctx.register_udf(ScalarUDF::new_from_impl(
+            datafusion_spark::function::array::repeat::SparkArrayRepeat::default(),
+        ));
         let task_ctx = session_ctx.task_ctx();
         let planner = PhysicalPlanner::new(Arc::from(session_ctx), 0);
 
@@ -4175,7 +4178,7 @@ mod tests {
                             "+--------------+",
                             "| [0]          |",
                             "| [3, 3, 3, 3] |",
-                            "| []           |",
+                            "|              |",
                             "+--------------+",
                         ];
                         assert_batches_eq!(expected, &[batch]);
