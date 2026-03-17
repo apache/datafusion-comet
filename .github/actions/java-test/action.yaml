@@ -120,27 +120,29 @@ runs:
         MAVEN_OPTS="-Xmx4G -Xms2G -DwildcardSuites=$MAVEN_SUITES -XX:+UnlockDiagnosticVMOptions -XX:+ShowMessageBoxOnError -XX:+HeapDumpOnOutOfMemoryError -XX:ErrorFile=./hs_err_pid%p.log" SPARK_HOME=`pwd` ./mvnw -B -Prelease clean install ${{ inputs.maven_opts }}
     - name: Upload crash logs
       if: failure()
-      uses: actions/upload-artifact@v6
+      uses: actions/upload-artifact@v7
       with:
         name: crash-logs-${{ inputs.artifact_name }}
         path: "**/hs_err_pid*.log"
+        overwrite: true
     - name: Debug listing
       if: failure()
       shell: bash
-      run: |  
+      run: |
         echo "CWD: $(pwd)"
         ls -lah .
         ls -lah target
         find . -name 'unit-tests.log'
     - name: Upload unit-tests.log
       if: failure()
-      uses: actions/upload-artifact@v6
+      uses: actions/upload-artifact@v7
       with:
         name: unit-tests-${{ inputs.artifact_name }}
         path: "**/target/unit-tests.log"
+        overwrite: true
     - name: Upload test results
       if: ${{ inputs.upload-test-reports == 'true' }}
-      uses: actions/upload-artifact@v6
+      uses: actions/upload-artifact@v7
       with:
          name: java-test-reports-${{ inputs.artifact_name }}
          path: "**/target/surefire-reports/*.txt"
