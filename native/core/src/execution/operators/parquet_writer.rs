@@ -583,6 +583,7 @@ mod tests {
 
     /// Helper function to create a test RecordBatch with 1000 rows of (int, string) data
     /// Example batch_id 1 -> 0..1000, 2 -> 1001..2000
+    #[allow(dead_code)]
     fn create_test_record_batch(batch_id: i32) -> Result<RecordBatch> {
         assert!(batch_id > 0, "batch_id must be greater than 0");
         let num_rows = batch_id * 1000;
