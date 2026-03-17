@@ -177,6 +177,8 @@ object CometQuarter extends CometExpressionSerde[Quarter] with CometExprGetDateF
 }
 
 object CometHour extends CometExpressionSerde[Hour] {
+  override def getSupportLevel(expr: Hour): SupportLevel = Compatible()
+
   override def convert(
       expr: Hour,
       inputs: Seq[Attribute],
@@ -203,6 +205,8 @@ object CometHour extends CometExpressionSerde[Hour] {
 }
 
 object CometMinute extends CometExpressionSerde[Minute] {
+  override def getSupportLevel(expr: Minute): SupportLevel = Compatible()
+
   override def convert(
       expr: Minute,
       inputs: Seq[Attribute],
@@ -229,6 +233,8 @@ object CometMinute extends CometExpressionSerde[Minute] {
 }
 
 object CometSecond extends CometExpressionSerde[Second] {
+  override def getSupportLevel(expr: Second): SupportLevel = Compatible()
+
   override def convert(
       expr: Second,
       inputs: Seq[Attribute],
