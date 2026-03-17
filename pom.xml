@@ -1102,6 +1102,7 @@ under the License.
             <exclude>dev/release/requirements.txt</exclude>
             <exclude>native/proto/src/generated/**</exclude>
             <exclude>benchmarks/tpc/queries/**</exclude>
+            <exclude>.claude/**</exclude>
           </excludes>
         </configuration>
       </plugin>
