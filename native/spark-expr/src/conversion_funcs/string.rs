@@ -1413,6 +1413,58 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_cast_string_with_timezone_offset_to_timestamp_ntz() {
+        // Strings with explicit timezone offsets should produce null for TimestampNTZ
+        let array: ArrayRef = Arc::new(StringArray::from(vec![
+            Some("2020-01-01T12:34:56+05:00"),
+            Some("2020-01-01T12:34:56-08:00"),
+            Some("2020-01-01T12:34:56Z"),
+            Some("2020-01-01T12:34:56.123456+00:00"),
+            Some("2020-01-01T12:34:56.123456"),
+        ]));
+
+        let string_array = array
+            .as_any()
+            .downcast_ref::<GenericStringArray<i32>>()
+            .expect("Expected a string array");
+
+        let eval_mode = EvalMode::Legacy;
+        let result = cast_utf8_to_timestamp!(
+            &string_array,
+            eval_mode,
+            TimestampMicrosecondType,
+            timestamp_parser,
+            &Utc,
+            None::<&str>
+        );
+
+        assert_eq!(
+            result.data_type(),
+            &DataType::Timestamp(TimeUnit::Microsecond, None)
+        );
+        assert_eq!(result.len(), 5);
+
+        let ts_array = result
+            .as_any()
+            .downcast_ref::<PrimitiveArray<TimestampMicrosecondType>>()
+            .expect("Expected a timestamp array");
+
+        // All strings with timezone offsets should be null
+        assert!(ts_array.is_null(0), "'+05:00' offset should produce null");
+        assert!(ts_array.is_null(1), "'-08:00' offset should produce null");
+        assert!(ts_array.is_null(2), "'Z' suffix should produce null");
+        assert!(
+            ts_array.is_null(3),
+            "'+00:00' offset with micros should produce null"
+        );
+
+        // The one without offset should parse correctly
+        assert!(!ts_array.is_null(4));
+        assert_eq!(ts_array.value(4), 1577882096123456);
+    }
+
+    #[test]
     fn test_cast_string_to_timestamp_ntz_via_cast_array() -> DataFusionResult<()> {
         let array: ArrayRef = Arc::new(StringArray::from(vec![
             Some("2020-01-01T12:34:56.123456"),
