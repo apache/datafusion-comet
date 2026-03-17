@@ -166,6 +166,9 @@ pub enum SparkError {
     #[error("[SCALAR_SUBQUERY_TOO_MANY_ROWS] Scalar subquery returned more than one row.")]
     ScalarSubqueryTooManyRows,
 
+    #[error("{message}")]
+    FileNotFound { message: String },
+
     #[error("ArrowError: {0}.")]
     Arrow(Arc<ArrowError>),
 
@@ -236,6 +239,7 @@ impl SparkError {
             SparkError::InvalidRegexGroupIndex { .. } => "InvalidRegexGroupIndex",
             SparkError::DatatypeCannotOrder { .. } => "DatatypeCannotOrder",
             SparkError::ScalarSubqueryTooManyRows => "ScalarSubqueryTooManyRows",
+            SparkError::FileNotFound { .. } => "FileNotFound",
             SparkError::Arrow(_) => "Arrow",
             SparkError::Internal(_) => "Internal",
         }
@@ -421,6 +425,11 @@ impl SparkError {
                     "dataType": data_type,
                 })
             }
+            SparkError::FileNotFound { message } => {
+                serde_json::json!({
+                    "message": message,
+                })
+            }
             SparkError::Arrow(e) => {
                 serde_json::json!({
                     "message": e.to_string(),
@@ -486,6 +495,9 @@ impl SparkError {
             // IllegalArgumentException
             SparkError::DatatypeCannotOrder { .. }
             | SparkError::InvalidUtf8String { .. } => "org/apache/spark/SparkIllegalArgumentException",
+
+            // FileNotFound - will be converted to SparkFileNotFoundException by the shim
+            SparkError::FileNotFound { .. } => "org/apache/spark/SparkException",
 
             // Generic errors
             SparkError::Arrow(_) | SparkError::Internal(_) => "org/apache/spark/SparkException",
@@ -558,6 +570,9 @@ impl SparkError {
 
             // Subquery errors
             SparkError::ScalarSubqueryTooManyRows => Some("SCALAR_SUBQUERY_TOO_MANY_ROWS"),
+
+            // File not found
+            SparkError::FileNotFound { .. } => Some("_LEGACY_ERROR_TEMP_2055"),
 
             // Generic errors (no error class)
             SparkError::Arrow(_) | SparkError::Internal(_) => None,

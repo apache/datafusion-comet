@@ -31,6 +31,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.comet.CometConf
 
 class CometJoinSuite extends CometTestBase {
+
   import testImplicits._
 
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
@@ -359,28 +360,87 @@ class CometJoinSuite extends CometTestBase {
       checkSparkAnswer(left.join(right, ($"left.N" === $"right.N") && ($"right.N" =!= 3), "full"))
 
       checkSparkAnswer(sql("""
-            |SELECT l.a, count(*)
-            |FROM allNulls l FULL OUTER JOIN upperCaseData r ON (l.a = r.N)
-            |GROUP BY l.a
+          |SELECT l.a, count(*)
+          |FROM allNulls l FULL OUTER JOIN upperCaseData r ON (l.a = r.N)
+          |GROUP BY l.a
         """.stripMargin))
 
       checkSparkAnswer(sql("""
-            |SELECT r.N, count(*)
-            |FROM allNulls l FULL OUTER JOIN upperCaseData r ON (l.a = r.N)
-            |GROUP BY r.N
+          |SELECT r.N, count(*)
+          |FROM allNulls l FULL OUTER JOIN upperCaseData r ON (l.a = r.N)
+          |GROUP BY r.N
           """.stripMargin))
 
       checkSparkAnswer(sql("""
-            |SELECT l.N, count(*)
-            |FROM upperCaseData l FULL OUTER JOIN allNulls r ON (l.N = r.a)
-            |GROUP BY l.N
+          |SELECT l.N, count(*)
+          |FROM upperCaseData l FULL OUTER JOIN allNulls r ON (l.N = r.a)
+          |GROUP BY l.N
           """.stripMargin))
 
       checkSparkAnswer(sql("""
-            |SELECT r.a, count(*)
-            |FROM upperCaseData l FULL OUTER JOIN allNulls r ON (l.N = r.a)
-            |GROUP BY r.a
+          |SELECT r.a, count(*)
+          |FROM upperCaseData l FULL OUTER JOIN allNulls r ON (l.N = r.a)
+          |GROUP BY r.a
         """.stripMargin))
+    }
+  }
+
+  test("Broadcast hash join build-side batch coalescing") {
+    // Use many shuffle partitions to produce many small broadcast batches,
+    // then verify that coalescing reduces the build-side batch count to 1 per task.
+    val numPartitions = 512
+    withSQLConf(
+      CometConf.COMET_BATCH_SIZE.key -> "100",
+      SQLConf.PREFER_SORTMERGEJOIN.key -> "false",
+      "spark.sql.join.forceApplyShuffledHashJoin" -> "true",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.SHUFFLE_PARTITIONS.key -> numPartitions.toString) {
+      withParquetTable((0 until 10000).map(i => (i, i % 5)), "tbl_a") {
+        withParquetTable((0 until 10000).map(i => (i % 10, i + 2)), "tbl_b") {
+          // Force a shuffle on tbl_a before broadcast so the broadcast source has
+          // numPartitions partitions, not just the number of parquet files.
+          val query =
+            s"""SELECT /*+ BROADCAST(a) */ *
+               |FROM (SELECT /*+ REPARTITION($numPartitions) */ * FROM tbl_a) a
+               |JOIN tbl_b ON a._2 = tbl_b._1""".stripMargin
+
+          val (_, cometPlan) = checkSparkAnswerAndOperator(
+            sql(query),
+            Seq(classOf[CometBroadcastExchangeExec], classOf[CometBroadcastHashJoinExec]))
+
+          val joins = collect(cometPlan) { case j: CometBroadcastHashJoinExec =>
+            j
+          }
+          assert(joins.nonEmpty, "Expected CometBroadcastHashJoinExec in plan")
+
+          val join = joins.head
+          val buildBatches = join.metrics("build_input_batches").value
+
+          // Without coalescing, build_input_batches would be ~numPartitions per task,
+          // totaling ~numPartitions * numPartitions across all tasks.
+          // With coalescing, each task gets 1 batch, so total ≈ numPartitions.
+          assert(
+            buildBatches <= numPartitions,
+            s"Expected at most $numPartitions build batches (1 per task), got $buildBatches. " +
+              "Broadcast batch coalescing may not be working.")
+
+          val broadcasts = collect(cometPlan) { case b: CometBroadcastExchangeExec =>
+            b
+          }
+          assert(broadcasts.nonEmpty, "Expected CometBroadcastExchangeExec in plan")
+
+          val broadcast = broadcasts.head
+          val coalescedBatches = broadcast.metrics("numCoalescedBatches").value
+          val coalescedRows = broadcast.metrics("numCoalescedRows").value
+
+          assert(
+            coalescedBatches >= numPartitions,
+            s"Expected at least $numPartitions coalesced batches, got $coalescedBatches")
+          assert(coalescedRows == 10000, s"Expected 10000 coalesced rows, got $coalescedRows")
+        }
+      }
     }
   }
 }
