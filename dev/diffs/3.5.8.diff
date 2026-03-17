@@ -93,22 +93,23 @@ index 27ae10b3d59..78e69902dfd 100644
 +  }
  }
 diff --git a/sql/core/src/main/scala/org/apache/spark/sql/execution/SparkPlanInfo.scala b/sql/core/src/main/scala/org/apache/spark/sql/execution/SparkPlanInfo.scala
-index db587dd9868..aac7295a53d 100644
+index db587dd9868..33802f29253 100644
 --- a/sql/core/src/main/scala/org/apache/spark/sql/execution/SparkPlanInfo.scala
 +++ b/sql/core/src/main/scala/org/apache/spark/sql/execution/SparkPlanInfo.scala
 @@ -18,6 +18,7 @@
  package org.apache.spark.sql.execution
  
  import org.apache.spark.annotation.DeveloperApi
-+import org.apache.spark.sql.comet.CometScanExec
++import org.apache.spark.sql.comet.{CometNativeScanExec, CometScanExec}
  import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, QueryStageExec}
  import org.apache.spark.sql.execution.columnar.InMemoryTableScanExec
  import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
-@@ -67,6 +68,7 @@ private[execution] object SparkPlanInfo {
+@@ -67,6 +68,8 @@ private[execution] object SparkPlanInfo {
      // dump the file scan metadata (e.g file path) to event log
      val metadata = plan match {
        case fileScan: FileSourceScanExec => fileScan.metadata
 +      case cometScan: CometScanExec => cometScan.metadata
++      case nativeScan: CometNativeScanExec => nativeScan.metadata
        case _ => Map[String, String]()
      }
      new SparkPlanInfo(
@@ -396,14 +397,14 @@ index c4fb4fa943c..a04b23870a8 100644
      assert(exchanges.size == 2)
    }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala
-index f33432ddb6f..42eb9fd1cb7 100644
+index f33432ddb6f..4acdf7e9cfb 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala
 @@ -22,6 +22,7 @@ import org.scalatest.GivenWhenThen
  import org.apache.spark.sql.catalyst.expressions.{DynamicPruningExpression, Expression}
  import org.apache.spark.sql.catalyst.expressions.CodegenObjectFactoryMode._
  import org.apache.spark.sql.catalyst.plans.ExistenceJoin
-+import org.apache.spark.sql.comet.CometScanExec
++import org.apache.spark.sql.comet.{CometNativeScanExec, CometScanExec}
  import org.apache.spark.sql.connector.catalog.{InMemoryTableCatalog, InMemoryTableWithV2FilterCatalog}
  import org.apache.spark.sql.execution._
  import org.apache.spark.sql.execution.adaptive._
@@ -447,40 +448,22 @@ index f33432ddb6f..42eb9fd1cb7 100644
      withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
        val df = sql(
          """ WITH v as (
-@@ -1698,7 +1705,8 @@ abstract class DynamicPartitionPruningV1Suite extends DynamicPartitionPruningDat
-    * Check the static scan metrics with and without DPP
-    */
-   test("static scan metrics",
--    DisableAdaptiveExecution("DPP in AQE must reuse broadcast")) {
-+    DisableAdaptiveExecution("DPP in AQE must reuse broadcast"),
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3313")) {
-     withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true",
-       SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "false",
-       SQLConf.EXCHANGE_REUSE_ENABLED.key -> "false") {
-@@ -1729,6 +1737,8 @@ abstract class DynamicPartitionPruningV1Suite extends DynamicPartitionPruningDat
+@@ -1729,6 +1736,10 @@ abstract class DynamicPartitionPruningV1Suite extends DynamicPartitionPruningDat
                case s: BatchScanExec =>
                  // we use f1 col for v2 tables due to schema pruning
                  s.output.exists(_.exists(_.argString(maxFields = 100).contains("f1")))
 +              case s: CometScanExec =>
 +                s.output.exists(_.exists(_.argString(maxFields = 100).contains("fid")))
++              case s: CometNativeScanExec =>
++                s.output.exists(_.exists(_.argString(maxFields = 100).contains("fid")))
                case _ => false
              }
            assert(scanOption.isDefined)
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/ExplainSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/ExplainSuite.scala
-index a206e97c353..79813d8e259 100644
+index a206e97c353..fea1149b67d 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/ExplainSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/ExplainSuite.scala
-@@ -280,7 +280,8 @@ class ExplainSuite extends ExplainSuiteHelper with DisableAdaptiveExecutionSuite
-     }
-   }
- 
--  test("explain formatted - check presence of subquery in case of DPP") {
-+  test("explain formatted - check presence of subquery in case of DPP",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3313")) {
-     withTable("df1", "df2") {
-       withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true",
-         SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "false",
-@@ -467,7 +468,8 @@ class ExplainSuite extends ExplainSuiteHelper with DisableAdaptiveExecutionSuite
+@@ -467,7 +467,8 @@ class ExplainSuite extends ExplainSuiteHelper with DisableAdaptiveExecutionSuite
      }
    }
  
@@ -490,7 +473,7 @@ index a206e97c353..79813d8e259 100644
      withTempDir { dir =>
        Seq("parquet", "orc", "csv", "json").foreach { fmt =>
          val basePath = dir.getCanonicalPath + "/" + fmt
-@@ -545,7 +547,9 @@ class ExplainSuite extends ExplainSuiteHelper with DisableAdaptiveExecutionSuite
+@@ -545,7 +546,9 @@ class ExplainSuite extends ExplainSuiteHelper with DisableAdaptiveExecutionSuite
    }
  }
  
@@ -1986,7 +1969,7 @@ index 07e2849ce6f..3e73645b638 100644
        ParquetOutputFormat.WRITER_VERSION -> ParquetProperties.WriterVersion.PARQUET_2_0.toString
      )
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFilterSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFilterSuite.scala
-index 8e88049f51e..49f2001dc6b 100644
+index 8e88049f51e..6150a556f9b 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFilterSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFilterSuite.scala
 @@ -1095,7 +1095,11 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
@@ -2075,17 +2058,24 @@ index 8e88049f51e..49f2001dc6b 100644
      val schema = StructType(Seq(
        StructField("a", IntegerType, nullable = false)
      ))
-@@ -1933,7 +1949,8 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
-     }
-   }
+@@ -1952,8 +1968,14 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
+           val e = intercept[SparkException] {
+             sql(s"select a from $tableName where b > 0").collect()
+           }
+-          assert(e.getCause.isInstanceOf[RuntimeException] && e.getCause.getMessage.contains(
+-            """Found duplicate field(s) "B": [B, b] in case-insensitive mode"""))
++          assert(e.getCause.isInstanceOf[RuntimeException])
++          val msg = e.getCause.getMessage
++          // native_datafusion produces a different error message for duplicate fields
++          assert(
++            msg.contains(
++              """Found duplicate field(s) "B": [B, b] in case-insensitive mode""") ||
++              msg.contains("Unable to get field named"),
++            s"Unexpected error message: $msg")
+         }
  
--  test("SPARK-25207: exception when duplicate fields in case-insensitive mode") {
-+  test("SPARK-25207: exception when duplicate fields in case-insensitive mode",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3311")) {
-     withTempPath { dir =>
-       val count = 10
-       val tableName = "spark_25207"
-@@ -1984,7 +2001,8 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
+         withSQLConf(SQLConf.CASE_SENSITIVE.key -> "true") {
+@@ -1984,7 +2006,8 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
      }
    }
  
@@ -2095,7 +2085,7 @@ index 8e88049f51e..49f2001dc6b 100644
      // block 1:
      //                      null count  min                                       max
      // page-0                         0  0                                         99
-@@ -2044,7 +2062,8 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
+@@ -2044,7 +2067,8 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
      }
    }
  
@@ -2105,7 +2095,7 @@ index 8e88049f51e..49f2001dc6b 100644
      withTempPath { dir =>
        val path = dir.getCanonicalPath
        spark.range(100).selectExpr("id * 2 AS id")
-@@ -2276,7 +2295,11 @@ class ParquetV1FilterSuite extends ParquetFilterSuite {
+@@ -2276,7 +2300,11 @@ class ParquetV1FilterSuite extends ParquetFilterSuite {
            assert(pushedParquetFilters.exists(_.getClass === filterClass),
              s"${pushedParquetFilters.map(_.getClass).toList} did not contain ${filterClass}.")
  
@@ -2118,7 +2108,7 @@ index 8e88049f51e..49f2001dc6b 100644
          } else {
            assert(selectedFilters.isEmpty, "There is filter pushed down")
          }
-@@ -2336,7 +2359,11 @@ class ParquetV2FilterSuite extends ParquetFilterSuite {
+@@ -2336,7 +2364,11 @@ class ParquetV2FilterSuite extends ParquetFilterSuite {
            assert(pushedParquetFilters.exists(_.getClass === filterClass),
              s"${pushedParquetFilters.map(_.getClass).toList} did not contain ${filterClass}.")
  
