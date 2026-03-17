@@ -1364,12 +1364,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "const-oid"
-version = "0.9.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c2459377285ad874054d797f3ccebf984978aa39129f6eafde5cdc8315b612f8"
-
-[[package]]
 name = "const-random"
 version = "0.1.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1436,15 +1430,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8b2a41393f66f16b0823bb79094d54ac5fbd34ab292ddafb9a0456ac9f87d201"
 dependencies = [
  "libc",
-]
-
-[[package]]
-name = "crc32c"
-version = "0.6.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a47af21622d091a8f0fb295b88bc886ac74efcc613efc19f5d0b21de5c89e47"
-dependencies = [
- "rustc_version",
 ]
 
 [[package]]
@@ -1683,7 +1668,7 @@ dependencies = [
 [[package]]
 name = "datafusion"
 version = "53.0.0"
-source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c08ccc8c7a7d1eaf39de39b4cbd61"
+source = "git+https://github.com/apache/datafusion?tag=53.0.0-rc2#28fc91a2a5a8ede5797fde04527f76f351c3cd8b"
 dependencies = [
  "arrow",
  "arrow-schema",
@@ -1692,25 +1677,25 @@ dependencies = [
  "chrono",
  "datafusion-catalog",
  "datafusion-catalog-listing",
- "datafusion-common",
+ "datafusion-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
  "datafusion-common-runtime",
  "datafusion-datasource",
  "datafusion-datasource-arrow",
  "datafusion-datasource-csv",
  "datafusion-datasource-json",
  "datafusion-datasource-parquet",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-expr-common",
- "datafusion-functions",
- "datafusion-functions-aggregate",
- "datafusion-functions-nested",
+ "datafusion-execution 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-expr 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-expr-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-functions 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-functions-aggregate 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-functions-nested 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
  "datafusion-functions-table",
  "datafusion-functions-window",
  "datafusion-optimizer",
- "datafusion-physical-expr",
+ "datafusion-physical-expr 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
  "datafusion-physical-expr-adapter",
- "datafusion-physical-expr-common",
+ "datafusion-physical-expr-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
  "datafusion-physical-optimizer",
  "datafusion-physical-plan",
  "datafusion-session",
@@ -1733,17 +1718,17 @@ dependencies = [
 [[package]]
 name = "datafusion-catalog"
 version = "53.0.0"
-source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c08ccc8c7a7d1eaf39de39b4cbd61"
+source = "git+https://github.com/apache/datafusion?tag=53.0.0-rc2#28fc91a2a5a8ede5797fde04527f76f351c3cd8b"
 dependencies = [
  "arrow",
  "async-trait",
  "dashmap",
- "datafusion-common",
+ "datafusion-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
  "datafusion-common-runtime",
  "datafusion-datasource",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-physical-expr",
+ "datafusion-execution 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-expr 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-physical-expr 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
  "datafusion-physical-plan",
  "datafusion-session",
  "futures",
@@ -1757,18 +1742,18 @@ dependencies = [
 [[package]]
 name = "datafusion-catalog-listing"
 version = "53.0.0"
-source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c08ccc8c7a7d1eaf39de39b4cbd61"
+source = "git+https://github.com/apache/datafusion?tag=53.0.0-rc2#28fc91a2a5a8ede5797fde04527f76f351c3cd8b"
 dependencies = [
  "arrow",
  "async-trait",
  "datafusion-catalog",
- "datafusion-common",
+ "datafusion-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
  "datafusion-datasource",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-physical-expr",
+ "datafusion-execution 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-expr 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-physical-expr 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
  "datafusion-physical-expr-adapter",
- "datafusion-physical-expr-common",
+ "datafusion-physical-expr-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
  "datafusion-physical-plan",
  "futures",
  "itertools 0.14.0",
@@ -1793,7 +1778,7 @@ dependencies = [
  "datafusion-comet-proto",
  "datafusion-comet-spark-expr",
  "datafusion-datasource",
- "datafusion-functions-nested",
+ "datafusion-functions-nested 53.0.0 (git+https://github.com/apache/datafusion?branch=branch-53)",
  "datafusion-physical-expr-adapter",
  "datafusion-spark",
  "futures",
@@ -1896,7 +1881,7 @@ dependencies = [
 [[package]]
 name = "datafusion-common"
 version = "53.0.0"
-source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c08ccc8c7a7d1eaf39de39b4cbd61"
+source = "git+https://github.com/apache/datafusion?tag=53.0.0-rc2#28fc91a2a5a8ede5797fde04527f76f351c3cd8b"
 dependencies = [
  "ahash",
  "arrow",
@@ -1918,9 +1903,29 @@ dependencies = [
 ]
 
 [[package]]
-name = "datafusion-common-runtime"
+name = "datafusion-common"
 version = "53.0.0"
 source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c08ccc8c7a7d1eaf39de39b4cbd61"
+dependencies = [
+ "ahash",
+ "arrow",
+ "arrow-ipc",
+ "chrono",
+ "half",
+ "hashbrown 0.16.1",
+ "indexmap 2.13.0",
+ "itertools 0.14.0",
+ "libc",
+ "log",
+ "paste",
+ "tokio",
+ "web-time",
+]
+
+[[package]]
+name = "datafusion-common-runtime"
+version = "53.0.0"
+source = "git+https://github.com/apache/datafusion?tag=53.0.0-rc2#28fc91a2a5a8ede5797fde04527f76f351c3cd8b"
 dependencies = [
  "futures",
  "log",
@@ -1930,7 +1935,7 @@ dependencies = [
 [[package]]
 name = "datafusion-datasource"
 version = "53.0.0"
-source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c08ccc8c7a7d1eaf39de39b4cbd61"
+source = "git+https://github.com/apache/datafusion?tag=53.0.0-rc2#28fc91a2a5a8ede5797fde04527f76f351c3cd8b"
 dependencies = [
  "arrow",
  "async-compression",
@@ -1938,13 +1943,13 @@ dependencies = [
  "bytes",
  "bzip2",
  "chrono",
- "datafusion-common",
+ "datafusion-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
  "datafusion-common-runtime",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-physical-expr",
+ "datafusion-execution 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-expr 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-physical-expr 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
  "datafusion-physical-expr-adapter",
- "datafusion-physical-expr-common",
+ "datafusion-physical-expr-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
  "datafusion-physical-plan",
  "datafusion-session",
  "flate2",
@@ -1964,18 +1969,18 @@ dependencies = [
 [[package]]
 name = "datafusion-datasource-arrow"
 version = "53.0.0"
-source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c08ccc8c7a7d1eaf39de39b4cbd61"
+source = "git+https://github.com/apache/datafusion?tag=53.0.0-rc2#28fc91a2a5a8ede5797fde04527f76f351c3cd8b"
 dependencies = [
  "arrow",
  "arrow-ipc",
  "async-trait",
  "bytes",
- "datafusion-common",
+ "datafusion-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
  "datafusion-common-runtime",
  "datafusion-datasource",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-physical-expr-common",
+ "datafusion-execution 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-expr 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-physical-expr-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
  "datafusion-physical-plan",
  "datafusion-session",
  "futures",
@@ -1987,17 +1992,17 @@ dependencies = [
 [[package]]
 name = "datafusion-datasource-csv"
 version = "53.0.0"
-source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c08ccc8c7a7d1eaf39de39b4cbd61"
+source = "git+https://github.com/apache/datafusion?tag=53.0.0-rc2#28fc91a2a5a8ede5797fde04527f76f351c3cd8b"
 dependencies = [
  "arrow",
  "async-trait",
  "bytes",
- "datafusion-common",
+ "datafusion-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
  "datafusion-common-runtime",
  "datafusion-datasource",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-physical-expr-common",
+ "datafusion-execution 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-expr 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-physical-expr-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
  "datafusion-physical-plan",
  "datafusion-session",
  "futures",
@@ -2009,17 +2014,17 @@ dependencies = [
 [[package]]
 name = "datafusion-datasource-json"
 version = "53.0.0"
-source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c08ccc8c7a7d1eaf39de39b4cbd61"
+source = "git+https://github.com/apache/datafusion?tag=53.0.0-rc2#28fc91a2a5a8ede5797fde04527f76f351c3cd8b"
 dependencies = [
  "arrow",
  "async-trait",
  "bytes",
- "datafusion-common",
+ "datafusion-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
  "datafusion-common-runtime",
  "datafusion-datasource",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-physical-expr-common",
+ "datafusion-execution 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-expr 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-physical-expr-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
  "datafusion-physical-plan",
  "datafusion-session",
  "futures",
@@ -2032,20 +2037,20 @@ dependencies = [
 [[package]]
 name = "datafusion-datasource-parquet"
 version = "53.0.0"
-source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c08ccc8c7a7d1eaf39de39b4cbd61"
+source = "git+https://github.com/apache/datafusion?tag=53.0.0-rc2#28fc91a2a5a8ede5797fde04527f76f351c3cd8b"
 dependencies = [
  "arrow",
  "async-trait",
  "bytes",
- "datafusion-common",
+ "datafusion-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
  "datafusion-common-runtime",
  "datafusion-datasource",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-functions-aggregate-common",
- "datafusion-physical-expr",
+ "datafusion-execution 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-expr 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-functions-aggregate-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-physical-expr 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
  "datafusion-physical-expr-adapter",
- "datafusion-physical-expr-common",
+ "datafusion-physical-expr-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
  "datafusion-physical-plan",
  "datafusion-pruning",
  "datafusion-session",
@@ -2061,21 +2066,26 @@ dependencies = [
 [[package]]
 name = "datafusion-doc"
 version = "53.0.0"
+source = "git+https://github.com/apache/datafusion?tag=53.0.0-rc2#28fc91a2a5a8ede5797fde04527f76f351c3cd8b"
+
+[[package]]
+name = "datafusion-doc"
+version = "53.0.0"
 source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c08ccc8c7a7d1eaf39de39b4cbd61"
 
 [[package]]
 name = "datafusion-execution"
 version = "53.0.0"
-source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c08ccc8c7a7d1eaf39de39b4cbd61"
+source = "git+https://github.com/apache/datafusion?tag=53.0.0-rc2#28fc91a2a5a8ede5797fde04527f76f351c3cd8b"
 dependencies = [
  "arrow",
  "arrow-buffer",
  "async-trait",
  "chrono",
  "dashmap",
- "datafusion-common",
- "datafusion-expr",
- "datafusion-physical-expr-common",
+ "datafusion-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-expr 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-physical-expr-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
  "futures",
  "log",
  "object_store 0.13.1",
@@ -2087,6 +2097,49 @@ dependencies = [
 ]
 
 [[package]]
+name = "datafusion-execution"
+version = "53.0.0"
+source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c08ccc8c7a7d1eaf39de39b4cbd61"
+dependencies = [
+ "arrow",
+ "arrow-buffer",
+ "async-trait",
+ "chrono",
+ "dashmap",
+ "datafusion-common 53.0.0 (git+https://github.com/apache/datafusion?branch=branch-53)",
+ "datafusion-expr 53.0.0 (git+https://github.com/apache/datafusion?branch=branch-53)",
+ "datafusion-physical-expr-common 53.0.0 (git+https://github.com/apache/datafusion?branch=branch-53)",
+ "futures",
+ "log",
+ "object_store 0.13.1",
+ "parking_lot",
+ "rand 0.9.2",
+ "tempfile",
+ "url",
+]
+
+[[package]]
+name = "datafusion-expr"
+version = "53.0.0"
+source = "git+https://github.com/apache/datafusion?tag=53.0.0-rc2#28fc91a2a5a8ede5797fde04527f76f351c3cd8b"
+dependencies = [
+ "arrow",
+ "async-trait",
+ "chrono",
+ "datafusion-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-doc 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-expr-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-functions-aggregate-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-functions-window-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-physical-expr-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "indexmap 2.13.0",
+ "itertools 0.14.0",
+ "paste",
+ "serde_json",
+ "sqlparser",
+]
+
+[[package]]
 name = "datafusion-expr"
 version = "53.0.0"
 source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c08ccc8c7a7d1eaf39de39b4cbd61"
@@ -2094,12 +2147,12 @@ dependencies = [
  "arrow",
  "async-trait",
  "chrono",
- "datafusion-common",
- "datafusion-doc",
- "datafusion-expr-common",
- "datafusion-functions-aggregate-common",
- "datafusion-functions-window-common",
- "datafusion-physical-expr-common",
+ "datafusion-common 53.0.0 (git+https://github.com/apache/datafusion?branch=branch-53)",
+ "datafusion-doc 53.0.0 (git+https://github.com/apache/datafusion?branch=branch-53)",
+ "datafusion-expr-common 53.0.0 (git+https://github.com/apache/datafusion?branch=branch-53)",
+ "datafusion-functions-aggregate-common 53.0.0 (git+https://github.com/apache/datafusion?branch=branch-53)",
+ "datafusion-functions-window-common 53.0.0 (git+https://github.com/apache/datafusion?branch=branch-53)",
+ "datafusion-physical-expr-common 53.0.0 (git+https://github.com/apache/datafusion?branch=branch-53)",
  "indexmap 2.13.0",
  "itertools 0.14.0",
  "paste",
@@ -2110,10 +2163,22 @@ dependencies = [
 [[package]]
 name = "datafusion-expr-common"
 version = "53.0.0"
+source = "git+https://github.com/apache/datafusion?tag=53.0.0-rc2#28fc91a2a5a8ede5797fde04527f76f351c3cd8b"
+dependencies = [
+ "arrow",
+ "datafusion-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "indexmap 2.13.0",
+ "itertools 0.14.0",
+ "paste",
+]
+
+[[package]]
+name = "datafusion-expr-common"
+version = "53.0.0"
 source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c08ccc8c7a7d1eaf39de39b4cbd61"
 dependencies = [
  "arrow",
- "datafusion-common",
+ "datafusion-common 53.0.0 (git+https://github.com/apache/datafusion?branch=branch-53)",
  "indexmap 2.13.0",
  "itertools 0.14.0",
  "paste",
@@ -2122,7 +2187,7 @@ dependencies = [
 [[package]]
 name = "datafusion-functions"
 version = "53.0.0"
-source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c08ccc8c7a7d1eaf39de39b4cbd61"
+source = "git+https://github.com/apache/datafusion?tag=53.0.0-rc2#28fc91a2a5a8ede5797fde04527f76f351c3cd8b"
 dependencies = [
  "arrow",
  "arrow-buffer",
@@ -2131,12 +2196,12 @@ dependencies = [
  "blake3",
  "chrono",
  "chrono-tz",
- "datafusion-common",
- "datafusion-doc",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-expr-common",
- "datafusion-macros",
+ "datafusion-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-doc 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-execution 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-expr 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-expr-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-macros 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
  "hex",
  "itertools 0.14.0",
  "log",
@@ -2151,20 +2216,68 @@ dependencies = [
 ]
 
 [[package]]
+name = "datafusion-functions"
+version = "53.0.0"
+source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c08ccc8c7a7d1eaf39de39b4cbd61"
+dependencies = [
+ "arrow",
+ "arrow-buffer",
+ "base64",
+ "chrono",
+ "chrono-tz",
+ "datafusion-common 53.0.0 (git+https://github.com/apache/datafusion?branch=branch-53)",
+ "datafusion-doc 53.0.0 (git+https://github.com/apache/datafusion?branch=branch-53)",
+ "datafusion-execution 53.0.0 (git+https://github.com/apache/datafusion?branch=branch-53)",
+ "datafusion-expr 53.0.0 (git+https://github.com/apache/datafusion?branch=branch-53)",
+ "datafusion-expr-common 53.0.0 (git+https://github.com/apache/datafusion?branch=branch-53)",
+ "datafusion-macros 53.0.0 (git+https://github.com/apache/datafusion?branch=branch-53)",
+ "hex",
+ "itertools 0.14.0",
+ "log",
+ "memchr",
+ "num-traits",
+ "rand 0.9.2",
+ "regex",
+ "unicode-segmentation",
+ "uuid",
+]
+
+[[package]]
+name = "datafusion-functions-aggregate"
+version = "53.0.0"
+source = "git+https://github.com/apache/datafusion?tag=53.0.0-rc2#28fc91a2a5a8ede5797fde04527f76f351c3cd8b"
+dependencies = [
+ "ahash",
+ "arrow",
+ "datafusion-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-doc 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-execution 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-expr 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-functions-aggregate-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-macros 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-physical-expr 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-physical-expr-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "half",
+ "log",
+ "num-traits",
+ "paste",
+]
+
+[[package]]
 name = "datafusion-functions-aggregate"
 version = "53.0.0"
 source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c08ccc8c7a7d1eaf39de39b4cbd61"
 dependencies = [
  "ahash",
  "arrow",
- "datafusion-common",
- "datafusion-doc",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-functions-aggregate-common",
- "datafusion-macros",
- "datafusion-physical-expr",
- "datafusion-physical-expr-common",
+ "datafusion-common 53.0.0 (git+https://github.com/apache/datafusion?branch=branch-53)",
+ "datafusion-doc 53.0.0 (git+https://github.com/apache/datafusion?branch=branch-53)",
+ "datafusion-execution 53.0.0 (git+https://github.com/apache/datafusion?branch=branch-53)",
+ "datafusion-expr 53.0.0 (git+https://github.com/apache/datafusion?branch=branch-53)",
+ "datafusion-functions-aggregate-common 53.0.0 (git+https://github.com/apache/datafusion?branch=branch-53)",
+ "datafusion-macros 53.0.0 (git+https://github.com/apache/datafusion?branch=branch-53)",
+ "datafusion-physical-expr 53.0.0 (git+https://github.com/apache/datafusion?branch=branch-53)",
+ "datafusion-physical-expr-common 53.0.0 (git+https://github.com/apache/datafusion?branch=branch-53)",
  "half",
  "log",
  "num-traits",
@@ -2174,13 +2287,49 @@ dependencies = [
 [[package]]
 name = "datafusion-functions-aggregate-common"
 version = "53.0.0"
+source = "git+https://github.com/apache/datafusion?tag=53.0.0-rc2#28fc91a2a5a8ede5797fde04527f76f351c3cd8b"
+dependencies = [
+ "ahash",
+ "arrow",
+ "datafusion-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-expr-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-physical-expr-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+]
+
+[[package]]
+name = "datafusion-functions-aggregate-common"
+version = "53.0.0"
 source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c08ccc8c7a7d1eaf39de39b4cbd61"
 dependencies = [
  "ahash",
  "arrow",
- "datafusion-common",
- "datafusion-expr-common",
- "datafusion-physical-expr-common",
+ "datafusion-common 53.0.0 (git+https://github.com/apache/datafusion?branch=branch-53)",
+ "datafusion-expr-common 53.0.0 (git+https://github.com/apache/datafusion?branch=branch-53)",
+ "datafusion-physical-expr-common 53.0.0 (git+https://github.com/apache/datafusion?branch=branch-53)",
+]
+
+[[package]]
+name = "datafusion-functions-nested"
+version = "53.0.0"
+source = "git+https://github.com/apache/datafusion?tag=53.0.0-rc2#28fc91a2a5a8ede5797fde04527f76f351c3cd8b"
+dependencies = [
+ "arrow",
+ "arrow-ord",
+ "datafusion-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-doc 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-execution 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-expr 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-expr-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-functions 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-functions-aggregate 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-functions-aggregate-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-macros 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-physical-expr-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "hashbrown 0.16.1",
+ "itertools 0.14.0",
+ "itoa",
+ "log",
+ "paste",
 ]
 
 [[package]]
@@ -2190,16 +2339,16 @@ source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c
 dependencies = [
  "arrow",
  "arrow-ord",
- "datafusion-common",
- "datafusion-doc",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-expr-common",
- "datafusion-functions",
- "datafusion-functions-aggregate",
- "datafusion-functions-aggregate-common",
- "datafusion-macros",
- "datafusion-physical-expr-common",
+ "datafusion-common 53.0.0 (git+https://github.com/apache/datafusion?branch=branch-53)",
+ "datafusion-doc 53.0.0 (git+https://github.com/apache/datafusion?branch=branch-53)",
+ "datafusion-execution 53.0.0 (git+https://github.com/apache/datafusion?branch=branch-53)",
+ "datafusion-expr 53.0.0 (git+https://github.com/apache/datafusion?branch=branch-53)",
+ "datafusion-expr-common 53.0.0 (git+https://github.com/apache/datafusion?branch=branch-53)",
+ "datafusion-functions 53.0.0 (git+https://github.com/apache/datafusion?branch=branch-53)",
+ "datafusion-functions-aggregate 53.0.0 (git+https://github.com/apache/datafusion?branch=branch-53)",
+ "datafusion-functions-aggregate-common 53.0.0 (git+https://github.com/apache/datafusion?branch=branch-53)",
+ "datafusion-macros 53.0.0 (git+https://github.com/apache/datafusion?branch=branch-53)",
+ "datafusion-physical-expr-common 53.0.0 (git+https://github.com/apache/datafusion?branch=branch-53)",
  "hashbrown 0.16.1",
  "itertools 0.14.0",
  "itoa",
@@ -2210,13 +2359,13 @@ dependencies = [
 [[package]]
 name = "datafusion-functions-table"
 version = "53.0.0"
-source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c08ccc8c7a7d1eaf39de39b4cbd61"
+source = "git+https://github.com/apache/datafusion?tag=53.0.0-rc2#28fc91a2a5a8ede5797fde04527f76f351c3cd8b"
 dependencies = [
  "arrow",
  "async-trait",
  "datafusion-catalog",
- "datafusion-common",
- "datafusion-expr",
+ "datafusion-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-expr 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
  "datafusion-physical-plan",
  "parking_lot",
  "paste",
@@ -2225,16 +2374,16 @@ dependencies = [
 [[package]]
 name = "datafusion-functions-window"
 version = "53.0.0"
-source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c08ccc8c7a7d1eaf39de39b4cbd61"
+source = "git+https://github.com/apache/datafusion?tag=53.0.0-rc2#28fc91a2a5a8ede5797fde04527f76f351c3cd8b"
 dependencies = [
  "arrow",
- "datafusion-common",
- "datafusion-doc",
- "datafusion-expr",
- "datafusion-functions-window-common",
- "datafusion-macros",
- "datafusion-physical-expr",
- "datafusion-physical-expr-common",
+ "datafusion-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-doc 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-expr 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-functions-window-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-macros 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-physical-expr 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-physical-expr-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
  "log",
  "paste",
 ]
@@ -2242,10 +2391,29 @@ dependencies = [
 [[package]]
 name = "datafusion-functions-window-common"
 version = "53.0.0"
+source = "git+https://github.com/apache/datafusion?tag=53.0.0-rc2#28fc91a2a5a8ede5797fde04527f76f351c3cd8b"
+dependencies = [
+ "datafusion-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-physical-expr-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+]
+
+[[package]]
+name = "datafusion-functions-window-common"
+version = "53.0.0"
 source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c08ccc8c7a7d1eaf39de39b4cbd61"
 dependencies = [
- "datafusion-common",
- "datafusion-physical-expr-common",
+ "datafusion-common 53.0.0 (git+https://github.com/apache/datafusion?branch=branch-53)",
+ "datafusion-physical-expr-common 53.0.0 (git+https://github.com/apache/datafusion?branch=branch-53)",
+]
+
+[[package]]
+name = "datafusion-macros"
+version = "53.0.0"
+source = "git+https://github.com/apache/datafusion?tag=53.0.0-rc2#28fc91a2a5a8ede5797fde04527f76f351c3cd8b"
+dependencies = [
+ "datafusion-doc 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "quote",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -2253,7 +2421,7 @@ name = "datafusion-macros"
 version = "53.0.0"
 source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c08ccc8c7a7d1eaf39de39b4cbd61"
 dependencies = [
- "datafusion-doc",
+ "datafusion-doc 53.0.0 (git+https://github.com/apache/datafusion?branch=branch-53)",
  "quote",
  "syn 2.0.117",
 ]
@@ -2261,14 +2429,14 @@ dependencies = [
 [[package]]
 name = "datafusion-optimizer"
 version = "53.0.0"
-source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c08ccc8c7a7d1eaf39de39b4cbd61"
+source = "git+https://github.com/apache/datafusion?tag=53.0.0-rc2#28fc91a2a5a8ede5797fde04527f76f351c3cd8b"
 dependencies = [
  "arrow",
  "chrono",
- "datafusion-common",
- "datafusion-expr",
- "datafusion-expr-common",
- "datafusion-physical-expr",
+ "datafusion-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-expr 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-expr-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-physical-expr 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
  "indexmap 2.13.0",
  "itertools 0.14.0",
  "log",
@@ -2279,15 +2447,37 @@ dependencies = [
 [[package]]
 name = "datafusion-physical-expr"
 version = "53.0.0"
+source = "git+https://github.com/apache/datafusion?tag=53.0.0-rc2#28fc91a2a5a8ede5797fde04527f76f351c3cd8b"
+dependencies = [
+ "ahash",
+ "arrow",
+ "datafusion-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-expr 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-expr-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-functions-aggregate-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-physical-expr-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "half",
+ "hashbrown 0.16.1",
+ "indexmap 2.13.0",
+ "itertools 0.14.0",
+ "parking_lot",
+ "paste",
+ "petgraph",
+ "tokio",
+]
+
+[[package]]
+name = "datafusion-physical-expr"
+version = "53.0.0"
 source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c08ccc8c7a7d1eaf39de39b4cbd61"
 dependencies = [
  "ahash",
  "arrow",
- "datafusion-common",
- "datafusion-expr",
- "datafusion-expr-common",
- "datafusion-functions-aggregate-common",
- "datafusion-physical-expr-common",
+ "datafusion-common 53.0.0 (git+https://github.com/apache/datafusion?branch=branch-53)",
+ "datafusion-expr 53.0.0 (git+https://github.com/apache/datafusion?branch=branch-53)",
+ "datafusion-expr-common 53.0.0 (git+https://github.com/apache/datafusion?branch=branch-53)",
+ "datafusion-functions-aggregate-common 53.0.0 (git+https://github.com/apache/datafusion?branch=branch-53)",
+ "datafusion-physical-expr-common 53.0.0 (git+https://github.com/apache/datafusion?branch=branch-53)",
  "half",
  "hashbrown 0.16.1",
  "indexmap 2.13.0",
@@ -2301,15 +2491,31 @@ dependencies = [
 [[package]]
 name = "datafusion-physical-expr-adapter"
 version = "53.0.0"
-source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c08ccc8c7a7d1eaf39de39b4cbd61"
+source = "git+https://github.com/apache/datafusion?tag=53.0.0-rc2#28fc91a2a5a8ede5797fde04527f76f351c3cd8b"
 dependencies = [
  "arrow",
- "datafusion-common",
- "datafusion-expr",
- "datafusion-functions",
- "datafusion-physical-expr",
- "datafusion-physical-expr-common",
+ "datafusion-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-expr 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-functions 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-physical-expr 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-physical-expr-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
  "itertools 0.14.0",
+]
+
+[[package]]
+name = "datafusion-physical-expr-common"
+version = "53.0.0"
+source = "git+https://github.com/apache/datafusion?tag=53.0.0-rc2#28fc91a2a5a8ede5797fde04527f76f351c3cd8b"
+dependencies = [
+ "ahash",
+ "arrow",
+ "chrono",
+ "datafusion-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-expr-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "hashbrown 0.16.1",
+ "indexmap 2.13.0",
+ "itertools 0.14.0",
+ "parking_lot",
 ]
 
 [[package]]
@@ -2320,8 +2526,8 @@ dependencies = [
  "ahash",
  "arrow",
  "chrono",
- "datafusion-common",
- "datafusion-expr-common",
+ "datafusion-common 53.0.0 (git+https://github.com/apache/datafusion?branch=branch-53)",
+ "datafusion-expr-common 53.0.0 (git+https://github.com/apache/datafusion?branch=branch-53)",
  "hashbrown 0.16.1",
  "indexmap 2.13.0",
  "itertools 0.14.0",
@@ -2331,15 +2537,15 @@ dependencies = [
 [[package]]
 name = "datafusion-physical-optimizer"
 version = "53.0.0"
-source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c08ccc8c7a7d1eaf39de39b4cbd61"
+source = "git+https://github.com/apache/datafusion?tag=53.0.0-rc2#28fc91a2a5a8ede5797fde04527f76f351c3cd8b"
 dependencies = [
  "arrow",
- "datafusion-common",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-expr-common",
- "datafusion-physical-expr",
- "datafusion-physical-expr-common",
+ "datafusion-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-execution 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-expr 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-expr-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-physical-expr 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-physical-expr-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
  "datafusion-physical-plan",
  "datafusion-pruning",
  "itertools 0.14.0",
@@ -2348,22 +2554,22 @@ dependencies = [
 [[package]]
 name = "datafusion-physical-plan"
 version = "53.0.0"
-source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c08ccc8c7a7d1eaf39de39b4cbd61"
+source = "git+https://github.com/apache/datafusion?tag=53.0.0-rc2#28fc91a2a5a8ede5797fde04527f76f351c3cd8b"
 dependencies = [
  "ahash",
  "arrow",
  "arrow-ord",
  "arrow-schema",
  "async-trait",
- "datafusion-common",
+ "datafusion-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
  "datafusion-common-runtime",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-functions",
- "datafusion-functions-aggregate-common",
- "datafusion-functions-window-common",
- "datafusion-physical-expr",
- "datafusion-physical-expr-common",
+ "datafusion-execution 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-expr 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-functions 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-functions-aggregate-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-functions-window-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-physical-expr 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-physical-expr-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
  "futures",
  "half",
  "hashbrown 0.16.1",
@@ -2379,14 +2585,14 @@ dependencies = [
 [[package]]
 name = "datafusion-pruning"
 version = "53.0.0"
-source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c08ccc8c7a7d1eaf39de39b4cbd61"
+source = "git+https://github.com/apache/datafusion?tag=53.0.0-rc2#28fc91a2a5a8ede5797fde04527f76f351c3cd8b"
 dependencies = [
  "arrow",
- "datafusion-common",
+ "datafusion-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
  "datafusion-datasource",
- "datafusion-expr-common",
- "datafusion-physical-expr",
- "datafusion-physical-expr-common",
+ "datafusion-expr-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-physical-expr 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-physical-expr-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
  "datafusion-physical-plan",
  "itertools 0.14.0",
  "log",
@@ -2395,12 +2601,12 @@ dependencies = [
 [[package]]
 name = "datafusion-session"
 version = "53.0.0"
-source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c08ccc8c7a7d1eaf39de39b4cbd61"
+source = "git+https://github.com/apache/datafusion?tag=53.0.0-rc2#28fc91a2a5a8ede5797fde04527f76f351c3cd8b"
 dependencies = [
  "async-trait",
- "datafusion-common",
- "datafusion-execution",
- "datafusion-expr",
+ "datafusion-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-execution 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-expr 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
  "datafusion-physical-plan",
  "parking_lot",
 ]
@@ -2408,7 +2614,7 @@ dependencies = [
 [[package]]
 name = "datafusion-spark"
 version = "53.0.0"
-source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c08ccc8c7a7d1eaf39de39b4cbd61"
+source = "git+https://github.com/apache/datafusion?tag=53.0.0-rc2#28fc91a2a5a8ede5797fde04527f76f351c3cd8b"
 dependencies = [
  "arrow",
  "bigdecimal",
@@ -2416,12 +2622,12 @@ dependencies = [
  "crc32fast",
  "datafusion",
  "datafusion-catalog",
- "datafusion-common",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-functions",
- "datafusion-functions-aggregate",
- "datafusion-functions-nested",
+ "datafusion-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-execution 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-expr 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-functions 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-functions-aggregate 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-functions-nested 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
  "log",
  "percent-encoding",
  "rand 0.9.2",
@@ -2434,14 +2640,14 @@ dependencies = [
 [[package]]
 name = "datafusion-sql"
 version = "53.0.0"
-source = "git+https://github.com/apache/datafusion?branch=branch-53#c466f820c66c08ccc8c7a7d1eaf39de39b4cbd61"
+source = "git+https://github.com/apache/datafusion?tag=53.0.0-rc2#28fc91a2a5a8ede5797fde04527f76f351c3cd8b"
 dependencies = [
  "arrow",
  "bigdecimal",
  "chrono",
- "datafusion-common",
- "datafusion-expr",
- "datafusion-functions-nested",
+ "datafusion-common 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-expr 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
+ "datafusion-functions-nested 53.0.0 (git+https://github.com/apache/datafusion?tag=53.0.0-rc2)",
  "indexmap 2.13.0",
  "log",
  "regex",
@@ -2533,7 +2739,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9ed9a281f7bc9b7576e61468ba615a66a5c8cfdff42420a70aa82701a3b1e292"
 dependencies = [
  "block-buffer",
- "const-oid",
  "crypto-common",
  "subtle",
 ]
@@ -2554,15 +2759,6 @@ name = "dissimilar"
 version = "1.0.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8975ffdaa0ef3661bfe02dbdcc06c9f829dfafe6a3c474de366a8d5e44276921"
-
-[[package]]
-name = "dlv-list"
-version = "0.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "442039f5147480ba31067cb00ada1adae6892028e40e45fc5de7b7df6dcc1b5f"
-dependencies = [
- "const-random",
-]
 
 [[package]]
 name = "dunce"
@@ -2626,7 +2822,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3231,8 +3427,8 @@ dependencies = [
 
 [[package]]
 name = "iceberg"
-version = "0.8.0"
-source = "git+https://github.com/mbutrovich/iceberg-rust?branch=df53-upgrade#646ab672a649322f3b140b0cf3dc76e26bb540a1"
+version = "0.9.0"
+source = "git+https://github.com/mbutrovich/iceberg-rust?branch=df53-upgrade#934d88a6c21e4389c380397485a35365c77a8a02"
 dependencies = [
  "anyhow",
  "apache-avro",
@@ -3262,11 +3458,9 @@ dependencies = [
  "moka",
  "murmur3",
  "once_cell",
- "opendal",
  "ordered-float 4.6.0",
  "parquet",
  "rand 0.8.5",
- "reqsign",
  "reqwest",
  "roaring",
  "serde",
@@ -3478,7 +3672,7 @@ checksum = "3640c1c38b8e4e43584d8df18be5fc6b0aa314ce6ebf51b53313d4306cca8e46"
 dependencies = [
  "hermit-abi",
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3526,7 +3720,7 @@ dependencies = [
  "portable-atomic",
  "portable-atomic-util",
  "serde_core",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4158,7 +4352,6 @@ dependencies = [
  "backon",
  "base64",
  "bytes",
- "crc32c",
  "futures",
  "getrandom 0.2.17",
  "hdrs",
@@ -4169,7 +4362,6 @@ dependencies = [
  "md-5",
  "percent-encoding",
  "quick-xml 0.38.4",
- "reqsign",
  "reqwest",
  "serde",
  "serde_json",
@@ -4200,16 +4392,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7bb71e1b3fa6ca1c61f383464aaf2bb0e2f8e772a1f01d486832464de363b951"
 dependencies = [
  "num-traits",
-]
-
-[[package]]
-name = "ordered-multimap"
-version = "0.7.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "49203cdcae0030493bad186b28da2fa25645fa276a51b6fec8010d281e02ef79"
-dependencies = [
- "dlv-list",
- "hashbrown 0.14.5",
 ]
 
 [[package]]
@@ -4643,16 +4825,6 @@ dependencies = [
 
 [[package]]
 name = "quick-xml"
-version = "0.37.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "331e97a1af0bf59823e6eadffe373d7b27f485be8748f71471c662c1f269b7fb"
-dependencies = [
- "memchr",
- "serde",
-]
-
-[[package]]
-name = "quick-xml"
 version = "0.38.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b66c2058c55a409d601666cffe35f04333cf1013010882cec174a7467cd4e21c"
@@ -4713,7 +4885,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.60.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4898,35 +5070,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 
 [[package]]
-name = "reqsign"
-version = "0.16.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "43451dbf3590a7590684c25fb8d12ecdcc90ed3ac123433e500447c7d77ed701"
-dependencies = [
- "anyhow",
- "async-trait",
- "base64",
- "chrono",
- "form_urlencoded",
- "getrandom 0.2.17",
- "hex",
- "hmac",
- "home",
- "http 1.4.0",
- "log",
- "percent-encoding",
- "quick-xml 0.37.5",
- "rand 0.8.5",
- "reqwest",
- "rust-ini",
- "serde",
- "serde_json",
- "sha1",
- "sha2",
- "tokio",
-]
-
-[[package]]
 name = "reqwest"
 version = "0.12.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5003,16 +5146,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rust-ini"
-version = "0.21.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "796e8d2b6696392a43bea58116b667fb4c29727dc5abd27d6acf338bb4f688c7"
-dependencies = [
- "cfg-if",
- "ordered-multimap",
-]
-
-[[package]]
 name = "rustc-demangle"
 version = "0.1.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5062,7 +5195,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -5588,7 +5721,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -6288,7 +6421,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
