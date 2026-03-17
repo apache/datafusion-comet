@@ -509,6 +509,10 @@ cause Comet to fall back to Spark.</p>
 <li><p>No support for <code class="docutils literal notranslate"><span class="pre">input_file_name()</span></code>, <code class="docutils literal notranslate"><span class="pre">input_file_block_start()</span></code>, or <code class="docutils literal notranslate"><span class="pre">input_file_block_length()</span></code> SQL functions.
 The <code class="docutils literal notranslate"><span class="pre">native_datafusion</span></code> scan does not use Spark’s <code class="docutils literal notranslate"><span class="pre">FileScanRDD</span></code>, so these functions cannot populate their values.</p></li>
 <li><p>No support for <code class="docutils literal notranslate"><span class="pre">ignoreMissingFiles</span></code> or <code class="docutils literal notranslate"><span class="pre">ignoreCorruptFiles</span></code> being set to <code class="docutils literal notranslate"><span class="pre">true</span></code></p></li>
+<li><p>No support for duplicate field names in case-insensitive mode. When the required or data schema contains
+field names that differ only by case (e.g., <code class="docutils literal notranslate"><span class="pre">B</span></code> and <code class="docutils literal notranslate"><span class="pre">b</span></code>), Comet falls back to Spark. Note that duplicates
+in the physical Parquet file that are not reflected in the table schema cannot be detected at plan time,
+so DataFusion may produce a different error message than Spark in that case.</p></li>
 </ul>
 <p>The <code class="docutils literal notranslate"><span class="pre">native_iceberg_compat</span></code> scan has the following additional limitation that may produce incorrect results
 without falling back to Spark:</p>
