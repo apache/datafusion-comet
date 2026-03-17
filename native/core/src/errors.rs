@@ -487,21 +487,29 @@ fn try_convert_duplicate_field_error(error_msg: &str) -> Option<SparkError> {
     }
     if let Some(caps) = FIELD_RE.captures(error_msg) {
         let requested_field = caps.get(1)?.as_str();
-        // Parse field names from the Valid fields list: ["b"] or ["b", "B"]
+        let requested_lower = requested_field.to_lowercase();
+        // Parse all field names from the Valid fields list: ["A", "B", "b"]
         let valid_fields_raw = caps.get(2)?.as_str();
-        let mut fields: Vec<String> = valid_fields_raw
+        let all_fields: Vec<String> = valid_fields_raw
             .split(',')
             .map(|s| s.trim().trim_matches('"').to_string())
             .collect();
-        // DataFusion only reports fields it found; add the requested name if not present
-        // to match Spark's behavior of listing all ambiguous fields
-        if !fields.iter().any(|f| f == requested_field) {
-            fields.push(requested_field.to_string());
+        // Filter to only fields that match case-insensitively (the actual duplicates).
+        // Spark's ParquetReadSupport.matchCaseInsensitiveField only reports fields
+        // from its case-insensitive map, not all schema fields.
+        let matched: Vec<String> = all_fields
+            .into_iter()
+            .filter(|f| f.to_lowercase() == requested_lower)
+            .collect();
+        // Only treat as a duplicate-field error if there are 2+ case-insensitive matches
+        if matched.len() < 2 {
+            return None;
         }
-        // Spark uses lowercase required field name
-        let required_field_name = requested_field.to_lowercase();
-        // Format as Spark expects: [b, B]
-        let matched_fields = format!("[{}]", fields.join(", "));
+        // Spark passes the original table schema field name (uppercase "B") as
+        // requiredFieldName. We don't have that here, so use the requested field
+        // name as-is, which is what DataFusion resolved.
+        let required_field_name = requested_field.to_string();
+        let matched_fields = format!("[{}]", matched.join(", "));
         Some(SparkError::DuplicateFieldCaseInsensitive {
             required_field_name,
             matched_fields,
