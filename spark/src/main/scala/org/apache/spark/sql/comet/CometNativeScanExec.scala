@@ -239,9 +239,15 @@ case class CometNativeScanExec(
       "staticFilesSize",
       "pruningTime")
 
-  override lazy val metrics: Map[String, SQLMetric] =
-    CometMetricNode.nativeScanMetrics(session.sparkContext) ++
-      scan.metrics.filterKeys(driverMetricKeys)
+  override lazy val metrics: Map[String, SQLMetric] = {
+    val nativeMetrics = CometMetricNode.nativeScanMetrics(session.sparkContext)
+    // Map native metric names to Spark metric names
+    val withAlias = nativeMetrics.get("output_rows") match {
+      case Some(metric) => nativeMetrics + ("numOutputRows" -> metric)
+      case None => nativeMetrics
+    }
+    withAlias ++ scan.metrics.filterKeys(driverMetricKeys)
+  }
 
   /**
    * See [[org.apache.spark.sql.execution.DataSourceScanExec.inputRDDs]]. Only used for tests.
