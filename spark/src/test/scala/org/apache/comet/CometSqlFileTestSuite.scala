@@ -30,7 +30,7 @@ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 class CometSqlFileTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
-      pos: Position): Unit = {
+                                                                                 pos: Position): Unit = {
     super.test(testName, testTags: _*) {
       withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_AUTO) {
         testFun
@@ -43,7 +43,7 @@ class CometSqlFileTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     val current = org.apache.spark.SPARK_VERSION.split("[.-]").take(2).map(_.toInt)
     val required = minVersion.split("[.-]").take(2).map(_.toInt)
     (current(0) > required(0)) ||
-    (current(0) == required(0) && current(1) >= required(1))
+      (current(0) == required(0) && current(1) >= required(1))
   }
 
   private val testResourceDir = {
@@ -90,7 +90,7 @@ class CometSqlFileTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               }
             } catch {
               case e: Exception =>
-                throw new RuntimeException(s"Error executing SQL '$sql'", e)
+                throw new RuntimeException(s"Error executing SQL '$sql' ${e.getMessage}", e)
             }
           case SqlQuery(sql, mode, line) =>
             try {
@@ -126,7 +126,7 @@ class CometSqlFileTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
             } catch {
               case e: Exception =>
-                throw new RuntimeException(s"Error executing SQL '$sql'", e)
+                throw new RuntimeException(s"Error executing SQL '$sql' ${e.getMessage}", e)
             }
         }
       }
