@@ -372,7 +372,7 @@ index 1f8c5822e7d..b7de4e28813 100644
  WITH t(c1) AS (SELECT replace(listagg(DISTINCT col1 COLLATE unicode_rtrim) COLLATE utf8_binary, ' ', '') FROM (VALUES ('xbc  '), ('xbc '), ('a'), ('xbc'))) SELECT len(c1), regexp_count(c1, 'a'), regexp_count(c1, 'xbc') FROM t
  -- !query schema
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/CachedTableSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/CachedTableSuite.scala
-index 0f42502f1d9..3137ac66d01 100644
+index 0f42502f1d9..e9ff802141f 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/CachedTableSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/CachedTableSuite.scala
 @@ -39,7 +39,7 @@ import org.apache.spark.sql.catalyst.util.DateTimeConstants
@@ -394,7 +394,7 @@ index 0f42502f1d9..3137ac66d01 100644
    }
  
    test("A cached table preserves the partitioning and ordering of its cached SparkPlan") {
-@@ -1659,9 +1660,15 @@ class CachedTableSuite extends QueryTest with SQLTestUtils
+@@ -1659,9 +1660,18 @@ class CachedTableSuite extends QueryTest with SQLTestUtils
            _.nodeName.contains("TableCacheQueryStage"))
          val aqeNode = findNodeInSparkPlanInfo(inMemoryScanNode.get,
            _.nodeName.contains("AdaptiveSparkPlan"))
@@ -409,7 +409,10 @@ index 0f42502f1d9..3137ac66d01 100644
 +        val wsc = resultStage.children.head           // WholeStageCodegen
 +        val c2r = wsc.children.head                   // ColumnarToRow or CometColumnarToRow
 +        val inputAdapter = c2r.children.head           // InputAdapter
-+        inputAdapter.children.head.nodeName == "AQEShuffleRead"
++        resultStage.nodeName  ==   "ResultQueryStage" &&
++          wsc.nodeName.startsWith("WholeStageCodegen") && // could be "WholeStageCodegen (1)"
++          (c2r.nodeName ==  "CometColumnarToRow" || c2r.nodeName == "ColumnarToRow") &&
++          inputAdapter.children.head.nodeName == "AQEShuffleRead"
        }
  
        withTempView("t0", "t1", "t2") {
