@@ -88,7 +88,7 @@ class CometPluginsSuite extends CometTestBase {
       spark.range(1000).toDF("id").write.mode(SaveMode.Overwrite).parquet(path)
       spark.read.parquet(path).filter("id > 500").collect()
     }
-
+    spark.sparkContext.listenerBus.waitUntilEmpty()
     assert(
       CometSource.QUERIES_PLANNED.getCount > queriesBefore,
       "queries.planned should increment after query")
@@ -104,10 +104,10 @@ class CometPluginsSuite extends CometTestBase {
         spark.range(10000).toDF("id").write.mode(SaveMode.Overwrite).parquet(path)
 
         val queriesBefore = CometSource.QUERIES_PLANNED.getCount
-
+        spark.sparkContext.listenerBus.waitUntilEmpty()
         spark.read.parquet(path).filter("id > 100").collect()
         spark.read.parquet(path).filter("id > 200").collect()
-
+        spark.sparkContext.listenerBus.waitUntilEmpty()
         val queriesAfter = CometSource.QUERIES_PLANNED.getCount
         assert(
           queriesAfter == queriesBefore + 2,

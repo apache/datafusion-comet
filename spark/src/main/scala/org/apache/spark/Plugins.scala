@@ -60,6 +60,9 @@ class CometDriverPlugin extends DriverPlugin with Logging with ShimCometDriverPl
     // Register Comet metrics source
     sc.env.metricsSystem.registerSource(CometSource)
 
+    // Register query execution listener via config
+    CometDriverPlugin.registerQueryExecutionListener(sc.conf)
+
     if (CometSparkSessionExtensions.shouldOverrideMemoryConf(sc.getConf)) {
       val execMemOverhead = if (sc.getConf.contains(EXECUTOR_MEMORY_OVERHEAD.key)) {
         sc.getConf.getSizeAsMb(EXECUTOR_MEMORY_OVERHEAD.key)
@@ -104,6 +107,10 @@ class CometDriverPlugin extends DriverPlugin with Logging with ShimCometDriverPl
 }
 
 object CometDriverPlugin extends Logging {
+  def registerQueryExecutionListener(conf: SparkConf): Unit = {
+    conf.set("spark.sql.queryExecutionListeners", "org.apache.comet.CometMetricsListener")
+  }
+
   def registerCometSessionExtension(conf: SparkConf): Unit = {
     val extensionKey = StaticSQLConf.SPARK_SESSION_EXTENSIONS.key
     val extensionClass = classOf[CometSparkSessionExtensions].getName

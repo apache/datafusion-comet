@@ -19,22 +19,11 @@
 
 package org.apache.comet
 
-import java.util.concurrent.atomic.AtomicBoolean
-
 import org.apache.spark.CometSource
-import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.execution.QueryExecution
 import org.apache.spark.sql.util.QueryExecutionListener
 
-object CometMetricsListener extends QueryExecutionListener {
-
-  private val registered = new AtomicBoolean(false)
-
-  def ensureRegistered(session: SparkSession): Unit = {
-    if (registered.compareAndSet(false, true)) {
-      session.listenerManager.register(this)
-    }
-  }
+class CometMetricsListener extends QueryExecutionListener {
 
   override def onSuccess(funcName: String, qe: QueryExecution, durationNs: Long): Unit = {
     val stats = CometCoverageStats.forPlan(qe.executedPlan)
