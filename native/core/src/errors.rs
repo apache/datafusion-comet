@@ -436,12 +436,14 @@ fn throw_exception(env: &mut JNIEnv, error: &CometError, backtrace: Option<Strin
             // Handle direct SparkError - serialize to JSON
             CometError::Spark(spark_error) => throw_spark_error_as_json(env, spark_error),
             _ => {
-                // Check for file-not-found errors that may arrive through other wrapping paths
                 let error_msg = error.to_string();
+                // Check for file-not-found errors that may arrive through other wrapping paths
                 if error_msg.contains("not found")
                     && error_msg.contains("No such file or directory")
                 {
                     let spark_error = SparkError::FileNotFound { message: error_msg };
+                    throw_spark_error_as_json(env, &spark_error)
+                } else if let Some(spark_error) = try_convert_duplicate_field_error(&error_msg) {
                     throw_spark_error_as_json(env, &spark_error)
                 } else {
                     let exception = error.to_exception();
@@ -472,6 +474,41 @@ fn throw_spark_error_as_json(
         "org/apache/comet/exceptions/CometQueryExecutionException",
         json_message,
     )
+}
+
+/// Try to convert a DataFusion "Unable to get field named" error into a SparkError.
+/// DataFusion produces this error when reading Parquet files with duplicate field names
+/// in case-insensitive mode (e.g., file has columns "b" and "B", query requests "b").
+fn try_convert_duplicate_field_error(error_msg: &str) -> Option<SparkError> {
+    // Match: Schema error: Unable to get field named "X". Valid fields: [...]
+    lazy_static! {
+        static ref FIELD_RE: Regex =
+            Regex::new(r#"Unable to get field named "([^"]+)"\. Valid fields: \[(.+)\]"#).unwrap();
+    }
+    if let Some(caps) = FIELD_RE.captures(error_msg) {
+        let requested_field = caps.get(1)?.as_str();
+        // Parse field names from the Valid fields list: ["b"] or ["b", "B"]
+        let valid_fields_raw = caps.get(2)?.as_str();
+        let mut fields: Vec<String> = valid_fields_raw
+            .split(',')
+            .map(|s| s.trim().trim_matches('"').to_string())
+            .collect();
+        // DataFusion only reports fields it found; add the requested name if not present
+        // to match Spark's behavior of listing all ambiguous fields
+        if !fields.iter().any(|f| f == requested_field) {
+            fields.push(requested_field.to_string());
+        }
+        // Spark uses lowercase required field name
+        let required_field_name = requested_field.to_lowercase();
+        // Format as Spark expects: [b, B]
+        let matched_fields = format!("[{}]", fields.join(", "));
+        Some(SparkError::DuplicateFieldCaseInsensitive {
+            required_field_name,
+            matched_fields,
+        })
+    } else {
+        None
+    }
 }
 
 #[derive(Debug, Error)]
