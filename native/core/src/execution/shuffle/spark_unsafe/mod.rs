@@ -15,6 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-mod list;
+pub mod list;
 mod map;
 pub mod row;

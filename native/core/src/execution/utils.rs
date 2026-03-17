@@ -97,6 +97,16 @@ impl SparkArrowConvert for ArrayData {
             }
         } else {
             // SAFETY: `array_ptr` and `schema_ptr` are aligned correctly.
+            debug_assert_eq!(
+                array_ptr.align_offset(array_align),
+                0,
+                "move_to_spark: array_ptr not aligned"
+            );
+            debug_assert_eq!(
+                schema_ptr.align_offset(schema_align),
+                0,
+                "move_to_spark: schema_ptr not aligned"
+            );
             unsafe {
                 std::ptr::write(array_ptr, FFI_ArrowArray::new(self));
                 std::ptr::write(schema_ptr, FFI_ArrowSchema::try_from(self.data_type())?);

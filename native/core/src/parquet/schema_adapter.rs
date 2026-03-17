@@ -349,7 +349,13 @@ impl SparkPhysicalExprAdapter {
             cast_options.allow_cast_unsigned_ints = self.parquet_options.allow_cast_unsigned_ints;
             cast_options.is_adapting_schema = true;
 
-            let spark_cast = Arc::new(Cast::new(child, target_type.clone(), cast_options));
+            let spark_cast = Arc::new(Cast::new(
+                child,
+                target_type.clone(),
+                cast_options,
+                None,
+                None,
+            ));
 
             return Ok(Transformed::yes(spark_cast as Arc<dyn PhysicalExpr>));
         }
