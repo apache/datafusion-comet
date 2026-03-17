@@ -19,7 +19,7 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, Murmur3Hash, Sha1, Sha2, XxHash64}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, Literal, Murmur3Hash, Sha1, Sha2, XxHash64}
 import org.apache.spark.sql.types.{ArrayType, DataType, DecimalType, IntegerType, LongType, MapType, StringType, StructType}
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
@@ -68,20 +68,30 @@ object CometMurmur3Hash extends CometExpressionSerde[Murmur3Hash] {
 }
 
 object CometSha2 extends CometExpressionSerde[Sha2] {
-  override def getSupportLevel(expr: Sha2): SupportLevel = {
-    // Currently, sha2 is not registered in the native engine, so we fall back to Spark
-    // for all cases until native support is available.
-    Unsupported(Some("sha2 function is not yet registered in native engine"))
-  }
-
   override def convert(
       expr: Sha2,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    // Currently, sha2 is not registered in the native engine registry.
-    // Fall back to Spark execution until native support is available.
-    withInfo(expr, "sha2 function is not yet registered in native engine")
-    None
+    if (!HashUtils.isSupportedType(expr)) {
+      return None
+    }
+
+    // Fall back to Spark for literal input to avoid native engine crash (#3340)
+    if (expr.left.isInstanceOf[Literal]) {
+      withInfo(expr, "Sha2 with literal input falls back to Spark")
+      return None
+    }
+
+    // It's possible for spark to dynamically compute the number of bits from input
+    // expression, however DataFusion does not support that yet.
+    if (!expr.right.foldable) {
+      withInfo(expr, "For Sha2, non literal numBits is not supported")
+      return None
+    }
+
+    val leftExpr = exprToProtoInternal(expr.left, inputs, binding)
+    val numBitsExpr = exprToProtoInternal(expr.right, inputs, binding)
+    scalarFunctionExprToProtoWithReturnType("sha2", StringType, false, leftExpr, numBitsExpr)
   }
 }
 

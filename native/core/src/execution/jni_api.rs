@@ -49,6 +49,7 @@ use datafusion_spark::function::datetime::last_day::SparkLastDay;
 use datafusion_spark::function::datetime::next_day::SparkNextDay;
 use datafusion_spark::function::hash::crc32::SparkCrc32;
 use datafusion_spark::function::hash::sha1::SparkSha1;
+use datafusion_spark::function::hash::sha2::SparkSha2;
 use datafusion_spark::function::map::map_from_entries::MapFromEntries;
 use datafusion_spark::function::math::expm1::SparkExpm1;
 use datafusion_spark::function::math::hex::SparkHex;
@@ -396,6 +397,7 @@ fn register_datafusion_spark_function(session_ctx: &SessionContext) {
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkLastDay::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkNextDay::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSha1::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSha2::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkConcat::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitwiseNot::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkHex::default()));
