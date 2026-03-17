@@ -61,7 +61,7 @@ under the License.
     <script src="../../_static/documentation_options.js?v=5929fcd5"></script>
     <script src="../../_static/doctools.js?v=9a2dae69"></script>
     <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script>DOCUMENTATION_OPTIONS.pagename = 'user-guide/0.10/tuning';</script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'user-guide/0.14/tuning';</script>
     <script async="true" defer="true" src="https://buttons.github.io/buttons.js"></script>
     <link rel="index" title="Index" href="../../genindex.html" />
     <link rel="search" title="Search" href="../../search.html" />
@@ -352,11 +352,8 @@ under the License.
 <ul class="current">
 <li class="toctree-l1"><a class="reference internal" href="../../about/index.html">Comet Overview</a></li>
 <li class="toctree-l1 current"><a class="reference internal" href="../index.html">User Guide</a><ul class="current">
-<li class="toctree-l2"><a class="reference internal" href="../latest/index.html">0.14.0-SNAPSHOT</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../0.13/index.html">0.13.x</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../0.12/index.html">0.12.x</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../0.11/index.html">0.11.x</a></li>
-<li class="toctree-l2 current"><a class="reference internal" href="index.html">0.10.x</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="../latest/index.html">0.15.0-SNAPSHOT</a></li>
+<li class="toctree-l2 current"><a class="reference internal" href="index.html">0.14.x</a><ul class="current">
 <li class="toctree-l3"><a class="reference internal" href="installation.html">Installing Comet</a></li>
 <li class="toctree-l3"><a class="reference internal" href="source.html">Building From Source</a></li>
 <li class="toctree-l3"><a class="reference internal" href="datasources.html">Supported Data Sources</a></li>
@@ -371,6 +368,9 @@ under the License.
 <li class="toctree-l3"><a class="reference internal" href="kubernetes.html">Kubernetes Guide</a></li>
 </ul>
 </li>
+<li class="toctree-l2"><a class="reference internal" href="../0.13/index.html">0.13.x</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../0.12/index.html">0.12.x</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../0.11/index.html">0.11.x</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../../contributor-guide/index.html">Contributor Guide</a></li>
@@ -421,7 +421,7 @@ under the License.
     <li class="breadcrumb-item"><a href="../index.html" class="nav-link">Comet User Guide</a></li>
     
     
-    <li class="breadcrumb-item"><a href="index.html" class="nav-link">Comet 0.10.1 User Guide</a></li>
+    <li class="breadcrumb-item"><a href="index.html" class="nav-link">Comet 0.14.0 User Guide</a></li>
     
     <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Comet Tuning Guide</span></li>
   </ul>
@@ -458,10 +458,6 @@ KIND, either express or implied.  See the License for the
 specific language governing permissions and limitations
 under the License.
 -->
-<div class="admonition warning">
-<p class="admonition-title">Warning</p>
-<p>This is <strong>out-of-date</strong> documentation. The latest Comet release is version 0.13.0.</p>
-</div>
 <section id="comet-tuning-guide">
 <h1>Comet Tuning Guide<a class="headerlink" href="#comet-tuning-guide" title="Link to this heading">#</a></h1>
 <p>Comet provides some tuning options to help you get the best performance from your queries.</p>
@@ -470,8 +466,9 @@ under the License.
 <p>Comet uses a global tokio runtime per executor process using tokio’s defaults of one worker thread per core and a
 maximum of 512 blocking threads. These values can be overridden using the environment variables <code class="docutils literal notranslate"><span class="pre">COMET_WORKER_THREADS</span></code>
 and <code class="docutils literal notranslate"><span class="pre">COMET_MAX_BLOCKING_THREADS</span></code>.</p>
-<p>DataFusion currently has a known issue when merging spill files in sort operators where the process can deadlock if
-there are more spill files than <code class="docutils literal notranslate"><span class="pre">COMET_MAX_BLOCKING_THREADS</span></code> (<a class="reference external" href="https://github.com/apache/datafusion/issues/15323">tracking issue</a>).</p>
+<p>It is recommended that <code class="docutils literal notranslate"><span class="pre">COMET_WORKER_THREADS</span></code> be set to the number of executor cores. This may not be necessary
+in some environments, such as Kubernetes, where the number of cores allocated to a pod will already be equal to the
+number of executor cores.</p>
 </section>
 <section id="memory-tuning">
 <h2>Memory Tuning<a class="headerlink" href="#memory-tuning" title="Link to this heading">#</a></h2>
@@ -479,28 +476,27 @@ there are more spill files than <code class="docutils literal notranslate"><span
 cases, it may be possible to reduce the amount of memory allocated to Spark so that overall memory allocation is
 the same or lower than the original configuration. In other cases, enabling Comet may require allocating more memory
 than before. See the <a class="reference internal" href="#determining-how-much-memory-to-allocate">Determining How Much Memory to Allocate</a> section for more details.</p>
-<p>Comet supports Spark’s on-heap (the default) and off-heap mode for allocating memory. However, we strongly recommend
-using off-heap mode. Comet has some limitations when running in on-heap mode, such as requiring more memory overall,
-and requiring shuffle memory to be separately configured.</p>
-<section id="configuring-comet-memory-in-off-heap-mode">
-<h3>Configuring Comet Memory in Off-Heap Mode<a class="headerlink" href="#configuring-comet-memory-in-off-heap-mode" title="Link to this heading">#</a></h3>
-<p>The recommended way to allocate memory for Comet is to set <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.enabled=true</span></code>. This allows
-Comet to share an off-heap memory pool with Spark, reducing the overall memory overhead. The size of the pool is
-specified by <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code>. For more details about Spark off-heap memory mode, please refer to
-Spark documentation: https://spark.apache.org/docs/latest/configuration.html.</p>
-</section>
-<section id="configuring-comet-memory-in-on-heap-mode">
-<h3>Configuring Comet Memory in On-Heap Mode<a class="headerlink" href="#configuring-comet-memory-in-on-heap-mode" title="Link to this heading">#</a></h3>
-<p>When running in on-heap mode, Comet memory can be allocated by setting <code class="docutils literal notranslate"><span class="pre">spark.comet.memoryOverhead</span></code>. If this setting
-is not provided, it will be calculated by multiplying the current Spark executor memory by
-<code class="docutils literal notranslate"><span class="pre">spark.comet.memory.overhead.factor</span></code> (default value is <code class="docutils literal notranslate"><span class="pre">0.2</span></code>) which may or may not result in enough memory for
-Comet to operate. It is not recommended to rely on this behavior. It is better to specify <code class="docutils literal notranslate"><span class="pre">spark.comet.memoryOverhead</span></code>
-explicitly.</p>
-<p>Comet supports native shuffle and columnar shuffle (these terms are explained in the <a class="reference internal" href="#shuffle">shuffle</a> section below).
-In on-heap mode, columnar shuffle memory must be separately allocated using <code class="docutils literal notranslate"><span class="pre">spark.comet.columnar.shuffle.memorySize</span></code>.
-If this setting is not provided, it will be calculated by multiplying <code class="docutils literal notranslate"><span class="pre">spark.comet.memoryOverhead</span></code> by
-<code class="docutils literal notranslate"><span class="pre">spark.comet.columnar.shuffle.memory.factor</span></code> (default value is <code class="docutils literal notranslate"><span class="pre">1.0</span></code>). If a shuffle exceeds this amount of memory
-then the query will fail.</p>
+<section id="configuring-comet-memory">
+<h3>Configuring Comet Memory<a class="headerlink" href="#configuring-comet-memory" title="Link to this heading">#</a></h3>
+<p>Comet shares an off-heap memory pool with Spark. The size of the pool is
+specified by <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code>.</p>
+<p>Comet’s memory accounting isn’t 100% accurate and this can result in Comet using more memory than it reserves,
+leading to out-of-memory exceptions. To work around this issue, it is possible to
+set <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.memoryPool.fraction</span></code> to a value less than <code class="docutils literal notranslate"><span class="pre">1.0</span></code> to restrict the amount of memory that can be
+reserved by Comet.</p>
+<p>For more details about Spark off-heap memory mode, please refer to <a class="reference external" href="https://spark.apache.org/docs/latest/configuration.html">Spark documentation</a>.</p>
+<p>Comet implements multiple memory pool implementations. The type of pool can be specified with <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.memoryPool</span></code>.</p>
+<p>The valid pool types are:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">fair_unified</span></code> (default when <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.enabled=true</span></code> is set)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">greedy_unified</span></code></p></li>
+</ul>
+<p>The <code class="docutils literal notranslate"><span class="pre">fair_unified</span></code> pool types prevents operators from using more than an even fraction of the available memory
+(i.e. <code class="docutils literal notranslate"><span class="pre">pool_size</span> <span class="pre">/</span> <span class="pre">num_reservations</span></code>). This pool works best when you know beforehand
+the query has multiple operators that will likely all need to spill. Sometimes it will cause spills even
+when there is sufficient memory in order to leave enough memory for other operators.</p>
+<p>The <code class="docutils literal notranslate"><span class="pre">greedy_unified</span></code> pool type implements a greedy first-come first-serve limit. This pool works well for queries that do not
+need to spill or have a single spillable operator.</p>
 </section>
 <section id="determining-how-much-memory-to-allocate">
 <h3>Determining How Much Memory to Allocate<a class="headerlink" href="#determining-how-much-memory-to-allocate" title="Link to this heading">#</a></h3>
@@ -518,7 +514,7 @@ local Parquet files using the 100 GB data set.</p>
 </ul>
 <p>Comet Performance</p>
 <ul class="simple">
-<li><p>Comet requires at least 5 GB of RAM in off-heap mode and 6 GB RAM in on-heap mode, but performance at this level
+<li><p>Comet requires at least 5 GB of RAM, but performance at this level
 is around 340 seconds, which is significantly faster than Spark with any amount of RAM</p></li>
 <li><p>Comet running in off-heap with 8 cores completes the benchmark in 295 seconds, more than 2x faster than Spark</p></li>
 <li><p>It is worth noting that running Comet with only 4 cores and 4 GB RAM completes the benchmark in 520 seconds,
@@ -526,75 +522,12 @@ providing better performance than Spark for half the resource</p></li>
 </ul>
 <p>It may be possible to reduce Comet’s memory overhead by reducing batch sizes or increasing number of partitions.</p>
 </section>
-<section id="sortexec">
-<h3>SortExec<a class="headerlink" href="#sortexec" title="Link to this heading">#</a></h3>
-<p>Comet’s SortExec implementation spills to disk when under memory pressure, but there are some known issues in the
-underlying DataFusion SortExec implementation that could cause out-of-memory errors during spilling. See
-https://github.com/apache/datafusion/issues/14692 for more information.</p>
-<p>Workarounds for this problem include:</p>
-<ul class="simple">
-<li><p>Allocating more off-heap memory</p></li>
-<li><p>Disabling native sort by setting <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.sort.enabled=false</span></code></p></li>
-</ul>
 </section>
-</section>
-<section id="advanced-memory-tuning">
-<h2>Advanced Memory Tuning<a class="headerlink" href="#advanced-memory-tuning" title="Link to this heading">#</a></h2>
-<section id="configuring-spark-executor-memoryoverhead-in-on-heap-mode">
-<h3>Configuring spark.executor.memoryOverhead in On-Heap Mode<a class="headerlink" href="#configuring-spark-executor-memoryoverhead-in-on-heap-mode" title="Link to this heading">#</a></h3>
-<p>In some environments, such as Kubernetes and YARN, it is important to correctly set <code class="docutils literal notranslate"><span class="pre">spark.executor.memoryOverhead</span></code> so
-that it is possible to allocate off-heap memory when running in on-heap mode.</p>
-<p>Comet will automatically set <code class="docutils literal notranslate"><span class="pre">spark.executor.memoryOverhead</span></code> based on the <code class="docutils literal notranslate"><span class="pre">spark.comet.memory*</span></code> settings so that
-resource managers respect Apache Spark memory configuration before starting the containers.</p>
-</section>
-<section id="configuring-off-heap-memory-pools">
-<h3>Configuring Off-Heap Memory Pools<a class="headerlink" href="#configuring-off-heap-memory-pools" title="Link to this heading">#</a></h3>
-<p>Comet implements multiple memory pool implementations. The type of pool can be specified with <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.memoryPool</span></code>.</p>
-<p>The valid pool types for off-heap mode are:</p>
-<ul class="simple">
-<li><p><code class="docutils literal notranslate"><span class="pre">fair_unified</span></code> (default when <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.enabled=true</span></code> is set)</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">greedy_unified</span></code></p></li>
-</ul>
-<p>Both of these pools share off-heap memory between Spark and Comet. This approach is referred to as
-unified memory management. The size of the pool is specified by <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code>.</p>
-<p>The <code class="docutils literal notranslate"><span class="pre">greedy_unified</span></code> pool type implements a greedy first-come first-serve limit. This pool works well for queries that do not
-need to spill or have a single spillable operator.</p>
-<p>The <code class="docutils literal notranslate"><span class="pre">fair_unified</span></code> pool type prevents operators from using more than an even fraction of the available memory
-(i.e. <code class="docutils literal notranslate"><span class="pre">pool_size</span> <span class="pre">/</span> <span class="pre">num_reservations</span></code>). This pool works best when you know beforehand
-the query has multiple operators that will likely all need to spill. Sometimes it will cause spills even
-when there is sufficient memory in order to leave enough memory for other operators.</p>
-</section>
-<section id="configuring-on-heap-memory-pools">
-<h3>Configuring On-Heap Memory Pools<a class="headerlink" href="#configuring-on-heap-memory-pools" title="Link to this heading">#</a></h3>
-<p>When running in on-heap mode, Comet will use its own dedicated memory pools that are not shared with Spark.</p>
-<p>The type of pool can be specified with <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.memoryPool</span></code>. The default setting is <code class="docutils literal notranslate"><span class="pre">greedy_task_shared</span></code>.</p>
-<p>The valid pool types for on-heap mode are:</p>
-<ul class="simple">
-<li><p><code class="docutils literal notranslate"><span class="pre">greedy</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">greedy_global</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">greedy_task_shared</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">fair_spill</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">fair_spill_global</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">fair_spill_task_shared</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">unbounded</span></code></p></li>
-</ul>
-<p>Pool types ending with <code class="docutils literal notranslate"><span class="pre">_global</span></code> use a single global memory pool between all tasks on same executor.</p>
-<p>Pool types ending with <code class="docutils literal notranslate"><span class="pre">_task_shared</span></code> share a single memory pool across all attempts for a single task.</p>
-<p>Other pool types create a dedicated pool per native query plan using a fraction of the available pool size based on number of cores
-and cores per task.</p>
-<p>The <code class="docutils literal notranslate"><span class="pre">greedy*</span></code> pool types use DataFusion’s <a class="reference external" href="https://docs.rs/datafusion/latest/datafusion/execution/memory_pool/struct.GreedyMemoryPool.html">GreedyMemoryPool</a>, which implements a greedy first-come first-serve limit. This
-pool works well for queries that do not need to spill or have a single spillable operator.</p>
-<p>The <code class="docutils literal notranslate"><span class="pre">fair_spill*</span></code> pool types use DataFusion’s <a class="reference external" href="https://docs.rs/datafusion/latest/datafusion/execution/memory_pool/struct.FairSpillPool.html">FairSpillPool</a>, which prevents spillable reservations from using more
-than an even fraction of the available memory sans any unspillable reservations
-(i.e. <code class="docutils literal notranslate"><span class="pre">(pool_size</span> <span class="pre">-</span> <span class="pre">unspillable_memory)</span> <span class="pre">/</span> <span class="pre">num_spillable_reservations</span></code>). This pool works best when you know beforehand
-the query has multiple spillable operators that will likely all need to spill. Sometimes it will cause spills even
-when there was sufficient memory (reserved for other operators) to avoid doing so. Unspillable memory is allocated in
-a first-come, first-serve fashion</p>
-<p>The <code class="docutils literal notranslate"><span class="pre">unbounded</span></code> pool type uses DataFusion’s <a class="reference external" href="https://docs.rs/datafusion/latest/datafusion/execution/memory_pool/struct.UnboundedMemoryPool.html">UnboundedMemoryPool</a>, which enforces no limit. This option is useful for
-development/testing purposes, where there is no room to allow spilling and rather choose to fail the job.
-Spilling significantly slows down the job and this option is one way to measure the best performance scenario without
-adjusting how much memory to allocate.</p>
-</section>
+<section id="optimizing-sorting-on-floating-point-values">
+<h2>Optimizing Sorting on Floating-Point Values<a class="headerlink" href="#optimizing-sorting-on-floating-point-values" title="Link to this heading">#</a></h2>
+<p>Sorting on floating-point data types (or complex types containing floating-point values) is not compatible with
+Spark if the data contains both zero and negative zero. This is likely an edge case that is not of concern for many users
+and sorting on floating-point data can be enabled by setting <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.SortOrder.allowIncompatible=true</span></code>.</p>
 </section>
 <section id="optimizing-joins">
 <h2>Optimizing Joins<a class="headerlink" href="#optimizing-joins" title="Link to this heading">#</a></h2>
@@ -625,14 +558,14 @@ Shuffle and if that is not possible it will try to use Columnar Shuffle. If neit
 back to Spark for shuffle operations.</p>
 <section id="native-shuffle">
 <h4>Native Shuffle<a class="headerlink" href="#native-shuffle" title="Link to this heading">#</a></h4>
-<p>Comet provides a fully native shuffle implementation, which generally provides the best performance. However,
-native shuffle currently only supports <code class="docutils literal notranslate"><span class="pre">HashPartitioning</span></code> and <code class="docutils literal notranslate"><span class="pre">SinglePartitioning</span></code> and has some restrictions on
-supported data types.</p>
+<p>Comet provides a fully native shuffle implementation, which generally provides the best performance. Native shuffle
+supports <code class="docutils literal notranslate"><span class="pre">HashPartitioning</span></code>, <code class="docutils literal notranslate"><span class="pre">RangePartitioning</span></code> and <code class="docutils literal notranslate"><span class="pre">SinglePartitioning</span></code> but currently only supports primitive type
+partitioning keys. Columns that are not partitioning keys may contain complex types like maps, structs, and arrays.</p>
 </section>
 <section id="columnar-jvm-shuffle">
 <h4>Columnar (JVM) Shuffle<a class="headerlink" href="#columnar-jvm-shuffle" title="Link to this heading">#</a></h4>
 <p>Comet Columnar shuffle is JVM-based and supports <code class="docutils literal notranslate"><span class="pre">HashPartitioning</span></code>, <code class="docutils literal notranslate"><span class="pre">RoundRobinPartitioning</span></code>, <code class="docutils literal notranslate"><span class="pre">RangePartitioning</span></code>, and
-<code class="docutils literal notranslate"><span class="pre">SinglePartitioning</span></code>. This shuffle implementation supports more data types than native shuffle.</p>
+<code class="docutils literal notranslate"><span class="pre">SinglePartitioning</span></code>. This shuffle implementation supports complex data types as partitioning keys.</p>
 </section>
 </section>
 <section id="shuffle-compression">
