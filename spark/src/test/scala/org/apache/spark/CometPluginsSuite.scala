@@ -103,8 +103,8 @@ class CometPluginsSuite extends CometTestBase {
         val path = new File(dir, "test.parquet").toString
         spark.range(10000).toDF("id").write.mode(SaveMode.Overwrite).parquet(path)
 
-        val queriesBefore = CometSource.QUERIES_PLANNED.getCount
         spark.sparkContext.listenerBus.waitUntilEmpty()
+        val queriesBefore = CometSource.QUERIES_PLANNED.getCount
         spark.read.parquet(path).filter("id > 100").collect()
         spark.read.parquet(path).filter("id > 200").collect()
         spark.sparkContext.listenerBus.waitUntilEmpty()

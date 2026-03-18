@@ -57,11 +57,8 @@ class CometDriverPlugin extends DriverPlugin with Logging with ShimCometDriverPl
     // register CometSparkSessionExtensions if it isn't already registered
     CometDriverPlugin.registerCometSessionExtension(sc.conf)
 
-    // Register Comet metrics source
-    sc.env.metricsSystem.registerSource(CometSource)
-
-    // Register query execution listener via config
-    CometDriverPlugin.registerQueryExecutionListener(sc.conf)
+    // Register Comet metrics
+    CometDriverPlugin.registerCometMetrics(sc)
 
     if (CometSparkSessionExtensions.shouldOverrideMemoryConf(sc.getConf)) {
       val execMemOverhead = if (sc.getConf.contains(EXECUTOR_MEMORY_OVERHEAD.key)) {
@@ -107,8 +104,23 @@ class CometDriverPlugin extends DriverPlugin with Logging with ShimCometDriverPl
 }
 
 object CometDriverPlugin extends Logging {
-  def registerQueryExecutionListener(conf: SparkConf): Unit = {
-    conf.set("spark.sql.queryExecutionListeners", "org.apache.comet.CometMetricsListener")
+  def registerCometMetrics(sc: SparkContext): Unit = {
+    sc.env.metricsSystem.registerSource(CometSource)
+
+    val listenerKey = "spark.sql.queryExecutionListeners"
+    val listenerClass = "org.apache.comet.CometMetricsListener"
+    val listeners = sc.conf.get(listenerKey, "")
+    if (listeners.isEmpty) {
+      logInfo(s"Setting $listenerKey=$listenerClass")
+      sc.conf.set(listenerKey, listenerClass)
+    } else {
+      val currentListeners = listeners.split(",").map(_.trim)
+      if (!currentListeners.contains(listenerClass)) {
+        val newValue = s"$listeners,$listenerClass"
+        logInfo(s"Setting $listenerKey=$newValue")
+        sc.conf.set(listenerKey, newValue)
+      }
+    }
   }
 
   def registerCometSessionExtension(conf: SparkConf): Unit = {
