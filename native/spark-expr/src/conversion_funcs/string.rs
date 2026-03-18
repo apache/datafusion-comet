@@ -1660,9 +1660,11 @@ mod tests {
         assert!(timestamp_parser("-0001", EvalMode::Legacy, tz)
             .unwrap()
             .is_some());
-        assert!(timestamp_parser("-0001-01-01T12:34:56", EvalMode::Legacy, tz)
-            .unwrap()
-            .is_some());
+        assert!(
+            timestamp_parser("-0001-01-01T12:34:56", EvalMode::Legacy, tz)
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[test]
