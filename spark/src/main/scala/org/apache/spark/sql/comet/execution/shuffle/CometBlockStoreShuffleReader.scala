@@ -21,6 +21,8 @@ package org.apache.spark.sql.comet.execution.shuffle
 
 import java.io.InputStream
 
+import scala.jdk.CollectionConverters._
+
 import org.apache.spark.{InterruptibleIterator, MapOutputTracker, SparkEnv, TaskContext}
 import org.apache.spark.internal.{config, Logging}
 import org.apache.spark.io.CompressionCodec
@@ -151,6 +153,15 @@ class CometBlockStoreShuffleReader[K, C](
         // or(and) sorter may have consumed previous interruptible iterator.
         new InterruptibleIterator[Product2[K, C]](context, resultIter)
     }
+  }
+
+  /**
+   * Returns the raw concatenated InputStream of all shuffle blocks, bypassing the decode step.
+   * Used by ShuffleScan direct read path.
+   */
+  def readAsRawStream(): InputStream = {
+    val streams = fetchIterator.map(_._2).toList
+    new java.io.SequenceInputStream(java.util.Collections.enumeration(streams.asJava))
   }
 
   private def fetchContinuousBlocksInBatch: Boolean = {

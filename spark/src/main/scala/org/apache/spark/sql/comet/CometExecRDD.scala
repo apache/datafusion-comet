@@ -26,7 +26,7 @@ import org.apache.spark.sql.execution.ScalarSubquery
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.SerializableConfiguration
 
-import org.apache.comet.CometExecIterator
+import org.apache.comet.{CometExecIterator, CometShuffleBlockIterator}
 import org.apache.comet.serde.OperatorOuterClass
 
 /**
@@ -64,7 +64,10 @@ private[spark] class CometExecRDD(
     nativeMetrics: CometMetricNode,
     subqueries: Seq[ScalarSubquery],
     broadcastedHadoopConfForEncryption: Option[Broadcast[SerializableConfiguration]] = None,
-    encryptedFilePaths: Seq[String] = Seq.empty)
+    encryptedFilePaths: Seq[String] = Seq.empty,
+    shuffleBlockIteratorFactories: Map[
+      Int,
+      (TaskContext, Partition) => CometShuffleBlockIterator] = Map.empty)
     extends RDD[ColumnarBatch](sc, inputRDDs.map(rdd => new OneToOneDependency(rdd))) {
 
   // Determine partition count: from inputs if available, otherwise from parameter
@@ -109,6 +112,12 @@ private[spark] class CometExecRDD(
       serializedPlan
     }
 
+    // Create shuffle block iterators for indices that have factories
+    val shuffleBlockIters = shuffleBlockIteratorFactories.map { case (idx, factory) =>
+      val inputPart = partition.inputPartitions(idx)
+      idx -> factory(context, inputPart)
+    }
+
     val it = new CometExecIterator(
       CometExec.newIterId,
       inputs,
@@ -118,7 +127,8 @@ private[spark] class CometExecRDD(
       numPartitions,
       partition.index,
       broadcastedHadoopConfForEncryption,
-      encryptedFilePaths)
+      encryptedFilePaths,
+      shuffleBlockIters)
 
     // Register ScalarSubqueries so native code can look them up
     subqueries.foreach(sub => CometScalarSubquery.setSubquery(it.id, sub))
@@ -167,7 +177,10 @@ object CometExecRDD {
       nativeMetrics: CometMetricNode,
       subqueries: Seq[ScalarSubquery],
       broadcastedHadoopConfForEncryption: Option[Broadcast[SerializableConfiguration]] = None,
-      encryptedFilePaths: Seq[String] = Seq.empty): CometExecRDD = {
+      encryptedFilePaths: Seq[String] = Seq.empty,
+      shuffleBlockIteratorFactories: Map[
+        Int,
+        (TaskContext, Partition) => CometShuffleBlockIterator] = Map.empty): CometExecRDD = {
     // scalastyle:on
 
     new CometExecRDD(
@@ -181,6 +194,7 @@ object CometExecRDD {
       nativeMetrics,
       subqueries,
       broadcastedHadoopConfForEncryption,
-      encryptedFilePaths)
+      encryptedFilePaths,
+      shuffleBlockIteratorFactories)
   }
 }
