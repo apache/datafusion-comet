@@ -84,19 +84,13 @@ fn generic_array_position<O: OffsetSizeTrait>(
     let elem_type = values.data_type().clone();
 
     match &elem_type {
-        DataType::Boolean => {
-            position_boolean::<O>(list_array, offsets, values, element)
-        }
+        DataType::Boolean => position_boolean::<O>(list_array, offsets, values, element),
         DataType::Int8 => position_primitive::<O, Int8Type>(list_array, offsets, values, element),
         DataType::Int16 => position_primitive::<O, Int16Type>(list_array, offsets, values, element),
         DataType::Int32 => position_primitive::<O, Int32Type>(list_array, offsets, values, element),
         DataType::Int64 => position_primitive::<O, Int64Type>(list_array, offsets, values, element),
-        DataType::Float32 => {
-            position_float::<O, Float32Type>(list_array, offsets, values, element)
-        }
-        DataType::Float64 => {
-            position_float::<O, Float64Type>(list_array, offsets, values, element)
-        }
+        DataType::Float32 => position_float::<O, Float32Type>(list_array, offsets, values, element),
+        DataType::Float64 => position_float::<O, Float64Type>(list_array, offsets, values, element),
         DataType::Decimal128(_, _) => {
             position_primitive::<O, Decimal128Type>(list_array, offsets, values, element)
         }
@@ -104,9 +98,7 @@ fn generic_array_position<O: OffsetSizeTrait>(
             position_primitive::<O, Date32Type>(list_array, offsets, values, element)
         }
         DataType::Timestamp(arrow::datatypes::TimeUnit::Microsecond, _) => {
-            position_primitive::<O, TimestampMicrosecondType>(
-                list_array, offsets, values, element,
-            )
+            position_primitive::<O, TimestampMicrosecondType>(list_array, offsets, values, element)
         }
         DataType::Utf8 => position_string::<O, i32>(list_array, offsets, values, element),
         DataType::LargeUtf8 => position_string::<O, i64>(list_array, offsets, values, element),
