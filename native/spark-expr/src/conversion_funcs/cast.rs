@@ -16,14 +16,15 @@
 // under the License.
 
 use crate::conversion_funcs::boolean::{
-    cast_boolean_to_decimal, is_df_cast_from_bool_spark_compatible,
+    cast_boolean_to_decimal, cast_boolean_to_timestamp, is_df_cast_from_bool_spark_compatible,
 };
 use crate::conversion_funcs::numeric::{
-    cast_float32_to_decimal128, cast_float64_to_decimal128, cast_int_to_decimal128,
-    cast_int_to_timestamp, is_df_cast_from_decimal_spark_compatible,
-    is_df_cast_from_float_spark_compatible, is_df_cast_from_int_spark_compatible,
-    spark_cast_decimal_to_boolean, spark_cast_float32_to_utf8, spark_cast_float64_to_utf8,
-    spark_cast_int_to_int, spark_cast_nonintegral_numeric_to_integral,
+    cast_decimal_to_timestamp, cast_float32_to_decimal128, cast_float64_to_decimal128,
+    cast_float_to_timestamp, cast_int_to_decimal128, cast_int_to_timestamp,
+    is_df_cast_from_decimal_spark_compatible, is_df_cast_from_float_spark_compatible,
+    is_df_cast_from_int_spark_compatible, spark_cast_decimal_to_boolean,
+    spark_cast_float32_to_utf8, spark_cast_float64_to_utf8, spark_cast_int_to_int,
+    spark_cast_nonintegral_numeric_to_integral,
 };
 use crate::conversion_funcs::string::{
     cast_string_to_date, cast_string_to_decimal, cast_string_to_float, cast_string_to_int,
@@ -81,6 +82,8 @@ pub struct Cast {
     pub child: Arc<dyn PhysicalExpr>,
     pub data_type: DataType,
     pub cast_options: SparkCastOptions,
+    pub expr_id: Option<u64>,
+    pub query_context: Option<Arc<crate::QueryContext>>,
 }
 
 impl PartialEq for Cast {
@@ -104,11 +107,15 @@ impl Cast {
         child: Arc<dyn PhysicalExpr>,
         data_type: DataType,
         cast_options: SparkCastOptions,
+        expr_id: Option<u64>,
+        query_context: Option<Arc<crate::QueryContext>>,
     ) -> Self {
         Self {
             child,
             data_type,
             cast_options,
+            expr_id,
+            query_context,
         }
     }
 }
@@ -384,6 +391,9 @@ pub(crate) fn cast_array(
             cast_boolean_to_decimal(&array, *precision, *scale)
         }
         (Int8 | Int16 | Int32 | Int64, Timestamp(_, tz)) => cast_int_to_timestamp(&array, tz),
+        (Float32 | Float64, Timestamp(_, tz)) => cast_float_to_timestamp(&array, tz, eval_mode),
+        (Boolean, Timestamp(_, tz)) => cast_boolean_to_timestamp(&array, tz),
+        (Decimal128(_, scale), Timestamp(_, tz)) => cast_decimal_to_timestamp(&array, tz, *scale),
         _ if cast_options.is_adapting_schema
             || is_datafusion_spark_compatible(&from_type, to_type) =>
         {
@@ -682,7 +692,23 @@ impl PhysicalExpr for Cast {
 
     fn evaluate(&self, batch: &RecordBatch) -> DataFusionResult<ColumnarValue> {
         let arg = self.child.evaluate(batch)?;
-        spark_cast(arg, &self.data_type, &self.cast_options)
+        let result = spark_cast(arg, &self.data_type, &self.cast_options);
+
+        // If there's an error and we have query_context, wrap it
+        match result {
+            Err(DataFusionError::External(e)) if self.query_context.is_some() => {
+                if let Some(spark_err) = e.downcast_ref::<crate::SparkError>() {
+                    let wrapped = crate::SparkErrorWithContext::with_context(
+                        spark_err.clone(),
+                        Arc::clone(self.query_context.as_ref().unwrap()),
+                    );
+                    Err(DataFusionError::External(Box::new(wrapped)))
+                } else {
+                    Err(DataFusionError::External(e))
+                }
+            }
+            other => other,
+        }
     }
 
     fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
@@ -698,6 +724,8 @@ impl PhysicalExpr for Cast {
                 Arc::clone(&children[0]),
                 self.data_type.clone(),
                 self.cast_options.clone(),
+                self.expr_id,
+                self.query_context.clone(),
             ))),
             _ => internal_err!("Cast should have exactly one child"),
         }

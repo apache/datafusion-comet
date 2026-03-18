@@ -48,6 +48,7 @@ on:
 
 env:
   RUST_VERSION: stable
+  RUST_BACKTRACE: 1
 
 jobs:
 
@@ -64,6 +65,72 @@ jobs:
         run: |
           rustup component add rustfmt
           cd native && cargo fmt --all -- --check
+
+  lint-java:
+    needs: lint
+    name: Lint Java (${{ matrix.profile.name }})
+    runs-on: ubuntu-latest
+    container:
+      image: amd64/rust
+      env:
+        JAVA_TOOL_OPTIONS: ${{ matrix.profile.java_version == '17' && '--add-exports=java.base/sun.nio.ch=ALL-UNNAMED --add-exports=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED' || '' }}
+    strategy:
+      matrix:
+        profile:
+          - name: "Spark 3.4, JDK 11, Scala 2.12"
+            java_version: "11"
+            maven_opts: "-Pspark-3.4 -Pscala-2.12"
+          - name: "Spark 3.5, JDK 17, Scala 2.12"
+            java_version: "17"
+            maven_opts: "-Pspark-3.5 -Pscala-2.12"
+          - name: "Spark 4.0, JDK 17"
+            java_version: "17"
+            maven_opts: "-Pspark-4.0"
+      fail-fast: false
+    steps:
+      - uses: runs-on/action@cd2b598b0515d39d78c38a02d529db87d2196d1e  # v2.0.3
+      - uses: actions/checkout@v6
+
+      - name: Setup Rust & Java toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: ${{ env.RUST_VERSION }}
+          jdk-version: ${{ matrix.profile.java_version }}
+
+      - name: Cache Maven dependencies
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.m2/repository
+            /root/.m2/repository
+          key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-lint
+          restore-keys: |
+            ${{ runner.os }}-java-maven-
+
+      - name: Run scalafix check
+        run: |
+          ./mvnw -B package -DskipTests scalafix:scalafix -Dscalafix.mode=CHECK -Psemanticdb ${{ matrix.profile.maven_opts }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+
+      - name: Install prettier
+        run: |
+          npm install -g prettier
+
+      - name: Run prettier
+        run: |
+          npx prettier "**/*.md" --write
+
+      - name: Mark workspace as safe for git
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Check for any local git changes (such as generated docs)
+        run: |
+          ./dev/ci/check-working-tree-clean.sh
 
   # Build native library once and share with all test jobs
   build-native:
