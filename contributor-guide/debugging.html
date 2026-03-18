@@ -470,8 +470,13 @@ LLDB or the LLDB that is bundled with XCode. We will use the LLDB packaged with 
 <p><em>Caveat: The steps here have only been tested with JDK 11</em> on Mac (M1)</p>
 <section id="debugging-for-advanced-developers">
 <h2>Debugging for Advanced Developers<a class="headerlink" href="#debugging-for-advanced-developers" title="Link to this heading">#</a></h2>
-<p>Add a <code class="docutils literal notranslate"><span class="pre">.lldbinit</span></code> to comet/core. This is not strictly necessary but will be useful if you want to
-use advanced <code class="docutils literal notranslate"><span class="pre">lldb</span></code> debugging.</p>
+<p>Add a <code class="docutils literal notranslate"><span class="pre">.lldbinit</span></code> to comet/native. This is not strictly necessary but will be useful if you want to
+use advanced <code class="docutils literal notranslate"><span class="pre">lldb</span></code> debugging. For example, we can ignore some exceptions and signals that are not relevant
+to our debugging and would otherwise cause the debugger to stop.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">settings</span> <span class="nb">set</span> <span class="n">platform</span><span class="o">.</span><span class="n">plugin</span><span class="o">.</span><span class="n">darwin</span><span class="o">.</span><span class="n">ignored</span><span class="o">-</span><span class="n">exceptions</span> <span class="n">EXC_BAD_ACCESS</span><span class="o">|</span><span class="n">EXC_BAD_INSTRUCTION</span>
+<span class="n">process</span> <span class="n">handle</span> <span class="o">-</span><span class="n">n</span> <span class="n">true</span> <span class="o">-</span><span class="n">p</span> <span class="n">true</span> <span class="o">-</span><span class="n">s</span> <span class="n">false</span> <span class="n">SIGBUS</span> <span class="n">SIGSEGV</span> <span class="n">SIGILL</span>
+</pre></div>
+</div>
 <section id="in-intellij">
 <h3>In IntelliJ<a class="headerlink" href="#in-intellij" title="Link to this heading">#</a></h3>
 <ol class="arabic">
