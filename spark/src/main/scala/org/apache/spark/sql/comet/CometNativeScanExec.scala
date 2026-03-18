@@ -67,7 +67,7 @@ case class CometNativeScanExec(
     disableBucketedScan: Boolean = false,
     originalPlan: FileSourceScanExec,
     override val serializedPlanOpt: SerializedPlan,
-    @transient scan: CometScanExec, // Lazy access to file partitions without serializing with plan
+    @transient planner: FilePartitionPlanner, // Lazy access to file partitions without serializing with plan
     sourceKey: String) // Key for PlanDataInjector to match common+partition data at runtime
     extends CometLeafExec
     with DataSourceScanExec
@@ -143,8 +143,9 @@ case class CometNativeScanExec(
     // Extract common data from nativeOp
     val commonBytes = nativeOp.getNativeScan.getCommon.toByteArray
 
-    // Get file partitions from CometScanExec (handles bucketing, etc.)
-    val filePartitions = scan.getFilePartitions()
+    // Get file partitions from FilePartitionPlanner (handles bucketing, etc.)
+    val filePartitions = planner.getFilePartitions()
+    planner.sendDriverMetrics(metrics, sparkContext)
 
     // Serialize each partition's files
     import org.apache.comet.serde.operator.partition2Proto
@@ -210,7 +211,7 @@ case class CometNativeScanExec(
       disableBucketedScan,
       originalPlan.doCanonicalize(),
       SerializedPlan(None),
-      null, // Transient scan not needed for canonicalization
+      null, // Transient planner not needed for canonicalization
       ""
     ) // sourceKey not needed for canonicalization
   }
@@ -246,7 +247,7 @@ case class CometNativeScanExec(
       case Some(metric) => nativeMetrics + ("numOutputRows" -> metric)
       case None => nativeMetrics
     }
-    withAlias ++ scan.metrics.filterKeys(driverMetricKeys)
+    withAlias ++ originalPlan.driverMetrics.filterKeys(driverMetricKeys)
   }
 
   /**
@@ -260,7 +261,7 @@ object CometNativeScanExec {
       nativeOp: Operator,
       scanExec: FileSourceScanExec,
       session: SparkSession,
-      scan: CometScanExec): CometNativeScanExec = {
+      planner: FilePartitionPlanner): CometNativeScanExec = {
     // TreeNode.mapProductIterator is protected method.
     def mapProductIterator[B: ClassTag](product: Product, f: Any => B): Array[B] = {
       val arr = Array.ofDim[B](product.productArity)
@@ -310,7 +311,7 @@ object CometNativeScanExec {
       wrapped.disableBucketedScan,
       wrapped,
       SerializedPlan(None),
-      scan,
+      planner,
       sourceKey)
     scanExec.logicalLink.foreach(batchScanExec.setLogicalLink)
     batchScanExec

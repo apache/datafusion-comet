@@ -66,8 +66,8 @@ class ParquetReadFromFakeHadoopFsSuite extends CometTestBase with AdaptiveSparkP
       p
     }
     assert(scans.size == 1)
-    // File partitions are now accessed from the scan field, not from the protobuf
-    val filePartitions = scans.head.scan.getFilePartitions()
+    // File partitions are now accessed from the planner field
+    val filePartitions = scans.head.planner.getFilePartitions()
     assert(filePartitions.nonEmpty)
     assert(
       filePartitions.head.files.head.filePath.toString
