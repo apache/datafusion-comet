@@ -1267,13 +1267,7 @@ abstract class CometTestBase
     writer.close()
   }
 
-  def usingLegacyNativeCometScan: Boolean = usingLegacyNativeCometScan(SQLConf.get)
-
-  def usingLegacyNativeCometScan(conf: SQLConf): Boolean =
-    CometConf.COMET_NATIVE_SCAN_IMPL.get(conf) == CometConf.SCAN_NATIVE_COMET
-
   def hasUnsignedSmallIntSafetyCheck(conf: SQLConf): Boolean = {
-    !usingLegacyNativeCometScan(conf) &&
     CometConf.COMET_PARQUET_UNSIGNED_SMALL_INT_CHECK.get(conf)
   }
 

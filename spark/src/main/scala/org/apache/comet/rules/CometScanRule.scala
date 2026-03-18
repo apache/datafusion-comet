@@ -222,6 +222,22 @@ case class CometScanRule(session: SparkSession)
       withInfo(scanExec, "Native DataFusion scan does not support Parquet field ID matching")
       return None
     }
+    // Case-insensitive mode with duplicate field names produces different errors
+    // in DataFusion vs Spark, so fall back to avoid incompatible error messages
+    if (!session.sessionState.conf.caseSensitiveAnalysis) {
+      val schemas = Seq(scanExec.requiredSchema, r.dataSchema)
+      for (schema <- schemas) {
+        val fieldNames =
+          schema.fieldNames.map(_.toLowerCase(java.util.Locale.ROOT))
+        if (fieldNames.length != fieldNames.distinct.length) {
+          withInfo(
+            scanExec,
+            "Native DataFusion scan does not support " +
+              "duplicate field names in case-insensitive mode")
+          return None
+        }
+      }
+    }
     if (!isSchemaSupported(scanExec, SCAN_NATIVE_DATAFUSION, r)) {
       return None
     }
@@ -307,6 +323,8 @@ case class CometScanRule(session: SparkSession)
         if (s.isCometEnabled && schemaSupported) {
           // When reading from Iceberg, we automatically enable type promotion
           SQLConf.get.setConfString(COMET_SCHEMA_EVOLUTION_ENABLED.key, "true")
+          // When reading from Iceberg, we automatically disable native columnar to row
+          SQLConf.get.setConfString(COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED.key, "false")
           CometBatchScanExec(
             scanExec.clone().asInstanceOf[BatchScanExec],
             runtimeFilters = scanExec.runtimeFilters)

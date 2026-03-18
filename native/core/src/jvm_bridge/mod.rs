@@ -263,11 +263,19 @@ impl JVMClasses<'_> {
     }
 
     pub fn get() -> &'static JVMClasses<'static> {
+        debug_assert!(
+            JVM_CLASSES.get().is_some(),
+            "JVMClasses::get: not initialized"
+        );
         unsafe { JVM_CLASSES.get_unchecked() }
     }
 
     /// Gets the JNIEnv for the current thread.
     pub fn get_env() -> CometResult<AttachGuard<'static>> {
+        debug_assert!(
+            JAVA_VM.get().is_some(),
+            "JVMClasses::get_env: JAVA_VM not initialized"
+        );
         unsafe {
             let java_vm = JAVA_VM.get_unchecked();
             java_vm.attach_current_thread().map_err(|e| {

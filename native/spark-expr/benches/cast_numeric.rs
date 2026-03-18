@@ -26,9 +26,21 @@ fn criterion_benchmark(c: &mut Criterion) {
     let batch = create_int32_batch();
     let expr = Arc::new(Column::new("a", 0));
     let spark_cast_options = SparkCastOptions::new_without_timezone(EvalMode::Legacy, false);
-    let cast_i32_to_i8 = Cast::new(expr.clone(), DataType::Int8, spark_cast_options.clone());
-    let cast_i32_to_i16 = Cast::new(expr.clone(), DataType::Int16, spark_cast_options.clone());
-    let cast_i32_to_i64 = Cast::new(expr, DataType::Int64, spark_cast_options);
+    let cast_i32_to_i8 = Cast::new(
+        expr.clone(),
+        DataType::Int8,
+        spark_cast_options.clone(),
+        None,
+        None,
+    );
+    let cast_i32_to_i16 = Cast::new(
+        expr.clone(),
+        DataType::Int16,
+        spark_cast_options.clone(),
+        None,
+        None,
+    );
+    let cast_i32_to_i64 = Cast::new(expr, DataType::Int64, spark_cast_options, None, None);
 
     let mut group = c.benchmark_group("cast_int_to_int");
     group.bench_function("cast_i32_to_i8", |b| {

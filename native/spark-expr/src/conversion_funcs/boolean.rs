@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::SparkResult;
+use crate::{SparkError, SparkResult};
 use arrow::array::{Array, ArrayRef, AsArray, Decimal128Array, TimestampMicrosecondBuilder};
 use arrow::datatypes::DataType;
 use std::sync::Arc;
@@ -39,7 +39,22 @@ pub fn cast_boolean_to_decimal(
         .iter()
         .map(|v| v.map(|b| if b { scaled_val } else { 0 }))
         .collect();
-    Ok(Arc::new(result.with_precision_and_scale(precision, scale)?))
+
+    // Convert Arrow decimal overflow errors to SparkError
+    let decimal_array = result
+        .with_precision_and_scale(precision, scale)
+        .map_err(|e| {
+            if matches!(e, arrow::error::ArrowError::InvalidArgumentError(_))
+                && e.to_string().contains("too large to store in a Decimal128")
+            {
+                // Use the scaled value as it's the only non-zero value that could overflow
+                crate::error::decimal_overflow_error(scaled_val, precision, scale)
+            } else {
+                SparkError::Arrow(Arc::new(e))
+            }
+        })?;
+
+    Ok(Arc::new(decimal_array))
 }
 
 pub(crate) fn cast_boolean_to_timestamp(
