@@ -22,8 +22,12 @@ package org.apache.comet.serde.operator
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.comet.{CometNativeExec, CometSinkPlaceHolder}
+import org.apache.spark.sql.comet.execution.shuffle.{CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.SparkPlan
+import org.apache.spark.sql.execution.adaptive.ShuffleQueryStageExec
+import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 
+import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.ConfigEntry
 import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass}
@@ -86,14 +90,66 @@ abstract class CometSink[T <: SparkPlan] extends CometOperatorSerde[T] {
 
 object CometExchangeSink extends CometSink[SparkPlan] {
 
-  /**
-   * Exchange data is FFI safe because there is no use of mutable buffers involved.
-   *
-   * Source of broadcast exchange batches is ArrowStreamReader.
-   *
-   * Source of shuffle exchange batches is NativeBatchDecoderIterator.
-   */
   override def isFfiSafe: Boolean = true
+
+  override def convert(
+      op: SparkPlan,
+      builder: Operator.Builder,
+      childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
+    if (shouldUseShuffleScan(op)) {
+      convertToShuffleScan(op, builder)
+    } else {
+      super.convert(op, builder, childOp: _*)
+    }
+  }
+
+  private def shouldUseShuffleScan(op: SparkPlan): Boolean = {
+    if (!CometConf.COMET_SHUFFLE_DIRECT_READ_ENABLED.get()) return false
+
+    // Extract the CometShuffleExchangeExec from the wrapper
+    val shuffleExec = op match {
+      case ShuffleQueryStageExec(_, s: CometShuffleExchangeExec, _) => Some(s)
+      case ShuffleQueryStageExec(_, ReusedExchangeExec(_, s: CometShuffleExchangeExec), _) =>
+        Some(s)
+      case s: CometShuffleExchangeExec => Some(s)
+      case _ => None
+    }
+
+    shuffleExec.exists(_.shuffleType == CometNativeShuffle)
+  }
+
+  private def convertToShuffleScan(
+      op: SparkPlan,
+      builder: Operator.Builder): Option[OperatorOuterClass.Operator] = {
+    val supportedTypes =
+      op.output.forall(a => supportedDataType(a.dataType, allowComplex = true))
+
+    if (!supportedTypes) {
+      withInfo(op, "Unsupported data type for shuffle direct read")
+      return None
+    }
+
+    val scanBuilder = OperatorOuterClass.ShuffleScan.newBuilder()
+    val source = op.simpleStringWithNodeId()
+    if (source.isEmpty) {
+      scanBuilder.setSource(op.getClass.getSimpleName)
+    } else {
+      scanBuilder.setSource(source)
+    }
+
+    val scanTypes = op.output.flatMap { attr =>
+      serializeDataType(attr.dataType)
+    }
+
+    if (scanTypes.length == op.output.length) {
+      scanBuilder.addAllFields(scanTypes.asJava)
+      builder.clearChildren()
+      Some(builder.setShuffleScan(scanBuilder).build())
+    } else {
+      withInfo(op, "unsupported data types for shuffle direct read")
+      None
+    }
+  }
 
   override def createExec(nativeOp: Operator, op: SparkPlan): CometNativeExec =
     CometSinkPlaceHolder(nativeOp, op, op)
