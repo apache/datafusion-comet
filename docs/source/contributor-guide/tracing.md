@@ -56,11 +56,11 @@ Example trace visualization:
 
 ## Definition of Labels
 
-| Label                    | Meaning                                                        |
-| ------------------------ | -------------------------------------------------------------- |
-| jvm_heap_used            | JVM heap memory usage of live objects for the executor process |
-| jemalloc_allocated       | Native memory usage for the executor process                   |
-| task_memory_comet_NNN    | Off-heap memory allocated by Comet for query execution         |
-| task_memory_spark_NNN    | On-heap & Off-heap memory allocated by Spark                   |
-| comet_shuffle_NNN        | Off-heap memory allocated by Comet for columnar shuffle        |
-| shuffle_spilled_bytes    | Bytes written to disk in a single shuffle spill operation      |
+| Label                 | Meaning                                                        |
+| --------------------- | -------------------------------------------------------------- |
+| jvm_heap_used         | JVM heap memory usage of live objects for the executor process |
+| jemalloc_allocated    | Native memory usage for the executor process                   |
+| task_memory_comet_NNN | Off-heap memory allocated by Comet for query execution         |
+| task_memory_spark_NNN | On-heap & Off-heap memory allocated by Spark                   |
+| comet_shuffle_NNN     | Off-heap memory allocated by Comet for columnar shuffle        |
+| shuffle_spilled_bytes | Bytes written to disk in a single shuffle spill operation      |
