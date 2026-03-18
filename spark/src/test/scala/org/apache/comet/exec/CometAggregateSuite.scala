@@ -1310,7 +1310,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
         // Partial aggregate stays in Spark, final aggregate runs in Comet.
         checkSparkAnswerAndNumOfAggregates(
-          s"SELECT grp, BIT_AND(col1), BIT_OR(col1), BIT_XOR(col1)," +
+          "SELECT grp, BIT_AND(col1), BIT_OR(col1), BIT_XOR(col1)," +
             " BIT_AND(col2), BIT_OR(col2), BIT_XOR(col2)," +
             " BIT_AND(col3), BIT_OR(col3), BIT_XOR(col3)," +
             " BIT_AND(col4), BIT_OR(col4), BIT_XOR(col4)" +
