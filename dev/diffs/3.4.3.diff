@@ -2948,7 +2948,7 @@ index abe606ad9c1..2d930b64cca 100644
      val tblTargetName = "tbl_target"
      val tblSourceQualified = s"default.$tblSourceName"
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala b/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
-index dd55fcfe42c..a1d390c93d0 100644
+index dd55fcfe42c..99bc018008a 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
 @@ -27,6 +27,7 @@ import scala.concurrent.duration._
@@ -2967,46 +2967,42 @@ index dd55fcfe42c..a1d390c93d0 100644
  import org.apache.spark.sql.execution.FilterExec
  import org.apache.spark.sql.execution.adaptive.DisableAdaptiveExecution
  import org.apache.spark.sql.execution.datasources.DataSourceUtils
-@@ -118,7 +120,7 @@ private[sql] trait SQLTestUtils extends SparkFunSuite with SQLTestUtilsBase with
-   }
+@@ -119,6 +121,34 @@ private[sql] trait SQLTestUtils extends SparkFunSuite with SQLTestUtilsBase with
  
    override protected def test(testName: String, testTags: Tag*)(testFun: => Any)
--      (implicit pos: Position): Unit = {
-+                             (implicit pos: Position): Unit = {
+       (implicit pos: Position): Unit = {
++    // Check Comet skip tags first, before DisableAdaptiveExecution handling
++    if (isCometEnabled && testTags.exists(_.isInstanceOf[IgnoreComet])) {
++      ignore(testName + " (disabled when Comet is on)", testTags: _*)(testFun)
++      return
++    }
++    if (isCometEnabled) {
++      val cometScanImpl = CometConf.COMET_NATIVE_SCAN_IMPL.get(conf)
++      val isNativeIcebergCompat = cometScanImpl == CometConf.SCAN_NATIVE_ICEBERG_COMPAT ||
++        cometScanImpl == CometConf.SCAN_AUTO
++      val isNativeDataFusion = cometScanImpl == CometConf.SCAN_NATIVE_DATAFUSION ||
++        cometScanImpl == CometConf.SCAN_AUTO
++      if (isNativeIcebergCompat &&
++        testTags.exists(_.isInstanceOf[IgnoreCometNativeIcebergCompat])) {
++        ignore(testName + " (disabled for NATIVE_ICEBERG_COMPAT)", testTags: _*)(testFun)
++        return
++      }
++      if (isNativeDataFusion &&
++        testTags.exists(_.isInstanceOf[IgnoreCometNativeDataFusion])) {
++        ignore(testName + " (disabled for NATIVE_DATAFUSION)", testTags: _*)(testFun)
++        return
++      }
++      if ((isNativeDataFusion || isNativeIcebergCompat) &&
++        testTags.exists(_.isInstanceOf[IgnoreCometNativeScan])) {
++        ignore(testName + " (disabled for NATIVE_DATAFUSION and NATIVE_ICEBERG_COMPAT)",
++          testTags: _*)(testFun)
++        return
++      }
++    }
      if (testTags.exists(_.isInstanceOf[DisableAdaptiveExecution])) {
        super.test(testName, testTags: _*) {
          withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
-@@ -126,7 +128,28 @@ private[sql] trait SQLTestUtils extends SparkFunSuite with SQLTestUtilsBase with
-         }
-       }
-     } else {
--      super.test(testName, testTags: _*)(testFun)
-+      if (isCometEnabled && testTags.exists(_.isInstanceOf[IgnoreComet])) {
-+        ignore(testName + " (disabled when Comet is on)", testTags: _*)(testFun)
-+      } else {
-+        val cometScanImpl = CometConf.COMET_NATIVE_SCAN_IMPL.get(conf)
-+        val isNativeIcebergCompat = cometScanImpl == CometConf.SCAN_NATIVE_ICEBERG_COMPAT ||
-+          cometScanImpl == CometConf.SCAN_AUTO
-+        val isNativeDataFusion = cometScanImpl == CometConf.SCAN_NATIVE_DATAFUSION ||
-+          cometScanImpl == CometConf.SCAN_AUTO
-+        if (isCometEnabled && isNativeIcebergCompat &&
-+          testTags.exists(_.isInstanceOf[IgnoreCometNativeIcebergCompat])) {
-+          ignore(testName + " (disabled for NATIVE_ICEBERG_COMPAT)", testTags: _*)(testFun)
-+        } else if (isCometEnabled && isNativeDataFusion &&
-+          testTags.exists(_.isInstanceOf[IgnoreCometNativeDataFusion])) {
-+          ignore(testName + " (disabled for NATIVE_DATAFUSION)", testTags: _*)(testFun)
-+        } else if (isCometEnabled && (isNativeDataFusion || isNativeIcebergCompat) &&
-+          testTags.exists(_.isInstanceOf[IgnoreCometNativeScan])) {
-+          ignore(testName + " (disabled for NATIVE_DATAFUSION and NATIVE_ICEBERG_COMPAT)",
-+            testTags: _*)(testFun)
-+        } else {
-+          super.test(testName, testTags: _*)(testFun)
-+        }
-+      }
-     }
-   }
- 
-@@ -242,6 +265,29 @@ private[sql] trait SQLTestUtilsBase
+@@ -242,6 +272,29 @@ private[sql] trait SQLTestUtilsBase
      protected override def _sqlContext: SQLContext = self.spark.sqlContext
    }
  
@@ -3036,7 +3032,7 @@ index dd55fcfe42c..a1d390c93d0 100644
    protected override def withSQLConf(pairs: (String, String)*)(f: => Unit): Unit = {
      SparkSession.setActiveSession(spark)
      super.withSQLConf(pairs: _*)(f)
-@@ -434,6 +480,8 @@ private[sql] trait SQLTestUtilsBase
+@@ -434,6 +487,8 @@ private[sql] trait SQLTestUtilsBase
      val schema = df.schema
      val withoutFilters = df.queryExecution.executedPlan.transform {
        case FilterExec(_, child) => child
