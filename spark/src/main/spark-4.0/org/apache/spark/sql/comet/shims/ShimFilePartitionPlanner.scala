@@ -43,10 +43,5 @@ trait ShimFilePartitionPlanner {
       isSplitable: Boolean,
       maxSplitBytes: Long,
       partitionValues: InternalRow): Seq[PartitionedFile] =
-    PartitionedFileUtil.splitFiles(
-      file,
-      filePath,
-      isSplitable,
-      maxSplitBytes,
-      partitionValues)
+    PartitionedFileUtil.splitFiles(file, filePath, isSplitable, maxSplitBytes, partitionValues)
 }

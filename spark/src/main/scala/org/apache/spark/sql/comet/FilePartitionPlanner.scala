@@ -60,9 +60,7 @@ class FilePartitionPlanner(
     val optimizerMetadataTimeNs = relation.location.metadataOpsTimeNs.getOrElse(0L)
     val startTime = System.nanoTime()
     val ret =
-      relation.location.listFiles(
-        partitionFilters.filterNot(isDynamicPruningFilter),
-        dataFilters)
+      relation.location.listFiles(partitionFilters.filterNot(isDynamicPruningFilter), dataFilters)
     setFilesNumAndSizeMetric(ret, true)
     val timeTakenMs =
       NANOSECONDS.toMillis((System.nanoTime() - startTime) + optimizerMetadataTimeNs)
@@ -115,12 +113,10 @@ class FilePartitionPlanner(
    * Send the driver-side metrics. Before calling this function, selectedPartitions has been
    * initialized. See SPARK-26327 for more details.
    */
-  def sendDriverMetrics(
-      metricsMap: Map[String, SQLMetric],
-      sparkContext: SparkContext): Unit = {
+  def sendDriverMetrics(metricsMap: Map[String, SQLMetric], sparkContext: SparkContext): Unit = {
     accumulatedMetrics.foreach(e => metricsMap(e._1).add(e._2))
-    val executionId = sparkContext.getLocalProperty(
-      org.apache.spark.sql.execution.SQLExecution.EXECUTION_ID_KEY)
+    val executionId =
+      sparkContext.getLocalProperty(org.apache.spark.sql.execution.SQLExecution.EXECUTION_ID_KEY)
     org.apache.spark.sql.execution.metric.SQLMetrics.postDriverMetricUpdates(
       sparkContext,
       executionId,
@@ -166,8 +162,7 @@ class FilePartitionPlanner(
         .groupBy { f =>
           BucketingUtils
             .getBucketId(new Path(f.filePath.toString()).getName)
-            .getOrElse(
-              throw QueryExecutionErrors.invalidBucketFile(f.filePath.toString()))
+            .getOrElse(throw QueryExecutionErrors.invalidBucketFile(f.filePath.toString()))
         }
 
     val prunedFilesGroupedToBuckets = if (optionalBucketSet.isDefined) {
@@ -196,9 +191,7 @@ class FilePartitionPlanner(
       }
       .getOrElse {
         Seq.tabulate(bucketSpec.numBuckets) { bucketId =>
-          FilePartition(
-            bucketId,
-            prunedFilesGroupedToBuckets.getOrElse(bucketId, Array.empty))
+          FilePartition(bucketId, prunedFilesGroupedToBuckets.getOrElse(bucketId, Array.empty))
         }
       }
   }
@@ -256,9 +249,6 @@ class FilePartitionPlanner(
       }
       .sortBy(_.length)(implicitly[Ordering[Long]].reverse)
 
-    FilePartition.getFilePartitions(
-      relation.sparkSession,
-      splitFiles,
-      maxSplitBytes)
+    FilePartition.getFilePartitions(relation.sparkSession, splitFiles, maxSplitBytes)
   }
 }

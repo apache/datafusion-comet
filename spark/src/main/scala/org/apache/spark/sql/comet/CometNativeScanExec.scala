@@ -67,7 +67,7 @@ case class CometNativeScanExec(
     disableBucketedScan: Boolean = false,
     originalPlan: FileSourceScanExec,
     override val serializedPlanOpt: SerializedPlan,
-    @transient planner: FilePartitionPlanner, // Lazy access to file partitions without serializing with plan
+    @transient planner: FilePartitionPlanner,
     sourceKey: String) // Key for PlanDataInjector to match common+partition data at runtime
     extends CometLeafExec
     with DataSourceScanExec

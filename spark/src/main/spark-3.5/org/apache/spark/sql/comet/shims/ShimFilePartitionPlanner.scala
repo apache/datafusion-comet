@@ -36,8 +36,7 @@ trait ShimFilePartitionPlanner {
     VersionUtils.majorMinorPatchVersion(SPARK_VERSION_SHORT) match {
       case Some((major, minor, patch)) => (major, minor, patch) >= (3, 5, 5)
       case None =>
-        throw new IllegalArgumentException(
-          s"Malformed Spark version: $SPARK_VERSION_SHORT")
+        throw new IllegalArgumentException(s"Malformed Spark version: $SPARK_VERSION_SHORT")
     }
   }
 
@@ -60,10 +59,7 @@ trait ShimFilePartitionPlanner {
         .asInstanceOf[PartitionedFile]
     } else {
       PartitionedFileUtil.getClass
-        .getMethod(
-          "getPartitionedFile",
-          classOf[FileStatusWithMetadata],
-          classOf[InternalRow])
+        .getMethod("getPartitionedFile", classOf[FileStatusWithMetadata], classOf[InternalRow])
         .invoke(PartitionedFileUtil, f, p.values)
         .asInstanceOf[PartitionedFile]
     }
