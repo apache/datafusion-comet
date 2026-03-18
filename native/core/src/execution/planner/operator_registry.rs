@@ -25,11 +25,8 @@ use std::{
 use datafusion_comet_proto::spark_operator::Operator;
 use jni::objects::GlobalRef;
 
-use super::PhysicalPlanner;
-use crate::execution::{
-    operators::{ExecutionError, ScanExec},
-    spark_plan::SparkPlan,
-};
+use super::{PhysicalPlanner, PlanCreationResult};
+use crate::execution::operators::ExecutionError;
 
 /// Trait for building physical operators from Spark protobuf operators
 pub trait OperatorBuilder: Send + Sync {
@@ -40,7 +37,7 @@ pub trait OperatorBuilder: Send + Sync {
         inputs: &mut Vec<Arc<GlobalRef>>,
         partition_count: usize,
         planner: &PhysicalPlanner,
-    ) -> Result<(Vec<ScanExec>, Arc<SparkPlan>), ExecutionError>;
+    ) -> PlanCreationResult;
 }
 
 /// Enum to identify different operator types for registry dispatch
@@ -100,7 +97,7 @@ impl OperatorRegistry {
         inputs: &mut Vec<Arc<GlobalRef>>,
         partition_count: usize,
         planner: &PhysicalPlanner,
-    ) -> Result<(Vec<ScanExec>, Arc<SparkPlan>), ExecutionError> {
+    ) -> PlanCreationResult {
         let operator_type = get_operator_type(spark_operator).ok_or_else(|| {
             ExecutionError::GeneralError(format!(
                 "Unsupported operator type: {:?}",
