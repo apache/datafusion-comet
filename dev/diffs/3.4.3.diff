@@ -417,19 +417,18 @@ index daef11ae4d6..9f3cc9181f2 100644
      assert(exchanges.size == 2)
    }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala
-index f33432ddb6f..881eab7417c 100644
+index f33432ddb6f..81b83a7acd1 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala
-@@ -22,6 +22,8 @@ import org.scalatest.GivenWhenThen
+@@ -22,6 +22,7 @@ import org.scalatest.GivenWhenThen
  import org.apache.spark.sql.catalyst.expressions.{DynamicPruningExpression, Expression}
  import org.apache.spark.sql.catalyst.expressions.CodegenObjectFactoryMode._
  import org.apache.spark.sql.catalyst.plans.ExistenceJoin
-+import org.apache.spark.sql.IgnoreCometNativeDataFusion
 +import org.apache.spark.sql.comet.CometScanExec
  import org.apache.spark.sql.connector.catalog.{InMemoryTableCatalog, InMemoryTableWithV2FilterCatalog}
  import org.apache.spark.sql.execution._
  import org.apache.spark.sql.execution.adaptive._
-@@ -262,6 +264,9 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -262,6 +263,9 @@ abstract class DynamicPartitionPruningSuiteBase
        case s: BatchScanExec => s.runtimeFilters.collect {
          case d: DynamicPruningExpression => d.child
        }
@@ -439,7 +438,7 @@ index f33432ddb6f..881eab7417c 100644
        case _ => Nil
      }
    }
-@@ -755,7 +760,8 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -755,7 +759,8 @@ abstract class DynamicPartitionPruningSuiteBase
      }
    }
  
@@ -449,7 +448,7 @@ index f33432ddb6f..881eab7417c 100644
      Given("disable broadcast pruning and disable subquery duplication")
      withSQLConf(
        SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true",
-@@ -1027,7 +1033,8 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -1027,7 +1032,8 @@ abstract class DynamicPartitionPruningSuiteBase
      }
    }
  
@@ -459,7 +458,7 @@ index f33432ddb6f..881eab7417c 100644
      withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "false",
        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
        withTable("large", "dimTwo", "dimThree") {
-@@ -1215,7 +1222,8 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -1215,7 +1221,8 @@ abstract class DynamicPartitionPruningSuiteBase
    }
  
    test("SPARK-32509: Unused Dynamic Pruning filter shouldn't affect " +
@@ -469,7 +468,7 @@ index f33432ddb6f..881eab7417c 100644
      withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
        withSQLConf(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
          val df = sql(
-@@ -1423,7 +1431,8 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -1423,7 +1430,8 @@ abstract class DynamicPartitionPruningSuiteBase
      }
    }
  
@@ -479,7 +478,7 @@ index f33432ddb6f..881eab7417c 100644
      withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
        val df = sql(
          """ WITH v as (
-@@ -1698,7 +1707,8 @@ abstract class DynamicPartitionPruningV1Suite extends DynamicPartitionPruningDat
+@@ -1698,7 +1706,8 @@ abstract class DynamicPartitionPruningV1Suite extends DynamicPartitionPruningDat
     * Check the static scan metrics with and without DPP
     */
    test("static scan metrics",
@@ -489,7 +488,7 @@ index f33432ddb6f..881eab7417c 100644
      withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true",
        SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "false",
        SQLConf.EXCHANGE_REUSE_ENABLED.key -> "false") {
-@@ -1729,6 +1739,8 @@ abstract class DynamicPartitionPruningV1Suite extends DynamicPartitionPruningDat
+@@ -1729,6 +1738,8 @@ abstract class DynamicPartitionPruningV1Suite extends DynamicPartitionPruningDat
                case s: BatchScanExec =>
                  // we use f1 col for v2 tables due to schema pruning
                  s.output.exists(_.exists(_.argString(maxFields = 100).contains("f1")))
@@ -524,19 +523,18 @@ index a6b295578d6..91acca4306f 100644
  
    test("SPARK-35884: Explain Formatted") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/FileBasedDataSourceSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/FileBasedDataSourceSuite.scala
-index 2796b1cf154..f5e2fdfe450 100644
+index 2796b1cf154..db2d16798a3 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/FileBasedDataSourceSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/FileBasedDataSourceSuite.scala
-@@ -33,6 +33,8 @@ import org.apache.spark.sql.TestingUDT.{IntervalUDT, NullData, NullUDT}
+@@ -33,6 +33,7 @@ import org.apache.spark.sql.TestingUDT.{IntervalUDT, NullData, NullUDT}
  import org.apache.spark.sql.catalyst.expressions.{AttributeReference, GreaterThan, Literal}
  import org.apache.spark.sql.catalyst.expressions.IntegralLiteralTestUtils.{negativeInt, positiveInt}
  import org.apache.spark.sql.catalyst.plans.logical.Filter
-+import org.apache.spark.sql.IgnoreCometNativeDataFusion
 +import org.apache.spark.sql.comet.{CometBatchScanExec, CometNativeScanExec, CometScanExec, CometSortMergeJoinExec}
  import org.apache.spark.sql.execution.{FileSourceScanLike, SimpleMode}
  import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
  import org.apache.spark.sql.execution.datasources.FilePartition
-@@ -499,7 +501,8 @@ class FileBasedDataSourceSuite extends QueryTest
+@@ -499,7 +500,8 @@ class FileBasedDataSourceSuite extends QueryTest
    }
  
    Seq("parquet", "orc").foreach { format =>
@@ -546,7 +544,7 @@ index 2796b1cf154..f5e2fdfe450 100644
        withTempDir { dir =>
          val tableName = s"spark_25132_${format}_native"
          val tableDir = dir.getCanonicalPath + s"/$tableName"
-@@ -815,6 +818,7 @@ class FileBasedDataSourceSuite extends QueryTest
+@@ -815,6 +817,7 @@ class FileBasedDataSourceSuite extends QueryTest
              assert(bJoinExec.isEmpty)
              val smJoinExec = collect(joinedDF.queryExecution.executedPlan) {
                case smJoin: SortMergeJoinExec => smJoin
@@ -554,7 +552,7 @@ index 2796b1cf154..f5e2fdfe450 100644
              }
              assert(smJoinExec.nonEmpty)
            }
-@@ -875,6 +879,7 @@ class FileBasedDataSourceSuite extends QueryTest
+@@ -875,6 +878,7 @@ class FileBasedDataSourceSuite extends QueryTest
  
            val fileScan = df.queryExecution.executedPlan collectFirst {
              case BatchScanExec(_, f: FileScan, _, _, _, _, _, _, _) => f
@@ -562,7 +560,7 @@ index 2796b1cf154..f5e2fdfe450 100644
            }
            assert(fileScan.nonEmpty)
            assert(fileScan.get.partitionFilters.nonEmpty)
-@@ -916,6 +921,7 @@ class FileBasedDataSourceSuite extends QueryTest
+@@ -916,6 +920,7 @@ class FileBasedDataSourceSuite extends QueryTest
  
            val fileScan = df.queryExecution.executedPlan collectFirst {
              case BatchScanExec(_, f: FileScan, _, _, _, _, _, _, _) => f
@@ -570,7 +568,7 @@ index 2796b1cf154..f5e2fdfe450 100644
            }
            assert(fileScan.nonEmpty)
            assert(fileScan.get.partitionFilters.isEmpty)
-@@ -1100,6 +1106,9 @@ class FileBasedDataSourceSuite extends QueryTest
+@@ -1100,6 +1105,9 @@ class FileBasedDataSourceSuite extends QueryTest
            val filters = df.queryExecution.executedPlan.collect {
              case f: FileSourceScanLike => f.dataFilters
              case b: BatchScanExec => b.scan.asInstanceOf[FileScan].dataFilters
