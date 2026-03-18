@@ -19,7 +19,7 @@ use datafusion::common::instant::Instant;
 use once_cell::sync::Lazy;
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 pub(crate) static RECORDER: Lazy<Recorder> = Lazy::new(Recorder::new);
 
@@ -27,29 +27,37 @@ pub(crate) static RECORDER: Lazy<Recorder> = Lazy::new(Recorder::new);
 /// https://github.com/catapult-project/catapult/blob/main/tracing/README.md
 pub struct Recorder {
     now: Instant,
-    writer: Arc<Mutex<BufWriter<File>>>,
+    pid: u32,
+    /// None if the trace file could not be opened or a write error has occurred.
+    writer: Mutex<Option<BufWriter<File>>>,
 }
 
 impl Recorder {
     pub fn new() -> Self {
-        let file = OpenOptions::new()
+        let pid = std::process::id();
+        // Include the PID in the filename so that each executor process writes to
+        // its own file, avoiding interleaved output and data corruption.
+        let path = format!("comet-event-trace-{pid}.json");
+        let writer = OpenOptions::new()
             .create(true)
             .append(true)
-            .open("comet-event-trace.json")
-            .expect("Error writing tracing");
+            .open(&path)
+            .ok()
+            .and_then(|file| {
+                let mut w = BufWriter::new(file);
+                // Write start of JSON array. Note that there is no requirement to
+                // write the closing ']'.
+                w.write_all(b"[ ").ok()?;
+                Some(w)
+            });
 
-        let mut writer = BufWriter::new(file);
-
-        // Write start of JSON array. Note that there is no requirement to write
-        // the closing ']'.
-        writer
-            .write_all("[ ".as_bytes())
-            .expect("Error writing tracing");
         Self {
             now: Instant::now(),
-            writer: Arc::new(Mutex::new(writer)),
+            pid,
+            writer: Mutex::new(writer),
         }
     }
+
     pub fn begin_task(&self, name: &str) {
         self.log_event(name, "B")
     }
@@ -59,38 +67,50 @@ impl Recorder {
     }
 
     pub fn log_memory_usage(&self, name: &str, usage_bytes: u64) {
-        let usage_mb = (usage_bytes as f64 / 1024.0 / 1024.0) as usize;
+        let key = format!("{name}_bytes");
         let json = format!(
-            "{{ \"name\": \"{name}\", \"cat\": \"PERF\", \"ph\": \"C\", \"pid\": 1, \"tid\": {}, \"ts\": {}, \"args\": {{ \"{name}\": {usage_mb} }} }},\n",
+            "{{ \"name\": \"{name}\", \"cat\": \"PERF\", \"ph\": \"C\", \"pid\": {}, \"tid\": {}, \"ts\": {}, \"args\": {{ \"{key}\": {usage_bytes} }} }},\n",
+            self.pid,
             Self::get_thread_id(),
             self.now.elapsed().as_micros()
         );
-        let mut writer = self.writer.lock().unwrap();
-        writer
-            .write_all(json.as_bytes())
-            .expect("Error writing tracing");
+        self.write(&json);
     }
 
     fn log_event(&self, name: &str, ph: &str) {
         let json = format!(
-            "{{ \"name\": \"{}\", \"cat\": \"PERF\", \"ph\": \"{ph}\", \"pid\": 1, \"tid\": {}, \"ts\": {} }},\n",
+            "{{ \"name\": \"{}\", \"cat\": \"PERF\", \"ph\": \"{ph}\", \"pid\": {}, \"tid\": {}, \"ts\": {} }},\n",
             name,
+            self.pid,
             Self::get_thread_id(),
             self.now.elapsed().as_micros()
         );
-        let mut writer = self.writer.lock().unwrap();
-        writer
-            .write_all(json.as_bytes())
-            .expect("Error writing tracing");
+        self.write(&json);
+    }
+
+    fn write(&self, json: &str) {
+        if let Ok(mut guard) = self.writer.lock() {
+            if let Some(ref mut w) = *guard {
+                if w.write_all(json.as_bytes()).is_err() {
+                    // Disable tracing on write failure to avoid repeated errors.
+                    *guard = None;
+                }
+            }
+        }
     }
 
     fn get_thread_id() -> u64 {
-        let thread_id = std::thread::current().id();
-        format!("{thread_id:?}")
-            .trim_start_matches("ThreadId(")
-            .trim_end_matches(")")
-            .parse()
-            .expect("Error parsing thread id")
+        std::thread::current().id().as_u64().get()
+    }
+}
+
+impl Drop for Recorder {
+    fn drop(&mut self) {
+        if let Ok(mut guard) = self.writer.lock() {
+            if let Some(ref mut w) = *guard {
+                let _ = w.flush();
+            }
+        }
     }
 }
 

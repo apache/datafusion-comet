@@ -24,7 +24,7 @@ use crate::execution::shuffle::writers::{BufBatchWriter, PartitionWriter};
 use crate::execution::shuffle::{
     comet_partitioning, CometPartitioning, CompressionCodec, ShuffleBlockWriter,
 };
-use crate::execution::tracing::{with_trace, with_trace_async};
+use crate::execution::tracing::{log_memory_usage, with_trace, with_trace_async};
 use arrow::array::{ArrayRef, RecordBatch};
 use arrow::datatypes::SchemaRef;
 use datafusion::common::utils::proxy::VecAllocExt;
@@ -520,6 +520,9 @@ impl MultiPartitionShuffleRepartitioner {
             self.reservation.free();
             self.metrics.spill_count.add(1);
             self.metrics.spilled_bytes.add(spilled_bytes);
+            if self.tracing_enabled {
+                log_memory_usage("shuffle_spilled_bytes", spilled_bytes as u64);
+            }
             Ok(())
         })
     }
