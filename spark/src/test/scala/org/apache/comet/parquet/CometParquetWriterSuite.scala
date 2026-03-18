@@ -205,7 +205,7 @@ class CometParquetWriterSuite extends CometTestBase {
         CometConf.COMET_EXEC_ENABLED.key -> "true") {
 
         val df1 = spark.range(1, 50).toDF("id")
-        val df2 = spark.range(100, 150).toDF("id")
+        val df2 = spark.range(100, 149).toDF("id")
         val unionDf = df1.union(df2).coalesce(2)
 
         val plan = captureWritePlan(path => unionDf.write.parquet(path), outputPath)
