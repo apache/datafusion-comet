@@ -343,6 +343,17 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(true)
 
+  val COMET_SHUFFLE_DIRECT_READ_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.shuffle.directRead.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "When enabled, native operators that consume shuffle output will read " +
+          "compressed shuffle blocks directly in native code, bypassing Arrow FFI. " +
+          "Only applies to native shuffle (not JVM columnar shuffle). " +
+          "Requires spark.comet.exec.shuffle.enabled to be true.")
+      .booleanConf
+      .createWithDefault(true)
+
   val COMET_SHUFFLE_MODE: ConfigEntry[String] = conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.mode")
     .category(CATEGORY_SHUFFLE)
     .doc(
