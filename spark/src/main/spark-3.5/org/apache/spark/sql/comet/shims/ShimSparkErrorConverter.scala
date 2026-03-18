@@ -247,6 +247,12 @@ trait ShimSparkErrorConverter {
           QueryExecutionErrors
             .intervalArithmeticOverflowError("Interval arithmetic overflow", "", sqlCtx(context)))
 
+      case "DuplicateFieldCaseInsensitive" =>
+        Some(
+          QueryExecutionErrors.foundDuplicateFieldInCaseInsensitiveModeError(
+            params("requiredFieldName").toString,
+            params("matchedOrcFields").toString))
+
       case "FileNotFound" =>
         val msg = params("message").toString
         // Extract file path from native error message and format like Hadoop's
