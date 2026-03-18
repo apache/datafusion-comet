@@ -647,19 +647,6 @@ abstract class CometNativeExec extends CometExec {
       : Map[Int, (TaskContext, Partition) => CometShuffleBlockIterator] = {
     if (shuffleScanIndices.isEmpty) return Map.empty
 
-    // Build the mapping from sparkPlans index to inputs index
-    // (CometNativeExec entries are skipped in inputs)
-    var inputIdx = 0
-    val sparkPlanToInputIdx = mutable.Map.empty[Int, Int]
-    sparkPlans.zipWithIndex.foreach { case (plan, spIdx) =>
-      plan match {
-        case _: CometNativeExec => // skipped, no input
-        case _ =>
-          sparkPlanToInputIdx(spIdx) = inputIdx
-          inputIdx += 1
-      }
-    }
-
     val factories = mutable.Map.empty[Int, (TaskContext, Partition) => CometShuffleBlockIterator]
 
     shuffleScanIndices.foreach { scanIdx =>

@@ -160,8 +160,11 @@ class CometBlockStoreShuffleReader[K, C](
    * Used by ShuffleScan direct read path.
    */
   def readAsRawStream(): InputStream = {
-    val streams = fetchIterator.map(_._2).toList
-    new java.io.SequenceInputStream(java.util.Collections.enumeration(streams.asJava))
+    val streams = fetchIterator.map(_._2)
+    new java.io.SequenceInputStream(new java.util.Enumeration[InputStream] {
+      override def hasMoreElements: Boolean = streams.hasNext
+      override def nextElement(): InputStream = streams.next()
+    })
   }
 
   private def fetchContinuousBlocksInBatch: Boolean = {

@@ -133,9 +133,6 @@ public class CometShuffleBlockIterator implements Closeable {
     if (!closed) {
       closed = true;
       inputStream.close();
-      if (dataBuf.capacity() > INITIAL_BUFFER_SIZE) {
-        dataBuf = ByteBuffer.allocateDirect(INITIAL_BUFFER_SIZE);
-      }
     }
   }
 }

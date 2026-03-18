@@ -152,7 +152,7 @@ impl ShuffleScanExec {
 
         let mut env = JVMClasses::get_env()?;
 
-        // has_next() returns block length or -1 if no more blocks
+        // has_next() reads the next block and returns its length, or -1 if EOF
         let block_length: i32 = unsafe {
             jni_call!(&mut env,
                 comet_shuffle_block_iterator(iter).has_next() -> i32)?
@@ -168,15 +168,9 @@ impl ShuffleScanExec {
                 comet_shuffle_block_iterator(iter).get_buffer() -> JObject)?
         };
 
-        // Get the actual block length (may differ from has_next return value)
-        let length: i32 = unsafe {
-            jni_call!(&mut env,
-                comet_shuffle_block_iterator(iter).get_current_block_length() -> i32)?
-        };
-
         let byte_buffer = JByteBuffer::from(buffer);
         let raw_pointer = env.get_direct_buffer_address(&byte_buffer)?;
-        let length = length as usize;
+        let length = block_length as usize;
         let slice: &[u8] = unsafe { std::slice::from_raw_parts(raw_pointer, length) };
 
         // Decode the compressed IPC data
