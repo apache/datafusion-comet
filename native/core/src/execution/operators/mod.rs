@@ -34,7 +34,9 @@ pub use parquet_writer::ParquetWriterExec;
 mod csv_scan;
 pub mod projection;
 mod scan;
+mod shuffle_scan;
 pub use csv_scan::init_csv_datasource_exec;
+pub use shuffle_scan::ShuffleScanExec;
 
 /// Error returned during executing operators.
 #[derive(thiserror::Error, Debug)]
