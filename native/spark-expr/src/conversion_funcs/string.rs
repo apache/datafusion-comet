@@ -1640,50 +1640,29 @@ mod tests {
             Some(1577862296000000) // 12:34:56 UTC+5:30 = 07:04:56 UTC
         );
         // T-prefixed time-only with colon
-        assert_eq!(
-            timestamp_parser("T12:34", EvalMode::Legacy, tz)
-                .unwrap()
-                .is_some(),
-            true
-        );
-        assert_eq!(
-            timestamp_parser("T12:34:56", EvalMode::Legacy, tz)
-                .unwrap()
-                .is_some(),
-            true
-        );
-        assert_eq!(
-            timestamp_parser("T12:34:56.123456", EvalMode::Legacy, tz)
-                .unwrap()
-                .is_some(),
-            true
-        );
+        assert!(timestamp_parser("T12:34", EvalMode::Legacy, tz)
+            .unwrap()
+            .is_some());
+        assert!(timestamp_parser("T12:34:56", EvalMode::Legacy, tz)
+            .unwrap()
+            .is_some());
+        assert!(timestamp_parser("T12:34:56.123456", EvalMode::Legacy, tz)
+            .unwrap()
+            .is_some());
         // Bare time-only (hour:minute without T prefix)
-        assert_eq!(
-            timestamp_parser("12:34", EvalMode::Legacy, tz)
-                .unwrap()
-                .is_some(),
-            true
-        );
-        assert_eq!(
-            timestamp_parser("12:34:56", EvalMode::Legacy, tz)
-                .unwrap()
-                .is_some(),
-            true
-        );
+        assert!(timestamp_parser("12:34", EvalMode::Legacy, tz)
+            .unwrap()
+            .is_some());
+        assert!(timestamp_parser("12:34:56", EvalMode::Legacy, tz)
+            .unwrap()
+            .is_some());
         // Negative year
-        assert_eq!(
-            timestamp_parser("-0001", EvalMode::Legacy, tz)
-                .unwrap()
-                .is_some(),
-            true
-        );
-        assert_eq!(
-            timestamp_parser("-0001-01-01T12:34:56", EvalMode::Legacy, tz)
-                .unwrap()
-                .is_some(),
-            true
-        );
+        assert!(timestamp_parser("-0001", EvalMode::Legacy, tz)
+            .unwrap()
+            .is_some());
+        assert!(timestamp_parser("-0001-01-01T12:34:56", EvalMode::Legacy, tz)
+            .unwrap()
+            .is_some());
     }
 
     #[test]
