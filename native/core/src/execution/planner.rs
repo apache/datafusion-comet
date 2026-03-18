@@ -23,6 +23,7 @@ pub mod operator_registry;
 
 use crate::execution::operators::init_csv_datasource_exec;
 use crate::execution::operators::IcebergScanExec;
+use crate::execution::operators::ScanMemoryLogExec;
 use crate::{
     errors::ExpressionError,
     execution::{
@@ -1204,6 +1205,8 @@ impl PhysicalPlanner {
                     self.session_ctx(),
                     common.encryption_enabled,
                 )?;
+                let scan: Arc<dyn ExecutionPlan> =
+                    Arc::new(ScanMemoryLogExec::new(scan, self.partition, partition_count));
                 Ok((
                     vec![],
                     Arc::new(SparkPlan::new(spark_plan.plan_id, scan, vec![])),
