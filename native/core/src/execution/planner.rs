@@ -1773,9 +1773,7 @@ impl PhysicalPlanner {
                 let data_types = scan.fields.iter().map(to_arrow_datatype).collect_vec();
 
                 if self.exec_context_id != TEST_EXEC_CONTEXT_ID && inputs.is_empty() {
-                    return Err(GeneralError(
-                        "No input for shuffle scan".to_string(),
-                    ));
+                    return Err(GeneralError("No input for shuffle scan".to_string()));
                 }
 
                 let input_source =
@@ -1785,11 +1783,8 @@ impl PhysicalPlanner {
                         Some(inputs.remove(0))
                     };
 
-                let shuffle_scan = ShuffleScanExec::new(
-                    self.exec_context_id,
-                    input_source,
-                    data_types,
-                )?;
+                let shuffle_scan =
+                    ShuffleScanExec::new(self.exec_context_id, input_source, data_types)?;
 
                 Ok((
                     vec![],
@@ -3736,7 +3731,8 @@ mod tests {
         let input_array = DictionaryArray::new(keys, Arc::new(values));
         let input_batch = InputBatch::Batch(vec![Arc::new(input_array)], row_count);
 
-        let (mut scans, _shuffle_scans, datafusion_plan) = planner.create_plan(&op, &mut vec![], 1).unwrap();
+        let (mut scans, _shuffle_scans, datafusion_plan) =
+            planner.create_plan(&op, &mut vec![], 1).unwrap();
         scans[0].set_input_batch(input_batch);
 
         let session_ctx = SessionContext::new();
@@ -3810,7 +3806,8 @@ mod tests {
         let input_array = DictionaryArray::new(keys, Arc::new(values));
         let input_batch = InputBatch::Batch(vec![Arc::new(input_array)], row_count);
 
-        let (mut scans, _shuffle_scans, datafusion_plan) = planner.create_plan(&op, &mut vec![], 1).unwrap();
+        let (mut scans, _shuffle_scans, datafusion_plan) =
+            planner.create_plan(&op, &mut vec![], 1).unwrap();
 
         // Scan's schema is determined by the input batch, so we need to set it before execution.
         scans[0].set_input_batch(input_batch);
@@ -3857,7 +3854,8 @@ mod tests {
         let op = create_filter(op_scan, 0);
         let planner = PhysicalPlanner::default();
 
-        let (mut scans, _shuffle_scans, datafusion_plan) = planner.create_plan(&op, &mut vec![], 1).unwrap();
+        let (mut scans, _shuffle_scans, datafusion_plan) =
+            planner.create_plan(&op, &mut vec![], 1).unwrap();
 
         let scan = &mut scans[0];
         scan.set_input_batch(InputBatch::EOF);
@@ -3942,7 +3940,8 @@ mod tests {
         let op = create_filter(op_scan, 0);
         let planner = PhysicalPlanner::default();
 
-        let (_scans, _shuffle_scans, filter_exec) = planner.create_plan(&op, &mut vec![], 1).unwrap();
+        let (_scans, _shuffle_scans, filter_exec) =
+            planner.create_plan(&op, &mut vec![], 1).unwrap();
 
         assert_eq!("FilterExec", filter_exec.native_plan.name());
         assert_eq!(1, filter_exec.children.len());
@@ -3966,7 +3965,8 @@ mod tests {
 
         let planner = PhysicalPlanner::default();
 
-        let (_scans, _shuffle_scans, hash_join_exec) = planner.create_plan(&op_join, &mut vec![], 1).unwrap();
+        let (_scans, _shuffle_scans, hash_join_exec) =
+            planner.create_plan(&op_join, &mut vec![], 1).unwrap();
 
         assert_eq!("HashJoinExec", hash_join_exec.native_plan.name());
         assert_eq!(2, hash_join_exec.children.len());

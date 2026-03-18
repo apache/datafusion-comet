@@ -45,11 +45,17 @@ impl<'a> CometShuffleBlockIterator<'a> {
             class,
             method_has_next: env.get_method_id(Self::JVM_CLASS, "hasNext", "()I")?,
             method_has_next_ret: ReturnType::Primitive(Primitive::Int),
-            method_get_buffer: env
-                .get_method_id(Self::JVM_CLASS, "getBuffer", "()Ljava/nio/ByteBuffer;")?,
+            method_get_buffer: env.get_method_id(
+                Self::JVM_CLASS,
+                "getBuffer",
+                "()Ljava/nio/ByteBuffer;",
+            )?,
             method_get_buffer_ret: ReturnType::Object,
-            method_get_current_block_length: env
-                .get_method_id(Self::JVM_CLASS, "getCurrentBlockLength", "()I")?,
+            method_get_current_block_length: env.get_method_id(
+                Self::JVM_CLASS,
+                "getCurrentBlockLength",
+                "()I",
+            )?,
             method_get_current_block_length_ret: ReturnType::Primitive(Primitive::Int),
         })
     }

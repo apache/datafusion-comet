@@ -667,16 +667,13 @@ abstract class CometNativeExec extends CometExec {
         inputs(scanIdx) match {
           case rdd: CometShuffledBatchRDD =>
             val dep = rdd.dependency
+            val rddMetrics = rdd.metrics
             factories(scanIdx) = (context, part) => {
-              val shufflePart =
-                part
-                  .asInstanceOf[CometExecPartition]
-                  .inputPartitions(scanIdx)
-                  .asInstanceOf[ShuffledRowRDDPartition]
+              val shufflePart = part.asInstanceOf[ShuffledRowRDDPartition]
               val tempMetrics =
                 context.taskMetrics().createTempShuffleReadMetrics()
               val sqlMetricsReporter =
-                new SQLShuffleReadMetricsReporter(tempMetrics, Map.empty)
+                new SQLShuffleReadMetricsReporter(tempMetrics, rddMetrics)
               val reader = shufflePart.spec match {
                 case CoalescedPartitionSpec(startReducerIndex, endReducerIndex, _) =>
                   SparkEnv.get.shuffleManager

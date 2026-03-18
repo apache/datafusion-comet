@@ -25,7 +25,7 @@ use jni::objects::GlobalRef;
 
 use crate::{
     execution::{
-        planner::{operator_registry::OperatorBuilder, PlanCreationResult, PhysicalPlanner},
+        planner::{operator_registry::OperatorBuilder, PhysicalPlanner, PlanCreationResult},
         spark_plan::SparkPlan,
     },
     extract_op,

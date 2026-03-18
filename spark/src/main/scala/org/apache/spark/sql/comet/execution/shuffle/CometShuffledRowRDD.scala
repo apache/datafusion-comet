@@ -34,7 +34,7 @@ import org.apache.spark.sql.vectorized.ColumnarBatch
  */
 class CometShuffledBatchRDD(
     var dependency: ShuffleDependency[Int, _, _],
-    metrics: Map[String, SQLMetric],
+    val metrics: Map[String, SQLMetric],
     partitionSpecs: Array[ShufflePartitionSpec])
     extends RDD[ColumnarBatch](dependency.rdd.context, Nil) {
 

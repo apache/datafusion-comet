@@ -321,8 +321,8 @@ impl Stream for ShuffleScanStream {
             InputBatch::EOF => Poll::Ready(None),
             InputBatch::Batch(columns, num_rows) => {
                 self.baseline_metrics.record_output(*num_rows);
-                let options = arrow::array::RecordBatchOptions::new()
-                    .with_row_count(Some(*num_rows));
+                let options =
+                    arrow::array::RecordBatchOptions::new().with_row_count(Some(*num_rows));
                 let maybe_batch = arrow::array::RecordBatch::try_new_with_options(
                     Arc::clone(&self.schema),
                     columns.clone(),
@@ -344,5 +344,59 @@ impl Stream for ShuffleScanStream {
 impl RecordBatchStream for ShuffleScanStream {
     fn schema(&self) -> SchemaRef {
         Arc::clone(&self.schema)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::execution::shuffle::codec::{CompressionCodec, ShuffleBlockWriter};
+    use arrow::array::{Int32Array, StringArray};
+    use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::record_batch::RecordBatch;
+    use datafusion::physical_plan::metrics::Time;
+    use std::io::Cursor;
+    use std::sync::Arc;
+
+    use crate::execution::shuffle::codec::read_ipc_compressed;
+
+    #[test]
+    fn test_read_compressed_ipc_block() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("name", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2, 3])),
+                Arc::new(StringArray::from(vec!["a", "b", "c"])),
+            ],
+        )
+        .unwrap();
+
+        // Write as compressed IPC
+        let writer =
+            ShuffleBlockWriter::try_new(&batch.schema(), CompressionCodec::Zstd(1)).unwrap();
+        let mut buf = Cursor::new(Vec::new());
+        let ipc_time = Time::new();
+        writer.write_batch(&batch, &mut buf, &ipc_time).unwrap();
+
+        // Read back (skip 16-byte header: 8 compressed_length + 8 field_count)
+        let bytes = buf.into_inner();
+        let body = &bytes[16..];
+
+        let decoded = read_ipc_compressed(body).unwrap();
+        assert_eq!(decoded.num_rows(), 3);
+        assert_eq!(decoded.num_columns(), 2);
+
+        // Verify data
+        let col0 = decoded
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+        assert_eq!(col0.value(0), 1);
+        assert_eq!(col0.value(1), 2);
+        assert_eq!(col0.value(2), 3);
     }
 }

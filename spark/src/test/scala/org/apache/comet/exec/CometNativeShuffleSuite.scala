@@ -30,7 +30,7 @@ import org.apache.spark.SparkEnv
 import org.apache.spark.sql.{CometTestBase, DataFrame, Dataset, Row}
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
-import org.apache.spark.sql.functions.col
+import org.apache.spark.sql.functions.{col, count, sum}
 
 import org.apache.comet.CometConf
 
@@ -434,6 +434,21 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
         // Just collect and verify - simpler test
         val result = shuffled.collect()
         assert(result.length == 50, s"Expected 50 rows after filter, got ${result.length}")
+      }
+    }
+  }
+
+  test("shuffle direct read produces same results as FFI path") {
+    Seq(true, false).foreach { directRead =>
+      withSQLConf(CometConf.COMET_SHUFFLE_DIRECT_READ_ENABLED.key -> directRead.toString) {
+        val df = spark
+          .range(1000)
+          .selectExpr("id", "id % 10 as key", "cast(id as string) as value")
+          .repartition(4, col("key"))
+          .groupBy("key")
+          .agg(sum("id").as("total"), count("value").as("cnt"))
+          .orderBy("key")
+        checkSparkAnswer(df)
       }
     }
   }
