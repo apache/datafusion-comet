@@ -235,11 +235,8 @@ impl ShuffleBlockWriter {
                 output.write_all(&raw_buf)?;
             }
             CompressionCodec::Lz4Frame => {
-                let mut wtr = lz4_flex::frame::FrameEncoder::new(output.by_ref());
-                wtr.write_all(&raw_buf)?;
-                wtr.finish().map_err(|e| {
-                    DataFusionError::Execution(format!("lz4 compression error: {e}"))
-                })?;
+                let compressed = lz4_flex::compress(&raw_buf);
+                output.write_all(&compressed)?;
             }
             CompressionCodec::Zstd(level) => {
                 let compressed = zstd::bulk::compress(&raw_buf, *level)?;
@@ -440,8 +437,8 @@ pub fn read_shuffle_block(bytes: &[u8], schema: &Arc<Schema>) -> Result<RecordBa
             read_raw_batch(&decompressed, schema)
         }
         b"LZ4_" => {
-            let decoder = lz4_flex::frame::FrameDecoder::new(data);
-            let decompressed = read_all_with_capacity(decoder, uncompressed_len)?;
+            let decompressed = lz4_flex::decompress(data, uncompressed_len)
+                .map_err(|e| DataFusionError::Execution(format!("lz4 decompression error: {e}")))?;
             read_raw_batch(&decompressed, schema)
         }
         b"ZSTD" => {
