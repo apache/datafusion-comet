@@ -23,12 +23,12 @@ CREATE TABLE test_get_array_item(arr array<int>, idx int) USING parquet
 statement
 INSERT INTO test_get_array_item VALUES (array(10, 20, 30), 0), (array(10, 20, 30), 1), (array(10, 20, 30), 2), (array(1), 0), (NULL, 0), (array(10, 20), NULL)
 
-query spark_answer_only
+query
 SELECT arr[0], arr[1], arr[2] FROM test_get_array_item
 
-query ignore(https://github.com/apache/datafusion-comet/issues/3332)
+query
 SELECT arr[idx] FROM test_get_array_item
 
 -- literal arguments
-query spark_answer_only
+query
 SELECT array(10, 20, 30)[0], array(10, 20, 30)[2], array()[0]

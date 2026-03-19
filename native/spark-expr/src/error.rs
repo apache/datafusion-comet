@@ -166,6 +166,15 @@ pub enum SparkError {
     #[error("[SCALAR_SUBQUERY_TOO_MANY_ROWS] Scalar subquery returned more than one row.")]
     ScalarSubqueryTooManyRows,
 
+    #[error("{message}")]
+    FileNotFound { message: String },
+
+    #[error("[_LEGACY_ERROR_TEMP_2093] Found duplicate field(s) \"{required_field_name}\": [{matched_fields}] in case-insensitive mode")]
+    DuplicateFieldCaseInsensitive {
+        required_field_name: String,
+        matched_fields: String,
+    },
+
     #[error("ArrowError: {0}.")]
     Arrow(Arc<ArrowError>),
 
@@ -236,6 +245,8 @@ impl SparkError {
             SparkError::InvalidRegexGroupIndex { .. } => "InvalidRegexGroupIndex",
             SparkError::DatatypeCannotOrder { .. } => "DatatypeCannotOrder",
             SparkError::ScalarSubqueryTooManyRows => "ScalarSubqueryTooManyRows",
+            SparkError::FileNotFound { .. } => "FileNotFound",
+            SparkError::DuplicateFieldCaseInsensitive { .. } => "DuplicateFieldCaseInsensitive",
             SparkError::Arrow(_) => "Arrow",
             SparkError::Internal(_) => "Internal",
         }
@@ -421,6 +432,20 @@ impl SparkError {
                     "dataType": data_type,
                 })
             }
+            SparkError::FileNotFound { message } => {
+                serde_json::json!({
+                    "message": message,
+                })
+            }
+            SparkError::DuplicateFieldCaseInsensitive {
+                required_field_name,
+                matched_fields,
+            } => {
+                serde_json::json!({
+                    "requiredFieldName": required_field_name,
+                    "matchedOrcFields": matched_fields,
+                })
+            }
             SparkError::Arrow(e) => {
                 serde_json::json!({
                     "message": e.to_string(),
@@ -486,6 +511,14 @@ impl SparkError {
             // IllegalArgumentException
             SparkError::DatatypeCannotOrder { .. }
             | SparkError::InvalidUtf8String { .. } => "org/apache/spark/SparkIllegalArgumentException",
+
+            // FileNotFound - will be converted to SparkFileNotFoundException by the shim
+            SparkError::FileNotFound { .. } => "org/apache/spark/SparkException",
+
+            // DuplicateFieldCaseInsensitive - converted to SparkRuntimeException by the shim
+            SparkError::DuplicateFieldCaseInsensitive { .. } => {
+                "org/apache/spark/SparkRuntimeException"
+            }
 
             // Generic errors
             SparkError::Arrow(_) | SparkError::Internal(_) => "org/apache/spark/SparkException",
@@ -558,6 +591,12 @@ impl SparkError {
 
             // Subquery errors
             SparkError::ScalarSubqueryTooManyRows => Some("SCALAR_SUBQUERY_TOO_MANY_ROWS"),
+
+            // File not found
+            SparkError::FileNotFound { .. } => Some("_LEGACY_ERROR_TEMP_2055"),
+
+            // Duplicate field in case-insensitive mode
+            SparkError::DuplicateFieldCaseInsensitive { .. } => Some("_LEGACY_ERROR_TEMP_2093"),
 
             // Generic errors (no error class)
             SparkError::Arrow(_) | SparkError::Internal(_) => None,
