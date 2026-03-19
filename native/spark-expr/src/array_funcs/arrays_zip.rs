@@ -16,17 +16,23 @@
 // under the License.
 
 use arrow::array::RecordBatch;
-use arrow::array::{Array, ArrayRef, StringArray};
+use arrow::array::{
+    new_null_array, Array, ArrayRef, Capacities, ListArray, MutableArrayData, StructArray,
+};
+use arrow::buffer::{NullBuffer, OffsetBuffer};
 use arrow::datatypes::DataType::{FixedSizeList, LargeList, List, Null};
 use arrow::datatypes::Schema;
 use arrow::datatypes::{DataType, Field, Fields};
+use datafusion::common::cast::{as_fixed_size_list_array, as_large_list_array, as_list_array};
 use datafusion::common::{exec_err, Result, ScalarValue};
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::physical_expr::PhysicalExpr;
-use datafusion::functions_nested::arrays_zip::arrays_zip_inner;
 use std::any::Any;
 use std::fmt::{Display, Formatter};
 use std::sync::Arc;
+// use datafusion::functions_nested::utils::make_scalar_function;
+// use datafusion::functions_nested::arrays_zip::arrays_zip_inner;
+// use datafusion::functions_nested::arrays_zip::StructOrdinal;
 
 #[derive(Debug, Eq, Hash, PartialEq)]
 pub struct SparkArraysZipFunc {
@@ -81,7 +87,7 @@ impl PhysicalExpr for SparkArraysZipFunc {
     }
 
     fn nullable(&self, _input_schema: &Schema) -> Result<bool> {
-        Ok(false)
+        Ok(true)
     }
 
     fn evaluate(&self, batch: &RecordBatch) -> Result<ColumnarValue> {
@@ -91,28 +97,7 @@ impl PhysicalExpr for SparkArraysZipFunc {
             .map(|e| e.evaluate(batch))
             .collect::<datafusion::common::Result<Vec<_>>>()?;
 
-        let len = values
-            .iter()
-            .fold(Option::<usize>::None, |acc, arg| match arg {
-                ColumnarValue::Scalar(_) => acc,
-                ColumnarValue::Array(a) => Some(a.len()),
-            });
-
-        let is_scalar = len.is_none();
-
-        let arrays = ColumnarValue::values_to_arrays(&values)?;
-        let names = vec![Arc::new(StringArray::from(self.names.clone())) as ArrayRef];
-
-        // TODO: replace this with DF's function
-        let result = arrays_zip_inner(&arrays, &names);
-
-        if is_scalar {
-            // If all inputs are scalar, keeps output as scalar
-            let result = result.and_then(|arr| ScalarValue::try_from_array(&arr, 0));
-            result.map(ColumnarValue::Scalar)
-        } else {
-            result.map(ColumnarValue::Array)
-        }
+        make_scalar_function(|arr| arrays_zip_inner(arr, self.names.clone()))(&*values)
     }
 
     fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
@@ -132,4 +117,228 @@ impl PhysicalExpr for SparkArraysZipFunc {
     fn fmt_sql(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         Display::fmt(self, f)
     }
+}
+
+pub fn make_scalar_function<F>(inner: F) -> impl Fn(&[ColumnarValue]) -> Result<ColumnarValue>
+where
+    F: Fn(&[ArrayRef]) -> Result<ArrayRef>,
+{
+    move |args: &[ColumnarValue]| {
+        // first, identify if any of the arguments is an Array. If yes, store its `len`,
+        // as any scalar will need to be converted to an array of len `len`.
+        let len = args
+            .iter()
+            .fold(Option::<usize>::None, |acc, arg| match arg {
+                ColumnarValue::Scalar(_) => acc,
+                ColumnarValue::Array(a) => Some(a.len()),
+            });
+
+        let is_scalar = len.is_none();
+
+        let args = ColumnarValue::values_to_arrays(args)?;
+
+        let result = (inner)(&args);
+
+        if is_scalar {
+            // If all inputs are scalar, keeps output as scalar
+            let result = result.and_then(|arr| ScalarValue::try_from_array(&arr, 0));
+            result.map(ColumnarValue::Scalar)
+        } else {
+            result.map(ColumnarValue::Array)
+        }
+    }
+}
+
+struct ListColumnView {
+    /// The flat values array backing this list column.
+    values: ArrayRef,
+    /// Pre-computed per-row start offsets (length = num_rows + 1).
+    offsets: Vec<usize>,
+    /// Pre-computed null bitmap: true means the row is null.
+    is_null: Vec<bool>,
+}
+
+pub fn arrays_zip_inner(args: &[ArrayRef], names: Vec<String>) -> Result<ArrayRef> {
+    if args.is_empty() {
+        return exec_err!("arrays_zip requires at least one argument");
+    }
+
+    // let (start_ordinal, end_ordinal) = match struct_ordinal {
+    //     StructOrdinal::ZeroBased => (0, args.len()),
+    //     StructOrdinal::OneBased => (1, args.len() + 1),
+    // };
+    // let names: Vec<String> = (start_ordinal..end_ordinal)
+    //     .map(|i| i.to_string())
+    //     .collect();
+
+    let num_rows = args[0].len();
+
+    // Build a type-erased ListColumnView for each argument.
+    // None means the argument is Null-typed (all nulls, no backing data).
+    let mut views: Vec<Option<ListColumnView>> = Vec::with_capacity(args.len());
+    let mut element_types: Vec<DataType> = Vec::with_capacity(args.len());
+
+    for (i, arg) in args.iter().enumerate() {
+        match arg.data_type() {
+            List(field) => {
+                let arr = as_list_array(arg)?;
+                let raw_offsets = arr.value_offsets();
+                let offsets: Vec<usize> = raw_offsets.iter().map(|&o| o as usize).collect();
+                let is_null = (0..num_rows).map(|row| arr.is_null(row)).collect();
+                element_types.push(field.data_type().clone());
+                views.push(Some(ListColumnView {
+                    values: Arc::clone(arr.values()),
+                    offsets,
+                    is_null,
+                }));
+            }
+            LargeList(field) => {
+                let arr = as_large_list_array(arg)?;
+                let raw_offsets = arr.value_offsets();
+                let offsets: Vec<usize> = raw_offsets.iter().map(|&o| o as usize).collect();
+                let is_null = (0..num_rows).map(|row| arr.is_null(row)).collect();
+                element_types.push(field.data_type().clone());
+                views.push(Some(ListColumnView {
+                    values: Arc::clone(arr.values()),
+                    offsets,
+                    is_null,
+                }));
+            }
+            FixedSizeList(field, size) => {
+                let arr = as_fixed_size_list_array(arg)?;
+                let size = *size as usize;
+                let offsets: Vec<usize> = (0..=num_rows).map(|row| row * size).collect();
+                let is_null = (0..num_rows).map(|row| arr.is_null(row)).collect();
+                element_types.push(field.data_type().clone());
+                views.push(Some(ListColumnView {
+                    values: Arc::clone(arr.values()),
+                    offsets,
+                    is_null,
+                }));
+            }
+            Null => {
+                element_types.push(Null);
+                views.push(None);
+            }
+            dt => {
+                return exec_err!("arrays_zip argument {i} expected list type, got {dt}");
+            }
+        }
+    }
+
+    // Collect per-column values data for MutableArrayData builders.
+    let values_data: Vec<_> = views
+        .iter()
+        .map(|v| v.as_ref().map(|view| view.values.to_data()))
+        .collect();
+
+    let struct_fields: Fields = element_types
+        .iter()
+        .enumerate()
+        .map(|(i, dt)| Field::new(names[i].to_string(), dt.clone(), true))
+        .collect::<Vec<_>>()
+        .into();
+
+    // Create a MutableArrayData builder per column. For None (Null-typed)
+    // args we only need extend_nulls, so we track them separately.
+    let mut builders: Vec<Option<MutableArrayData>> = values_data
+        .iter()
+        .map(|vd| {
+            vd.as_ref().map(|data| {
+                MutableArrayData::with_capacities(vec![data], true, Capacities::Array(0))
+            })
+        })
+        .collect();
+
+    let mut offsets: Vec<i32> = Vec::with_capacity(num_rows + 1);
+    offsets.push(0);
+    let mut null_mask: Vec<bool> = Vec::with_capacity(num_rows);
+    let mut total_values: usize = 0;
+
+    // Process each row: compute per-array lengths, then copy values
+    // and pad shorter arrays with NULLs.
+    for row_idx in 0..num_rows {
+        let mut max_len: usize = 0;
+        let mut all_null = true;
+
+        for view in views.iter().flatten() {
+            if !view.is_null[row_idx] {
+                all_null = false;
+                let len = view.offsets[row_idx + 1] - view.offsets[row_idx];
+                max_len = max_len.max(len);
+            }
+        }
+
+        if all_null {
+            null_mask.push(true);
+            offsets.push(*offsets.last().unwrap());
+            continue;
+        }
+        null_mask.push(false);
+
+        // Extend each column builder for this row.
+        for (col_idx, view) in views.iter().enumerate() {
+            match view {
+                Some(v) if !v.is_null[row_idx] => {
+                    let start = v.offsets[row_idx];
+                    let end = v.offsets[row_idx + 1];
+                    let len = end - start;
+                    let builder = builders[col_idx].as_mut().unwrap();
+                    builder.extend(0, start, end);
+                    if len < max_len {
+                        builder.extend_nulls(max_len - len);
+                    }
+                }
+                _ => {
+                    // Null list entry or None (Null-typed) arg — all nulls.
+                    if let Some(builder) = builders[col_idx].as_mut() {
+                        builder.extend_nulls(max_len);
+                    }
+                }
+            }
+        }
+
+        total_values += max_len;
+        let last = *offsets.last().unwrap();
+        offsets.push(last + max_len as i32);
+    }
+
+    // Assemble struct columns from builders.
+    let struct_columns: Vec<ArrayRef> = builders
+        .into_iter()
+        .zip(element_types.iter())
+        .map(|(builder, elem_type)| match builder {
+            Some(b) => arrow::array::make_array(b.freeze()),
+            None => new_null_array(
+                if elem_type.is_null() {
+                    &Null
+                } else {
+                    elem_type
+                },
+                total_values,
+            ),
+        })
+        .collect();
+
+    let struct_array = StructArray::try_new(struct_fields, struct_columns, None)?;
+
+    let null_buffer = if null_mask.iter().any(|&v| v) {
+        Some(NullBuffer::from(
+            null_mask.iter().map(|v| !v).collect::<Vec<bool>>(),
+        ))
+    } else {
+        None
+    };
+
+    let result = ListArray::try_new(
+        Arc::new(Field::new_list_field(
+            struct_array.data_type().clone(),
+            true,
+        )),
+        OffsetBuffer::new(offsets.into()),
+        Arc::new(struct_array),
+        null_buffer,
+    )?;
+
+    Ok(Arc::new(result))
 }
