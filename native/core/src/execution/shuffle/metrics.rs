@@ -26,7 +26,7 @@ pub(super) struct ShufflePartitionerMetrics {
     /// Time to perform repartitioning
     pub(super) repart_time: Time,
 
-    /// Time encoding batches to IPC format
+    /// Time encoding batches to shuffle format
     pub(super) encode_time: Time,
 
     /// Time spent writing to disk. Maps to "shuffleWriteTime" in Spark SQL Metrics.

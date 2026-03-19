@@ -36,7 +36,7 @@ import java.nio.channels.ReadableByteChannel;
  * getBuffer().
  *
  * <p>The DirectByteBuffer returned by getBuffer() is only valid until the next hasNext() call.
- * Native code must fully consume it (via read_ipc_compressed which allocates new memory for the
+ * Native code must fully consume it (via read_shuffle_block which allocates new memory for the
  * decompressed data) before pulling the next block.
  */
 public class CometShuffleBlockIterator implements Closeable {

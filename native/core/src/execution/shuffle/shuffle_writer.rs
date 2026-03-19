@@ -588,7 +588,7 @@ mod test {
     }
 
     /// Test that batch coalescing in BufBatchWriter reduces output size by
-    /// writing fewer, larger IPC blocks instead of many small ones.
+    /// writing fewer, larger blocks instead of many small ones.
     #[test]
     #[cfg_attr(miri, ignore)]
     fn test_batch_coalescing_reduces_size() {

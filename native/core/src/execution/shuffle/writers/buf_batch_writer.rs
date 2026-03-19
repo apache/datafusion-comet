@@ -27,7 +27,7 @@ use std::io::{Cursor, Seek, SeekFrom, Write};
 /// Once the buffer exceeds the max size, the buffer will be flushed to the writer.
 ///
 /// Small batches are coalesced using Arrow's [`BatchCoalescer`] before serialization,
-/// producing exactly `batch_size`-row output batches to reduce per-block IPC schema overhead.
+/// producing exactly `batch_size`-row output batches to reduce per-block serialization overhead.
 /// The coalescer is lazily initialized on the first write.
 pub(crate) struct BufBatchWriter<S: Borrow<ShuffleBlockWriter>, W: Write> {
     shuffle_block_writer: S,

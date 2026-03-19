@@ -555,7 +555,7 @@ impl ShufflePartitioner for MultiPartitionShuffleRepartitioner {
         .await
     }
 
-    /// Writes buffered shuffled record batches into Arrow IPC bytes.
+    /// Writes buffered shuffled record batches to the output shuffle file.
     fn shuffle_write(&mut self) -> datafusion::common::Result<()> {
         with_trace("shuffle_write", self.tracing_enabled, || {
             let start_time = Instant::now();

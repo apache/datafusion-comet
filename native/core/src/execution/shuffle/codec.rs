@@ -362,7 +362,7 @@ fn read_all<R: Read>(mut reader: R) -> Result<Vec<u8>> {
     Ok(buf)
 }
 
-/// Checksum algorithms for writing IPC bytes.
+/// Checksum algorithms for writing shuffle bytes.
 #[derive(Clone)]
 pub(crate) enum Checksum {
     /// CRC32 checksum algorithm.
