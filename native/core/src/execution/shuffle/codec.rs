@@ -31,7 +31,6 @@ use simd_adler32::Adler32;
 use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 use std::sync::Arc;
 
-
 #[derive(Debug, Clone)]
 pub enum CompressionCodec {
     None,
