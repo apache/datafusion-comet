@@ -877,6 +877,43 @@ pub extern "system" fn Java_org_apache_comet_Native_sortRowPartitionsNative(
     })
 }
 
+// Thread-local cache for the parsed shuffle schema. The schema bytes are
+// identical for every call within a given shuffle reader, so we avoid
+// re-parsing protobuf and re-allocating Field/Schema objects on each batch.
+thread_local! {
+    static CACHED_SHUFFLE_SCHEMA: std::cell::RefCell<Option<(Vec<u8>, Arc<Schema>)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Parse shuffle schema from protobuf bytes, using a thread-local cache.
+fn get_or_parse_shuffle_schema(
+    env: &mut JNIEnv,
+    schema_bytes: &JByteArray,
+) -> CometResult<Arc<Schema>> {
+    let schema_vec = env.convert_byte_array(schema_bytes)?;
+
+    CACHED_SHUFFLE_SCHEMA.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some((ref cached_bytes, ref cached_schema)) = *cache {
+            if cached_bytes == &schema_vec {
+                return Ok(Arc::clone(cached_schema));
+            }
+        }
+
+        let shuffle_scan = spark_operator::ShuffleScan::decode(schema_vec.as_slice())
+            .map_err(|e| CometError::Internal(format!("Failed to parse shuffle schema: {e}")))?;
+        let fields: Vec<Field> = shuffle_scan
+            .fields
+            .iter()
+            .enumerate()
+            .map(|(i, dt)| Field::new(format!("c{i}"), to_arrow_datatype(dt), true))
+            .collect();
+        let schema = Arc::new(Schema::new(fields));
+        *cache = Some((schema_vec, Arc::clone(&schema)));
+        Ok(schema)
+    })
+}
+
 #[no_mangle]
 /// Used by Comet native shuffle reader
 /// # Safety
@@ -892,17 +929,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlock(
     tracing_enabled: jboolean,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| {
-        // Parse the schema from protobuf bytes
-        let schema_vec = env.convert_byte_array(&schema_bytes)?;
-        let shuffle_scan = spark_operator::ShuffleScan::decode(schema_vec.as_slice())
-            .map_err(|e| CometError::Internal(format!("Failed to parse shuffle schema: {e}")))?;
-        let fields: Vec<Field> = shuffle_scan
-            .fields
-            .iter()
-            .enumerate()
-            .map(|(i, dt)| Field::new(format!("c{i}"), to_arrow_datatype(dt), true))
-            .collect();
-        let schema = Schema::new(fields);
+        let schema = get_or_parse_shuffle_schema(&mut env, &schema_bytes)?;
 
         with_trace("decodeShuffleBlock", tracing_enabled != JNI_FALSE, || {
             let raw_pointer = env.get_direct_buffer_address(&byte_buffer)?;

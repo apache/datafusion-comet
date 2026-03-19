@@ -674,7 +674,7 @@ mod test {
 
     /// Read all shuffle blocks from a byte buffer written by BufBatchWriter/ShuffleBlockWriter,
     /// returning the total number of rows.
-    fn read_all_shuffle_blocks(data: &[u8], schema: &Schema) -> usize {
+    fn read_all_shuffle_blocks(data: &[u8], schema: &Arc<Schema>) -> usize {
         let mut offset = 0;
         let mut total_rows = 0;
         while offset < data.len() {

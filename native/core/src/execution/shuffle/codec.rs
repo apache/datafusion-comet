@@ -16,9 +16,9 @@
 // under the License.
 
 use crate::errors::{CometError, CometResult};
-use arrow::array::{make_array, Array, ArrayRef, RecordBatch, UInt32Array};
+use arrow::array::{make_array, Array, ArrayRef, MutableArrayData, RecordBatch};
 use arrow::buffer::Buffer;
-use arrow::compute::{cast, take};
+use arrow::compute::cast;
 use arrow::datatypes::DataType;
 use arrow::datatypes::Schema;
 use arrow::record_batch::RecordBatchOptions;
@@ -104,8 +104,12 @@ fn normalize_array(col: &ArrayRef) -> Result<ArrayRef> {
 
     let needs_copy = col.offset() != 0 || col.nulls().is_some_and(|nulls| nulls.offset() != 0);
     if needs_copy {
-        let indices = UInt32Array::from_iter_values(0..col.len() as u32);
-        Ok(take(col.as_ref(), &indices, None)?)
+        // Use MutableArrayData::extend for a direct memcpy rather than
+        // take() which builds an index array and does per-element lookups.
+        let data = col.to_data();
+        let mut mutable = MutableArrayData::new(vec![&data], false, col.len());
+        mutable.extend(0, 0, col.len());
+        Ok(make_array(mutable.freeze()))
     } else {
         Ok(col)
     }
@@ -325,7 +329,7 @@ fn read_array_data(
 }
 
 /// Read a raw batch from decompressed bytes, given the expected schema.
-fn read_raw_batch(bytes: &[u8], schema: &Schema) -> Result<RecordBatch> {
+fn read_raw_batch(bytes: &[u8], schema: &Arc<Schema>) -> Result<RecordBatch> {
     let mut cursor = bytes;
 
     let num_rows = read_u32(&mut cursor)? as usize;
@@ -337,14 +341,14 @@ fn read_raw_batch(bytes: &[u8], schema: &Schema) -> Result<RecordBatch> {
     }
 
     let options = RecordBatchOptions::new().with_row_count(Some(num_rows));
-    let batch = RecordBatch::try_new_with_options(Arc::new(schema.clone()), columns, &options)?;
+    let batch = RecordBatch::try_new_with_options(Arc::clone(schema), columns, &options)?;
     Ok(batch)
 }
 
 /// Reads and decompresses a shuffle block written in raw buffer format.
 /// The `bytes` slice starts at the codec tag (after the 8-byte length and
 /// 8-byte field_count header that the JVM reads).
-pub fn read_shuffle_block(bytes: &[u8], schema: &Schema) -> Result<RecordBatch> {
+pub fn read_shuffle_block(bytes: &[u8], schema: &Arc<Schema>) -> Result<RecordBatch> {
     match &bytes[0..4] {
         b"SNAP" => {
             let decoder = snap::read::FrameDecoder::new(&bytes[4..]);

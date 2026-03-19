@@ -140,7 +140,7 @@ impl ShuffleScanExec {
         iter: &JObject,
         data_types: &[DataType],
         decode_time: &Time,
-        schema: &Schema,
+        schema: &Arc<Schema>,
     ) -> Result<InputBatch, CometError> {
         if exec_context_id == TEST_EXEC_CONTEXT_ID {
             return Ok(InputBatch::EOF);
