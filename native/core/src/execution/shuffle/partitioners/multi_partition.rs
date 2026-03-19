@@ -195,7 +195,7 @@ impl MultiPartitionShuffleRepartitioner {
         });
         let estimated_rows_per_partition = batch_size / num_output_partitions.max(1);
         let partition_buffers = (0..num_output_partitions)
-            .map(|_| PartitionBuffer::new(schema.clone(), estimated_rows_per_partition))
+            .map(|_| PartitionBuffer::new(Arc::clone(&schema), estimated_rows_per_partition))
             .collect();
 
         let reservation = MemoryConsumer::new(format!("ShuffleRepartitioner[{partition}]"))
@@ -446,53 +446,53 @@ impl MultiPartitionShuffleRepartitioner {
                 };
                 let data = column.to_data();
                 let values = data.buffers()[0].as_slice();
-                for row in 0..num_rows {
-                    let p = partition_ids[row] as usize;
+                for (row, &p_id) in partition_ids.iter().enumerate().take(num_rows) {
+                    let p = p_id as usize;
                     let src_offset = row * byte_width;
                     self.partition_buffers[p].columns[col_idx]
                         .append_fixed(&values[src_offset..src_offset + byte_width]);
-                    let is_valid = nulls.map_or(true, |n| n.is_valid(row));
+                    let is_valid = nulls.is_none_or(|n| n.is_valid(row));
                     self.partition_buffers[p].columns[col_idx].append_null_bit(is_valid);
                 }
             } else if is_variable {
                 let data = column.to_data();
                 let offsets_slice = data.buffers()[0].typed_data::<i32>();
                 let values_slice = data.buffers()[1].as_slice();
-                for row in 0..num_rows {
-                    let p = partition_ids[row] as usize;
+                for (row, &p_id) in partition_ids.iter().enumerate().take(num_rows) {
+                    let p = p_id as usize;
                     let start = offsets_slice[row] as usize;
                     let end = offsets_slice[row + 1] as usize;
                     self.partition_buffers[p].columns[col_idx]
                         .append_variable(&values_slice[start..end]);
-                    let is_valid = nulls.map_or(true, |n| n.is_valid(row));
+                    let is_valid = nulls.is_none_or(|n| n.is_valid(row));
                     self.partition_buffers[p].columns[col_idx].append_null_bit(is_valid);
                 }
             } else if is_large_variable {
                 let data = column.to_data();
                 let offsets_slice = data.buffers()[0].typed_data::<i64>();
                 let values_slice = data.buffers()[1].as_slice();
-                for row in 0..num_rows {
-                    let p = partition_ids[row] as usize;
+                for (row, &p_id) in partition_ids.iter().enumerate().take(num_rows) {
+                    let p = p_id as usize;
                     let start = offsets_slice[row] as usize;
                     let end = offsets_slice[row + 1] as usize;
                     self.partition_buffers[p].columns[col_idx]
                         .append_large_variable(&values_slice[start..end]);
-                    let is_valid = nulls.map_or(true, |n| n.is_valid(row));
+                    let is_valid = nulls.is_none_or(|n| n.is_valid(row));
                     self.partition_buffers[p].columns[col_idx].append_null_bit(is_valid);
                 }
             } else if is_boolean {
                 let bool_array = column.as_any().downcast_ref::<BooleanArray>().unwrap();
-                for row in 0..num_rows {
-                    let p = partition_ids[row] as usize;
+                for (row, &p_id) in partition_ids.iter().enumerate().take(num_rows) {
+                    let p = p_id as usize;
                     self.partition_buffers[p].columns[col_idx]
                         .append_bool(bool_array.value(row));
-                    let is_valid = nulls.map_or(true, |n| n.is_valid(row));
+                    let is_valid = nulls.is_none_or(|n| n.is_valid(row));
                     self.partition_buffers[p].columns[col_idx].append_null_bit(is_valid);
                 }
             } else {
                 // Fallback
-                for row in 0..num_rows {
-                    let p = partition_ids[row] as usize;
+                for (row, &p_id) in partition_ids.iter().enumerate().take(num_rows) {
+                    let p = p_id as usize;
                     self.partition_buffers[p].columns[col_idx]
                         .append_fallback_index(row as u32);
                 }

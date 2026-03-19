@@ -221,12 +221,14 @@ impl PartitionBuffer {
         self.columns.iter().map(|c| c.memory_size()).sum()
     }
 
+    #[allow(dead_code)]
     pub(crate) fn has_fallback_columns(&self) -> bool {
         self.columns
             .iter()
             .any(|c| matches!(c, ColumnBuffer::Fallback { .. }))
     }
 
+    #[allow(dead_code)]
     pub(crate) fn clear(&mut self) {
         self.row_count = 0;
         for col in &mut self.columns {
@@ -280,7 +282,7 @@ impl PartitionBuffer {
                         Buffer::from(std::mem::replace(values, MutableBuffer::new(0)));
                     let mut builder =
                         ArrayData::builder(data_type).len(row_count).add_buffer(buffer);
-                    if nulls.len() > 0 {
+                    if !nulls.is_empty() {
                         builder = builder
                             .null_bit_buffer(Some(nulls.finish().into_inner()));
                     }
@@ -298,7 +300,7 @@ impl PartitionBuffer {
                             vec![0i32],
                         )));
                     let values_buffer = Buffer::from(std::mem::take(data));
-                    let null_buffer = if nulls.len() > 0 {
+                    let null_buffer = if !nulls.is_empty() {
                         Some(NullBuffer::new(nulls.finish()))
                     } else {
                         None
@@ -328,7 +330,7 @@ impl PartitionBuffer {
                             vec![0i64],
                         )));
                     let values_buffer = Buffer::from(std::mem::take(data));
-                    let null_buffer = if nulls.len() > 0 {
+                    let null_buffer = if !nulls.is_empty() {
                         Some(NullBuffer::new(nulls.finish()))
                     } else {
                         None
@@ -349,7 +351,7 @@ impl PartitionBuffer {
                 }
                 ColumnBuffer::Boolean { values, nulls } => {
                     let values_buf = values.finish();
-                    let null_buffer = if nulls.len() > 0 {
+                    let null_buffer = if !nulls.is_empty() {
                         Some(NullBuffer::new(nulls.finish()))
                     } else {
                         None
@@ -367,7 +369,7 @@ impl PartitionBuffer {
         }
 
         self.row_count = 0;
-        Ok(RecordBatch::try_new(self.schema.clone(), arrays)?)
+        Ok(RecordBatch::try_new(Arc::clone(&self.schema), arrays)?)
     }
 }
 
@@ -384,7 +386,7 @@ mod tests {
             Field::new("s", DataType::Utf8, true),
             Field::new("b", DataType::Boolean, true),
         ]));
-        let mut buf = PartitionBuffer::new(schema.clone(), 100);
+        let mut buf = PartitionBuffer::new(Arc::clone(&schema), 100);
 
         // Append 3 rows manually
         // Row 0: i=1, s="hello", b=true, all valid
