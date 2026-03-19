@@ -21,7 +21,7 @@ use std::fmt::Debug;
 
 use jni::objects::GlobalRef;
 
-pub use copy::*;
+pub(crate) use copy::*;
 pub use iceberg_scan::*;
 pub use scan::*;
 

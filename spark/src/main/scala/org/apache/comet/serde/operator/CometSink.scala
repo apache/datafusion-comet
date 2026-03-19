@@ -36,9 +36,6 @@ import org.apache.comet.serde.QueryPlanSerde.{serializeDataType, supportedDataTy
  */
 abstract class CometSink[T <: SparkPlan] extends CometOperatorSerde[T] {
 
-  /** Whether the data produced by the Comet operator is FFI safe */
-  def isFfiSafe: Boolean = false
-
   override def enabledConfig: Option[ConfigEntry[Boolean]] = None
 
   override def convert(
@@ -61,8 +58,6 @@ abstract class CometSink[T <: SparkPlan] extends CometOperatorSerde[T] {
     } else {
       scanBuilder.setSource(source)
     }
-    scanBuilder.setArrowFfiSafe(isFfiSafe)
-
     val scanTypes = op.output.flatten { attr =>
       serializeDataType(attr.dataType)
     }
@@ -85,15 +80,6 @@ abstract class CometSink[T <: SparkPlan] extends CometOperatorSerde[T] {
 }
 
 object CometExchangeSink extends CometSink[SparkPlan] {
-
-  /**
-   * Exchange data is FFI safe because there is no use of mutable buffers involved.
-   *
-   * Source of broadcast exchange batches is ArrowStreamReader.
-   *
-   * Source of shuffle exchange batches is NativeBatchDecoderIterator.
-   */
-  override def isFfiSafe: Boolean = true
 
   override def createExec(nativeOp: Operator, op: SparkPlan): CometNativeExec =
     CometSinkPlaceHolder(nativeOp, op, op)
