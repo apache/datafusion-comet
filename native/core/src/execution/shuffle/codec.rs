@@ -201,6 +201,11 @@ impl ShuffleBlockWriter {
 
     /// Writes given record batch in raw buffer format into given writer.
     /// Returns number of bytes written.
+    ///
+    /// The batch is first serialized to an intermediate buffer, then compressed
+    /// in one shot. This avoids creating a streaming compression encoder per
+    /// batch (expensive for Zstd ~128KB state) and gives us the uncompressed
+    /// size for a pre-allocation hint on the read side.
     pub fn write_batch<W: Write + Seek>(
         &self,
         batch: &RecordBatch,
@@ -217,31 +222,35 @@ impl ShuffleBlockWriter {
         // write header
         output.write_all(&self.header_bytes)?;
 
-        let output = match &self.codec {
+        // Serialize raw batch to intermediate buffer
+        let mut raw_buf = Vec::new();
+        write_raw_batch(batch, &mut raw_buf)?;
+
+        // Write uncompressed size hint (u32), then compressed data
+        let uncompressed_len = raw_buf.len() as u32;
+        output.write_all(&uncompressed_len.to_le_bytes())?;
+
+        match &self.codec {
             CompressionCodec::None => {
-                write_raw_batch(batch, output)?;
-                output
+                output.write_all(&raw_buf)?;
             }
             CompressionCodec::Lz4Frame => {
-                let mut wtr = lz4_flex::frame::FrameEncoder::new(output);
-                write_raw_batch(batch, &mut wtr)?;
+                let mut wtr = lz4_flex::frame::FrameEncoder::new(output.by_ref());
+                wtr.write_all(&raw_buf)?;
                 wtr.finish().map_err(|e| {
                     DataFusionError::Execution(format!("lz4 compression error: {e}"))
-                })?
+                })?;
             }
-
             CompressionCodec::Zstd(level) => {
-                let mut encoder = zstd::Encoder::new(output, *level)?;
-                write_raw_batch(batch, &mut encoder)?;
-                encoder.finish()?
+                let compressed = zstd::bulk::compress(&raw_buf, *level)?;
+                output.write_all(&compressed)?;
             }
-
             CompressionCodec::Snappy => {
-                let mut wtr = snap::write::FrameEncoder::new(output);
-                write_raw_batch(batch, &mut wtr)?;
+                let mut wtr = snap::write::FrameEncoder::new(output.by_ref());
+                wtr.write_all(&raw_buf)?;
                 wtr.into_inner().map_err(|e| {
                     DataFusionError::Execution(format!("snappy compression error: {e}"))
-                })?
+                })?;
             }
         };
 
@@ -416,33 +425,39 @@ fn read_raw_batch(bytes: &[u8], schema: &Arc<Schema>) -> Result<RecordBatch> {
 /// Reads and decompresses a shuffle block written in raw buffer format.
 /// The `bytes` slice starts at the codec tag (after the 8-byte length and
 /// 8-byte field_count header that the JVM reads).
+///
+/// Format: `[codec_tag: 4 bytes][uncompressed_len: u32][compressed_data...]`
 pub fn read_shuffle_block(bytes: &[u8], schema: &Arc<Schema>) -> Result<RecordBatch> {
-    match &bytes[0..4] {
+    let codec_tag = &bytes[0..4];
+    // Read uncompressed size hint for pre-allocation
+    let uncompressed_len = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
+    let data = &bytes[8..];
+
+    match codec_tag {
         b"SNAP" => {
-            let decoder = snap::read::FrameDecoder::new(&bytes[4..]);
-            let decompressed = read_all(decoder)?;
+            let decoder = snap::read::FrameDecoder::new(data);
+            let decompressed = read_all_with_capacity(decoder, uncompressed_len)?;
             read_raw_batch(&decompressed, schema)
         }
         b"LZ4_" => {
-            let decoder = lz4_flex::frame::FrameDecoder::new(&bytes[4..]);
-            let decompressed = read_all(decoder)?;
+            let decoder = lz4_flex::frame::FrameDecoder::new(data);
+            let decompressed = read_all_with_capacity(decoder, uncompressed_len)?;
             read_raw_batch(&decompressed, schema)
         }
         b"ZSTD" => {
-            let decoder = zstd::Decoder::new(&bytes[4..])?;
-            let decompressed = read_all(decoder)?;
+            let decompressed = zstd::bulk::decompress(data, uncompressed_len)?;
             read_raw_batch(&decompressed, schema)
         }
-        b"NONE" => read_raw_batch(&bytes[4..], schema),
+        b"NONE" => read_raw_batch(data, schema),
         other => Err(DataFusionError::Execution(format!(
             "Failed to decode batch: invalid compression codec: {other:?}"
         ))),
     }
 }
 
-/// Read all bytes from a reader into a Vec.
-fn read_all<R: Read>(mut reader: R) -> Result<Vec<u8>> {
-    let mut buf = Vec::new();
+/// Read all bytes from a reader into a pre-allocated Vec.
+fn read_all_with_capacity<R: Read>(mut reader: R, capacity: usize) -> Result<Vec<u8>> {
+    let mut buf = Vec::with_capacity(capacity);
     reader.read_to_end(&mut buf)?;
     Ok(buf)
 }
