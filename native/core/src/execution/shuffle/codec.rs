@@ -31,6 +31,7 @@ use simd_adler32::Adler32;
 use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 use std::sync::Arc;
 
+
 #[derive(Debug, Clone)]
 pub enum CompressionCodec {
     None,
@@ -46,6 +47,10 @@ pub struct ShuffleBlockWriter {
 }
 
 /// Recursively writes raw Arrow ArrayData buffers to the given writer.
+///
+/// The null buffer may have a non-zero bit offset (e.g. from `RecordBatch::slice`),
+/// even when `data.offset() == 0`. We emit a zero-offset copy of the bitmap so
+/// the reader can consume it without tracking offsets.
 fn write_array_data<W: Write>(data: &arrow::array::ArrayData, writer: &mut W) -> Result<()> {
     debug_assert_eq!(data.offset(), 0, "shuffle arrays must have offset 0");
 
@@ -53,13 +58,28 @@ fn write_array_data<W: Write>(data: &arrow::array::ArrayData, writer: &mut W) ->
     let null_count = data.null_count() as u32;
     writer.write_all(&null_count.to_le_bytes())?;
 
-    // Write validity bitmap
+    // Write validity bitmap (always emitted at bit-offset 0)
     if null_count > 0 {
         if let Some(bitmap) = data.nulls() {
-            let bitmap_bytes = bitmap.buffer().as_slice();
-            let len = bitmap_bytes.len() as u32;
-            writer.write_all(&len.to_le_bytes())?;
-            writer.write_all(bitmap_bytes)?;
+            if bitmap.offset() == 0 {
+                // Fast path: bitmap is already aligned, write raw bytes
+                let bitmap_bytes = bitmap.buffer().as_slice();
+                let len = bitmap_bytes.len() as u32;
+                writer.write_all(&len.to_le_bytes())?;
+                writer.write_all(bitmap_bytes)?;
+            } else {
+                // Bitmap has a non-zero bit offset — produce a zero-offset copy
+                let num_bits = bitmap.len();
+                let num_bytes = num_bits.div_ceil(8);
+                writer.write_all(&(num_bytes as u32).to_le_bytes())?;
+                let mut buf = vec![0u8; num_bytes];
+                for i in 0..num_bits {
+                    if bitmap.is_valid(i) {
+                        buf[i / 8] |= 1 << (i % 8);
+                    }
+                }
+                writer.write_all(&buf)?;
+            }
         } else {
             writer.write_all(&0u32.to_le_bytes())?;
         }
@@ -760,6 +780,45 @@ mod tests {
             assert!(col.is_null(2));
             assert_eq!(col.value(3), "foo");
         }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_roundtrip_sliced_batch() {
+        // Test that arrays with non-zero offsets (from slicing) roundtrip correctly.
+        // This is important because the shuffle writer uses debug_assert for offset==0,
+        // but in release builds sliced arrays could silently produce wrong results.
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("i", DataType::Int32, true),
+            Field::new("s", DataType::Utf8, true),
+        ]));
+        let full_batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(Int32Array::from(vec![
+                    Some(1),
+                    None,
+                    Some(3),
+                    Some(4),
+                    None,
+                    Some(6),
+                ])),
+                Arc::new(StringArray::from(vec![
+                    Some("a"),
+                    Some("bb"),
+                    None,
+                    Some("dddd"),
+                    Some("eeeee"),
+                    None,
+                ])),
+            ],
+        )
+        .unwrap();
+
+        // Slice the batch to get arrays with non-zero offset
+        let sliced = full_batch.slice(2, 3); // rows: [Some(3), Some(4), None] and [None, Some("dddd"), Some("eeeee")]
+        assert_eq!(sliced.num_rows(), 3);
+        roundtrip_test(schema, &sliced);
     }
 
     #[test]
