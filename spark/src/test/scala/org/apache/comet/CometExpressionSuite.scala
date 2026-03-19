@@ -2992,4 +2992,27 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("window_time") {
+    withTable("t1") {
+      sql("create table t1(time timestamp, value int) using parquet")
+      sql(
+        "insert into t1 values" +
+          "(cast('2023-01-01 12:00:00' as timestamp), 1)," +
+          "(cast('2023-01-01 12:05:00' as timestamp), 2)," +
+          "(cast('2023-01-01 12:15:00' as timestamp), 3)")
+
+      // basic window_time with aggregation
+      checkSparkAnswer(
+        "select max(window_time(window)), sum(value) " +
+          "from (select window(time, '10 minutes') as window, value from t1) " +
+          "group by window")
+
+      // window_time with sliding window
+      checkSparkAnswer(
+        "select max(window_time(window)), count(value) " +
+          "from (select window(time, '10 minutes', '5 minutes') as window, value from t1) " +
+          "group by window")
+    }
+  }
+
 }
