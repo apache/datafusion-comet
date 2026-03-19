@@ -296,8 +296,7 @@ mod test {
         ] {
             let mut output = vec![];
             let mut cursor = Cursor::new(&mut output);
-            let writer =
-                ShuffleBlockWriter::try_new(schema.as_ref(), codec.clone()).unwrap();
+            let writer = ShuffleBlockWriter::try_new(schema.as_ref(), codec.clone()).unwrap();
             let length = writer
                 .write_batch(&batch, &mut cursor, &Time::default())
                 .unwrap();

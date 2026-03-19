@@ -40,7 +40,6 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 use datafusion_comet_proto::spark_operator::{self, Operator};
-use prost::Message;
 use datafusion_spark::function::bitwise::bit_count::SparkBitCount;
 use datafusion_spark::function::bitwise::bit_get::SparkBitGet;
 use datafusion_spark::function::bitwise::bitwise_not::SparkBitwiseNot;
@@ -73,6 +72,7 @@ use jni::{
     sys::{jboolean, jdouble, jint, jlong},
     JNIEnv,
 };
+use prost::Message;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -894,10 +894,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlock(
     try_unwrap_or_throw(&e, |mut env| {
         // Parse the schema from protobuf bytes
         let schema_vec = env.convert_byte_array(&schema_bytes)?;
-        let shuffle_scan =
-            spark_operator::ShuffleScan::decode(schema_vec.as_slice()).map_err(|e| {
-                CometError::Internal(format!("Failed to parse shuffle schema: {e}"))
-            })?;
+        let shuffle_scan = spark_operator::ShuffleScan::decode(schema_vec.as_slice())
+            .map_err(|e| CometError::Internal(format!("Failed to parse shuffle schema: {e}")))?;
         let fields: Vec<Field> = shuffle_scan
             .fields
             .iter()

@@ -71,10 +71,7 @@ fn write_array_data<W: Write>(data: &arrow::array::ArrayData, writer: &mut W) ->
     writer.write_all(&num_buffers.to_le_bytes())?;
     for buffer in data.buffers() {
         let len: u32 = buffer.len().try_into().map_err(|_| {
-            DataFusionError::Execution(format!(
-                "Buffer length {} exceeds u32::MAX",
-                buffer.len()
-            ))
+            DataFusionError::Execution(format!("Buffer length {} exceeds u32::MAX", buffer.len()))
         })?;
         writer.write_all(&len.to_le_bytes())?;
         writer.write_all(buffer.as_slice())?;
@@ -100,9 +97,7 @@ fn write_raw_batch<W: Write>(batch: &RecordBatch, writer: &mut W) -> Result<()> 
     for col in batch.columns() {
         // Cast dictionary arrays to their value type
         let col = match col.data_type() {
-            DataType::Dictionary(_, value_type) => {
-                cast(col.as_ref(), value_type.as_ref())?
-            }
+            DataType::Dictionary(_, value_type) => cast(col.as_ref(), value_type.as_ref())?,
             _ => Arc::clone(col),
         };
         write_array_data(&col.to_data(), writer)?;
@@ -237,9 +232,7 @@ fn read_bytes<'a>(cursor: &mut &'a [u8], len: usize) -> Result<&'a [u8]> {
 /// Returns child data types for nested Arrow types.
 fn get_child_types(data_type: &DataType) -> Vec<DataType> {
     match data_type {
-        DataType::List(field)
-        | DataType::LargeList(field)
-        | DataType::FixedSizeList(field, _) => {
+        DataType::List(field) | DataType::LargeList(field) | DataType::FixedSizeList(field, _) => {
             vec![field.data_type().clone()]
         }
         DataType::Map(field, _) => {
@@ -709,11 +702,7 @@ mod tests {
 
         let batch = RecordBatch::try_new(
             Arc::clone(&schema),
-            vec![
-                Arc::new(list_arr),
-                Arc::new(struct_arr),
-                Arc::new(map_arr),
-            ],
+            vec![Arc::new(list_arr), Arc::new(struct_arr), Arc::new(map_arr)],
         )
         .unwrap();
 
@@ -732,8 +721,7 @@ mod tests {
 
         let keys = Int32Array::from(vec![Some(0), Some(1), None, Some(0)]);
         let values = StringArray::from(vec!["foo", "bar"]);
-        let dict_arr =
-            DictionaryArray::<Int32Type>::try_new(keys, Arc::new(values)).unwrap();
+        let dict_arr = DictionaryArray::<Int32Type>::try_new(keys, Arc::new(values)).unwrap();
 
         let batch =
             RecordBatch::try_new(Arc::clone(&dict_schema), vec![Arc::new(dict_arr)]).unwrap();
