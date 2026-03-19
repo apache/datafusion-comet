@@ -268,12 +268,16 @@ class CometStringExpressionSuite extends CometTestBase {
       checkSparkAnswerAndOperator("SELECT parse_url(_1, 'REF') FROM tbl_parse_url")
       checkSparkAnswerAndOperator("SELECT parse_url(_1, 'AUTHORITY') FROM tbl_parse_url")
       checkSparkAnswerAndOperator("SELECT parse_url(_1, 'USERINFO') FROM tbl_parse_url")
+
+      // Literal arguments exercise constant-folding code path
+      checkSparkAnswerAndOperator(
+        "SELECT parse_url('http://spark.apache.org/path?query=1', 'HOST') FROM tbl_parse_url")
+      checkSparkAnswerAndOperator(
+        "SELECT parse_url('http://spark.apache.org/path?query=1', 'QUERY', 'query') FROM tbl_parse_url")
     }
   }
 
-  test("parse_url in ANSI mode (Spark 3.5)") {
-    assume(!isSpark40Plus)
-
+  test("parse_url in ANSI mode") {
     withParquetTable(
       Seq(("http://spark.apache.org/path?query=1", 0), (null, 1)),
       "tbl_parse_url_ansi") {
@@ -283,9 +287,11 @@ class CometStringExpressionSuite extends CometTestBase {
     }
   }
 
+  // In legacy mode (ANSI disabled), parse_url returns NULL for malformed URLs instead of
+  // throwing an error. On Spark 3.5 this is driven by ParseUrl.failOnError=false; on Spark 4.0
+  // the flag is extracted from the ParseUrlEvaluator embedded in the Invoke node. Both paths
+  // serialize as try_parse_url on the native side.
   test("parse_url with invalid URL in legacy mode") {
-    assume(isSpark40Plus)
-
     withParquetTable(
       Seq(
         ("http://spark.apache.org/path?query=1", 0),

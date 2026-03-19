@@ -16,7 +16,7 @@
 -- under the License.
 
 -- ConfigMatrix: parquet.enable.dictionary=false,true
--- MinSparkVersion: 3.5
+-- MinSparkVersion: 3.4
 
 statement
 CREATE TABLE test_parse_url(url string) USING parquet
@@ -54,6 +54,34 @@ SELECT parse_url(url, 'AUTHORITY') FROM test_parse_url
 
 query
 SELECT parse_url(url, 'USERINFO') FROM test_parse_url
+
+-- Literal arguments: exercises the constant-folding code path which may differ from column inputs
+query
+SELECT parse_url('http://spark.apache.org/path?query=1', 'HOST')
+
+query
+SELECT parse_url('http://spark.apache.org/path?query=1', 'QUERY')
+
+query
+SELECT parse_url('http://spark.apache.org/path?query=1', 'QUERY', 'query')
+
+query
+SELECT parse_url('http://spark.apache.org/path?query=1', 'PROTOCOL')
+
+query
+SELECT parse_url('http://spark.apache.org/path?query=1', 'PATH')
+
+query
+SELECT parse_url('http://spark.apache.org/path?query=1', 'FILE')
+
+query
+SELECT parse_url('ftp://user:pwd@ftp.example.com:2121/files?x=1#frag', 'REF')
+
+query
+SELECT parse_url('ftp://user:pwd@ftp.example.com:2121/files?x=1#frag', 'AUTHORITY')
+
+query
+SELECT parse_url('ftp://user:pwd@ftp.example.com:2121/files?x=1#frag', 'USERINFO')
 
 -- Note: try_parse_url is a Comet-internal DataFusion function name used when serializing
 -- parse_url with failOnError=false. It is not a registered Spark SQL function and cannot

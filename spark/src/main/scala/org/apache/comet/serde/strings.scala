@@ -383,9 +383,7 @@ object CometStringSplit extends CometExpressionSerde[StringSplit] {
   }
 }
 
-object CometParseUrl
-    extends CometExpressionSerde[ParseUrl]
-    with CometInvokeExpressionSerde {
+object CometParseUrl extends CometExpressionSerde[ParseUrl] with CometInvokeExpressionSerde {
 
   // In Spark 4.0, ParseUrl became RuntimeReplaceable and the analyser rewrites it to
   // Invoke(ParseUrlEvaluator.evaluate, url, part[, key]).  The first child is a

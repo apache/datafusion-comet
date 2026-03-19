@@ -50,8 +50,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
   // evaluator object embedded in the first Literal(_, ObjectType(...)) child of the Invoke node.
   // To support a new RuntimeReplaceable expression rewritten to Invoke in Spark 4.0, implement
   // CometInvokeExpressionSerde and add the object here.
-  private val invokeSerdeByTargetClassName
-      : Map[String, CometInvokeExpressionSerde] =
+  private val invokeSerdeByTargetClassName: Map[String, CometInvokeExpressionSerde] =
     Seq(CometParseUrl).map(s => s.invokeTargetClassName -> s).toMap
 
   // Extracts the target object class name from an Invoke-like expression.
@@ -661,9 +660,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
           // `UnaryExpression` includes `PromotePrecision` for Spark 3.3
           // `PromotePrecision` is just a wrapper, don't need to serialize it.
           exprToProtoInternal(child, inputs, binding)
-
-        case expr if expr.prettyName == "parse_url" =>
-          CometParseUrl.convertExpression(expr, inputs, binding)
 
         case expr if expr.prettyName == "invoke" =>
           convertInvokeExpression(expr, inputs, binding)
