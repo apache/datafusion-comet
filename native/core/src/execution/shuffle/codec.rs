@@ -17,11 +17,11 @@
 
 use crate::errors::{CometError, CometResult};
 use arrow::array::{make_array, Array, ArrayRef, RecordBatch};
-use arrow::record_batch::RecordBatchOptions;
 use arrow::buffer::Buffer;
 use arrow::compute::cast;
 use arrow::datatypes::DataType;
 use arrow::datatypes::Schema;
+use arrow::record_batch::RecordBatchOptions;
 use bytes::Buf;
 use crc32fast::Hasher;
 use datafusion::common::DataFusionError;
@@ -318,10 +318,8 @@ fn read_raw_batch(bytes: &[u8], schema: &Schema) -> Result<RecordBatch> {
         columns.push(make_array(array_data));
     }
 
-    let options =
-        RecordBatchOptions::new().with_row_count(Some(num_rows));
-    let batch =
-        RecordBatch::try_new_with_options(Arc::new(schema.clone()), columns, &options)?;
+    let options = RecordBatchOptions::new().with_row_count(Some(num_rows));
+    let batch = RecordBatch::try_new_with_options(Arc::new(schema.clone()), columns, &options)?;
     Ok(batch)
 }
 
