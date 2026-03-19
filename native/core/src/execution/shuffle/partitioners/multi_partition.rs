@@ -285,7 +285,7 @@ impl MultiPartitionShuffleRepartitioner {
 
                 self.scatter_batch(
                     &input,
-                    &scratch.partition_ids[..num_rows],
+                    &scratch.partition_row_indices[..num_rows],
                     &scratch.partition_starts,
                 )?;
                 self.scratch = scratch;
@@ -333,7 +333,7 @@ impl MultiPartitionShuffleRepartitioner {
 
                 self.scatter_batch(
                     &input,
-                    &scratch.partition_ids[..num_rows],
+                    &scratch.partition_row_indices[..num_rows],
                     &scratch.partition_starts,
                 )?;
                 self.scratch = scratch;
@@ -388,7 +388,7 @@ impl MultiPartitionShuffleRepartitioner {
 
                 self.scatter_batch(
                     &input,
-                    &scratch.partition_ids[..num_rows],
+                    &scratch.partition_row_indices[..num_rows],
                     &scratch.partition_starts,
                 )?;
                 self.scratch = scratch;
@@ -407,16 +407,17 @@ impl MultiPartitionShuffleRepartitioner {
     fn scatter_batch(
         &mut self,
         input: &RecordBatch,
-        partition_ids: &[u32],
+        partition_row_indices: &[u32],
         partition_starts: &[u32],
     ) -> datafusion::common::Result<()> {
-        let num_rows = input.num_rows();
         let num_partitions = self.partition_buffers.len();
 
         // Track memory before scatter
         let mem_before: usize = self.partition_buffers.iter().map(|b| b.memory_size()).sum();
 
-        // Column-oriented scatter: process one column at a time across all rows
+        // Column-oriented scatter: for each column, iterate by partition then by
+        // rows within that partition. This keeps writes to the same partition buffer
+        // sequential for better cache locality.
         for (col_idx, column) in input.columns().iter().enumerate() {
             // Determine scatter path from first partition's column type
             // (all partitions have the same column types)
@@ -446,55 +447,90 @@ impl MultiPartitionShuffleRepartitioner {
                 };
                 let data = column.to_data();
                 let values = data.buffers()[0].as_slice();
-                for (row, &p_id) in partition_ids.iter().enumerate().take(num_rows) {
-                    let p = p_id as usize;
-                    let src_offset = row * byte_width;
-                    self.partition_buffers[p].columns[col_idx]
-                        .append_fixed(&values[src_offset..src_offset + byte_width]);
-                    let is_valid = nulls.is_none_or(|n| n.is_valid(row));
-                    self.partition_buffers[p].columns[col_idx].append_null_bit(is_valid);
+                for p in 0..num_partitions {
+                    let start = partition_starts[p] as usize;
+                    let end = partition_starts[p + 1] as usize;
+                    if start == end {
+                        continue;
+                    }
+                    let row_indices = &partition_row_indices[start..end];
+                    for &row_idx in row_indices {
+                        let row = row_idx as usize;
+                        let src_offset = row * byte_width;
+                        let is_valid = nulls.is_none_or(|n| n.is_valid(row));
+                        self.partition_buffers[p]
+                            .append_fixed(col_idx, &values[src_offset..src_offset + byte_width], is_valid);
+                    }
                 }
             } else if is_variable {
                 let data = column.to_data();
                 let offsets_slice = data.buffers()[0].typed_data::<i32>();
                 let values_slice = data.buffers()[1].as_slice();
-                for (row, &p_id) in partition_ids.iter().enumerate().take(num_rows) {
-                    let p = p_id as usize;
-                    let start = offsets_slice[row] as usize;
-                    let end = offsets_slice[row + 1] as usize;
-                    self.partition_buffers[p].columns[col_idx]
-                        .append_variable(&values_slice[start..end]);
-                    let is_valid = nulls.is_none_or(|n| n.is_valid(row));
-                    self.partition_buffers[p].columns[col_idx].append_null_bit(is_valid);
+                for p in 0..num_partitions {
+                    let start = partition_starts[p] as usize;
+                    let end = partition_starts[p + 1] as usize;
+                    if start == end {
+                        continue;
+                    }
+                    let row_indices = &partition_row_indices[start..end];
+                    for &row_idx in row_indices {
+                        let row = row_idx as usize;
+                        let val_start = offsets_slice[row] as usize;
+                        let val_end = offsets_slice[row + 1] as usize;
+                        let is_valid = nulls.is_none_or(|n| n.is_valid(row));
+                        self.partition_buffers[p]
+                            .append_variable(col_idx, &values_slice[val_start..val_end], is_valid);
+                    }
                 }
             } else if is_large_variable {
                 let data = column.to_data();
                 let offsets_slice = data.buffers()[0].typed_data::<i64>();
                 let values_slice = data.buffers()[1].as_slice();
-                for (row, &p_id) in partition_ids.iter().enumerate().take(num_rows) {
-                    let p = p_id as usize;
-                    let start = offsets_slice[row] as usize;
-                    let end = offsets_slice[row + 1] as usize;
-                    self.partition_buffers[p].columns[col_idx]
-                        .append_large_variable(&values_slice[start..end]);
-                    let is_valid = nulls.is_none_or(|n| n.is_valid(row));
-                    self.partition_buffers[p].columns[col_idx].append_null_bit(is_valid);
+                for p in 0..num_partitions {
+                    let start = partition_starts[p] as usize;
+                    let end = partition_starts[p + 1] as usize;
+                    if start == end {
+                        continue;
+                    }
+                    let row_indices = &partition_row_indices[start..end];
+                    for &row_idx in row_indices {
+                        let row = row_idx as usize;
+                        let val_start = offsets_slice[row] as usize;
+                        let val_end = offsets_slice[row + 1] as usize;
+                        let is_valid = nulls.is_none_or(|n| n.is_valid(row));
+                        self.partition_buffers[p]
+                            .append_large_variable(col_idx, &values_slice[val_start..val_end], is_valid);
+                    }
                 }
             } else if is_boolean {
                 let bool_array = column.as_any().downcast_ref::<BooleanArray>().unwrap();
-                for (row, &p_id) in partition_ids.iter().enumerate().take(num_rows) {
-                    let p = p_id as usize;
-                    self.partition_buffers[p].columns[col_idx]
-                        .append_bool(bool_array.value(row));
-                    let is_valid = nulls.is_none_or(|n| n.is_valid(row));
-                    self.partition_buffers[p].columns[col_idx].append_null_bit(is_valid);
+                for p in 0..num_partitions {
+                    let start = partition_starts[p] as usize;
+                    let end = partition_starts[p + 1] as usize;
+                    if start == end {
+                        continue;
+                    }
+                    let row_indices = &partition_row_indices[start..end];
+                    for &row_idx in row_indices {
+                        let row = row_idx as usize;
+                        let is_valid = nulls.is_none_or(|n| n.is_valid(row));
+                        self.partition_buffers[p]
+                            .append_bool(col_idx, bool_array.value(row), is_valid);
+                    }
                 }
             } else {
                 // Fallback
-                for (row, &p_id) in partition_ids.iter().enumerate().take(num_rows) {
-                    let p = p_id as usize;
-                    self.partition_buffers[p].columns[col_idx]
-                        .append_fallback_index(row as u32);
+                for p in 0..num_partitions {
+                    let start = partition_starts[p] as usize;
+                    let end = partition_starts[p + 1] as usize;
+                    if start == end {
+                        continue;
+                    }
+                    let row_indices = &partition_row_indices[start..end];
+                    for &row_idx in row_indices {
+                        self.partition_buffers[p]
+                            .append_fallback_index(col_idx, row_idx);
+                    }
                 }
             }
         }

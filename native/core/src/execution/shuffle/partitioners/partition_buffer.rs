@@ -213,6 +213,30 @@ impl PartitionBuffer {
         }
     }
 
+    pub(crate) fn append_fixed(&mut self, col_idx: usize, bytes: &[u8], is_valid: bool) {
+        self.columns[col_idx].append_fixed(bytes);
+        self.columns[col_idx].append_null_bit(is_valid);
+    }
+
+    pub(crate) fn append_variable(&mut self, col_idx: usize, bytes: &[u8], is_valid: bool) {
+        self.columns[col_idx].append_variable(bytes);
+        self.columns[col_idx].append_null_bit(is_valid);
+    }
+
+    pub(crate) fn append_large_variable(&mut self, col_idx: usize, bytes: &[u8], is_valid: bool) {
+        self.columns[col_idx].append_large_variable(bytes);
+        self.columns[col_idx].append_null_bit(is_valid);
+    }
+
+    pub(crate) fn append_bool(&mut self, col_idx: usize, value: bool, is_valid: bool) {
+        self.columns[col_idx].append_bool(value);
+        self.columns[col_idx].append_null_bit(is_valid);
+    }
+
+    pub(crate) fn append_fallback_index(&mut self, col_idx: usize, idx: u32) {
+        self.columns[col_idx].append_fallback_index(idx);
+    }
+
     pub(crate) fn row_count(&self) -> usize {
         self.row_count
     }
