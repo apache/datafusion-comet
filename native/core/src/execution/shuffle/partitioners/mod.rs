@@ -16,6 +16,7 @@
 // under the License.
 
 mod multi_partition;
+pub(super) mod partition_buffer;
 mod partitioned_batch_iterator;
 mod single_partition;
 
