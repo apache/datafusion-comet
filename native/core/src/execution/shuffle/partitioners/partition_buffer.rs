@@ -122,22 +122,16 @@ impl ColumnBuffer {
                 data,
                 nulls,
             } => {
-                offsets.capacity() * std::mem::size_of::<i32>()
-                    + data.capacity()
-                    + nulls.capacity()
+                offsets.capacity() * std::mem::size_of::<i32>() + data.capacity() + nulls.capacity()
             }
             ColumnBuffer::LargeVariable {
                 offsets,
                 data,
                 nulls,
             } => {
-                offsets.capacity() * std::mem::size_of::<i64>()
-                    + data.capacity()
-                    + nulls.capacity()
+                offsets.capacity() * std::mem::size_of::<i64>() + data.capacity() + nulls.capacity()
             }
-            ColumnBuffer::Fallback { indices } => {
-                indices.capacity() * std::mem::size_of::<u32>()
-            }
+            ColumnBuffer::Fallback { indices } => indices.capacity() * std::mem::size_of::<u32>(),
         }
     }
 }
@@ -297,18 +291,13 @@ impl PartitionBuffer {
         for (col_idx, col) in self.columns.iter_mut().enumerate() {
             let data_type = self.schema.field(col_idx).data_type().clone();
             let array: ArrayRef = match col {
-                ColumnBuffer::Fixed {
-                    values,
-                    nulls,
-                    ..
-                } => {
-                    let buffer =
-                        Buffer::from(std::mem::replace(values, MutableBuffer::new(0)));
-                    let mut builder =
-                        ArrayData::builder(data_type).len(row_count).add_buffer(buffer);
+                ColumnBuffer::Fixed { values, nulls, .. } => {
+                    let buffer = Buffer::from(std::mem::replace(values, MutableBuffer::new(0)));
+                    let mut builder = ArrayData::builder(data_type)
+                        .len(row_count)
+                        .add_buffer(buffer);
                     if !nulls.is_empty() {
-                        builder = builder
-                            .null_bit_buffer(Some(nulls.finish().into_inner()));
+                        builder = builder.null_bit_buffer(Some(nulls.finish().into_inner()));
                     }
                     let data = builder.build()?;
                     make_array(data)
@@ -318,11 +307,10 @@ impl PartitionBuffer {
                     data,
                     nulls,
                 } => {
-                    let offsets_buffer =
-                        OffsetBuffer::new(ScalarBuffer::from(std::mem::replace(
-                            offsets,
-                            vec![0i32],
-                        )));
+                    let offsets_buffer = OffsetBuffer::new(ScalarBuffer::from(std::mem::replace(
+                        offsets,
+                        vec![0i32],
+                    )));
                     let values_buffer = Buffer::from(std::mem::take(data));
                     let null_buffer = if !nulls.is_empty() {
                         Some(NullBuffer::new(nulls.finish()))
@@ -330,16 +318,14 @@ impl PartitionBuffer {
                         None
                     };
                     match &data_type {
-                        DataType::Utf8 => Arc::new(StringArray::new(
-                            offsets_buffer,
-                            values_buffer,
-                            null_buffer,
-                        )) as ArrayRef,
-                        DataType::Binary => Arc::new(BinaryArray::new(
-                            offsets_buffer,
-                            values_buffer,
-                            null_buffer,
-                        )) as ArrayRef,
+                        DataType::Utf8 => {
+                            Arc::new(StringArray::new(offsets_buffer, values_buffer, null_buffer))
+                                as ArrayRef
+                        }
+                        DataType::Binary => {
+                            Arc::new(BinaryArray::new(offsets_buffer, values_buffer, null_buffer))
+                                as ArrayRef
+                        }
                         _ => unreachable!("Variable buffer with unexpected data type"),
                     }
                 }
@@ -348,11 +334,10 @@ impl PartitionBuffer {
                     data,
                     nulls,
                 } => {
-                    let offsets_buffer =
-                        OffsetBuffer::new(ScalarBuffer::from(std::mem::replace(
-                            offsets,
-                            vec![0i64],
-                        )));
+                    let offsets_buffer = OffsetBuffer::new(ScalarBuffer::from(std::mem::replace(
+                        offsets,
+                        vec![0i64],
+                    )));
                     let values_buffer = Buffer::from(std::mem::take(data));
                     let null_buffer = if !nulls.is_empty() {
                         Some(NullBuffer::new(nulls.finish()))
@@ -383,8 +368,8 @@ impl PartitionBuffer {
                     Arc::new(BooleanArray::new(values_buf, null_buffer)) as ArrayRef
                 }
                 ColumnBuffer::Fallback { indices } => {
-                    let fallback = fallback_batch
-                        .expect("fallback_batch required for Fallback columns");
+                    let fallback =
+                        fallback_batch.expect("fallback_batch required for Fallback columns");
                     let idx_array = UInt32Array::from(std::mem::take(indices));
                     take(fallback.column(col_idx), &idx_array, None)?
                 }
