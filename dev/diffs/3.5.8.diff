@@ -76,7 +76,8 @@ index 27ae10b3d59..78e69902dfd 100644
      val extensionConfClassNames = sparkContext.getConf.get(StaticSQLConf.SPARK_SESSION_EXTENSIONS)
        .getOrElse(Seq.empty)
 +    val extensionClassNames = extensionConfClassNames ++ loadCometExtension(sparkContext)
-     extensionConfClassNames.foreach { extensionConfClassName =>
+-    extensionConfClassNames.foreach { extensionConfClassName =>
++    extensionClassNames.foreach { extensionConfClassName =>
        try {
          val extensionConfClass = Utils.classForName(extensionConfClassName)
 @@ -1396,4 +1405,12 @@ object SparkSession extends Logging {
@@ -3271,7 +3272,38 @@ index f3be79f9022..b4b1ea8dbc4 100644
 +    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3312")) {
  
      withTempDir { tempDir =>
- 
+
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala
+index 8b4ac474..3f79f208 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala
+@@ -223,6 +223,8 @@ class SparkSessionExtensionSuite extends SparkFunSuite with SQLHelper with Adapt
+     withSession(extensions) { session =>
+       session.conf.set(SQLConf.ADAPTIVE_EXECUTION_ENABLED, true)
+       session.conf.set(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key, "-1")
++      // https://github.com/apache/datafusion-comet/issues/1197
++      session.conf.set("spark.comet.enabled", false)
+       assert(session.sessionState.columnarRules.contains(
+         MyColumnarRule(PreRuleReplaceAddWithBrokenVersion(), MyPostRule())))
+       import session.sqlContext.implicits._
+@@ -281,6 +283,8 @@ class SparkSessionExtensionSuite extends SparkFunSuite with SQLHelper with Adapt
+     }
+     withSession(extensions) { session =>
+       session.conf.set(SQLConf.ADAPTIVE_EXECUTION_ENABLED, enableAQE)
++      // https://github.com/apache/datafusion-comet/issues/1197
++      session.conf.set("spark.comet.enabled", false)
+       assert(session.sessionState.columnarRules.contains(
+         MyColumnarRule(PreRuleReplaceAddWithBrokenVersion(), MyPostRule())))
+       import session.sqlContext.implicits._
+@@ -319,6 +323,8 @@ class SparkSessionExtensionSuite extends SparkFunSuite with SQLHelper with Adapt
+     val session = SparkSession.builder()
+       .master("local[1]")
+       .config(COLUMN_BATCH_SIZE.key, 2)
++      // https://github.com/apache/datafusion-comet/issues/1197
++      .config("spark.comet.enabled", false)
+       .withExtensions { extensions =>
+         extensions.injectColumnar(session =>
+           MyColumnarRule(PreRuleReplaceAddWithBrokenVersion(), MyPostRule())) }
 diff --git a/sql/hive/src/test/scala/org/apache/spark/sql/hive/execution/SQLQuerySuite.scala b/sql/hive/src/test/scala/org/apache/spark/sql/hive/execution/SQLQuerySuite.scala
 index 6160c3e5f6c..0956d7d9edc 100644
 --- a/sql/hive/src/test/scala/org/apache/spark/sql/hive/execution/SQLQuerySuite.scala
