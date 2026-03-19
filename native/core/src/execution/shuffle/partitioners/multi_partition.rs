@@ -439,6 +439,8 @@ impl MultiPartitionShuffleRepartitioner {
         partition_iter: &mut PartitionedBatchIterator,
         shuffle_block_writer: &mut ShuffleBlockWriter,
         output_data: &mut BufWriter<File>,
+        gather_time: &Time,
+        coalesce_time: &Time,
         encode_time: &Time,
         write_time: &Time,
         write_buffer_size: usize,
@@ -450,11 +452,20 @@ impl MultiPartitionShuffleRepartitioner {
             write_buffer_size,
             batch_size,
         );
-        for batch in partition_iter {
-            let batch = batch?;
-            buf_batch_writer.write(&batch, encode_time, write_time)?;
+        loop {
+            let gather_start = Instant::now();
+            let maybe_batch = partition_iter.next();
+            gather_time.add_duration(gather_start.elapsed());
+
+            match maybe_batch {
+                Some(batch) => {
+                    let batch = batch?;
+                    buf_batch_writer.write(&batch, coalesce_time, encode_time, write_time)?;
+                }
+                None => break,
+            }
         }
-        buf_batch_writer.flush(encode_time, write_time)?;
+        buf_batch_writer.flush(coalesce_time, encode_time, write_time)?;
         Ok(())
     }
 
@@ -595,6 +606,8 @@ impl ShufflePartitioner for MultiPartitionShuffleRepartitioner {
                     &mut partition_iter,
                     &mut self.shuffle_block_writer,
                     &mut output_data,
+                    &self.metrics.gather_time,
+                    &self.metrics.coalesce_time,
                     &self.metrics.encode_time,
                     &self.metrics.write_time,
                     self.write_buffer_size,

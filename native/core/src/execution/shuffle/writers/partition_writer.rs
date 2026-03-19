@@ -23,6 +23,7 @@ use datafusion::common::DataFusionError;
 use datafusion::execution::disk_manager::RefCountedTempFile;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use std::fs::{File, OpenOptions};
+use tokio::time::Instant;
 
 struct SpillFile {
     temp_file: RefCountedTempFile,
@@ -81,7 +82,11 @@ impl PartitionWriter {
         write_buffer_size: usize,
         batch_size: usize,
     ) -> datafusion::common::Result<usize> {
-        if let Some(batch) = iter.next() {
+        let gather_start = Instant::now();
+        let first = iter.next();
+        metrics.gather_time.add_duration(gather_start.elapsed());
+
+        if let Some(batch) = first {
             self.ensure_spill_file_created(runtime)?;
 
             let total_bytes_written = {
@@ -91,17 +96,33 @@ impl PartitionWriter {
                     write_buffer_size,
                     batch_size,
                 );
-                let mut bytes_written =
-                    buf_batch_writer.write(&batch?, &metrics.encode_time, &metrics.write_time)?;
-                for batch in iter {
-                    let batch = batch?;
-                    bytes_written += buf_batch_writer.write(
-                        &batch,
-                        &metrics.encode_time,
-                        &metrics.write_time,
-                    )?;
+                let mut bytes_written = buf_batch_writer.write(
+                    &batch?,
+                    &metrics.coalesce_time,
+                    &metrics.encode_time,
+                    &metrics.write_time,
+                )?;
+                loop {
+                    let gather_start = Instant::now();
+                    let maybe_batch = iter.next();
+                    metrics.gather_time.add_duration(gather_start.elapsed());
+                    match maybe_batch {
+                        Some(batch) => {
+                            bytes_written += buf_batch_writer.write(
+                                &batch?,
+                                &metrics.coalesce_time,
+                                &metrics.encode_time,
+                                &metrics.write_time,
+                            )?;
+                        }
+                        None => break,
+                    }
                 }
-                buf_batch_writer.flush(&metrics.encode_time, &metrics.write_time)?;
+                buf_batch_writer.flush(
+                    &metrics.coalesce_time,
+                    &metrics.encode_time,
+                    &metrics.write_time,
+                )?;
                 bytes_written
             };
 

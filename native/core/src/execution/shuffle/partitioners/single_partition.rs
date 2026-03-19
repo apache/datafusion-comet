@@ -125,6 +125,7 @@ impl ShufflePartitioner for SinglePartitionShufflePartitioner {
                 if let Some(batch) = concatenated_batch {
                     self.output_data_writer.write(
                         &batch,
+                        &self.metrics.coalesce_time,
                         &self.metrics.encode_time,
                         &self.metrics.write_time,
                     )?;
@@ -134,6 +135,7 @@ impl ShufflePartitioner for SinglePartitionShufflePartitioner {
                     // Write the new batch
                     self.output_data_writer.write(
                         &batch,
+                        &self.metrics.coalesce_time,
                         &self.metrics.encode_time,
                         &self.metrics.write_time,
                     )?;
@@ -162,12 +164,16 @@ impl ShufflePartitioner for SinglePartitionShufflePartitioner {
         if let Some(batch) = concatenated_batch {
             self.output_data_writer.write(
                 &batch,
+                &self.metrics.coalesce_time,
                 &self.metrics.encode_time,
                 &self.metrics.write_time,
             )?;
         }
-        self.output_data_writer
-            .flush(&self.metrics.encode_time, &self.metrics.write_time)?;
+        self.output_data_writer.flush(
+            &self.metrics.coalesce_time,
+            &self.metrics.encode_time,
+            &self.metrics.write_time,
+        )?;
 
         // Write index file. It should only contain 2 entries: 0 and the total number of bytes written
         let index_file = OpenOptions::new()
