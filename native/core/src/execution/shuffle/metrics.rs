@@ -26,6 +26,9 @@ pub(super) struct ShufflePartitionerMetrics {
     /// Time to perform repartitioning
     pub(super) repart_time: Time,
 
+    /// Time scattering values to per-partition buffers
+    pub(super) scatter_time: Time,
+
     /// Time encoding batches to IPC format
     pub(super) encode_time: Time,
 
@@ -50,6 +53,7 @@ impl ShufflePartitionerMetrics {
         Self {
             baseline: BaselineMetrics::new(metrics, partition),
             repart_time: MetricBuilder::new(metrics).subset_time("repart_time", partition),
+            scatter_time: MetricBuilder::new(metrics).subset_time("scatter_time", partition),
             encode_time: MetricBuilder::new(metrics).subset_time("encode_time", partition),
             write_time: MetricBuilder::new(metrics).subset_time("write_time", partition),
             input_batches: MetricBuilder::new(metrics).counter("input_batches", partition),

@@ -415,6 +415,8 @@ impl MultiPartitionShuffleRepartitioner {
         // Track memory before scatter
         let mem_before: usize = self.partition_buffers.iter().map(|b| b.memory_size()).sum();
 
+        let scatter_start = Instant::now();
+
         // Column-oriented scatter: for each column, iterate by partition then by
         // rows within that partition. This keeps writes to the same partition buffer
         // sequential for better cache locality.
@@ -534,6 +536,8 @@ impl MultiPartitionShuffleRepartitioner {
                 }
             }
         }
+
+        self.metrics.scatter_time.add_duration(scatter_start.elapsed());
 
         // Update row counts from partition_starts (O(num_partitions), not O(num_rows))
         for p in 0..num_partitions {
