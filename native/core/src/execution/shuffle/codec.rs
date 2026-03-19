@@ -16,17 +16,18 @@
 // under the License.
 
 use crate::errors::{CometError, CometResult};
-use arrow::array::RecordBatch;
-use arrow::datatypes::Schema;
-use arrow::ipc::reader::StreamReader;
-use arrow::ipc::writer::StreamWriter;
+use arrow::array::{make_array, Array, ArrayRef, RecordBatch};
+use arrow::buffer::Buffer;
+use arrow::compute::cast;
+use arrow::datatypes::{DataType, Schema};
 use bytes::Buf;
 use crc32fast::Hasher;
 use datafusion::common::DataFusionError;
 use datafusion::error::Result;
 use datafusion::physical_plan::metrics::Time;
 use simd_adler32::Adler32;
-use std::io::{Cursor, Seek, SeekFrom, Write};
+use std::io::{Cursor, Read, Seek, SeekFrom, Write};
+use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub enum CompressionCodec {
@@ -40,6 +41,73 @@ pub enum CompressionCodec {
 pub struct ShuffleBlockWriter {
     codec: CompressionCodec,
     header_bytes: Vec<u8>,
+}
+
+/// Recursively writes raw Arrow ArrayData buffers to the given writer.
+fn write_array_data<W: Write>(data: &arrow::array::ArrayData, writer: &mut W) -> Result<()> {
+    debug_assert_eq!(data.offset(), 0, "shuffle arrays must have offset 0");
+
+    // Write null_count
+    let null_count = data.null_count() as u32;
+    writer.write_all(&null_count.to_le_bytes())?;
+
+    // Write validity bitmap
+    if null_count > 0 {
+        if let Some(bitmap) = data.nulls() {
+            let bitmap_bytes = bitmap.buffer().as_slice();
+            let len = bitmap_bytes.len() as u32;
+            writer.write_all(&len.to_le_bytes())?;
+            writer.write_all(bitmap_bytes)?;
+        } else {
+            writer.write_all(&0u32.to_le_bytes())?;
+        }
+    } else {
+        writer.write_all(&0u32.to_le_bytes())?;
+    }
+
+    // Write buffers
+    let num_buffers = data.buffers().len() as u32;
+    writer.write_all(&num_buffers.to_le_bytes())?;
+    for buffer in data.buffers() {
+        let len: u32 = buffer.len().try_into().map_err(|_| {
+            DataFusionError::Execution(format!(
+                "Buffer length {} exceeds u32::MAX",
+                buffer.len()
+            ))
+        })?;
+        writer.write_all(&len.to_le_bytes())?;
+        writer.write_all(buffer.as_slice())?;
+    }
+
+    // Write children
+    let num_children = data.child_data().len() as u32;
+    writer.write_all(&num_children.to_le_bytes())?;
+    for child in data.child_data() {
+        let child_num_rows = child.len() as u32;
+        writer.write_all(&child_num_rows.to_le_bytes())?;
+        write_array_data(child, writer)?;
+    }
+
+    Ok(())
+}
+
+/// Writes a RecordBatch in raw buffer format. Dictionary arrays are cast to their value type.
+fn write_raw_batch<W: Write>(batch: &RecordBatch, writer: &mut W) -> Result<()> {
+    let num_rows = batch.num_rows() as u32;
+    writer.write_all(&num_rows.to_le_bytes())?;
+
+    for col in batch.columns() {
+        // Cast dictionary arrays to their value type
+        let col = match col.data_type() {
+            DataType::Dictionary(_, value_type) => {
+                cast(col.as_ref(), value_type.as_ref())?
+            }
+            _ => Arc::clone(col),
+        };
+        write_array_data(&col.to_data(), writer)?;
+    }
+
+    Ok(())
 }
 
 impl ShuffleBlockWriter {
@@ -71,7 +139,7 @@ impl ShuffleBlockWriter {
         })
     }
 
-    /// Writes given record batch as Arrow IPC bytes into given writer.
+    /// Writes given record batch in raw buffer format into given writer.
     /// Returns number of bytes written.
     pub fn write_batch<W: Write + Seek>(
         &self,
@@ -91,55 +159,46 @@ impl ShuffleBlockWriter {
 
         let output = match &self.codec {
             CompressionCodec::None => {
-                let mut arrow_writer = StreamWriter::try_new(output, &batch.schema())?;
-                arrow_writer.write(batch)?;
-                arrow_writer.finish()?;
-                arrow_writer.into_inner()?
+                write_raw_batch(batch, output)?;
+                output
             }
             CompressionCodec::Lz4Frame => {
                 let mut wtr = lz4_flex::frame::FrameEncoder::new(output);
-                let mut arrow_writer = StreamWriter::try_new(&mut wtr, &batch.schema())?;
-                arrow_writer.write(batch)?;
-                arrow_writer.finish()?;
+                write_raw_batch(batch, &mut wtr)?;
                 wtr.finish().map_err(|e| {
                     DataFusionError::Execution(format!("lz4 compression error: {e}"))
                 })?
             }
 
             CompressionCodec::Zstd(level) => {
-                let encoder = zstd::Encoder::new(output, *level)?;
-                let mut arrow_writer = StreamWriter::try_new(encoder, &batch.schema())?;
-                arrow_writer.write(batch)?;
-                arrow_writer.finish()?;
-                let zstd_encoder = arrow_writer.into_inner()?;
-                zstd_encoder.finish()?
+                let mut encoder = zstd::Encoder::new(output, *level)?;
+                write_raw_batch(batch, &mut encoder)?;
+                encoder.finish()?
             }
 
             CompressionCodec::Snappy => {
                 let mut wtr = snap::write::FrameEncoder::new(output);
-                let mut arrow_writer = StreamWriter::try_new(&mut wtr, &batch.schema())?;
-                arrow_writer.write(batch)?;
-                arrow_writer.finish()?;
+                write_raw_batch(batch, &mut wtr)?;
                 wtr.into_inner().map_err(|e| {
                     DataFusionError::Execution(format!("snappy compression error: {e}"))
                 })?
             }
         };
 
-        // fill ipc length
+        // fill block length
         let end_pos = output.stream_position()?;
-        let ipc_length = end_pos - start_pos - 8;
+        let block_length = end_pos - start_pos - 8;
         let max_size = i32::MAX as u64;
-        if ipc_length > max_size {
+        if block_length > max_size {
             return Err(DataFusionError::Execution(format!(
-                "Shuffle block size {ipc_length} exceeds maximum size of {max_size}. \
+                "Shuffle block size {block_length} exceeds maximum size of {max_size}. \
                 Try reducing batch size or increasing compression level"
             )));
         }
 
-        // fill ipc length
+        // fill block length
         output.seek(SeekFrom::Start(start_pos))?;
-        output.write_all(&ipc_length.to_le_bytes())?;
+        output.write_all(&block_length.to_le_bytes())?;
         output.seek(SeekFrom::Start(end_pos))?;
 
         timer.stop();
@@ -148,7 +207,135 @@ impl ShuffleBlockWriter {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Read-side helpers
+// ---------------------------------------------------------------------------
+
+fn read_u32(cursor: &mut &[u8]) -> Result<u32> {
+    if cursor.len() < 4 {
+        return Err(DataFusionError::Execution(
+            "unexpected end of shuffle block data".to_string(),
+        ));
+    }
+    let (bytes, rest) = cursor.split_at(4);
+    *cursor = rest;
+    Ok(u32::from_le_bytes(bytes.try_into().unwrap()))
+}
+
+fn read_bytes<'a>(cursor: &mut &'a [u8], len: usize) -> Result<&'a [u8]> {
+    if cursor.len() < len {
+        return Err(DataFusionError::Execution(
+            "unexpected end of shuffle block data".to_string(),
+        ));
+    }
+    let (bytes, rest) = cursor.split_at(len);
+    *cursor = rest;
+    Ok(bytes)
+}
+
+/// Returns child data types for nested Arrow types.
+fn get_child_types(data_type: &DataType) -> Vec<DataType> {
+    match data_type {
+        DataType::List(field)
+        | DataType::LargeList(field)
+        | DataType::FixedSizeList(field, _) => {
+            vec![field.data_type().clone()]
+        }
+        DataType::Map(field, _) => {
+            // Map's single child is a struct with key/value fields
+            vec![field.data_type().clone()]
+        }
+        DataType::Struct(fields) => fields.iter().map(|f| f.data_type().clone()).collect(),
+        _ => vec![],
+    }
+}
+
+/// Reconstructs ArrayData from raw buffer format (reverse of write_array_data).
+fn read_array_data(
+    cursor: &mut &[u8],
+    data_type: &DataType,
+    num_rows: usize,
+) -> Result<arrow::array::ArrayData> {
+    let null_count = read_u32(cursor)? as usize;
+
+    // Read validity bitmap
+    let bitmap_len = read_u32(cursor)? as usize;
+    let null_buffer = if bitmap_len > 0 {
+        let bytes = read_bytes(cursor, bitmap_len)?;
+        Some(Buffer::from(bytes))
+    } else {
+        None
+    };
+
+    // Read buffers
+    let num_buffers = read_u32(cursor)? as usize;
+    let mut buffers = Vec::with_capacity(num_buffers);
+    for _ in 0..num_buffers {
+        let buf_len = read_u32(cursor)? as usize;
+        let bytes = read_bytes(cursor, buf_len)?;
+        buffers.push(Buffer::from(bytes));
+    }
+
+    // Read children
+    let num_children = read_u32(cursor)? as usize;
+    let child_types = get_child_types(data_type);
+    let mut child_data = Vec::with_capacity(num_children);
+    for i in 0..num_children {
+        let child_num_rows = read_u32(cursor)? as usize;
+        let child_type = child_types.get(i).ok_or_else(|| {
+            DataFusionError::Execution(format!(
+                "unexpected child index {i} for data type {data_type:?}"
+            ))
+        })?;
+        child_data.push(read_array_data(cursor, child_type, child_num_rows)?);
+    }
+
+    // Build ArrayData without validation (data came from our own writer)
+    let mut builder = arrow::array::ArrayData::builder(data_type.clone())
+        .len(num_rows)
+        .null_count(null_count);
+
+    if let Some(nb) = null_buffer {
+        builder = builder.null_bit_buffer(Some(nb));
+    }
+
+    for buf in buffers {
+        builder = builder.add_buffer(buf);
+    }
+
+    for child in child_data {
+        builder = builder.add_child_data(child);
+    }
+
+    // SAFETY: data was written by write_array_data from valid Arrow arrays
+    Ok(unsafe { builder.build_unchecked() })
+}
+
+/// Read a raw batch from decompressed bytes, given the expected schema.
+fn read_raw_batch(bytes: &[u8], schema: &Schema) -> Result<RecordBatch> {
+    let mut cursor = bytes;
+
+    let num_rows = read_u32(&mut cursor)? as usize;
+
+    let mut columns: Vec<ArrayRef> = Vec::with_capacity(schema.fields().len());
+    for field in schema.fields() {
+        let array_data = read_array_data(&mut cursor, field.data_type(), num_rows)?;
+        columns.push(make_array(array_data));
+    }
+
+    let batch = RecordBatch::try_new(Arc::new(schema.clone()), columns)?;
+    Ok(batch)
+}
+
+/// Reads and decompresses a shuffle block. The `bytes` slice starts at the codec tag
+/// (after the 8-byte length and 8-byte field_count header that the JVM reads).
+///
+/// This is kept temporarily for backward compatibility while callers are migrated.
 pub fn read_ipc_compressed(bytes: &[u8]) -> Result<RecordBatch> {
+    // NOTE: This function cannot work with the new raw format because it needs a schema.
+    // It is kept as a stub that delegates to the old IPC path for backward compatibility.
+    // Callers should migrate to read_shuffle_block().
+    use arrow::ipc::reader::StreamReader;
     match &bytes[0..4] {
         b"SNAP" => {
             let decoder = snap::read::FrameDecoder::new(&bytes[4..]);
@@ -177,6 +364,40 @@ pub fn read_ipc_compressed(bytes: &[u8]) -> Result<RecordBatch> {
             "Failed to decode batch: invalid compression codec: {other:?}"
         ))),
     }
+}
+
+/// Reads and decompresses a shuffle block written in raw buffer format.
+/// The `bytes` slice starts at the codec tag (after the 8-byte length and
+/// 8-byte field_count header that the JVM reads).
+pub fn read_shuffle_block(bytes: &[u8], schema: &Schema) -> Result<RecordBatch> {
+    match &bytes[0..4] {
+        b"SNAP" => {
+            let decoder = snap::read::FrameDecoder::new(&bytes[4..]);
+            let decompressed = read_all(decoder)?;
+            read_raw_batch(&decompressed, schema)
+        }
+        b"LZ4_" => {
+            let decoder = lz4_flex::frame::FrameDecoder::new(&bytes[4..]);
+            let decompressed = read_all(decoder)?;
+            read_raw_batch(&decompressed, schema)
+        }
+        b"ZSTD" => {
+            let decoder = zstd::Decoder::new(&bytes[4..])?;
+            let decompressed = read_all(decoder)?;
+            read_raw_batch(&decompressed, schema)
+        }
+        b"NONE" => read_raw_batch(&bytes[4..], schema),
+        other => Err(DataFusionError::Execution(format!(
+            "Failed to decode batch: invalid compression codec: {other:?}"
+        ))),
+    }
+}
+
+/// Read all bytes from a reader into a Vec.
+fn read_all<R: Read>(mut reader: R) -> Result<Vec<u8>> {
+    let mut buf = Vec::new();
+    reader.read_to_end(&mut buf)?;
+    Ok(buf)
 }
 
 /// Checksum algorithms for writing IPC bytes.
@@ -235,5 +456,89 @@ impl Checksum {
             Checksum::CRC32(hasher) => hasher.finalize(),
             Checksum::Adler32(hasher) => hasher.finish(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::array::{Float64Array, Int32Array};
+    use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::record_batch::RecordBatch;
+    use datafusion::physical_plan::metrics::Time;
+    use std::io::Cursor;
+    use std::sync::Arc;
+
+    fn make_test_batch() -> (Arc<Schema>, RecordBatch) {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::Int32, true),
+            Field::new("b", DataType::Float64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(Int32Array::from(vec![Some(1), None, Some(3)])),
+                Arc::new(Float64Array::from(vec![1.0, 2.0, 3.0])),
+            ],
+        )
+        .unwrap();
+        (schema, batch)
+    }
+
+    fn roundtrip(codec: CompressionCodec) {
+        let (schema, batch) = make_test_batch();
+        let writer = ShuffleBlockWriter::try_new(&schema, codec).unwrap();
+        let mut buf = Cursor::new(Vec::new());
+        let ipc_time = Time::new();
+        writer.write_batch(&batch, &mut buf, &ipc_time).unwrap();
+
+        let bytes = buf.into_inner();
+        // Skip 16-byte header: 8 compressed_length + 8 field_count
+        let body = &bytes[16..];
+
+        let decoded = read_shuffle_block(body, &schema).unwrap();
+        assert_eq!(decoded.num_rows(), 3);
+        assert_eq!(decoded.num_columns(), 2);
+
+        // Verify Int32 column (nullable)
+        let col0 = decoded
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+        assert_eq!(col0.value(0), 1);
+        assert!(col0.is_null(1));
+        assert_eq!(col0.value(2), 3);
+
+        // Verify Float64 column (non-nullable)
+        let col1 = decoded
+            .column(1)
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .unwrap();
+        assert_eq!(col1.value(0), 1.0);
+        assert_eq!(col1.value(1), 2.0);
+        assert_eq!(col1.value(2), 3.0);
+    }
+
+    #[test]
+    fn test_raw_roundtrip_primitives_none() {
+        roundtrip(CompressionCodec::None);
+    }
+
+    #[test]
+    fn test_raw_roundtrip_primitives_lz4() {
+        roundtrip(CompressionCodec::Lz4Frame);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_raw_roundtrip_primitives_zstd() {
+        roundtrip(CompressionCodec::Zstd(1));
+    }
+
+    #[test]
+    fn test_raw_roundtrip_primitives_snappy() {
+        roundtrip(CompressionCodec::Snappy);
     }
 }

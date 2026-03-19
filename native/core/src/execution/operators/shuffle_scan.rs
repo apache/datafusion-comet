@@ -351,11 +351,11 @@ mod tests {
     use std::io::Cursor;
     use std::sync::Arc;
 
-    use crate::execution::shuffle::codec::read_ipc_compressed;
+    use crate::execution::shuffle::codec::read_shuffle_block;
 
     #[test]
     #[cfg_attr(miri, ignore)] // Miri cannot call FFI functions (zstd)
-    fn test_read_compressed_ipc_block() {
+    fn test_read_compressed_block() {
         let schema = Arc::new(Schema::new(vec![
             Field::new("id", DataType::Int32, false),
             Field::new("name", DataType::Utf8, true),
@@ -369,7 +369,7 @@ mod tests {
         )
         .unwrap();
 
-        // Write as compressed IPC
+        // Write as compressed raw batch
         let writer =
             ShuffleBlockWriter::try_new(&batch.schema(), CompressionCodec::Zstd(1)).unwrap();
         let mut buf = Cursor::new(Vec::new());
@@ -380,7 +380,7 @@ mod tests {
         let bytes = buf.into_inner();
         let body = &bytes[16..];
 
-        let decoded = read_ipc_compressed(body).unwrap();
+        let decoded = read_shuffle_block(body, &schema).unwrap();
         assert_eq!(decoded.num_rows(), 3);
         assert_eq!(decoded.num_columns(), 2);
 
