@@ -16,9 +16,9 @@
 // under the License.
 
 use crate::errors::{CometError, CometResult};
-use arrow::array::{make_array, Array, ArrayRef, RecordBatch};
+use arrow::array::{make_array, Array, ArrayRef, RecordBatch, UInt32Array};
 use arrow::buffer::Buffer;
-use arrow::compute::cast;
+use arrow::compute::{cast, take};
 use arrow::datatypes::DataType;
 use arrow::datatypes::Schema;
 use arrow::record_batch::RecordBatchOptions;
@@ -46,10 +46,7 @@ pub struct ShuffleBlockWriter {
 }
 
 /// Recursively writes raw Arrow ArrayData buffers to the given writer.
-///
-/// The null buffer may have a non-zero bit offset (e.g. from `RecordBatch::slice`),
-/// even when `data.offset() == 0`. We emit a zero-offset copy of the bitmap so
-/// the reader can consume it without tracking offsets.
+/// Arrays must be normalized to zero offset before calling this function.
 fn write_array_data<W: Write>(data: &arrow::array::ArrayData, writer: &mut W) -> Result<()> {
     debug_assert_eq!(data.offset(), 0, "shuffle arrays must have offset 0");
 
@@ -57,28 +54,14 @@ fn write_array_data<W: Write>(data: &arrow::array::ArrayData, writer: &mut W) ->
     let null_count = data.null_count() as u32;
     writer.write_all(&null_count.to_le_bytes())?;
 
-    // Write validity bitmap (always emitted at bit-offset 0)
+    // Write validity bitmap
     if null_count > 0 {
         if let Some(bitmap) = data.nulls() {
-            if bitmap.offset() == 0 {
-                // Fast path: bitmap is already aligned, write raw bytes
-                let bitmap_bytes = bitmap.buffer().as_slice();
-                let len = bitmap_bytes.len() as u32;
-                writer.write_all(&len.to_le_bytes())?;
-                writer.write_all(bitmap_bytes)?;
-            } else {
-                // Bitmap has a non-zero bit offset — produce a zero-offset copy
-                let num_bits = bitmap.len();
-                let num_bytes = num_bits.div_ceil(8);
-                writer.write_all(&(num_bytes as u32).to_le_bytes())?;
-                let mut buf = vec![0u8; num_bytes];
-                for i in 0..num_bits {
-                    if bitmap.is_valid(i) {
-                        buf[i / 8] |= 1 << (i % 8);
-                    }
-                }
-                writer.write_all(&buf)?;
-            }
+            debug_assert_eq!(bitmap.offset(), 0, "null bitmap must have offset 0");
+            let bitmap_bytes = bitmap.buffer().as_slice();
+            let len = bitmap_bytes.len() as u32;
+            writer.write_all(&len.to_le_bytes())?;
+            writer.write_all(bitmap_bytes)?;
         } else {
             writer.write_all(&0u32.to_le_bytes())?;
         }
@@ -109,17 +92,33 @@ fn write_array_data<W: Write>(data: &arrow::array::ArrayData, writer: &mut W) ->
     Ok(())
 }
 
+/// Ensures an array has zero offset in both its data and null buffer by
+/// producing a physical copy when necessary. This is required because our
+/// raw buffer format writes buffers verbatim and assumes offset 0.
+fn normalize_array(col: &ArrayRef) -> Result<ArrayRef> {
+    // Cast dictionary arrays to their value type
+    let col = match col.data_type() {
+        DataType::Dictionary(_, value_type) => cast(col.as_ref(), value_type.as_ref())?,
+        _ => Arc::clone(col),
+    };
+
+    let needs_copy = col.offset() != 0 || col.nulls().is_some_and(|nulls| nulls.offset() != 0);
+    if needs_copy {
+        let indices = UInt32Array::from_iter_values(0..col.len() as u32);
+        Ok(take(col.as_ref(), &indices, None)?)
+    } else {
+        Ok(col)
+    }
+}
+
 /// Writes a RecordBatch in raw buffer format. Dictionary arrays are cast to their value type.
+/// Arrays with non-zero offsets (e.g. from slicing) are copied to ensure offset 0.
 fn write_raw_batch<W: Write>(batch: &RecordBatch, writer: &mut W) -> Result<()> {
     let num_rows = batch.num_rows() as u32;
     writer.write_all(&num_rows.to_le_bytes())?;
 
     for col in batch.columns() {
-        // Cast dictionary arrays to their value type
-        let col = match col.data_type() {
-            DataType::Dictionary(_, value_type) => cast(col.as_ref(), value_type.as_ref())?,
-            _ => Arc::clone(col),
-        };
+        let col = normalize_array(col)?;
         write_array_data(&col.to_data(), writer)?;
     }
 
