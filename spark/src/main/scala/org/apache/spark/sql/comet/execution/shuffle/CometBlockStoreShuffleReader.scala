@@ -36,6 +36,8 @@ import org.apache.spark.storage.ShuffleBlockFetcherIterator
 import org.apache.spark.util.CompletionIterator
 
 import org.apache.comet.{CometConf, Native}
+import org.apache.comet.serde.OperatorOuterClass
+import org.apache.comet.serde.QueryPlanSerde.serializeDataType
 import org.apache.comet.vector.NativeUtil
 
 /**
@@ -86,6 +88,17 @@ class CometBlockStoreShuffleReader[K, C](
       fetchContinuousBlocksInBatch).toCompletionIterator
   }
 
+  /** Serialize the output schema as a ShuffleScan protobuf message. */
+  private lazy val schemaBytes: Array[Byte] = {
+    import scala.jdk.CollectionConverters._
+    val scanBuilder = OperatorOuterClass.ShuffleScan.newBuilder()
+    val scanTypes = dep.outputAttributes.flatMap { attr =>
+      serializeDataType(attr.dataType)
+    }
+    scanBuilder.addAllFields(scanTypes.asJava)
+    scanBuilder.build().toByteArray
+  }
+
   /** Read the combined key-values for this reduce task */
   override def read(): Iterator[Product2[K, C]] = {
     var currentReadIterator: NativeBatchDecoderIterator = null
@@ -114,6 +127,7 @@ class CometBlockStoreShuffleReader[K, C](
           dep.decodeTime,
           nativeLib,
           nativeUtil,
+          schemaBytes,
           tracingEnabled)
         currentReadIterator
       })

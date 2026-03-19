@@ -28,7 +28,7 @@ use crate::{
 };
 use arrow::array::{Array, RecordBatch, UInt32Array};
 use arrow::compute::{take, TakeOptions};
-use arrow::datatypes::DataType as ArrowDataType;
+use arrow::datatypes::{DataType as ArrowDataType, Field, Schema};
 use datafusion::common::{DataFusionError, Result as DataFusionResult, ScalarValue};
 use datafusion::execution::disk_manager::DiskManagerMode;
 use datafusion::execution::memory_pool::MemoryPool;
@@ -39,7 +39,8 @@ use datafusion::{
     physical_plan::{display::DisplayableExecutionPlan, SendableRecordBatchStream},
     prelude::{SessionConfig, SessionContext},
 };
-use datafusion_comet_proto::spark_operator::Operator;
+use datafusion_comet_proto::spark_operator::{self, Operator};
+use prost::Message;
 use datafusion_spark::function::bitwise::bit_count::SparkBitCount;
 use datafusion_spark::function::bitwise::bit_get::SparkBitGet;
 use datafusion_spark::function::bitwise::bitwise_not::SparkBitwiseNot;
@@ -83,7 +84,7 @@ use crate::execution::memory_pools::{
     create_memory_pool, handle_task_shared_pool_release, parse_memory_pool_config, MemoryPoolConfig,
 };
 use crate::execution::operators::{ScanExec, ShuffleScanExec};
-use crate::execution::shuffle::codec::read_ipc_compressed;
+use crate::execution::shuffle::read_shuffle_block;
 use crate::execution::shuffle::CompressionCodec;
 use crate::execution::spark_plan::SparkPlan;
 
@@ -887,14 +888,29 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlock(
     length: jint,
     array_addrs: JLongArray,
     schema_addrs: JLongArray,
+    schema_bytes: JByteArray,
     tracing_enabled: jboolean,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| {
+        // Parse the schema from protobuf bytes
+        let schema_vec = env.convert_byte_array(&schema_bytes)?;
+        let shuffle_scan =
+            spark_operator::ShuffleScan::decode(schema_vec.as_slice()).map_err(|e| {
+                CometError::Internal(format!("Failed to parse shuffle schema: {e}"))
+            })?;
+        let fields: Vec<Field> = shuffle_scan
+            .fields
+            .iter()
+            .enumerate()
+            .map(|(i, dt)| Field::new(format!("c{i}"), to_arrow_datatype(dt), true))
+            .collect();
+        let schema = Schema::new(fields);
+
         with_trace("decodeShuffleBlock", tracing_enabled != JNI_FALSE, || {
             let raw_pointer = env.get_direct_buffer_address(&byte_buffer)?;
             let length = length as usize;
             let slice: &[u8] = unsafe { std::slice::from_raw_parts(raw_pointer, length) };
-            let batch = read_ipc_compressed(slice)?;
+            let batch = read_shuffle_block(slice, &schema)?;
             prepare_output(&mut env, array_addrs, schema_addrs, batch, false)
         })
     })

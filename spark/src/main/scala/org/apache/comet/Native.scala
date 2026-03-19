@@ -177,6 +177,7 @@ class Native extends NativeBase {
       length: Int,
       arrayAddrs: Array[Long],
       schemaAddrs: Array[Long],
+      schemaBytes: Array[Byte],
       tracingEnabled: Boolean): Long
 
   /**

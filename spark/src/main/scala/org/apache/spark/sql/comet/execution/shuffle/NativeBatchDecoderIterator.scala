@@ -39,6 +39,7 @@ case class NativeBatchDecoderIterator(
     decodeTime: SQLMetric,
     nativeLib: Native,
     nativeUtil: NativeUtil,
+    schemaBytes: Array[Byte],
     tracingEnabled: Boolean)
     extends Iterator[ColumnarBatch] {
 
@@ -160,6 +161,7 @@ case class NativeBatchDecoderIterator(
           bytesToRead.toInt,
           arrayAddrs,
           schemaAddrs,
+          schemaBytes,
           tracingEnabled)
       })
     decodeTime.add(System.nanoTime() - startTime)

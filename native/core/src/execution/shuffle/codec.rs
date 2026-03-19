@@ -328,45 +328,6 @@ fn read_raw_batch(bytes: &[u8], schema: &Schema) -> Result<RecordBatch> {
     Ok(batch)
 }
 
-/// Reads and decompresses a shuffle block. The `bytes` slice starts at the codec tag
-/// (after the 8-byte length and 8-byte field_count header that the JVM reads).
-///
-/// This is kept temporarily for backward compatibility while callers are migrated.
-pub fn read_ipc_compressed(bytes: &[u8]) -> Result<RecordBatch> {
-    // NOTE: This function cannot work with the new raw format because it needs a schema.
-    // It is kept as a stub that delegates to the old IPC path for backward compatibility.
-    // Callers should migrate to read_shuffle_block().
-    use arrow::ipc::reader::StreamReader;
-    match &bytes[0..4] {
-        b"SNAP" => {
-            let decoder = snap::read::FrameDecoder::new(&bytes[4..]);
-            let mut reader =
-                unsafe { StreamReader::try_new(decoder, None)?.with_skip_validation(true) };
-            reader.next().unwrap().map_err(|e| e.into())
-        }
-        b"LZ4_" => {
-            let decoder = lz4_flex::frame::FrameDecoder::new(&bytes[4..]);
-            let mut reader =
-                unsafe { StreamReader::try_new(decoder, None)?.with_skip_validation(true) };
-            reader.next().unwrap().map_err(|e| e.into())
-        }
-        b"ZSTD" => {
-            let decoder = zstd::Decoder::new(&bytes[4..])?;
-            let mut reader =
-                unsafe { StreamReader::try_new(decoder, None)?.with_skip_validation(true) };
-            reader.next().unwrap().map_err(|e| e.into())
-        }
-        b"NONE" => {
-            let mut reader =
-                unsafe { StreamReader::try_new(&bytes[4..], None)?.with_skip_validation(true) };
-            reader.next().unwrap().map_err(|e| e.into())
-        }
-        other => Err(DataFusionError::Execution(format!(
-            "Failed to decode batch: invalid compression codec: {other:?}"
-        ))),
-    }
-}
-
 /// Reads and decompresses a shuffle block written in raw buffer format.
 /// The `bytes` slice starts at the codec tag (after the 8-byte length and
 /// 8-byte field_count header that the JVM reads).
