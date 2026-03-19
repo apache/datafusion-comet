@@ -435,6 +435,7 @@ impl MultiPartitionShuffleRepartitioner {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn shuffle_write_partition(
         partition_iter: &mut PartitionedBatchIterator,
         shuffle_block_writer: &mut ShuffleBlockWriter,
