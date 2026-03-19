@@ -19,15 +19,18 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{AesDecrypt, Attribute, Expression}
+import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
 
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProtoWithReturnType}
 
-private object CometAesDecryptHelper {
-  def convertToAesDecryptExpr[T <: Expression](
-      expr: T,
+// AesDecrypt extends RuntimeReplaceable in Spark, so by the time Comet's serde runs it has
+// already been replaced with a StaticInvoke. This handler is registered in CometStaticInvoke's
+// staticInvokeExpressions map under the ("aesDecrypt", ExpressionImplUtils) key.
+object CometAesDecryptStaticInvoke extends CometExpressionSerde[StaticInvoke] {
+  override def convert(
+      expr: StaticInvoke,
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
     val childExpr = expr.children.map(exprToProtoInternal(_, inputs, binding))
@@ -37,23 +40,5 @@ private object CometAesDecryptHelper {
       failOnError = false,
       childExpr: _*)
     optExprWithInfo(optExpr, expr, expr.children: _*)
-  }
-}
-
-object CometAesDecrypt extends CometExpressionSerde[AesDecrypt] {
-  override def convert(
-      expr: AesDecrypt,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[Expr] = {
-    CometAesDecryptHelper.convertToAesDecryptExpr(expr, inputs, binding)
-  }
-}
-
-object CometAesDecryptStaticInvoke extends CometExpressionSerde[StaticInvoke] {
-  override def convert(
-      expr: StaticInvoke,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[Expr] = {
-    CometAesDecryptHelper.convertToAesDecryptExpr(expr, inputs, binding)
   }
 }
