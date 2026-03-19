@@ -265,7 +265,7 @@ async fn external_shuffle(
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::execution::shuffle::{read_ipc_compressed, ShuffleBlockWriter};
+    use crate::execution::shuffle::{read_shuffle_block, ShuffleBlockWriter};
     use arrow::array::{Array, StringArray, StringBuilder};
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatch;
@@ -285,8 +285,9 @@ mod test {
 
     #[test]
     #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
-    fn roundtrip_ipc() {
+    fn roundtrip_raw() {
         let batch = create_batch(8192);
+        let schema = batch.schema();
         for codec in &[
             CompressionCodec::None,
             CompressionCodec::Zstd(1),
@@ -296,14 +297,14 @@ mod test {
             let mut output = vec![];
             let mut cursor = Cursor::new(&mut output);
             let writer =
-                ShuffleBlockWriter::try_new(batch.schema().as_ref(), codec.clone()).unwrap();
+                ShuffleBlockWriter::try_new(schema.as_ref(), codec.clone()).unwrap();
             let length = writer
                 .write_batch(&batch, &mut cursor, &Time::default())
                 .unwrap();
             assert_eq!(length, output.len());
 
-            let ipc_without_length_prefix = &output[16..];
-            let batch2 = read_ipc_compressed(ipc_without_length_prefix).unwrap();
+            let block_without_length_prefix = &output[16..];
+            let batch2 = read_shuffle_block(block_without_length_prefix, &schema).unwrap();
             assert_eq!(batch, batch2);
         }
     }
@@ -651,7 +652,7 @@ mod test {
             buf_writer.flush(&encode_time, &write_time).unwrap();
         }
 
-        // Coalesced output should be smaller due to fewer IPC schema blocks
+        // Coalesced output should be smaller due to fewer block headers
         assert!(
             coalesced_output.len() < uncoalesced_output.len(),
             "Coalesced output ({} bytes) should be smaller than uncoalesced ({} bytes)",
@@ -659,9 +660,9 @@ mod test {
             uncoalesced_output.len()
         );
 
-        // Verify both roundtrip correctly by reading all IPC blocks
-        let coalesced_rows = read_all_ipc_blocks(&coalesced_output);
-        let uncoalesced_rows = read_all_ipc_blocks(&uncoalesced_output);
+        // Verify both roundtrip correctly by reading all shuffle blocks
+        let coalesced_rows = read_all_shuffle_blocks(&coalesced_output, &schema);
+        let uncoalesced_rows = read_all_shuffle_blocks(&uncoalesced_output, &schema);
         assert_eq!(
             coalesced_rows, 5000,
             "Coalesced should contain all 5000 rows"
@@ -672,22 +673,22 @@ mod test {
         );
     }
 
-    /// Read all IPC blocks from a byte buffer written by BufBatchWriter/ShuffleBlockWriter,
+    /// Read all shuffle blocks from a byte buffer written by BufBatchWriter/ShuffleBlockWriter,
     /// returning the total number of rows.
-    fn read_all_ipc_blocks(data: &[u8]) -> usize {
+    fn read_all_shuffle_blocks(data: &[u8], schema: &Schema) -> usize {
         let mut offset = 0;
         let mut total_rows = 0;
         while offset < data.len() {
-            // First 8 bytes are the IPC length (little-endian u64)
-            let ipc_length =
+            // First 8 bytes are the block length (little-endian u64)
+            let block_length =
                 u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap()) as usize;
             // Skip the 8-byte length prefix; the next 8 bytes are field_count + codec header
             let block_start = offset + 8;
-            let block_end = block_start + ipc_length;
-            // read_ipc_compressed expects data starting after the 16-byte header
+            let block_end = block_start + block_length;
+            // read_shuffle_block expects data starting after the 16-byte header
             // (i.e., after length + field_count), at the codec tag
-            let ipc_data = &data[block_start + 8..block_end];
-            let batch = read_ipc_compressed(ipc_data).unwrap();
+            let block_data = &data[block_start + 8..block_end];
+            let batch = read_shuffle_block(block_data, schema).unwrap();
             total_rows += batch.num_rows();
             offset = block_end;
         }

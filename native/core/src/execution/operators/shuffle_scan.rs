@@ -19,7 +19,7 @@ use crate::{
     errors::CometError,
     execution::{
         operators::ExecutionError, planner::TEST_EXEC_CONTEXT_ID,
-        shuffle::codec::read_ipc_compressed,
+        shuffle::codec::read_shuffle_block,
     },
     jvm_bridge::{jni_call, JVMClasses},
 };
@@ -48,7 +48,7 @@ use super::scan::InputBatch;
 
 /// ShuffleScanExec reads compressed shuffle blocks from JVM via JNI and decodes them natively.
 /// Unlike ScanExec which receives Arrow arrays via FFI, ShuffleScanExec receives raw compressed
-/// bytes from CometShuffleBlockIterator and decodes them using read_ipc_compressed().
+/// bytes from CometShuffleBlockIterator and decodes them using read_shuffle_block().
 #[derive(Debug, Clone)]
 pub struct ShuffleScanExec {
     /// The ID of the execution context that owns this subquery.
@@ -124,6 +124,7 @@ impl ShuffleScanExec {
                 self.input_source.as_ref().unwrap().as_obj(),
                 &self.data_types,
                 &self.decode_time,
+                &self.schema,
             )?;
             *current_batch = Some(next_batch);
         }
@@ -139,6 +140,7 @@ impl ShuffleScanExec {
         iter: &JObject,
         data_types: &[DataType],
         decode_time: &Time,
+        schema: &Schema,
     ) -> Result<InputBatch, CometError> {
         if exec_context_id == TEST_EXEC_CONTEXT_ID {
             return Ok(InputBatch::EOF);
@@ -173,15 +175,13 @@ impl ShuffleScanExec {
         let length = block_length as usize;
         let slice: &[u8] = unsafe { std::slice::from_raw_parts(raw_pointer, length) };
 
-        // Decode the compressed IPC data
+        // Decode the compressed shuffle block
         let mut timer = decode_time.timer();
-        let batch = read_ipc_compressed(slice)?;
+        let batch = read_shuffle_block(slice, schema)?;
         timer.stop();
 
         let num_rows = batch.num_rows();
 
-        // The read_ipc_compressed already produces owned arrays, so we skip the
-        // header (field count + codec) that was already consumed by read_ipc_compressed.
         // Extract column arrays from the RecordBatch.
         let columns: Vec<ArrayRef> = batch.columns().to_vec();
 
