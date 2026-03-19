@@ -354,6 +354,7 @@ mod tests {
     use crate::execution::shuffle::codec::read_ipc_compressed;
 
     #[test]
+    #[cfg_attr(miri, ignore)] // Miri cannot call FFI functions (zstd)
     fn test_read_compressed_ipc_block() {
         let schema = Arc::new(Schema::new(vec![
             Field::new("id", DataType::Int32, false),
