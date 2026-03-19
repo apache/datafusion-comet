@@ -18,7 +18,6 @@
 use crate::errors::{CometError, CometResult};
 use arrow::array::{make_array, Array, ArrayRef, MutableArrayData, RecordBatch};
 use arrow::buffer::Buffer;
-use arrow::compute::cast;
 use arrow::datatypes::DataType;
 use arrow::datatypes::Schema;
 use arrow::record_batch::RecordBatchOptions;
@@ -96,12 +95,6 @@ fn write_array_data<W: Write>(data: &arrow::array::ArrayData, writer: &mut W) ->
 /// producing a physical copy when necessary. This is required because our
 /// raw buffer format writes buffers verbatim and assumes offset 0.
 fn normalize_array(col: &ArrayRef) -> Result<ArrayRef> {
-    // Cast dictionary arrays to their value type
-    let col = match col.data_type() {
-        DataType::Dictionary(_, value_type) => cast(col.as_ref(), value_type.as_ref())?,
-        _ => Arc::clone(col),
-    };
-
     let needs_copy = col.offset() != 0 || col.nulls().is_some_and(|nulls| nulls.offset() != 0);
     if needs_copy {
         // Use MutableArrayData::extend for a direct memcpy rather than
@@ -111,18 +104,66 @@ fn normalize_array(col: &ArrayRef) -> Result<ArrayRef> {
         mutable.extend(0, 0, col.len());
         Ok(make_array(mutable.freeze()))
     } else {
-        Ok(col)
+        Ok(Arc::clone(col))
     }
 }
 
-/// Writes a RecordBatch in raw buffer format. Dictionary arrays are cast to their value type.
-/// Arrays with non-zero offsets (e.g. from slicing) are copied to ensure offset 0.
+// Column encoding tags for the raw shuffle format.
+const COL_TAG_PLAIN: u8 = 0;
+const COL_TAG_DICTIONARY: u8 = 1;
+
+/// Encode a dictionary key DataType as a single byte.
+fn encode_key_type(dt: &DataType) -> Result<u8> {
+    match dt {
+        DataType::Int8 => Ok(0),
+        DataType::Int16 => Ok(1),
+        DataType::Int32 => Ok(2),
+        DataType::Int64 => Ok(3),
+        DataType::UInt8 => Ok(4),
+        DataType::UInt16 => Ok(5),
+        DataType::UInt32 => Ok(6),
+        DataType::UInt64 => Ok(7),
+        _ => Err(DataFusionError::Execution(format!(
+            "unsupported dictionary key type: {dt:?}"
+        ))),
+    }
+}
+
+/// Decode a dictionary key DataType from the byte written by encode_key_type.
+fn decode_key_type(tag: u8) -> Result<DataType> {
+    match tag {
+        0 => Ok(DataType::Int8),
+        1 => Ok(DataType::Int16),
+        2 => Ok(DataType::Int32),
+        3 => Ok(DataType::Int64),
+        4 => Ok(DataType::UInt8),
+        5 => Ok(DataType::UInt16),
+        6 => Ok(DataType::UInt32),
+        7 => Ok(DataType::UInt64),
+        _ => Err(DataFusionError::Execution(format!(
+            "unknown dictionary key type tag: {tag}"
+        ))),
+    }
+}
+
+/// Writes a RecordBatch in raw buffer format. Dictionary arrays are preserved
+/// (not cast to value type) so they compress better. Each column is prefixed
+/// with a tag byte indicating plain (0) or dictionary (1) encoding.
 fn write_raw_batch<W: Write>(batch: &RecordBatch, writer: &mut W) -> Result<()> {
     let num_rows = batch.num_rows() as u32;
     writer.write_all(&num_rows.to_le_bytes())?;
 
     for col in batch.columns() {
         let col = normalize_array(col)?;
+        match col.data_type() {
+            DataType::Dictionary(key_type, _) => {
+                writer.write_all(&[COL_TAG_DICTIONARY])?;
+                writer.write_all(&[encode_key_type(key_type)?])?;
+            }
+            _ => {
+                writer.write_all(&[COL_TAG_PLAIN])?;
+            }
+        }
         write_array_data(&col.to_data(), writer)?;
     }
 
@@ -263,6 +304,7 @@ fn get_child_types(data_type: &DataType) -> Vec<DataType> {
             vec![field.data_type().clone()]
         }
         DataType::Struct(fields) => fields.iter().map(|f| f.data_type().clone()).collect(),
+        DataType::Dictionary(_, value_type) => vec![value_type.as_ref().clone()],
         _ => vec![],
     }
 }
@@ -329,19 +371,45 @@ fn read_array_data(
 }
 
 /// Read a raw batch from decompressed bytes, given the expected schema.
+/// Columns that were written as dictionary-encoded are reconstructed as
+/// DictionaryArray. The returned batch schema may differ from the input
+/// schema (Dictionary vs plain types) — callers that need plain types
+/// should cast dictionary columns afterward.
 fn read_raw_batch(bytes: &[u8], schema: &Arc<Schema>) -> Result<RecordBatch> {
     let mut cursor = bytes;
 
     let num_rows = read_u32(&mut cursor)? as usize;
 
     let mut columns: Vec<ArrayRef> = Vec::with_capacity(schema.fields().len());
+    let mut fields: Vec<arrow::datatypes::FieldRef> = Vec::with_capacity(schema.fields().len());
     for field in schema.fields() {
-        let array_data = read_array_data(&mut cursor, field.data_type(), num_rows)?;
+        // Read per-column tag
+        let tag = read_bytes(&mut cursor, 1)?[0];
+        let data_type = match tag {
+            COL_TAG_PLAIN => field.data_type().clone(),
+            COL_TAG_DICTIONARY => {
+                let key_tag = read_bytes(&mut cursor, 1)?[0];
+                let key_type = decode_key_type(key_tag)?;
+                DataType::Dictionary(Box::new(key_type), Box::new(field.data_type().clone()))
+            }
+            _ => {
+                return Err(DataFusionError::Execution(format!(
+                    "unknown column tag: {tag}"
+                )));
+            }
+        };
+        let array_data = read_array_data(&mut cursor, &data_type, num_rows)?;
         columns.push(make_array(array_data));
+        fields.push(Arc::new(arrow::datatypes::Field::new(
+            field.name(),
+            data_type,
+            field.is_nullable(),
+        )));
     }
 
+    let actual_schema = Arc::new(Schema::new(fields));
     let options = RecordBatchOptions::new().with_row_count(Some(num_rows));
-    let batch = RecordBatch::try_new_with_options(Arc::clone(schema), columns, &options)?;
+    let batch = RecordBatch::try_new_with_options(actual_schema, columns, &options)?;
     Ok(batch)
 }
 
@@ -735,8 +803,8 @@ mod tests {
 
     #[test]
     #[cfg_attr(miri, ignore)]
-    fn test_roundtrip_dictionary_cast() {
-        // Dictionary<Int32, Utf8> should be cast to plain Utf8 on write
+    fn test_roundtrip_dictionary_preserved() {
+        // Dictionary<Int32, Utf8> should be preserved through write/read
         let dict_schema = Arc::new(Schema::new(vec![Field::new(
             "d",
             DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8)),
@@ -750,7 +818,8 @@ mod tests {
         let batch =
             RecordBatch::try_new(Arc::clone(&dict_schema), vec![Arc::new(dict_arr)]).unwrap();
 
-        // The writer casts dict to plain string, so the read schema must be Utf8
+        // The read schema uses the value type (Utf8) since that's what Spark knows about.
+        // The reader reconstructs a Dictionary type from the per-column tag.
         let read_schema = Arc::new(Schema::new(vec![Field::new("d", DataType::Utf8, true)]));
 
         let codecs = vec![
@@ -771,16 +840,19 @@ mod tests {
             let decoded = read_shuffle_block(body, &read_schema).unwrap();
             assert_eq!(decoded.num_rows(), 4);
 
-            // Result should be a plain StringArray, not a DictionaryArray
+            // Result should be a DictionaryArray (preserved, not cast)
             let col = decoded
                 .column(0)
                 .as_any()
-                .downcast_ref::<StringArray>()
-                .expect("expected plain StringArray after dict cast");
-            assert_eq!(col.value(0), "foo");
-            assert_eq!(col.value(1), "bar");
-            assert!(col.is_null(2));
-            assert_eq!(col.value(3), "foo");
+                .downcast_ref::<DictionaryArray<Int32Type>>()
+                .expect("expected DictionaryArray to be preserved");
+            // Verify values by casting to string for comparison
+            let cast_col = arrow::compute::cast(col, &DataType::Utf8).expect("cast dict to utf8");
+            let str_col = cast_col.as_any().downcast_ref::<StringArray>().unwrap();
+            assert_eq!(str_col.value(0), "foo");
+            assert_eq!(str_col.value(1), "bar");
+            assert!(str_col.is_null(2));
+            assert_eq!(str_col.value(3), "foo");
         }
     }
 

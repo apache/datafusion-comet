@@ -26,7 +26,7 @@ use crate::{
     },
     jvm_bridge::{jni_new_global_ref, JVMClasses},
 };
-use arrow::array::{Array, RecordBatch, UInt32Array};
+use arrow::array::{Array, ArrayRef, RecordBatch, UInt32Array};
 use arrow::compute::{take, TakeOptions};
 use arrow::datatypes::{DataType as ArrowDataType, Field, Schema};
 use datafusion::common::{DataFusionError, Result as DataFusionResult, ScalarValue};
@@ -877,6 +877,42 @@ pub extern "system" fn Java_org_apache_comet_Native_sortRowPartitionsNative(
     })
 }
 
+/// Casts any dictionary-encoded columns in a RecordBatch to their value types.
+/// Used by the JNI decode path where the JVM expects plain Arrow types.
+fn unpack_dictionary_columns(batch: RecordBatch) -> DataFusionResult<RecordBatch> {
+    let mut needs_cast = false;
+    for col in batch.columns() {
+        if matches!(col.data_type(), ArrowDataType::Dictionary(_, _)) {
+            needs_cast = true;
+            break;
+        }
+    }
+    if !needs_cast {
+        return Ok(batch);
+    }
+
+    let mut new_columns: Vec<ArrayRef> = Vec::with_capacity(batch.num_columns());
+    let mut new_fields: Vec<arrow::datatypes::FieldRef> = Vec::with_capacity(batch.num_columns());
+    for (col, field) in batch.columns().iter().zip(batch.schema().fields()) {
+        match col.data_type() {
+            ArrowDataType::Dictionary(_, value_type) => {
+                new_columns.push(arrow::compute::cast(col.as_ref(), value_type)?);
+                new_fields.push(Arc::new(arrow::datatypes::Field::new(
+                    field.name(),
+                    value_type.as_ref().clone(),
+                    field.is_nullable(),
+                )));
+            }
+            _ => {
+                new_columns.push(Arc::clone(col));
+                new_fields.push(Arc::clone(field));
+            }
+        }
+    }
+    let schema = Arc::new(Schema::new(new_fields));
+    Ok(RecordBatch::try_new(schema, new_columns)?)
+}
+
 // Thread-local cache for the parsed shuffle schema. The schema bytes are
 // identical for every call within a given shuffle reader, so we avoid
 // re-parsing protobuf and re-allocating Field/Schema objects on each batch.
@@ -936,6 +972,12 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlock(
             let length = length as usize;
             let slice: &[u8] = unsafe { std::slice::from_raw_parts(raw_pointer, length) };
             let batch = read_shuffle_block(slice, &schema)?;
+
+            // The raw shuffle format may preserve dictionary-encoded columns.
+            // The JVM side expects plain (non-dictionary) types, so cast any
+            // dictionary columns to their value types before FFI export.
+            let batch = unpack_dictionary_columns(batch)?;
+
             prepare_output(&mut env, array_addrs, schema_addrs, batch, false)
         })
     })
