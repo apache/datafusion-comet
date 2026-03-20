@@ -27,9 +27,6 @@ use crate::common::bit::{self, BitReader};
 use arrow::buffer::Buffer;
 use bytes::Buf;
 
-/// Number of bytes to store a decimal value in Arrow value vector
-pub(crate) const DECIMAL_BYTE_WIDTH: usize = 16;
-
 #[derive(Clone, Copy)]
 pub struct ReadOptions {
     // Whether to read legacy dates/timestamps as it is. If false, throw exceptions.
