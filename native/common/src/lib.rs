@@ -17,6 +17,7 @@
 
 mod error;
 mod query_context;
+pub mod tracing;
 mod utils;
 
 pub use error::{decimal_overflow_error, SparkError, SparkErrorWithContext, SparkResult};
