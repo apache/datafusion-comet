@@ -1877,6 +1877,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tikv-jemalloc-ctl",
+ "tikv-jemalloc-sys",
  "tikv-jemallocator",
  "tokio",
  "url",
