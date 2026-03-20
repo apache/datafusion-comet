@@ -228,11 +228,18 @@ object IcebergReflection extends Logging {
           val opsMethod = table.getClass.getDeclaredMethod("operations")
           opsMethod.setAccessible(true)
           val ops = opsMethod.invoke(table)
-          val currentMethod = ops.getClass.getDeclaredMethod("current")
-          currentMethod.setAccessible(true)
-          val metadata = currentMethod.invoke(ops)
-          val formatVersionMethod = metadata.getClass.getMethod("formatVersion")
-          Some(formatVersionMethod.invoke(metadata).asInstanceOf[Int])
+          findMethodInHierarchy(ops.getClass, "current")
+            .flatMap { currentMethod =>
+              val metadata = currentMethod.invoke(ops)
+              val formatVersionMethod = metadata.getClass.getMethod("formatVersion")
+              Some(formatVersionMethod.invoke(metadata).asInstanceOf[Int])
+            }
+            .orElse {
+              logError(
+                s"Iceberg reflection failure: Failed to get format version: " +
+                  "current() method not found in operations class hierarchy")
+              None
+            }
         } catch {
           case e: Exception =>
             logError(s"Iceberg reflection failure: Failed to get format version: ${e.getMessage}")
@@ -327,9 +334,12 @@ object IcebergReflection extends Logging {
       operationsMethod.setAccessible(true)
       val operations = operationsMethod.invoke(table)
 
-      val currentMethod = operations.getClass.getDeclaredMethod("current")
-      currentMethod.setAccessible(true)
-      Some(currentMethod.invoke(operations))
+      findMethodInHierarchy(operations.getClass, "current").map(_.invoke(operations)).orElse {
+        logError(
+          s"Iceberg reflection failure: Failed to get table metadata: " +
+            "current() method not found in operations class hierarchy")
+        None
+      }
     } catch {
       case e: Exception =>
         logError(s"Iceberg reflection failure: Failed to get table metadata: ${e.getMessage}")
