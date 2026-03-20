@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::{Array, ArrayRef, StringArray};
+use arrow::array::{Array, ArrayRef, StringArray, StringBuilder};
 use datafusion::common::{
     cast::as_generic_string_array, exec_err, Result as DataFusionResult, ScalarValue,
 };
@@ -32,8 +32,7 @@ use std::sync::Arc;
 /// - `$` — root element
 /// - `.name` or `['name']` — named child
 /// - `[n]` — array index (0-based)
-/// - `[*]` — array wildcard
-/// - `.*` or `['*']` — object wildcard
+/// - `[*]` — array wildcard (iterates over array elements)
 pub fn spark_get_json_object(args: &[ColumnarValue]) -> DataFusionResult<ColumnarValue> {
     if args.len() != 2 {
         return exec_err!(
@@ -132,8 +131,6 @@ pub fn spark_get_json_object(args: &[ColumnarValue]) -> DataFusionResult<Columna
     }
 }
 
-use arrow::array::StringBuilder;
-
 /// A parsed JSONPath segment.
 #[derive(Debug, Clone)]
 enum PathSegment {
@@ -141,13 +138,19 @@ enum PathSegment {
     Field(String),
     /// Array index: `[n]`
     Index(usize),
-    /// Wildcard: `[*]` or `.*`
+    /// Wildcard: `[*]` (iterates over array elements)
     Wildcard,
+}
+
+/// A parsed JSONPath expression with precomputed metadata.
+struct ParsedPath {
+    segments: Vec<PathSegment>,
+    has_wildcard: bool,
 }
 
 /// Parse a Spark-compatible JSONPath expression.
 /// Returns None for invalid paths.
-fn parse_json_path(path: &str) -> Option<Vec<PathSegment>> {
+fn parse_json_path(path: &str) -> Option<ParsedPath> {
     let mut chars = path.chars().peekable();
 
     // Must start with '$'
@@ -156,6 +159,7 @@ fn parse_json_path(path: &str) -> Option<Vec<PathSegment>> {
     }
 
     let mut segments = Vec::new();
+    let mut has_wildcard = false;
 
     while chars.peek().is_some() {
         match chars.peek()? {
@@ -168,6 +172,7 @@ fn parse_json_path(path: &str) -> Option<Vec<PathSegment>> {
                 if chars.peek() == Some(&'*') {
                     chars.next();
                     segments.push(PathSegment::Wildcard);
+                    has_wildcard = true;
                 } else {
                     // Read field name
                     let mut name = String::new();
@@ -201,6 +206,7 @@ fn parse_json_path(path: &str) -> Option<Vec<PathSegment>> {
                     }
                     if name == "*" {
                         segments.push(PathSegment::Wildcard);
+                        has_wildcard = true;
                     } else {
                         segments.push(PathSegment::Field(name));
                     }
@@ -211,6 +217,7 @@ fn parse_json_path(path: &str) -> Option<Vec<PathSegment>> {
                         return None;
                     }
                     segments.push(PathSegment::Wildcard);
+                    has_wildcard = true;
                 } else {
                     // [n] — numeric index
                     let mut num_str = String::new();
@@ -235,33 +242,36 @@ fn parse_json_path(path: &str) -> Option<Vec<PathSegment>> {
         }
     }
 
-    Some(segments)
+    Some(ParsedPath {
+        segments,
+        has_wildcard,
+    })
 }
 
 /// Evaluate a parsed JSONPath against a JSON string.
 /// Returns the result as a string, or None if no match.
-fn evaluate_path(json_str: &str, path: &[PathSegment]) -> Option<String> {
+fn evaluate_path(json_str: &str, path: &ParsedPath) -> Option<String> {
     let value: Value = serde_json::from_str(json_str).ok()?;
 
-    // Check if path contains any wildcards
-    let has_wildcard = path.iter().any(|s| matches!(s, PathSegment::Wildcard));
+    if !path.has_wildcard {
+        // Fast path: no wildcards, no Vec allocations
+        let result = evaluate_no_wildcard(&value, &path.segments)?;
+        return value_to_string(result);
+    }
 
-    let results = evaluate_segments(&value, path);
+    // Wildcard path: may return multiple results
+    let results = evaluate_with_wildcard(&value, &path.segments);
 
     match results.len() {
         0 => None,
-        1 if !has_wildcard => value_to_string(results[0]),
         1 => {
-            // Single wildcard match: Spark strips outer array brackets from the
-            // JSON representation. For strings this means the quotes are preserved.
-            // We simulate by serializing as a JSON array and stripping the brackets.
-            let arr_str = serde_json::to_string(&Value::Array(vec![results[0].clone()])).ok()?;
-            // Strip leading '[' and trailing ']'
-            let inner = &arr_str[1..arr_str.len() - 1];
-            if inner == "null" {
+            // Single wildcard match: Spark preserves JSON serialization format
+            // (strings keep their quotes, numbers don't)
+            let s = serde_json::to_string(results[0]).ok()?;
+            if s == "null" {
                 None
             } else {
-                Some(inner.to_string())
+                Some(s)
             }
         }
         _ => {
@@ -272,27 +282,46 @@ fn evaluate_path(json_str: &str, path: &[PathSegment]) -> Option<String> {
     }
 }
 
-/// Recursively evaluate path segments against a JSON value.
+/// Fast-path evaluation for paths without wildcards.
+/// Returns a reference to the matched value, or None if no match.
+fn evaluate_no_wildcard<'a>(value: &'a Value, segments: &[PathSegment]) -> Option<&'a Value> {
+    if segments.is_empty() {
+        return Some(value);
+    }
+
+    match &segments[0] {
+        PathSegment::Field(name) => {
+            let child = value.as_object()?.get(name)?;
+            evaluate_no_wildcard(child, &segments[1..])
+        }
+        PathSegment::Index(idx) => {
+            let child = value.as_array()?.get(*idx)?;
+            evaluate_no_wildcard(child, &segments[1..])
+        }
+        PathSegment::Wildcard => unreachable!("wildcard in no-wildcard path"),
+    }
+}
+
+/// Evaluation for paths containing wildcards.
 /// Returns references to all matching values.
-fn evaluate_segments<'a>(value: &'a Value, segments: &[PathSegment]) -> Vec<&'a Value> {
+fn evaluate_with_wildcard<'a>(value: &'a Value, segments: &[PathSegment]) -> Vec<&'a Value> {
     if segments.is_empty() {
         return vec![value];
     }
 
-    let segment = &segments[0];
     let rest = &segments[1..];
 
-    match segment {
+    match &segments[0] {
         PathSegment::Field(name) => match value {
             Value::Object(map) => match map.get(name) {
-                Some(v) => evaluate_segments(v, rest),
+                Some(v) => evaluate_with_wildcard(v, rest),
                 None => vec![],
             },
             _ => vec![],
         },
         PathSegment::Index(idx) => match value {
             Value::Array(arr) => match arr.get(*idx) {
-                Some(v) => evaluate_segments(v, rest),
+                Some(v) => evaluate_with_wildcard(v, rest),
                 None => vec![],
             },
             _ => vec![],
@@ -300,7 +329,7 @@ fn evaluate_segments<'a>(value: &'a Value, segments: &[PathSegment]) -> Vec<&'a 
         PathSegment::Wildcard => match value {
             Value::Array(arr) => arr
                 .iter()
-                .flat_map(|v| evaluate_segments(v, rest))
+                .flat_map(|v| evaluate_with_wildcard(v, rest))
                 .collect(),
             _ => vec![],
         },
@@ -327,26 +356,30 @@ mod tests {
     fn test_parse_json_path() {
         // Root only
         let path = parse_json_path("$").unwrap();
-        assert!(path.is_empty());
+        assert!(path.segments.is_empty());
+        assert!(!path.has_wildcard);
 
         // Simple field
         let path = parse_json_path("$.name").unwrap();
-        assert!(matches!(&path[0], PathSegment::Field(n) if n == "name"));
+        assert!(matches!(&path.segments[0], PathSegment::Field(n) if n == "name"));
+        assert!(!path.has_wildcard);
 
         // Array index
         let path = parse_json_path("$[0]").unwrap();
-        assert!(matches!(&path[0], PathSegment::Index(0)));
+        assert!(matches!(&path.segments[0], PathSegment::Index(0)));
 
         // Bracket notation
         let path = parse_json_path("$['key with spaces']").unwrap();
-        assert!(matches!(&path[0], PathSegment::Field(n) if n == "key with spaces"));
+        assert!(matches!(&path.segments[0], PathSegment::Field(n) if n == "key with spaces"));
 
         // Wildcard
         let path = parse_json_path("$[*]").unwrap();
-        assert!(matches!(&path[0], PathSegment::Wildcard));
+        assert!(matches!(&path.segments[0], PathSegment::Wildcard));
+        assert!(path.has_wildcard);
 
         let path = parse_json_path("$.*").unwrap();
-        assert!(matches!(&path[0], PathSegment::Wildcard));
+        assert!(matches!(&path.segments[0], PathSegment::Wildcard));
+        assert!(path.has_wildcard);
 
         // Recursive descent not supported
         assert!(parse_json_path("$..name").is_none());
@@ -358,18 +391,14 @@ mod tests {
 
     #[test]
     fn test_evaluate_simple_field() {
+        let path = parse_json_path("$.name").unwrap();
         assert_eq!(
-            evaluate_path(
-                r#"{"name":"John","age":30}"#,
-                &parse_json_path("$.name").unwrap()
-            ),
+            evaluate_path(r#"{"name":"John","age":30}"#, &path),
             Some("John".to_string())
         );
+        let path = parse_json_path("$.age").unwrap();
         assert_eq!(
-            evaluate_path(
-                r#"{"name":"John","age":30}"#,
-                &parse_json_path("$.age").unwrap()
-            ),
+            evaluate_path(r#"{"name":"John","age":30}"#, &path),
             Some("30".to_string())
         );
     }
@@ -377,111 +406,89 @@ mod tests {
     #[test]
     fn test_evaluate_nested() {
         let json = r#"{"user":{"profile":{"name":"Alice"}}}"#;
-        assert_eq!(
-            evaluate_path(json, &parse_json_path("$.user.profile.name").unwrap()),
-            Some("Alice".to_string())
-        );
+        let path = parse_json_path("$.user.profile.name").unwrap();
+        assert_eq!(evaluate_path(json, &path), Some("Alice".to_string()));
     }
 
     #[test]
     fn test_evaluate_array_index() {
-        assert_eq!(
-            evaluate_path(r#"[1,2,3]"#, &parse_json_path("$[0]").unwrap()),
-            Some("1".to_string())
-        );
-        assert_eq!(
-            evaluate_path(r#"[1,2,3]"#, &parse_json_path("$[3]").unwrap()),
-            None
-        );
+        let path = parse_json_path("$[0]").unwrap();
+        assert_eq!(evaluate_path(r#"[1,2,3]"#, &path), Some("1".to_string()));
+        let path = parse_json_path("$[3]").unwrap();
+        assert_eq!(evaluate_path(r#"[1,2,3]"#, &path), None);
     }
 
     #[test]
     fn test_evaluate_root() {
+        let path = parse_json_path("$").unwrap();
         assert_eq!(
-            evaluate_path(r#"{"a":"b"}"#, &parse_json_path("$").unwrap()),
+            evaluate_path(r#"{"a":"b"}"#, &path),
             Some(r#"{"a":"b"}"#.to_string())
         );
     }
 
     #[test]
     fn test_evaluate_null_value() {
-        assert_eq!(
-            evaluate_path(r#"{"a":null}"#, &parse_json_path("$.a").unwrap()),
-            None
-        );
+        let path = parse_json_path("$.a").unwrap();
+        assert_eq!(evaluate_path(r#"{"a":null}"#, &path), None);
     }
 
     #[test]
     fn test_evaluate_missing_field() {
-        assert_eq!(
-            evaluate_path(r#"{"a":"b"}"#, &parse_json_path("$.c").unwrap()),
-            None
-        );
+        let path = parse_json_path("$.c").unwrap();
+        assert_eq!(evaluate_path(r#"{"a":"b"}"#, &path), None);
     }
 
     #[test]
     fn test_evaluate_invalid_json() {
-        assert_eq!(
-            evaluate_path("not json", &parse_json_path("$.a").unwrap()),
-            None
-        );
+        let path = parse_json_path("$.a").unwrap();
+        assert_eq!(evaluate_path("not json", &path), None);
     }
 
     #[test]
     fn test_evaluate_wildcard() {
         let json = r#"[{"a":"b"},{"a":"c"}]"#;
-        assert_eq!(
-            evaluate_path(json, &parse_json_path("$[*].a").unwrap()),
-            Some(r#"["b","c"]"#.to_string())
-        );
+        let path = parse_json_path("$[*].a").unwrap();
+        assert_eq!(evaluate_path(json, &path), Some(r#"["b","c"]"#.to_string()));
     }
 
     #[test]
     fn test_evaluate_string_unquoted() {
-        // Strings should be returned without quotes
-        assert_eq!(
-            evaluate_path(r#"["a","b"]"#, &parse_json_path("$[1]").unwrap()),
-            Some("b".to_string())
-        );
+        // Strings should be returned without quotes for non-wildcard paths
+        let path = parse_json_path("$[1]").unwrap();
+        assert_eq!(evaluate_path(r#"["a","b"]"#, &path), Some("b".to_string()));
     }
 
     #[test]
     fn test_evaluate_nested_array_field() {
         let json = r#"{"items":["apple","banana","cherry"]}"#;
-        assert_eq!(
-            evaluate_path(json, &parse_json_path("$.items[1]").unwrap()),
-            Some("banana".to_string())
-        );
+        let path = parse_json_path("$.items[1]").unwrap();
+        assert_eq!(evaluate_path(json, &path), Some("banana".to_string()));
     }
 
     #[test]
     fn test_evaluate_bracket_notation_with_spaces() {
         let json = r#"{"key with spaces":"it works"}"#;
-        assert_eq!(
-            evaluate_path(json, &parse_json_path("$['key with spaces']").unwrap()),
-            Some("it works".to_string())
-        );
+        let path = parse_json_path("$['key with spaces']").unwrap();
+        assert_eq!(evaluate_path(json, &path), Some("it works".to_string()));
     }
 
     #[test]
     fn test_evaluate_boolean_and_nested_object() {
         let json = r#"{"a":true,"b":{"c":1}}"#;
-        assert_eq!(
-            evaluate_path(json, &parse_json_path("$.a").unwrap()),
-            Some("true".to_string())
-        );
-        assert_eq!(
-            evaluate_path(json, &parse_json_path("$.b").unwrap()),
-            Some(r#"{"c":1}"#.to_string())
-        );
+        let path_a = parse_json_path("$.a").unwrap();
+        assert_eq!(evaluate_path(json, &path_a), Some("true".to_string()));
+        let path_b = parse_json_path("$.b").unwrap();
+        assert_eq!(evaluate_path(json, &path_b), Some(r#"{"c":1}"#.to_string()));
     }
 
     #[test]
     fn test_object_key_order_preserved() {
-        // serde_json with preserve_order feature should maintain insertion order
+        // Depends on serde_json "preserve_order" feature (see Cargo.toml)
         let json = r#"{"z":1,"a":2}"#;
+        let path = parse_json_path("$").unwrap();
         assert_eq!(
-            evaluate_path(json, &parse_json_path("$").unwrap()),
+            evaluate_path(json, &path),
             Some(r#"{"z":1,"a":2}"#.to_string())
         );
     }
@@ -490,36 +497,27 @@ mod tests {
     fn test_wildcard_single_match() {
         // Single wildcard match on string: Spark preserves JSON quotes
         let json = r#"[{"a":"only"}]"#;
-        assert_eq!(
-            evaluate_path(json, &parse_json_path("$[*].a").unwrap()),
-            Some(r#""only""#.to_string())
-        );
+        let path = parse_json_path("$[*].a").unwrap();
+        assert_eq!(evaluate_path(json, &path), Some(r#""only""#.to_string()));
 
         // Single wildcard match on number: no quotes
         let json = r#"[{"a":42}]"#;
-        assert_eq!(
-            evaluate_path(json, &parse_json_path("$[*].a").unwrap()),
-            Some("42".to_string())
-        );
+        assert_eq!(evaluate_path(json, &path), Some("42".to_string()));
     }
 
     #[test]
     fn test_wildcard_missing_fields() {
         // Wildcard should skip elements where the field is missing
         let json = r#"[{"a":1},{"b":2},{"a":3}]"#;
-        assert_eq!(
-            evaluate_path(json, &parse_json_path("$[*].a").unwrap()),
-            Some("[1,3]".to_string())
-        );
+        let path = parse_json_path("$[*].a").unwrap();
+        assert_eq!(evaluate_path(json, &path), Some("[1,3]".to_string()));
     }
 
     #[test]
     fn test_field_with_colon() {
         let json = r#"{"fb:testid":"123"}"#;
-        assert_eq!(
-            evaluate_path(json, &parse_json_path("$.fb:testid").unwrap()),
-            Some("123".to_string())
-        );
+        let path = parse_json_path("$.fb:testid").unwrap();
+        assert_eq!(evaluate_path(json, &path), Some("123".to_string()));
     }
 
     #[test]
@@ -532,7 +530,7 @@ mod tests {
     fn test_object_wildcard() {
         // Spark returns null for $.* on objects (wildcard only works in array contexts)
         let json = r#"{"a":1,"b":2,"c":3}"#;
-        let result = evaluate_path(json, &parse_json_path("$.*").unwrap());
-        assert_eq!(result, None);
+        let path = parse_json_path("$.*").unwrap();
+        assert_eq!(evaluate_path(json, &path), None);
     }
 }

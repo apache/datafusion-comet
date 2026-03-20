@@ -34,6 +34,7 @@ chrono-tz = { workspace = true }
 num = { workspace = true }
 regex = { workspace = true }
 serde = { version = "1.0", features = ["derive"] }
+# preserve_order: needed for get_json_object to match Spark's JSON key ordering
 serde_json = { version = "1.0", features = ["preserve_order"] }
 thiserror = { workspace = true }
 futures = { workspace = true }
