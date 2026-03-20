@@ -31,7 +31,7 @@ use num::{CheckedSub, Integer};
 use regex::Regex;
 use std::num::Wrapping;
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 macro_rules! cast_utf8_to_timestamp {
     ($array:expr, $eval_mode:expr, $array_type:ty, $cast_method:ident, $tz:expr) => {{
@@ -1096,6 +1096,20 @@ fn parse_str_to_microsecond_timestamp<T: TimeZone>(
     get_timestamp_values(value, "microsecond", tz)
 }
 
+static RE_YEAR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\d{4,7}$").unwrap());
+static RE_MONTH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\d{4,7}-\d{2}$").unwrap());
+static RE_DAY: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\d{4,7}-\d{2}-\d{2}$").unwrap());
+static RE_HOUR: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\d{4,7}-\d{2}-\d{2}T\d{1,2}$").unwrap());
+static RE_MINUTE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\d{4,7}-\d{2}-\d{2}T\d{2}:\d{2}$").unwrap());
+static RE_SECOND: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\d{4,7}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$").unwrap());
+static RE_MICROSECOND: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\d{4,7}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{1,6}$").unwrap());
+static RE_TIME_ONLY: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^T\d{1,2}$").unwrap());
+
 fn timestamp_parser<T: TimeZone>(
     value: &str,
     eval_mode: EvalMode,
@@ -1105,40 +1119,15 @@ fn timestamp_parser<T: TimeZone>(
     if value.is_empty() {
         return Ok(None);
     }
-    // Define regex patterns and corresponding parsing functions
-    let patterns = &[
-        (
-            Regex::new(r"^\d{4,7}$").unwrap(),
-            parse_str_to_year_timestamp as fn(&str, &T) -> SparkResult<Option<i64>>,
-        ),
-        (
-            Regex::new(r"^\d{4,7}-\d{2}$").unwrap(),
-            parse_str_to_month_timestamp,
-        ),
-        (
-            Regex::new(r"^\d{4,7}-\d{2}-\d{2}$").unwrap(),
-            parse_str_to_day_timestamp,
-        ),
-        (
-            Regex::new(r"^\d{4,7}-\d{2}-\d{2}T\d{1,2}$").unwrap(),
-            parse_str_to_hour_timestamp,
-        ),
-        (
-            Regex::new(r"^\d{4,7}-\d{2}-\d{2}T\d{2}:\d{2}$").unwrap(),
-            parse_str_to_minute_timestamp,
-        ),
-        (
-            Regex::new(r"^\d{4,7}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$").unwrap(),
-            parse_str_to_second_timestamp,
-        ),
-        (
-            Regex::new(r"^\d{4,7}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{1,6}$").unwrap(),
-            parse_str_to_microsecond_timestamp,
-        ),
-        (
-            Regex::new(r"^T\d{1,2}$").unwrap(),
-            parse_str_to_time_only_timestamp,
-        ),
+    let patterns: &[(&Regex, fn(&str, &T) -> SparkResult<Option<i64>>)] = &[
+        (&RE_YEAR, parse_str_to_year_timestamp),
+        (&RE_MONTH, parse_str_to_month_timestamp),
+        (&RE_DAY, parse_str_to_day_timestamp),
+        (&RE_HOUR, parse_str_to_hour_timestamp),
+        (&RE_MINUTE, parse_str_to_minute_timestamp),
+        (&RE_SECOND, parse_str_to_second_timestamp),
+        (&RE_MICROSECOND, parse_str_to_microsecond_timestamp),
+        (&RE_TIME_ONLY, parse_str_to_time_only_timestamp),
     ];
 
     let mut timestamp = None;
