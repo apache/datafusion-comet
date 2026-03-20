@@ -23,6 +23,7 @@ use datafusion::common::DataFusionError;
 use datafusion::execution::disk_manager::RefCountedTempFile;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use std::fs::{File, OpenOptions};
+use std::time::{Duration, Instant};
 
 struct SpillFile {
     temp_file: RefCountedTempFile,
@@ -84,6 +85,12 @@ impl PartitionWriter {
         if let Some(batch) = iter.next() {
             self.ensure_spill_file_created(runtime)?;
 
+            // Snapshot inner metric values so we can compute gather_time by subtraction
+            let coalesce_before = metrics.coalesce_time.value();
+            let encode_before = metrics.encode_time.value();
+            let write_before = metrics.write_time.value();
+            let total_start = Instant::now();
+
             let total_bytes_written = {
                 let mut buf_batch_writer = BufBatchWriter::new(
                     &mut self.shuffle_block_writer,
@@ -91,19 +98,36 @@ impl PartitionWriter {
                     write_buffer_size,
                     batch_size,
                 );
-                let mut bytes_written =
-                    buf_batch_writer.write(&batch?, &metrics.encode_time, &metrics.write_time)?;
+                let mut bytes_written = buf_batch_writer.write(
+                    &batch?,
+                    &metrics.coalesce_time,
+                    &metrics.encode_time,
+                    &metrics.write_time,
+                )?;
                 for batch in iter {
-                    let batch = batch?;
                     bytes_written += buf_batch_writer.write(
-                        &batch,
+                        &batch?,
+                        &metrics.coalesce_time,
                         &metrics.encode_time,
                         &metrics.write_time,
                     )?;
                 }
-                buf_batch_writer.flush(&metrics.encode_time, &metrics.write_time)?;
+                buf_batch_writer.flush(
+                    &metrics.coalesce_time,
+                    &metrics.encode_time,
+                    &metrics.write_time,
+                )?;
                 bytes_written
             };
+
+            // gather_time = total - coalesce - encode - write (avoids per-batch syscalls)
+            let total_nanos = total_start.elapsed().as_nanos() as usize;
+            let inner_nanos = (metrics.coalesce_time.value() - coalesce_before)
+                + (metrics.encode_time.value() - encode_before)
+                + (metrics.write_time.value() - write_before);
+            metrics.gather_time.add_duration(Duration::from_nanos(
+                total_nanos.saturating_sub(inner_nanos) as u64,
+            ));
 
             Ok(total_bytes_written)
         } else {

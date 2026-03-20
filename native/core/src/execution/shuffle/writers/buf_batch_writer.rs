@@ -61,9 +61,11 @@ impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
     pub(crate) fn write(
         &mut self,
         batch: &RecordBatch,
+        coalesce_time: &Time,
         encode_time: &Time,
         write_time: &Time,
     ) -> datafusion::common::Result<usize> {
+        let mut coalesce_timer = coalesce_time.timer();
         let coalescer = self
             .coalescer
             .get_or_insert_with(|| BatchCoalescer::new(batch.schema(), self.batch_size));
@@ -75,6 +77,7 @@ impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
         while let Some(batch) = coalescer.next_completed_batch() {
             completed.push(batch);
         }
+        coalesce_timer.stop();
 
         let mut bytes_written = 0;
         for batch in &completed {
@@ -108,10 +111,12 @@ impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
 
     pub(crate) fn flush(
         &mut self,
+        coalesce_time: &Time,
         encode_time: &Time,
         write_time: &Time,
     ) -> datafusion::common::Result<()> {
         // Finish any remaining buffered rows in the coalescer
+        let mut coalesce_timer = coalesce_time.timer();
         let mut remaining = Vec::new();
         if let Some(coalescer) = &mut self.coalescer {
             coalescer.finish_buffered_batch()?;
@@ -119,6 +124,7 @@ impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
                 remaining.push(batch);
             }
         }
+        coalesce_timer.stop();
         for batch in &remaining {
             self.write_batch_to_buffer(batch, encode_time, write_time)?;
         }
