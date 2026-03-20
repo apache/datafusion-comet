@@ -69,7 +69,8 @@ public class CometShuffleBlockIterator implements Closeable {
       return -1;
     }
 
-    // Read 16-byte header
+    // Read 16-byte header: clear() resets position=0, limit=capacity,
+    // preparing the buffer for channel.read() to fill it
     headerBuf.clear();
     while (headerBuf.hasRemaining()) {
       int bytesRead = channel.read(headerBuf);
@@ -94,16 +95,18 @@ public class CometShuffleBlockIterator implements Closeable {
               + bytesToRead
               + " exceeds maximum of "
               + Integer.MAX_VALUE
-              + ". Try reducing shuffle batch size.");
+              + ". Try reducing spark.comet.columnar.shuffle.batch.size.");
     }
 
-    if (dataBuf.capacity() < bytesToRead) {
+    currentBlockLength = (int) bytesToRead;
+
+    if (dataBuf.capacity() < currentBlockLength) {
       int newCapacity = (int) Math.min(bytesToRead * 2L, Integer.MAX_VALUE);
       dataBuf = ByteBuffer.allocateDirect(newCapacity);
     }
 
     dataBuf.clear();
-    dataBuf.limit((int) bytesToRead);
+    dataBuf.limit(currentBlockLength);
     while (dataBuf.hasRemaining()) {
       int bytesRead = channel.read(dataBuf);
       if (bytesRead < 0) {
@@ -113,7 +116,6 @@ public class CometShuffleBlockIterator implements Closeable {
     // Note: native side uses get_direct_buffer_address (base pointer) + currentBlockLength,
     // not the buffer's position/limit. No flip needed.
 
-    currentBlockLength = (int) bytesToRead;
     return currentBlockLength;
   }
 

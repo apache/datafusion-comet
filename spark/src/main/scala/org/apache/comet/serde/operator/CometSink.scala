@@ -146,7 +146,7 @@ object CometExchangeSink extends CometSink[SparkPlan] {
       builder.clearChildren()
       Some(builder.setShuffleScan(scanBuilder).build())
     } else {
-      withInfo(op, "unsupported data types for shuffle direct read")
+      withInfo(op, s"unsupported data types in ${op.nodeName} for shuffle direct read")
       None
     }
   }
