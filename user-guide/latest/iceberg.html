@@ -460,11 +460,7 @@ under the License.
 -->
 <section id="accelerating-apache-iceberg-parquet-scans-using-comet-experimental">
 <h1>Accelerating Apache Iceberg Parquet Scans using Comet (Experimental)<a class="headerlink" href="#accelerating-apache-iceberg-parquet-scans-using-comet-experimental" title="Link to this heading">#</a></h1>
-<p><strong>Note: Iceberg integration is a work-in-progress. Comet currently has two distinct Iceberg
-code paths: 1) fully-native
-reader (based on <a class="reference external" href="https://github.com/apache/iceberg-rust">iceberg-rust</a>), and 2) a hybrid reader (native Parquet decoding, JVM otherwise) that requires
-building Iceberg from source rather than using available artifacts in Maven. Directions for both
-designs are provided below.</strong></p>
+<p><strong>Note: Iceberg integration is a work-in-progress.</strong></p>
 <section id="native-reader">
 <h2>Native Reader<a class="headerlink" href="#native-reader" title="Link to this heading">#</a></h2>
 <p>Comet’s fully-native Iceberg integration does not require modifying Iceberg source
@@ -473,9 +469,7 @@ then serialized to Comet’s native execution engine (see
 <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2528">PR #2528</a>).</p>
 <p>The example below uses Spark’s package downloader to retrieve Comet 0.14.0 and Iceberg
 1.8.1, but Comet has been tested with Iceberg 1.5, 1.7, 1.8, 1.9, and 1.10. The key configuration
-to enable fully-native Iceberg is <code class="docutils literal notranslate"><span class="pre">spark.comet.scan.icebergNative.enabled=true</span></code>. This
-configuration should <strong>not</strong> be used with the hybrid Iceberg configuration
-<code class="docutils literal notranslate"><span class="pre">spark.sql.iceberg.parquet.reader-type=COMET</span></code> from below.</p>
+to enable fully-native Iceberg is <code class="docutils literal notranslate"><span class="pre">spark.comet.scan.icebergNative.enabled=true</span></code>.</p>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nv">$SPARK_HOME</span>/bin/spark-shell<span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--packages<span class="w"> </span>org.apache.datafusion:comet-spark-spark3.5_2.12:0.14.0,org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.8.1,org.apache.iceberg:iceberg-core:1.8.1<span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--repositories<span class="w"> </span>https://repo1.maven.org/maven2/<span class="w"> </span><span class="se">\</span>
@@ -586,118 +580,6 @@ configure Spark to use a REST catalog with Comet’s native Iceberg scan:</p>
 <li><p>Scans with residual filters using <code class="docutils literal notranslate"><span class="pre">truncate</span></code>, <code class="docutils literal notranslate"><span class="pre">bucket</span></code>, <code class="docutils literal notranslate"><span class="pre">year</span></code>, <code class="docutils literal notranslate"><span class="pre">month</span></code>, <code class="docutils literal notranslate"><span class="pre">day</span></code>, or <code class="docutils literal notranslate"><span class="pre">hour</span></code>
 transform functions (partition pruning still works, but row-level filtering of these
 transforms falls back)</p></li>
-</ul>
-</section>
-</section>
-<section id="hybrid-reader">
-<h2>Hybrid Reader<a class="headerlink" href="#hybrid-reader" title="Link to this heading">#</a></h2>
-<section id="build-comet">
-<h3>Build Comet<a class="headerlink" href="#build-comet" title="Link to this heading">#</a></h3>
-<p>Run a Maven install so that we can compile Iceberg against latest Comet:</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>mvn<span class="w"> </span>install<span class="w"> </span>-DskipTests
-</pre></div>
-</div>
-<p>Build the release JAR to be used from Spark:</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>make<span class="w"> </span>release
-</pre></div>
-</div>
-<p>Set <code class="docutils literal notranslate"><span class="pre">COMET_JAR</span></code> env var:</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">COMET_JAR</span><span class="o">=</span><span class="sb">`</span><span class="nb">pwd</span><span class="sb">`</span>/spark/target/comet-spark-spark3.5_2.12-0.15.0-SNAPSHOT.jar
-</pre></div>
-</div>
-</section>
-<section id="build-iceberg">
-<h3>Build Iceberg<a class="headerlink" href="#build-iceberg" title="Link to this heading">#</a></h3>
-<p>Clone the Iceberg repository and apply code changes needed by Comet</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>clone<span class="w"> </span>git@github.com:apache/iceberg.git
-<span class="nb">cd</span><span class="w"> </span>iceberg
-git<span class="w"> </span>checkout<span class="w"> </span>apache-iceberg-1.8.1
-git<span class="w"> </span>apply<span class="w"> </span>../datafusion-comet/dev/diffs/iceberg/1.8.1.diff
-</pre></div>
-</div>
-<p>Perform a clean build</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>./gradlew<span class="w"> </span>clean<span class="w"> </span>build<span class="w"> </span>-x<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-x<span class="w"> </span>integrationTest
-</pre></div>
-</div>
-</section>
-<section id="test">
-<h3>Test<a class="headerlink" href="#test" title="Link to this heading">#</a></h3>
-<p>Set <code class="docutils literal notranslate"><span class="pre">ICEBERG_JAR</span></code> environment variable.</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">ICEBERG_JAR</span><span class="o">=</span><span class="sb">`</span><span class="nb">pwd</span><span class="sb">`</span>/spark/v3.5/spark-runtime/build/libs/iceberg-spark-runtime-3.5_2.12-1.9.0-SNAPSHOT.jar
-</pre></div>
-</div>
-<p>Launch Spark Shell:</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nv">$SPARK_HOME</span>/bin/spark-shell<span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--driver-class-path<span class="w"> </span><span class="nv">$COMET_JAR</span>:<span class="nv">$ICEBERG_JAR</span><span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--conf<span class="w"> </span>spark.executor.extraClassPath<span class="o">=</span><span class="nv">$COMET_JAR</span>:<span class="nv">$ICEBERG_JAR</span><span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--conf<span class="w"> </span>spark.sql.extensions<span class="o">=</span>org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions<span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--conf<span class="w"> </span>spark.sql.catalog.spark_catalog<span class="o">=</span>org.apache.iceberg.spark.SparkCatalog<span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--conf<span class="w"> </span>spark.sql.catalog.spark_catalog.type<span class="o">=</span>hadoop<span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--conf<span class="w"> </span>spark.sql.catalog.spark_catalog.warehouse<span class="o">=</span>/tmp/warehouse<span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--conf<span class="w"> </span>spark.plugins<span class="o">=</span>org.apache.spark.CometPlugin<span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--conf<span class="w"> </span>spark.shuffle.manager<span class="o">=</span>org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager<span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--conf<span class="w"> </span>spark.sql.iceberg.parquet.reader-type<span class="o">=</span>COMET<span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--conf<span class="w"> </span>spark.comet.explainFallback.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--conf<span class="w"> </span>spark.memory.offHeap.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--conf<span class="w"> </span>spark.memory.offHeap.size<span class="o">=</span>2g<span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--conf<span class="w"> </span>spark.comet.use.lazyMaterialization<span class="o">=</span><span class="nb">false</span><span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--conf<span class="w"> </span>spark.comet.schemaEvolution.enabled<span class="o">=</span><span class="nb">true</span>
-</pre></div>
-</div>
-<p>Create an Iceberg table. Note that Comet will not accelerate this part.</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">scala</span><span class="o">&gt;</span> <span class="n">spark</span><span class="o">.</span><span class="n">sql</span><span class="p">(</span><span class="n">s</span><span class="s2">&quot;CREATE TABLE IF NOT EXISTS t1 (c0 INT, c1 STRING) USING iceberg&quot;</span><span class="p">)</span>
-<span class="n">scala</span><span class="o">&gt;</span> <span class="n">spark</span><span class="o">.</span><span class="n">sql</span><span class="p">(</span><span class="n">s</span><span class="s2">&quot;INSERT INTO t1 VALUES ${(0 until 10000).map(i =&gt; (i, i)).mkString(&quot;</span><span class="p">,</span><span class="s2">&quot;)}&quot;</span><span class="p">)</span>
-</pre></div>
-</div>
-<p>Comet should now be able to accelerate reading the table:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">scala</span><span class="o">&gt;</span> <span class="n">spark</span><span class="o">.</span><span class="n">sql</span><span class="p">(</span><span class="n">s</span><span class="s2">&quot;SELECT * from t1&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">show</span><span class="p">()</span>
-</pre></div>
-</div>
-<p>This should produce the following output:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">scala</span><span class="o">&gt;</span> <span class="n">spark</span><span class="o">.</span><span class="n">sql</span><span class="p">(</span><span class="n">s</span><span class="s2">&quot;SELECT * from t1&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">show</span><span class="p">()</span>
-<span class="o">+---+---+</span>
-<span class="o">|</span> <span class="n">c0</span><span class="o">|</span> <span class="n">c1</span><span class="o">|</span>
-<span class="o">+---+---+</span>
-<span class="o">|</span>  <span class="mi">0</span><span class="o">|</span>  <span class="mi">0</span><span class="o">|</span>
-<span class="o">|</span>  <span class="mi">1</span><span class="o">|</span>  <span class="mi">1</span><span class="o">|</span>
-<span class="o">|</span>  <span class="mi">2</span><span class="o">|</span>  <span class="mi">2</span><span class="o">|</span>
-<span class="o">|</span>  <span class="mi">3</span><span class="o">|</span>  <span class="mi">3</span><span class="o">|</span>
-<span class="o">|</span>  <span class="mi">4</span><span class="o">|</span>  <span class="mi">4</span><span class="o">|</span>
-<span class="o">|</span>  <span class="mi">5</span><span class="o">|</span>  <span class="mi">5</span><span class="o">|</span>
-<span class="o">|</span>  <span class="mi">6</span><span class="o">|</span>  <span class="mi">6</span><span class="o">|</span>
-<span class="o">|</span>  <span class="mi">7</span><span class="o">|</span>  <span class="mi">7</span><span class="o">|</span>
-<span class="o">|</span>  <span class="mi">8</span><span class="o">|</span>  <span class="mi">8</span><span class="o">|</span>
-<span class="o">|</span>  <span class="mi">9</span><span class="o">|</span>  <span class="mi">9</span><span class="o">|</span>
-<span class="o">|</span> <span class="mi">10</span><span class="o">|</span> <span class="mi">10</span><span class="o">|</span>
-<span class="o">|</span> <span class="mi">11</span><span class="o">|</span> <span class="mi">11</span><span class="o">|</span>
-<span class="o">|</span> <span class="mi">12</span><span class="o">|</span> <span class="mi">12</span><span class="o">|</span>
-<span class="o">|</span> <span class="mi">13</span><span class="o">|</span> <span class="mi">13</span><span class="o">|</span>
-<span class="o">|</span> <span class="mi">14</span><span class="o">|</span> <span class="mi">14</span><span class="o">|</span>
-<span class="o">|</span> <span class="mi">15</span><span class="o">|</span> <span class="mi">15</span><span class="o">|</span>
-<span class="o">|</span> <span class="mi">16</span><span class="o">|</span> <span class="mi">16</span><span class="o">|</span>
-<span class="o">|</span> <span class="mi">17</span><span class="o">|</span> <span class="mi">17</span><span class="o">|</span>
-<span class="o">|</span> <span class="mi">18</span><span class="o">|</span> <span class="mi">18</span><span class="o">|</span>
-<span class="o">|</span> <span class="mi">19</span><span class="o">|</span> <span class="mi">19</span><span class="o">|</span>
-<span class="o">+---+---+</span>
-<span class="n">only</span> <span class="n">showing</span> <span class="n">top</span> <span class="mi">20</span> <span class="n">rows</span>
-</pre></div>
-</div>
-<p>Confirm that the query was accelerated by Comet:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">scala</span><span class="o">&gt;</span> <span class="n">spark</span><span class="o">.</span><span class="n">sql</span><span class="p">(</span><span class="n">s</span><span class="s2">&quot;SELECT * from t1&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">explain</span><span class="p">()</span>
-<span class="o">==</span> <span class="n">Physical</span> <span class="n">Plan</span> <span class="o">==</span>
-<span class="o">*</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span> <span class="n">CometColumnarToRow</span>
-<span class="o">+-</span> <span class="n">CometBatchScan</span> <span class="n">spark_catalog</span><span class="o">.</span><span class="n">default</span><span class="o">.</span><span class="n">t1</span><span class="p">[</span><span class="n">c0</span><span class="c1">#26, c1#27] spark_catalog.default.t1 (branch=null) [filters=, groupedBy=] RuntimeFilters: []</span>
-</pre></div>
-</div>
-</section>
-<section id="known-issues">
-<h3>Known issues<a class="headerlink" href="#known-issues" title="Link to this heading">#</a></h3>
-<ul class="simple">
-<li><p>Spark Runtime Filtering isn’t <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2116">working</a></p>
-<ul>
-<li><p>You can bypass the issue by either setting <code class="docutils literal notranslate"><span class="pre">spark.sql.adaptive.enabled=false</span></code> or <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.broadcastExchange.enabled=false</span></code></p></li>
-</ul>
-</li>
 </ul>
 </section>
 </section>
