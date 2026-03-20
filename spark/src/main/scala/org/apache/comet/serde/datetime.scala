@@ -601,9 +601,7 @@ object CometPreciseTimestampConversion extends CometExpressionSerde[PreciseTimes
       expr: PreciseTimestampConversion,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    // PreciseTimestampConversion reinterprets between LongType and TimestampType
-    // without changing the underlying microsecond value. In Arrow, both types
-    // share the same i64 representation, so we simply return the child expression.
+    // Both types are i64 micros in Arrow, so no conversion needed — return child directly.
     exprToProtoInternal(expr.child, inputs, binding)
   }
 }
