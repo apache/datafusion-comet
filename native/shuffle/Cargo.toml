@@ -40,6 +40,7 @@ datafusion-comet-spark-expr = { workspace = true }
 futures = { workspace = true }
 itertools = "0.14.0"
 jni = "0.21"
+log = "0.4"
 lz4_flex = { version = "0.13.0", default-features = false, features = ["frame"] }
 simd-adler32 = "0.3.7"
 snap = "1.1"
