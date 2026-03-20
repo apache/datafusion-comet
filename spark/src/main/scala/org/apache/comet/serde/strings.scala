@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import java.util.Locale
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Concat, ConcatWs, Expression, If, InitCap, IsNull, Left, Length, Like, Literal, Lower, RegExpReplace, Right, RLike, StringLPad, StringRepeat, StringRPad, StringSplit, Substring, Upper}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Concat, ConcatWs, Expression, GetJsonObject, If, InitCap, IsNull, Left, Length, Like, Literal, Lower, RegExpReplace, Right, RLike, StringLPad, StringRepeat, StringRPad, StringSplit, Substring, Upper}
 import org.apache.spark.sql.types.{BinaryType, DataTypes, LongType, StringType}
 import org.apache.spark.unsafe.types.UTF8String
 
@@ -379,6 +379,24 @@ object CometStringSplit extends CometExpressionSerde[StringSplit] {
       regexExpr,
       limitExpr)
     optExprWithInfo(optExpr, expr, expr.str, expr.regex, expr.limit)
+  }
+}
+
+object CometGetJsonObject extends CometExpressionSerde[GetJsonObject] {
+
+  override def convert(
+      expr: GetJsonObject,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    val jsonExpr = exprToProtoInternal(expr.json, inputs, binding)
+    val pathExpr = exprToProtoInternal(expr.path, inputs, binding)
+    val optExpr = scalarFunctionExprToProtoWithReturnType(
+      "get_json_object",
+      expr.dataType,
+      false,
+      jsonExpr,
+      pathExpr)
+    optExprWithInfo(optExpr, expr, expr.json, expr.path)
   }
 }
 
