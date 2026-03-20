@@ -19,11 +19,9 @@
 
 package org.apache.spark.sql.comet.shims
 
-import org.apache.hadoop.fs.Path
-import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Expression, FileSourceConstantMetadataAttribute, Literal}
-import org.apache.spark.sql.execution.{FileSourceScanExec, PartitionedFileUtil, ScalarSubquery}
+import org.apache.spark.sql.execution.{FileSourceScanExec, ScalarSubquery}
 import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.execution.datasources.parquet.ParquetOptions
 import org.apache.spark.sql.sources.Filter
@@ -50,23 +48,6 @@ trait ShimCometScanExec extends ShimStreamSourceAwareSparkPlan {
       fsRelation.fileFormat.fileConstantMetadataExtractors,
       options)
   }
-
-  // see SPARK-39634
-  protected def isNeededForSchema(sparkSchema: StructType): Boolean = false
-
-  protected def getPartitionedFile(
-      f: FileStatusWithMetadata,
-      p: PartitionDirectory): PartitionedFile =
-    PartitionedFileUtil.getPartitionedFile(f, f.getPath, p.values, 0, f.getLen)
-
-  protected def splitFiles(
-      sparkSession: SparkSession,
-      file: FileStatusWithMetadata,
-      filePath: Path,
-      isSplitable: Boolean,
-      maxSplitBytes: Long,
-      partitionValues: InternalRow): Seq[PartitionedFile] =
-    PartitionedFileUtil.splitFiles(file, filePath, isSplitable, maxSplitBytes, partitionValues)
 
   protected def getPushedDownFilters(
       relation: HadoopFsRelation,
