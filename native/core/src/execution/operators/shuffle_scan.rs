@@ -180,10 +180,15 @@ impl ShuffleScanExec {
 
         let num_rows = batch.num_rows();
 
-        // The read_ipc_compressed already produces owned arrays, so we skip the
-        // header (field count + codec) that was already consumed by read_ipc_compressed.
-        // Extract column arrays from the RecordBatch.
-        let columns: Vec<ArrayRef> = batch.columns().to_vec();
+        // Extract column arrays, unpacking any dictionary-encoded columns.
+        // Native shuffle may dictionary-encode string/binary columns for efficiency,
+        // but downstream DataFusion operators expect the value types declared in the
+        // schema (e.g. Utf8, not Dictionary<Int32, Utf8>).
+        let columns: Vec<ArrayRef> = batch
+            .columns()
+            .iter()
+            .map(|col| unpack_dictionary(col))
+            .collect();
 
         debug_assert_eq!(
             columns.len(),
@@ -194,6 +199,15 @@ impl ShuffleScanExec {
         );
 
         Ok(InputBatch::new(columns, Some(num_rows)))
+    }
+}
+
+/// If `array` is dictionary-encoded, cast it to the value type. Otherwise return as-is.
+fn unpack_dictionary(array: &ArrayRef) -> ArrayRef {
+    if let DataType::Dictionary(_, value_type) = array.data_type() {
+        arrow::compute::cast(array, value_type.as_ref()).expect("failed to unpack dictionary array")
+    } else {
+        Arc::clone(array)
     }
 }
 
@@ -393,5 +407,107 @@ mod tests {
         assert_eq!(col0.value(0), 1);
         assert_eq!(col0.value(1), 2);
         assert_eq!(col0.value(2), 3);
+    }
+
+    /// Tests that ShuffleScanExec correctly unpacks dictionary-encoded columns.
+    /// Native shuffle may dictionary-encode string/binary columns, but the schema
+    /// declares value types (e.g. Utf8). Without unpacking, RecordBatch creation
+    /// fails with a schema mismatch.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_dictionary_encoded_shuffle_block_is_unpacked() {
+        use super::*;
+        use arrow::array::StringDictionaryBuilder;
+        use arrow::datatypes::Int32Type;
+        use datafusion::physical_plan::ExecutionPlan;
+        use futures::StreamExt;
+
+        // Build a batch with a dictionary-encoded string column (simulating what
+        // the native shuffle writer produces for string columns).
+        let mut dict_builder = StringDictionaryBuilder::<Int32Type>::new();
+        dict_builder.append_value("hello");
+        dict_builder.append_value("world");
+        dict_builder.append_value("hello"); // repeated value, good for dictionary
+        let dict_array = dict_builder.finish();
+
+        // The IPC schema includes the dictionary type
+        let dict_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new(
+                "name",
+                DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8)),
+                true,
+            ),
+        ]));
+        let dict_batch = RecordBatch::try_new(
+            Arc::clone(&dict_schema),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2, 3])),
+                Arc::new(dict_array),
+            ],
+        )
+        .unwrap();
+
+        // Write as compressed IPC (preserves dictionary encoding)
+        let writer =
+            ShuffleBlockWriter::try_new(&dict_batch.schema(), CompressionCodec::Zstd(1)).unwrap();
+        let mut buf = Cursor::new(Vec::new());
+        let ipc_time = Time::new();
+        writer
+            .write_batch(&dict_batch, &mut buf, &ipc_time)
+            .unwrap();
+        let bytes = buf.into_inner();
+        let body = &bytes[16..];
+
+        // Confirm that read_ipc_compressed returns dictionary-encoded arrays
+        let decoded = read_ipc_compressed(body).unwrap();
+        assert!(
+            matches!(decoded.column(1).data_type(), DataType::Dictionary(_, _)),
+            "Expected dictionary-encoded column from IPC, got {:?}",
+            decoded.column(1).data_type()
+        );
+
+        // Create ShuffleScanExec with value types (Utf8, not Dictionary) — this is
+        // what the protobuf schema provides.
+        let mut scan = ShuffleScanExec::new(
+            super::super::super::planner::TEST_EXEC_CONTEXT_ID,
+            None,
+            vec![DataType::Int32, DataType::Utf8],
+        )
+        .unwrap();
+
+        // Feed the decoded batch through unpack_dictionary (simulating get_next)
+        let columns: Vec<ArrayRef> = decoded
+            .columns()
+            .iter()
+            .map(|col| super::unpack_dictionary(col))
+            .collect();
+        let input = InputBatch::new(columns, Some(decoded.num_rows()));
+        scan.set_input_batch(input);
+
+        // Execute and verify the output RecordBatch has the expected schema
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let ctx = Arc::new(TaskContext::default());
+            let mut stream = scan.execute(0, ctx).unwrap();
+            let result_batch = stream.next().await.unwrap().unwrap();
+
+            // Schema should have Utf8, not Dictionary
+            assert_eq!(
+                *result_batch.schema().field(1).data_type(),
+                DataType::Utf8,
+                "Expected Utf8 after dictionary unpacking"
+            );
+
+            // Verify data integrity
+            let col1 = result_batch
+                .column(1)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .expect("Column should be StringArray after unpacking");
+            assert_eq!(col1.value(0), "hello");
+            assert_eq!(col1.value(1), "world");
+            assert_eq!(col1.value(2), "hello");
+        });
     }
 }

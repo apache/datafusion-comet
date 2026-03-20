@@ -349,7 +349,7 @@ object CometConf extends ShimCometConf {
       .doc(
         "When enabled, native operators that consume shuffle output will read " +
           "compressed shuffle blocks directly in native code, bypassing Arrow FFI. " +
-          "Only applies to native shuffle (not JVM columnar shuffle). " +
+          "Applies to both native shuffle and JVM columnar shuffle. " +
           "Requires spark.comet.exec.shuffle.enabled to be true.")
       .booleanConf
       .createWithDefault(true)

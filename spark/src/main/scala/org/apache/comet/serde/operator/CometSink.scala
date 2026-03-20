@@ -22,7 +22,7 @@ package org.apache.comet.serde.operator
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.comet.{CometNativeExec, CometSinkPlaceHolder}
-import org.apache.spark.sql.comet.execution.shuffle.{CometNativeShuffle, CometShuffleExchangeExec}
+import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.adaptive.ShuffleQueryStageExec
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
@@ -115,7 +115,7 @@ object CometExchangeSink extends CometSink[SparkPlan] {
       case _ => None
     }
 
-    shuffleExec.exists(_.shuffleType == CometNativeShuffle)
+    shuffleExec.isDefined
   }
 
   private def convertToShuffleScan(
