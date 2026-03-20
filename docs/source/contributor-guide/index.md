@@ -35,7 +35,7 @@ Benchmarking Guide <benchmarking>
 Adding a New Operator <adding_a_new_operator>
 Adding a New Expression <adding_a_new_expression>
 Tracing <tracing>
-Profiling Native Code <profiling_native_code>
+Profiling <profiling>
 Spark SQL Tests <spark-sql-tests.md>
 SQL File Tests <sql-file-tests.md>
 Roadmap <roadmap.md>
