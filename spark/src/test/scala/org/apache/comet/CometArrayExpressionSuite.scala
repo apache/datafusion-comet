@@ -1090,7 +1090,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
         assert(
           errorMessage.contains("select element_at(arr, 0) from test_element_at_zero"),
           s"Error message should contain SQL query text but got: $errorMessage")
-
+      }
     }
   }
 }
