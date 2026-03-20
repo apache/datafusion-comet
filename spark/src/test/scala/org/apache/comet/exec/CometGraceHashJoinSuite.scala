@@ -34,8 +34,6 @@ import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
 
 class CometGraceHashJoinSuite extends CometTestBase {
 
-  import testImplicits._
-
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
       pos: Position): Unit = {
     super.test(testName, testTags: _*) {
