@@ -242,11 +242,28 @@ fn parse_json_path(path: &str) -> Option<Vec<PathSegment>> {
 /// Returns the result as a string, or None if no match.
 fn evaluate_path(json_str: &str, path: &[PathSegment]) -> Option<String> {
     let value: Value = serde_json::from_str(json_str).ok()?;
+
+    // Check if path contains any wildcards
+    let has_wildcard = path.iter().any(|s| matches!(s, PathSegment::Wildcard));
+
     let results = evaluate_segments(&value, path);
 
     match results.len() {
         0 => None,
-        1 => value_to_string(results[0]),
+        1 if !has_wildcard => value_to_string(results[0]),
+        1 => {
+            // Single wildcard match: Spark strips outer array brackets from the
+            // JSON representation. For strings this means the quotes are preserved.
+            // We simulate by serializing as a JSON array and stripping the brackets.
+            let arr_str = serde_json::to_string(&Value::Array(vec![results[0].clone()])).ok()?;
+            // Strip leading '[' and trailing ']'
+            let inner = &arr_str[1..arr_str.len() - 1];
+            if inner == "null" {
+                None
+            } else {
+                Some(inner.to_string())
+            }
+        }
         _ => {
             // Multiple results: wrap in JSON array
             let arr = Value::Array(results.into_iter().cloned().collect());
@@ -283,10 +300,6 @@ fn evaluate_segments<'a>(value: &'a Value, segments: &[PathSegment]) -> Vec<&'a 
         PathSegment::Wildcard => match value {
             Value::Array(arr) => arr
                 .iter()
-                .flat_map(|v| evaluate_segments(v, rest))
-                .collect(),
-            Value::Object(map) => map
-                .values()
                 .flat_map(|v| evaluate_segments(v, rest))
                 .collect(),
             _ => vec![],
@@ -461,5 +474,65 @@ mod tests {
             evaluate_path(json, &parse_json_path("$.b").unwrap()),
             Some(r#"{"c":1}"#.to_string())
         );
+    }
+
+    #[test]
+    fn test_object_key_order_preserved() {
+        // serde_json with preserve_order feature should maintain insertion order
+        let json = r#"{"z":1,"a":2}"#;
+        assert_eq!(
+            evaluate_path(json, &parse_json_path("$").unwrap()),
+            Some(r#"{"z":1,"a":2}"#.to_string())
+        );
+    }
+
+    #[test]
+    fn test_wildcard_single_match() {
+        // Single wildcard match on string: Spark preserves JSON quotes
+        let json = r#"[{"a":"only"}]"#;
+        assert_eq!(
+            evaluate_path(json, &parse_json_path("$[*].a").unwrap()),
+            Some(r#""only""#.to_string())
+        );
+
+        // Single wildcard match on number: no quotes
+        let json = r#"[{"a":42}]"#;
+        assert_eq!(
+            evaluate_path(json, &parse_json_path("$[*].a").unwrap()),
+            Some("42".to_string())
+        );
+    }
+
+    #[test]
+    fn test_wildcard_missing_fields() {
+        // Wildcard should skip elements where the field is missing
+        let json = r#"[{"a":1},{"b":2},{"a":3}]"#;
+        assert_eq!(
+            evaluate_path(json, &parse_json_path("$[*].a").unwrap()),
+            Some("[1,3]".to_string())
+        );
+    }
+
+    #[test]
+    fn test_field_with_colon() {
+        let json = r#"{"fb:testid":"123"}"#;
+        assert_eq!(
+            evaluate_path(json, &parse_json_path("$.fb:testid").unwrap()),
+            Some("123".to_string())
+        );
+    }
+
+    #[test]
+    fn test_dot_bracket_invalid() {
+        // $.[0] is not valid path syntax in Spark
+        assert!(parse_json_path("$.[0]").is_none());
+    }
+
+    #[test]
+    fn test_object_wildcard() {
+        // Spark returns null for $.* on objects (wildcard only works in array contexts)
+        let json = r#"{"a":1,"b":2,"c":3}"#;
+        let result = evaluate_path(json, &parse_json_path("$.*").unwrap());
+        assert_eq!(result, None);
     }
 }
