@@ -75,6 +75,7 @@ public class CometShuffleBlockIterator implements Closeable {
       int bytesRead = channel.read(headerBuf);
       if (bytesRead < 0) {
         if (headerBuf.position() == 0) {
+          close();
           return -1;
         }
         throw new EOFException("Data corrupt: unexpected EOF while reading batch header");
@@ -85,6 +86,7 @@ public class CometShuffleBlockIterator implements Closeable {
     // Field count discarded - schema determined by ShuffleScan protobuf fields
     headerBuf.getLong();
 
+    // Subtract 8 because compressedLength includes the 8-byte field count we already read
     long bytesToRead = compressedLength - 8;
     if (bytesToRead > Integer.MAX_VALUE) {
       throw new IllegalStateException(

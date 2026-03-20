@@ -22,11 +22,12 @@ package org.apache.spark.sql.comet
 import org.apache.spark._
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.rdd.RDD
+import org.apache.spark.sql.comet.execution.shuffle.CometShuffledBatchRDD
 import org.apache.spark.sql.execution.ScalarSubquery
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.SerializableConfiguration
 
-import org.apache.comet.{CometExecIterator, CometShuffleBlockIterator}
+import org.apache.comet.CometExecIterator
 import org.apache.comet.serde.OperatorOuterClass
 
 /**
@@ -65,9 +66,7 @@ private[spark] class CometExecRDD(
     subqueries: Seq[ScalarSubquery],
     broadcastedHadoopConfForEncryption: Option[Broadcast[SerializableConfiguration]] = None,
     encryptedFilePaths: Seq[String] = Seq.empty,
-    shuffleBlockIteratorFactories: Map[
-      Int,
-      (TaskContext, Partition) => CometShuffleBlockIterator] = Map.empty)
+    shuffleScanIndices: Set[Int] = Set.empty)
     extends RDD[ColumnarBatch](sc, inputRDDs.map(rdd => new OneToOneDependency(rdd))) {
 
   // Determine partition count: from inputs if available, otherwise from parameter
@@ -112,11 +111,14 @@ private[spark] class CometExecRDD(
       serializedPlan
     }
 
-    // Create shuffle block iterators for indices that have factories
-    val shuffleBlockIters = shuffleBlockIteratorFactories.map { case (idx, factory) =>
-      val inputPart = partition.inputPartitions(idx)
-      idx -> factory(context, inputPart)
-    }
+    // Create shuffle block iterators for inputs that are CometShuffledBatchRDD
+    val shuffleBlockIters = shuffleScanIndices.flatMap { idx =>
+      inputRDDs(idx) match {
+        case rdd: CometShuffledBatchRDD =>
+          Some(idx -> rdd.computeAsShuffleBlockIterator(partition.inputPartitions(idx), context))
+        case _ => None
+      }
+    }.toMap
 
     val it = new CometExecIterator(
       CometExec.newIterId,
@@ -178,9 +180,7 @@ object CometExecRDD {
       subqueries: Seq[ScalarSubquery],
       broadcastedHadoopConfForEncryption: Option[Broadcast[SerializableConfiguration]] = None,
       encryptedFilePaths: Seq[String] = Seq.empty,
-      shuffleBlockIteratorFactories: Map[
-        Int,
-        (TaskContext, Partition) => CometShuffleBlockIterator] = Map.empty): CometExecRDD = {
+      shuffleScanIndices: Set[Int] = Set.empty): CometExecRDD = {
     // scalastyle:on
 
     new CometExecRDD(
@@ -195,6 +195,6 @@ object CometExecRDD {
       subqueries,
       broadcastedHadoopConfForEncryption,
       encryptedFilePaths,
-      shuffleBlockIteratorFactories)
+      shuffleScanIndices)
   }
 }

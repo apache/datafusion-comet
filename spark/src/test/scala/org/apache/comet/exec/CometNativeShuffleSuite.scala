@@ -452,4 +452,26 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
       }
     }
   }
+
+  test("shuffle direct read with multiple shuffles in plan") {
+    Seq(true, false).foreach { directRead =>
+      withSQLConf(CometConf.COMET_SHUFFLE_DIRECT_READ_ENABLED.key -> directRead.toString) {
+        // Join two shuffled datasets to produce a plan with multiple shuffle reads
+        val left = spark
+          .range(100)
+          .selectExpr("id as l_id", "id % 10 as key")
+          .repartition(4, col("key"))
+        val right = spark
+          .range(100)
+          .selectExpr("id as r_id", "id % 10 as key")
+          .repartition(4, col("key"))
+        val df = left
+          .join(right, "key")
+          .groupBy("key")
+          .agg(count("l_id").as("cnt"))
+          .orderBy("key")
+        checkSparkAnswer(df)
+      }
+    }
+  }
 }

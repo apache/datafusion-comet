@@ -25,7 +25,6 @@ import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.{Partition, SparkEnv, TaskContext}
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
@@ -34,14 +33,14 @@ import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression,
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.catalyst.plans.physical._
-import org.apache.spark.sql.comet.execution.shuffle.{CometBlockStoreShuffleReader, CometShuffledBatchRDD, CometShuffleExchangeExec, ShuffledRowRDDPartition}
+import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, BroadcastQueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
-import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics, SQLShuffleReadMetricsReporter}
+import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, TimestampNTZType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -51,7 +50,7 @@ import org.apache.spark.util.io.ChunkedByteBuffer
 import com.google.common.base.Objects
 import com.google.protobuf.CodedOutputStream
 
-import org.apache.comet.{CometConf, CometExecIterator, CometRuntimeException, CometShuffleBlockIterator, ConfigEntry}
+import org.apache.comet.{CometConf, CometExecIterator, CometRuntimeException, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.{isCometShuffleEnabled, withInfo}
 import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.serde.{CometOperatorSerde, Compatible, Incompatible, OperatorOuterClass, SupportLevel, Unsupported}
@@ -554,10 +553,8 @@ abstract class CometNativeExec extends CometExec {
           throw new CometRuntimeException(s"No input for CometNativeExec:\n $this")
         }
 
-        // Detect ShuffleScan indices and create factories for direct read
+        // Detect ShuffleScan indices for direct read in CometExecRDD
         val shuffleScanIndices = findShuffleScanIndices(serializedPlanCopy)
-        val shuffleBlockIteratorFactories =
-          buildShuffleBlockIteratorFactories(sparkPlans, inputs, shuffleScanIndices)
 
         // Unified RDD creation - CometExecRDD handles all cases
         val subqueries = collectSubqueries(this)
@@ -573,7 +570,7 @@ abstract class CometNativeExec extends CometExec {
           subqueries,
           broadcastedHadoopConfForEncryption,
           encryptedFilePaths,
-          shuffleBlockIteratorFactories)
+          shuffleScanIndices)
     }
   }
 
@@ -633,86 +630,6 @@ abstract class CometNativeExec extends CometExec {
     }
     walk(plan)
     indices.toSet
-  }
-
-  /**
-   * Build factory functions that produce CometShuffleBlockIterator for each input index that is a
-   * ShuffleScan. Maps from input index to a factory that, given TaskContext and Partition,
-   * creates the iterator.
-   */
-  private def buildShuffleBlockIteratorFactories(
-      sparkPlans: ArrayBuffer[SparkPlan],
-      inputs: ArrayBuffer[RDD[ColumnarBatch]],
-      shuffleScanIndices: Set[Int])
-      : Map[Int, (TaskContext, Partition) => CometShuffleBlockIterator] = {
-    if (shuffleScanIndices.isEmpty) return Map.empty
-
-    val factories = mutable.Map.empty[Int, (TaskContext, Partition) => CometShuffleBlockIterator]
-
-    shuffleScanIndices.foreach { scanIdx =>
-      if (scanIdx < inputs.length) {
-        inputs(scanIdx) match {
-          case rdd: CometShuffledBatchRDD =>
-            val dep = rdd.dependency
-            val rddMetrics = rdd.metrics
-            factories(scanIdx) = (context, part) => {
-              val shufflePart = part.asInstanceOf[ShuffledRowRDDPartition]
-              val tempMetrics =
-                context.taskMetrics().createTempShuffleReadMetrics()
-              val sqlMetricsReporter =
-                new SQLShuffleReadMetricsReporter(tempMetrics, rddMetrics)
-              val reader = shufflePart.spec match {
-                case CoalescedPartitionSpec(startReducerIndex, endReducerIndex, _) =>
-                  SparkEnv.get.shuffleManager
-                    .getReader(
-                      dep.shuffleHandle,
-                      startReducerIndex,
-                      endReducerIndex,
-                      context,
-                      sqlMetricsReporter)
-                    .asInstanceOf[CometBlockStoreShuffleReader[_, _]]
-                case PartialReducerPartitionSpec(reducerIndex, startMapIndex, endMapIndex, _) =>
-                  SparkEnv.get.shuffleManager
-                    .getReader(
-                      dep.shuffleHandle,
-                      startMapIndex,
-                      endMapIndex,
-                      reducerIndex,
-                      reducerIndex + 1,
-                      context,
-                      sqlMetricsReporter)
-                    .asInstanceOf[CometBlockStoreShuffleReader[_, _]]
-                case PartialMapperPartitionSpec(mapIndex, startReducerIndex, endReducerIndex) =>
-                  SparkEnv.get.shuffleManager
-                    .getReader(
-                      dep.shuffleHandle,
-                      mapIndex,
-                      mapIndex + 1,
-                      startReducerIndex,
-                      endReducerIndex,
-                      context,
-                      sqlMetricsReporter)
-                    .asInstanceOf[CometBlockStoreShuffleReader[_, _]]
-                case CoalescedMapperPartitionSpec(startMapIndex, endMapIndex, numReducers) =>
-                  SparkEnv.get.shuffleManager
-                    .getReader(
-                      dep.shuffleHandle,
-                      startMapIndex,
-                      endMapIndex,
-                      0,
-                      numReducers,
-                      context,
-                      sqlMetricsReporter)
-                    .asInstanceOf[CometBlockStoreShuffleReader[_, _]]
-              }
-              val rawStream = reader.readAsRawStream()
-              new CometShuffleBlockIterator(rawStream)
-            }
-          case _ => // Not a CometShuffledBatchRDD, skip
-        }
-      }
-    }
-    factories.toMap
   }
 
   /**

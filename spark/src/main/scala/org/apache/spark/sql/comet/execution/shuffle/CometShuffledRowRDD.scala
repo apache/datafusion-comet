@@ -27,6 +27,8 @@ import org.apache.spark.sql.execution.metric.{SQLMetric, SQLShuffleReadMetricsRe
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
+import org.apache.comet.CometShuffleBlockIterator
+
 /**
  * Different from [[org.apache.spark.sql.execution.ShuffledRowRDD]], this RDD is specialized for
  * reading shuffled data through [[CometBlockStoreShuffleReader]]. The shuffled data is read in an
@@ -90,12 +92,14 @@ class CometShuffledBatchRDD(
     }
   }
 
-  override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
+  private def createReader(
+      split: Partition,
+      context: TaskContext): CometBlockStoreShuffleReader[_, _] = {
     val tempMetrics = context.taskMetrics().createTempShuffleReadMetrics()
     // `SQLShuffleReadMetricsReporter` will update its own metrics for SQL exchange operator,
     // as well as the `tempMetrics` for basic shuffle metrics.
     val sqlMetricsReporter = new SQLShuffleReadMetricsReporter(tempMetrics, metrics)
-    val reader = split.asInstanceOf[ShuffledRowRDDPartition].spec match {
+    split.asInstanceOf[ShuffledRowRDDPartition].spec match {
       case CoalescedPartitionSpec(startReducerIndex, endReducerIndex, _) =>
         SparkEnv.get.shuffleManager
           .getReader(
@@ -142,7 +146,21 @@ class CometShuffledBatchRDD(
             sqlMetricsReporter)
           .asInstanceOf[CometBlockStoreShuffleReader[_, _]]
     }
+  }
 
+  /**
+   * Creates a CometShuffleBlockIterator that provides raw compressed shuffle blocks for direct
+   * consumption by native code, bypassing Arrow FFI.
+   */
+  def computeAsShuffleBlockIterator(
+      split: Partition,
+      context: TaskContext): CometShuffleBlockIterator = {
+    val reader = createReader(split, context)
+    new CometShuffleBlockIterator(reader.readAsRawStream())
+  }
+
+  override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
+    val reader = createReader(split, context)
     // TODO: Reads IPC by native code
     reader.read().asInstanceOf[Iterator[Product2[Int, ColumnarBatch]]].map(_._2)
   }
