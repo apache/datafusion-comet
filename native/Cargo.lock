@@ -1837,6 +1837,7 @@ dependencies = [
  "crc32fast",
  "criterion",
  "datafusion",
+ "datafusion-comet-jni-bridge",
  "datafusion-comet-objectstore-hdfs",
  "datafusion-comet-proto",
  "datafusion-comet-spark-expr",
@@ -1869,19 +1870,28 @@ dependencies = [
  "procfs",
  "prost",
  "rand 0.10.0",
- "regex",
  "reqwest",
  "serde_json",
  "simd-adler32",
  "snap",
  "tempfile",
- "thiserror 2.0.18",
  "tikv-jemalloc-ctl",
  "tikv-jemallocator",
  "tokio",
  "url",
  "uuid",
  "zstd",
+]
+
+[[package]]
+name = "datafusion-comet-common"
+version = "0.15.0"
+dependencies = [
+ "arrow",
+ "datafusion",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -1897,6 +1907,24 @@ dependencies = [
  "tempfile",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "datafusion-comet-jni-bridge"
+version = "0.15.0"
+dependencies = [
+ "arrow",
+ "assertables",
+ "datafusion",
+ "datafusion-comet-common",
+ "jni",
+ "lazy_static",
+ "once_cell",
+ "parquet",
+ "paste",
+ "prost",
+ "regex",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -1931,14 +1959,13 @@ dependencies = [
  "chrono-tz",
  "criterion",
  "datafusion",
+ "datafusion-comet-common",
  "futures",
  "hex",
  "num",
  "rand 0.10.0",
  "regex",
- "serde",
  "serde_json",
- "thiserror 2.0.18",
  "tokio",
  "twox-hash",
 ]
