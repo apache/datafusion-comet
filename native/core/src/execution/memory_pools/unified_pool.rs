@@ -23,10 +23,7 @@ use std::{
     },
 };
 
-use crate::{
-    errors::CometResult,
-    jvm_bridge::{jni_call, JVMClasses},
-};
+use crate::{errors::CometResult, jvm_bridge::JVMClasses};
 use datafusion::{
     common::{resources_datafusion_err, DataFusionError},
     execution::memory_pool::{MemoryPool, MemoryReservation},

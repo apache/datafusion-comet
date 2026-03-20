@@ -53,7 +53,7 @@ use crate::execution::planner::PhysicalPlanner;
 use crate::execution::serde;
 use crate::execution::spark_plan::SparkPlan;
 use crate::execution::utils::SparkArrowConvert;
-use crate::jvm_bridge::{jni_new_global_ref, JVMClasses};
+use crate::jvm_bridge::JVMClasses;
 use crate::parquet::data_type::AsBytes;
 use crate::parquet::encryption_support::{CometEncryptionFactory, ENCRYPTION_FACTORY_ID};
 use crate::parquet::parquet_exec::init_datasource_exec;
