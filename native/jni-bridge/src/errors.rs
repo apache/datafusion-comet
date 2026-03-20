@@ -19,6 +19,7 @@
 
 use arrow::error::ArrowError;
 use datafusion::common::DataFusionError;
+use datafusion_comet_common::{SparkError, SparkErrorWithContext};
 use jni::errors::{Exception, ToException};
 use regex::Regex;
 
@@ -37,9 +38,7 @@ use std::{
 // lifetime checker won't let us.
 use jni::sys::{jboolean, jbyte, jchar, jdouble, jfloat, jint, jlong, jobject, jshort};
 
-use crate::execution::operators::ExecutionError;
-use datafusion_comet_spark_expr::SparkError;
-use jni::objects::{GlobalRef, JThrowable, JValue};
+use jni::objects::{GlobalRef, JThrowable};
 use jni::JNIEnv;
 use lazy_static::lazy_static;
 use parquet::errors::ParquetError;
@@ -47,6 +46,34 @@ use thiserror::Error;
 
 lazy_static! {
     static ref PANIC_BACKTRACE: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+}
+
+/// Error returned during executing operators.
+#[derive(thiserror::Error, Debug)]
+pub enum ExecutionError {
+    /// Simple error
+    #[allow(dead_code)]
+    #[error("General execution error with reason: {0}.")]
+    GeneralError(String),
+
+    /// Error when deserializing an operator.
+    #[error("Fail to deserialize to native operator with reason: {0}.")]
+    DeserializeError(String),
+
+    /// Error when processing Arrow array.
+    #[error("Fail to process Arrow array with reason: {0}.")]
+    ArrowError(String),
+
+    /// DataFusion error
+    #[error("Error from DataFusion: {0}.")]
+    DataFusionError(String),
+
+    #[error("{class}: {msg}")]
+    JavaException {
+        class: String,
+        msg: String,
+        throwable: GlobalRef,
+    },
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -62,11 +89,6 @@ pub enum CometError {
 
     #[error("Comet Internal Error: {0}")]
     Internal(String),
-
-    /// CometError::Spark is typically used in native code to emulate the same errors
-    /// that Spark would return
-    #[error(transparent)]
-    Spark(SparkError),
 
     #[error(transparent)]
     Arrow {
@@ -136,6 +158,11 @@ pub enum CometError {
         source: DataFusionError,
     },
 
+    /// Wraps a SparkError directly, allowing Comet to throw Spark-compatible exceptions
+    /// that Spark would return
+    #[error(transparent)]
+    Spark(SparkError),
+
     #[error("{class}: {msg}")]
     JavaException {
         class: String,
@@ -145,7 +172,10 @@ pub enum CometError {
 }
 
 pub fn init() {
-    std::panic::set_hook(Box::new(|_panic_info| {
+    std::panic::set_hook(Box::new(|panic_info| {
+        // Log the panic message and location to stderr so it is visible in CI logs
+        // even if the exception message is lost crossing the FFI boundary
+        eprintln!("Comet native panic: {panic_info}");
         // Capture the backtrace for a panic
         *PANIC_BACKTRACE.lock().unwrap() =
             Some(std::backtrace::Backtrace::force_capture().to_string());
@@ -212,6 +242,66 @@ impl From<CometError> for ExecutionError {
     }
 }
 
+impl From<prost::DecodeError> for ExpressionError {
+    fn from(error: prost::DecodeError) -> ExpressionError {
+        ExpressionError::Deserialize(error.to_string())
+    }
+}
+
+impl From<prost::UnknownEnumValue> for ExpressionError {
+    fn from(error: prost::UnknownEnumValue) -> ExpressionError {
+        ExpressionError::Deserialize(error.to_string())
+    }
+}
+
+impl From<prost::DecodeError> for ExecutionError {
+    fn from(error: prost::DecodeError) -> ExecutionError {
+        ExecutionError::DeserializeError(error.to_string())
+    }
+}
+
+impl From<prost::UnknownEnumValue> for ExecutionError {
+    fn from(error: prost::UnknownEnumValue) -> ExecutionError {
+        ExecutionError::DeserializeError(error.to_string())
+    }
+}
+
+impl From<ArrowError> for ExecutionError {
+    fn from(error: ArrowError) -> ExecutionError {
+        ExecutionError::ArrowError(error.to_string())
+    }
+}
+
+impl From<ArrowError> for ExpressionError {
+    fn from(error: ArrowError) -> ExpressionError {
+        ExpressionError::ArrowError(error.to_string())
+    }
+}
+
+impl From<ExpressionError> for ArrowError {
+    fn from(error: ExpressionError) -> ArrowError {
+        ArrowError::ComputeError(error.to_string())
+    }
+}
+
+impl From<DataFusionError> for ExecutionError {
+    fn from(value: DataFusionError) -> Self {
+        ExecutionError::DataFusionError(value.message().to_string())
+    }
+}
+
+impl From<ExecutionError> for DataFusionError {
+    fn from(value: ExecutionError) -> Self {
+        DataFusionError::Execution(value.to_string())
+    }
+}
+
+impl From<ExpressionError> for DataFusionError {
+    fn from(value: ExpressionError) -> Self {
+        DataFusionError::Execution(value.to_string())
+    }
+}
+
 impl jni::errors::ToException for CometError {
     fn to_exception(&self) -> Exception {
         match self {
@@ -221,10 +311,6 @@ impl jni::errors::ToException for CometError {
             },
             CometError::NullPointer(..) => Exception {
                 class: "java/lang/NullPointerException".to_string(),
-                msg: self.to_string(),
-            },
-            CometError::Spark { .. } => Exception {
-                class: "org/apache/spark/SparkException".to_string(),
                 msg: self.to_string(),
             },
             CometError::NumberIntFormat { source: s } => Exception {
@@ -242,6 +328,10 @@ impl jni::errors::ToException for CometError {
             CometError::Parquet { .. } => Exception {
                 class: "org/apache/comet/ParquetRuntimeException".to_string(),
                 msg: self.to_string(),
+            },
+            CometError::Spark(spark_err) => Exception {
+                class: spark_err.exception_class().to_string(),
+                msg: spark_err.to_string(),
             },
             _other => Exception {
                 class: "org/apache/comet/CometNativeException".to_string(),
@@ -277,8 +367,9 @@ pub type CometResult<T> = result::Result<T, CometError>;
 // ----------------------------------------------------------------------
 // Convenient macros for different errors
 
+#[macro_export]
 macro_rules! general_err {
-    ($fmt:expr, $($args:expr),*) => (crate::CometError::from(parquet::errors::ParquetError::General(format!($fmt, $($args),*))));
+    ($fmt:expr, $($args:expr),*) => ($crate::errors::CometError::from(parquet::errors::ParquetError::General(format!($fmt, $($args),*))));
 }
 
 /// Returns the "default value" for a type.  This is used for JNI code in order to facilitate
@@ -392,45 +483,132 @@ fn throw_exception(env: &mut JNIEnv, error: &CometError, backtrace: Option<Strin
                         throwable,
                     },
             } => env.throw(<&JThrowable>::from(throwable.as_obj())),
+            // Handle DataFusion errors containing SparkError or SparkErrorWithContext
             CometError::DataFusion {
                 msg: _,
                 source: DataFusionError::External(e),
-            } if matches!(e.downcast_ref(), Some(SparkError::CastOverFlow { .. })) => {
-                match e.downcast_ref() {
-                    Some(SparkError::CastOverFlow {
-                        value,
-                        from_type,
-                        to_type,
-                    }) => {
-                        let throwable: JThrowable = env
-                            .new_object(
-                                "org/apache/spark/sql/comet/CastOverflowException",
-                                "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V",
-                                &[
-                                    JValue::Object(&env.new_string(value).unwrap()),
-                                    JValue::Object(&env.new_string(from_type).unwrap()),
-                                    JValue::Object(&env.new_string(to_type).unwrap()),
-                                ],
-                            )
-                            .unwrap()
-                            .into();
-                        env.throw(throwable)
+            } => {
+                if let Some(spark_error_with_ctx) = e.downcast_ref::<SparkErrorWithContext>() {
+                    let json_message = spark_error_with_ctx.to_json();
+                    env.throw_new(
+                        "org/apache/comet/exceptions/CometQueryExecutionException",
+                        json_message,
+                    )
+                } else if let Some(spark_error) = e.downcast_ref::<SparkError>() {
+                    let json_message = spark_error.to_json();
+                    env.throw_new(
+                        "org/apache/comet/exceptions/CometQueryExecutionException",
+                        json_message,
+                    )
+                } else {
+                    // Check for file-not-found errors from object store
+                    let error_msg = e.to_string();
+                    if error_msg.contains("not found")
+                        && error_msg.contains("No such file or directory")
+                    {
+                        let spark_error = SparkError::FileNotFound { message: error_msg };
+                        throw_spark_error_as_json(env, &spark_error)
+                    } else {
+                        // Not a SparkError, use generic exception
+                        let exception = error.to_exception();
+                        match backtrace {
+                            Some(backtrace_string) => env.throw_new(
+                                exception.class,
+                                to_stacktrace_string(exception.msg, backtrace_string).unwrap(),
+                            ),
+                            _ => env.throw_new(exception.class, exception.msg),
+                        }
                     }
-                    _ => unreachable!(),
                 }
             }
+            // Handle direct SparkError - serialize to JSON
+            CometError::Spark(spark_error) => throw_spark_error_as_json(env, spark_error),
             _ => {
-                let exception = error.to_exception();
-                match backtrace {
-                    Some(backtrace_string) => env.throw_new(
-                        exception.class,
-                        to_stacktrace_string(exception.msg, backtrace_string).unwrap(),
-                    ),
-                    _ => env.throw_new(exception.class, exception.msg),
+                let error_msg = error.to_string();
+                // Check for file-not-found errors that may arrive through other wrapping paths
+                if error_msg.contains("not found")
+                    && error_msg.contains("No such file or directory")
+                {
+                    let spark_error = SparkError::FileNotFound { message: error_msg };
+                    throw_spark_error_as_json(env, &spark_error)
+                } else if let Some(spark_error) = try_convert_duplicate_field_error(&error_msg) {
+                    throw_spark_error_as_json(env, &spark_error)
+                } else {
+                    let exception = error.to_exception();
+                    match backtrace {
+                        Some(backtrace_string) => env.throw_new(
+                            exception.class,
+                            to_stacktrace_string(exception.msg, backtrace_string).unwrap(),
+                        ),
+                        _ => env.throw_new(exception.class, exception.msg),
+                    }
                 }
             }
         }
         .expect("Thrown exception")
+    }
+}
+
+/// Throws a CometQueryExecutionException with JSON-encoded SparkError
+fn throw_spark_error_as_json(
+    env: &mut JNIEnv,
+    spark_error: &SparkError,
+) -> jni::errors::Result<()> {
+    // Serialize error to JSON
+    let json_message = spark_error.to_json();
+
+    // Throw CometQueryExecutionException with JSON message
+    env.throw_new(
+        "org/apache/comet/exceptions/CometQueryExecutionException",
+        json_message,
+    )
+}
+
+/// Try to convert a DataFusion "Unable to get field named" error into a SparkError.
+/// DataFusion produces this error when reading Parquet files with duplicate field names
+/// in case-insensitive mode. For example, if a Parquet file has columns "B" and "b",
+/// DataFusion may deduplicate them and report: Unable to get field named "b". Valid
+/// fields: ["A", "B"]. When the requested field has a case-insensitive match among the
+/// valid fields, we convert this to Spark's _LEGACY_ERROR_TEMP_2093 error.
+fn try_convert_duplicate_field_error(error_msg: &str) -> Option<SparkError> {
+    // Match: Schema error: Unable to get field named "X". Valid fields: [...]
+    lazy_static! {
+        static ref FIELD_RE: Regex =
+            Regex::new(r#"Unable to get field named "([^"]+)"\. Valid fields: \[(.+)\]"#).unwrap();
+    }
+    if let Some(caps) = FIELD_RE.captures(error_msg) {
+        let requested_field = caps.get(1)?.as_str();
+        let requested_lower = requested_field.to_lowercase();
+        // Parse field names from the Valid fields list: ["A", "B"] or [A, B, b]
+        let valid_fields_raw = caps.get(2)?.as_str();
+        let all_fields: Vec<String> = valid_fields_raw
+            .split(',')
+            .map(|s| s.trim().trim_matches('"').to_string())
+            .collect();
+        // Find fields that match case-insensitively
+        let mut matched: Vec<String> = all_fields
+            .into_iter()
+            .filter(|f| f.to_lowercase() == requested_lower)
+            .collect();
+        // Need at least one case-insensitive match to treat this as a duplicate field error.
+        // DataFusion may deduplicate columns case-insensitively, so the valid fields list
+        // might contain only one variant (e.g. "B" when file has both "B" and "b").
+        // If requested field differs from the match, both existed in the original file.
+        if matched.is_empty() {
+            return None;
+        }
+        // Add the requested field name if it's not already in the list (different case)
+        if !matched.iter().any(|f| f == requested_field) {
+            matched.push(requested_field.to_string());
+        }
+        let required_field_name = requested_field.to_string();
+        let matched_fields = format!("[{}]", matched.join(", "));
+        Some(SparkError::DuplicateFieldCaseInsensitive {
+            required_field_name,
+            matched_fields,
+        })
+    } else {
+        None
     }
 }
 
@@ -441,6 +619,7 @@ enum StacktraceError {
     #[error("Unable to initialize backtrace regex: {0}")]
     Regex(#[from] regex::Error),
     #[error("Required field missing: {0}")]
+    #[allow(non_camel_case_types)]
     Required_Field(String),
     #[error("Unable to format stacktrace element: {0}")]
     Element(#[from] std::fmt::Error),

@@ -24,12 +24,12 @@ use crate::{
         metrics::utils::update_comet_metric, planner::PhysicalPlanner, serde::to_arrow_datatype,
         shuffle::spark_unsafe::row::process_sorted_row_partition, sort::RdxSort,
     },
-    jvm_bridge::{jni_new_global_ref, JVMClasses},
+    jvm_bridge::JVMClasses,
 };
 use arrow::array::{Array, RecordBatch, UInt32Array};
 use arrow::compute::{take, TakeOptions};
 use arrow::datatypes::DataType as ArrowDataType;
-use datafusion::common::{Result as DataFusionResult, ScalarValue};
+use datafusion::common::{DataFusionError, Result as DataFusionResult, ScalarValue};
 use datafusion::execution::disk_manager::DiskManagerMode;
 use datafusion::execution::memory_pool::MemoryPool;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
@@ -40,6 +40,7 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 use datafusion_comet_proto::spark_operator::Operator;
+use datafusion_spark::function::bitwise::bit_count::SparkBitCount;
 use datafusion_spark::function::bitwise::bit_get::SparkBitGet;
 use datafusion_spark::function::bitwise::bitwise_not::SparkBitwiseNot;
 use datafusion_spark::function::datetime::date_add::SparkDateAdd;
@@ -55,8 +56,11 @@ use datafusion_spark::function::math::hex::SparkHex;
 use datafusion_spark::function::math::width_bucket::SparkWidthBucket;
 use datafusion_spark::function::string::char::CharFunc;
 use datafusion_spark::function::string::concat::SparkConcat;
+use datafusion_spark::function::string::luhn_check::SparkLuhnCheck;
+use datafusion_spark::function::string::space::SparkSpace;
 use futures::poll;
 use futures::stream::StreamExt;
+use futures::FutureExt;
 use jni::objects::JByteBuffer;
 use jni::sys::{jlongArray, JNI_FALSE};
 use jni::{
@@ -400,6 +404,9 @@ fn register_datafusion_spark_function(session_ctx: &SessionContext) {
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkWidthBucket::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(MapFromEntries::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkCrc32::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkLuhnCheck::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSpace::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitCount::default()));
 }
 
 /// Prepares arrow arrays for output.
@@ -540,7 +547,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                 let physical_plan_time = start.elapsed();
 
                 exec_context.plan_creation_time += physical_plan_time;
-                exec_context.root_op = Some(Arc::clone(&root_op));
                 exec_context.scans = scans;
 
                 if exec_context.explain_native {
@@ -566,16 +572,36 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                     let (tx, rx) = mpsc::channel(2);
                     let mut stream = stream;
                     get_runtime().spawn(async move {
-                        while let Some(batch) = stream.next().await {
-                            if tx.send(batch).await.is_err() {
-                                break;
+                        let result = std::panic::AssertUnwindSafe(async {
+                            while let Some(batch) = stream.next().await {
+                                if tx.send(batch).await.is_err() {
+                                    break;
+                                }
                             }
+                        })
+                        .catch_unwind()
+                        .await;
+
+                        if let Err(panic) = result {
+                            let msg = match panic.downcast_ref::<&str>() {
+                                Some(s) => s.to_string(),
+                                None => match panic.downcast_ref::<String>() {
+                                    Some(s) => s.clone(),
+                                    None => "unknown panic".to_string(),
+                                },
+                            };
+                            let _ = tx
+                                .send(Err(DataFusionError::Execution(format!(
+                                    "native panic: {msg}"
+                                ))))
+                                .await;
                         }
                     });
                     exec_context.batch_receiver = Some(rx);
                 } else {
                     exec_context.stream = Some(stream);
                 }
+                exec_context.root_op = Some(root_op);
             } else {
                 // Pull input batches
                 pull_input_batches(exec_context)?;
@@ -825,6 +851,13 @@ pub extern "system" fn Java_org_apache_comet_Native_sortRowPartitionsNative(
             tracing_enabled != JNI_FALSE,
             || {
                 // SAFETY: JVM unsafe memory allocation is aligned with long.
+                debug_assert!(address != 0, "sortRowPartitionsNative: null address");
+                debug_assert!(size >= 0, "sortRowPartitionsNative: negative size {size}");
+                debug_assert_eq!(
+                    (address as usize) % std::mem::align_of::<i64>(),
+                    0,
+                    "sortRowPartitionsNative: address not aligned to i64"
+                );
                 let array =
                     unsafe { std::slice::from_raw_parts_mut(address as *mut i64, size as usize) };
                 array.rdxsort();
@@ -948,6 +981,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_columnarToRowConvert(
 ) -> jni::sys::jobject {
     try_unwrap_or_throw(&e, |mut env| {
         // Get the context
+        debug_assert!(c2r_handle != 0, "columnarToRowConvert: c2r_handle is null");
         let ctx = (c2r_handle as *mut ColumnarToRowContext)
             .as_mut()
             .ok_or_else(|| CometError::Internal("Null columnar to row context".to_string()))?;
@@ -965,6 +999,17 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_columnarToRowConvert(
             let array_ptr = array_addrs_elements[i] as *mut FFI_ArrowArray;
             let schema_ptr = schema_addrs_elements[i] as *mut FFI_ArrowSchema;
 
+            debug_assert!(
+                !array_ptr.is_null(),
+                "columnarToRowConvert: null array pointer at index {}",
+                i
+            );
+            debug_assert!(
+                !schema_ptr.is_null(),
+                "columnarToRowConvert: null schema pointer at index {}",
+                i
+            );
+
             // Take ownership of the FFI structures
             let ffi_array = std::ptr::read(array_ptr);
             let ffi_schema = std::ptr::read(schema_ptr);
@@ -977,6 +1022,11 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_columnarToRowConvert(
         }
 
         // Convert columnar to row
+        debug_assert!(
+            num_rows >= 0,
+            "columnarToRowConvert: num_rows is negative: {}",
+            num_rows
+        );
         let (buffer_ptr, offsets, lengths) = ctx.convert(&arrays, num_rows as usize)?;
 
         // Create Java int arrays for offsets and lengths
@@ -1013,6 +1063,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_columnarToRowClose(
     c2r_handle: jlong,
 ) {
     try_unwrap_or_throw(&e, |_env| {
+        debug_assert!(c2r_handle != 0, "columnarToRowClose: c2r_handle is null");
         if c2r_handle != 0 {
             let _ctx: Box<ColumnarToRowContext> =
                 Box::from_raw(c2r_handle as *mut ColumnarToRowContext);

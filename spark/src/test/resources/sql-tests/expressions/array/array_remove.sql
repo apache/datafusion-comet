@@ -15,6 +15,7 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
+-- Config: spark.comet.expression.ArrayRemove.allowIncompatible=true
 -- ConfigMatrix: parquet.enable.dictionary=false,true
 
 statement
@@ -35,5 +36,5 @@ query spark_answer_only
 SELECT array_remove(array(1, 2, 3, 2), val) FROM test_array_remove
 
 -- literal + literal
-query ignore(https://github.com/apache/datafusion-comet/issues/3338)
+query
 SELECT array_remove(array(1, 2, 3, 2), 2), array_remove(array(1, 2, 3), 4), array_remove(array(), 1), array_remove(cast(NULL as array<int>), 1)

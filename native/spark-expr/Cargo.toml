@@ -34,7 +34,7 @@ chrono-tz = { workspace = true }
 num = { workspace = true }
 regex = { workspace = true }
 serde_json = "1.0"
-thiserror = { workspace = true }
+datafusion-comet-common = { workspace = true }
 futures = { workspace = true }
 twox-hash = "2.1.2"
 rand = { workspace = true }
@@ -102,4 +102,12 @@ path = "tests/spark_expr_reg.rs"
 
 [[bench]]
 name = "cast_from_boolean"
+harness = false
+
+[[bench]]
+name = "wide_decimal"
+harness = false
+
+[[bench]]
+name = "cast_non_int_numeric_timestamp"
 harness = false

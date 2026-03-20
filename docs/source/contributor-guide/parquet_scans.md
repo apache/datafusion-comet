@@ -49,10 +49,10 @@ The following features are not supported by either scan implementation, and Come
 
 The following shared limitation may produce incorrect results without falling back to Spark:
 
-- No support for datetime rebasing detection or the `spark.comet.exceptionOnDatetimeRebase` configuration. When
-  reading Parquet files containing dates or timestamps written before Spark 3.0 (which used a hybrid
-  Julian/Gregorian calendar), dates/timestamps will be read as if they were written using the Proleptic Gregorian
-  calendar. This may produce incorrect results for dates before October 15, 1582.
+- No support for datetime rebasing. When reading Parquet files containing dates or timestamps written before
+  Spark 3.0 (which used a hybrid Julian/Gregorian calendar), dates/timestamps will be read as if they were
+  written using the Proleptic Gregorian calendar. This may produce incorrect results for dates before
+  October 15, 1582.
 
 The `native_datafusion` scan has some additional limitations, mostly related to Parquet metadata. All of these
 cause Comet to fall back to Spark.
@@ -62,6 +62,11 @@ cause Comet to fall back to Spark.
 - No support for `input_file_name()`, `input_file_block_start()`, or `input_file_block_length()` SQL functions.
   The `native_datafusion` scan does not use Spark's `FileScanRDD`, so these functions cannot populate their values.
 - No support for `ignoreMissingFiles` or `ignoreCorruptFiles` being set to `true`
+- No support for duplicate field names in case-insensitive mode. When the required or data schema contains
+  field names that differ only by case (e.g., `B` and `b`), Comet falls back to Spark. Duplicates
+  in the physical Parquet file that are not reflected in the table schema cannot be detected at plan time;
+  in that case DataFusion will throw a `SparkRuntimeException` with error class `_LEGACY_ERROR_TEMP_2093`,
+  matching Spark's behavior.
 
 The `native_iceberg_compat` scan has the following additional limitation that may produce incorrect results
 without falling back to Spark:

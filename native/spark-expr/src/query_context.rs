@@ -15,6 +15,5 @@
 // specific language governing permissions and limitations
 // under the License.
 
-mod bitwise_count;
-
-pub use bitwise_count::SparkBitwiseCount;
+// Re-export all query context types from the common crate
+pub use datafusion_comet_common::{create_query_context_map, QueryContext, QueryContextMap};

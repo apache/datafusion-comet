@@ -16,7 +16,7 @@
 // under the License.
 
 use crate::utils::is_valid_decimal_precision;
-use crate::{arithmetic_overflow_error, EvalMode};
+use crate::{decimal_sum_overflow_error, EvalMode, SparkErrorWithContext};
 use arrow::array::{
     cast::AsArray, types::Decimal128Type, Array, ArrayRef, BooleanArray, Decimal128Array,
 };
@@ -29,7 +29,7 @@ use datafusion::logical_expr::{
 };
 use std::{any::Any, sync::Arc};
 
-#[derive(Debug, PartialEq, Eq, Hash)]
+#[derive(Debug)]
 pub struct SumDecimal {
     /// Aggregate function signature
     signature: Signature,
@@ -41,10 +41,43 @@ pub struct SumDecimal {
     /// Decimal scale
     scale: i8,
     eval_mode: EvalMode,
+    /// Optional expression ID for query context lookup during error creation
+    expr_id: Option<u64>,
+    /// Session-scoped query context registry for error reporting
+    registry: Arc<crate::QueryContextMap>,
+}
+
+// Manually implement PartialEq, Eq, and Hash excluding the registry field
+// since registry is only for error reporting and doesn't affect function behavior
+impl PartialEq for SumDecimal {
+    fn eq(&self, other: &Self) -> bool {
+        self.precision == other.precision
+            && self.scale == other.scale
+            && self.eval_mode == other.eval_mode
+            && self.expr_id == other.expr_id
+            && self.result_type == other.result_type
+    }
+}
+
+impl Eq for SumDecimal {}
+
+impl std::hash::Hash for SumDecimal {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.precision.hash(state);
+        self.scale.hash(state);
+        self.eval_mode.hash(state);
+        self.expr_id.hash(state);
+        self.result_type.hash(state);
+    }
 }
 
 impl SumDecimal {
-    pub fn try_new(data_type: DataType, eval_mode: EvalMode) -> DFResult<Self> {
+    pub fn try_new(
+        data_type: DataType,
+        eval_mode: EvalMode,
+        expr_id: Option<u64>,
+        registry: Arc<crate::QueryContextMap>,
+    ) -> DFResult<Self> {
         let (precision, scale) = match data_type {
             DataType::Decimal128(p, s) => (p, s),
             _ => {
@@ -59,6 +92,8 @@ impl SumDecimal {
             precision,
             scale,
             eval_mode,
+            expr_id,
+            registry,
         })
     }
 }
@@ -73,6 +108,8 @@ impl AggregateUDFImpl for SumDecimal {
             self.precision,
             self.scale,
             self.eval_mode,
+            self.expr_id,
+            Arc::clone(&self.registry),
         )))
     }
 
@@ -110,6 +147,8 @@ impl AggregateUDFImpl for SumDecimal {
             self.result_type.clone(),
             self.precision,
             self.eval_mode,
+            self.expr_id,
+            Arc::clone(&self.registry),
         )))
     }
 
@@ -137,10 +176,18 @@ struct SumDecimalAccumulator {
     precision: u8,
     scale: i8,
     eval_mode: EvalMode,
+    expr_id: Option<u64>,
+    registry: Arc<crate::QueryContextMap>,
 }
 
 impl SumDecimalAccumulator {
-    fn new(precision: u8, scale: i8, eval_mode: EvalMode) -> Self {
+    fn new(
+        precision: u8,
+        scale: i8,
+        eval_mode: EvalMode,
+        expr_id: Option<u64>,
+        registry: Arc<crate::QueryContextMap>,
+    ) -> Self {
         // For decimal sum, always track is_empty regardless of eval_mode
         // This matches Spark's behavior where DecimalType always uses shouldTrackIsEmpty = true
         Self {
@@ -149,6 +196,8 @@ impl SumDecimalAccumulator {
             precision,
             scale,
             eval_mode,
+            expr_id,
+            registry,
         }
     }
 
@@ -164,7 +213,8 @@ impl SumDecimalAccumulator {
 
         if is_overflow || !is_valid_decimal_precision(new_sum, self.precision) {
             if self.eval_mode == EvalMode::Ansi {
-                return Err(DataFusionError::from(arithmetic_overflow_error("decimal")));
+                let error = decimal_sum_overflow_error();
+                return Err(self.wrap_error_with_context(error));
             }
             self.sum = None;
             self.is_empty = false;
@@ -174,6 +224,17 @@ impl SumDecimalAccumulator {
         self.sum = Some(new_sum);
         self.is_empty = false;
         Ok(())
+    }
+
+    /// Wrap a SparkError with QueryContext if expr_id is available
+    fn wrap_error_with_context(&self, error: crate::SparkError) -> DataFusionError {
+        if let Some(expr_id) = self.expr_id {
+            if let Some(query_ctx) = self.registry.get(expr_id) {
+                let wrapped = SparkErrorWithContext::with_context(error, query_ctx);
+                return DataFusionError::External(Box::new(wrapped));
+            }
+        }
+        DataFusionError::from(error)
     }
 }
 
@@ -292,7 +353,8 @@ impl Accumulator for SumDecimalAccumulator {
 
         if is_overflow || !is_valid_decimal_precision(new_sum, self.precision) {
             if self.eval_mode == EvalMode::Ansi {
-                return Err(DataFusionError::from(arithmetic_overflow_error("decimal")));
+                let error = decimal_sum_overflow_error();
+                return Err(self.wrap_error_with_context(error));
             } else {
                 self.sum = None;
                 self.is_empty = false;
@@ -311,16 +373,26 @@ struct SumDecimalGroupsAccumulator {
     result_type: DataType,
     precision: u8,
     eval_mode: EvalMode,
+    expr_id: Option<u64>,
+    registry: Arc<crate::QueryContextMap>,
 }
 
 impl SumDecimalGroupsAccumulator {
-    fn new(result_type: DataType, precision: u8, eval_mode: EvalMode) -> Self {
+    fn new(
+        result_type: DataType,
+        precision: u8,
+        eval_mode: EvalMode,
+        expr_id: Option<u64>,
+        registry: Arc<crate::QueryContextMap>,
+    ) -> Self {
         Self {
             sum: Vec::new(),
             is_empty: Vec::new(),
             result_type,
             precision,
             eval_mode,
+            expr_id,
+            registry,
         }
     }
 
@@ -328,6 +400,17 @@ impl SumDecimalGroupsAccumulator {
         // For decimal sum, always initialize properly regardless of eval_mode
         self.sum.resize(total_num_groups, Some(0));
         self.is_empty.resize(total_num_groups, true);
+    }
+
+    /// Wrap a SparkError with QueryContext if expr_id is available
+    fn wrap_error_with_context(&self, error: crate::SparkError) -> DataFusionError {
+        if let Some(expr_id) = self.expr_id {
+            if let Some(query_ctx) = self.registry.get(expr_id) {
+                let wrapped = SparkErrorWithContext::with_context(error, query_ctx);
+                return DataFusionError::External(Box::new(wrapped));
+            }
+        }
+        DataFusionError::from(error)
     }
 
     #[inline]
@@ -342,7 +425,8 @@ impl SumDecimalGroupsAccumulator {
 
         if is_overflow || !is_valid_decimal_precision(new_sum, self.precision) {
             if self.eval_mode == EvalMode::Ansi {
-                return Err(DataFusionError::from(arithmetic_overflow_error("decimal")));
+                let error = decimal_sum_overflow_error();
+                return Err(self.wrap_error_with_context(error));
             }
             self.sum[group_index] = None;
         } else {
@@ -503,7 +587,8 @@ impl GroupsAccumulator for SumDecimalGroupsAccumulator {
 
             if is_overflow || !is_valid_decimal_precision(new_sum, self.precision) {
                 if self.eval_mode == EvalMode::Ansi {
-                    return Err(DataFusionError::from(arithmetic_overflow_error("decimal")));
+                    let error = decimal_sum_overflow_error();
+                    return Err(self.wrap_error_with_context(error));
                 } else {
                     self.sum[group_index] = None;
                     self.is_empty[group_index] = false;
@@ -542,7 +627,13 @@ mod tests {
 
     #[test]
     fn invalid_data_type() {
-        assert!(SumDecimal::try_new(DataType::Int32, EvalMode::Legacy).is_err());
+        assert!(SumDecimal::try_new(
+            DataType::Int32,
+            EvalMode::Legacy,
+            None,
+            crate::create_query_context_map(),
+        )
+        .is_err());
     }
 
     #[tokio::test]
@@ -566,6 +657,8 @@ mod tests {
         let aggregate_udf = Arc::new(AggregateUDF::new_from_impl(SumDecimal::try_new(
             data_type.clone(),
             EvalMode::Legacy,
+            None,
+            crate::create_query_context_map(),
         )?));
 
         let aggr_expr = AggregateExprBuilder::new(aggregate_udf, vec![c1])

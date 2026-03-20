@@ -224,11 +224,10 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
   private def extractDeleteFilesList(
       task: Any,
       contentFileClass: Class[_],
-      fileScanTaskClass: Class[_]): Seq[OperatorOuterClass.IcebergDeleteFile] = {
+      fileScanTaskClass: Class[_],
+      fileIO: Option[Any]): Seq[OperatorOuterClass.IcebergDeleteFile] = {
     try {
-      // scalastyle:off classforname
-      val deleteFileClass = Class.forName(IcebergReflection.ClassNames.DELETE_FILE)
-      // scalastyle:on classforname
+      val deleteFileClass = IcebergReflection.loadClass(IcebergReflection.ClassNames.DELETE_FILE)
 
       val deletes = IcebergReflection.getDeleteFilesFromTask(task, fileScanTaskClass)
 
@@ -263,10 +262,24 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                   val specIdMethod = deleteFileClass.getMethod("specId")
                   specIdMethod.invoke(deleteFile).asInstanceOf[Int]
                 } catch {
-                  case _: Exception =>
-                    0
+                  case _: Exception => 0
                 }
               deleteBuilder.setPartitionSpecId(specId)
+
+              // Workaround for https://github.com/apache/iceberg/issues/12554
+              // RewriteTablePath rewrites path references inside position delete files,
+              // making the copied file possibly differ in size, but does not update
+              // file_size_in_bytes in the manifest. The manifest value cannot be trusted;
+              // always use FileIO to get the actual size.
+              val inputFile = fileIO.get.getClass
+                .getMethod("newInputFile", classOf[String])
+                .invoke(fileIO.get, deletePath)
+              val actualDeleteFileSizeInBytes =
+                inputFile.getClass
+                  .getMethod("getLength")
+                  .invoke(inputFile)
+                  .asInstanceOf[Long]
+              deleteBuilder.setFileSizeInBytes(actualDeleteFileSizeInBytes)
 
               try {
                 val equalityIdsMethod =
@@ -321,13 +334,11 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       if (spec != null) {
         // Deduplicate partition spec
         try {
-          // scalastyle:off classforname
           val partitionSpecParserClass =
-            Class.forName(IcebergReflection.ClassNames.PARTITION_SPEC_PARSER)
+            IcebergReflection.loadClass(IcebergReflection.ClassNames.PARTITION_SPEC_PARSER)
           val toJsonMethod = partitionSpecParserClass.getMethod(
             "toJson",
-            Class.forName(IcebergReflection.ClassNames.PARTITION_SPEC))
-          // scalastyle:on classforname
+            IcebergReflection.loadClass(IcebergReflection.ClassNames.PARTITION_SPEC))
           val partitionSpecJson = toJsonMethod
             .invoke(null, spec)
             .asInstanceOf[String]
@@ -670,9 +681,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
    */
   private def convertIcebergLiteral(icebergLiteral: Any, sparkType: DataType): Literal = {
     // Load Literal interface to get value() method (use interface to avoid package-private issues)
-    // scalastyle:off classforname
-    val literalClass = Class.forName(IcebergReflection.ClassNames.LITERAL)
-    // scalastyle:on classforname
+    val literalClass = IcebergReflection.loadClass(IcebergReflection.ClassNames.LITERAL)
     val valueMethod = literalClass.getMethod("value")
     val value = valueMethod.invoke(icebergLiteral)
 
@@ -752,6 +761,8 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       mutable.HashMap[Seq[OperatorOuterClass.IcebergDeleteFile], Int]()
     val residualToPoolIndex = mutable.HashMap[Option[Expr], Int]()
 
+    val fileIO = IcebergReflection.getFileIO(metadata.table)
+
     val perPartitionBuilders = mutable.ArrayBuffer[OperatorOuterClass.IcebergScan]()
 
     var totalTasks = 0
@@ -773,19 +784,23 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     }
 
     // Load Iceberg classes once (avoid repeated class loading in loop)
-    // scalastyle:off classforname
-    val contentScanTaskClass = Class.forName(IcebergReflection.ClassNames.CONTENT_SCAN_TASK)
-    val fileScanTaskClass = Class.forName(IcebergReflection.ClassNames.FILE_SCAN_TASK)
-    val contentFileClass = Class.forName(IcebergReflection.ClassNames.CONTENT_FILE)
-    val schemaParserClass = Class.forName(IcebergReflection.ClassNames.SCHEMA_PARSER)
-    val schemaClass = Class.forName(IcebergReflection.ClassNames.SCHEMA)
-    // scalastyle:on classforname
+    val contentScanTaskClass =
+      IcebergReflection.loadClass(IcebergReflection.ClassNames.CONTENT_SCAN_TASK)
+    val fileScanTaskClass =
+      IcebergReflection.loadClass(IcebergReflection.ClassNames.FILE_SCAN_TASK)
+    val contentFileClass =
+      IcebergReflection.loadClass(IcebergReflection.ClassNames.CONTENT_FILE)
+    val schemaParserClass =
+      IcebergReflection.loadClass(IcebergReflection.ClassNames.SCHEMA_PARSER)
+    val schemaClass =
+      IcebergReflection.loadClass(IcebergReflection.ClassNames.SCHEMA)
 
     // Cache method lookups (avoid repeated getMethod in loop)
     val fileMethod = contentScanTaskClass.getMethod("file")
     val startMethod = contentScanTaskClass.getMethod("start")
     val lengthMethod = contentScanTaskClass.getMethod("length")
     val residualMethod = contentScanTaskClass.getMethod("residual")
+    val fileSizeInBytesMethod = contentFileClass.getMethod("fileSizeInBytes")
     val taskSchemaMethod = fileScanTaskClass.getMethod("schema")
     val toJsonMethod = schemaParserClass.getMethod("toJson", schemaClass)
     toJsonMethod.setAccessible(true)
@@ -839,6 +854,10 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
 
                 val length = lengthMethod.invoke(task).asInstanceOf[Long]
                 taskBuilder.setLength(length)
+
+                val fileSizeInBytes =
+                  fileSizeInBytesMethod.invoke(dataFile).asInstanceOf[Long]
+                taskBuilder.setFileSizeInBytes(fileSizeInBytes)
 
                 val taskSchema = taskSchemaMethod.invoke(task)
 
@@ -901,7 +920,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                 taskBuilder.setProjectFieldIdsIdx(projectFieldIdsIdx)
 
                 val deleteFilesList =
-                  extractDeleteFilesList(task, contentFileClass, fileScanTaskClass)
+                  extractDeleteFilesList(task, contentFileClass, fileScanTaskClass, fileIO)
                 if (deleteFilesList.nonEmpty) {
                   val deleteFilesIdx = deleteFilesToPoolIndex.getOrElseUpdate(
                     deleteFilesList, {
