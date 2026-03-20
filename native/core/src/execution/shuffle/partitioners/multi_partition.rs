@@ -39,7 +39,7 @@ use std::fmt::{Debug, Formatter};
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, BufWriter, Seek, Write};
 use std::sync::Arc;
-use tokio::time::Instant;
+use std::time::{Duration, Instant};
 
 #[derive(Default)]
 struct ScratchSpace {
@@ -447,26 +447,32 @@ impl MultiPartitionShuffleRepartitioner {
         write_buffer_size: usize,
         batch_size: usize,
     ) -> datafusion::common::Result<()> {
+        // Snapshot inner metric values so we can compute gather_time by subtraction
+        let coalesce_before = coalesce_time.value();
+        let encode_before = encode_time.value();
+        let write_before = write_time.value();
+        let total_start = Instant::now();
+
         let mut buf_batch_writer = BufBatchWriter::new(
             shuffle_block_writer,
             output_data,
             write_buffer_size,
             batch_size,
         );
-        loop {
-            let gather_start = Instant::now();
-            let maybe_batch = partition_iter.next();
-            gather_time.add_duration(gather_start.elapsed());
-
-            match maybe_batch {
-                Some(batch) => {
-                    let batch = batch?;
-                    buf_batch_writer.write(&batch, coalesce_time, encode_time, write_time)?;
-                }
-                None => break,
-            }
+        for batch in partition_iter {
+            let batch = batch?;
+            buf_batch_writer.write(&batch, coalesce_time, encode_time, write_time)?;
         }
         buf_batch_writer.flush(coalesce_time, encode_time, write_time)?;
+
+        // gather_time = total - coalesce - encode - write (avoids per-batch syscalls)
+        let total_nanos = total_start.elapsed().as_nanos() as usize;
+        let inner_nanos = (coalesce_time.value() - coalesce_before)
+            + (encode_time.value() - encode_before)
+            + (write_time.value() - write_before);
+        gather_time.add_duration(Duration::from_nanos(
+            total_nanos.saturating_sub(inner_nanos) as u64,
+        ));
         Ok(())
     }
 
