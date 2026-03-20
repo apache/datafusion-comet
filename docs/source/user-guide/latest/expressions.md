@@ -90,6 +90,12 @@ Expressions that are not Spark-compatible will fall back to Spark by default and
 | Substring       | Yes               |                                                                                                            |
 | Upper           | No                | Results can vary depending on locale and character set. Requires `spark.comet.caseConversion.enabled=true` |
 
+## JSON Functions
+
+| Expression    | Spark-Compatible? | Compatibility Notes                                                                           |
+| ------------- | ----------------- | --------------------------------------------------------------------------------------------- |
+| GetJsonObject | No                | Spark allows single-quoted JSON and unescaped control characters which Comet does not support |
+
 ## Date/Time Functions
 
 | Expression     | SQL                          | Spark-Compatible? | Compatibility Notes                                                                                                              |
