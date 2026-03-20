@@ -1266,8 +1266,13 @@ impl PhysicalPlanner {
                     };
 
                 // The `ScanExec` operator will take actual arrays from Spark during execution
-                let scan =
-                    ScanExec::new(self.exec_context_id, input_source, &scan.source, data_types)?;
+                let scan = ScanExec::new(
+                    self.exec_context_id,
+                    input_source,
+                    &scan.source,
+                    data_types,
+                    scan.arrow_ffi_safe,
+                )?;
 
                 Ok((
                     vec![scan.clone()],
@@ -3651,6 +3656,7 @@ mod tests {
                     type_info: None,
                 }],
                 source: "".to_string(),
+                arrow_ffi_safe: false,
             })),
         };
 
@@ -3715,6 +3721,7 @@ mod tests {
                     type_info: None,
                 }],
                 source: "".to_string(),
+                arrow_ffi_safe: false,
             })),
         };
 
@@ -3919,6 +3926,7 @@ mod tests {
             op_struct: Some(OpStruct::Scan(spark_operator::Scan {
                 fields: vec![create_proto_datatype()],
                 source: "".to_string(),
+                arrow_ffi_safe: false,
             })),
         }
     }
@@ -3961,6 +3969,7 @@ mod tests {
                     },
                 ],
                 source: "".to_string(),
+                arrow_ffi_safe: false,
             })),
         };
 
@@ -4082,6 +4091,7 @@ mod tests {
                     },
                 ],
                 source: "".to_string(),
+                arrow_ffi_safe: false,
             })),
         };
 
@@ -4564,6 +4574,7 @@ mod tests {
                     },
                 ],
                 source: "".to_string(),
+                arrow_ffi_safe: false,
             })),
         };
 

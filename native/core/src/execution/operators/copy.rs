@@ -22,8 +22,16 @@ use arrow::array::{downcast_dictionary_array, make_array, Array, ArrayRef, Mutab
 use arrow::datatypes::DataType;
 use arrow::error::ArrowError;
 
+#[derive(Debug, PartialEq, Clone)]
+pub enum CopyMode {
+    /// Perform a deep copy and also unpack dictionaries
+    UnpackOrDeepCopy,
+    /// Perform a clone and also unpack dictionaries
+    UnpackOrClone,
+}
+
 /// Copy an Arrow Array
-fn copy_array(array: &dyn Array) -> ArrayRef {
+pub(crate) fn copy_array(array: &dyn Array) -> ArrayRef {
     let capacity = array.len();
     let data = array.to_data();
 
@@ -54,8 +62,15 @@ fn copy_array(array: &dyn Array) -> ArrayRef {
     }
 }
 
-/// Unpack dictionary arrays to primitive type, or clone non-dictionary arrays.
-pub(crate) fn copy_or_unpack_array(array: &Arc<dyn Array>) -> Result<ArrayRef, ArrowError> {
+/// Copy an Arrow Array or cast to primitive type if it is a dictionary array.
+/// This is used for `CopyExec` to copy/cast the input array. If the input array
+/// is a dictionary array, we will cast the dictionary array to primitive type
+/// (i.e., unpack the dictionary array) and copy the primitive array. If the input
+/// array is a primitive array, we simply copy the array.
+pub(crate) fn copy_or_unpack_array(
+    array: &Arc<dyn Array>,
+    mode: &CopyMode,
+) -> Result<ArrayRef, ArrowError> {
     match array.data_type() {
         DataType::Dictionary(_, value_type) => {
             let options = CastOptions::default();
@@ -67,6 +82,12 @@ pub(crate) fn copy_or_unpack_array(array: &Arc<dyn Array>) -> Result<ArrayRef, A
                 &options,
             )?))
         }
-        _ => Ok(Arc::clone(array)),
+        _ => {
+            if mode == &CopyMode::UnpackOrDeepCopy {
+                Ok(copy_array(array))
+            } else {
+                Ok(Arc::clone(array))
+            }
+        }
     }
 }

@@ -279,6 +279,13 @@ case class CometBroadcastExchangeExec(
 
 object CometBroadcastExchangeExec extends CometSink[BroadcastExchangeExec] {
 
+  /**
+   * Exchange data is FFI safe because there is no use of mutable buffers involved.
+   *
+   * Source of broadcast exchange batches is ArrowStreamReader.
+   */
+  override def isFfiSafe: Boolean = true
+
   override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
     CometConf.COMET_EXEC_BROADCAST_EXCHANGE_ENABLED)
 
