@@ -384,6 +384,12 @@ object CometStringSplit extends CometExpressionSerde[StringSplit] {
 
 object CometGetJsonObject extends CometExpressionSerde[GetJsonObject] {
 
+  override def getSupportLevel(expr: GetJsonObject): SupportLevel =
+    Incompatible(
+      Some(
+        "Spark allows single-quoted JSON and unescaped control characters " +
+          "which Comet does not support"))
+
   override def convert(
       expr: GetJsonObject,
       inputs: Seq[Attribute],
