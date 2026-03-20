@@ -1841,6 +1841,7 @@ dependencies = [
  "datafusion-comet-jni-bridge",
  "datafusion-comet-objectstore-hdfs",
  "datafusion-comet-proto",
+ "datafusion-comet-shuffle",
  "datafusion-comet-spark-expr",
  "datafusion-datasource",
  "datafusion-functions-nested",
