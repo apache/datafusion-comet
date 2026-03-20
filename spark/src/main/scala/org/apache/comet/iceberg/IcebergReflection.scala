@@ -78,6 +78,29 @@ object IcebergReflection extends Logging {
   }
 
   /**
+   * Loads a class using the thread context classloader first, then falls back to the system
+   * classloader.
+   *
+   * @param className
+   *   Fully qualified class name to load
+   * @return
+   *   The loaded Class object
+   */
+  def loadClass(className: String): Class[_] = {
+    val classLoader = Thread.currentThread().getContextClassLoader
+    if (classLoader != null) {
+      // scalastyle:off classforname
+      Class.forName(className, true, classLoader)
+      // scalastyle:on classforname
+    } else {
+      // Fallback to default classloader if context classloader is null
+      // scalastyle:off classforname
+      Class.forName(className)
+      // scalastyle:on classforname
+    }
+  }
+
+  /**
    * Searches through class hierarchy to find a method (including protected methods).
    */
   def findMethodInHierarchy(
@@ -124,9 +147,7 @@ object IcebergReflection extends Logging {
    */
   def extractFileLocation(file: Any): Option[String] = {
     try {
-      // scalastyle:off classforname
-      val contentFileClass = Class.forName(ClassNames.CONTENT_FILE)
-      // scalastyle:on classforname
+      val contentFileClass = loadClass(ClassNames.CONTENT_FILE)
       extractFileLocation(contentFileClass, file)
     } catch {
       case _: Exception => None
@@ -387,9 +408,7 @@ object IcebergReflection extends Logging {
    */
   def getEqualityFieldIds(deleteFile: Any): java.util.List[_] = {
     try {
-      // scalastyle:off classforname
-      val deleteFileClass = Class.forName(ClassNames.DELETE_FILE)
-      // scalastyle:on classforname
+      val deleteFileClass = loadClass(ClassNames.DELETE_FILE)
       val equalityFieldIdsMethod = deleteFileClass.getMethod("equalityFieldIds")
       val ids = equalityFieldIdsMethod.invoke(deleteFile).asInstanceOf[java.util.List[_]]
       if (ids == null) new java.util.ArrayList[Any]() else ids
@@ -515,9 +534,7 @@ object IcebergReflection extends Logging {
     val fieldsMethod = partitionSpec.getClass.getMethod("fields")
     val fields = fieldsMethod.invoke(partitionSpec).asInstanceOf[java.util.List[_]]
 
-    // scalastyle:off classforname
-    val partitionFieldClass = Class.forName(ClassNames.PARTITION_FIELD)
-    // scalastyle:on classforname
+    val partitionFieldClass = loadClass(ClassNames.PARTITION_FIELD)
     val sourceIdMethod = partitionFieldClass.getMethod("sourceId")
     val findFieldMethod = schema.getClass.getMethod("findField", classOf[Int])
 
