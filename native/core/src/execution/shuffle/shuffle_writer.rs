@@ -631,9 +631,13 @@ mod test {
                 8192,
             );
             for batch in &small_batches {
-                buf_writer.write(batch, &coalesce_time, &encode_time, &write_time).unwrap();
+                buf_writer
+                    .write(batch, &coalesce_time, &encode_time, &write_time)
+                    .unwrap();
             }
-            buf_writer.flush(&coalesce_time, &encode_time, &write_time).unwrap();
+            buf_writer
+                .flush(&coalesce_time, &encode_time, &write_time)
+                .unwrap();
         }
 
         // Write without coalescing (batch_size=1)
@@ -647,9 +651,13 @@ mod test {
                 1,
             );
             for batch in &small_batches {
-                buf_writer.write(batch, &coalesce_time, &encode_time, &write_time).unwrap();
+                buf_writer
+                    .write(batch, &coalesce_time, &encode_time, &write_time)
+                    .unwrap();
             }
-            buf_writer.flush(&coalesce_time, &encode_time, &write_time).unwrap();
+            buf_writer
+                .flush(&coalesce_time, &encode_time, &write_time)
+                .unwrap();
         }
 
         // Coalesced output should be smaller due to fewer IPC schema blocks
