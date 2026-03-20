@@ -89,6 +89,8 @@ spark-submit \
 
 Note: If the executor is distributed then `executor.html` will be written on the remote node.
 
+Note: If the executor is distributed then `executor.html` will be written on the remote node.
+
 ### Choosing an event type
 
 | Event   | When to use                                                                                               |
