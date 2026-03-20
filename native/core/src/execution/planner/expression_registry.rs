@@ -184,6 +184,12 @@ impl ExpressionRegistry {
 
         // Register temporal expressions
         self.register_temporal_expressions();
+
+        // Register random expressions
+        self.register_random_expressions();
+
+        // Register partition expressions
+        self.register_partition_expressions();
     }
 
     /// Register arithmetic expression builders
@@ -385,5 +391,29 @@ impl ExpressionRegistry {
                 "Expression struct is None".to_string(),
             )),
         }
+    }
+
+    /// Register random expression builders
+    fn register_random_expressions(&mut self) {
+        use crate::execution::expressions::random::*;
+
+        self.builders
+            .insert(ExpressionType::Rand, Box::new(RandBuilder));
+        self.builders
+            .insert(ExpressionType::Randn, Box::new(RandnBuilder));
+    }
+
+    /// Register partition expression builders
+    fn register_partition_expressions(&mut self) {
+        use crate::execution::expressions::partition::*;
+
+        self.builders.insert(
+            ExpressionType::SparkPartitionId,
+            Box::new(SparkPartitionIdBuilder),
+        );
+        self.builders.insert(
+            ExpressionType::MonotonicallyIncreasingId,
+            Box::new(MonotonicallyIncreasingIdBuilder),
+        );
     }
 }

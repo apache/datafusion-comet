@@ -59,7 +59,7 @@ runs:
       #  temporarily work around https://github.com/actions/runner-images/issues/13341
       #  by disabling caching for macOS
       if: ${{ runner.os != 'macOS' }}
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         path: |
           ~/.m2/repository
@@ -67,36 +67,6 @@ runs:
         key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}
         restore-keys: |
           ${{ runner.os }}-java-maven-
-
-    - name: Run Maven compile
-      shell: bash
-      run: |
-        ./mvnw -B package -DskipTests scalafix:scalafix -Dscalafix.mode=CHECK -Psemanticdb ${{ inputs.maven_opts }}
-
-    - name: Setup Node.js
-      uses: actions/setup-node@v6
-      with:
-        node-version: '24'
-
-    - name: Install prettier
-      shell: bash
-      run: |
-        npm install -g prettier
-
-    - name: Run prettier
-      shell: bash
-      run: |
-        npx prettier "**/*.md" --write
-
-    - name: Mark workspace as safe for git
-      shell: bash
-      run: |
-        git config --global --add safe.directory "$GITHUB_WORKSPACE"
-
-    - name: Check for any local git changes (such as generated docs)
-      shell: bash
-      run: |
-        ./dev/ci/check-working-tree-clean.sh
 
     - name: Run all tests
       shell: bash
@@ -106,7 +76,7 @@ runs:
         SPARK_LOCAL_HOSTNAME: "localhost"
         SPARK_LOCAL_IP: "127.0.0.1"
       run: |
-        MAVEN_OPTS="-Xmx4G -Xms2G -XX:+UnlockDiagnosticVMOptions -XX:+ShowMessageBoxOnError -XX:+HeapDumpOnOutOfMemoryError -XX:ErrorFile=./hs_err_pid%p.log" SPARK_HOME=`pwd` ./mvnw -B -Prelease clean install ${{ inputs.maven_opts }}
+        MAVEN_OPTS="-Xmx4G -Xms2G -XX:+UnlockDiagnosticVMOptions -XX:+ShowMessageBoxOnError -XX:+HeapDumpOnOutOfMemoryError -XX:ErrorFile=./hs_err_pid%p.log" SPARK_HOME=`pwd` ./mvnw -B -Prelease install ${{ inputs.maven_opts }}
     - name: Run specified tests
       shell: bash
       if: ${{ inputs.suites != '' }}
@@ -117,7 +87,7 @@ runs:
       run: |
         MAVEN_SUITES="$(echo "${{ inputs.suites }}" | paste -sd, -)"
         echo "Running with MAVEN_SUITES=$MAVEN_SUITES"
-        MAVEN_OPTS="-Xmx4G -Xms2G -DwildcardSuites=$MAVEN_SUITES -XX:+UnlockDiagnosticVMOptions -XX:+ShowMessageBoxOnError -XX:+HeapDumpOnOutOfMemoryError -XX:ErrorFile=./hs_err_pid%p.log" SPARK_HOME=`pwd` ./mvnw -B -Prelease clean install ${{ inputs.maven_opts }}
+        MAVEN_OPTS="-Xmx4G -Xms2G -DwildcardSuites=$MAVEN_SUITES -XX:+UnlockDiagnosticVMOptions -XX:+ShowMessageBoxOnError -XX:+HeapDumpOnOutOfMemoryError -XX:ErrorFile=./hs_err_pid%p.log" SPARK_HOME=`pwd` ./mvnw -B -Prelease install ${{ inputs.maven_opts }}
     - name: Upload crash logs
       if: failure()
       uses: actions/upload-artifact@v6

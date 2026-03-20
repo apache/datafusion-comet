@@ -19,10 +19,7 @@
 
 package org.apache.comet
 
-import java.io.FileNotFoundException
 import java.lang.management.ManagementFactory
-
-import scala.util.matching.Regex
 
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark._
@@ -163,19 +160,9 @@ class CometExecIterator(
         // threw the exception, so we log the exception with taskAttemptId here
         logError(s"Native execution for task $taskAttemptId failed", e)
 
-        val fileNotFoundPattern: Regex =
-          ("""^External: Object at location (.+?) not found: No such file or directory """ +
-            """\(os error \d+\)$""").r
-        val parquetError: Regex =
+        val parquetError: scala.util.matching.Regex =
           """^Parquet error: (?:.*)$""".r
         e.getMessage match {
-          case fileNotFoundPattern(filePath) =>
-            // See org.apache.spark.sql.errors.QueryExecutionErrors.readCurrentFileNotFoundError
-            throw new SparkException(
-              errorClass = "_LEGACY_ERROR_TEMP_2055",
-              messageParameters = Map("message" -> e.getMessage),
-              cause = new FileNotFoundException(filePath)
-            ) // Can't use SparkFileNotFoundException because it's private.
           case parquetError() =>
             // See org.apache.spark.sql.errors.QueryExecutionErrors.failedToReadDataError
             // See org.apache.parquet.hadoop.ParquetFileReader for error message.
