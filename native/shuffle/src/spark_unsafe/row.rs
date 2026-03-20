@@ -17,8 +17,6 @@
 
 //! Utils for supporting native sort-based columnar shuffle.
 
-use datafusion_comet_jni_bridge::errors::CometError;
-use datafusion_comet_common::bytes_to_i128;
 use crate::codec::{Checksum, ShuffleBlockWriter};
 use crate::spark_unsafe::{
     list::{append_list_element, SparkUnsafeArray},
@@ -38,6 +36,8 @@ use arrow::compute::cast;
 use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 use arrow::error::ArrowError;
 use datafusion::physical_plan::metrics::Time;
+use datafusion_comet_common::bytes_to_i128;
+use datafusion_comet_jni_bridge::errors::CometError;
 use jni::sys::{jint, jlong};
 use std::{
     fs::OpenOptions,

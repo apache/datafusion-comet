@@ -22,7 +22,6 @@ use crate::partitioners::partitioned_batch_iterator::{
 use crate::partitioners::ShufflePartitioner;
 use crate::writers::{BufBatchWriter, PartitionWriter};
 use crate::{comet_partitioning, CometPartitioning, CompressionCodec, ShuffleBlockWriter};
-use datafusion_comet_common::tracing::{with_trace, with_trace_async};
 use arrow::array::{ArrayRef, RecordBatch};
 use arrow::datatypes::SchemaRef;
 use datafusion::common::utils::proxy::VecAllocExt;
@@ -30,6 +29,7 @@ use datafusion::common::DataFusionError;
 use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::physical_plan::metrics::Time;
+use datafusion_comet_common::tracing::{with_trace, with_trace_async};
 use datafusion_comet_spark_expr::murmur3::create_murmur3_hashes;
 use itertools::Itertools;
 use std::fmt;

@@ -22,7 +22,6 @@ use crate::partitioners::{
     MultiPartitionShuffleRepartitioner, ShufflePartitioner, SinglePartitionShufflePartitioner,
 };
 use crate::{CometPartitioning, CompressionCodec};
-use datafusion_comet_common::tracing::with_trace_async;
 use async_trait::async_trait;
 use datafusion::common::exec_datafusion_err;
 use datafusion::physical_expr::{EquivalenceProperties, Partitioning};
@@ -39,6 +38,7 @@ use datafusion::{
         Statistics,
     },
 };
+use datafusion_comet_common::tracing::with_trace_async;
 use futures::{StreamExt, TryFutureExt, TryStreamExt};
 use std::{
     any::Any,
