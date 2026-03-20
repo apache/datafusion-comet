@@ -1096,10 +1096,11 @@ fn parse_str_to_microsecond_timestamp<T: TimeZone>(
     get_timestamp_values(value, "microsecond", tz)
 }
 
+type TimestampPattern<T> = (&'static Regex, fn(&str, &T) -> SparkResult<Option<i64>>);
+
 static RE_YEAR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\d{4,7}$").unwrap());
 static RE_MONTH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\d{4,7}-\d{2}$").unwrap());
-static RE_DAY: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^\d{4,7}-\d{2}-\d{2}$").unwrap());
+static RE_DAY: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\d{4,7}-\d{2}-\d{2}$").unwrap());
 static RE_HOUR: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^\d{4,7}-\d{2}-\d{2}T\d{1,2}$").unwrap());
 static RE_MINUTE: LazyLock<Regex> =
@@ -1119,7 +1120,7 @@ fn timestamp_parser<T: TimeZone>(
     if value.is_empty() {
         return Ok(None);
     }
-    let patterns: &[(&Regex, fn(&str, &T) -> SparkResult<Option<i64>>)] = &[
+    let patterns: &[TimestampPattern<T>] = &[
         (&RE_YEAR, parse_str_to_year_timestamp),
         (&RE_MONTH, parse_str_to_month_timestamp),
         (&RE_DAY, parse_str_to_day_timestamp),
