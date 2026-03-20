@@ -15,10 +15,23 @@
 // specific language governing permissions and limitations
 // under the License.
 
-mod error;
-mod query_context;
-mod utils;
+/// Converts a slice of bytes to i128. The bytes are serialized in big-endian order by
+/// `BigInteger.toByteArray()` in Java.
+pub fn bytes_to_i128(slice: &[u8]) -> i128 {
+    let mut bytes = [0; 16];
+    let mut i = 0;
+    while i != 16 && i != slice.len() {
+        bytes[i] = slice[slice.len() - 1 - i];
+        i += 1;
+    }
 
-pub use error::{decimal_overflow_error, SparkError, SparkErrorWithContext, SparkResult};
-pub use query_context::{create_query_context_map, QueryContext, QueryContextMap};
-pub use utils::bytes_to_i128;
+    // if the decimal is negative, we need to flip all the bits
+    if (slice[0] as i8) < 0 {
+        while i < 16 {
+            bytes[i] = !bytes[i];
+            i += 1;
+        }
+    }
+
+    i128::from_le_bytes(bytes)
+}
