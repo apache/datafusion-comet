@@ -20,7 +20,9 @@ statement
 CREATE TABLE test_window_time(time timestamp, value int) USING parquet
 
 statement
-INSERT INTO test_window_time VALUES (timestamp('2023-01-01 12:00:00'), 1), (timestamp('2023-01-01 12:05:00'), 2), (timestamp('2023-01-01 12:15:00'), 3)
+INSERT INTO test_window_time VALUES (timestamp('2023-01-01 12:00:00'), 1), (timestamp('2023-01-01 12:05:00'), 2), (timestamp('2023-01-01 12:15:00'), 3), (NULL, 4)
+
+-- spark_answer_only: window() uses unsupported CreateNamedStruct and KnownNullable
 
 -- basic window_time with tumbling window
 query spark_answer_only
