@@ -22,7 +22,7 @@ package org.apache.comet.serde
 import java.util.Locale
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, DateAdd, DateDiff, DateFormatClass, DateSub, DayOfMonth, DayOfWeek, DayOfYear, GetDateField, Hour, LastDay, Literal, MakeDate, Minute, Month, NextDay, PreciseTimestampConversion, Quarter, Second, TruncDate, TruncTimestamp, UnixDate, UnixTimestamp, WeekDay, WeekOfYear, Year}
-import org.apache.spark.sql.types.{DateType, IntegerType, StringType, TimestampType}
+import org.apache.spark.sql.types.{DateType, IntegerType, LongType, StringType, TimestampType}
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
@@ -588,26 +588,22 @@ object CometDateFormat extends CometExpressionSerde[DateFormatClass] {
 }
 
 object CometPreciseTimestampConversion extends CometExpressionSerde[PreciseTimestampConversion] {
+  override def getSupportLevel(expr: PreciseTimestampConversion): SupportLevel = {
+    (expr.fromType, expr.toType) match {
+      case (TimestampType, LongType) | (LongType, TimestampType) =>
+        Compatible()
+      case _ =>
+        Unsupported(Some(s"PreciseTimestampConversion from ${expr.fromType} to ${expr.toType}"))
+    }
+  }
+
   override def convert(
       expr: PreciseTimestampConversion,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     // PreciseTimestampConversion reinterprets between LongType and TimestampType
-    // without changing the underlying microsecond value, so a simple cast suffices.
-    for {
-      childExpr <- exprToProtoInternal(expr.child, inputs, binding)
-      dt <- serializeDataType(expr.toType)
-    } yield {
-      ExprOuterClass.Expr
-        .newBuilder()
-        .setCast(
-          ExprOuterClass.Cast
-            .newBuilder()
-            .setChild(childExpr)
-            .setDatatype(dt)
-            .setEvalMode(ExprOuterClass.EvalMode.LEGACY)
-            .setAllowIncompat(false))
-        .build()
-    }
+    // without changing the underlying microsecond value. In Arrow, both types
+    // share the same i64 representation, so we simply return the child expression.
+    exprToProtoInternal(expr.child, inputs, binding)
   }
 }
