@@ -443,7 +443,7 @@ impl SparkError {
             } => {
                 serde_json::json!({
                     "requiredFieldName": required_field_name,
-                    "matchedFields": matched_fields,
+                    "matchedOrcFields": matched_fields,
                 })
             }
             SparkError::Arrow(e) => {
