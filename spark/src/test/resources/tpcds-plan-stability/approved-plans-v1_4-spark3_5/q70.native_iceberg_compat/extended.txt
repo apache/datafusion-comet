@@ -1,17 +1,17 @@
 TakeOrderedAndProject
 +- Project
    +-  Window [COMET: WindowExec is not fully compatible with Spark (Native WindowExec has known correctness issues). To enable it anyway, set spark.comet.operator.WindowExec.allowIncompatible=true. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/compatibility.html).]
-      +- CometNativeColumnarToRow
+      +- CometColumnarToRow
          +- CometSort
             +- CometColumnarExchange
                +- HashAggregate
-                  +- CometNativeColumnarToRow
+                  +- CometColumnarToRow
                      +- CometColumnarExchange
                         +- HashAggregate
                            +- Expand
                               +- Project
                                  +- BroadcastHashJoin
-                                    :- CometNativeColumnarToRow
+                                    :- CometColumnarToRow
                                     :  +- CometProject
                                     :     +- CometBroadcastHashJoin
                                     :        :- CometFilter
@@ -37,7 +37,7 @@ TakeOrderedAndProject
                                                    +- Filter
                                                       +- Window
                                                          +-  WindowGroupLimit [COMET: WindowGroupLimit is not supported]
-                                                            +- CometNativeColumnarToRow
+                                                            +- CometColumnarToRow
                                                                +- CometSort
                                                                   +- CometHashAggregate
                                                                      +- CometExchange

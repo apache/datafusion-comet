@@ -1,9 +1,9 @@
-CometNativeColumnarToRow
+CometColumnarToRow
 +- CometHashAggregate
    +- CometColumnarExchange
       +- HashAggregate
          +-  HashAggregate [COMET: Unsupported aggregation mode PartialMerge]
-            +- CometNativeColumnarToRow
+            +- CometColumnarToRow
                +- CometHashAggregate
                   +- CometProject
                      +- CometBroadcastHashJoin

@@ -1,12 +1,12 @@
 TakeOrderedAndProject
 +- HashAggregate
-   +- CometNativeColumnarToRow
+   +- CometColumnarToRow
       +- CometColumnarExchange
          +- HashAggregate
             +- Project
                +- Filter
                   +-  BroadcastHashJoin [COMET: Unsupported join type ExistenceJoin(exists#1)]
-                     :- CometNativeColumnarToRow
+                     :- CometColumnarToRow
                      :  +- CometProject
                      :     +- CometBroadcastHashJoin
                      :        :- CometProject

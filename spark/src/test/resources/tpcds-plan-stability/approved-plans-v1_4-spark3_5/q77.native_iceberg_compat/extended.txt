@@ -1,11 +1,11 @@
 TakeOrderedAndProject
 +- HashAggregate
-   +- CometNativeColumnarToRow
+   +- CometColumnarToRow
       +- CometColumnarExchange
          +- HashAggregate
             +- Expand
                +- Union
-                  :- CometNativeColumnarToRow
+                  :- CometColumnarToRow
                   :  +- CometProject
                   :     +- CometBroadcastHashJoin
                   :        :- CometHashAggregate
@@ -51,7 +51,7 @@ TakeOrderedAndProject
                   :- Project
                   :  +-  BroadcastNestedLoopJoin [COMET: BroadcastNestedLoopJoin is not supported]
                   :     :- BroadcastExchange
-                  :     :  +- CometNativeColumnarToRow
+                  :     :  +- CometColumnarToRow
                   :     :     +- CometHashAggregate
                   :     :        +- CometExchange
                   :     :           +- CometHashAggregate
@@ -63,7 +63,7 @@ TakeOrderedAndProject
                   :     :                       +- CometProject
                   :     :                          +- CometFilter
                   :     :                             +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
-                  :     +- CometNativeColumnarToRow
+                  :     +- CometColumnarToRow
                   :        +- CometHashAggregate
                   :           +- CometExchange
                   :              +- CometHashAggregate
@@ -75,7 +75,7 @@ TakeOrderedAndProject
                   :                          +- CometProject
                   :                             +- CometFilter
                   :                                +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
-                  +- CometNativeColumnarToRow
+                  +- CometColumnarToRow
                      +- CometProject
                         +- CometBroadcastHashJoin
                            :- CometHashAggregate

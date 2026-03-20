@@ -9,12 +9,12 @@ TakeOrderedAndProject
       :     :     :  +- Project
       :     :     :     +- Filter
       :     :     :        +-  Window [COMET: WindowExec is not fully compatible with Spark (Native WindowExec has known correctness issues). To enable it anyway, set spark.comet.operator.WindowExec.allowIncompatible=true. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/compatibility.html).]
-      :     :     :           +- CometNativeColumnarToRow
+      :     :     :           +- CometColumnarToRow
       :     :     :              +- CometSort
       :     :     :                 +- CometExchange
       :     :     :                    +- CometFilter
       :     :     :                       :  +- Subquery
-      :     :     :                       :     +- CometNativeColumnarToRow
+      :     :     :                       :     +- CometColumnarToRow
       :     :     :                       :        +- CometHashAggregate
       :     :     :                       :           +- CometExchange
       :     :     :                       :              +- CometHashAggregate
@@ -31,12 +31,12 @@ TakeOrderedAndProject
       :     :        +- Project
       :     :           +- Filter
       :     :              +-  Window [COMET: WindowExec is not fully compatible with Spark (Native WindowExec has known correctness issues). To enable it anyway, set spark.comet.operator.WindowExec.allowIncompatible=true. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/compatibility.html).]
-      :     :                 +- CometNativeColumnarToRow
+      :     :                 +- CometColumnarToRow
       :     :                    +- CometSort
       :     :                       +- CometExchange
       :     :                          +- CometFilter
       :     :                             :  +- Subquery
-      :     :                             :     +- CometNativeColumnarToRow
+      :     :                             :     +- CometColumnarToRow
       :     :                             :        +- CometHashAggregate
       :     :                             :           +- CometExchange
       :     :                             :              +- CometHashAggregate

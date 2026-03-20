@@ -1,11 +1,11 @@
 HashAggregate
-+- CometNativeColumnarToRow
++- CometColumnarToRow
    +- CometColumnarExchange
       +- HashAggregate
          +- Project
             +- BroadcastHashJoin
                :-  BroadcastHashJoin [COMET: BuildRight with LeftAnti is not supported]
-               :  :- CometNativeColumnarToRow
+               :  :- CometColumnarToRow
                :  :  +- CometHashAggregate
                :  :     +- CometExchange
                :  :        +- CometHashAggregate
@@ -30,7 +30,7 @@ HashAggregate
                :  :                       +- CometFilter
                :  :                          +- CometScan [native_iceberg_compat] parquet spark_catalog.default.customer
                :  +- BroadcastExchange
-               :     +- CometNativeColumnarToRow
+               :     +- CometColumnarToRow
                :        +- CometHashAggregate
                :           +- CometExchange
                :              +- CometHashAggregate
@@ -50,7 +50,7 @@ HashAggregate
                :                             +- CometFilter
                :                                +- CometScan [native_iceberg_compat] parquet spark_catalog.default.customer
                +- BroadcastExchange
-                  +- CometNativeColumnarToRow
+                  +- CometColumnarToRow
                      +- CometHashAggregate
                         +- CometExchange
                            +- CometHashAggregate

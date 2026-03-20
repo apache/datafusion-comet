@@ -2,11 +2,11 @@ TakeOrderedAndProject
 +- Filter
    +- Window
       +-  WindowGroupLimit [COMET: WindowGroupLimit is not supported]
-         +- CometNativeColumnarToRow
+         +- CometColumnarToRow
             +- CometSort
                +- CometColumnarExchange
                   +-  WindowGroupLimit [COMET: WindowGroupLimit is not supported]
-                     +- CometNativeColumnarToRow
+                     +- CometColumnarToRow
                         +- CometSort
                            +- CometHashAggregate
                               +- CometExchange
