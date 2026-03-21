@@ -46,6 +46,34 @@ import org.apache.comet.shims.CometExprShim
  */
 object QueryPlanSerde extends Logging with CometExprShim {
 
+  // Registry of Invoke-expression handlers, keyed by the fully-qualified class name of the
+  // evaluator object embedded in the first Literal(_, ObjectType(...)) child of the Invoke node.
+  // To support a new RuntimeReplaceable expression rewritten to Invoke in Spark 4.0, implement
+  // CometInvokeExpressionSerde and add the object here.
+  private val invokeSerdeByTargetClassName: Map[String, CometInvokeExpressionSerde] =
+    Seq(CometParseUrl).map(s => s.invokeTargetClassName -> s).toMap
+
+  // Extracts the target object class name from an Invoke-like expression.
+  private def invokeTargetClassName(expr: Expression): Option[String] = {
+    expr.children.headOption.flatMap {
+      _.dataType match {
+        case objectType: ObjectType => Some(objectType.cls.getName)
+        case _ => None
+      }
+    }
+  }
+
+  // Routes Invoke expressions to a handler based on the target object class name.
+  private def convertInvokeExpression(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] =
+    for {
+      targetClassName <- invokeTargetClassName(expr)
+      handler <- invokeSerdeByTargetClassName.get(targetClassName)
+      result <- handler.convertFromInvoke(expr, inputs, binding)
+    } yield result
+
   private val arrayExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     classOf[ArrayAppend] -> CometArrayAppend,
     classOf[ArrayCompact] -> CometArrayCompact,
@@ -161,6 +189,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[Like] -> CometLike,
     classOf[Lower] -> CometLower,
     classOf[OctetLength] -> CometScalarFunction("octet_length"),
+    classOf[ParseUrl] -> CometParseUrl,
     classOf[RegExpReplace] -> CometRegExpReplace,
     classOf[Reverse] -> CometReverse,
     classOf[RLike] -> CometRLike,
@@ -631,6 +660,9 @@ object QueryPlanSerde extends Logging with CometExprShim {
           // `UnaryExpression` includes `PromotePrecision` for Spark 3.3
           // `PromotePrecision` is just a wrapper, don't need to serialize it.
           exprToProtoInternal(child, inputs, binding)
+
+        case expr if expr.prettyName == "invoke" =>
+          convertInvokeExpression(expr, inputs, binding)
 
         case expr =>
           QueryPlanSerde.exprSerdeMap.get(expr.getClass) match {

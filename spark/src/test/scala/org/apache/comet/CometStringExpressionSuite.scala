@@ -26,6 +26,7 @@ import org.apache.spark.sql.{CometTestBase, DataFrame}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 class CometStringExpressionSuite extends CometTestBase {
@@ -247,6 +248,66 @@ class CometStringExpressionSuite extends CometTestBase {
       }
     }
   }
+
+  test("parse_url") {
+    withParquetTable(
+      Seq(
+        ("http://spark.apache.org/path?query=1", 0),
+        ("https://spark.apache.org/path/to/page?query=1&k2=v2", 1),
+        ("ftp://user:pwd@ftp.example.com:2121/files?x=1#frag", 2),
+        (null, 3)),
+      "tbl_parse_url") {
+
+      checkSparkAnswerAndOperator("SELECT parse_url(_1, 'HOST') FROM tbl_parse_url")
+      checkSparkAnswerAndOperator("SELECT parse_url(_1, 'QUERY') FROM tbl_parse_url")
+      checkSparkAnswerAndOperator("SELECT parse_url(_1, 'PROTOCOL') FROM tbl_parse_url")
+      checkSparkAnswerAndOperator(
+        "SELECT parse_url(_1, 'QUERY', 'query'), parse_url(_1, 'QUERY', 'k2') FROM tbl_parse_url")
+      checkSparkAnswerAndOperator("SELECT parse_url(_1, 'PATH') FROM tbl_parse_url")
+      checkSparkAnswerAndOperator("SELECT parse_url(_1, 'FILE') FROM tbl_parse_url")
+      checkSparkAnswerAndOperator("SELECT parse_url(_1, 'REF') FROM tbl_parse_url")
+      checkSparkAnswerAndOperator("SELECT parse_url(_1, 'AUTHORITY') FROM tbl_parse_url")
+      checkSparkAnswerAndOperator("SELECT parse_url(_1, 'USERINFO') FROM tbl_parse_url")
+
+      // Literal arguments exercise constant-folding code path
+      checkSparkAnswerAndOperator(
+        "SELECT parse_url('http://spark.apache.org/path?query=1', 'HOST') FROM tbl_parse_url")
+      checkSparkAnswerAndOperator(
+        "SELECT parse_url('http://spark.apache.org/path?query=1', 'QUERY', 'query') FROM tbl_parse_url")
+    }
+  }
+
+  test("parse_url in ANSI mode") {
+    withParquetTable(
+      Seq(("http://spark.apache.org/path?query=1", 0), (null, 1)),
+      "tbl_parse_url_ansi") {
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+        checkSparkAnswerAndOperator("SELECT parse_url(_1, 'HOST') FROM tbl_parse_url_ansi")
+      }
+    }
+  }
+
+  // In legacy mode (ANSI disabled), parse_url returns NULL for malformed URLs instead of
+  // throwing an error. On Spark 3.5 this is driven by ParseUrl.failOnError=false; on Spark 4.0
+  // the flag is extracted from the ParseUrlEvaluator embedded in the Invoke node. Both paths
+  // serialize as try_parse_url on the native side.
+  test("parse_url with invalid URL in legacy mode") {
+    withParquetTable(
+      Seq(
+        ("http://spark.apache.org/path?query=1", 0),
+        ("http://spark.apache.org:abc/path", 1),
+        (null, 2)),
+      "tbl_parse_url_invalid") {
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> "false") {
+        checkSparkAnswerAndOperator("SELECT parse_url(_1, 'HOST') FROM tbl_parse_url_invalid")
+      }
+    }
+  }
+
+  // Note: try_parse_url is a Comet-internal DataFusion function name used when serializing
+  // parse_url with failOnError=false. It is not a registered Spark SQL function and cannot
+  // be called directly from SQL. The NULL-on-error behaviour is covered by the
+  // "parse_url with invalid URL in legacy mode" test above.
 
   test("Various String scalar functions") {
     val table = "names"
