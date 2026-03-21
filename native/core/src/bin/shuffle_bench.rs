@@ -50,7 +50,7 @@ use arrow::array::RecordBatch;
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use clap::Parser;
 use comet::execution::shuffle::{
-    read_ipc_compressed, CometPartitioning, CompressionCodec, ShuffleWriterExec,
+    read_shuffle_block, CometPartitioning, CompressionCodec, ShuffleWriterExec,
 };
 use datafusion::datasource::memory::MemorySourceConfig;
 use datafusion::datasource::source::DataSourceExec;
@@ -270,6 +270,7 @@ fn main() {
                 data_file.to_str().unwrap(),
                 index_file.to_str().unwrap(),
                 args.partitions,
+                &schema,
             );
             if !is_warmup {
                 read_times.push(read_elapsed);
@@ -584,7 +585,12 @@ fn run_shuffle_write(
     start.elapsed().as_secs_f64()
 }
 
-fn run_shuffle_read(data_file: &str, index_file: &str, num_partitions: usize) -> f64 {
+fn run_shuffle_read(
+    data_file: &str,
+    index_file: &str,
+    num_partitions: usize,
+    schema: &SchemaRef,
+) -> f64 {
     let start = Instant::now();
 
     // Read index file to get partition offsets
@@ -612,20 +618,22 @@ fn run_shuffle_read(data_file: &str, index_file: &str, num_partitions: usize) ->
             continue; // Empty partition
         }
 
-        // Read all IPC blocks within this partition
+        // Read all blocks within this partition
         let mut offset = start_offset;
         while offset < end_offset {
-            // First 8 bytes: IPC length
-            let ipc_length =
+            // First 8 bytes: block length (little-endian u64)
+            let block_length =
                 u64::from_le_bytes(data_bytes[offset..offset + 8].try_into().unwrap()) as usize;
-
-            // Skip 8-byte length prefix, then 8 bytes of field_count + codec header
-            let block_data = &data_bytes[offset + 16..offset + 8 + ipc_length];
-            let batch = read_ipc_compressed(block_data).expect("Failed to decode shuffle block");
+            let block_start = offset + 8;
+            let block_end = block_start + block_length;
+            // read_shuffle_block expects data after the 16-byte header (length + field_count)
+            let block_data = &data_bytes[block_start + 8..block_end];
+            let batch =
+                read_shuffle_block(block_data, schema).expect("Failed to decode shuffle block");
             total_rows += batch.num_rows();
             total_batches += 1;
 
-            offset += 8 + ipc_length;
+            offset = block_end;
         }
     }
 
