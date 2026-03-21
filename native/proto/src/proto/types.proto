@@ -59,6 +59,8 @@ message DataType {
     LIST = 14;
     MAP = 15;
     STRUCT = 16;
+    YEAR_MONTH_INTERVAL = 17;
+    DAY_TIME_INTERVAL = 18;
   }
   DataTypeId type_id = 1;
 
