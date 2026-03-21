@@ -152,6 +152,10 @@ struct Args {
     /// Write buffer size in bytes
     #[arg(long, default_value_t = 1048576)]
     write_buffer_size: usize,
+
+    /// Maximum number of rows to use (default: 1,000,000)
+    #[arg(long, default_value_t = 1_000_000)]
+    limit: usize,
 }
 
 fn main() {
@@ -177,6 +181,26 @@ fn main() {
         generate_data(&args)
     };
     let load_elapsed = load_start.elapsed();
+
+    // Apply row limit
+    let batches = {
+        let mut limited = Vec::new();
+        let mut rows_so_far = 0usize;
+        for batch in batches {
+            if rows_so_far >= args.limit {
+                break;
+            }
+            let remaining = args.limit - rows_so_far;
+            if batch.num_rows() <= remaining {
+                rows_so_far += batch.num_rows();
+                limited.push(batch);
+            } else {
+                limited.push(batch.slice(0, remaining));
+                rows_so_far += remaining;
+            }
+        }
+        limited
+    };
 
     let schema = batches[0].schema();
     let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
