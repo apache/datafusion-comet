@@ -31,7 +31,6 @@ import org.apache.spark.sql.types.{IntegerType, StringType, StructType}
 import org.apache.comet.CometConf
 
 class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper {
-  import org.apache.spark.sql.catalyst.expressions.GetArrayItem
 
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
       pos: Position): Unit = {
@@ -42,8 +41,7 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
           SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
           CometConf.COMET_ENABLED.key -> "true",
           CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "false",
-          CometConf.COMET_NATIVE_SCAN_IMPL.key -> scan,
-          CometConf.getExprAllowIncompatConfigKey(classOf[GetArrayItem]) -> "true") {
+          CometConf.COMET_NATIVE_SCAN_IMPL.key -> scan) {
           testFun
         }
       })

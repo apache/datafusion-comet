@@ -23,16 +23,13 @@ pub mod operator_registry;
 
 use crate::execution::operators::init_csv_datasource_exec;
 use crate::execution::operators::IcebergScanExec;
-use crate::{
-    errors::ExpressionError,
-    execution::{
-        expressions::subquery::Subquery,
-        operators::{ExecutionError, ExpandExec, ParquetWriterExec, ScanExec},
-        planner::expression_registry::ExpressionRegistry,
-        planner::operator_registry::OperatorRegistry,
-        serde::to_arrow_datatype,
-        shuffle::ShuffleWriterExec,
-    },
+use crate::execution::{
+    expressions::subquery::Subquery,
+    operators::{ExecutionError, ExpandExec, ParquetWriterExec, ScanExec},
+    planner::expression_registry::ExpressionRegistry,
+    planner::operator_registry::OperatorRegistry,
+    serde::to_arrow_datatype,
+    shuffle::ShuffleWriterExec,
 };
 use arrow::compute::CastOptions;
 use arrow::datatypes::{DataType, Field, FieldRef, Schema, TimeUnit, DECIMAL128_MAX_PRECISION};
@@ -123,12 +120,11 @@ use datafusion_comet_proto::{
     },
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
-use datafusion_comet_spark_expr::monotonically_increasing_id::MonotonicallyIncreasingId;
 use datafusion_comet_spark_expr::{
     ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Correlation, Covariance, CreateNamedStruct,
     DecimalRescaleCheckOverflow, GetArrayStructFields, GetStructField, IfExpr, ListExtract,
-    NormalizeNaNAndZero, RandExpr, RandnExpr, SparkCastOptions, Stddev, SumDecimal, ToJson,
-    UnboundColumn, Variance, WideDecimalBinaryExpr, WideDecimalOp,
+    NormalizeNaNAndZero, SparkCastOptions, Stddev, SumDecimal, ToJson, UnboundColumn, Variance,
+    WideDecimalBinaryExpr, WideDecimalOp,
 };
 use itertools::Itertools;
 use jni::objects::GlobalRef;
@@ -195,6 +191,11 @@ impl PhysicalPlanner {
     /// Return session context of this planner.
     pub fn session_ctx(&self) -> &Arc<SessionContext> {
         &self.session_ctx
+    }
+
+    /// Return partition id of this planner.
+    pub fn partition(&self) -> i32 {
+        self.partition
     }
 
     /// get DataFusion PartitionedFiles from a Spark FilePartition
@@ -655,20 +656,6 @@ impl PhysicalPlanner {
                     expr.legacy_negative_index,
                 )))
             }
-            ExprStruct::Rand(expr) => {
-                let seed = expr.seed.wrapping_add(self.partition.into());
-                Ok(Arc::new(RandExpr::new(seed)))
-            }
-            ExprStruct::Randn(expr) => {
-                let seed = expr.seed.wrapping_add(self.partition.into());
-                Ok(Arc::new(RandnExpr::new(seed)))
-            }
-            ExprStruct::SparkPartitionId(_) => Ok(Arc::new(DataFusionLiteral::new(
-                ScalarValue::Int32(Some(self.partition)),
-            ))),
-            ExprStruct::MonotonicallyIncreasingId(_) => Ok(Arc::new(
-                MonotonicallyIncreasingId::from_partition_id(self.partition),
-            )),
             ExprStruct::ToCsv(expr) => {
                 let csv_struct_expr =
                     self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
@@ -2652,24 +2639,6 @@ impl PhysicalPlanner {
             .with_distinct(false)
             .build()
             .map_err(|e| e.into())
-    }
-}
-
-impl From<DataFusionError> for ExecutionError {
-    fn from(value: DataFusionError) -> Self {
-        ExecutionError::DataFusionError(value.message().to_string())
-    }
-}
-
-impl From<ExecutionError> for DataFusionError {
-    fn from(value: ExecutionError) -> Self {
-        DataFusionError::Execution(value.to_string())
-    }
-}
-
-impl From<ExpressionError> for DataFusionError {
-    fn from(value: ExpressionError) -> Self {
-        DataFusionError::Execution(value.to_string())
     }
 }
 

@@ -23,9 +23,9 @@ under the License.
 :maxdepth: 2
 :caption: User Guides
 
-0.14.0-SNAPSHOT <latest/index>
+0.15.0-SNAPSHOT <latest/index>
+0.14.x <0.14/index>
 0.13.x <0.13/index>
 0.12.x <0.12/index>
 0.11.x <0.11/index>
-0.10.x <0.10/index>
 ```
