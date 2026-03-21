@@ -77,7 +77,7 @@ pub use datetime_funcs::{
     SparkDateDiff, SparkDateTrunc, SparkHour, SparkMakeDate, SparkMinute, SparkSecond,
     SparkUnixTimestamp, TimestampTruncExpr,
 };
-pub use error::{SparkError, SparkErrorWithContext, SparkResult};
+pub use error::{decimal_overflow_error, SparkError, SparkErrorWithContext, SparkResult};
 pub use hash_funcs::*;
 pub use json_funcs::{FromJson, ToJson};
 pub use math_funcs::{

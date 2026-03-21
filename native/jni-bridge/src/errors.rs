@@ -19,6 +19,7 @@
 
 use arrow::error::ArrowError;
 use datafusion::common::DataFusionError;
+use datafusion_comet_common::{SparkError, SparkErrorWithContext};
 use jni::errors::{Exception, ToException};
 use regex::Regex;
 
@@ -37,8 +38,6 @@ use std::{
 // lifetime checker won't let us.
 use jni::sys::{jboolean, jbyte, jchar, jdouble, jfloat, jint, jlong, jobject, jshort};
 
-use crate::execution::operators::ExecutionError;
-use datafusion_comet_spark_expr::SparkError;
 use jni::objects::{GlobalRef, JThrowable};
 use jni::JNIEnv;
 use lazy_static::lazy_static;
@@ -47,6 +46,34 @@ use thiserror::Error;
 
 lazy_static! {
     static ref PANIC_BACKTRACE: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+}
+
+/// Error returned during executing operators.
+#[derive(thiserror::Error, Debug)]
+pub enum ExecutionError {
+    /// Simple error
+    #[allow(dead_code)]
+    #[error("General execution error with reason: {0}.")]
+    GeneralError(String),
+
+    /// Error when deserializing an operator.
+    #[error("Fail to deserialize to native operator with reason: {0}.")]
+    DeserializeError(String),
+
+    /// Error when processing Arrow array.
+    #[error("Fail to process Arrow array with reason: {0}.")]
+    ArrowError(String),
+
+    /// DataFusion error
+    #[error("Error from DataFusion: {0}.")]
+    DataFusionError(String),
+
+    #[error("{class}: {msg}")]
+    JavaException {
+        class: String,
+        msg: String,
+        throwable: GlobalRef,
+    },
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -62,11 +89,6 @@ pub enum CometError {
 
     #[error("Comet Internal Error: {0}")]
     Internal(String),
-
-    /// CometError::Spark is typically used in native code to emulate the same errors
-    /// that Spark would return
-    #[error(transparent)]
-    Spark(SparkError),
 
     #[error(transparent)]
     Arrow {
@@ -135,6 +157,11 @@ pub enum CometError {
         #[source]
         source: DataFusionError,
     },
+
+    /// Wraps a SparkError directly, allowing Comet to throw Spark-compatible exceptions
+    /// that Spark would return
+    #[error(transparent)]
+    Spark(SparkError),
 
     #[error("{class}: {msg}")]
     JavaException {
@@ -215,6 +242,66 @@ impl From<CometError> for ExecutionError {
     }
 }
 
+impl From<prost::DecodeError> for ExpressionError {
+    fn from(error: prost::DecodeError) -> ExpressionError {
+        ExpressionError::Deserialize(error.to_string())
+    }
+}
+
+impl From<prost::UnknownEnumValue> for ExpressionError {
+    fn from(error: prost::UnknownEnumValue) -> ExpressionError {
+        ExpressionError::Deserialize(error.to_string())
+    }
+}
+
+impl From<prost::DecodeError> for ExecutionError {
+    fn from(error: prost::DecodeError) -> ExecutionError {
+        ExecutionError::DeserializeError(error.to_string())
+    }
+}
+
+impl From<prost::UnknownEnumValue> for ExecutionError {
+    fn from(error: prost::UnknownEnumValue) -> ExecutionError {
+        ExecutionError::DeserializeError(error.to_string())
+    }
+}
+
+impl From<ArrowError> for ExecutionError {
+    fn from(error: ArrowError) -> ExecutionError {
+        ExecutionError::ArrowError(error.to_string())
+    }
+}
+
+impl From<ArrowError> for ExpressionError {
+    fn from(error: ArrowError) -> ExpressionError {
+        ExpressionError::ArrowError(error.to_string())
+    }
+}
+
+impl From<ExpressionError> for ArrowError {
+    fn from(error: ExpressionError) -> ArrowError {
+        ArrowError::ComputeError(error.to_string())
+    }
+}
+
+impl From<DataFusionError> for ExecutionError {
+    fn from(value: DataFusionError) -> Self {
+        ExecutionError::DataFusionError(value.message().to_string())
+    }
+}
+
+impl From<ExecutionError> for DataFusionError {
+    fn from(value: ExecutionError) -> Self {
+        DataFusionError::Execution(value.to_string())
+    }
+}
+
+impl From<ExpressionError> for DataFusionError {
+    fn from(value: ExpressionError) -> Self {
+        DataFusionError::Execution(value.to_string())
+    }
+}
+
 impl jni::errors::ToException for CometError {
     fn to_exception(&self) -> Exception {
         match self {
@@ -225,10 +312,6 @@ impl jni::errors::ToException for CometError {
             CometError::NullPointer(..) => Exception {
                 class: "java/lang/NullPointerException".to_string(),
                 msg: self.to_string(),
-            },
-            CometError::Spark(spark_err) => Exception {
-                class: spark_err.exception_class().to_string(),
-                msg: spark_err.to_string(),
             },
             CometError::NumberIntFormat { source: s } => Exception {
                 class: "java/lang/NumberFormatException".to_string(),
@@ -245,6 +328,10 @@ impl jni::errors::ToException for CometError {
             CometError::Parquet { .. } => Exception {
                 class: "org/apache/comet/ParquetRuntimeException".to_string(),
                 msg: self.to_string(),
+            },
+            CometError::Spark(spark_err) => Exception {
+                class: spark_err.exception_class().to_string(),
+                msg: spark_err.to_string(),
             },
             _other => Exception {
                 class: "org/apache/comet/CometNativeException".to_string(),
@@ -280,8 +367,9 @@ pub type CometResult<T> = result::Result<T, CometError>;
 // ----------------------------------------------------------------------
 // Convenient macros for different errors
 
+#[macro_export]
 macro_rules! general_err {
-    ($fmt:expr, $($args:expr),*) => (crate::CometError::from(parquet::errors::ParquetError::General(format!($fmt, $($args),*))));
+    ($fmt:expr, $($args:expr),*) => ($crate::errors::CometError::from(parquet::errors::ParquetError::General(format!($fmt, $($args),*))));
 }
 
 /// Returns the "default value" for a type.  This is used for JNI code in order to facilitate
@@ -395,23 +483,23 @@ fn throw_exception(env: &mut JNIEnv, error: &CometError, backtrace: Option<Strin
                         throwable,
                     },
             } => env.throw(<&JThrowable>::from(throwable.as_obj())),
-            // Handle DataFusion errors containing SparkError - serialize to JSON
+            // Handle DataFusion errors containing SparkError or SparkErrorWithContext
             CometError::DataFusion {
                 msg: _,
                 source: DataFusionError::External(e),
             } => {
-                // Try SparkErrorWithContext first (includes context)
-                if let Some(spark_error_with_ctx) =
-                    e.downcast_ref::<datafusion_comet_spark_expr::SparkErrorWithContext>()
-                {
+                if let Some(spark_error_with_ctx) = e.downcast_ref::<SparkErrorWithContext>() {
                     let json_message = spark_error_with_ctx.to_json();
                     env.throw_new(
                         "org/apache/comet/exceptions/CometQueryExecutionException",
                         json_message,
                     )
                 } else if let Some(spark_error) = e.downcast_ref::<SparkError>() {
-                    // Fall back to plain SparkError (no context)
-                    throw_spark_error_as_json(env, spark_error)
+                    let json_message = spark_error.to_json();
+                    env.throw_new(
+                        "org/apache/comet/exceptions/CometQueryExecutionException",
+                        json_message,
+                    )
                 } else {
                     // Check for file-not-found errors from object store
                     let error_msg = e.to_string();
@@ -531,6 +619,7 @@ enum StacktraceError {
     #[error("Unable to initialize backtrace regex: {0}")]
     Regex(#[from] regex::Error),
     #[error("Required field missing: {0}")]
+    #[allow(non_camel_case_types)]
     Required_Field(String),
     #[error("Unable to format stacktrace element: {0}")]
     Element(#[from] std::fmt::Error),
