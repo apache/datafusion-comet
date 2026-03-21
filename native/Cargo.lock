@@ -1885,7 +1885,7 @@ dependencies = [
 
 [[package]]
 name = "datafusion-comet-common"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "arrow",
  "datafusion",
@@ -1911,7 +1911,7 @@ dependencies = [
 
 [[package]]
 name = "datafusion-comet-jni-bridge"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "arrow",
  "assertables",

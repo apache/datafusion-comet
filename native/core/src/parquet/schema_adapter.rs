@@ -76,7 +76,8 @@ fn remap_physical_schema_names(
         .fields()
         .iter()
         .map(|field| {
-            if let Some(logical_name) = logical_names.get(&field.name().to_lowercase()) {
+            let field_lower = field.name().to_lowercase();
+            if let Some(logical_name) = logical_names.get(&field_lower) {
                 if *logical_name != field.name() {
                     Arc::new(Field::new(
                         *logical_name,
@@ -113,18 +114,23 @@ impl PhysicalExprAdapterFactory for SparkPhysicalExprAdapterFactory {
         // schema, which uses the original physical file column names.
         let (adapted_physical_schema, logical_to_physical_names) =
             if !self.parquet_options.case_sensitive {
+                // Pre-compute lowercased physical field names to avoid repeated
+                // to_lowercase() calls in the O(n*m) matching loop.
+                let physical_lower: Vec<(String, &str)> = physical_file_schema
+                    .fields()
+                    .iter()
+                    .map(|f| (f.name().to_lowercase(), f.name().as_str()))
+                    .collect();
+
                 let logical_to_physical: HashMap<String, String> = logical_file_schema
                     .fields()
                     .iter()
                     .filter_map(|logical_field| {
-                        physical_file_schema
-                            .fields()
+                        let logical_lower = logical_field.name().to_lowercase();
+                        physical_lower
                             .iter()
-                            .find(|pf| {
-                                pf.name().to_lowercase() == logical_field.name().to_lowercase()
-                                    && pf.name() != logical_field.name()
-                            })
-                            .map(|pf| (logical_field.name().clone(), pf.name().clone()))
+                            .find(|(pl, orig)| *pl == logical_lower && *orig != logical_field.name())
+                            .map(|(_, orig)| (logical_field.name().clone(), orig.to_string()))
                     })
                     .collect();
                 let remapped =
@@ -261,10 +267,11 @@ impl SparkPhysicalExprAdapter {
                         .iter()
                         .find(|f| f.name() == col_name)
                 } else {
+                    let col_lower = col_name.to_lowercase();
                     self.physical_file_schema
                         .fields()
                         .iter()
-                        .find(|f| f.name().to_lowercase() == col_name.to_lowercase())
+                        .find(|f| f.name().to_lowercase() == col_lower)
                 };
 
                 if let (Some(logical_field), Some(physical_field)) = (logical_field, physical_field)
@@ -531,8 +538,7 @@ mod test {
         let parquet_exec = DataSourceExec::new(Arc::new(file_scan_config));
 
         let mut stream = parquet_exec
-            .execute(0, Arc::new(TaskContext::default()))
-            .unwrap();
+            .execute(0, Arc::new(TaskContext::default()))?;
         stream.next().await.unwrap()
     }
 }
