@@ -27,5 +27,5 @@ query spark_answer_only
 SELECT array_min(arr) FROM test_array_min
 
 -- literal arguments
-query ignore(https://github.com/apache/datafusion-comet/issues/3338)
+query
 SELECT array_min(array(1, 2, 3)), array_min(array()), array_min(cast(NULL as array<int>))

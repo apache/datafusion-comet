@@ -264,6 +264,18 @@ object CometParseToDate extends CometExpressionSerde[ParseToDate] {
 }
 
 object CometHour extends CometExpressionSerde[Hour] {
+
+  override def getSupportLevel(expr: Hour): SupportLevel = {
+    if (expr.child.dataType.typeName == "timestamp_ntz") {
+      Incompatible(
+        Some(
+          "Incorrectly applies timezone conversion to TimestampNTZ inputs" +
+            " (https://github.com/apache/datafusion-comet/issues/3180)"))
+    } else {
+      Compatible()
+    }
+  }
+
   override def convert(
       expr: Hour,
       inputs: Seq[Attribute],
@@ -290,6 +302,18 @@ object CometHour extends CometExpressionSerde[Hour] {
 }
 
 object CometMinute extends CometExpressionSerde[Minute] {
+
+  override def getSupportLevel(expr: Minute): SupportLevel = {
+    if (expr.child.dataType.typeName == "timestamp_ntz") {
+      Incompatible(
+        Some(
+          "Incorrectly applies timezone conversion to TimestampNTZ inputs" +
+            " (https://github.com/apache/datafusion-comet/issues/3180)"))
+    } else {
+      Compatible()
+    }
+  }
+
   override def convert(
       expr: Minute,
       inputs: Seq[Attribute],
@@ -316,6 +340,18 @@ object CometMinute extends CometExpressionSerde[Minute] {
 }
 
 object CometSecond extends CometExpressionSerde[Second] {
+
+  override def getSupportLevel(expr: Second): SupportLevel = {
+    if (expr.child.dataType.typeName == "timestamp_ntz") {
+      Incompatible(
+        Some(
+          "Incorrectly applies timezone conversion to TimestampNTZ inputs" +
+            " (https://github.com/apache/datafusion-comet/issues/3180)"))
+    } else {
+      Compatible()
+    }
+  }
+
   override def convert(
       expr: Second,
       inputs: Seq[Attribute],
@@ -489,10 +525,19 @@ object CometTruncTimestamp extends CometExpressionSerde[TruncTimestamp] {
       "microsecond")
 
   override def getSupportLevel(expr: TruncTimestamp): SupportLevel = {
+    val timezone = expr.timeZoneId.getOrElse("UTC")
+    val isUtc = timezone == "UTC" || timezone == "Etc/UTC"
     expr.format match {
       case Literal(fmt: UTF8String, _) =>
         if (supportedFormats.contains(fmt.toString.toLowerCase(Locale.ROOT))) {
-          Compatible()
+          if (isUtc) {
+            Compatible()
+          } else {
+            Incompatible(
+              Some(
+                s"Incorrect results in non-UTC timezone '$timezone'" +
+                  " (https://github.com/apache/datafusion-comet/issues/2649)"))
+          }
         } else {
           Unsupported(Some(s"Format $fmt is not supported"))
         }

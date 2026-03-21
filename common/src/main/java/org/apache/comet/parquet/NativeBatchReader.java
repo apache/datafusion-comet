@@ -89,7 +89,7 @@ import static scala.jdk.javaapi.CollectionConverters.asJava;
  * <p>Example of how to use this:
  *
  * <pre>
- *   BatchReader reader = new BatchReader(parquetFile, batchSize);
+ *   NativeBatchReader reader = new NativeBatchReader(parquetFile, batchSize);
  *   try {
  *     reader.init();
  *     while (reader.readBatch()) {

@@ -15,18 +15,27 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! JNI JVM related functions
+//! JNI bridge for Apache DataFusion Comet.
+//!
+//! This crate provides the JNI interaction layer used across Comet's native Rust crates.
 
-use crate::errors::CometResult;
+#![allow(clippy::result_large_err)]
 
 use jni::objects::JClass;
 use jni::{
     errors::Error,
     objects::{JMethodID, JObject, JString, JThrowable, JValueGen, JValueOwned},
     signature::ReturnType,
-    AttachGuard, JNIEnv,
+    AttachGuard, JNIEnv, JavaVM,
 };
 use once_cell::sync::OnceCell;
+
+use errors::{CometError, CometResult};
+
+pub mod errors;
+
+/// Global reference to the Java VM, initialized during native library setup.
+pub static JAVA_VM: OnceCell<JavaVM> = OnceCell::new();
 
 /// Macro for converting JNI Error to Comet Error.
 #[macro_export]
@@ -40,6 +49,7 @@ macro_rules! jni_map_error {
 }
 
 /// Macro for converting Rust types to JNI types.
+#[macro_export]
 macro_rules! jvalues {
     ($($args:expr,)* $(,)?) => {{
         &[$(jni::objects::JValue::from($args).as_jni()),*] as &[jni::sys::jvalue]
@@ -53,55 +63,65 @@ macro_rules! jvalues {
 /// metric_node is the Java object on which the method is called.
 /// add is the method name.
 /// jname and value are the arguments.
+#[macro_export]
 macro_rules! jni_call {
     ($env:expr, $clsname:ident($obj:expr).$method:ident($($args:expr),* $(,)?) -> $ret:ty) => {{
         let method_id = paste::paste! {
-            $crate::jvm_bridge::JVMClasses::get().[<$clsname>].[<method_ $method>]
+            $crate::JVMClasses::get().[<$clsname>].[<method_ $method>]
         };
         let ret_type = paste::paste! {
-            $crate::jvm_bridge::JVMClasses::get().[<$clsname>].[<method_ $method _ret>]
+            $crate::JVMClasses::get().[<$clsname>].[<method_ $method _ret>]
         }.clone();
-        let args = $crate::jvm_bridge::jvalues!($($args,)*);
+        let args = $crate::jvalues!($($args,)*);
 
         // Call the JVM method and obtain the returned value
         let ret = $env.call_method_unchecked($obj, method_id, ret_type, args);
 
         // Check if JVM has thrown any exception, and handle it if so.
-        let result = if let Some(exception) = $crate::jvm_bridge::check_exception($env)? {
+        let result = if let Some(exception) = $crate::check_exception($env)? {
             Err(exception.into())
         } else {
-            $crate::jvm_bridge::jni_map_error!($env, ret)
+            $crate::jni_map_error!($env, ret)
         };
 
-        result.and_then(|result| $crate::jvm_bridge::jni_map_error!($env, <$ret>::try_from(result)))
+        result.and_then(|result| $crate::jni_map_error!($env, <$ret>::try_from(result)))
     }}
 }
 
+#[macro_export]
 macro_rules! jni_static_call {
     ($env:expr, $clsname:ident.$method:ident($($args:expr),* $(,)?) -> $ret:ty) => {{
         let clazz = &paste::paste! {
-            $crate::jvm_bridge::JVMClasses::get().[<$clsname>].[<class>]
+            $crate::JVMClasses::get().[<$clsname>].[<class>]
         };
         let method_id = paste::paste! {
-            $crate::jvm_bridge::JVMClasses::get().[<$clsname>].[<method_ $method>]
+            $crate::JVMClasses::get().[<$clsname>].[<method_ $method>]
         };
         let ret_type = paste::paste! {
-            $crate::jvm_bridge::JVMClasses::get().[<$clsname>].[<method_ $method _ret>]
+            $crate::JVMClasses::get().[<$clsname>].[<method_ $method _ret>]
         }.clone();
-        let args = $crate::jvm_bridge::jvalues!($($args,)*);
+        let args = $crate::jvalues!($($args,)*);
 
         // Call the JVM static method and obtain the returned value
         let ret = $env.call_static_method_unchecked(clazz, method_id, ret_type, args);
 
         // Check if JVM has thrown any exception, and handle it if so.
-        let result = if let Some(exception) = $crate::jvm_bridge::check_exception($env)? {
+        let result = if let Some(exception) = $crate::check_exception($env)? {
             Err(exception.into())
         } else {
-            $crate::jvm_bridge::jni_map_error!($env, ret)
+            $crate::jni_map_error!($env, ret)
         };
 
-        result.and_then(|result| $crate::jvm_bridge::jni_map_error!($env, <$ret>::try_from(result)))
+        result.and_then(|result| $crate::jni_map_error!($env, <$ret>::try_from(result)))
     }}
+}
+
+/// Macro for creating a new global reference.
+#[macro_export]
+macro_rules! jni_new_global_ref {
+    ($env:expr, $obj:expr) => {{
+        $crate::jni_map_error!($env, $env.new_global_ref($obj))
+    }};
 }
 
 /// Wrapper for JString. Because we cannot implement `TryFrom` trait for `JString` as they
@@ -156,26 +176,12 @@ impl<'a> TryFrom<JValueOwned<'a>> for BinaryWrapper<'a> {
     }
 }
 
-/// Macro for creating a new global reference.
-macro_rules! jni_new_global_ref {
-    ($env:expr, $obj:expr) => {{
-        $crate::jni_map_error!($env, $env.new_global_ref($obj))
-    }};
-}
-
-pub(crate) use jni_call;
-pub(crate) use jni_map_error;
-pub(crate) use jni_new_global_ref;
-pub(crate) use jni_static_call;
-pub(crate) use jvalues;
-
 mod comet_exec;
 pub use comet_exec::*;
 mod batch_iterator;
 mod comet_metric_node;
 mod comet_task_memory_manager;
 
-use crate::{errors::CometError, JAVA_VM};
 use batch_iterator::CometBatchIterator;
 pub use comet_metric_node::*;
 pub use comet_task_memory_manager::*;
@@ -190,13 +196,13 @@ pub struct JVMClasses<'a> {
     /// Cached JClass for "java.lang.Throwable"
     java_lang_throwable: JClass<'a>,
     /// Cached method ID for "java.lang.Object#getClass"
-    pub object_get_class_method: JMethodID,
+    object_get_class_method: JMethodID,
     /// Cached method ID for "java.lang.Class#getName"
-    pub class_get_name_method: JMethodID,
+    class_get_name_method: JMethodID,
     /// Cached method ID for "java.lang.Throwable#getMessage"
-    pub throwable_get_message_method: JMethodID,
+    throwable_get_message_method: JMethodID,
     /// Cached method ID for "java.lang.Throwable#getCause"
-    pub throwable_get_cause_method: JMethodID,
+    throwable_get_cause_method: JMethodID,
 
     /// The CometMetricNode class. Used for updating the metrics.
     pub comet_metric_node: CometMetricNode<'a>,
@@ -263,11 +269,19 @@ impl JVMClasses<'_> {
     }
 
     pub fn get() -> &'static JVMClasses<'static> {
+        debug_assert!(
+            JVM_CLASSES.get().is_some(),
+            "JVMClasses::get: not initialized"
+        );
         unsafe { JVM_CLASSES.get_unchecked() }
     }
 
     /// Gets the JNIEnv for the current thread.
     pub fn get_env() -> CometResult<AttachGuard<'static>> {
+        debug_assert!(
+            JAVA_VM.get().is_some(),
+            "JVMClasses::get_env: JAVA_VM not initialized"
+        );
         unsafe {
             let java_vm = JAVA_VM.get_unchecked();
             java_vm.attach_current_thread().map_err(|e| {
@@ -279,7 +293,7 @@ impl JVMClasses<'_> {
     }
 }
 
-pub(crate) fn check_exception(env: &mut JNIEnv) -> CometResult<Option<CometError>> {
+pub fn check_exception(env: &mut JNIEnv) -> CometResult<Option<CometError>> {
     let result = if env.exception_check()? {
         let exception = env.exception_occurred()?;
         env.exception_clear()?;
@@ -372,10 +386,7 @@ fn get_throwable_message(
 /// this converts it into a `CometError::JavaException` with the exception class name
 /// and exception message. This error can then be populated to the JVM side to let
 /// users know the cause of the native side error.
-pub(crate) fn convert_exception(
-    env: &mut JNIEnv,
-    throwable: &JThrowable,
-) -> CometResult<CometError> {
+pub fn convert_exception(env: &mut JNIEnv, throwable: &JThrowable) -> CometResult<CometError> {
     let cache = JVMClasses::get();
     let exception_class_name_str = get_throwable_class_name(env, cache, throwable)?;
     let message_str = get_throwable_message(env, cache, throwable)?;

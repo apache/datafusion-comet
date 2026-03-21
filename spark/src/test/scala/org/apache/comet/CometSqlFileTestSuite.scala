@@ -83,39 +83,50 @@ class CometSqlFileTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       withTable(file.tables: _*) {
         file.records.foreach {
           case SqlStatement(sql, line) =>
-            val location = if (line > 0) s"$relativePath:$line" else relativePath
-            withClue(s"In SQL file $location, executing statement:\n$sql\n") {
-              spark.sql(sql)
+            try {
+              val location = if (line > 0) s"$relativePath:$line" else relativePath
+              withClue(s"In SQL file $location, executing statement:\n$sql\n") {
+                spark.sql(sql)
+              }
+            } catch {
+              case e: Exception =>
+                throw new RuntimeException(s"Error executing SQL '$sql' ${e.getMessage}", e)
             }
           case SqlQuery(sql, mode, line) =>
-            val location = if (line > 0) s"$relativePath:$line" else relativePath
-            withClue(s"In SQL file $location, executing query:\n$sql\n") {
-              mode match {
-                case CheckCoverageAndAnswer =>
-                  checkSparkAnswerAndOperator(sql)
-                case SparkAnswerOnly =>
-                  checkSparkAnswer(sql)
-                case WithTolerance(tol) =>
-                  checkSparkAnswerWithTolerance(sql, tol)
-                case ExpectFallback(reason) =>
-                  checkSparkAnswerAndFallbackReason(sql, reason)
-                case Ignore(reason) =>
-                  logInfo(s"IGNORED query (${reason}): $sql")
-                case ExpectError(pattern) =>
-                  val (sparkError, cometError) = checkSparkAnswerMaybeThrows(spark.sql(sql))
-                  assert(
-                    sparkError.isDefined,
-                    s"Expected Spark to throw an error matching '$pattern' but query succeeded")
-                  assert(
-                    cometError.isDefined,
-                    s"Expected Comet to throw an error matching '$pattern' but query succeeded")
-                  assert(
-                    sparkError.get.getMessage.contains(pattern),
-                    s"Spark error '${sparkError.get.getMessage}' does not contain '$pattern'")
-                  assert(
-                    cometError.get.getMessage.contains(pattern),
-                    s"Comet error '${cometError.get.getMessage}' does not contain '$pattern'")
+            try {
+              val location = if (line > 0) s"$relativePath:$line" else relativePath
+              withClue(s"In SQL file $location, executing query:\n$sql\n") {
+                mode match {
+                  case CheckCoverageAndAnswer =>
+                    checkSparkAnswerAndOperator(sql)
+                  case SparkAnswerOnly =>
+                    checkSparkAnswer(sql)
+                  case WithTolerance(tol) =>
+                    checkSparkAnswerWithTolerance(sql, tol)
+                  case ExpectFallback(reason) =>
+                    checkSparkAnswerAndFallbackReason(sql, reason)
+                  case Ignore(reason) =>
+                    logInfo(s"IGNORED query ($reason): $sql")
+                  case ExpectError(pattern) =>
+                    val (sparkError, cometError) = checkSparkAnswerMaybeThrows(spark.sql(sql))
+                    assert(
+                      sparkError.isDefined,
+                      s"Expected Spark to throw an error matching '$pattern' but query succeeded")
+                    assert(
+                      cometError.isDefined,
+                      s"Expected Comet to throw an error matching '$pattern' but query succeeded")
+                    assert(
+                      sparkError.get.getMessage.contains(pattern),
+                      s"Spark error '${sparkError.get.getMessage}' does not contain '$pattern'")
+                    assert(
+                      cometError.get.getMessage.contains(pattern),
+                      s"Comet error '${cometError.get.getMessage}' does not contain '$pattern'")
+                }
               }
+
+            } catch {
+              case e: Exception =>
+                throw new RuntimeException(s"Error executing SQL '$sql' ${e.getMessage}", e)
             }
         }
       }

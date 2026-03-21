@@ -35,7 +35,7 @@ import org.apache.spark.sql.catalyst.expressions.{Expression, ExpressionInfo, He
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, BloomFilterAggregate}
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
-import org.apache.spark.sql.execution.{CollectLimitExec, ProjectExec, SparkPlan, SQLExecution, UnionExec}
+import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, BroadcastQueryStageExec}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
@@ -382,41 +382,6 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
-  // ignored: native_comet scan is no longer supported
-  ignore("ReusedExchangeExec should work on CometBroadcastExchangeExec with V2 scan") {
-    withSQLConf(
-      CometConf.COMET_EXEC_BROADCAST_FORCE_ENABLED.key -> "true",
-      CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET,
-      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
-      SQLConf.USE_V1_SOURCE_LIST.key -> "") {
-      withTempPath { path =>
-        spark
-          .range(5)
-          .withColumn("p", $"id" % 2)
-          .write
-          .mode("overwrite")
-          .partitionBy("p")
-          .parquet(path.toString)
-        withTempView("t") {
-          spark.read.parquet(path.toString).createOrReplaceTempView("t")
-          val df = sql("""
-              |SELECT t1.id, t2.id, t3.id
-              |FROM t AS t1
-              |JOIN t AS t2 ON t2.id = t1.id
-              |JOIN t AS t3 ON t3.id = t2.id
-              |WHERE t1.p = 1 AND t2.p = 1 AND t3.p = 1
-              |""".stripMargin)
-          val reusedPlan = ReuseExchangeAndSubquery.apply(df.queryExecution.executedPlan)
-          val reusedExchanges = collect(reusedPlan) { case r: ReusedExchangeExec =>
-            r
-          }
-          assert(reusedExchanges.size == 1)
-          assert(reusedExchanges.head.child.isInstanceOf[CometBroadcastExchangeExec])
-        }
-      }
-    }
-  }
-
   test("CometShuffleExchangeExec logical link should be correct") {
     withTempView("v") {
       spark.sparkContext
@@ -509,6 +474,10 @@ class CometExecSuite extends CometTestBase {
           val expected = (0 until numParts).flatMap(_ => (0 until 5).map(i => i + 1)).sorted
 
           assert(rowContents === expected)
+
+          val metrics = nativeBroadcast.metrics
+          assert(metrics("numCoalescedBatches").value == 5L)
+          assert(metrics("numCoalescedRows").value == 5L)
         }
       }
     }
@@ -528,6 +497,10 @@ class CometExecSuite extends CometTestBase {
           }.get.asInstanceOf[CometBroadcastExchangeExec]
           val rows = nativeBroadcast.executeCollect()
           assert(rows.isEmpty)
+
+          val metrics = nativeBroadcast.metrics
+          assert(metrics("numCoalescedBatches").value == 0L)
+          assert(metrics("numCoalescedRows").value == 0L)
         }
       }
     }
@@ -593,35 +566,50 @@ class CometExecSuite extends CometTestBase {
   }
 
   test("Comet native metrics: scan") {
-    withSQLConf(CometConf.COMET_EXEC_ENABLED.key -> "true") {
-      withTempDir { dir =>
-        val path = new Path(dir.toURI.toString, "native-scan.parquet")
-        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = true, 10000)
-        withParquetTable(path.toString, "tbl") {
-          val df = sql("SELECT * FROM tbl WHERE _2 > _3")
-          df.collect()
+    Seq(CometConf.SCAN_NATIVE_DATAFUSION, CometConf.SCAN_NATIVE_ICEBERG_COMPAT).foreach {
+      scanMode =>
+        withSQLConf(
+          CometConf.COMET_EXEC_ENABLED.key -> "true",
+          CometConf.COMET_NATIVE_SCAN_IMPL.key -> scanMode) {
+          withTempDir { dir =>
+            val path = new Path(dir.toURI.toString, "native-scan.parquet")
+            makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = true, 10000)
+            withParquetTable(path.toString, "tbl") {
+              val df = sql("SELECT * FROM tbl")
+              df.collect()
 
-          find(df.queryExecution.executedPlan)(s =>
-            s.isInstanceOf[CometScanExec] || s.isInstanceOf[CometNativeScanExec])
-            .foreach(scan => {
-              val metrics = scan.metrics
+              val scan = find(df.queryExecution.executedPlan)(s =>
+                s.isInstanceOf[CometScanExec] || s.isInstanceOf[CometNativeScanExec])
+              assert(scan.isDefined, s"Expected to find a Comet scan node for $scanMode")
+              val metrics = scan.get.metrics
 
-              assert(metrics.contains("time_elapsed_scanning_total"))
+              assert(
+                metrics.contains("time_elapsed_scanning_total"),
+                s"[$scanMode] Missing time_elapsed_scanning_total. Available: ${metrics.keys}")
               assert(metrics.contains("bytes_scanned"))
               assert(metrics.contains("output_rows"))
               assert(metrics.contains("time_elapsed_opening"))
               assert(metrics.contains("time_elapsed_processing"))
               assert(metrics.contains("time_elapsed_scanning_until_data"))
-              assert(metrics("time_elapsed_scanning_total").value > 0)
-              assert(metrics("bytes_scanned").value > 0)
-              assert(metrics("output_rows").value > 0)
-              assert(metrics("time_elapsed_opening").value > 0)
-              assert(metrics("time_elapsed_processing").value > 0)
-              assert(metrics("time_elapsed_scanning_until_data").value > 0)
-            })
-
+              assert(
+                metrics("time_elapsed_scanning_total").value > 0,
+                s"[$scanMode] time_elapsed_scanning_total should be > 0")
+              assert(
+                metrics("bytes_scanned").value > 0,
+                s"[$scanMode] bytes_scanned should be > 0")
+              assert(metrics("output_rows").value > 0, s"[$scanMode] output_rows should be > 0")
+              assert(
+                metrics("time_elapsed_opening").value > 0,
+                s"[$scanMode] time_elapsed_opening should be > 0")
+              assert(
+                metrics("time_elapsed_processing").value > 0,
+                s"[$scanMode] time_elapsed_processing should be > 0")
+              assert(
+                metrics("time_elapsed_scanning_until_data").value > 0,
+                s"[$scanMode] time_elapsed_scanning_until_data should be > 0")
+            }
+          }
         }
-      }
     }
   }
 
@@ -732,7 +720,7 @@ class CometExecSuite extends CometTestBase {
         assert(metrics.contains("build_time"))
         assert(metrics("build_time").value > 1L)
         assert(metrics.contains("build_input_batches"))
-        assert(metrics("build_input_batches").value == 25L)
+        assert(metrics("build_input_batches").value == 5L)
         assert(metrics.contains("build_mem_used"))
         assert(metrics("build_mem_used").value > 1L)
         assert(metrics.contains("build_input_rows"))
