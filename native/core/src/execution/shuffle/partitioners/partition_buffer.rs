@@ -149,54 +149,36 @@ impl PartitionBuffer {
         let columns = schema
             .fields()
             .iter()
-            .map(|field| match field.data_type() {
-                DataType::Boolean => ColumnBuffer::Boolean {
-                    values: BooleanBufferBuilder::new(estimated_rows),
-                    nulls: BooleanBufferBuilder::new(estimated_rows),
-                },
-                DataType::Int8 | DataType::UInt8 => ColumnBuffer::Fixed {
-                    values: MutableBuffer::new(estimated_rows),
-                    byte_width: 1,
-                    nulls: BooleanBufferBuilder::new(estimated_rows),
-                },
-                DataType::Int16 | DataType::UInt16 | DataType::Float16 => ColumnBuffer::Fixed {
-                    values: MutableBuffer::new(estimated_rows * 2),
-                    byte_width: 2,
-                    nulls: BooleanBufferBuilder::new(estimated_rows),
-                },
-                DataType::Int32 | DataType::UInt32 | DataType::Float32 | DataType::Date32 => {
-                    ColumnBuffer::Fixed {
-                        values: MutableBuffer::new(estimated_rows * 4),
-                        byte_width: 4,
+            .map(|field| {
+                let dt = field.data_type();
+                if let DataType::Boolean = dt {
+                    ColumnBuffer::Boolean {
+                        values: BooleanBufferBuilder::new(estimated_rows),
                         nulls: BooleanBufferBuilder::new(estimated_rows),
                     }
+                } else if let Some(byte_width) = dt.primitive_width() {
+                    ColumnBuffer::Fixed {
+                        values: MutableBuffer::new(estimated_rows * byte_width),
+                        byte_width,
+                        nulls: BooleanBufferBuilder::new(estimated_rows),
+                    }
+                } else {
+                    match dt {
+                        DataType::Utf8 | DataType::Binary => ColumnBuffer::Variable {
+                            offsets: vec![0i32],
+                            data: vec![],
+                            nulls: BooleanBufferBuilder::new(estimated_rows),
+                        },
+                        DataType::LargeUtf8 | DataType::LargeBinary => {
+                            ColumnBuffer::LargeVariable {
+                                offsets: vec![0i64],
+                                data: vec![],
+                                nulls: BooleanBufferBuilder::new(estimated_rows),
+                            }
+                        }
+                        _ => ColumnBuffer::Fallback { indices: vec![] },
+                    }
                 }
-                DataType::Int64
-                | DataType::UInt64
-                | DataType::Float64
-                | DataType::Date64
-                | DataType::Timestamp(_, _)
-                | DataType::Duration(_) => ColumnBuffer::Fixed {
-                    values: MutableBuffer::new(estimated_rows * 8),
-                    byte_width: 8,
-                    nulls: BooleanBufferBuilder::new(estimated_rows),
-                },
-                DataType::Decimal128(_, _) => ColumnBuffer::Fixed {
-                    values: MutableBuffer::new(estimated_rows * 16),
-                    byte_width: 16,
-                    nulls: BooleanBufferBuilder::new(estimated_rows),
-                },
-                DataType::Utf8 | DataType::Binary => ColumnBuffer::Variable {
-                    offsets: vec![0i32],
-                    data: vec![],
-                    nulls: BooleanBufferBuilder::new(estimated_rows),
-                },
-                DataType::LargeUtf8 | DataType::LargeBinary => ColumnBuffer::LargeVariable {
-                    offsets: vec![0i64],
-                    data: vec![],
-                    nulls: BooleanBufferBuilder::new(estimated_rows),
-                },
-                _ => ColumnBuffer::Fallback { indices: vec![] },
             })
             .collect();
 
@@ -239,49 +221,10 @@ impl PartitionBuffer {
         self.columns.iter().map(|c| c.memory_size()).sum()
     }
 
-    #[allow(dead_code)]
     pub(crate) fn has_fallback_columns(&self) -> bool {
         self.columns
             .iter()
             .any(|c| matches!(c, ColumnBuffer::Fallback { .. }))
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn clear(&mut self) {
-        self.row_count = 0;
-        for col in &mut self.columns {
-            match col {
-                ColumnBuffer::Boolean { values, nulls } => {
-                    *values = BooleanBufferBuilder::new(0);
-                    *nulls = BooleanBufferBuilder::new(0);
-                }
-                ColumnBuffer::Fixed { values, nulls, .. } => {
-                    *values = MutableBuffer::new(0);
-                    *nulls = BooleanBufferBuilder::new(0);
-                }
-                ColumnBuffer::Variable {
-                    offsets,
-                    data,
-                    nulls,
-                } => {
-                    *offsets = vec![0i32];
-                    data.clear();
-                    *nulls = BooleanBufferBuilder::new(0);
-                }
-                ColumnBuffer::LargeVariable {
-                    offsets,
-                    data,
-                    nulls,
-                } => {
-                    *offsets = vec![0i64];
-                    data.clear();
-                    *nulls = BooleanBufferBuilder::new(0);
-                }
-                ColumnBuffer::Fallback { indices } => {
-                    indices.clear();
-                }
-            }
-        }
     }
 
     pub(crate) fn flush(&mut self, fallback_batch: Option<&RecordBatch>) -> Result<RecordBatch> {
