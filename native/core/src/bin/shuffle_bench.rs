@@ -235,6 +235,7 @@ fn main() {
     let mut write_times = Vec::with_capacity(args.iterations);
     let mut read_times = Vec::with_capacity(args.iterations);
     let mut data_file_sizes = Vec::with_capacity(args.iterations);
+    let mut last_read_result: Option<ShuffleReadResult> = None;
 
     for i in 0..total_iters {
         let is_warmup = i < args.warmup;
@@ -266,16 +267,19 @@ fn main() {
 
         // Read phase
         if args.read_back {
-            let read_elapsed = run_shuffle_read(
+            let result = run_shuffle_read(
                 data_file.to_str().unwrap(),
                 index_file.to_str().unwrap(),
                 args.partitions,
                 &schema,
             );
             if !is_warmup {
-                read_times.push(read_elapsed);
+                read_times.push(result.elapsed);
             }
-            print!("  read: {:.3}s", read_elapsed);
+            print!("  read: {:.3}s", result.elapsed);
+            if !is_warmup {
+                last_read_result = Some(result);
+            }
         }
         println!();
     }
@@ -331,6 +335,10 @@ fn main() {
                 "  throughput:       {}/s (from compressed)",
                 format_bytes(read_throughput_bytes as usize)
             );
+        }
+
+        if let Some(ref result) = last_read_result {
+            print_block_stats(&result.block_sizes, result.total_batches, result.total_rows);
         }
     }
 
@@ -585,12 +593,19 @@ fn run_shuffle_write(
     start.elapsed().as_secs_f64()
 }
 
+struct ShuffleReadResult {
+    elapsed: f64,
+    total_rows: usize,
+    total_batches: usize,
+    block_sizes: Vec<usize>,
+}
+
 fn run_shuffle_read(
     data_file: &str,
     index_file: &str,
     num_partitions: usize,
     schema: &SchemaRef,
-) -> f64 {
+) -> ShuffleReadResult {
     let start = Instant::now();
 
     // Read index file to get partition offsets
@@ -608,6 +623,7 @@ fn run_shuffle_read(
 
     let mut total_rows = 0usize;
     let mut total_batches = 0usize;
+    let mut block_sizes = Vec::new();
 
     // Decode each partition's data
     for p in 0..num_partitions.min(offsets.len().saturating_sub(1)) {
@@ -632,6 +648,7 @@ fn run_shuffle_read(
                 read_shuffle_block(block_data, schema).expect("Failed to decode shuffle block");
             total_rows += batch.num_rows();
             total_batches += 1;
+            block_sizes.push(block_length);
 
             offset = block_end;
         }
@@ -644,7 +661,12 @@ fn run_shuffle_read(
         total_batches,
         num_partitions
     );
-    elapsed
+    ShuffleReadResult {
+        elapsed,
+        total_rows,
+        total_batches,
+        block_sizes,
+    }
 }
 
 fn build_partitioning(
@@ -735,6 +757,45 @@ fn format_number(n: usize) -> String {
         result.push(c);
     }
     result.chars().rev().collect()
+}
+
+fn print_block_stats(block_sizes: &[usize], total_batches: usize, total_rows: usize) {
+    if block_sizes.is_empty() {
+        return;
+    }
+    let mut sorted = block_sizes.to_vec();
+    sorted.sort_unstable();
+
+    let count = sorted.len();
+    let min = sorted[0];
+    let max = sorted[count - 1];
+    let sum: usize = sorted.iter().sum();
+    let mean = sum as f64 / count as f64;
+    let median = if count % 2 == 0 {
+        (sorted[count / 2 - 1] + sorted[count / 2]) as f64 / 2.0
+    } else {
+        sorted[count / 2] as f64
+    };
+    let p25 = sorted[count / 4];
+    let p75 = sorted[count * 3 / 4];
+    let p90 = sorted[count * 9 / 10];
+    let p99 = sorted[count * 99 / 100];
+
+    println!("Shuffle blocks:");
+    println!("  blocks:           {}", format_number(count));
+    println!(
+        "  rows/block:       ~{}",
+        format_number(total_rows / total_batches)
+    );
+    println!("  total size:       {}", format_bytes(sum));
+    println!("  min:              {}", format_bytes(min));
+    println!("  p25:              {}", format_bytes(p25));
+    println!("  median:           {}", format_bytes(median as usize));
+    println!("  mean:             {}", format_bytes(mean as usize));
+    println!("  p75:              {}", format_bytes(p75));
+    println!("  p90:              {}", format_bytes(p90));
+    println!("  p99:              {}", format_bytes(p99));
+    println!("  max:              {}", format_bytes(max));
 }
 
 fn format_bytes(bytes: usize) -> String {
