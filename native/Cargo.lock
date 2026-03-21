@@ -312,7 +312,7 @@ dependencies = [
  "arrow-schema",
  "arrow-select",
  "flatbuffers",
- "lz4_flex",
+ "lz4_flex 0.12.1",
 ]
 
 [[package]]
@@ -1836,6 +1836,7 @@ dependencies = [
  "crc32fast",
  "criterion",
  "datafusion",
+ "datafusion-comet-jni-bridge",
  "datafusion-comet-objectstore-hdfs",
  "datafusion-comet-proto",
  "datafusion-comet-spark-expr",
@@ -1854,7 +1855,7 @@ dependencies = [
  "lazy_static",
  "log",
  "log4rs",
- "lz4_flex",
+ "lz4_flex 0.13.0",
  "mimalloc",
  "num",
  "object_store",
@@ -1868,19 +1869,28 @@ dependencies = [
  "procfs",
  "prost",
  "rand 0.10.0",
- "regex",
  "reqwest",
  "serde_json",
  "simd-adler32",
  "snap",
  "tempfile",
- "thiserror 2.0.18",
  "tikv-jemalloc-ctl",
  "tikv-jemallocator",
  "tokio",
  "url",
  "uuid",
  "zstd",
+]
+
+[[package]]
+name = "datafusion-comet-common"
+version = "0.15.0"
+dependencies = [
+ "arrow",
+ "datafusion",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -1896,6 +1906,24 @@ dependencies = [
  "tempfile",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "datafusion-comet-jni-bridge"
+version = "0.15.0"
+dependencies = [
+ "arrow",
+ "assertables",
+ "datafusion",
+ "datafusion-comet-common",
+ "jni",
+ "lazy_static",
+ "once_cell",
+ "parquet",
+ "paste",
+ "prost",
+ "regex",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -1933,15 +1961,14 @@ dependencies = [
  "chrono-tz",
  "criterion",
  "datafusion",
+ "datafusion-comet-common",
  "ecb",
  "futures",
  "hex",
  "num",
  "rand 0.10.0",
  "regex",
- "serde",
  "serde_json",
- "thiserror 2.0.18",
  "tokio",
  "twox-hash",
 ]
@@ -3980,6 +4007,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "lz4_flex"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "db9a0d582c2874f68138a16ce1867e0ffde6c0bb0a0df85e1f36d04146db488a"
+dependencies = [
+ "twox-hash",
+]
+
+[[package]]
 name = "md-5"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4408,7 +4444,7 @@ dependencies = [
  "futures",
  "half",
  "hashbrown 0.16.1",
- "lz4_flex",
+ "lz4_flex 0.12.1",
  "num-bigint",
  "num-integer",
  "num-traits",
