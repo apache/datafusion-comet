@@ -338,7 +338,7 @@ fn main() {
         }
 
         if let Some(ref result) = last_read_result {
-            print_block_stats(&result.block_sizes, result.total_batches, result.total_rows);
+            print_block_stats(&result.block_sizes, &result.block_rows);
         }
     }
 
@@ -595,9 +595,8 @@ fn run_shuffle_write(
 
 struct ShuffleReadResult {
     elapsed: f64,
-    total_rows: usize,
-    total_batches: usize,
     block_sizes: Vec<usize>,
+    block_rows: Vec<usize>,
 }
 
 fn run_shuffle_read(
@@ -624,6 +623,7 @@ fn run_shuffle_read(
     let mut total_rows = 0usize;
     let mut total_batches = 0usize;
     let mut block_sizes = Vec::new();
+    let mut block_rows = Vec::new();
 
     // Decode each partition's data
     for p in 0..num_partitions.min(offsets.len().saturating_sub(1)) {
@@ -649,6 +649,7 @@ fn run_shuffle_read(
             total_rows += batch.num_rows();
             total_batches += 1;
             block_sizes.push(block_length);
+            block_rows.push(batch.num_rows());
 
             offset = block_end;
         }
@@ -663,9 +664,8 @@ fn run_shuffle_read(
     );
     ShuffleReadResult {
         elapsed,
-        total_rows,
-        total_batches,
         block_sizes,
+        block_rows,
     }
 }
 
@@ -759,13 +759,7 @@ fn format_number(n: usize) -> String {
     result.chars().rev().collect()
 }
 
-fn print_block_stats(block_sizes: &[usize], total_batches: usize, total_rows: usize) {
-    if block_sizes.is_empty() {
-        return;
-    }
-    let mut sorted = block_sizes.to_vec();
-    sorted.sort_unstable();
-
+fn percentiles(sorted: &[usize]) -> (usize, usize, usize, usize, usize, usize, usize, f64, f64) {
     let count = sorted.len();
     let min = sorted[0];
     let max = sorted[count - 1];
@@ -780,22 +774,45 @@ fn print_block_stats(block_sizes: &[usize], total_batches: usize, total_rows: us
     let p75 = sorted[count * 3 / 4];
     let p90 = sorted[count * 9 / 10];
     let p99 = sorted[count * 99 / 100];
+    (min, p25, p75, p90, p99, max, sum, mean, median)
+}
+
+fn print_block_stats(block_sizes: &[usize], block_rows: &[usize]) {
+    if block_sizes.is_empty() {
+        return;
+    }
+
+    let mut sorted_sizes = block_sizes.to_vec();
+    sorted_sizes.sort_unstable();
+    let (min, p25, p75, p90, p99, max, sum, mean, median) = percentiles(&sorted_sizes);
 
     println!("Shuffle blocks:");
-    println!("  blocks:           {}", format_number(count));
-    println!(
-        "  rows/block:       ~{}",
-        format_number(total_rows / total_batches)
-    );
+    println!("  count:            {}", format_number(sorted_sizes.len()));
     println!("  total size:       {}", format_bytes(sum));
-    println!("  min:              {}", format_bytes(min));
-    println!("  p25:              {}", format_bytes(p25));
-    println!("  median:           {}", format_bytes(median as usize));
-    println!("  mean:             {}", format_bytes(mean as usize));
-    println!("  p75:              {}", format_bytes(p75));
-    println!("  p90:              {}", format_bytes(p90));
-    println!("  p99:              {}", format_bytes(p99));
-    println!("  max:              {}", format_bytes(max));
+    println!("  Block sizes (compressed):");
+    println!("    min:            {}", format_bytes(min));
+    println!("    p25:            {}", format_bytes(p25));
+    println!("    median:         {}", format_bytes(median as usize));
+    println!("    mean:           {}", format_bytes(mean as usize));
+    println!("    p75:            {}", format_bytes(p75));
+    println!("    p90:            {}", format_bytes(p90));
+    println!("    p99:            {}", format_bytes(p99));
+    println!("    max:            {}", format_bytes(max));
+
+    let mut sorted_rows = block_rows.to_vec();
+    sorted_rows.sort_unstable();
+    let (min, p25, p75, p90, p99, max, sum, mean, median) = percentiles(&sorted_rows);
+
+    println!("  Rows per block:");
+    println!("    total:          {}", format_number(sum));
+    println!("    min:            {}", format_number(min));
+    println!("    p25:            {}", format_number(p25));
+    println!("    median:         {}", format_number(median as usize));
+    println!("    mean:           {}", format_number(mean as usize));
+    println!("    p75:            {}", format_number(p75));
+    println!("    p90:            {}", format_number(p90));
+    println!("    p99:            {}", format_number(p99));
+    println!("    max:            {}", format_number(max));
 }
 
 fn format_bytes(bytes: usize) -> String {
