@@ -248,7 +248,6 @@ impl ExecutionPlan for ShuffleScanExec {
     ) -> datafusion::common::Result<SendableRecordBatchStream> {
         Ok(Box::pin(ShuffleScanStream::new(
             self.clone(),
-            self.schema(),
             partition,
             self.baseline_metrics.clone(),
         )))
@@ -289,8 +288,6 @@ impl DisplayAs for ShuffleScanExec {
 struct ShuffleScanStream {
     /// The ShuffleScanExec producing input batches.
     shuffle_scan: ShuffleScanExec,
-    /// Schema of the output.
-    schema: SchemaRef,
     /// Metrics.
     baseline_metrics: BaselineMetrics,
 }
@@ -298,13 +295,11 @@ struct ShuffleScanStream {
 impl ShuffleScanStream {
     pub fn new(
         shuffle_scan: ShuffleScanExec,
-        schema: SchemaRef,
         _partition: usize,
         baseline_metrics: BaselineMetrics,
     ) -> Self {
         Self {
             shuffle_scan,
-            schema,
             baseline_metrics,
         }
     }
@@ -332,7 +327,7 @@ impl Stream for ShuffleScanStream {
                 let options =
                     arrow::array::RecordBatchOptions::new().with_row_count(Some(*num_rows));
                 let maybe_batch = arrow::array::RecordBatch::try_new_with_options(
-                    Arc::clone(&self.schema),
+                    self.shuffle_scan.schema(),
                     columns.clone(),
                     &options,
                 )
@@ -351,7 +346,7 @@ impl Stream for ShuffleScanStream {
 
 impl RecordBatchStream for ShuffleScanStream {
     fn schema(&self) -> SchemaRef {
-        Arc::clone(&self.schema)
+        self.shuffle_scan.schema()
     }
 }
 
