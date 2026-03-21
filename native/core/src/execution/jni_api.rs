@@ -70,7 +70,7 @@ use jni::{
         ReleaseMode,
     },
     sys::{jboolean, jdouble, jint, jlong},
-    JNIEnv,
+    Env, JNIEnv,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -152,13 +152,13 @@ struct ExecutionContext {
     /// The input sources for the DataFusion plan
     pub scans: Vec<ScanExec>,
     /// The global reference of input sources for the DataFusion plan
-    pub input_sources: Vec<Arc<GlobalRef>>,
+    pub input_sources: Vec<Arc<GlobalRef<JObject<'static>>>>,
     /// The record batch stream to pull results from
     pub stream: Option<SendableRecordBatchStream>,
     /// Receives batches from a spawned tokio task (async I/O path)
     pub batch_receiver: Option<mpsc::Receiver<DataFusionResult<RecordBatch>>>,
     /// Native metrics
-    pub metrics: Arc<GlobalRef>,
+    pub metrics: Arc<GlobalRef<JObject<'static>>>,
     // The interval in milliseconds to update metrics
     pub metrics_update_interval: Option<Duration>,
     // The last update time of metrics
@@ -239,7 +239,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             let mut input_sources = vec![];
             let num_inputs = env.get_array_length(&iterators)?;
             for i in 0..num_inputs {
-                let input_source = env.get_object_array_element(&iterators, i)?;
+                let input_source = env.get_object_array_element(&iterators, i as usize)?;
                 let input_source = Arc::new(jni_new_global_ref!(env, input_source)?);
                 input_sources.push(input_source);
             }
@@ -268,7 +268,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             let num_local_dirs = env.get_array_length(&local_dirs)?;
             let mut local_dirs_vec = vec![];
             for i in 0..num_local_dirs {
-                let local_dir: JString = env.get_object_array_element(&local_dirs, i)?.into();
+                let local_dir = env.get_object_array_element(&local_dirs, i as usize)?;
+                let local_dir = unsafe { JString::from_raw(&*env, local_dir.into_raw()) };
                 let local_dir = env.get_string(&local_dir)?;
                 local_dirs_vec.push(local_dir.into());
             }
@@ -296,7 +297,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             // Handle key unwrapper for encrypted files
             if !key_unwrapper_obj.is_null() {
                 let encryption_factory = CometEncryptionFactory {
-                    key_unwrapper: jni_new_global_ref!(env, key_unwrapper_obj)?,
+                    key_unwrapper: Arc::new(jni_new_global_ref!(env, key_unwrapper_obj)?),
                 };
                 session.runtime_env().register_parquet_encryption_factory(
                     ENCRYPTION_FACTORY_ID,
@@ -411,7 +412,7 @@ fn register_datafusion_spark_function(session_ctx: &SessionContext) {
 
 /// Prepares arrow arrays for output.
 fn prepare_output(
-    env: &mut JNIEnv,
+    env: &mut Env,
     array_addrs: JLongArray,
     schema_addrs: JLongArray,
     output_batch: RecordBatch,
@@ -698,8 +699,7 @@ pub extern "system" fn Java_org_apache_comet_Native_releasePlan(
     })
 }
 
-/// Updates the metrics of the query plan.
-fn update_metrics(env: &mut JNIEnv, exec_context: &mut ExecutionContext) -> CometResult<()> {
+fn update_metrics(env: &mut Env, exec_context: &mut ExecutionContext) -> CometResult<()> {
     if let Some(native_query) = &exec_context.root_op {
         let metrics = exec_context.metrics.as_obj();
         update_comet_metric(env, metrics, native_query)
@@ -724,15 +724,15 @@ fn log_plan_metrics(exec_context: &ExecutionContext, stage_id: jint, partition: 
 }
 
 fn convert_datatype_arrays(
-    env: &'_ mut JNIEnv<'_>,
+    env: &mut Env,
     serialized_datatypes: JObjectArray,
 ) -> JNIResult<Vec<ArrowDataType>> {
     let array_len = env.get_array_length(&serialized_datatypes)?;
     let mut res: Vec<ArrowDataType> = Vec::new();
 
     for i in 0..array_len {
-        let inner_array = env.get_object_array_element(&serialized_datatypes, i)?;
-        let inner_array: JByteArray = inner_array.into();
+        let inner_array = env.get_object_array_element(&serialized_datatypes, i as usize)?;
+        let inner_array = unsafe { JByteArray::from_raw(&*env, inner_array.into_raw()) };
         let bytes = env.convert_byte_array(inner_array)?;
         let data_type = serde::deserialize_data_type(bytes.as_slice()).unwrap();
         let arrow_dt = to_arrow_datatype(&data_type);
@@ -788,7 +788,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative
 
                 let output_path: String = env.get_string(&file_path).unwrap().into();
 
-                let checksum_enabled = checksum_enabled == 1;
+                let checksum_enabled = checksum_enabled;
                 let current_checksum = if current_checksum == i64::MIN {
                     // Initial checksum is not available.
                     None
@@ -886,7 +886,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlock(
             let length = length as usize;
             let slice: &[u8] = unsafe { std::slice::from_raw_parts(raw_pointer, length) };
             let batch = read_ipc_compressed(slice)?;
-            prepare_output(&mut env, array_addrs, schema_addrs, batch, false)
+            prepare_output(env, array_addrs, schema_addrs, batch, false)
         })
     })
 }
@@ -957,7 +957,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_columnarToRowInit(
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| {
         // Deserialize the schema
-        let schema = convert_datatype_arrays(&mut env, serialized_schema)?;
+        let schema = convert_datatype_arrays(env, serialized_schema)?;
 
         // Create the context
         let ctx = Box::new(ColumnarToRowContext::new(schema, batch_size as usize));
@@ -1030,17 +1030,18 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_columnarToRowConvert(
         let (buffer_ptr, offsets, lengths) = ctx.convert(&arrays, num_rows as usize)?;
 
         // Create Java int arrays for offsets and lengths
-        let offsets_array = env.new_int_array(offsets.len() as i32)?;
+        let offsets_array = env.new_int_array(offsets.len())?;
         env.set_int_array_region(&offsets_array, 0, offsets)?;
 
-        let lengths_array = env.new_int_array(lengths.len() as i32)?;
+        let lengths_array = env.new_int_array(lengths.len())?;
         env.set_int_array_region(&lengths_array, 0, lengths)?;
 
         // Create the NativeColumnarToRowInfo object
-        let info_class = env.find_class("org/apache/comet/NativeColumnarToRowInfo")?;
+        let info_class =
+            env.find_class(jni::jni_str!("org/apache/comet/NativeColumnarToRowInfo"))?;
         let info_obj = env.new_object(
             info_class,
-            "(J[I[I)V",
+            jni::jni_sig!("(J[I[I)V"),
             &[
                 jni::objects::JValue::Long(buffer_ptr as jlong),
                 jni::objects::JValue::Object(&offsets_array),

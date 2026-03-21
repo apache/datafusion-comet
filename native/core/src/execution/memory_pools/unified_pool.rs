@@ -28,14 +28,14 @@ use datafusion::{
     common::{resources_datafusion_err, DataFusionError},
     execution::memory_pool::{MemoryPool, MemoryReservation},
 };
-use jni::objects::GlobalRef;
+use jni::objects::{GlobalRef, JObject};
 use log::warn;
 
 /// A DataFusion `MemoryPool` implementation for Comet that delegates to
 /// Spark's off-heap executor memory pool via JNI by calling
 /// [`crate::jvm_bridge::CometTaskMemoryManager`].
 pub struct CometUnifiedMemoryPool {
-    task_memory_manager_handle: Arc<GlobalRef>,
+    task_memory_manager_handle: Arc<GlobalRef<JObject<'static>>>,
     used: AtomicUsize,
     task_attempt_id: i64,
 }
@@ -50,7 +50,7 @@ impl Debug for CometUnifiedMemoryPool {
 
 impl CometUnifiedMemoryPool {
     pub fn new(
-        task_memory_manager_handle: Arc<GlobalRef>,
+        task_memory_manager_handle: Arc<GlobalRef<JObject<'static>>>,
         task_attempt_id: i64,
     ) -> CometUnifiedMemoryPool {
         Self {
@@ -63,9 +63,10 @@ impl CometUnifiedMemoryPool {
     /// Request memory from Spark's off-heap memory pool via JNI
     fn acquire_from_spark(&self, additional: usize) -> CometResult<i64> {
         let mut env = JVMClasses::get_env()?;
+        let env = env.borrow_env_mut();
         let handle = self.task_memory_manager_handle.as_obj();
         unsafe {
-            jni_call!(&mut env,
+            jni_call!(env,
               comet_task_memory_manager(handle).acquire_memory(additional as i64) -> i64)
         }
     }
@@ -73,9 +74,10 @@ impl CometUnifiedMemoryPool {
     /// Release memory to Spark's off-heap memory pool via JNI
     fn release_to_spark(&self, size: usize) -> CometResult<()> {
         let mut env = JVMClasses::get_env()?;
+        let env = env.borrow_env_mut();
         let handle = self.task_memory_manager_handle.as_obj();
         unsafe {
-            jni_call!(&mut env, comet_task_memory_manager(handle).release_memory(size as i64) -> ())
+            jni_call!(env, comet_task_memory_manager(handle).release_memory(size as i64) -> ())
         }
     }
 }

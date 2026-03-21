@@ -40,9 +40,7 @@ use datafusion::{
 };
 use futures::Stream;
 use itertools::Itertools;
-use jni::objects::JValueGen;
-use jni::objects::{GlobalRef, JObject};
-use jni::sys::jsize;
+use jni::objects::{GlobalRef, JObject, JValue};
 use std::rc::Rc;
 use std::{
     any::Any,
@@ -61,7 +59,7 @@ pub struct ScanExec {
     /// environment `JNIEnv` from the execution context.
     pub exec_context_id: i64,
     /// The input source of scan node. It is a global reference of JVM `CometBatchIterator` object.
-    pub input_source: Option<Arc<GlobalRef>>,
+    pub input_source: Option<Arc<GlobalRef<JObject<'static>>>>,
     /// A description of the input source for informational purposes
     pub input_source_description: String,
     /// The data types of columns of the input batch. Converted from Spark schema.
@@ -84,7 +82,7 @@ pub struct ScanExec {
 impl ScanExec {
     pub fn new(
         exec_context_id: i64,
-        input_source: Option<Arc<GlobalRef>>,
+        input_source: Option<Arc<GlobalRef<JObject<'static>>>>,
         input_source_description: &str,
         data_types: Vec<DataType>,
         arrow_ffi_safe: bool,
@@ -176,9 +174,10 @@ impl ScanExec {
         }
 
         let mut env = JVMClasses::get_env()?;
+        let env = env.borrow_env_mut();
 
         let num_rows: i32 = unsafe {
-            jni_call!(&mut env,
+            jni_call!(env,
         comet_batch_iterator(iter).has_next() -> i32)?
         };
 
@@ -190,11 +189,11 @@ impl ScanExec {
         // JVM via FFI
         // Selection vectors can be provided by, for instance, Iceberg to
         // remove rows that have been deleted.
-        let selection_indices_arrays = Self::get_selection_indices(&mut env, iter, num_cols)?;
+        let selection_indices_arrays = Self::get_selection_indices(env, iter, num_cols)?;
 
         // fetch batch data from JVM via FFI
         let (num_rows, array_addrs, schema_addrs) =
-            Self::allocate_and_fetch_batch(&mut env, iter, num_cols)?;
+            Self::allocate_and_fetch_batch(env, iter, num_cols)?;
 
         let mut inputs: Vec<ArrayRef> = Vec::with_capacity(num_cols);
 
@@ -262,7 +261,7 @@ impl ScanExec {
     /// Allocates Arrow FFI structures and calls JNI to get the next batch data.
     /// Returns the number of rows and the allocated array/schema addresses.
     fn allocate_and_fetch_batch(
-        env: &mut jni::JNIEnv,
+        env: &mut jni::Env,
         iter: &JObject,
         num_cols: usize,
     ) -> Result<(i32, Vec<i64>, Vec<i64>), CometError> {
@@ -282,8 +281,8 @@ impl ScanExec {
         }
 
         // Prepare the java array parameters
-        let long_array_addrs = env.new_long_array(num_cols as jsize)?;
-        let long_schema_addrs = env.new_long_array(num_cols as jsize)?;
+        let long_array_addrs = env.new_long_array(num_cols)?;
+        let long_schema_addrs = env.new_long_array(num_cols)?;
 
         env.set_long_array_region(&long_array_addrs, 0, &array_addrs)?;
         env.set_long_array_region(&long_schema_addrs, 0, &schema_addrs)?;
@@ -291,8 +290,8 @@ impl ScanExec {
         let array_obj = JObject::from(long_array_addrs);
         let schema_obj = JObject::from(long_schema_addrs);
 
-        let array_obj = JValueGen::Object(array_obj.as_ref());
-        let schema_obj = JValueGen::Object(schema_obj.as_ref());
+        let array_obj = JValue::Object(array_obj.as_ref());
+        let schema_obj = JValue::Object(schema_obj.as_ref());
 
         let num_rows: i32 = unsafe {
             jni_call!(env,
@@ -309,7 +308,7 @@ impl ScanExec {
     /// Checks for selection vectors and exports selection indices if needed.
     /// Returns selection arrays if they exist (applies to all columns).
     fn get_selection_indices(
-        env: &mut jni::JNIEnv,
+        env: &mut jni::Env,
         iter: &JObject,
         num_cols: usize,
     ) -> Result<Option<Vec<ArrayRef>>, CometError> {
@@ -318,7 +317,7 @@ impl ScanExec {
             jni_call!(env,
                 comet_batch_iterator(iter).has_selection_vectors() -> jni::sys::jboolean)?
         };
-        let has_selection_vectors = has_selection_vectors_result != 0;
+        let has_selection_vectors = has_selection_vectors_result;
 
         let selection_indices_arrays = if has_selection_vectors {
             // Allocate arrays for selection indices export (one per column)
@@ -333,8 +332,8 @@ impl ScanExec {
             }
 
             // Prepare JNI arrays for the export call
-            let indices_array_obj = env.new_long_array(num_cols as jsize)?;
-            let indices_schema_obj = env.new_long_array(num_cols as jsize)?;
+            let indices_array_obj = env.new_long_array(num_cols)?;
+            let indices_schema_obj = env.new_long_array(num_cols)?;
             env.set_long_array_region(&indices_array_obj, 0, &indices_array_addrs)?;
             env.set_long_array_region(&indices_schema_obj, 0, &indices_schema_addrs)?;
 
@@ -342,8 +341,8 @@ impl ScanExec {
             let _exported_count: i32 = unsafe {
                 jni_call!(env,
                     comet_batch_iterator(iter).export_selection_indices(
-                        JValueGen::Object(JObject::from(indices_array_obj).as_ref()),
-                        JValueGen::Object(JObject::from(indices_schema_obj).as_ref())
+                        JValue::Object(JObject::from(indices_array_obj).as_ref()),
+                        JValue::Object(JObject::from(indices_schema_obj).as_ref())
                     ) -> i32)?
             };
 
