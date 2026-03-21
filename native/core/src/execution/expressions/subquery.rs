@@ -17,7 +17,7 @@
 
 use crate::{
     execution::utils::bytes_to_i128,
-    jvm_bridge::{jni_static_call, BinaryWrapper, JVMClasses, StringWrapper},
+    jvm_bridge::{BinaryWrapper, JVMClasses, StringWrapper},
 };
 use arrow::array::RecordBatch;
 use arrow::datatypes::{DataType, Schema, TimeUnit};

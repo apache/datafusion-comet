@@ -15,8 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::errors::CometError;
 use crate::execution::spark_plan::SparkPlan;
-use crate::{errors::CometError, jvm_bridge::jni_call};
 use datafusion::physical_plan::metrics::MetricValue;
 use datafusion_comet_proto::spark_metric::NativeMetricNode;
 use jni::{objects::JObject, JNIEnv};

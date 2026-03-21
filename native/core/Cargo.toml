@@ -45,13 +45,11 @@ tokio = { version = "1", features = ["rt-multi-thread"] }
 async-trait = { workspace = true }
 log = "0.4"
 log4rs = "1.4.0"
-thiserror = { workspace = true }
-lazy_static = "1.4.0"
 prost = "0.14.3"
 jni = "0.21"
 snap = "1.1"
 # we disable default features in lz4_flex to force the use of the faster unsafe encoding and decoding implementation
-lz4_flex = { version = "0.12.1", default-features = false, features = ["frame"] }
+lz4_flex = { version = "0.13.0", default-features = false, features = ["frame"] }
 zstd = "0.13.3"
 rand = { workspace = true }
 num = { workspace = true }
@@ -64,10 +62,10 @@ datafusion-physical-expr-adapter = { workspace = true }
 datafusion-datasource = { workspace = true }
 datafusion-spark = { workspace = true }
 once_cell = "1.18.0"
-regex = { workspace = true }
 crc32fast = "1.3.2"
 simd-adler32 = "0.3.7"
 datafusion-comet-spark-expr = { workspace = true }
+datafusion-comet-jni-bridge = { workspace = true }
 datafusion-comet-proto = { workspace = true }
 object_store = { workspace = true }
 url = { workspace = true }
@@ -108,7 +106,7 @@ jemalloc = ["tikv-jemallocator", "tikv-jemalloc-ctl"]
 
 # exclude optional packages from cargo machete verifications
 [package.metadata.cargo-machete]
-ignored = ["datafusion-comet-objectstore-hdfs", "hdfs-sys"]
+ignored = ["hdfs-sys", "paste"]
 
 [lib]
 name = "comet"

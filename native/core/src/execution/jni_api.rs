@@ -24,7 +24,7 @@ use crate::{
         metrics::utils::update_comet_metric, planner::PhysicalPlanner, serde::to_arrow_datatype,
         shuffle::spark_unsafe::row::process_sorted_row_partition, sort::RdxSort,
     },
-    jvm_bridge::{jni_new_global_ref, JVMClasses},
+    jvm_bridge::JVMClasses,
 };
 use arrow::array::{Array, ArrayRef, RecordBatch, UInt32Array};
 use arrow::compute::{take, TakeOptions};
