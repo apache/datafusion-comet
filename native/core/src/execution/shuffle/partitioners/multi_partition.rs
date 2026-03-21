@@ -460,8 +460,11 @@ impl MultiPartitionShuffleRepartitioner {
                         let row = row_idx as usize;
                         let src_offset = row * byte_width;
                         let is_valid = nulls.is_none_or(|n| n.is_valid(row));
-                        self.partition_buffers[p]
-                            .append_fixed(col_idx, &values[src_offset..src_offset + byte_width], is_valid);
+                        self.partition_buffers[p].append_fixed(
+                            col_idx,
+                            &values[src_offset..src_offset + byte_width],
+                            is_valid,
+                        );
                     }
                 }
             } else if is_variable {
@@ -480,8 +483,11 @@ impl MultiPartitionShuffleRepartitioner {
                         let val_start = offsets_slice[row] as usize;
                         let val_end = offsets_slice[row + 1] as usize;
                         let is_valid = nulls.is_none_or(|n| n.is_valid(row));
-                        self.partition_buffers[p]
-                            .append_variable(col_idx, &values_slice[val_start..val_end], is_valid);
+                        self.partition_buffers[p].append_variable(
+                            col_idx,
+                            &values_slice[val_start..val_end],
+                            is_valid,
+                        );
                     }
                 }
             } else if is_large_variable {
@@ -500,8 +506,11 @@ impl MultiPartitionShuffleRepartitioner {
                         let val_start = offsets_slice[row] as usize;
                         let val_end = offsets_slice[row + 1] as usize;
                         let is_valid = nulls.is_none_or(|n| n.is_valid(row));
-                        self.partition_buffers[p]
-                            .append_large_variable(col_idx, &values_slice[val_start..val_end], is_valid);
+                        self.partition_buffers[p].append_large_variable(
+                            col_idx,
+                            &values_slice[val_start..val_end],
+                            is_valid,
+                        );
                     }
                 }
             } else if is_boolean {
@@ -516,8 +525,11 @@ impl MultiPartitionShuffleRepartitioner {
                     for &row_idx in row_indices {
                         let row = row_idx as usize;
                         let is_valid = nulls.is_none_or(|n| n.is_valid(row));
-                        self.partition_buffers[p]
-                            .append_bool(col_idx, bool_array.value(row), is_valid);
+                        self.partition_buffers[p].append_bool(
+                            col_idx,
+                            bool_array.value(row),
+                            is_valid,
+                        );
                     }
                 }
             } else {
@@ -530,14 +542,15 @@ impl MultiPartitionShuffleRepartitioner {
                     }
                     let row_indices = &partition_row_indices[start..end];
                     for &row_idx in row_indices {
-                        self.partition_buffers[p]
-                            .append_fallback_index(col_idx, row_idx);
+                        self.partition_buffers[p].append_fallback_index(col_idx, row_idx);
                     }
                 }
             }
         }
 
-        self.metrics.scatter_time.add_duration(scatter_start.elapsed());
+        self.metrics
+            .scatter_time
+            .add_duration(scatter_start.elapsed());
 
         // Update row counts from partition_starts (O(num_partitions), not O(num_rows))
         for p in 0..num_partitions {
@@ -705,10 +718,7 @@ impl ShufflePartitioner for MultiPartitionShuffleRepartitioner {
                         &self.metrics.encode_time,
                         &self.metrics.write_time,
                     )?;
-                    buf_batch_writer.flush(
-                        &self.metrics.encode_time,
-                        &self.metrics.write_time,
-                    )?;
+                    buf_batch_writer.flush(&self.metrics.encode_time, &self.metrics.write_time)?;
                 }
             }
 
