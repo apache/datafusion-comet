@@ -73,17 +73,18 @@ impl ParquetFileReaderFactory for CachingParquetReaderFactory {
         metrics: &ExecutionPlanMetricsSet,
     ) -> DataFusionResult<Box<dyn AsyncFileReader + Send>> {
         let bytes_scanned =
-            MetricBuilder::new(metrics).counter("bytes_scanned", partition_index);
+            MetricBuilder::new(metrics).counter("parquet bytes_scanned", partition_index);
 
         let location = partitioned_file.object_meta.location.clone();
 
         // Get or create the OnceCell for this file path
-        let cell = METADATA_CACHE
-            .lock()
-            .unwrap()
-            .entry(location.clone())
-            .or_insert_with(|| Arc::new(OnceCell::new()))
-            .clone();
+        let cell = Arc::<OnceCell<Arc<ParquetMetaData>>>::clone(
+            METADATA_CACHE
+                .lock()
+                .unwrap()
+                .entry(location.clone())
+                .or_insert_with(|| Arc::new(OnceCell::new())),
+        );
 
         let mut inner = ParquetObjectReader::new(Arc::clone(&self.store), location.clone())
             .with_file_size(partitioned_file.object_meta.size);
@@ -109,10 +110,7 @@ struct CachingParquetFileReader {
 }
 
 impl AsyncFileReader for CachingParquetFileReader {
-    fn get_bytes(
-        &mut self,
-        range: Range<u64>,
-    ) -> BoxFuture<'_, parquet::errors::Result<Bytes>> {
+    fn get_bytes(&mut self, range: Range<u64>) -> BoxFuture<'_, parquet::errors::Result<Bytes>> {
         self.bytes_scanned.add((range.end - range.start) as usize);
         self.inner.get_bytes(range)
     }
@@ -139,18 +137,12 @@ impl AsyncFileReader for CachingParquetFileReader {
         async move {
             let metadata = cell
                 .get_or_try_init(|| async {
-                    log::trace!(
-                        "CachingParquetFileReader: loading footer for {}",
-                        location
-                    );
+                    log::trace!("CachingParquetFileReader: loading footer for {}", location);
                     self.inner.get_metadata(options).await
                 })
                 .await?;
 
-            log::trace!(
-                "CachingParquetFileReader: cache HIT for {}",
-                self.location
-            );
+            log::trace!("CachingParquetFileReader: cache HIT for {}", self.location);
             Ok(Arc::clone(metadata))
         }
         .boxed()
