@@ -53,8 +53,48 @@ fn detect_fraction_precision(fmt: &str) -> Option<FractionPrecision> {
     }
 }
 
+/// The set of Spark/Java SimpleDateFormat tokens that this implementation
+/// can reliably convert to chrono strftime patterns.  Any token outside this
+/// set would pass through unconverted and silently produce wrong results, so
+/// we reject the format early and let the caller fall back to Spark.
+const SUPPORTED_SPARK_TOKENS: &[&str] = &[
+    "yyyy",
+    "MM",
+    "dd",
+    "HH",
+    "mm",
+    "ss",
+    ".SSSSSSSSS",
+    ".SSSSSS",
+    ".SSS",
+    "XXX",
+    "Z",
+];
+
+/// Return `true` when every alphabetic run in `fmt` is covered by one of the
+/// supported tokens.  Literal separators (`-`, `/`, ` `, `:`, `.`, `T`, `'`)
+/// are allowed.
+fn is_supported_spark_format(fmt: &str) -> bool {
+    // Build a scratch copy, blank-out every known token, then check that no
+    // unrecognised letter remains.
+    let mut scratch = fmt.to_string();
+    for tok in SUPPORTED_SPARK_TOKENS {
+        scratch = scratch.replace(tok, &" ".repeat(tok.len()));
+    }
+    // After blanking known tokens, only separators / whitespace / digits
+    // should remain.  Any remaining ASCII letter means an unsupported token.
+    !scratch.chars().any(|c| c.is_ascii_alphabetic())
+}
+
 /// Convert a Spark/Java SimpleDateFormat pattern to a chrono strftime pattern.
-fn spark_to_chrono(fmt: &str) -> (String, Option<FractionPrecision>) {
+///
+/// Returns `None` when the format contains tokens that this implementation
+/// does not support, so the caller can fall back to Spark.
+fn spark_to_chrono(fmt: &str) -> Option<(String, Option<FractionPrecision>)> {
+    if !is_supported_spark_format(fmt) {
+        return None;
+    }
+
     let precision = detect_fraction_precision(fmt);
 
     let mut out = fmt.to_string();
@@ -79,7 +119,7 @@ fn spark_to_chrono(fmt: &str) -> (String, Option<FractionPrecision>) {
     out = out.replace("XXX", "%:z");
     out = out.replace("Z", "%z");
 
-    (out, precision)
+    Some((out, precision))
 }
 
 /// Returns true when the Spark format string contains a time component.
@@ -89,17 +129,29 @@ fn spark_format_has_time(fmt: &str) -> bool {
 
 /// Parse a string value using a Spark format, returning a `NaiveDateTime`.
 /// Date-only formats are expanded to midnight.
+///
+/// Returns a `DataFusionError` when the format contains unsupported tokens
+/// or when the value cannot be parsed.
 fn parse_spark_naive(
     value: &str,
     spark_fmt: &str,
-) -> Result<(NaiveDateTime, Option<FractionPrecision>), chrono::ParseError> {
-    let (chrono_fmt, precision) = spark_to_chrono(spark_fmt);
+) -> Result<(NaiveDateTime, Option<FractionPrecision>), DataFusionError> {
+    let (chrono_fmt, precision) = spark_to_chrono(spark_fmt).ok_or_else(|| {
+        DataFusionError::Plan(format!(
+            "Unsupported Spark format pattern '{spark_fmt}': \
+             contains tokens not handled by the native implementation"
+        ))
+    })?;
 
     if spark_format_has_time(spark_fmt) {
-        let ts = NaiveDateTime::parse_from_str(value, &chrono_fmt)?;
+        let ts = NaiveDateTime::parse_from_str(value, &chrono_fmt).map_err(|_| {
+            DataFusionError::Plan(format!("Error parsing '{value}' with format '{spark_fmt}'"))
+        })?;
         Ok((ts, precision))
     } else {
-        let date = NaiveDate::parse_from_str(value, &chrono_fmt)?;
+        let date = NaiveDate::parse_from_str(value, &chrono_fmt).map_err(|_| {
+            DataFusionError::Plan(format!("Error parsing '{value}' with format '{spark_fmt}'"))
+        })?;
         Ok((date.and_hms_opt(0, 0, 0).unwrap(), precision))
     }
 }
@@ -129,9 +181,7 @@ pub fn spark_to_timestamp_parse(
     spark_fmt: &str,
     tz: Tz,
 ) -> Result<i64, DataFusionError> {
-    let (naive, precision) = parse_spark_naive(value, spark_fmt).map_err(|_| {
-        DataFusionError::Plan(format!("Error parsing '{value}' with format '{spark_fmt}'"))
-    })?;
+    let (naive, precision) = parse_spark_naive(value, spark_fmt)?;
 
     let naive = normalize_fraction(naive, precision)
         .ok_or_else(|| DataFusionError::Plan("Invalid fractional timestamp".into()))?;
@@ -331,7 +381,11 @@ pub fn spark_to_date(args: &[ArrayRef], fail_on_error: bool) -> Result<ArrayRef>
                     match (parsed, fail_on_error) {
                         (Ok(micros), _) => {
                             // Convert UTC microseconds to days since epoch.
-                            let days = (micros / 1_000_000 / 86_400) as i32;
+                            // Use div_euclid (floor division) so that pre-epoch
+                            // timestamps with non-midnight times round toward
+                            // negative infinity instead of toward zero.
+                            let secs = micros.div_euclid(1_000_000);
+                            let days = secs.div_euclid(86_400) as i32;
                             Ok(ScalarValue::Date32(Some(days)))
                         }
                         (Err(err), true) => Err(err),
@@ -398,14 +452,14 @@ mod tests {
 
     #[test]
     fn converts_basic_date_format() {
-        let (fmt, precision) = spark_to_chrono("yyyy-MM-dd");
+        let (fmt, precision) = spark_to_chrono("yyyy-MM-dd").unwrap();
         assert_eq!(fmt, "%Y-%m-%d");
         assert_eq!(precision, None);
     }
 
     #[test]
     fn converts_timestamp_with_millis() {
-        let (fmt, precision) = spark_to_chrono("yyyy-MM-dd HH:mm:ss.SSS");
+        let (fmt, precision) = spark_to_chrono("yyyy-MM-dd HH:mm:ss.SSS").unwrap();
 
         assert_eq!(fmt, "%Y-%m-%d %H:%M:%S%.f");
         assert_eq!(precision, Some(FractionPrecision::Millis));
@@ -413,9 +467,18 @@ mod tests {
 
     #[test]
     fn converts_timestamp_with_timezone() {
-        let (fmt, _) = spark_to_chrono("yyyy-MM-dd HH:mm:ssXXX");
+        let (fmt, _) = spark_to_chrono("yyyy-MM-dd HH:mm:ssXXX").unwrap();
 
         assert_eq!(fmt, "%Y-%m-%d %H:%M:%S%:z");
+    }
+
+    #[test]
+    fn rejects_unsupported_format_tokens() {
+        // Single-digit month (M), 2-digit year (yy), AM/PM (a), day-of-week (E)
+        assert!(spark_to_chrono("yyyy-M-dd").is_none());
+        assert!(spark_to_chrono("yy-MM-dd").is_none());
+        assert!(spark_to_chrono("yyyy-MM-dd hh:mm:ss a").is_none());
+        assert!(spark_to_chrono("EEE, yyyy-MM-dd").is_none());
     }
 
     #[test]
@@ -590,5 +653,82 @@ mod tests {
         let arr = result.as_any().downcast_ref::<Date32Array>().unwrap();
 
         assert_eq!(arr.value(0), days);
+    }
+
+    #[test]
+    fn to_date_pre_epoch_with_non_midnight_time() {
+        // "1969-12-31 12:00:00" should map to day -1 (1969-12-31), not day 0 (1970-01-01).
+        let dates: ArrayRef =
+            Arc::new(StringArray::from(vec![Some("1969-12-31 12:00:00")])) as ArrayRef;
+        let formats: ArrayRef =
+            Arc::new(StringArray::from(vec![Some("yyyy-MM-dd HH:mm:ss")])) as ArrayRef;
+
+        let result = spark_to_date(&[dates, formats], false).unwrap();
+        let arr = result.as_any().downcast_ref::<Date32Array>().unwrap();
+
+        let expected_days = NaiveDate::from_ymd_opt(1969, 12, 31)
+            .unwrap()
+            .signed_duration_since(NaiveDate::from_ymd_opt(1970, 1, 1).unwrap())
+            .num_days() as i32;
+        assert_eq!(expected_days, -1);
+        assert_eq!(arr.value(0), expected_days);
+    }
+
+    #[test]
+    fn to_date_pre_epoch_midnight() {
+        // "1969-12-31" at midnight should map to day -1.
+        let dates: ArrayRef = Arc::new(StringArray::from(vec![Some("1969-12-31")])) as ArrayRef;
+        let formats: ArrayRef = Arc::new(StringArray::from(vec![Some("yyyy-MM-dd")])) as ArrayRef;
+
+        let result = spark_to_date(&[dates, formats], false).unwrap();
+        let arr = result.as_any().downcast_ref::<Date32Array>().unwrap();
+
+        assert_eq!(arr.value(0), -1);
+    }
+
+    #[test]
+    fn to_date_unsupported_format_returns_null_when_not_fail_on_error() {
+        // Format with single-digit month (M) is unsupported and should produce null.
+        let dates: ArrayRef = Arc::new(StringArray::from(vec![Some("2026-1-30")])) as ArrayRef;
+        let formats: ArrayRef = Arc::new(StringArray::from(vec![Some("yyyy-M-dd")])) as ArrayRef;
+
+        let result = spark_to_date(&[dates, formats], false).unwrap();
+        let arr = result.as_any().downcast_ref::<Date32Array>().unwrap();
+
+        assert!(arr.is_null(0));
+    }
+
+    #[test]
+    fn to_timestamp_unsupported_format_returns_null_when_not_fail_on_error() {
+        let dates: ArrayRef =
+            Arc::new(StringArray::from(vec![Some("2026-1-30 10:30:52")])) as ArrayRef;
+        let formats: ArrayRef =
+            Arc::new(StringArray::from(vec![Some("yyyy-M-dd HH:mm:ss")])) as ArrayRef;
+
+        let result = spark_to_timestamp(&[dates, formats], false).unwrap();
+        let ts = result
+            .as_any()
+            .downcast_ref::<TimestampMicrosecondArray>()
+            .unwrap();
+
+        assert!(ts.is_null(0));
+    }
+
+    #[test]
+    fn is_supported_spark_format_accepts_valid_formats() {
+        assert!(is_supported_spark_format("yyyy-MM-dd"));
+        assert!(is_supported_spark_format("yyyy-MM-dd HH:mm:ss"));
+        assert!(is_supported_spark_format("yyyy-MM-dd HH:mm:ss.SSS"));
+        assert!(is_supported_spark_format("yyyy/MM/dd"));
+        assert!(is_supported_spark_format("yyyy-MM-dd HH:mm:ssXXX"));
+    }
+
+    #[test]
+    fn is_supported_spark_format_rejects_unsupported() {
+        assert!(!is_supported_spark_format("yyyy-M-dd"));
+        assert!(!is_supported_spark_format("yy-MM-dd"));
+        assert!(!is_supported_spark_format("yyyy-MM-dd hh:mm:ss a"));
+        assert!(!is_supported_spark_format("EEE, yyyy-MM-dd"));
+        assert!(!is_supported_spark_format("yyyy-MM-dd'T'HH:mm:ss"));
     }
 }

@@ -44,3 +44,23 @@ SELECT to_date('2026/01/30', 'yyyy/MM/dd')
 
 query
 SELECT to_date('2026-01-30 10:30:00')
+
+-- Pre-epoch dates
+statement
+CREATE TABLE test_to_date_pre_epoch(col STRING) USING parquet
+
+statement
+INSERT INTO test_to_date_pre_epoch VALUES ('1969-12-31'), ('1960-06-15'), (NULL)
+
+query
+SELECT col, to_date(col) FROM test_to_date_pre_epoch
+
+query
+SELECT col, to_date(col, 'yyyy-MM-dd') FROM test_to_date_pre_epoch
+
+-- NULL handling
+query
+SELECT to_date(NULL)
+
+query
+SELECT to_date(NULL, 'yyyy-MM-dd')

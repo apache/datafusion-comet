@@ -253,6 +253,39 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
     }
   }
 
+  test("to_date handles pre-epoch dates correctly") {
+    withTempView("pre_epoch_tbl") {
+      val schema = StructType(Seq(StructField("dt_str", DataTypes.StringType, nullable = true)))
+
+      val data = Seq(
+        Row("1969-12-31"),
+        Row("1960-06-15"),
+        Row("1969-12-31 12:00:00"),
+        Row(null))
+
+      spark
+        .createDataFrame(spark.sparkContext.parallelize(data), schema)
+        .createOrReplaceTempView("pre_epoch_tbl")
+
+      checkSparkAnswerAndOperator("SELECT dt_str, to_date(dt_str) FROM pre_epoch_tbl")
+    }
+  }
+
+  test("to_date pre-epoch with explicit format") {
+    withTempView("pre_epoch_fmt_tbl") {
+      val schema = StructType(Seq(StructField("dt_str", DataTypes.StringType, nullable = true)))
+
+      val data = Seq(Row("1969/12/31"), Row("1960/06/15"), Row(null))
+
+      spark
+        .createDataFrame(spark.sparkContext.parallelize(data), schema)
+        .createOrReplaceTempView("pre_epoch_fmt_tbl")
+
+      checkSparkAnswerAndOperator(
+        "SELECT dt_str, to_date(dt_str, 'yyyy/MM/dd') FROM pre_epoch_fmt_tbl")
+    }
+  }
+
   test("unix_timestamp - timestamp input") {
     createTimestampTestData.createOrReplaceTempView("tbl")
     for (timezone <- Seq("UTC", "America/Los_Angeles")) {

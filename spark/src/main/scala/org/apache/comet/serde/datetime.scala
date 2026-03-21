@@ -226,21 +226,19 @@ object CometGetTimestamp extends CometExpressionSerde[GetTimestamp] {
 
 object CometParseToDate extends CometExpressionSerde[ParseToDate] {
 
-  /**
-   * Convert a Spark expression into a protocol buffer representation that can be passed into
-   * native code.
-   *
-   * @param expr
-   *   The Spark expression.
-   * @param inputs
-   *   The input attributes.
-   * @param binding
-   *   Whether the attributes are bound (this is only relevant in aggregate expressions).
-   * @return
-   *   Protocol buffer representation, or None if the expression could not be converted. In this
-   *   case it is expected that the input expression will have been tagged with reasons why it
-   *   could not be converted.
-   */
+  override def getSupportLevel(expr: ParseToDate): SupportLevel = {
+    expr.left.dataType match {
+      case StringType | DateType | TimestampType => Compatible()
+      case _: TimestampNTZType =>
+        Unsupported(
+          Some(
+            "to_date does not support TimestampNTZ input: " +
+              "timezone conversion would be incorrectly applied"))
+      case other =>
+        Unsupported(Some(s"to_date does not support input type: $other"))
+    }
+  }
+
   override def convert(
       expr: ParseToDate,
       inputs: Seq[Attribute],
