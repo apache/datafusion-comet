@@ -16,31 +16,11 @@
 // under the License.
 
 /// Utils for array vector, etc.
-use crate::errors::ExpressionError;
 use crate::execution::operators::ExecutionError;
 use arrow::{
     array::ArrayData,
-    error::ArrowError,
     ffi::{from_ffi, FFI_ArrowArray, FFI_ArrowSchema},
 };
-
-impl From<ArrowError> for ExecutionError {
-    fn from(error: ArrowError) -> ExecutionError {
-        ExecutionError::ArrowError(error.to_string())
-    }
-}
-
-impl From<ArrowError> for ExpressionError {
-    fn from(error: ArrowError) -> ExpressionError {
-        ExpressionError::ArrowError(error.to_string())
-    }
-}
-
-impl From<ExpressionError> for ArrowError {
-    fn from(error: ExpressionError) -> ArrowError {
-        ArrowError::ComputeError(error.to_string())
-    }
-}
 
 pub trait SparkArrowConvert {
     /// Build Arrow Arrays from C data interface passed from Spark.

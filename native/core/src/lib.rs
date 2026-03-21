@@ -26,9 +26,12 @@
 #![deny(clippy::clone_on_ref_ptr)]
 extern crate core;
 
+#[macro_use]
+extern crate datafusion_comet_jni_bridge;
+
 use jni::{
     objects::{JClass, JString},
-    JNIEnv, JavaVM,
+    JNIEnv,
 };
 use log::info;
 use log4rs::{
@@ -37,7 +40,6 @@ use log4rs::{
     encode::pattern::PatternEncoder,
     Config,
 };
-use once_cell::sync::OnceCell;
 
 #[cfg(all(
     not(target_env = "msvc"),
@@ -52,14 +54,20 @@ use tikv_jemallocator::Jemalloc;
 ))]
 use mimalloc::MiMalloc;
 
+// Re-export from jvm-bridge crate for internal use
+pub use datafusion_comet_jni_bridge::errors;
+pub use datafusion_comet_jni_bridge::JAVA_VM;
+
+/// Re-export jvm-bridge items under the `jvm_bridge` name for convenience.
+pub mod jvm_bridge {
+    pub use datafusion_comet_jni_bridge::*;
+}
+
 use errors::{try_unwrap_or_throw, CometError, CometResult};
 
 #[macro_use]
-mod errors;
-#[macro_use]
 pub mod common;
 pub mod execution;
-mod jvm_bridge;
 pub mod parquet;
 
 #[cfg(all(
@@ -76,8 +84,6 @@ static GLOBAL: Jemalloc = Jemalloc;
 ))]
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
-
-static JAVA_VM: OnceCell<JavaVM> = OnceCell::new();
 
 #[no_mangle]
 pub extern "system" fn Java_org_apache_comet_NativeBase_init(

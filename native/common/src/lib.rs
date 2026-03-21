@@ -15,21 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Operators
+mod error;
+mod query_context;
 
-pub use crate::errors::ExecutionError;
-
-pub use copy::*;
-pub use iceberg_scan::*;
-pub use scan::*;
-
-mod copy;
-mod expand;
-pub use expand::ExpandExec;
-mod iceberg_scan;
-mod parquet_writer;
-pub use parquet_writer::ParquetWriterExec;
-mod csv_scan;
-pub mod projection;
-mod scan;
-pub use csv_scan::init_csv_datasource_exec;
+pub use error::{decimal_overflow_error, SparkError, SparkErrorWithContext, SparkResult};
+pub use query_context::{create_query_context_map, QueryContext, QueryContextMap};
