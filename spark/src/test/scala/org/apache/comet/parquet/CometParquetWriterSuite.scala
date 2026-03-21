@@ -253,18 +253,26 @@ class CometParquetWriterSuite extends CometTestBase {
         CometConf.getOperatorAllowIncompatConfigKey(classOf[DataWritingCommandExec]) -> "true",
         CometConf.COMET_EXEC_ENABLED.key -> "true") {
 
-        val df = spark.sql("""
-          SELECT 1 as id, named_struct('name', 'Alice', 'age', 30) as person
-          UNION ALL
-          SELECT 2 as id, named_struct('name', 'Bob', 'age', 25) as person
-        """)
+        // Use parquet files as source so Comet can convert the scans to native operators.
+        // SQL literals produce RDDScanExec(OneRowRelation) which Comet cannot convert,
+        // causing the native writer to not engage.
+        withTempPath { srcDir =>
+          val src1 = new File(srcDir, "src1.parquet").getAbsolutePath
+          val src2 = new File(srcDir, "src2.parquet").getAbsolutePath
+          Seq((1, ("Alice", 30))).toDF("id", "person").write.parquet(src1)
+          Seq((2, ("Bob", 25))).toDF("id", "person").write.parquet(src2)
 
-        val plan = captureWritePlan(path => df.write.parquet(path), outputPath)
+          val df1 = spark.read.parquet(src1)
+          val df2 = spark.read.parquet(src2)
+          val df = df1.union(df2)
 
-        val result = spark.read.parquet(outputPath)
-        assert(result.count() == 2)
+          val plan = captureWritePlan(path => df.write.parquet(path), outputPath)
 
-        assertHasCometNativeWriteExec(plan)
+          val result = spark.read.parquet(outputPath)
+          assert(result.count() == 2)
+
+          assertHasCometNativeWriteExec(plan)
+        }
       }
     }
   }
@@ -279,22 +287,25 @@ class CometParquetWriterSuite extends CometTestBase {
         CometConf.getOperatorAllowIncompatConfigKey(classOf[DataWritingCommandExec]) -> "true",
         CometConf.COMET_EXEC_ENABLED.key -> "true") {
 
-        val df = spark.sql("""
-          SELECT * FROM (
-            SELECT 1 as id UNION ALL SELECT 2 as id
-          )
-          UNION ALL
-          SELECT * FROM (
-            SELECT 3 as id UNION ALL SELECT 4 as id
-          )
-        """)
+        // Use parquet files as source instead of SQL literals to ensure Comet
+        // can convert the scans to native operators.
+        withTempPath { srcDir =>
+          val src1 = new File(srcDir, "src1.parquet").getAbsolutePath
+          val src2 = new File(srcDir, "src2.parquet").getAbsolutePath
+          Seq(1, 2).toDF("id").write.parquet(src1)
+          Seq(3, 4).toDF("id").write.parquet(src2)
 
-        val plan = captureWritePlan(path => df.write.parquet(path), outputPath)
+          val inner1 = spark.read.parquet(src1)
+          val inner2 = spark.read.parquet(src2)
+          val df = inner1.union(inner2)
 
-        val result = spark.read.parquet(outputPath)
-        assert(result.count() == 4)
+          val plan = captureWritePlan(path => df.write.parquet(path), outputPath)
 
-        assertHasCometNativeWriteExec(plan)
+          val result = spark.read.parquet(outputPath)
+          assert(result.count() == 4)
+
+          assertHasCometNativeWriteExec(plan)
+        }
       }
     }
   }
