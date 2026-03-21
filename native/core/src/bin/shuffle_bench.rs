@@ -176,31 +176,11 @@ fn main() {
     // Load data
     let load_start = Instant::now();
     let batches = if let Some(ref input_path) = args.input {
-        load_parquet(input_path, args.batch_size)
+        load_parquet(input_path, args.batch_size, args.limit)
     } else {
         generate_data(&args)
     };
     let load_elapsed = load_start.elapsed();
-
-    // Apply row limit
-    let batches = {
-        let mut limited = Vec::new();
-        let mut rows_so_far = 0usize;
-        for batch in batches {
-            if rows_so_far >= args.limit {
-                break;
-            }
-            let remaining = args.limit - rows_so_far;
-            if batch.num_rows() <= remaining {
-                rows_so_far += batch.num_rows();
-                limited.push(batch);
-            } else {
-                limited.push(batch.slice(0, remaining));
-                rows_so_far += remaining;
-            }
-        }
-        limited
-    };
 
     let schema = batches[0].schema();
     let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
@@ -358,8 +338,9 @@ fn main() {
     let _ = fs::remove_file(&index_file);
 }
 
-fn load_parquet(path: &PathBuf, batch_size: usize) -> Vec<RecordBatch> {
+fn load_parquet(path: &PathBuf, batch_size: usize, limit: usize) -> Vec<RecordBatch> {
     let mut batches = Vec::new();
+    let mut total_rows = 0usize;
 
     let paths = if path.is_dir() {
         let mut files: Vec<PathBuf> = fs::read_dir(path)
@@ -383,7 +364,7 @@ fn load_parquet(path: &PathBuf, batch_size: usize) -> Vec<RecordBatch> {
         vec![path.clone()]
     };
 
-    for file_path in &paths {
+    'outer: for file_path in &paths {
         let file = fs::File::open(file_path)
             .unwrap_or_else(|e| panic!("Failed to open {}: {}", file_path.display(), e));
         let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap_or_else(|e| {
@@ -407,8 +388,19 @@ fn load_parquet(path: &PathBuf, batch_size: usize) -> Vec<RecordBatch> {
             let batch = batch_result.unwrap_or_else(|e| {
                 panic!("Failed to read batch from {}: {}", file_path.display(), e)
             });
-            if batch.num_rows() > 0 {
+            if batch.num_rows() == 0 {
+                continue;
+            }
+            let remaining = limit - total_rows;
+            if batch.num_rows() <= remaining {
+                total_rows += batch.num_rows();
                 batches.push(batch);
+            } else {
+                batches.push(batch.slice(0, remaining));
+                total_rows += remaining;
+            }
+            if total_rows >= limit {
+                break 'outer;
             }
         }
     }
@@ -418,8 +410,9 @@ fn load_parquet(path: &PathBuf, batch_size: usize) -> Vec<RecordBatch> {
     }
 
     println!(
-        "Loaded {} batches from {} file(s)",
+        "Loaded {} batches ({} rows) from {} file(s)",
         batches.len(),
+        format_number(total_rows),
         paths.len()
     );
     batches
