@@ -15,6 +15,7 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
+-- Config: spark.comet.expression.Cast.allowIncompatible=true
 -- ConfigMatrix: parquet.enable.dictionary=false,true
 
 -- Test casting string to timestamp_ntz
@@ -36,4 +37,5 @@ SELECT s, cast(s AS timestamp_ntz) FROM test_cast_ts_ntz WHERE s = '2020-01-01T1
 
 -- Compare timestamp_ntz vs timestamp (with timezone) to show they differ
 query
+-- Exclude offset string: cast(s AS timestamp) does not yet parse offsets natively
 SELECT s, cast(s AS timestamp_ntz) as ts_ntz, cast(s AS timestamp) as ts FROM test_cast_ts_ntz WHERE s IS NOT NULL AND s != 'not_a_timestamp' AND s != '2020-01-01T12:34:56+05:00'

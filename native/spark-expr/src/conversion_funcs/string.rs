@@ -682,13 +682,13 @@ pub(crate) fn cast_string_to_timestamp(
             )
         }
         DataType::Timestamp(_, None) => {
-            // TimestampNTZ: reuse timestamp_parser with Utc (identity timezone),
-            // but don't set timezone metadata on the output array
+            // TimestampNTZ: use a dedicated parser that strips timezone offsets
+            // before parsing, matching Spark's behavior of ignoring offsets for NTZ.
             cast_utf8_to_timestamp!(
                 string_array,
                 eval_mode,
                 TimestampMicrosecondType,
-                timestamp_parser,
+                timestamp_ntz_parser,
                 &Utc,
                 None::<&str>
             )
@@ -1098,7 +1098,29 @@ fn parse_str_to_microsecond_timestamp<T: TimeZone>(
     get_timestamp_values(value, "microsecond", tz)
 }
 
-// used in tests only
+/// Regex to match a timezone offset suffix in a timestamp string.
+/// Matches: Z, +HH:MM, -HH:MM, +HHMM, -HHMM, +HH, -HH
+fn strip_timezone_offset(value: &str) -> &str {
+    // This regex is anchored to the end of the string and matches common timezone offset formats.
+    // We use a lazy_static-style approach via Regex::new (consistent with the rest of this file).
+    let tz_suffix = Regex::new(r"([+-]\d{2}(:\d{2})?|Z)$").unwrap();
+    match tz_suffix.find(value) {
+        Some(m) => &value[..m.start()],
+        None => value,
+    }
+}
+
+/// Strips timezone offset before parsing, matching Spark's TimestampNTZ behavior.
+/// Separate from `timestamp_parser` to preserve offsets for Timestamp WITH TZ.
+fn timestamp_ntz_parser<T: TimeZone>(
+    value: &str,
+    eval_mode: EvalMode,
+    tz: &T,
+) -> SparkResult<Option<i64>> {
+    let stripped = strip_timezone_offset(value.trim());
+    timestamp_parser(stripped, eval_mode, tz)
+}
+
 fn timestamp_parser<T: TimeZone>(
     value: &str,
     eval_mode: EvalMode,
@@ -1415,7 +1437,7 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore)]
     fn test_cast_string_with_timezone_offset_to_timestamp_ntz() {
-        // Strings with explicit timezone offsets should produce null for TimestampNTZ
+        // Offset strings: offset stripped, local datetime preserved (Spark NTZ behavior)
         let array: ArrayRef = Arc::new(StringArray::from(vec![
             Some("2020-01-01T12:34:56+05:00"),
             Some("2020-01-01T12:34:56-08:00"),
@@ -1434,7 +1456,7 @@ mod tests {
             &string_array,
             eval_mode,
             TimestampMicrosecondType,
-            timestamp_parser,
+            timestamp_ntz_parser,
             &Utc,
             None::<&str>
         );
@@ -1450,16 +1472,20 @@ mod tests {
             .downcast_ref::<PrimitiveArray<TimestampMicrosecondType>>()
             .expect("Expected a timestamp array");
 
-        // All strings with timezone offsets should be null
-        assert!(ts_array.is_null(0), "'+05:00' offset should produce null");
-        assert!(ts_array.is_null(1), "'-08:00' offset should produce null");
-        assert!(ts_array.is_null(2), "'Z' suffix should produce null");
+        // Offset strings: offset stripped, local datetime kept
+        assert!(!ts_array.is_null(0), "'+05:00' offset should be parsed");
+        assert_eq!(ts_array.value(0), 1577882096000000);
+        assert!(!ts_array.is_null(1), "'-08:00' offset should be parsed");
+        assert_eq!(ts_array.value(1), 1577882096000000);
+        assert!(!ts_array.is_null(2), "'Z' suffix should be parsed");
+        assert_eq!(ts_array.value(2), 1577882096000000);
         assert!(
-            ts_array.is_null(3),
-            "'+00:00' offset with micros should produce null"
+            !ts_array.is_null(3),
+            "'+00:00' offset with micros should be parsed"
         );
+        assert_eq!(ts_array.value(3), 1577882096123456);
 
-        // The one without offset should parse correctly
+        // The one without offset should also parse correctly
         assert!(!ts_array.is_null(4));
         assert_eq!(ts_array.value(4), 1577882096123456);
     }
@@ -1503,6 +1529,40 @@ mod tests {
             .expect("Expected a timestamp array");
         // 2020-01-01T12:34:56.123456 stored as-is (no timezone conversion)
         assert_eq!(ntz_array.value(0), 1577882096123456);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_cast_string_with_offset_via_cast_array() -> DataFusionResult<()> {
+        let array: ArrayRef = Arc::new(StringArray::from(vec![
+            Some("2020-01-01T12:34:56+05:00"),
+            Some("2020-01-01T12:34:56"),
+        ]));
+
+        let timezone = "America/Los_Angeles".to_string();
+        let cast_options = SparkCastOptions::new(EvalMode::Legacy, &timezone, false);
+
+        let result = cast_array(
+            Arc::clone(&array),
+            &DataType::Timestamp(TimeUnit::Microsecond, None),
+            &cast_options,
+        )?;
+
+        let ts_array = result
+            .as_any()
+            .downcast_ref::<PrimitiveArray<TimestampMicrosecondType>>()
+            .expect("Expected a timestamp array");
+
+        // Offset string should be parsed: offset stripped, local datetime kept
+        assert!(
+            !ts_array.is_null(0),
+            "Offset string should be parsed for NTZ"
+        );
+        assert_eq!(ts_array.value(0), 1577882096000000); // 2020-01-01T12:34:56
+                                                         // Non-offset string should parse correctly
+        assert!(!ts_array.is_null(1));
+        assert_eq!(ts_array.value(1), 1577882096000000);
 
         Ok(())
     }
