@@ -508,6 +508,13 @@ fn is_spark_compatible_read(physical_type: &DataType, logical_type: &DataType) -
 
     match (physical_type, logical_type) {
         _ if physical_type == logical_type => true,
+
+        // RunEndEncoded is an Arrow encoding wrapper (e.g., from Iceberg).
+        // Unwrap to the inner values type and check compatibility.
+        (RunEndEncoded(_, values_field), _) => {
+            is_spark_compatible_read(values_field.data_type(), logical_type)
+        }
+
         (_, Null) => true,
 
         // INT32 family
@@ -611,6 +618,9 @@ fn arrow_to_parquet_type_name(dt: &DataType) -> String {
         DataType::FixedSizeBinary(n) => format!("FIXED_LEN_BYTE_ARRAY({n})"),
         DataType::Timestamp(_, _) => "INT64".to_string(),
         DataType::Decimal128(p, s) => format!("DECIMAL({p},{s})"),
+        DataType::RunEndEncoded(_, values_field) => {
+            arrow_to_parquet_type_name(values_field.data_type())
+        }
         other => format!("{other}"),
     }
 }
