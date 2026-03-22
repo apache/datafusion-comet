@@ -16,8 +16,12 @@
 // under the License.
 
 //! A `ParquetFileReaderFactory` that caches parquet footer metadata across
-//! partitions. When multiple Spark partitions read from the same parquet file
-//! (different row group ranges), this avoids redundant footer reads and parsing.
+//! partitions within a single scan. When multiple Spark partitions read from
+//! the same parquet file (different row group ranges), this avoids redundant
+//! footer reads and parsing.
+//!
+//! The cache is scoped to the factory instance (one per scan), not global,
+//! so it does not persist across queries.
 //!
 //! Uses `tokio::sync::OnceCell` per file path so that concurrent partitions
 //! wait for the first reader to load the footer rather than all racing.
@@ -42,25 +46,21 @@ use tokio::sync::OnceCell;
 
 type MetadataCell = Arc<OnceCell<Arc<ParquetMetaData>>>;
 
-/// Global cache: maps file path -> OnceCell that will hold the metadata once loaded.
-/// The OnceCell ensures only one task fetches the footer; others await the result.
-static METADATA_CACHE: std::sync::LazyLock<Mutex<HashMap<Path, MetadataCell>>> =
-    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
-
-/// Clears the metadata cache. Call between queries if needed.
-pub fn clear_metadata_cache() {
-    METADATA_CACHE.lock().unwrap().clear();
-}
-
 /// A `ParquetFileReaderFactory` that caches footer metadata by file path.
+/// The cache is scoped to this factory instance (shared across partitions
+/// within a single scan via Arc), not global.
 #[derive(Debug)]
 pub struct CachingParquetReaderFactory {
     store: Arc<dyn ObjectStore>,
+    cache: Arc<Mutex<HashMap<Path, MetadataCell>>>,
 }
 
 impl CachingParquetReaderFactory {
     pub fn new(store: Arc<dyn ObjectStore>) -> Self {
-        Self { store }
+        Self {
+            store,
+            cache: Arc::new(Mutex::new(HashMap::new())),
+        }
     }
 }
 
@@ -78,7 +78,7 @@ impl ParquetFileReaderFactory for CachingParquetReaderFactory {
 
         // Get or create the OnceCell for this file path
         let cell = Arc::<OnceCell<Arc<ParquetMetaData>>>::clone(
-            METADATA_CACHE
+            self.cache
                 .lock()
                 .unwrap()
                 .entry(location.clone())
