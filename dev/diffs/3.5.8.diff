@@ -53,7 +53,7 @@ index bc00c448b80..82068d7a2eb 100644
      <!--
        This spark-tags test-dep is needed even though it isn't used in this module, otherwise testing-cmds that exclude
 diff --git a/sql/core/src/main/scala/org/apache/spark/sql/SparkSession.scala b/sql/core/src/main/scala/org/apache/spark/sql/SparkSession.scala
-index 27ae10b3d59..78e69902dfd 100644
+index 27ae10b3d59..d12fb7c42c2 100644
 --- a/sql/core/src/main/scala/org/apache/spark/sql/SparkSession.scala
 +++ b/sql/core/src/main/scala/org/apache/spark/sql/SparkSession.scala
 @@ -1353,6 +1353,14 @@ object SparkSession extends Logging {
@@ -71,15 +71,16 @@ index 27ae10b3d59..78e69902dfd 100644
    /**
     * Initialize extensions specified in [[StaticSQLConf]]. The classes will be applied to the
     * extensions passed into this function.
-@@ -1362,6 +1370,7 @@ object SparkSession extends Logging {
+@@ -1362,7 +1370,8 @@ object SparkSession extends Logging {
        extensions: SparkSessionExtensions): SparkSessionExtensions = {
      val extensionConfClassNames = sparkContext.getConf.get(StaticSQLConf.SPARK_SESSION_EXTENSIONS)
        .getOrElse(Seq.empty)
-+    val extensionClassNames = extensionConfClassNames ++ loadCometExtension(sparkContext)
 -    extensionConfClassNames.foreach { extensionConfClassName =>
++    val extensionClassNames = extensionConfClassNames ++ loadCometExtension(sparkContext)
 +    extensionClassNames.foreach { extensionConfClassName =>
        try {
          val extensionConfClass = Utils.classForName(extensionConfClassName)
+         val extensionConf = extensionConfClass.getConstructor().newInstance()
 @@ -1396,4 +1405,12 @@ object SparkSession extends Logging {
        }
      }
@@ -517,7 +518,7 @@ index a206e97c353..79813d8e259 100644
  
    test("SPARK-35884: Explain Formatted") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/FileBasedDataSourceSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/FileBasedDataSourceSuite.scala
-index 93275487f29..510e3087e0f 100644
+index 93275487f29..601cb6647fe 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/FileBasedDataSourceSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/FileBasedDataSourceSuite.scala
 @@ -23,6 +23,7 @@ import java.nio.file.{Files, StandardOpenOption}
@@ -551,7 +552,7 @@ index 93275487f29..510e3087e0f 100644
    Seq("parquet", "orc").foreach { format =>
 -    test(s"Spark native readers should respect spark.sql.caseSensitive - ${format}") {
 +    test(s"Spark native readers should respect spark.sql.caseSensitive - ${format}",
-+      IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3311")) {
++      IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3760")) {
        withTempDir { dir =>
          val tableName = s"spark_25132_${format}_native"
          val tableDir = dir.getCanonicalPath + s"/$tableName"
@@ -979,6 +980,37 @@ index 3cf2bfd17ab..49728c35c42 100644
      withSQLConf(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
        SQLConf.ANSI_ENABLED.key -> "true") {
        withTable("t") {
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala
+index 8b4ac474f87..3f79f20822f 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala
+@@ -223,6 +223,8 @@ class SparkSessionExtensionSuite extends SparkFunSuite with SQLHelper with Adapt
+     withSession(extensions) { session =>
+       session.conf.set(SQLConf.ADAPTIVE_EXECUTION_ENABLED, true)
+       session.conf.set(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key, "-1")
++      // https://github.com/apache/datafusion-comet/issues/1197
++      session.conf.set("spark.comet.enabled", false)
+       assert(session.sessionState.columnarRules.contains(
+         MyColumnarRule(PreRuleReplaceAddWithBrokenVersion(), MyPostRule())))
+       import session.sqlContext.implicits._
+@@ -281,6 +283,8 @@ class SparkSessionExtensionSuite extends SparkFunSuite with SQLHelper with Adapt
+     }
+     withSession(extensions) { session =>
+       session.conf.set(SQLConf.ADAPTIVE_EXECUTION_ENABLED, enableAQE)
++      // https://github.com/apache/datafusion-comet/issues/1197
++      session.conf.set("spark.comet.enabled", false)
+       assert(session.sessionState.columnarRules.contains(
+         MyColumnarRule(PreRuleReplaceAddWithBrokenVersion(), MyPostRule())))
+       import session.sqlContext.implicits._
+@@ -319,6 +323,8 @@ class SparkSessionExtensionSuite extends SparkFunSuite with SQLHelper with Adapt
+     val session = SparkSession.builder()
+       .master("local[1]")
+       .config(COLUMN_BATCH_SIZE.key, 2)
++      // https://github.com/apache/datafusion-comet/issues/1197
++      .config("spark.comet.enabled", false)
+       .withExtensions { extensions =>
+         extensions.injectColumnar(session =>
+           MyColumnarRule(PreRuleReplaceAddWithBrokenVersion(), MyPostRule())) }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
 index 04702201f82..5ee11f83ecf 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
@@ -2190,7 +2222,7 @@ index 8ed9ef1630e..a865928c1b2 100644
        checkAnswer(
          // "fruit" column in this file is encoded using DELTA_LENGTH_BYTE_ARRAY.
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
-index f6472ba3d9d..7f00caf5063 100644
+index f6472ba3d9d..5ea2d938664 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
 @@ -185,7 +185,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
@@ -2219,7 +2251,7 @@ index f6472ba3d9d..7f00caf5063 100644
  
 -  test("SPARK-34212 Parquet should read decimals correctly") {
 +  test("SPARK-34212 Parquet should read decimals correctly",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3311")) {
++    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3720")) {
      def readParquet(schema: String, path: File): DataFrame = {
        spark.read.schema(schema).parquet(path.toString)
      }
@@ -2358,7 +2390,7 @@ index 5c0b7def039..151184bc98c 100644
      assert(fileSourceScanSchemata.size === expectedSchemaCatalogStrings.size,
        s"Found ${fileSourceScanSchemata.size} file sources in dataframe, " +
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaSuite.scala
-index 3f47c5e506f..92a5eafec84 100644
+index 3f47c5e506f..f1ce3194279 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaSuite.scala
 @@ -27,6 +27,7 @@ import org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName
@@ -2385,7 +2417,7 @@ index 3f47c5e506f..92a5eafec84 100644
  
 -  test("schema mismatch failure error message for parquet vectorized reader") {
 +  test("schema mismatch failure error message for parquet vectorized reader",
-+      IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3311")) {
++      IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3720")) {
      withTempPath { dir =>
        val e = testSchemaMismatch(dir.getCanonicalPath, vectorizedReaderEnabled = true)
        assert(e.getCause.isInstanceOf[SparkException])
@@ -2395,7 +2427,7 @@ index 3f47c5e506f..92a5eafec84 100644
  
 -  test("SPARK-45604: schema mismatch failure error on timestamp_ntz to array<timestamp_ntz>") {
 +  test("SPARK-45604: schema mismatch failure error on timestamp_ntz to array<timestamp_ntz>",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3311")) {
++    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3720")) {
      import testImplicits._
  
      withTempPath { dir =>
@@ -3272,38 +3304,7 @@ index f3be79f9022..b4b1ea8dbc4 100644
 +    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3312")) {
  
      withTempDir { tempDir =>
-
-diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala
-index 8b4ac474..3f79f208 100644
---- a/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala
-+++ b/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala
-@@ -223,6 +223,8 @@ class SparkSessionExtensionSuite extends SparkFunSuite with SQLHelper with Adapt
-     withSession(extensions) { session =>
-       session.conf.set(SQLConf.ADAPTIVE_EXECUTION_ENABLED, true)
-       session.conf.set(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key, "-1")
-+      // https://github.com/apache/datafusion-comet/issues/1197
-+      session.conf.set("spark.comet.enabled", false)
-       assert(session.sessionState.columnarRules.contains(
-         MyColumnarRule(PreRuleReplaceAddWithBrokenVersion(), MyPostRule())))
-       import session.sqlContext.implicits._
-@@ -281,6 +283,8 @@ class SparkSessionExtensionSuite extends SparkFunSuite with SQLHelper with Adapt
-     }
-     withSession(extensions) { session =>
-       session.conf.set(SQLConf.ADAPTIVE_EXECUTION_ENABLED, enableAQE)
-+      // https://github.com/apache/datafusion-comet/issues/1197
-+      session.conf.set("spark.comet.enabled", false)
-       assert(session.sessionState.columnarRules.contains(
-         MyColumnarRule(PreRuleReplaceAddWithBrokenVersion(), MyPostRule())))
-       import session.sqlContext.implicits._
-@@ -319,6 +323,8 @@ class SparkSessionExtensionSuite extends SparkFunSuite with SQLHelper with Adapt
-     val session = SparkSession.builder()
-       .master("local[1]")
-       .config(COLUMN_BATCH_SIZE.key, 2)
-+      // https://github.com/apache/datafusion-comet/issues/1197
-+      .config("spark.comet.enabled", false)
-       .withExtensions { extensions =>
-         extensions.injectColumnar(session =>
-           MyColumnarRule(PreRuleReplaceAddWithBrokenVersion(), MyPostRule())) }
+ 
 diff --git a/sql/hive/src/test/scala/org/apache/spark/sql/hive/execution/SQLQuerySuite.scala b/sql/hive/src/test/scala/org/apache/spark/sql/hive/execution/SQLQuerySuite.scala
 index 6160c3e5f6c..0956d7d9edc 100644
 --- a/sql/hive/src/test/scala/org/apache/spark/sql/hive/execution/SQLQuerySuite.scala
