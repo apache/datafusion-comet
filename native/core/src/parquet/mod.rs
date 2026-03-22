@@ -23,6 +23,7 @@ pub use mutable_vector::*;
 #[macro_use]
 pub mod util;
 pub mod parquet_exec;
+pub mod parquet_read_cached_factory;
 pub mod parquet_support;
 pub mod read;
 pub mod schema_adapter;
