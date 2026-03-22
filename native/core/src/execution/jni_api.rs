@@ -393,7 +393,6 @@ fn prepare_datafusion_session_context(
 // register UDFs from datafusion-spark crate
 fn register_datafusion_spark_function(session_ctx: &SessionContext) {
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkExpm1::default()));
-    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSha2::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(CharFunc::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitGet::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkDateAdd::default()));
@@ -401,6 +400,7 @@ fn register_datafusion_spark_function(session_ctx: &SessionContext) {
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkLastDay::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkNextDay::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSha1::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSha2::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkConcat::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitwiseNot::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkHex::default()));
