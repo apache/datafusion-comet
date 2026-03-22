@@ -20,6 +20,7 @@
 package org.apache.spark.sql.comet
 
 import scala.jdk.CollectionConverters._
+
 import org.apache.spark.TaskContext
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
@@ -29,7 +30,9 @@ import org.apache.spark.sql.comet.execution.arrow.CometArrowConverters
 import org.apache.spark.sql.execution.{LeafExecNode, LocalTableScanExec}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.vectorized.ColumnarBatch
+
 import com.google.common.base.Objects
+
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass}
 import org.apache.comet.serde.OperatorOuterClass.Operator
@@ -111,19 +114,6 @@ object CometLocalTableScanExec extends CometSink[LocalTableScanExec] {
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
     CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED)
-
-  override def convert(
-      op: LocalTableScanExec,
-      builder: Operator.Builder,
-      childOp: Operator*): Option[Operator] = {
-    val scanTypes = op.output.flatten(attr => serializeDataType(attr.dataType))
-    val scanBuilder = OperatorOuterClass.Scan
-      .newBuilder()
-      .setSource(op.getClass.getSimpleName)
-      .addAllFields(scanTypes.asJava)
-      .setArrowFfiSafe(false)
-    Some(builder.setScan(scanBuilder).build())
-  }
 
   override def createExec(nativeOp: Operator, op: LocalTableScanExec): CometNativeExec = {
     CometScanWrapper(nativeOp, CometLocalTableScanExec(op, op.rows, op.output))
