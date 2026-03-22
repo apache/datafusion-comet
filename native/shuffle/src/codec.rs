@@ -15,7 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::errors::{CometError, CometResult};
 use arrow::array::RecordBatch;
 use arrow::datatypes::Schema;
 use arrow::ipc::reader::StreamReader;
@@ -25,6 +24,7 @@ use crc32fast::Hasher;
 use datafusion::common::DataFusionError;
 use datafusion::error::Result;
 use datafusion::physical_plan::metrics::Time;
+use datafusion_comet_jni_bridge::errors::{CometError, CometResult};
 use simd_adler32::Adler32;
 use std::io::{Cursor, Seek, SeekFrom, Write};
 

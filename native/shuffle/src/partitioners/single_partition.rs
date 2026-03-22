@@ -15,10 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::execution::shuffle::metrics::ShufflePartitionerMetrics;
-use crate::execution::shuffle::partitioners::ShufflePartitioner;
-use crate::execution::shuffle::writers::BufBatchWriter;
-use crate::execution::shuffle::{CompressionCodec, ShuffleBlockWriter};
+use crate::metrics::ShufflePartitionerMetrics;
+use crate::partitioners::ShufflePartitioner;
+use crate::writers::BufBatchWriter;
+use crate::{CompressionCodec, ShuffleBlockWriter};
 use arrow::array::RecordBatch;
 use arrow::datatypes::SchemaRef;
 use datafusion::common::DataFusionError;

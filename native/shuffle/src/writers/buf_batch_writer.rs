@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::execution::shuffle::ShuffleBlockWriter;
+use crate::ShuffleBlockWriter;
 use arrow::array::RecordBatch;
 use arrow::compute::kernels::coalesce::BatchCoalescer;
 use datafusion::physical_plan::metrics::Time;

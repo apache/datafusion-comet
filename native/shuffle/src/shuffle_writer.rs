@@ -17,12 +17,11 @@
 
 //! Defines the External shuffle repartition plan.
 
-use crate::execution::shuffle::metrics::ShufflePartitionerMetrics;
-use crate::execution::shuffle::partitioners::{
+use crate::metrics::ShufflePartitionerMetrics;
+use crate::partitioners::{
     MultiPartitionShuffleRepartitioner, ShufflePartitioner, SinglePartitionShufflePartitioner,
 };
-use crate::execution::shuffle::{CometPartitioning, CompressionCodec};
-use crate::execution::tracing::with_trace_async;
+use crate::{CometPartitioning, CompressionCodec};
 use async_trait::async_trait;
 use datafusion::common::exec_datafusion_err;
 use datafusion::physical_expr::{EquivalenceProperties, Partitioning};
@@ -39,6 +38,7 @@ use datafusion::{
         Statistics,
     },
 };
+use datafusion_comet_common::tracing::with_trace_async;
 use futures::{StreamExt, TryFutureExt, TryStreamExt};
 use std::{
     any::Any,
@@ -265,7 +265,7 @@ async fn external_shuffle(
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::execution::shuffle::{read_ipc_compressed, ShuffleBlockWriter};
+    use crate::{read_ipc_compressed, ShuffleBlockWriter};
     use arrow::array::{Array, StringArray, StringBuilder};
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatch;
@@ -591,7 +591,7 @@ mod test {
     #[test]
     #[cfg_attr(miri, ignore)]
     fn test_batch_coalescing_reduces_size() {
-        use crate::execution::shuffle::writers::BufBatchWriter;
+        use crate::writers::BufBatchWriter;
         use arrow::array::Int32Array;
 
         // Create a wide schema to amplify per-block schema overhead
