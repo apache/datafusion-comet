@@ -21,8 +21,11 @@ package org.apache.comet
 
 import scala.util.Random
 
-import org.apache.spark.sql.{CometTestBase, Row, SaveMode}
+import org.apache.spark.sql.{CometTestBase, DataFrame, Row, SaveMode}
+import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
+import org.apache.spark.sql.catalyst.expressions.{Days, Literal}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 
@@ -396,45 +399,47 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
     checkSparkAnswerAndOperator("SELECT unix_date(NULL)")
   }
 
-  test("days") {
-    import org.apache.spark.sql.Column
-    import org.apache.spark.sql.DataFrame
-    import org.apache.spark.sql.catalyst.expressions.{Days, Literal}
-    import org.apache.spark.sql.functions.col
-
-    def checkDays(cometDF: DataFrame, baselineDF: DataFrame): Unit = {
-      // Ensure the expected answer is evaluated solely by native Spark JVM (Comet off)
-      var expected: Array[org.apache.spark.sql.Row] = Array.empty
-      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-        expected = baselineDF.collect()
-      }
-      checkAnswer(cometDF, expected.toSeq)
-      checkCometOperators(stripAQEPlan(cometDF.queryExecution.executedPlan))
+  /**
+   * Checks that the Comet-evaluated DataFrame produces the same results as the baseline DataFrame
+   * evaluated by native Spark JVM, and that Comet native operators are used. This is needed
+   * because Days is a PartitionTransformExpression that extends Unevaluable, so
+   * checkSparkAnswerAndOperator cannot be used directly.
+   */
+  private def checkDays(cometDF: DataFrame, baselineDF: DataFrame): Unit = {
+    // Ensure the expected answer is evaluated solely by native Spark JVM (Comet off)
+    var expected: Array[Row] = Array.empty
+    withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+      expected = baselineDF.collect()
     }
+    checkAnswer(cometDF, expected.toSeq)
+    checkCometOperators(stripAQEPlan(cometDF.queryExecution.executedPlan))
+  }
 
-    // === DateType input ===
+  test("days - date input") {
     val r = new Random(42)
     val dateSchema = StructType(Seq(StructField("d", DataTypes.DateType, true)))
     val dateDF = FuzzDataGenerator.generateDataFrame(r, spark, dateSchema, 1000, DataGenOptions())
 
     checkDays(
-      dateDF.select(col("d"), new Column(Days(col("d").expr))),
+      dateDF.select(col("d"), getColumnFromExpression(Days(UnresolvedAttribute("d")))),
       dateDF.selectExpr("d", "unix_date(d)"))
+  }
 
-    // === TimestampType input with timezone tests ===
+  test("days - timestamp input") {
+    val r = new Random(42)
     val tsSchema = StructType(Seq(StructField("ts", DataTypes.TimestampType, true)))
-    val tsDF =
-      FuzzDataGenerator.generateDataFrame(r, spark, tsSchema, 1000, DataGenOptions())
+    val tsDF = FuzzDataGenerator.generateDataFrame(r, spark, tsSchema, 1000, DataGenOptions())
 
     for (timezone <- Seq("UTC", "America/Los_Angeles", "Asia/Tokyo")) {
       withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> timezone) {
         checkDays(
-          tsDF.select(col("ts"), new Column(Days(col("ts").expr))),
+          tsDF.select(col("ts"), getColumnFromExpression(Days(UnresolvedAttribute("ts")))),
           tsDF.selectExpr("ts", "unix_date(cast(ts as date))"))
       }
     }
+  }
 
-    // === Literal edge cases ===
+  test("days - literal edge cases") {
     withSQLConf(
       SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
         "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
@@ -444,20 +449,20 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
       // Pre-epoch (should return negative day numbers)
       checkDays(
         dummyDF.select(
-          new Column(
+          getColumnFromExpression(
             Days(Literal.create(java.sql.Date.valueOf("1969-12-31"), DataTypes.DateType))),
-          new Column(
+          getColumnFromExpression(
             Days(Literal.create(java.sql.Date.valueOf("1960-01-01"), DataTypes.DateType)))),
         dummyDF.selectExpr("unix_date(DATE('1969-12-31'))", "unix_date(DATE('1960-01-01'))"))
 
       // Epoch and post-epoch
       checkDays(
         dummyDF.select(
-          new Column(
+          getColumnFromExpression(
             Days(Literal.create(java.sql.Date.valueOf("1970-01-01"), DataTypes.DateType))),
-          new Column(
+          getColumnFromExpression(
             Days(Literal.create(java.sql.Date.valueOf("1970-01-02"), DataTypes.DateType))),
-          new Column(
+          getColumnFromExpression(
             Days(Literal.create(java.sql.Date.valueOf("2024-01-01"), DataTypes.DateType)))),
         dummyDF.selectExpr(
           "unix_date(DATE('1970-01-01'))",
@@ -467,9 +472,9 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
       // Timestamp literals
       checkDays(
         dummyDF.select(
-          new Column(Days(Literal
+          getColumnFromExpression(Days(Literal
             .create(java.sql.Timestamp.valueOf("1970-01-01 00:00:00"), DataTypes.TimestampType))),
-          new Column(
+          getColumnFromExpression(
             Days(
               Literal.create(
                 java.sql.Timestamp.valueOf("2024-06-15 10:30:00"),
@@ -480,7 +485,7 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
 
       // Null handling
       checkDays(
-        dummyDF.select(new Column(Days(Literal.create(null, DataTypes.DateType)))),
+        dummyDF.select(getColumnFromExpression(Days(Literal.create(null, DataTypes.DateType)))),
         dummyDF.selectExpr("unix_date(cast(NULL as date))"))
     }
   }
