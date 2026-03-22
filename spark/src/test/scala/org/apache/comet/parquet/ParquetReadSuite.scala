@@ -1397,7 +1397,8 @@ abstract class ParquetReadSuite extends CometTestBase {
               }
               spark
                 .createDataFrame(spark.sparkContext.parallelize(rows), writeSchema)
-                .write.parquet(path.getCanonicalPath)
+                .write
+                .parquet(path.getCanonicalPath)
 
               val readSchema = StructType(Seq(StructField("col", readType, true)))
               readParquetFile(path.getCanonicalPath, Some(readSchema)) { df =>
