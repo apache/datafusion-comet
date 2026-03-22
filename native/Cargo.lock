@@ -1834,7 +1834,6 @@ dependencies = [
  "aws-config",
  "aws-credential-types",
  "bytes",
- "crc32fast",
  "criterion",
  "datafusion",
  "datafusion-comet-common",
@@ -1858,7 +1857,6 @@ dependencies = [
  "lazy_static",
  "log",
  "log4rs",
- "lz4_flex 0.13.0",
  "mimalloc",
  "num",
  "object_store",
@@ -1874,15 +1872,12 @@ dependencies = [
  "rand 0.10.0",
  "reqwest",
  "serde_json",
- "simd-adler32",
- "snap",
  "tempfile",
  "tikv-jemalloc-ctl",
  "tikv-jemallocator",
  "tokio",
  "url",
  "uuid",
- "zstd",
 ]
 
 [[package]]
