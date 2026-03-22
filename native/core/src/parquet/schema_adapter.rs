@@ -517,19 +517,20 @@ fn is_spark_compatible_read(physical_type: &DataType, logical_type: &DataType) -
 
         (_, Null) => true,
 
-        // INT32 family
-        (Int8 | Int16 | Int32, Int8 | Int16 | Int32) => true,
+        // Integer family (same-width and widenings)
+        (Int8 | Int16 | Int32, Int8 | Int16 | Int32 | Int64) => true,
+        (Int64, Int64) => true,
         (Int32 | Int8 | Int16, Date32) => true,
-        (Int8 | Int16 | Int32, Decimal128(_, _)) => true,
+        (Int8 | Int16 | Int32 | Int64, Decimal128(_, _)) => true,
 
         // Unsigned int conversions
-        (UInt8, Int8 | Int16 | Int32) => true,
-        (UInt16, Int16 | Int32) => true,
+        (UInt8, Int8 | Int16 | Int32 | Int64) => true,
+        (UInt16, Int16 | Int32 | Int64) => true,
         (UInt32, Int32 | Int64) => true,
         (UInt64, Decimal128(20, 0)) => true,
 
-        // INT64 family
-        (Int64, Decimal128(_, _)) => true,
+        // Float widening
+        (Float32, Float64) => true,
 
         // Timestamps: only LTZ → NTZ is rejected (SPARK-36182).
         // NTZ → LTZ is allowed because DataFusion coerces INT96 to Timestamp(us, None)
@@ -538,9 +539,8 @@ fn is_spark_compatible_read(physical_type: &DataType, logical_type: &DataType) -
             !(tz_physical.is_some() && tz_logical.is_none())
         }
 
-        // Timestamp → Int64 for nanosAsLong (Spark reads TIMESTAMP(NANOS) as LongType;
-        // DataFusion converts it to Arrow Timestamp, so the adapter must reinterpret)
-        (Timestamp(_, _), Int64) => true,
+        // Timestamp ↔ Int64: nanosAsLong and Iceberg timestamp partition columns
+        (Timestamp(_, _), Int64) | (Int64, Timestamp(_, _)) => true,
 
         // BINARY / String interop
         (Binary | LargeBinary | Utf8 | LargeUtf8, Binary | LargeBinary | Utf8 | LargeUtf8) => true,
@@ -663,22 +663,16 @@ mod test {
         Ok(())
     }
 
-    // SPARK-35640: int as long should throw schema incompatible error
+    // Int32→Int64 is a valid type widening that DataFusion handles correctly
     #[tokio::test]
-    async fn parquet_int_as_long_should_fail() -> Result<(), DataFusionError> {
+    async fn parquet_int_as_long_should_succeed() -> Result<(), DataFusionError> {
         let file_schema = Arc::new(Schema::new(vec![Field::new("_1", DataType::Int32, true)]));
         let values = Arc::new(Int32Array::from(vec![1, 2, 3])) as Arc<dyn arrow::array::Array>;
         let batch = RecordBatch::try_new(Arc::clone(&file_schema), vec![values])?;
         let required_schema = Arc::new(Schema::new(vec![Field::new("_1", DataType::Int64, true)]));
 
-        let result = roundtrip(&batch, required_schema).await;
-        assert!(result.is_err());
-        let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains("Column: [_1]"), "{err_msg}");
-        assert!(
-            err_msg.contains("bigint") && err_msg.contains("INT32"),
-            "{err_msg}"
-        );
+        let result = roundtrip(&batch, required_schema).await?;
+        assert_eq!(result.num_rows(), 3);
         Ok(())
     }
 
@@ -738,24 +732,27 @@ mod test {
             &DataType::Int64
         ));
 
+        // Compatible widenings
+        assert!(is_spark_compatible_read(&DataType::Int32, &DataType::Int64));
+        assert!(is_spark_compatible_read(
+            &DataType::Float32,
+            &DataType::Float64
+        ));
+        assert!(is_spark_compatible_read(
+            &DataType::Int64,
+            &DataType::Timestamp(TimeUnit::Microsecond, None)
+        ));
+
         // Incompatible (#3720 cases)
         assert!(!is_spark_compatible_read(
             &DataType::Utf8,
             &DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()))
         ));
         assert!(!is_spark_compatible_read(
-            &DataType::Int32,
-            &DataType::Int64
-        ));
-        assert!(!is_spark_compatible_read(
             &DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
             &DataType::Timestamp(TimeUnit::Microsecond, None)
         ));
         assert!(!is_spark_compatible_read(&DataType::Utf8, &DataType::Int32));
-        assert!(!is_spark_compatible_read(
-            &DataType::Float32,
-            &DataType::Float64
-        ));
         assert!(!is_spark_compatible_read(
             &DataType::Decimal128(18, 2),
             &DataType::Decimal128(10, 2)
