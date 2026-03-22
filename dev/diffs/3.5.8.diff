@@ -2189,7 +2189,7 @@ index 8ed9ef1630e..a865928c1b2 100644
        checkAnswer(
          // "fruit" column in this file is encoded using DELTA_LENGTH_BYTE_ARRAY.
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
-index f6472ba3d9d..5ea2d938664 100644
+index f6472ba3d9d..7f00caf5063 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
 @@ -185,7 +185,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
@@ -2218,7 +2218,7 @@ index f6472ba3d9d..5ea2d938664 100644
  
 -  test("SPARK-34212 Parquet should read decimals correctly") {
 +  test("SPARK-34212 Parquet should read decimals correctly",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3720")) {
++    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3311")) {
      def readParquet(schema: String, path: File): DataFrame = {
        spark.read.schema(schema).parquet(path.toString)
      }
@@ -2357,7 +2357,7 @@ index 5c0b7def039..151184bc98c 100644
      assert(fileSourceScanSchemata.size === expectedSchemaCatalogStrings.size,
        s"Found ${fileSourceScanSchemata.size} file sources in dataframe, " +
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaSuite.scala
-index 3f47c5e506f..f1ce3194279 100644
+index 3f47c5e506f..92a5eafec84 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaSuite.scala
 @@ -27,6 +27,7 @@ import org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName
@@ -2384,7 +2384,7 @@ index 3f47c5e506f..f1ce3194279 100644
  
 -  test("schema mismatch failure error message for parquet vectorized reader") {
 +  test("schema mismatch failure error message for parquet vectorized reader",
-+      IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3720")) {
++      IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3311")) {
      withTempPath { dir =>
        val e = testSchemaMismatch(dir.getCanonicalPath, vectorizedReaderEnabled = true)
        assert(e.getCause.isInstanceOf[SparkException])
@@ -2394,7 +2394,7 @@ index 3f47c5e506f..f1ce3194279 100644
  
 -  test("SPARK-45604: schema mismatch failure error on timestamp_ntz to array<timestamp_ntz>") {
 +  test("SPARK-45604: schema mismatch failure error on timestamp_ntz to array<timestamp_ntz>",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3720")) {
++    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3311")) {
      import testImplicits._
  
      withTempPath { dir =>
