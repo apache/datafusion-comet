@@ -21,8 +21,8 @@ package org.apache.comet.serde
 
 import java.util.Locale
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, DateAdd, DateDiff, DateFormatClass, DateSub, DayOfMonth, DayOfWeek, DayOfYear, GetDateField, Hour, LastDay, Literal, MakeDate, Minute, Month, NextDay, Quarter, Second, TruncDate, TruncTimestamp, UnixDate, UnixTimestamp, WeekDay, WeekOfYear, Year}
-import org.apache.spark.sql.types.{DateType, IntegerType, StringType, TimestampType}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, DateAdd, DateDiff, DateFormatClass, DateSub, DayOfMonth, DayOfWeek, DayOfYear, GetDateField, Hour, LastDay, Literal, MakeDate, Minute, Month, NextDay, PreciseTimestampConversion, Quarter, Second, TruncDate, TruncTimestamp, UnixDate, UnixTimestamp, WeekDay, WeekOfYear, Year}
+import org.apache.spark.sql.types.{DateType, IntegerType, LongType, StringType, TimestampType}
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
@@ -584,5 +584,24 @@ object CometDateFormat extends CometExpressionSerde[DateFormatClass] {
         withInfo(expr, expr.left, expr.right)
         None
     }
+  }
+}
+
+object CometPreciseTimestampConversion extends CometExpressionSerde[PreciseTimestampConversion] {
+  override def getSupportLevel(expr: PreciseTimestampConversion): SupportLevel = {
+    (expr.fromType, expr.toType) match {
+      case (TimestampType, LongType) | (LongType, TimestampType) =>
+        Compatible()
+      case _ =>
+        Unsupported(Some(s"PreciseTimestampConversion from ${expr.fromType} to ${expr.toType}"))
+    }
+  }
+
+  override def convert(
+      expr: PreciseTimestampConversion,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    // Both types are i64 micros in Arrow, so no conversion needed — return child directly.
+    exprToProtoInternal(expr.child, inputs, binding)
   }
 }
