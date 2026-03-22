@@ -24,7 +24,7 @@ use crate::{
         metrics::utils::update_comet_metric, planner::PhysicalPlanner, serde::to_arrow_datatype,
         shuffle::spark_unsafe::row::process_sorted_row_partition, sort::RdxSort,
     },
-    jvm_bridge::{jni_new_global_ref, JVMClasses},
+    jvm_bridge::JVMClasses,
 };
 use arrow::array::{Array, RecordBatch, UInt32Array};
 use arrow::compute::{take, TakeOptions};
@@ -82,7 +82,7 @@ use tokio::sync::mpsc;
 use crate::execution::memory_pools::{
     create_memory_pool, handle_task_shared_pool_release, parse_memory_pool_config, MemoryPoolConfig,
 };
-use crate::execution::operators::ScanExec;
+use crate::execution::operators::{ScanExec, ShuffleScanExec};
 use crate::execution::shuffle::{read_ipc_compressed, CompressionCodec};
 use crate::execution::spark_plan::SparkPlan;
 
@@ -151,6 +151,8 @@ struct ExecutionContext {
     pub root_op: Option<Arc<SparkPlan>>,
     /// The input sources for the DataFusion plan
     pub scans: Vec<ScanExec>,
+    /// The shuffle scan input sources for the DataFusion plan
+    pub shuffle_scans: Vec<ShuffleScanExec>,
     /// The global reference of input sources for the DataFusion plan
     pub input_sources: Vec<Arc<GlobalRef>>,
     /// The record batch stream to pull results from
@@ -311,6 +313,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 partition_count: partition_count as usize,
                 root_op: None,
                 scans: vec![],
+                shuffle_scans: vec![],
                 input_sources,
                 stream: None,
                 batch_receiver: None,
@@ -491,6 +494,10 @@ fn pull_input_batches(exec_context: &mut ExecutionContext) -> Result<(), CometEr
     exec_context.scans.iter_mut().try_for_each(|scan| {
         scan.get_next_batch()?;
         Ok::<(), CometError>(())
+    })?;
+    exec_context.shuffle_scans.iter_mut().try_for_each(|scan| {
+        scan.get_next_batch()?;
+        Ok::<(), CometError>(())
     })
 }
 
@@ -539,7 +546,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                 let planner =
                     PhysicalPlanner::new(Arc::clone(&exec_context.session_ctx), partition)
                         .with_exec_id(exec_context_id);
-                let (scans, root_op) = planner.create_plan(
+                let (scans, shuffle_scans, root_op) = planner.create_plan(
                     &exec_context.spark_plan,
                     &mut exec_context.input_sources.clone(),
                     exec_context.partition_count,
@@ -548,6 +555,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
 
                 exec_context.plan_creation_time += physical_plan_time;
                 exec_context.scans = scans;
+                exec_context.shuffle_scans = shuffle_scans;
 
                 if exec_context.explain_native {
                     let formatted_plan_str =
@@ -560,7 +568,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                 // so we should always execute partition 0.
                 let stream = root_op.native_plan.execute(0, task_ctx)?;
 
-                if exec_context.scans.is_empty() {
+                if exec_context.scans.is_empty() && exec_context.shuffle_scans.is_empty() {
                     // No JVM data sources — spawn onto tokio so the executor
                     // thread parks in blocking_recv instead of busy-polling.
                     //
