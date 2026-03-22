@@ -43,7 +43,6 @@ use arrow::array::builder::StringBuilder;
 use arrow::array::{
     BinaryBuilder, DictionaryArray, GenericByteArray, ListArray, MapArray, StringArray, StructArray,
 };
-use arrow::compute::can_cast_types;
 use arrow::datatypes::{ArrowDictionaryKeyType, ArrowNativeType, DataType, Schema};
 use arrow::datatypes::{Field, Fields, GenericBinaryType};
 use arrow::error::ArrowError;
@@ -294,6 +293,7 @@ pub(crate) fn cast_array(
     };
 
     let cast_result = match (&from_type, to_type) {
+        (Null, _) => Ok(cast_with_options(&array, to_type, &native_cast_options)?),
         (Utf8, Boolean) => spark_cast_utf8_to_boolean::<i32>(&array, eval_mode),
         (LargeUtf8, Boolean) => spark_cast_utf8_to_boolean::<i64>(&array, eval_mode),
         (Utf8, Timestamp(_, _)) => {
@@ -366,8 +366,18 @@ pub(crate) fn cast_array(
             cast_options,
         )?),
         (List(_), Utf8) => Ok(cast_array_to_string(array.as_list(), cast_options)?),
-        (List(_), List(_)) if can_cast_types(&from_type, to_type) => {
-            Ok(cast_with_options(&array, to_type, &CAST_OPTIONS)?)
+        (List(_), List(to)) => {
+            let list_array = array.as_list::<i32>();
+            Ok(Arc::new(ListArray::new(
+                Arc::clone(to),
+                list_array.offsets().clone(),
+                cast_array(
+                    Arc::clone(list_array.values()),
+                    to.data_type(),
+                    cast_options,
+                )?,
+                list_array.nulls().cloned(),
+            )) as ArrayRef)
         }
         (Map(_, _), Map(_, _)) => Ok(cast_map_to_map(&array, &from_type, to_type, cast_options)?),
         (UInt8 | UInt16 | UInt32 | UInt64, Int8 | Int16 | Int32 | Int64)
@@ -803,7 +813,8 @@ fn cast_binary_formatter(value: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::StringArray;
+    use arrow::array::{ListArray, StringArray};
+    use arrow::buffer::OffsetBuffer;
     use arrow::datatypes::TimestampMicrosecondType;
     use arrow::datatypes::{Field, Fields};
     #[test]
@@ -929,8 +940,6 @@ mod tests {
 
     #[test]
     fn test_cast_string_array_to_string() {
-        use arrow::array::ListArray;
-        use arrow::buffer::OffsetBuffer;
         let values_array =
             StringArray::from(vec![Some("a"), Some("b"), Some("c"), Some("a"), None, None]);
         let offsets_buffer = OffsetBuffer::<i32>::new(vec![0, 3, 5, 6, 6].into());
@@ -955,8 +964,6 @@ mod tests {
 
     #[test]
     fn test_cast_i32_array_to_string() {
-        use arrow::array::ListArray;
-        use arrow::buffer::OffsetBuffer;
         let values_array = Int32Array::from(vec![Some(1), Some(2), Some(3), Some(1), None, None]);
         let offsets_buffer = OffsetBuffer::<i32>::new(vec![0, 3, 5, 6, 6].into());
         let item_field = Arc::new(Field::new("item", DataType::Int32, true));
