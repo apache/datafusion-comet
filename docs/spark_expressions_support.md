@@ -105,7 +105,7 @@
 - [ ] sequence
 - [ ] shuffle
 - [ ] slice
-- [ ] sort_array
+- [x] sort_array
 
 ### bitwise_funcs
 
