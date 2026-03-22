@@ -38,11 +38,10 @@ use crate::errors::{try_unwrap_or_throw, CometError};
 
 use arrow::ffi::FFI_ArrowArray;
 
-/// JNI exposed methods
-use jni::JNIEnv;
 use jni::{
-    objects::{GlobalRef, JByteBuffer, JClass},
+    objects::{GlobalRef, JByteBuffer, JClass, JObject},
     sys::{jboolean, jint, jlong},
+    Env, JNIEnv,
 };
 
 use self::util::jni::TypePromotionInfo;
@@ -65,7 +64,7 @@ use datafusion::execution::SendableRecordBatchStream;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use futures::{poll, StreamExt};
-use jni::objects::{JByteArray, JLongArray, JMap, JObject, JObjectArray, JString, ReleaseMode};
+use jni::objects::{JByteArray, JLongArray, JMap, JObjectArray, JString, ReleaseMode};
 use jni::sys::{jintArray, JNI_FALSE};
 use object_store::path::Path;
 use read::ColumnReader;
@@ -74,7 +73,7 @@ use util::jni::{convert_column_descriptor, convert_encoding, deserialize_schema}
 /// Parquet read context maintained across multiple JNI calls.
 struct Context {
     pub column_reader: ColumnReader,
-    last_data_page: Option<GlobalRef>,
+    last_data_page: Option<GlobalRef<JByteBuffer<'static>>>,
 }
 
 #[no_mangle]
@@ -128,8 +127,8 @@ pub extern "system" fn Java_org_apache_comet_parquet_Native_initColumnReader(
                 desc,
                 promotion_info,
                 batch_size as usize,
-                use_decimal_128 != 0,
-                use_legacy_date_timestamp != 0,
+                use_decimal_128,
+                use_legacy_date_timestamp,
             ),
             last_data_page: None,
         };
@@ -315,7 +314,7 @@ pub extern "system" fn Java_org_apache_comet_parquet_Native_skipBatch(
 ) -> jint {
     try_unwrap_or_throw(&env, |_| {
         let reader = get_reader(handle)?;
-        Ok(reader.skip_batch(batch_size as usize, discard == 0) as jint)
+        Ok(reader.skip_batch(batch_size as usize, discard) as jint)
     })
 }
 
@@ -379,7 +378,7 @@ enum ParquetReaderState {
 /// Parquet read context maintained across multiple JNI calls.
 struct BatchContext {
     native_plan: Arc<SparkPlan>,
-    metrics_node: Arc<GlobalRef>,
+    metrics_node: Arc<GlobalRef<JObject<'static>>>,
     batch_stream: Option<SendableRecordBatchStream>,
     current_batch: Option<RecordBatch>,
     reader_state: ParquetReaderState,
@@ -416,16 +415,20 @@ fn get_file_groups_single_file(
 }
 
 pub fn get_object_store_options(
-    env: &mut JNIEnv,
+    env: &mut Env,
     map_object: JObject,
 ) -> Result<HashMap<String, String>, CometError> {
-    let map = JMap::from_env(env, &map_object)?;
+    let map = JMap::from_env(env, map_object)?;
     // Convert to a HashMap
     let mut collected_map = HashMap::new();
     map.iter(env).and_then(|mut iter| {
-        while let Some((key, value)) = iter.next(env)? {
-            let key_string: String = String::from(env.get_string(&JString::from(key))?);
-            let value_string: String = String::from(env.get_string(&JString::from(value))?);
+        while let Some(entry) = iter.next(env)? {
+            let key = entry.key(env)?;
+            let value = entry.value(env)?;
+            let key = unsafe { JString::from_raw(env, key.into_raw()) };
+            let value = unsafe { JString::from_raw(env, value.into_raw()) };
+            let key_string = key.try_to_string(env)?;
+            let value_string = value.try_to_string(env)?;
             collected_map.insert(key_string, value_string);
         }
         Ok(())
@@ -524,7 +527,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
         // Handle key unwrapper for encrypted files
         let encryption_enabled = if !key_unwrapper_obj.is_null() {
             let encryption_factory = CometEncryptionFactory {
-                key_unwrapper: jni_new_global_ref!(env, key_unwrapper_obj)?,
+                key_unwrapper: Arc::new(jni_new_global_ref!(env, key_unwrapper_obj)?),
             };
             session_ctx
                 .runtime_env()

@@ -23,7 +23,7 @@ use std::{
 };
 
 use datafusion_comet_proto::spark_operator::Operator;
-use jni::objects::GlobalRef;
+use jni::objects::{GlobalRef, JObject};
 
 use super::{PhysicalPlanner, PlanCreationResult};
 use crate::execution::operators::ExecutionError;
@@ -34,7 +34,7 @@ pub trait OperatorBuilder: Send + Sync {
     fn build(
         &self,
         spark_plan: &datafusion_comet_proto::spark_operator::Operator,
-        inputs: &mut Vec<Arc<GlobalRef>>,
+        inputs: &mut Vec<Arc<GlobalRef<JObject<'static>>>>,
         partition_count: usize,
         planner: &PhysicalPlanner,
     ) -> PlanCreationResult;
@@ -94,7 +94,7 @@ impl OperatorRegistry {
     pub fn create_plan(
         &self,
         spark_operator: &Operator,
-        inputs: &mut Vec<Arc<GlobalRef>>,
+        inputs: &mut Vec<Arc<GlobalRef<JObject<'static>>>>,
         partition_count: usize,
         planner: &PhysicalPlanner,
     ) -> PlanCreationResult {

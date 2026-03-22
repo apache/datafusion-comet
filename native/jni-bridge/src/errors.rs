@@ -27,7 +27,7 @@ use std::{
     any::Any,
     convert,
     fmt::Write,
-    panic::{catch_unwind, UnwindSafe},
+    panic::UnwindSafe,
     result, str,
     str::Utf8Error,
     sync::{Arc, Mutex},
@@ -39,7 +39,7 @@ use std::{
 use jni::sys::{jboolean, jbyte, jchar, jdouble, jfloat, jint, jlong, jobject, jshort};
 
 use jni::objects::{GlobalRef, JThrowable};
-use jni::JNIEnv;
+use jni::{strings::JNIString, Env, JNIEnv, Outcome};
 use lazy_static::lazy_static;
 use parquet::errors::ParquetError;
 use thiserror::Error;
@@ -72,7 +72,7 @@ pub enum ExecutionError {
     JavaException {
         class: String,
         msg: String,
-        throwable: GlobalRef,
+        throwable: GlobalRef<JThrowable<'static>>,
     },
 }
 
@@ -167,7 +167,7 @@ pub enum CometError {
     JavaException {
         class: String,
         msg: String,
-        throwable: GlobalRef,
+        throwable: GlobalRef<JThrowable<'static>>,
     },
 }
 
@@ -388,7 +388,7 @@ pub trait JNIDefault {
 
 impl JNIDefault for jboolean {
     fn default() -> jboolean {
-        0
+        false
     }
 }
 
@@ -449,7 +449,7 @@ impl JNIDefault for () {
 // `RuntimeException` back to the calling Java.  Since a return result is required, use `JNIDefault`
 // to create a reasonable result.  This returned default value will be ignored due to the exception.
 pub fn unwrap_or_throw_default<T: JNIDefault>(
-    env: &mut JNIEnv,
+    env: &mut Env,
     result: std::result::Result<T, CometError>,
 ) -> T {
     match result {
@@ -465,16 +465,16 @@ pub fn unwrap_or_throw_default<T: JNIDefault>(
     }
 }
 
-fn throw_exception(env: &mut JNIEnv, error: &CometError, backtrace: Option<String>) {
+fn throw_exception(env: &mut Env, error: &CometError, backtrace: Option<String>) {
     // If there isn't already an exception?
-    if env.exception_check().is_ok() {
+    if !env.exception_check() {
         // ... then throw new exception
         match error {
             CometError::JavaException {
                 class: _,
                 msg: _,
                 throwable,
-            } => env.throw(<&JThrowable>::from(throwable.as_obj())),
+            } => env.throw(throwable),
             CometError::Execution {
                 source:
                     ExecutionError::JavaException {
@@ -482,7 +482,7 @@ fn throw_exception(env: &mut JNIEnv, error: &CometError, backtrace: Option<Strin
                         msg: _,
                         throwable,
                     },
-            } => env.throw(<&JThrowable>::from(throwable.as_obj())),
+            } => env.throw(throwable),
             // Handle DataFusion errors containing SparkError or SparkErrorWithContext
             CometError::DataFusion {
                 msg: _,
@@ -491,14 +491,14 @@ fn throw_exception(env: &mut JNIEnv, error: &CometError, backtrace: Option<Strin
                 if let Some(spark_error_with_ctx) = e.downcast_ref::<SparkErrorWithContext>() {
                     let json_message = spark_error_with_ctx.to_json();
                     env.throw_new(
-                        "org/apache/comet/exceptions/CometQueryExecutionException",
-                        json_message,
+                        jni::jni_str!("org/apache/comet/exceptions/CometQueryExecutionException"),
+                        JNIString::new(json_message),
                     )
                 } else if let Some(spark_error) = e.downcast_ref::<SparkError>() {
                     let json_message = spark_error.to_json();
                     env.throw_new(
-                        "org/apache/comet/exceptions/CometQueryExecutionException",
-                        json_message,
+                        jni::jni_str!("org/apache/comet/exceptions/CometQueryExecutionException"),
+                        JNIString::new(json_message),
                     )
                 } else {
                     // Check for file-not-found errors from object store
@@ -513,10 +513,15 @@ fn throw_exception(env: &mut JNIEnv, error: &CometError, backtrace: Option<Strin
                         let exception = error.to_exception();
                         match backtrace {
                             Some(backtrace_string) => env.throw_new(
-                                exception.class,
-                                to_stacktrace_string(exception.msg, backtrace_string).unwrap(),
+                                JNIString::new(exception.class),
+                                JNIString::new(
+                                    to_stacktrace_string(exception.msg, backtrace_string).unwrap(),
+                                ),
                             ),
-                            _ => env.throw_new(exception.class, exception.msg),
+                            _ => env.throw_new(
+                                JNIString::new(exception.class),
+                                JNIString::new(exception.msg),
+                            ),
                         }
                     }
                 }
@@ -537,10 +542,15 @@ fn throw_exception(env: &mut JNIEnv, error: &CometError, backtrace: Option<Strin
                     let exception = error.to_exception();
                     match backtrace {
                         Some(backtrace_string) => env.throw_new(
-                            exception.class,
-                            to_stacktrace_string(exception.msg, backtrace_string).unwrap(),
+                            JNIString::new(exception.class),
+                            JNIString::new(
+                                to_stacktrace_string(exception.msg, backtrace_string).unwrap(),
+                            ),
                         ),
-                        _ => env.throw_new(exception.class, exception.msg),
+                        _ => env.throw_new(
+                            JNIString::new(exception.class),
+                            JNIString::new(exception.msg),
+                        ),
                     }
                 }
             }
@@ -550,17 +560,14 @@ fn throw_exception(env: &mut JNIEnv, error: &CometError, backtrace: Option<Strin
 }
 
 /// Throws a CometQueryExecutionException with JSON-encoded SparkError
-fn throw_spark_error_as_json(
-    env: &mut JNIEnv,
-    spark_error: &SparkError,
-) -> jni::errors::Result<()> {
+fn throw_spark_error_as_json(env: &mut Env, spark_error: &SparkError) -> jni::errors::Result<()> {
     // Serialize error to JSON
     let json_message = spark_error.to_json();
 
     // Throw CometQueryExecutionException with JSON message
     env.throw_new(
-        "org/apache/comet/exceptions/CometQueryExecutionException",
-        json_message,
+        jni::jni_str!("org/apache/comet/exceptions/CometQueryExecutionException"),
+        JNIString::new(json_message),
     )
 }
 
@@ -659,33 +666,26 @@ fn to_stacktrace_string(msg: String, backtrace_string: String) -> Result<String,
     Ok(res)
 }
 
-fn flatten<T, E>(result: Result<Result<T, E>, E>) -> Result<T, E> {
-    result.and_then(convert::identity)
-}
-
-// Implements "currying" from `FnOnce(T) -> R` to `FnOnce() -> R`, given
-// an instance of T. Curring is not supported in Rust so we have to use this
-// custom function to achieve something similar here.
-fn curry<'a, T: 'a, F, R>(f: F, t: T) -> impl FnOnce() -> R + 'a
-where
-    F: FnOnce(T) -> R + 'a,
-{
-    || f(t)
-}
-
 // It is currently undefined behavior to unwind from Rust code into foreign code, so we can wrap
 // our JNI functions and turn these panics into a `RuntimeException`.
 pub fn try_unwrap_or_throw<T, F>(env: &JNIEnv, f: F) -> T
 where
     T: JNIDefault,
-    F: FnOnce(JNIEnv) -> Result<T, CometError> + UnwindSafe,
+    F: FnOnce(&mut Env) -> Result<T, CometError> + UnwindSafe,
 {
-    let mut env1 = unsafe { JNIEnv::from_raw(env.get_raw()).unwrap() };
-    let env2 = unsafe { JNIEnv::from_raw(env.get_raw()).unwrap() };
-    unwrap_or_throw_default(
-        &mut env1,
-        flatten(catch_unwind(curry(f, env2)).map_err(CometError::from)),
-    )
+    let raw = env.as_raw();
+    let mut env1 = unsafe { JNIEnv::from_raw(raw) };
+    match env1.with_env(f).into_outcome() {
+        Outcome::Ok(value) => value,
+        Outcome::Err(err) => {
+            let mut guard = unsafe { jni::AttachGuard::from_unowned(raw) };
+            unwrap_or_throw_default(guard.borrow_env_mut(), Err(err))
+        }
+        Outcome::Panic(payload) => {
+            let mut guard = unsafe { jni::AttachGuard::from_unowned(raw) };
+            unwrap_or_throw_default(guard.borrow_env_mut(), Err(CometError::from(payload)))
+        }
+    }
 }
 
 #[cfg(test)]
