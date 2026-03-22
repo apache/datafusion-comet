@@ -73,7 +73,7 @@ impl ParquetFileReaderFactory for CachingParquetReaderFactory {
         metrics: &ExecutionPlanMetricsSet,
     ) -> DataFusionResult<Box<dyn AsyncFileReader + Send>> {
         let bytes_scanned =
-            MetricBuilder::new(metrics).counter("parquet bytes_scanned", partition_index);
+            MetricBuilder::new(metrics).counter("bytes_scanned", partition_index);
 
         let location = partitioned_file.object_meta.location.clone();
 
