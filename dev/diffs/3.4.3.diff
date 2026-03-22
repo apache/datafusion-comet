@@ -2140,7 +2140,7 @@ index 104b4e416cd..8cc41d15051 100644
          case _ =>
            throw new AnalysisException("Can not match ParquetTable in the query.")
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
-index 8670d95c65e..45669c0b664 100644
+index 8670d95c65e..c7ba51f770f 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
 @@ -41,6 +41,7 @@ import org.apache.parquet.schema.{MessageType, MessageTypeParser}
@@ -2157,7 +2157,7 @@ index 8670d95c65e..45669c0b664 100644
  
 -  test("SPARK-35640: read binary as timestamp should throw schema incompatible error") {
 +  test("SPARK-35640: read binary as timestamp should throw schema incompatible error",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3311")) {
++    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3720")) {
      val data = (1 to 4).map(i => Tuple1(i.toString))
      val readSchema = StructType(Seq(StructField("_1", DataTypes.TimestampType)))
  
@@ -2167,7 +2167,7 @@ index 8670d95c65e..45669c0b664 100644
  
 -  test("SPARK-35640: int as long should throw schema incompatible error") {
 +  test("SPARK-35640: int as long should throw schema incompatible error",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3311")) {
++    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3720")) {
      val data = (1 to 4).map(i => Tuple1(i))
      val readSchema = StructType(Seq(StructField("_1", DataTypes.LongType)))
  
@@ -2182,7 +2182,7 @@ index 8670d95c65e..45669c0b664 100644
        checkAnswer(
          // "fruit" column in this file is encoded using DELTA_LENGTH_BYTE_ARRAY.
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
-index 29cb224c878..d16c22b73a9 100644
+index 29cb224c878..ee5a87fa200 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
 @@ -27,6 +27,7 @@ import org.apache.parquet.hadoop.ParquetOutputFormat
@@ -2199,7 +2199,7 @@ index 29cb224c878..d16c22b73a9 100644
  
 -  test("SPARK-36182: can't read TimestampLTZ as TimestampNTZ") {
 +  test("SPARK-36182: can't read TimestampLTZ as TimestampNTZ",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3311")) {
++    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3720")) {
      val data = (1 to 1000).map { i =>
        val ts = new java.sql.Timestamp(i)
        Row(ts)
@@ -2219,7 +2219,7 @@ index 29cb224c878..d16c22b73a9 100644
  
 -  test("SPARK-34212 Parquet should read decimals correctly") {
 +  test("SPARK-34212 Parquet should read decimals correctly",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3311")) {
++    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3720")) {
      def readParquet(schema: String, path: File): DataFrame = {
        spark.read.schema(schema).parquet(path.toString)
      }
@@ -2249,7 +2249,7 @@ index 29cb224c878..d16c22b73a9 100644
  
 -  test("row group skipping doesn't overflow when reading into larger type") {
 +  test("row group skipping doesn't overflow when reading into larger type",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3311")) {
++    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3720")) {
      withTempPath { path =>
        Seq(0).toDF("a").write.parquet(path.toString)
        // The vectorized and non-vectorized readers will produce different exceptions, we don't need
@@ -2358,7 +2358,7 @@ index 5c0b7def039..151184bc98c 100644
      assert(fileSourceScanSchemata.size === expectedSchemaCatalogStrings.size,
        s"Found ${fileSourceScanSchemata.size} file sources in dataframe, " +
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaSuite.scala
-index bf5c51b89bb..6ff4d1ba18b 100644
+index bf5c51b89bb..4e2f0bdb389 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaSuite.scala
 @@ -27,6 +27,7 @@ import org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName
@@ -2385,7 +2385,7 @@ index bf5c51b89bb..6ff4d1ba18b 100644
  
 -  test("schema mismatch failure error message for parquet vectorized reader") {
 +  test("schema mismatch failure error message for parquet vectorized reader",
-+      IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3311")) {
++      IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3720")) {
      withTempPath { dir =>
        val e = testSchemaMismatch(dir.getCanonicalPath, vectorizedReaderEnabled = true)
        assert(e.getCause.isInstanceOf[SparkException])
@@ -2395,7 +2395,7 @@ index bf5c51b89bb..6ff4d1ba18b 100644
  
 -  test("SPARK-45604: schema mismatch failure error on timestamp_ntz to array<timestamp_ntz>") {
 +  test("SPARK-45604: schema mismatch failure error on timestamp_ntz to array<timestamp_ntz>",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3311")) {
++    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3720")) {
      import testImplicits._
  
      withTempPath { dir =>
