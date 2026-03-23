@@ -245,7 +245,7 @@ or strings containing null bytes (e.g \\u0000)
 - **string -> date**: Only supports years between 262143 BC and 262142 AD
 - **string -> decimal**: Does not support fullwidth unicode digits (e.g \\uFF10)
 or strings containing null bytes (e.g \\u0000)
-- **string -> timestamp**: ANSI mode not supported
+- **string -> timestamp**: Not all valid formats are supported
 <!-- prettier-ignore-end -->
 <!--END:CAST_ANSI_TABLE-->
 
