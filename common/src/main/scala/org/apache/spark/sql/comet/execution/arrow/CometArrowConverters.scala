@@ -36,9 +36,8 @@ object CometArrowConverters extends Logging {
   // This is similar how Spark converts internal row to Arrow format except that it is transforming
   // the result batch to Comet's ColumnarBatch instead of serialized bytes.
   // Each batch is written to a fresh VectorSchemaRoot so that native code can safely
-  // Arc::clone the buffers rather than performing a deep copy. The JVM-side root is
-  // closed immediately after export, while native ref-counting keeps the memory alive
-  // until the native plan is done.
+  // Arc::clone the buffers rather than performing a deep copy. The allocator manages
+  // the buffer lifetime and is closed when the task completes.
 
   abstract private[sql] class ArrowBatchIterBase(
       schema: StructType,
@@ -102,9 +101,7 @@ object CometArrowConverters extends Logging {
           rowCount += 1
         }
         arrowWriter.finish()
-        val batch = NativeUtil.rootAsBatch(root)
-        root.close()
-        batch
+        NativeUtil.rootAsBatch(root)
       } else {
         null
       }
@@ -158,9 +155,7 @@ object CometArrowConverters extends Logging {
         rowsProduced += rowsToProduce
 
         arrowWriter.finish()
-        val batch = NativeUtil.rootAsBatch(root)
-        root.close()
-        batch
+        NativeUtil.rootAsBatch(root)
       } else {
         null
       }
