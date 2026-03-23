@@ -1204,9 +1204,9 @@ dependencies = [
 
 [[package]]
 name = "cc"
-version = "1.2.56"
+version = "1.2.57"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aebf35691d1bfb0ac386a69bac2fde4dd276fb618cf8bf4f5318fe285e821bb2"
+checksum = "7a0dd1ca384932ff3641c8718a02769f1698e7563dc6974ffd03346116310423"
 dependencies = [
  "find-msvc-tools",
  "jobserver",
@@ -1834,12 +1834,13 @@ dependencies = [
  "aws-config",
  "aws-credential-types",
  "bytes",
- "crc32fast",
  "criterion",
  "datafusion",
+ "datafusion-comet-common",
  "datafusion-comet-jni-bridge",
  "datafusion-comet-objectstore-hdfs",
  "datafusion-comet-proto",
+ "datafusion-comet-shuffle",
  "datafusion-comet-spark-expr",
  "datafusion-datasource",
  "datafusion-functions-nested",
@@ -1856,7 +1857,6 @@ dependencies = [
  "lazy_static",
  "log",
  "log4rs",
- "lz4_flex 0.13.0",
  "mimalloc",
  "num",
  "object_store",
@@ -1872,15 +1872,12 @@ dependencies = [
  "rand 0.10.0",
  "reqwest",
  "serde_json",
- "simd-adler32",
- "snap",
  "tempfile",
  "tikv-jemalloc-ctl",
  "tikv-jemallocator",
  "tokio",
  "url",
  "uuid",
- "zstd",
 ]
 
 [[package]]
@@ -1947,6 +1944,31 @@ version = "0.15.0"
 dependencies = [
  "prost",
  "prost-build",
+]
+
+[[package]]
+name = "datafusion-comet-shuffle"
+version = "0.15.0"
+dependencies = [
+ "arrow",
+ "async-trait",
+ "bytes",
+ "crc32fast",
+ "criterion",
+ "datafusion",
+ "datafusion-comet-common",
+ "datafusion-comet-jni-bridge",
+ "datafusion-comet-spark-expr",
+ "futures",
+ "itertools 0.14.0",
+ "jni",
+ "log",
+ "lz4_flex 0.13.0",
+ "simd-adler32",
+ "snap",
+ "tempfile",
+ "tokio",
+ "zstd",
 ]
 
 [[package]]
@@ -5351,9 +5373,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.9"
+version = "0.103.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d7df23109aa6c1567d1c575b9952556388da57401e4ace1d15f79eedad0d8f53"
+checksum = "df33b2b81ac578cabaf06b89b0631153a3f416b0a886e8a7a1707fb51abbd1ef"
 dependencies = [
  "aws-lc-rs",
  "ring",

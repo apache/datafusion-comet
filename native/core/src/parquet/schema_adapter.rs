@@ -66,20 +66,18 @@ fn remap_physical_schema_names(
     logical_schema: &SchemaRef,
     physical_schema: &SchemaRef,
 ) -> SchemaRef {
-    let logical_names: HashMap<String, &str> = logical_schema
-        .fields()
-        .iter()
-        .map(|f| (f.name().to_lowercase(), f.name().as_str()))
-        .collect();
-
     let remapped_fields: Vec<_> = physical_schema
         .fields()
         .iter()
         .map(|field| {
-            if let Some(logical_name) = logical_names.get(&field.name().to_lowercase()) {
-                if *logical_name != field.name() {
+            if let Some(logical_field) = logical_schema
+                .fields()
+                .iter()
+                .find(|lf| lf.name().eq_ignore_ascii_case(field.name()))
+            {
+                if logical_field.name() != field.name() {
                     Arc::new(Field::new(
-                        *logical_name,
+                        logical_field.name(),
                         field.data_type().clone(),
                         field.is_nullable(),
                     ))
@@ -121,7 +119,7 @@ impl PhysicalExprAdapterFactory for SparkPhysicalExprAdapterFactory {
                             .fields()
                             .iter()
                             .find(|pf| {
-                                pf.name().to_lowercase() == logical_field.name().to_lowercase()
+                                pf.name().eq_ignore_ascii_case(logical_field.name())
                                     && pf.name() != logical_field.name()
                             })
                             .map(|pf| (logical_field.name().clone(), pf.name().clone()))
@@ -264,7 +262,7 @@ impl SparkPhysicalExprAdapter {
                     self.physical_file_schema
                         .fields()
                         .iter()
-                        .find(|f| f.name().to_lowercase() == col_name.to_lowercase())
+                        .find(|f| f.name().eq_ignore_ascii_case(col_name))
                 };
 
                 if let (Some(logical_field), Some(physical_field)) = (logical_field, physical_field)
@@ -530,9 +528,7 @@ mod test {
 
         let parquet_exec = DataSourceExec::new(Arc::new(file_scan_config));
 
-        let mut stream = parquet_exec
-            .execute(0, Arc::new(TaskContext::default()))
-            .unwrap();
+        let mut stream = parquet_exec.execute(0, Arc::new(TaskContext::default()))?;
         stream.next().await.unwrap()
     }
 }

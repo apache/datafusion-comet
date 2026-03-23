@@ -15,14 +15,23 @@
 // specific language governing permissions and limitations
 // under the License.
 
-pub(crate) mod codec;
-mod comet_partitioning;
-mod metrics;
-mod partitioners;
-mod shuffle_writer;
-pub mod spark_unsafe;
-mod writers;
+/// Converts a slice of bytes to i128. The bytes are serialized in big-endian order by
+/// `BigInteger.toByteArray()` in Java.
+pub fn bytes_to_i128(slice: &[u8]) -> i128 {
+    let mut bytes = [0; 16];
+    let mut i = 0;
+    while i != 16 && i != slice.len() {
+        bytes[i] = slice[slice.len() - 1 - i];
+        i += 1;
+    }
 
-pub use codec::{read_ipc_compressed, CompressionCodec, ShuffleBlockWriter};
-pub use comet_partitioning::CometPartitioning;
-pub use shuffle_writer::ShuffleWriterExec;
+    // if the decimal is negative, we need to flip all the bits
+    if (slice[0] as i8) < 0 {
+        while i < 16 {
+            bytes[i] = !bytes[i];
+            i += 1;
+        }
+    }
+
+    i128::from_le_bytes(bytes)
+}

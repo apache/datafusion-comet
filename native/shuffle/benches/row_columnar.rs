@@ -22,11 +22,11 @@
 //! list, and map types.
 
 use arrow::datatypes::{DataType as ArrowDataType, Field, Fields};
-use comet::execution::shuffle::spark_unsafe::row::{
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
+use datafusion_comet_shuffle::spark_unsafe::row::{
     process_sorted_row_partition, SparkUnsafeObject, SparkUnsafeRow,
 };
-use comet::execution::shuffle::CompressionCodec;
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
+use datafusion_comet_shuffle::CompressionCodec;
 use std::sync::Arc;
 use tempfile::Builder;
 
