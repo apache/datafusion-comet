@@ -19,6 +19,7 @@ use datafusion::physical_plan::metrics::{
     BaselineMetrics, Count, ExecutionPlanMetricsSet, MetricBuilder, Time,
 };
 
+/// Execution metrics for a shuffle partition operation.
 pub(crate) struct ShufflePartitionerMetrics {
     /// metrics
     pub(crate) baseline: BaselineMetrics,

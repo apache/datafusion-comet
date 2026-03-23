@@ -19,7 +19,7 @@ use crate::{
     errors::CometError,
     execution::{
         operators::ExecutionError, planner::TEST_EXEC_CONTEXT_ID,
-        shuffle::codec::read_ipc_compressed,
+        shuffle::ipc::read_ipc_compressed,
     },
     jvm_bridge::{jni_call, JVMClasses},
 };
@@ -352,7 +352,7 @@ impl RecordBatchStream for ShuffleScanStream {
 
 #[cfg(test)]
 mod tests {
-    use crate::execution::shuffle::codec::{CompressionCodec, ShuffleBlockWriter};
+    use crate::execution::shuffle::{CompressionCodec, ShuffleBlockWriter};
     use arrow::array::{Int32Array, StringArray};
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatch;
@@ -360,7 +360,7 @@ mod tests {
     use std::io::Cursor;
     use std::sync::Arc;
 
-    use crate::execution::shuffle::codec::read_ipc_compressed;
+    use crate::execution::shuffle::ipc::read_ipc_compressed;
 
     #[test]
     #[cfg_attr(miri, ignore)] // Miri cannot call FFI functions (zstd)
