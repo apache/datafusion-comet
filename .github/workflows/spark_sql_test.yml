@@ -126,6 +126,7 @@ jobs:
         # - native_iceberg_compat: Spark 3.5 only
         config:
           - {spark-short: '3.4', spark-full: '3.4.3', java: 11, scan-impl: 'auto'}
+          - {spark-short: '3.4', spark-full: '3.4.3', java: 11, scan-impl: 'native_datafusion'}
           - {spark-short: '3.5', spark-full: '3.5.8', java: 11, scan-impl: 'auto'}
           - {spark-short: '3.5', spark-full: '3.5.8', java: 11, scan-impl: 'native_datafusion'}
           - {spark-short: '4.0', spark-full: '4.0.1', java: 17, scan-impl: 'auto'}
