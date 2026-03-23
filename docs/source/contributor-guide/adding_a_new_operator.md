@@ -432,9 +432,6 @@ object CometYourSinkOperator extends CometSink[YourSinkExec] {
   override def enabledConfig: Option[ConfigEntry[Boolean]] =
     Some(CometConf.COMET_EXEC_YOUR_SINK_ENABLED)
 
-  // Optional: Override if the data produced is FFI safe
-  override def isFfiSafe: Boolean = false
-
   override def createExec(
       nativeOp: OperatorOuterClass.Operator,
       op: YourSinkExec): CometNativeExec = {
@@ -485,7 +482,6 @@ case class CometYourSinkExec(
 - The `CometSink.convert()` method (in `CometSink.scala`) automatically handles:
   - Data type validation
   - Conversion to `ScanExec` in the native plan
-  - Setting FFI safety flags
 - You must implement `createExec()` to wrap the operator appropriately
 - You typically need to create a corresponding `CometYourSinkExec` class that implements columnar execution
 

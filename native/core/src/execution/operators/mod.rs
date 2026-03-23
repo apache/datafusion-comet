@@ -19,7 +19,6 @@
 
 pub use crate::errors::ExecutionError;
 
-pub use copy::*;
 pub use iceberg_scan::*;
 pub use scan::*;
 

@@ -105,9 +105,6 @@ case class CometLocalTableScanExec(
 
 object CometLocalTableScanExec extends CometSink[LocalTableScanExec] {
 
-  // uses CometArrowConverters, which re-uses arrays
-  override def isFfiSafe: Boolean = false
-
   override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
     CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED)
 

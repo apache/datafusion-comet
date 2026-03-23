@@ -150,44 +150,9 @@ in Java on-heap memory keeps growing until the batches are released in native co
 
 ### Ownership Transfer
 
-The Arrow C data interface supports ownership transfer by registering callbacks in the C struct that is passed over
-the JNI boundary for the function to delete the array data. For example, the `ArrowArray` struct has:
-
-```c
-// Release callback
-void (*release)(struct ArrowArray*);
-```
-
-Comet currently does not always follow best practice around ownership transfer because there are some cases where
-Comet JVM code will retain references to arrays after passing them to native code and may mutate the underlying
-buffers. There is an `arrow_ffi_safe` flag in the protocol buffer definition of `Scan` that indicates whether
-ownership is being transferred according to the Arrow C data interface specification.
-
-```protobuf
-message Scan {
-  repeated spark.spark_expression.DataType fields = 1;
-  // The source of the scan (e.g. file scan, broadcast exchange, shuffle, etc). This
-  // is purely for informational purposes when viewing native query plans in
-  // debug mode.
-  string source = 2;
-  // Whether native code can assume ownership of batches that it receives
-  bool arrow_ffi_safe = 3;
-}
-```
-
-#### When ownership is NOT transferred to native:
-
-If the data originates from a scan that uses mutable buffers
-then ownership is not transferred to native and the JVM may re-use the underlying buffers in the future.
-
-It is critical that the native code performs a deep copy of the arrays if the arrays are to be buffered by
-operators such as `SortExec` or `ShuffleWriterExec`, otherwise data corruption is likely to occur.
-
-#### When ownership IS transferred to native:
-
-When ownership is transferred, it is safe to buffer batches in native. However, JVM wrapper objects will not be
-released until the native batches are dropped. This can lead to OOM or GC pressure if there is not enough Java
-heap memory configured.
+Each batch is written to a fresh `VectorSchemaRoot` in the JVM, so native code can safely `Arc::clone` the
+buffers rather than performing a deep copy. The JVM-side root is closed immediately after export;
+native ref-counting keeps the memory alive until the native plan releases the arrays.
 
 ## Native → JVM Data Flow (CometExecIterator)
 
@@ -342,10 +307,8 @@ arrowBuf.close();  // → calls native release_batch()
 
 ### JVM → Native
 
-| Scenario           | `arrow_ffi_safe` | Ownership   | Action Required                        |
-| ------------------ | ---------------- | ----------- | -------------------------------------- |
-| Temporary scan     | `false`          | JVM keeps   | **Must deep copy** to avoid corruption |
-| Ownership transfer | `true`           | Native owns | Copy only to unpack dictionaries       |
+Native code always receives freshly allocated Arrow buffers per batch and can safely `Arc::clone` them.
+Dictionary arrays are unpacked during import.
 
 ### Native → JVM
 

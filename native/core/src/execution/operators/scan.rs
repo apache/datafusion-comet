@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::execution::operators::{copy_array, copy_or_unpack_array, CopyMode};
+use crate::execution::operators::copy::copy_or_unpack_array;
 use crate::{
     errors::CometError,
     execution::{
@@ -77,8 +77,6 @@ pub struct ScanExec {
     metrics: ExecutionPlanMetricsSet,
     /// Baseline metrics
     baseline_metrics: BaselineMetrics,
-    /// Whether native code can assume ownership of batches that it receives
-    arrow_ffi_safe: bool,
 }
 
 impl ScanExec {
@@ -87,7 +85,6 @@ impl ScanExec {
         input_source: Option<Arc<GlobalRef>>,
         input_source_description: &str,
         data_types: Vec<DataType>,
-        arrow_ffi_safe: bool,
     ) -> Result<Self, CometError> {
         let metrics_set = ExecutionPlanMetricsSet::default();
         let baseline_metrics = BaselineMetrics::new(&metrics_set, 0);
@@ -114,7 +111,6 @@ impl ScanExec {
             metrics: metrics_set,
             baseline_metrics,
             schema,
-            arrow_ffi_safe,
         })
     }
 
@@ -147,7 +143,6 @@ impl ScanExec {
                 self.exec_context_id,
                 self.input_source.as_ref().unwrap().as_obj(),
                 self.data_types.len(),
-                self.arrow_ffi_safe,
             )?;
             *current_batch = Some(next_batch);
         }
@@ -162,7 +157,6 @@ impl ScanExec {
         exec_context_id: i64,
         iter: &JObject,
         num_cols: usize,
-        arrow_ffi_safe: bool,
     ) -> Result<InputBatch, CometError> {
         if exec_context_id == TEST_EXEC_CONTEXT_ID {
             // This is a unit test. We don't need to call JNI.
@@ -225,15 +219,7 @@ impl ScanExec {
                 array
             };
 
-            let array = if arrow_ffi_safe {
-                // ownership of this array has been transferred to native
-                // but we still need to unpack dictionary arrays
-                copy_or_unpack_array(&array, &CopyMode::UnpackOrClone)?
-            } else {
-                // it is necessary to copy the array because the contents may be
-                // overwritten on the JVM side in the future
-                copy_array(&array)
-            };
+            let array = copy_or_unpack_array(&array)?;
 
             inputs.push(array);
 
