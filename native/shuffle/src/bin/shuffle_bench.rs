@@ -49,9 +49,6 @@ use arrow::array::builder::{Date32Builder, Decimal128Builder, Int64Builder, Stri
 use arrow::array::RecordBatch;
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use clap::Parser;
-use comet::execution::shuffle::{
-    read_ipc_compressed, CometPartitioning, CompressionCodec, ShuffleWriterExec,
-};
 use datafusion::datasource::memory::MemorySourceConfig;
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::execution::config::SessionConfig;
@@ -60,6 +57,9 @@ use datafusion::physical_expr::expressions::Column;
 use datafusion::physical_plan::common::collect;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionContext;
+use datafusion_comet_shuffle::{
+    read_ipc_compressed, CometPartitioning, CompressionCodec, ShuffleWriterExec,
+};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use rand::RngExt;
 use std::fs;

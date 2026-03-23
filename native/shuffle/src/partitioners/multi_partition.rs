@@ -15,16 +15,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::execution::shuffle::metrics::ShufflePartitionerMetrics;
-use crate::execution::shuffle::partitioners::partitioned_batch_iterator::{
+use crate::metrics::ShufflePartitionerMetrics;
+use crate::partitioners::partitioned_batch_iterator::{
     PartitionedBatchIterator, PartitionedBatchesProducer,
 };
-use crate::execution::shuffle::partitioners::ShufflePartitioner;
-use crate::execution::shuffle::writers::{BufBatchWriter, PartitionWriter};
-use crate::execution::shuffle::{
-    comet_partitioning, CometPartitioning, CompressionCodec, ShuffleBlockWriter,
-};
-use crate::execution::tracing::{with_trace, with_trace_async};
+use crate::partitioners::ShufflePartitioner;
+use crate::writers::{BufBatchWriter, PartitionWriter};
+use crate::{comet_partitioning, CometPartitioning, CompressionCodec, ShuffleBlockWriter};
 use arrow::array::{ArrayRef, RecordBatch};
 use arrow::datatypes::SchemaRef;
 use datafusion::common::utils::proxy::VecAllocExt;
@@ -32,6 +29,7 @@ use datafusion::common::DataFusionError;
 use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::physical_plan::metrics::Time;
+use datafusion_comet_common::tracing::{with_trace, with_trace_async};
 use datafusion_comet_spark_expr::murmur3::create_murmur3_hashes;
 use itertools::Itertools;
 use std::fmt;

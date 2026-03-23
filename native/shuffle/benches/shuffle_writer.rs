@@ -19,9 +19,6 @@ use arrow::array::builder::{Date32Builder, Decimal128Builder, Int32Builder};
 use arrow::array::{builder::StringBuilder, Array, Int32Array, RecordBatch};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::row::{RowConverter, SortField};
-use comet::execution::shuffle::{
-    CometPartitioning, CompressionCodec, ShuffleBlockWriter, ShuffleWriterExec,
-};
 use criterion::{criterion_group, criterion_main, Criterion};
 use datafusion::datasource::memory::MemorySourceConfig;
 use datafusion::datasource::source::DataSourceExec;
@@ -31,6 +28,9 @@ use datafusion::physical_plan::metrics::Time;
 use datafusion::{
     physical_plan::{common::collect, ExecutionPlan},
     prelude::SessionContext,
+};
+use datafusion_comet_shuffle::{
+    CometPartitioning, CompressionCodec, ShuffleBlockWriter, ShuffleWriterExec,
 };
 use itertools::Itertools;
 use std::io::Cursor;

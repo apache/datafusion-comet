@@ -47,7 +47,7 @@ impl CometPartitioning {
     }
 }
 
-pub(super) fn pmod(hash: u32, n: usize) -> usize {
+pub(crate) fn pmod(hash: u32, n: usize) -> usize {
     let hash = hash as i32;
     let n = n as i32;
     let r = hash % n;

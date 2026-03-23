@@ -15,23 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Operators
+mod buf_batch_writer;
+mod partition_writer;
 
-pub use crate::errors::ExecutionError;
-
-pub use copy::*;
-pub use iceberg_scan::*;
-pub use scan::*;
-
-mod copy;
-mod expand;
-pub use expand::ExpandExec;
-mod iceberg_scan;
-mod parquet_writer;
-pub use parquet_writer::ParquetWriterExec;
-mod csv_scan;
-pub mod projection;
-mod scan;
-mod shuffle_scan;
-pub use csv_scan::init_csv_datasource_exec;
-pub use shuffle_scan::ShuffleScanExec;
+pub(crate) use buf_batch_writer::BufBatchWriter;
+pub(crate) use partition_writer::PartitionWriter;

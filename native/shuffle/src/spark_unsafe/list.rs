@@ -15,14 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::{
-    errors::CometError,
-    execution::shuffle::spark_unsafe::{
-        map::append_map_elements,
-        row::{
-            append_field, downcast_builder_ref, impl_primitive_accessors, SparkUnsafeObject,
-            SparkUnsafeRow,
-        },
+use crate::spark_unsafe::{
+    map::append_map_elements,
+    row::{
+        append_field, downcast_builder_ref, impl_primitive_accessors, SparkUnsafeObject,
+        SparkUnsafeRow,
     },
 };
 use arrow::array::{
@@ -34,6 +31,7 @@ use arrow::array::{
     MapBuilder,
 };
 use arrow::datatypes::{DataType, TimeUnit};
+use datafusion_comet_jni_bridge::errors::CometError;
 
 /// Generates bulk append methods for primitive types in SparkUnsafeArray.
 ///
