@@ -15,10 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::execution::shuffle::metrics::ShufflePartitionerMetrics;
-use crate::execution::shuffle::partitioners::PartitionedBatchIterator;
-use crate::execution::shuffle::writers::buf_batch_writer::BufBatchWriter;
-use crate::execution::shuffle::ShuffleBlockWriter;
+use crate::metrics::ShufflePartitionerMetrics;
+use crate::partitioners::PartitionedBatchIterator;
+use crate::writers::buf_batch_writer::BufBatchWriter;
+use crate::ShuffleBlockWriter;
 use datafusion::common::DataFusionError;
 use datafusion::execution::disk_manager::RefCountedTempFile;
 use datafusion::execution::runtime_env::RuntimeEnv;

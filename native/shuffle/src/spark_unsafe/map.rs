@@ -15,12 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::{
-    errors::CometError,
-    execution::shuffle::spark_unsafe::list::{append_to_builder, SparkUnsafeArray},
-};
+use crate::spark_unsafe::list::{append_to_builder, SparkUnsafeArray};
 use arrow::array::builder::{ArrayBuilder, MapBuilder, MapFieldNames};
 use arrow::datatypes::{DataType, FieldRef};
+use datafusion_comet_jni_bridge::errors::CometError;
 
 pub struct SparkUnsafeMap {
     pub(crate) keys: SparkUnsafeArray,
