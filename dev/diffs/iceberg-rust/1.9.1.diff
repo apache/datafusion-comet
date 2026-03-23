@@ -890,3 +890,783 @@ index 6719c45ca..251545440 100644
          sourceColumnName,
          tableName,
          tableName(OTHER_TABLE_NAME),
+diff --git a/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometColumnReader.java b/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometColumnReader.java
+deleted file mode 100644
+index 16159dcbdf..0000000000
+--- a/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometColumnReader.java
++++ /dev/null
+@@ -1,140 +0,0 @@
+-/*
+- * Licensed to the Apache Software Foundation (ASF) under one
+- * or more contributor license agreements.  See the NOTICE file
+- * distributed with this work for additional information
+- * regarding copyright ownership.  The ASF licenses this file
+- * to you under the Apache License, Version 2.0 (the
+- * "License"); you may not use this file except in compliance
+- * with the License.  You may obtain a copy of the License at
+- *
+- *   http://www.apache.org/licenses/LICENSE-2.0
+- *
+- * Unless required by applicable law or agreed to in writing,
+- * software distributed under the License is distributed on an
+- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+- * KIND, either express or implied.  See the License for the
+- * specific language governing permissions and limitations
+- * under the License.
+- */
+-package org.apache.iceberg.spark.data.vectorized;
+-
+-import java.io.IOException;
+-import org.apache.comet.parquet.AbstractColumnReader;
+-import org.apache.comet.parquet.ColumnReader;
+-import org.apache.comet.parquet.TypeUtil;
+-import org.apache.comet.parquet.Utils;
+-import org.apache.comet.shaded.arrow.c.CometSchemaImporter;
+-import org.apache.comet.shaded.arrow.memory.RootAllocator;
+-import org.apache.iceberg.parquet.VectorizedReader;
+-import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
+-import org.apache.iceberg.spark.SparkSchemaUtil;
+-import org.apache.iceberg.types.Types;
+-import org.apache.parquet.column.ColumnDescriptor;
+-import org.apache.parquet.column.page.PageReader;
+-import org.apache.spark.sql.types.DataType;
+-import org.apache.spark.sql.types.Metadata;
+-import org.apache.spark.sql.types.StructField;
+-import org.apache.spark.sql.vectorized.ColumnVector;
+-
+-class CometColumnReader implements VectorizedReader<ColumnVector> {
+-  // use the Comet default batch size
+-  public static final int DEFAULT_BATCH_SIZE = 8192;
+-
+-  private final ColumnDescriptor descriptor;
+-  private final DataType sparkType;
+-
+-  // The delegated ColumnReader from Comet side
+-  private AbstractColumnReader delegate;
+-  private boolean initialized = false;
+-  private int batchSize = DEFAULT_BATCH_SIZE;
+-  private CometSchemaImporter importer;
+-
+-  CometColumnReader(DataType sparkType, ColumnDescriptor descriptor) {
+-    this.sparkType = sparkType;
+-    this.descriptor = descriptor;
+-  }
+-
+-  CometColumnReader(Types.NestedField field) {
+-    DataType dataType = SparkSchemaUtil.convert(field.type());
+-    StructField structField = new StructField(field.name(), dataType, false, Metadata.empty());
+-    this.sparkType = dataType;
+-    this.descriptor = TypeUtil.convertToParquet(structField);
+-  }
+-
+-  public AbstractColumnReader delegate() {
+-    return delegate;
+-  }
+-
+-  void setDelegate(AbstractColumnReader delegate) {
+-    this.delegate = delegate;
+-  }
+-
+-  void setInitialized(boolean initialized) {
+-    this.initialized = initialized;
+-  }
+-
+-  public int batchSize() {
+-    return batchSize;
+-  }
+-
+-  /**
+-   * This method is to initialized/reset the CometColumnReader. This needs to be called for each row
+-   * group after readNextRowGroup, so a new dictionary encoding can be set for each of the new row
+-   * groups.
+-   */
+-  public void reset() {
+-    if (importer != null) {
+-      importer.close();
+-    }
+-
+-    if (delegate != null) {
+-      delegate.close();
+-    }
+-
+-    this.importer = new CometSchemaImporter(new RootAllocator());
+-    this.delegate = Utils.getColumnReader(sparkType, descriptor, importer, batchSize, false, false);
+-    this.initialized = true;
+-  }
+-
+-  public ColumnDescriptor descriptor() {
+-    return descriptor;
+-  }
+-
+-  /** Returns the Spark data type for this column. */
+-  public DataType sparkType() {
+-    return sparkType;
+-  }
+-
+-  /**
+-   * Set the page reader to be 'pageReader'.
+-   *
+-   * <p>NOTE: this should be called before reading a new Parquet column chunk, and after {@link
+-   * CometColumnReader#reset} is called.
+-   */
+-  public void setPageReader(PageReader pageReader) throws IOException {
+-    Preconditions.checkState(initialized, "Invalid state: 'reset' should be called first");
+-    ((ColumnReader) delegate).setPageReader(pageReader);
+-  }
+-
+-  @Override
+-  public void close() {
+-    // close resources on native side
+-    if (importer != null) {
+-      importer.close();
+-    }
+-
+-    if (delegate != null) {
+-      delegate.close();
+-    }
+-  }
+-
+-  @Override
+-  public void setBatchSize(int size) {
+-    this.batchSize = size;
+-  }
+-
+-  @Override
+-  public ColumnVector read(ColumnVector reuse, int numRowsToRead) {
+-    throw new UnsupportedOperationException("Not supported");
+-  }
+-}
+diff --git a/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometColumnarBatchReader.java b/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometColumnarBatchReader.java
+deleted file mode 100644
+index 04ac69476a..0000000000
+--- a/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometColumnarBatchReader.java
++++ /dev/null
+@@ -1,197 +0,0 @@
+-/*
+- * Licensed to the Apache Software Foundation (ASF) under one
+- * or more contributor license agreements.  See the NOTICE file
+- * distributed with this work for additional information
+- * regarding copyright ownership.  The ASF licenses this file
+- * to you under the Apache License, Version 2.0 (the
+- * "License"); you may not use this file except in compliance
+- * with the License.  You may obtain a copy of the License at
+- *
+- *   http://www.apache.org/licenses/LICENSE-2.0
+- *
+- * Unless required by applicable law or agreed to in writing,
+- * software distributed under the License is distributed on an
+- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+- * KIND, either express or implied.  See the License for the
+- * specific language governing permissions and limitations
+- * under the License.
+- */
+-package org.apache.iceberg.spark.data.vectorized;
+-
+-import java.io.IOException;
+-import java.io.UncheckedIOException;
+-import java.util.List;
+-import java.util.Map;
+-import org.apache.comet.parquet.AbstractColumnReader;
+-import org.apache.comet.parquet.BatchReader;
+-import org.apache.iceberg.Schema;
+-import org.apache.iceberg.data.DeleteFilter;
+-import org.apache.iceberg.parquet.VectorizedReader;
+-import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
+-import org.apache.iceberg.spark.SparkSchemaUtil;
+-import org.apache.iceberg.util.Pair;
+-import org.apache.parquet.column.page.PageReadStore;
+-import org.apache.parquet.hadoop.metadata.ColumnChunkMetaData;
+-import org.apache.parquet.hadoop.metadata.ColumnPath;
+-import org.apache.spark.sql.catalyst.InternalRow;
+-import org.apache.spark.sql.vectorized.ColumnVector;
+-import org.apache.spark.sql.vectorized.ColumnarBatch;
+-
+-/**
+- * {@link VectorizedReader} that returns Spark's {@link ColumnarBatch} to support Spark's vectorized
+- * read path. The {@link ColumnarBatch} returned is created by passing in the Arrow vectors
+- * populated via delegated read calls to {@link CometColumnReader VectorReader(s)}.
+- */
+-@SuppressWarnings("checkstyle:VisibilityModifier")
+-class CometColumnarBatchReader implements VectorizedReader<ColumnarBatch> {
+-
+-  private final CometColumnReader[] readers;
+-  private final boolean hasIsDeletedColumn;
+-
+-  // The delegated BatchReader on the Comet side does the real work of loading a batch of rows.
+-  // The Comet BatchReader contains an array of ColumnReader. There is no need to explicitly call
+-  // ColumnReader.readBatch; instead, BatchReader.nextBatch will be called, which underneath calls
+-  // ColumnReader.readBatch. The only exception is DeleteColumnReader, because at the time of
+-  // calling BatchReader.nextBatch, the isDeleted value is not yet available, so
+-  // DeleteColumnReader.readBatch must be called explicitly later, after the isDeleted value is
+-  // available.
+-  private final BatchReader delegate;
+-  private DeleteFilter<InternalRow> deletes = null;
+-  private long rowStartPosInBatch = 0;
+-
+-  CometColumnarBatchReader(List<VectorizedReader<?>> readers, Schema schema) {
+-    this.readers =
+-        readers.stream().map(CometColumnReader.class::cast).toArray(CometColumnReader[]::new);
+-    this.hasIsDeletedColumn =
+-        readers.stream().anyMatch(reader -> reader instanceof CometDeleteColumnReader);
+-
+-    AbstractColumnReader[] abstractColumnReaders = new AbstractColumnReader[readers.size()];
+-    this.delegate = new BatchReader(abstractColumnReaders);
+-    delegate.setSparkSchema(SparkSchemaUtil.convert(schema));
+-  }
+-
+-  @Override
+-  public void setRowGroupInfo(
+-      PageReadStore pageStore, Map<ColumnPath, ColumnChunkMetaData> metaData) {
+-    for (int i = 0; i < readers.length; i++) {
+-      try {
+-        if (!(readers[i] instanceof CometConstantColumnReader)
+-            && !(readers[i] instanceof CometPositionColumnReader)
+-            && !(readers[i] instanceof CometDeleteColumnReader)) {
+-          readers[i].reset();
+-          readers[i].setPageReader(pageStore.getPageReader(readers[i].descriptor()));
+-        }
+-      } catch (IOException e) {
+-        throw new UncheckedIOException("Failed to setRowGroupInfo for Comet vectorization", e);
+-      }
+-    }
+-
+-    for (int i = 0; i < readers.length; i++) {
+-      delegate.getColumnReaders()[i] = this.readers[i].delegate();
+-    }
+-
+-    this.rowStartPosInBatch =
+-        pageStore
+-            .getRowIndexOffset()
+-            .orElseThrow(
+-                () ->
+-                    new IllegalArgumentException(
+-                        "PageReadStore does not contain row index offset"));
+-  }
+-
+-  public void setDeleteFilter(DeleteFilter<InternalRow> deleteFilter) {
+-    this.deletes = deleteFilter;
+-  }
+-
+-  @Override
+-  public final ColumnarBatch read(ColumnarBatch reuse, int numRowsToRead) {
+-    ColumnarBatch columnarBatch = new ColumnBatchLoader(numRowsToRead).loadDataToColumnBatch();
+-    rowStartPosInBatch += numRowsToRead;
+-    return columnarBatch;
+-  }
+-
+-  @Override
+-  public void setBatchSize(int batchSize) {
+-    for (CometColumnReader reader : readers) {
+-      if (reader != null) {
+-        reader.setBatchSize(batchSize);
+-      }
+-    }
+-  }
+-
+-  @Override
+-  public void close() {
+-    for (CometColumnReader reader : readers) {
+-      if (reader != null) {
+-        reader.close();
+-      }
+-    }
+-  }
+-
+-  private class ColumnBatchLoader {
+-    private final int batchSize;
+-
+-    ColumnBatchLoader(int numRowsToRead) {
+-      Preconditions.checkArgument(
+-          numRowsToRead > 0, "Invalid number of rows to read: %s", numRowsToRead);
+-      this.batchSize = numRowsToRead;
+-    }
+-
+-    ColumnarBatch loadDataToColumnBatch() {
+-      ColumnVector[] vectors = readDataToColumnVectors();
+-      int numLiveRows = batchSize;
+-
+-      if (hasIsDeletedColumn) {
+-        boolean[] isDeleted = buildIsDeleted(vectors);
+-        readDeletedColumn(vectors, isDeleted);
+-      } else {
+-        Pair<int[], Integer> pair = buildRowIdMapping(vectors);
+-        if (pair != null) {
+-          int[] rowIdMapping = pair.first();
+-          numLiveRows = pair.second();
+-          for (int i = 0; i < vectors.length; i++) {
+-            vectors[i] = new ColumnVectorWithFilter(vectors[i], rowIdMapping);
+-          }
+-        }
+-      }
+-
+-      if (deletes != null && deletes.hasEqDeletes()) {
+-        vectors = ColumnarBatchUtil.removeExtraColumns(deletes, vectors);
+-      }
+-
+-      ColumnarBatch batch = new ColumnarBatch(vectors);
+-      batch.setNumRows(numLiveRows);
+-      return batch;
+-    }
+-
+-    private boolean[] buildIsDeleted(ColumnVector[] vectors) {
+-      return ColumnarBatchUtil.buildIsDeleted(vectors, deletes, rowStartPosInBatch, batchSize);
+-    }
+-
+-    private Pair<int[], Integer> buildRowIdMapping(ColumnVector[] vectors) {
+-      return ColumnarBatchUtil.buildRowIdMapping(vectors, deletes, rowStartPosInBatch, batchSize);
+-    }
+-
+-    ColumnVector[] readDataToColumnVectors() {
+-      ColumnVector[] columnVectors = new ColumnVector[readers.length];
+-      // Fetch rows for all readers in the delegate
+-      delegate.nextBatch(batchSize);
+-      for (int i = 0; i < readers.length; i++) {
+-        columnVectors[i] = readers[i].delegate().currentBatch();
+-      }
+-
+-      return columnVectors;
+-    }
+-
+-    void readDeletedColumn(ColumnVector[] columnVectors, boolean[] isDeleted) {
+-      for (int i = 0; i < readers.length; i++) {
+-        if (readers[i] instanceof CometDeleteColumnReader) {
+-          CometDeleteColumnReader deleteColumnReader = new CometDeleteColumnReader<>(isDeleted);
+-          deleteColumnReader.setBatchSize(batchSize);
+-          deleteColumnReader.delegate().readBatch(batchSize);
+-          columnVectors[i] = deleteColumnReader.delegate().currentBatch();
+-        }
+-      }
+-    }
+-  }
+-}
+diff --git a/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometConstantColumnReader.java b/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometConstantColumnReader.java
+deleted file mode 100644
+index c665002e8f..0000000000
+--- a/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometConstantColumnReader.java
++++ /dev/null
+@@ -1,65 +0,0 @@
+-/*
+- * Licensed to the Apache Software Foundation (ASF) under one
+- * or more contributor license agreements.  See the NOTICE file
+- * distributed with this work for additional information
+- * regarding copyright ownership.  The ASF licenses this file
+- * to you under the Apache License, Version 2.0 (the
+- * "License"); you may not use this file except in compliance
+- * with the License.  You may obtain a copy of the License at
+- *
+- *   http://www.apache.org/licenses/LICENSE-2.0
+- *
+- * Unless required by applicable law or agreed to in writing,
+- * software distributed under the License is distributed on an
+- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+- * KIND, either express or implied.  See the License for the
+- * specific language governing permissions and limitations
+- * under the License.
+- */
+-package org.apache.iceberg.spark.data.vectorized;
+-
+-import java.math.BigDecimal;
+-import java.nio.ByteBuffer;
+-import org.apache.comet.parquet.ConstantColumnReader;
+-import org.apache.iceberg.types.Types;
+-import org.apache.spark.sql.types.DataType;
+-import org.apache.spark.sql.types.DataTypes;
+-import org.apache.spark.sql.types.Decimal;
+-import org.apache.spark.sql.types.DecimalType;
+-import org.apache.spark.unsafe.types.UTF8String;
+-
+-class CometConstantColumnReader<T> extends CometColumnReader {
+-
+-  CometConstantColumnReader(T value, Types.NestedField field) {
+-    super(field);
+-    // use delegate to set constant value on the native side to be consumed by native execution.
+-    setDelegate(
+-        new ConstantColumnReader(sparkType(), descriptor(), convertToSparkValue(value), false));
+-  }
+-
+-  @Override
+-  public void setBatchSize(int batchSize) {
+-    super.setBatchSize(batchSize);
+-    delegate().setBatchSize(batchSize);
+-    setInitialized(true);
+-  }
+-
+-  private Object convertToSparkValue(T value) {
+-    DataType dataType = sparkType();
+-    // Match the value to Spark internal type if necessary
+-    if (dataType == DataTypes.StringType && value instanceof String) {
+-      // the internal type for StringType is UTF8String
+-      return UTF8String.fromString((String) value);
+-    } else if (dataType instanceof DecimalType && value instanceof BigDecimal) {
+-      // the internal type for DecimalType is Decimal
+-      return Decimal.apply((BigDecimal) value);
+-    } else if (dataType == DataTypes.BinaryType && value instanceof ByteBuffer) {
+-      // the internal type for DecimalType is byte[]
+-      // Iceberg default value should always use HeapBufferBuffer, so calling ByteBuffer.array()
+-      // should be safe.
+-      return ((java.nio.ByteBuffer) value).array();
+-    } else {
+-      return value;
+-    }
+-  }
+-}
+diff --git a/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometDeleteColumnReader.java b/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometDeleteColumnReader.java
+deleted file mode 100644
+index 4a28fc51da..0000000000
+--- a/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometDeleteColumnReader.java
++++ /dev/null
+@@ -1,75 +0,0 @@
+-/*
+- * Licensed to the Apache Software Foundation (ASF) under one
+- * or more contributor license agreements.  See the NOTICE file
+- * distributed with this work for additional information
+- * regarding copyright ownership.  The ASF licenses this file
+- * to you under the Apache License, Version 2.0 (the
+- * "License"); you may not use this file except in compliance
+- * with the License.  You may obtain a copy of the License at
+- *
+- *   http://www.apache.org/licenses/LICENSE-2.0
+- *
+- * Unless required by applicable law or agreed to in writing,
+- * software distributed under the License is distributed on an
+- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+- * KIND, either express or implied.  See the License for the
+- * specific language governing permissions and limitations
+- * under the License.
+- */
+-package org.apache.iceberg.spark.data.vectorized;
+-
+-import org.apache.comet.parquet.MetadataColumnReader;
+-import org.apache.comet.parquet.Native;
+-import org.apache.comet.parquet.TypeUtil;
+-import org.apache.iceberg.MetadataColumns;
+-import org.apache.iceberg.types.Types;
+-import org.apache.spark.sql.types.DataTypes;
+-import org.apache.spark.sql.types.Metadata;
+-import org.apache.spark.sql.types.StructField;
+-
+-class CometDeleteColumnReader<T> extends CometColumnReader {
+-  CometDeleteColumnReader(Types.NestedField field) {
+-    super(field);
+-    setDelegate(new DeleteColumnReader());
+-  }
+-
+-  CometDeleteColumnReader(boolean[] isDeleted) {
+-    super(MetadataColumns.IS_DELETED);
+-    setDelegate(new DeleteColumnReader(isDeleted));
+-  }
+-
+-  @Override
+-  public void setBatchSize(int batchSize) {
+-    super.setBatchSize(batchSize);
+-    delegate().setBatchSize(batchSize);
+-    setInitialized(true);
+-  }
+-
+-  private static class DeleteColumnReader extends MetadataColumnReader {
+-    private boolean[] isDeleted;
+-
+-    DeleteColumnReader() {
+-      super(
+-          DataTypes.BooleanType,
+-          TypeUtil.convertToParquet(
+-              new StructField("_deleted", DataTypes.BooleanType, false, Metadata.empty())),
+-          false /* useDecimal128 = false */,
+-          false /* isConstant */);
+-      this.isDeleted = new boolean[0];
+-    }
+-
+-    DeleteColumnReader(boolean[] isDeleted) {
+-      this();
+-      this.isDeleted = isDeleted;
+-    }
+-
+-    @Override
+-    public void readBatch(int total) {
+-      Native.resetBatch(nativeHandle);
+-      // set isDeleted on the native side to be consumed by native execution
+-      Native.setIsDeleted(nativeHandle, isDeleted);
+-
+-      super.readBatch(total);
+-    }
+-  }
+-}
+diff --git a/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometPositionColumnReader.java b/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometPositionColumnReader.java
+deleted file mode 100644
+index 1949a71798..0000000000
+--- a/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometPositionColumnReader.java
++++ /dev/null
+@@ -1,62 +0,0 @@
+-/*
+- * Licensed to the Apache Software Foundation (ASF) under one
+- * or more contributor license agreements.  See the NOTICE file
+- * distributed with this work for additional information
+- * regarding copyright ownership.  The ASF licenses this file
+- * to you under the Apache License, Version 2.0 (the
+- * "License"); you may not use this file except in compliance
+- * with the License.  You may obtain a copy of the License at
+- *
+- *   http://www.apache.org/licenses/LICENSE-2.0
+- *
+- * Unless required by applicable law or agreed to in writing,
+- * software distributed under the License is distributed on an
+- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+- * KIND, either express or implied.  See the License for the
+- * specific language governing permissions and limitations
+- * under the License.
+- */
+-package org.apache.iceberg.spark.data.vectorized;
+-
+-import org.apache.comet.parquet.MetadataColumnReader;
+-import org.apache.comet.parquet.Native;
+-import org.apache.iceberg.types.Types;
+-import org.apache.parquet.column.ColumnDescriptor;
+-import org.apache.spark.sql.types.DataTypes;
+-
+-class CometPositionColumnReader extends CometColumnReader {
+-  CometPositionColumnReader(Types.NestedField field) {
+-    super(field);
+-    setDelegate(new PositionColumnReader(descriptor()));
+-  }
+-
+-  @Override
+-  public void setBatchSize(int batchSize) {
+-    super.setBatchSize(batchSize);
+-    delegate().setBatchSize(batchSize);
+-    setInitialized(true);
+-  }
+-
+-  private static class PositionColumnReader extends MetadataColumnReader {
+-    /** The current position value of the column that are used to initialize this column reader. */
+-    private long position;
+-
+-    PositionColumnReader(ColumnDescriptor descriptor) {
+-      super(
+-          DataTypes.LongType,
+-          descriptor,
+-          false /* useDecimal128 = false */,
+-          false /* isConstant */);
+-    }
+-
+-    @Override
+-    public void readBatch(int total) {
+-      Native.resetBatch(nativeHandle);
+-      // set position on the native side to be consumed by native execution
+-      Native.setPosition(nativeHandle, position, total);
+-      position += total;
+-
+-      super.readBatch(total);
+-    }
+-  }
+-}
+diff --git a/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometVectorizedReaderBuilder.java b/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometVectorizedReaderBuilder.java
+deleted file mode 100644
+index d36f1a7274..0000000000
+--- a/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometVectorizedReaderBuilder.java
++++ /dev/null
+@@ -1,147 +0,0 @@
+-/*
+- * Licensed to the Apache Software Foundation (ASF) under one
+- * or more contributor license agreements.  See the NOTICE file
+- * distributed with this work for additional information
+- * regarding copyright ownership.  The ASF licenses this file
+- * to you under the Apache License, Version 2.0 (the
+- * "License"); you may not use this file except in compliance
+- * with the License.  You may obtain a copy of the License at
+- *
+- *   http://www.apache.org/licenses/LICENSE-2.0
+- *
+- * Unless required by applicable law or agreed to in writing,
+- * software distributed under the License is distributed on an
+- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+- * KIND, either express or implied.  See the License for the
+- * specific language governing permissions and limitations
+- * under the License.
+- */
+-package org.apache.iceberg.spark.data.vectorized;
+-
+-import java.util.List;
+-import java.util.Map;
+-import java.util.function.Function;
+-import java.util.stream.IntStream;
+-import org.apache.iceberg.MetadataColumns;
+-import org.apache.iceberg.Schema;
+-import org.apache.iceberg.data.DeleteFilter;
+-import org.apache.iceberg.parquet.TypeWithSchemaVisitor;
+-import org.apache.iceberg.parquet.VectorizedReader;
+-import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
+-import org.apache.iceberg.relocated.com.google.common.collect.Lists;
+-import org.apache.iceberg.relocated.com.google.common.collect.Maps;
+-import org.apache.iceberg.spark.SparkSchemaUtil;
+-import org.apache.iceberg.types.Types;
+-import org.apache.parquet.column.ColumnDescriptor;
+-import org.apache.parquet.schema.GroupType;
+-import org.apache.parquet.schema.MessageType;
+-import org.apache.parquet.schema.PrimitiveType;
+-import org.apache.parquet.schema.Type;
+-import org.apache.spark.sql.catalyst.InternalRow;
+-
+-class CometVectorizedReaderBuilder extends TypeWithSchemaVisitor<VectorizedReader<?>> {
+-
+-  private final MessageType parquetSchema;
+-  private final Schema icebergSchema;
+-  private final Map<Integer, ?> idToConstant;
+-  private final Function<List<VectorizedReader<?>>, VectorizedReader<?>> readerFactory;
+-  private final DeleteFilter<InternalRow> deleteFilter;
+-
+-  CometVectorizedReaderBuilder(
+-      Schema expectedSchema,
+-      MessageType parquetSchema,
+-      Map<Integer, ?> idToConstant,
+-      Function<List<VectorizedReader<?>>, VectorizedReader<?>> readerFactory,
+-      DeleteFilter<InternalRow> deleteFilter) {
+-    this.parquetSchema = parquetSchema;
+-    this.icebergSchema = expectedSchema;
+-    this.idToConstant = idToConstant;
+-    this.readerFactory = readerFactory;
+-    this.deleteFilter = deleteFilter;
+-  }
+-
+-  @Override
+-  public VectorizedReader<?> message(
+-      Types.StructType expected, MessageType message, List<VectorizedReader<?>> fieldReaders) {
+-    GroupType groupType = message.asGroupType();
+-    Map<Integer, VectorizedReader<?>> readersById = Maps.newHashMap();
+-    List<Type> fields = groupType.getFields();
+-
+-    IntStream.range(0, fields.size())
+-        .filter(pos -> fields.get(pos).getId() != null)
+-        .forEach(pos -> readersById.put(fields.get(pos).getId().intValue(), fieldReaders.get(pos)));
+-
+-    List<Types.NestedField> icebergFields =
+-        expected != null ? expected.fields() : ImmutableList.of();
+-
+-    List<VectorizedReader<?>> reorderedFields =
+-        Lists.newArrayListWithExpectedSize(icebergFields.size());
+-
+-    for (Types.NestedField field : icebergFields) {
+-      int id = field.fieldId();
+-      VectorizedReader<?> reader = readersById.get(id);
+-      if (idToConstant.containsKey(id)) {
+-        CometConstantColumnReader constantReader =
+-            new CometConstantColumnReader<>(idToConstant.get(id), field);
+-        reorderedFields.add(constantReader);
+-      } else if (id == MetadataColumns.ROW_POSITION.fieldId()) {
+-        reorderedFields.add(new CometPositionColumnReader(field));
+-      } else if (id == MetadataColumns.IS_DELETED.fieldId()) {
+-        CometColumnReader deleteReader = new CometDeleteColumnReader<>(field);
+-        reorderedFields.add(deleteReader);
+-      } else if (reader != null) {
+-        reorderedFields.add(reader);
+-      } else if (field.initialDefault() != null) {
+-        CometColumnReader constantReader =
+-            new CometConstantColumnReader<>(field.initialDefault(), field);
+-        reorderedFields.add(constantReader);
+-      } else if (field.isOptional()) {
+-        CometColumnReader constantReader = new CometConstantColumnReader<>(null, field);
+-        reorderedFields.add(constantReader);
+-      } else {
+-        throw new IllegalArgumentException(
+-            String.format("Missing required field: %s", field.name()));
+-      }
+-    }
+-    return vectorizedReader(reorderedFields);
+-  }
+-
+-  protected VectorizedReader<?> vectorizedReader(List<VectorizedReader<?>> reorderedFields) {
+-    VectorizedReader<?> reader = readerFactory.apply(reorderedFields);
+-    if (deleteFilter != null) {
+-      ((CometColumnarBatchReader) reader).setDeleteFilter(deleteFilter);
+-    }
+-    return reader;
+-  }
+-
+-  @Override
+-  public VectorizedReader<?> struct(
+-      Types.StructType expected, GroupType groupType, List<VectorizedReader<?>> fieldReaders) {
+-    if (expected != null) {
+-      throw new UnsupportedOperationException(
+-          "Vectorized reads are not supported yet for struct fields");
+-    }
+-    return null;
+-  }
+-
+-  @Override
+-  public VectorizedReader<?> primitive(
+-      org.apache.iceberg.types.Type.PrimitiveType expected, PrimitiveType primitive) {
+-
+-    if (primitive.getId() == null) {
+-      return null;
+-    }
+-    int parquetFieldId = primitive.getId().intValue();
+-    ColumnDescriptor desc = parquetSchema.getColumnDescription(currentPath());
+-    // Nested types not yet supported for vectorized reads
+-    if (desc.getMaxRepetitionLevel() > 0) {
+-      return null;
+-    }
+-    Types.NestedField icebergField = icebergSchema.findField(parquetFieldId);
+-    if (icebergField == null) {
+-      return null;
+-    }
+-
+-    return new CometColumnReader(SparkSchemaUtil.convert(icebergField.type()), desc);
+-  }
+-}
+diff --git a/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/VectorizedSparkParquetReaders.java b/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/VectorizedSparkParquetReaders.java
+index b523bc5bff..4aa274a0c7 100644
+--- a/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/VectorizedSparkParquetReaders.java
++++ b/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/VectorizedSparkParquetReaders.java
+@@ -70,22 +70,6 @@ public class VectorizedSparkParquetReaders {
+                 deleteFilter));
+   }
+ 
+-  public static CometColumnarBatchReader buildCometReader(
+-      Schema expectedSchema,
+-      MessageType fileSchema,
+-      Map<Integer, ?> idToConstant,
+-      DeleteFilter<InternalRow> deleteFilter) {
+-    return (CometColumnarBatchReader)
+-        TypeWithSchemaVisitor.visit(
+-            expectedSchema.asStruct(),
+-            fileSchema,
+-            new CometVectorizedReaderBuilder(
+-                expectedSchema,
+-                fileSchema,
+-                idToConstant,
+-                readers -> new CometColumnarBatchReader(readers, expectedSchema),
+-                deleteFilter));
+-  }
+ 
+   // enables unsafe memory access to avoid costly checks to see if index is within bounds
+   // as long as it is not configured explicitly (see BoundsChecking in Arrow)
+diff --git a/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/source/BaseBatchReader.java b/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/source/BaseBatchReader.java
+index 780e1750a5..25f253eede 100644
+--- a/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/source/BaseBatchReader.java
++++ b/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/source/BaseBatchReader.java
+@@ -34,7 +34,6 @@ import org.apache.iceberg.parquet.Parquet;
+ import org.apache.iceberg.relocated.com.google.common.collect.Sets;
+ import org.apache.iceberg.spark.OrcBatchReadConf;
+ import org.apache.iceberg.spark.ParquetBatchReadConf;
+-import org.apache.iceberg.spark.ParquetReaderType;
+ import org.apache.iceberg.spark.data.vectorized.VectorizedSparkOrcReaders;
+ import org.apache.iceberg.spark.data.vectorized.VectorizedSparkParquetReaders;
+ import org.apache.iceberg.types.TypeUtil;
+@@ -92,15 +91,9 @@ abstract class BaseBatchReader<T extends ScanTask> extends BaseReader<ColumnarBa
+         .project(requiredSchema)
+         .split(start, length)
+         .createBatchedReaderFunc(
+-            fileSchema -> {
+-              if (parquetConf.readerType() == ParquetReaderType.COMET) {
+-                return VectorizedSparkParquetReaders.buildCometReader(
+-                    requiredSchema, fileSchema, idToConstant, deleteFilter);
+-              } else {
+-                return VectorizedSparkParquetReaders.buildReader(
+-                    requiredSchema, fileSchema, idToConstant, deleteFilter);
+-              }
+-            })
++            fileSchema ->
++                VectorizedSparkParquetReaders.buildReader(
++                    requiredSchema, fileSchema, idToConstant, deleteFilter))
+         .recordsPerBatch(parquetConf.batchSize())
+         .filter(residual)
+         .caseSensitive(caseSensitive())
