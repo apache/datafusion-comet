@@ -18,8 +18,7 @@
 use crate::{
     errors::CometError,
     execution::{
-        operators::ExecutionError, planner::TEST_EXEC_CONTEXT_ID,
-        shuffle::ipc::read_ipc_compressed,
+        operators::ExecutionError, planner::TEST_EXEC_CONTEXT_ID, shuffle::ipc::read_ipc_compressed,
     },
     jvm_bridge::{jni_call, JVMClasses},
 };
