@@ -60,6 +60,7 @@ use datafusion::{
         empty::EmptyExec,
         joins::{utils::JoinFilter, HashJoinExec, PartitionMode, SortMergeJoinExec},
         limit::LocalLimitExec,
+        placeholder_row::PlaceholderRowExec,
         projection::ProjectionExec,
         sorts::sort::SortExec,
         ExecutionPlan,
@@ -1310,22 +1311,12 @@ impl PhysicalPlanner {
                 let tasks = parse_file_scan_tasks_from_common(common, &scan.file_scan_tasks)?;
                 let data_file_concurrency_limit = common.data_file_concurrency_limit as usize;
 
-                let iceberg_scan = IcebergScanExec::new(
-                    metadata_location,
-                    required_schema,
-                    catalog_properties,
-                    tasks,
-                    data_file_concurrency_limit,
-                )?;
-
+                // TEMPORARY: return garbage data to identify which Iceberg tests use Comet
+                let garbage_exec = Arc::new(PlaceholderRowExec::new(required_schema));
                 Ok((
                     vec![],
                     vec![],
-                    Arc::new(SparkPlan::new(
-                        spark_plan.plan_id,
-                        Arc::new(iceberg_scan),
-                        vec![],
-                    )),
+                    Arc::new(SparkPlan::new(spark_plan.plan_id, garbage_exec, vec![])),
                 ))
             }
             OpStruct::ShuffleWriter(writer) => {
