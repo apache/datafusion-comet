@@ -48,30 +48,126 @@ SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY v) FROM test_percentile
 query
 SELECT percentile_cont(0.25) WITHIN GROUP (ORDER BY v), percentile_cont(0.75) WITHIN GROUP (ORDER BY v) FROM test_percentile
 
--- Tests for interval types
-statement
-CREATE TABLE test_interval (
-  id INT,
-  ym INTERVAL YEAR TO MONTH,
-  dt INTERVAL DAY TO SECOND
-) USING parquet
+-- ============================================================
+-- Tests for negative values (sort order correctness is critical)
+-- ============================================================
 
 statement
-INSERT INTO test_interval VALUES
-  (1, INTERVAL '1' YEAR, INTERVAL '1' DAY),
-  (2, INTERVAL '2' YEAR, INTERVAL '2' DAY),
-  (3, INTERVAL '3' YEAR, INTERVAL '3' DAY),
-  (4, INTERVAL '4' YEAR, INTERVAL '4' DAY),
-  (5, INTERVAL '5' YEAR, INTERVAL '5' DAY)
+CREATE TABLE test_negative(k int, v int) USING parquet
 
--- percentile_cont with YearMonthIntervalType
-query
-SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY ym) FROM test_interval
+statement
+INSERT INTO test_negative VALUES (0, -50), (0, -20), (0, 0), (0, 10), (0, 30), (1, -100), (1, -50), (1, 50), (1, 100)
 
--- percentile_cont with DayTimeIntervalType
+-- Negative values with ASC ordering
 query
-SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY dt) FROM test_interval
+SELECT percentile_cont(0.25) WITHIN GROUP (ORDER BY v) FROM test_negative
 
--- percentile_cont with interval types and GROUP BY
+-- Negative values with DESC ordering
 query
-SELECT id % 2 AS grp, percentile_cont(0.5) WITHIN GROUP (ORDER BY ym) FROM test_interval GROUP BY id % 2 ORDER BY grp
+SELECT percentile_cont(0.25) WITHIN GROUP (ORDER BY v DESC) FROM test_negative
+
+-- Negative values with GROUP BY
+query
+SELECT k, percentile_cont(0.5) WITHIN GROUP (ORDER BY v) FROM test_negative GROUP BY k ORDER BY k
+
+-- Negative values median
+query
+SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY v) FROM test_negative
+
+-- ============================================================
+-- Tests for boundary percentiles (0.0 and 1.0)
+-- ============================================================
+
+-- 0th percentile (minimum value)
+query
+SELECT percentile_cont(0.0) WITHIN GROUP (ORDER BY v) FROM test_percentile
+
+-- 100th percentile (maximum value)
+query
+SELECT percentile_cont(1.0) WITHIN GROUP (ORDER BY v) FROM test_percentile
+
+-- Boundary percentiles with negative values
+query
+SELECT percentile_cont(0.0) WITHIN GROUP (ORDER BY v), percentile_cont(1.0) WITHIN GROUP (ORDER BY v) FROM test_negative
+
+-- Boundary percentiles with GROUP BY
+query
+SELECT k, percentile_cont(0.0) WITHIN GROUP (ORDER BY v), percentile_cont(1.0) WITHIN GROUP (ORDER BY v) FROM test_negative GROUP BY k ORDER BY k
+
+-- ============================================================
+-- Tests for all-null groups and single-value groups
+-- ============================================================
+
+statement
+CREATE TABLE test_edge_cases(k int, v int) USING parquet
+
+statement
+INSERT INTO test_edge_cases VALUES (0, NULL), (0, NULL), (1, 42), (2, 10), (2, 10), (2, 10)
+
+-- All-null group should return NULL
+query
+SELECT k, percentile_cont(0.5) WITHIN GROUP (ORDER BY v) FROM test_edge_cases GROUP BY k ORDER BY k
+
+-- Single value group
+query
+SELECT k, percentile_cont(0.25) WITHIN GROUP (ORDER BY v) FROM test_edge_cases WHERE k = 1 GROUP BY k
+
+-- All same values in group
+query
+SELECT k, percentile_cont(0.5) WITHIN GROUP (ORDER BY v) FROM test_edge_cases WHERE k = 2 GROUP BY k
+
+-- Empty result (no rows match)
+query
+SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY v) FROM test_edge_cases WHERE k = 999
+
+-- ============================================================
+-- Tests for DOUBLE column type
+-- ============================================================
+
+statement
+CREATE TABLE test_double(k int, v double) USING parquet
+
+statement
+INSERT INTO test_double VALUES (0, -1.5), (0, 0.0), (0, 1.5), (0, 3.0), (1, -100.25), (1, 0.5), (1, 100.75), (2, NULL)
+
+-- Double values basic
+query
+SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY v) FROM test_double
+
+-- Double values with GROUP BY
+query
+SELECT k, percentile_cont(0.25) WITHIN GROUP (ORDER BY v) FROM test_double GROUP BY k ORDER BY k
+
+-- Double boundary percentiles
+query
+SELECT percentile_cont(0.0) WITHIN GROUP (ORDER BY v), percentile_cont(1.0) WITHIN GROUP (ORDER BY v) FROM test_double WHERE k = 0
+
+-- Double with DESC ordering
+query
+SELECT percentile_cont(0.25) WITHIN GROUP (ORDER BY v DESC) FROM test_double WHERE k = 1
+
+-- ============================================================
+-- Tests for FLOAT column type
+-- ============================================================
+
+statement
+CREATE TABLE test_float(k int, v float) USING parquet
+
+statement
+INSERT INTO test_float VALUES (0, -2.5), (0, -0.5), (0, 0.5), (0, 2.5), (1, -50.0), (1, 0.0), (1, 50.0)
+
+-- Float values basic
+query
+SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY v) FROM test_float
+
+-- Float values with GROUP BY
+query
+SELECT k, percentile_cont(0.5) WITHIN GROUP (ORDER BY v) FROM test_float GROUP BY k ORDER BY k
+
+-- Float boundary percentiles
+query
+SELECT percentile_cont(0.0) WITHIN GROUP (ORDER BY v), percentile_cont(1.0) WITHIN GROUP (ORDER BY v) FROM test_float
+
+-- Float with negative values and DESC
+query
+SELECT percentile_cont(0.75) WITHIN GROUP (ORDER BY v DESC) FROM test_float WHERE k = 0

@@ -20,8 +20,8 @@
 //! This implementation matches Spark's `Percentile` class intermediate state format,
 //! which uses a serialized map of (value -> frequency) stored as BinaryType.
 
-use arrow::array::{Array, ArrayRef, BinaryArray, Float64Array, IntervalDayTimeArray, IntervalYearMonthArray};
-use arrow::datatypes::{DataType, Field, FieldRef, IntervalDayTimeType, IntervalUnit};
+use arrow::array::{Array, ArrayRef, BinaryArray, Float64Array};
+use arrow::datatypes::{DataType, Field, FieldRef};
 use datafusion::common::{Result, ScalarValue};
 use datafusion::logical_expr::{Accumulator, AggregateUDFImpl, Signature};
 use datafusion::physical_expr::expressions::format_state_name;
@@ -108,12 +108,7 @@ impl AggregateUDFImpl for Percentile {
     }
 
     fn default_value(&self, _data_type: &DataType) -> Result<ScalarValue> {
-        match &self.return_type {
-            DataType::Float64 => Ok(ScalarValue::Float64(None)),
-            DataType::Interval(IntervalUnit::YearMonth) => Ok(ScalarValue::IntervalYearMonth(None)),
-            DataType::Interval(IntervalUnit::DayTime) => Ok(ScalarValue::IntervalDayTime(None)),
-            _ => Ok(ScalarValue::Float64(None)),
-        }
+        Ok(ScalarValue::Float64(None))
     }
 }
 
@@ -195,12 +190,27 @@ impl PercentileAccumulator {
             return None;
         }
 
-        // Get sorted (value, accumulated_count) pairs
-        let sorted_counts: Vec<(i64, i64)> = if self.reverse {
-            self.counts.iter().rev().map(|(&k, &v)| (k, v)).collect()
-        } else {
-            self.counts.iter().map(|(&k, &v)| (k, v)).collect()
-        };
+        // Collect entries and sort by actual f64 value (not bit pattern).
+        // We can't rely on BTreeMap's i64 ordering because f64 bit patterns
+        // don't preserve numeric ordering for negative values.
+        let mut entries: Vec<(f64, i64)> = self
+            .counts
+            .iter()
+            .map(|(&bits, &count)| (f64::from_bits(bits as u64), count))
+            .collect();
+
+        // Sort by f64 value
+        entries.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+
+        if self.reverse {
+            entries.reverse();
+        }
+
+        // Convert back to (bits, count) for the rest of the computation
+        let sorted_counts: Vec<(i64, i64)> = entries
+            .into_iter()
+            .map(|(f, count)| (f.to_bits() as i64, count))
+            .collect();
 
         // Compute accumulated counts
         let mut accumulated: Vec<(i64, i64)> = Vec::with_capacity(sorted_counts.len());
@@ -250,31 +260,6 @@ impl PercentileAccumulator {
                 let result = (1.0 - fraction) * lower_f + fraction * higher_f;
                 Some(result.to_bits() as i64)
             }
-            DataType::Interval(IntervalUnit::YearMonth) => {
-                // Values are i32 months stored as i64
-                let lower_months = lower_key as i32;
-                let higher_months = higher_key as i32;
-                let result = (1.0 - fraction) * (lower_months as f64) + fraction * (higher_months as f64);
-                Some(result.round() as i64)
-            }
-            DataType::Interval(IntervalUnit::DayTime) => {
-                // Values are packed as (days << 32) | milliseconds
-                let lower_days = (lower_key >> 32) as i32;
-                let lower_ms = lower_key as i32;
-                let higher_days = (higher_key >> 32) as i32;
-                let higher_ms = higher_key as i32;
-
-                // Convert to total milliseconds for interpolation
-                let lower_total_ms = (lower_days as i64) * 86_400_000 + (lower_ms as i64);
-                let higher_total_ms = (higher_days as i64) * 86_400_000 + (higher_ms as i64);
-                let result_ms = ((1.0 - fraction) * (lower_total_ms as f64) + fraction * (higher_total_ms as f64)).round() as i64;
-
-                // Convert back to days and milliseconds
-                let result_days = (result_ms / 86_400_000) as i32;
-                let result_remaining_ms = (result_ms % 86_400_000) as i32;
-
-                Some(((result_days as i64) << 32) | (result_remaining_ms as i64 & 0xFFFFFFFF))
-            }
             _ => Some(lower_key),
         }
     }
@@ -291,52 +276,14 @@ impl PercentileAccumulator {
 impl Accumulator for PercentileAccumulator {
     fn update_batch(&mut self, values: &[ArrayRef]) -> Result<()> {
         let array = &values[0];
+        let values = array.as_any().downcast_ref::<Float64Array>().unwrap();
 
-        match array.data_type() {
-            DataType::Float64 => {
-                let values = array.as_any().downcast_ref::<Float64Array>().unwrap();
-                for i in 0..values.len() {
-                    if values.is_null(i) {
-                        continue;
-                    }
-                    let key = values.value(i).to_bits() as i64;
-                    *self.counts.entry(key).or_insert(0) += 1;
-                }
+        for i in 0..values.len() {
+            if values.is_null(i) {
+                continue;
             }
-            DataType::Interval(IntervalUnit::YearMonth) => {
-                let values = array.as_any().downcast_ref::<IntervalYearMonthArray>().unwrap();
-                for i in 0..values.len() {
-                    if values.is_null(i) {
-                        continue;
-                    }
-                    let key = values.value(i) as i64;
-                    *self.counts.entry(key).or_insert(0) += 1;
-                }
-            }
-            DataType::Interval(IntervalUnit::DayTime) => {
-                let values = array.as_any().downcast_ref::<IntervalDayTimeArray>().unwrap();
-                for i in 0..values.len() {
-                    if values.is_null(i) {
-                        continue;
-                    }
-                    // Convert IntervalDayTime struct to packed i64: (days << 32) | milliseconds
-                    let (days, ms) = IntervalDayTimeType::to_parts(values.value(i));
-                    let key = ((days as i64) << 32) | (ms as i64 & 0xFFFFFFFF);
-                    *self.counts.entry(key).or_insert(0) += 1;
-                }
-            }
-            _ => {
-                // Fallback: try to treat as Float64
-                if let Some(values) = array.as_any().downcast_ref::<Float64Array>() {
-                    for i in 0..values.len() {
-                        if values.is_null(i) {
-                            continue;
-                        }
-                        let key = values.value(i).to_bits() as i64;
-                        *self.counts.entry(key).or_insert(0) += 1;
-                    }
-                }
-            }
+            let key = values.value(i).to_bits() as i64;
+            *self.counts.entry(key).or_insert(0) += 1;
         }
 
         Ok(())
@@ -367,25 +314,8 @@ impl Accumulator for PercentileAccumulator {
 
     fn evaluate(&mut self) -> Result<ScalarValue> {
         match self.compute_percentile_i64() {
-            Some(value) => match &self.return_type {
-                DataType::Float64 => Ok(ScalarValue::Float64(Some(f64::from_bits(value as u64)))),
-                DataType::Interval(IntervalUnit::YearMonth) => {
-                    Ok(ScalarValue::IntervalYearMonth(Some(value as i32)))
-                }
-                DataType::Interval(IntervalUnit::DayTime) => {
-                    // Unpack i64 to (days, milliseconds) and create IntervalDayTime struct
-                    let days = (value >> 32) as i32;
-                    let ms = value as i32;
-                    Ok(ScalarValue::IntervalDayTime(Some(IntervalDayTimeType::make_value(days, ms))))
-                }
-                _ => Ok(ScalarValue::Float64(Some(f64::from_bits(value as u64)))),
-            },
-            None => match &self.return_type {
-                DataType::Float64 => Ok(ScalarValue::Float64(None)),
-                DataType::Interval(IntervalUnit::YearMonth) => Ok(ScalarValue::IntervalYearMonth(None)),
-                DataType::Interval(IntervalUnit::DayTime) => Ok(ScalarValue::IntervalDayTime(None)),
-                _ => Ok(ScalarValue::Float64(None)),
-            },
+            Some(value) => Ok(ScalarValue::Float64(Some(f64::from_bits(value as u64)))),
+            None => Ok(ScalarValue::Float64(None)),
         }
     }
 
@@ -452,30 +382,54 @@ mod tests {
     }
 
     #[test]
-    fn test_percentile_year_month_interval() {
-        let mut acc = PercentileAccumulator::new(0.5, false, DataType::Interval(IntervalUnit::YearMonth));
-        let values: ArrayRef = Arc::new(IntervalYearMonthArray::from(vec![0, 10, 20, 30, 40]));
+    fn test_percentile_negative_values() {
+        // Test that negative values are sorted correctly
+        // Values: -100, -50, 50, 100
+        // Sorted: -100, -50, 50, 100
+        // Median (50th percentile) with 4 values:
+        // position = (4-1) * 0.5 = 1.5
+        // lower_idx = 1 (-50), upper_idx = 2 (50)
+        // result = 0.5 * (-50) + 0.5 * 50 = 0
+        let mut acc = PercentileAccumulator::new(0.5, false, DataType::Float64);
+        let values: ArrayRef =
+            Arc::new(Float64Array::from(vec![-100.0, -50.0, 50.0, 100.0]));
         acc.update_batch(&[values]).unwrap();
 
         let result = acc.evaluate().unwrap();
-        assert_eq!(result, ScalarValue::IntervalYearMonth(Some(20)));
+        assert_eq!(result, ScalarValue::Float64(Some(0.0)));
     }
 
     #[test]
-    fn test_percentile_day_time_interval() {
-        let mut acc = PercentileAccumulator::new(0.5, false, DataType::Interval(IntervalUnit::DayTime));
-        // Create intervals: 1 day, 2 days, 3 days, 4 days, 5 days (no milliseconds)
-        let values: ArrayRef = Arc::new(IntervalDayTimeArray::from(vec![
-            IntervalDayTimeType::make_value(1, 0),
-            IntervalDayTimeType::make_value(2, 0),
-            IntervalDayTimeType::make_value(3, 0),
-            IntervalDayTimeType::make_value(4, 0),
-            IntervalDayTimeType::make_value(5, 0),
-        ]));
+    fn test_percentile_all_negative() {
+        // Test all negative values
+        // Values: -50, -20, 0, 10, 30
+        // Sorted: -50, -20, 0, 10, 30
+        // Median (50th percentile) with 5 values:
+        // position = (5-1) * 0.5 = 2
+        // result = value at index 2 = 0
+        let mut acc = PercentileAccumulator::new(0.5, false, DataType::Float64);
+        let values: ArrayRef =
+            Arc::new(Float64Array::from(vec![-50.0, -20.0, 0.0, 10.0, 30.0]));
         acc.update_batch(&[values]).unwrap();
 
         let result = acc.evaluate().unwrap();
-        // Median should be 3 days
-        assert_eq!(result, ScalarValue::IntervalDayTime(Some(IntervalDayTimeType::make_value(3, 0))));
+        assert_eq!(result, ScalarValue::Float64(Some(0.0)));
+    }
+
+    #[test]
+    fn test_percentile_negative_25th() {
+        // Test 25th percentile with negative values
+        // Values: -100, -50, 50, 100
+        // position = (4-1) * 0.25 = 0.75
+        // lower_idx = 0 (-100), upper_idx = 1 (-50)
+        // result = 0.25 * (-100) + 0.75 * (-50) = -25 + -37.5 = -62.5
+        // Actually: (1-0.75)*(-100) + 0.75*(-50) = 0.25*(-100) + 0.75*(-50) = -25 - 37.5 = -62.5
+        let mut acc = PercentileAccumulator::new(0.25, false, DataType::Float64);
+        let values: ArrayRef =
+            Arc::new(Float64Array::from(vec![-100.0, -50.0, 50.0, 100.0]));
+        acc.update_batch(&[values]).unwrap();
+
+        let result = acc.evaluate().unwrap();
+        assert_eq!(result, ScalarValue::Float64(Some(-62.5)));
     }
 }

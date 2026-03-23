@@ -2271,12 +2271,9 @@ impl PhysicalPlanner {
                 let return_type = to_arrow_datatype(expr.datatype.as_ref().unwrap());
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
 
-                // Cast input to appropriate type based on return type
-                // For interval types, we preserve the type; for numeric types, cast to Float64
-                let child = match &return_type {
-                    DataType::Interval(_) => child,
-                    _ => Arc::new(CastExpr::new(child, DataType::Float64, None)) as Arc<dyn PhysicalExpr>,
-                };
+                // Cast input to Float64 for numeric types
+                let child =
+                    Arc::new(CastExpr::new(child, DataType::Float64, None)) as Arc<dyn PhysicalExpr>;
 
                 // Extract the literal percentile value
                 let percentile_expr =

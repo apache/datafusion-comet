@@ -25,7 +25,7 @@ import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.catalyst.expressions.Literal
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, Corr, Count, Covariance, CovPopulation, CovSample, First, Last, Max, Min, Percentile, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, ByteType, DataTypes, DayTimeIntervalType, DecimalType, IntegerType, LongType, NumericType, ShortType, StringType, YearMonthIntervalType}
+import org.apache.spark.sql.types.{ArrayType, ByteType, DataTypes, DecimalType, IntegerType, LongType, NumericType, ShortType, StringType}
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
@@ -694,11 +694,9 @@ object CometPercentile extends CometAggregateExpressionSerde[Percentile] {
       return None
     }
 
-    // Support numeric types and interval types
+    // Support numeric types (includes DecimalType)
     expr.child.dataType match {
       case _: NumericType =>
-      case _: YearMonthIntervalType =>
-      case _: DayTimeIntervalType =>
       case _ =>
         withInfo(aggExpr, s"unsupported input type: ${expr.child.dataType}")
         return None
