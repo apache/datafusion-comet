@@ -18,4 +18,4 @@
 pub mod list;
 mod map;
 pub mod row;
-mod unsafe_object;
+pub mod unsafe_object;
