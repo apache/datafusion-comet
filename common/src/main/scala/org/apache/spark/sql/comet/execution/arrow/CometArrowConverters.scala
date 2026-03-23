@@ -33,11 +33,14 @@ import org.apache.comet.CometArrowAllocator
 import org.apache.comet.vector.NativeUtil
 
 object CometArrowConverters extends Logging {
-  // This is similar how Spark converts internal row to Arrow format except that it is transforming
-  // the result batch to Comet's ColumnarBatch instead of serialized bytes.
-  // Each batch is written to a fresh VectorSchemaRoot so that native code can safely
-  // Arc::clone the buffers rather than performing a deep copy. The allocator manages
-  // the buffer lifetime and is closed when the task completes.
+  // Converts JVM row/columnar data to Arrow-backed ColumnarBatches for native consumption.
+  //
+  // Memory ownership: each batch's Arrow buffers are transferred to native code via the Arrow
+  // C Data Interface. CometBatchIterator calls Data.exportVector(), which retains a reference to
+  // every ArrowBuf via ArrayExporter. CometBatchIterator then closes the JVM-side vectors,
+  // releasing the JVM reference. Native code frees the buffers by calling the Arrow release
+  // callback when it is done. The child allocator is closed by the task completion listener
+  // after CometExecIterator.close() has already released all vector references.
 
   abstract private[sql] class ArrowBatchIterBase(
       schema: StructType,
@@ -47,19 +50,8 @@ object CometArrowConverters extends Logging {
       with AutoCloseable {
 
     protected val arrowSchema: Schema = Utils.toArrowSchema(schema, timeZoneId)
-    // Reuse the same root allocator here.
     protected val allocator: BufferAllocator =
       CometArrowAllocator.newChildAllocator(s"to${this.getClass.getSimpleName}", 0, Long.MaxValue)
-
-    // The previous root is closed when the next batch is requested, so only one
-    // root is alive at a time. The last root is closed when the task completes.
-    private var prevRoot: VectorSchemaRoot = _
-
-    protected def closeAndTrack(root: VectorSchemaRoot): VectorSchemaRoot = {
-      if (prevRoot != null) prevRoot.close()
-      prevRoot = root
-      root
-    }
 
     Option(context).foreach {
       _.addTaskCompletionListener[Unit] { _ =>
@@ -72,12 +64,7 @@ object CometArrowConverters extends Logging {
     }
 
     protected def close(closeAllocator: Boolean): Unit = {
-      // the allocator shall be closed when the task is finished
       if (closeAllocator) {
-        if (prevRoot != null) {
-          prevRoot.close()
-          prevRoot = null
-        }
         allocator.close()
       }
     }
@@ -106,7 +93,7 @@ object CometArrowConverters extends Logging {
 
     override protected def nextBatch(): ColumnarBatch = {
       if (rowIter.hasNext) {
-        val root = closeAndTrack(VectorSchemaRoot.create(arrowSchema, allocator))
+        val root = VectorSchemaRoot.create(arrowSchema, allocator)
         val arrowWriter = ArrowWriter.create(root)
         var rowCount = 0L
         while (rowIter.hasNext && (maxRecordsPerBatch <= 0 || rowCount < maxRecordsPerBatch)) {
@@ -150,7 +137,7 @@ object CometArrowConverters extends Logging {
     override protected def nextBatch(): ColumnarBatch = {
       val rowsInBatch = colBatch.numRows()
       if (rowsProduced < rowsInBatch) {
-        val root = closeAndTrack(VectorSchemaRoot.create(arrowSchema, allocator))
+        val root = VectorSchemaRoot.create(arrowSchema, allocator)
         val arrowWriter = ArrowWriter.create(root)
         val rowsToProduce =
           if (maxRecordsPerBatch <= 0) rowsInBatch - rowsProduced

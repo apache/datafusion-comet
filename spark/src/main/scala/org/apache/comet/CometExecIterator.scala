@@ -234,6 +234,12 @@ class CometExecIterator(
         currentBatch.close()
         currentBatch = null
       }
+      // Close input batch iterators to release any buffered batch memory before the allocator
+      // is closed by the task completion listener in ArrowBatchIterBase.
+      inputIterators.foreach {
+        case iter: CometBatchIterator => iter.close()
+        case _ => // shuffle iterators manage their own lifecycle
+      }
       nativeUtil.close()
       shuffleBlockIterators.values.foreach(_.close())
       nativeLib.releasePlan(plan)

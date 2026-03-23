@@ -24,20 +24,26 @@ import scala.collection.Iterator;
 import org.apache.spark.sql.vectorized.ColumnarBatch;
 
 import org.apache.comet.vector.CometSelectionVector;
+import org.apache.comet.vector.CometVector;
 import org.apache.comet.vector.NativeUtil;
 
 /**
  * Iterator for fetching batches from JVM to native code. Usually called via JNI from native
  * ScanExec.
  *
- * <p>Batches are owned by the JVM. Native code can safely access the batch after calling `next` but
- * the native code must not retain references to the batch because the next call to `hasNext` will
- * signal to the JVM that the batch can be closed.
+ * <p>Ownership of Arrow buffer memory is transferred to native code via the Arrow C Data Interface
+ * release callback mechanism. When {@link #next} is called, each vector is exported via {@code
+ * Data.exportVector()}, which calls {@code ArrowBuf.getReferenceManager().retain()} on every
+ * underlying buffer. The JVM-side vector is then closed immediately, releasing the JVM reference.
+ * The buffers remain alive until native code calls the Arrow release callback, at which point the
+ * retained reference is released and the memory is freed.
+ *
+ * <p>If the task is cancelled before a batch is exported, {@link #close} releases the JVM
+ * references directly so the allocator can be closed cleanly.
  */
-public class CometBatchIterator {
+public class CometBatchIterator implements AutoCloseable {
   private final Iterator<ColumnarBatch> input;
   private final NativeUtil nativeUtil;
-  private ColumnarBatch previousBatch = null;
   private ColumnarBatch currentBatch = null;
 
   CometBatchIterator(Iterator<ColumnarBatch> input, NativeUtil nativeUtil) {
@@ -46,16 +52,11 @@ public class CometBatchIterator {
   }
 
   /**
-   * Fetch the next input batch and allow the previous batch to be closed (this may not happen
-   * immediately).
+   * Fetch the next input batch.
    *
    * @return Number of rows in next batch or -1 if no batches left.
    */
   public int hasNext() {
-
-    // release reference to previous batch
-    previousBatch = null;
-
     if (currentBatch == null) {
       if (input.hasNext()) {
         currentBatch = input.next();
@@ -69,7 +70,9 @@ public class CometBatchIterator {
   }
 
   /**
-   * Get the next batch of Arrow arrays.
+   * Export the current batch to native code via the Arrow C Data Interface and release JVM
+   * references. After this call the buffer memory is owned by native code and will be freed through
+   * the Arrow release callback.
    *
    * @param arrayAddrs The addresses of the ArrowArray structures.
    * @param schemaAddrs The addresses of the ArrowSchema structures.
@@ -80,13 +83,14 @@ public class CometBatchIterator {
       return -1;
     }
 
-    // export the batch using the Arrow C Data Interface
+    // Export the batch via the Arrow C Data Interface. ArrayExporter.export() calls
+    // arrowBuf.getReferenceManager().retain() for every buffer, so the ExportedArrayPrivateData
+    // keeps the buffers alive until native calls the release callback.
     int numRows = nativeUtil.exportBatch(arrayAddrs, schemaAddrs, currentBatch);
 
-    // keep a reference to the exported batch so that it doesn't get garbage collected
-    // while the native code is still processing it
-    previousBatch = currentBatch;
-
+    // Release JVM-side vector references. The buffers remain alive via the retained references
+    // held by the Arrow exporter and will be freed when native calls the release callback.
+    closeBatchVectors(currentBatch);
     currentBatch = null;
 
     return numRows;
@@ -135,5 +139,25 @@ public class CometBatchIterator {
       }
     }
     return exportCount;
+  }
+
+  /**
+   * Release JVM references for any batch that was fetched but not yet exported (e.g., task
+   * cancellation). This allows the Arrow allocator to be closed cleanly.
+   */
+  @Override
+  public void close() {
+    closeBatchVectors(currentBatch);
+    currentBatch = null;
+  }
+
+  private void closeBatchVectors(ColumnarBatch batch) {
+    if (batch != null) {
+      for (int i = 0; i < batch.numCols(); i++) {
+        if (batch.column(i) instanceof CometVector) {
+          ((CometVector) batch.column(i)).close();
+        }
+      }
+    }
   }
 }
