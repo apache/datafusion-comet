@@ -31,25 +31,35 @@ use num::{CheckedSub, Integer};
 use regex::Regex;
 use std::num::Wrapping;
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 macro_rules! cast_utf8_to_timestamp {
     ($array:expr, $eval_mode:expr, $array_type:ty, $cast_method:ident, $tz:expr) => {{
         let len = $array.len();
         let mut cast_array = PrimitiveArray::<$array_type>::builder(len).with_timezone("UTC");
+        let mut cast_err: Option<SparkError> = None;
         for i in 0..len {
             if $array.is_null(i) {
                 cast_array.append_null()
-            } else if let Ok(Some(cast_value)) =
-                $cast_method($array.value(i).trim(), $eval_mode, $tz)
-            {
-                cast_array.append_value(cast_value);
             } else {
-                cast_array.append_null()
+                match $cast_method($array.value(i).trim(), $eval_mode, $tz) {
+                    Ok(Some(cast_value)) => cast_array.append_value(cast_value),
+                    Ok(None) => cast_array.append_null(),
+                    Err(e) => {
+                        if $eval_mode == EvalMode::Ansi {
+                            cast_err = Some(e);
+                            break;
+                        }
+                        cast_array.append_null()
+                    }
+                }
             }
         }
-        let result: ArrayRef = Arc::new(cast_array.finish()) as ArrayRef;
-        result
+        if let Some(e) = cast_err {
+            Err(e)
+        } else {
+            Ok(Arc::new(cast_array.finish()) as ArrayRef)
+        }
     }};
 }
 
@@ -668,15 +678,13 @@ pub(crate) fn cast_string_to_timestamp(
     let tz = &timezone::Tz::from_str(timezone_str).unwrap();
 
     let cast_array: ArrayRef = match to_type {
-        DataType::Timestamp(_, _) => {
-            cast_utf8_to_timestamp!(
-                string_array,
-                eval_mode,
-                TimestampMicrosecondType,
-                timestamp_parser,
-                tz
-            )
-        }
+        DataType::Timestamp(_, _) => cast_utf8_to_timestamp!(
+            string_array,
+            eval_mode,
+            TimestampMicrosecondType,
+            timestamp_parser,
+            tz
+        )?,
         _ => unreachable!("Invalid data type {:?} in cast from string", to_type),
     };
     Ok(cast_array)
@@ -961,6 +969,12 @@ fn get_timestamp_values<T: TimeZone>(
 ) -> SparkResult<Option<i64>> {
     let values: Vec<_> = value.split(['T', '-', ':', '.']).collect();
     let year = values[0].parse::<i32>().unwrap_or_default();
+
+    // NaiveDate (used internally by chrono's with_ymd_and_hms) is bounded to ±262142.
+    if !(-262143..=262142).contains(&year) {
+        return Ok(None);
+    }
+
     let month = values.get(1).map_or(1, |m| m.parse::<u32>().unwrap_or(1));
     let day = values.get(2).map_or(1, |d| d.parse::<u32>().unwrap_or(1));
     let hour = values.get(3).map_or(0, |h| h.parse::<u32>().unwrap_or(0));
@@ -1004,7 +1018,7 @@ fn get_timestamp_values<T: TimeZone>(
             .with_second(second)
             .with_microsecond(microsecond),
         _ => {
-            return Err(SparkError::CastInvalidValue {
+            return Err(SparkError::InvalidInputInCastToDatetime {
                 value: value.to_string(),
                 from_type: "STRING".to_string(),
                 to_type: "TIMESTAMP".to_string(),
@@ -1082,7 +1096,21 @@ fn parse_str_to_microsecond_timestamp<T: TimeZone>(
     get_timestamp_values(value, "microsecond", tz)
 }
 
-// used in tests only
+type TimestampPattern<T> = (&'static Regex, fn(&str, &T) -> SparkResult<Option<i64>>);
+
+static RE_YEAR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\d{4,7}$").unwrap());
+static RE_MONTH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\d{4,7}-\d{2}$").unwrap());
+static RE_DAY: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\d{4,7}-\d{2}-\d{2}$").unwrap());
+static RE_HOUR: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\d{4,7}-\d{2}-\d{2}T\d{1,2}$").unwrap());
+static RE_MINUTE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\d{4,7}-\d{2}-\d{2}T\d{2}:\d{2}$").unwrap());
+static RE_SECOND: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\d{4,7}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$").unwrap());
+static RE_MICROSECOND: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\d{4,7}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{1,6}$").unwrap());
+static RE_TIME_ONLY: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^T\d{1,2}$").unwrap());
+
 fn timestamp_parser<T: TimeZone>(
     value: &str,
     eval_mode: EvalMode,
@@ -1092,40 +1120,15 @@ fn timestamp_parser<T: TimeZone>(
     if value.is_empty() {
         return Ok(None);
     }
-    // Define regex patterns and corresponding parsing functions
-    let patterns = &[
-        (
-            Regex::new(r"^\d{4,5}$").unwrap(),
-            parse_str_to_year_timestamp as fn(&str, &T) -> SparkResult<Option<i64>>,
-        ),
-        (
-            Regex::new(r"^\d{4,5}-\d{2}$").unwrap(),
-            parse_str_to_month_timestamp,
-        ),
-        (
-            Regex::new(r"^\d{4,5}-\d{2}-\d{2}$").unwrap(),
-            parse_str_to_day_timestamp,
-        ),
-        (
-            Regex::new(r"^\d{4,5}-\d{2}-\d{2}T\d{1,2}$").unwrap(),
-            parse_str_to_hour_timestamp,
-        ),
-        (
-            Regex::new(r"^\d{4,5}-\d{2}-\d{2}T\d{2}:\d{2}$").unwrap(),
-            parse_str_to_minute_timestamp,
-        ),
-        (
-            Regex::new(r"^\d{4,5}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$").unwrap(),
-            parse_str_to_second_timestamp,
-        ),
-        (
-            Regex::new(r"^\d{4,5}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{1,6}$").unwrap(),
-            parse_str_to_microsecond_timestamp,
-        ),
-        (
-            Regex::new(r"^T\d{1,2}$").unwrap(),
-            parse_str_to_time_only_timestamp,
-        ),
+    let patterns: &[TimestampPattern<T>] = &[
+        (&RE_YEAR, parse_str_to_year_timestamp),
+        (&RE_MONTH, parse_str_to_month_timestamp),
+        (&RE_DAY, parse_str_to_day_timestamp),
+        (&RE_HOUR, parse_str_to_hour_timestamp),
+        (&RE_MINUTE, parse_str_to_minute_timestamp),
+        (&RE_SECOND, parse_str_to_second_timestamp),
+        (&RE_MICROSECOND, parse_str_to_microsecond_timestamp),
+        (&RE_TIME_ONLY, parse_str_to_time_only_timestamp),
     ];
 
     let mut timestamp = None;
@@ -1140,7 +1143,7 @@ fn timestamp_parser<T: TimeZone>(
 
     if timestamp.is_none() {
         return if eval_mode == EvalMode::Ansi {
-            Err(SparkError::CastInvalidValue {
+            Err(SparkError::InvalidInputInCastToDatetime {
                 value: value.to_string(),
                 from_type: "STRING".to_string(),
                 to_type: "TIMESTAMP".to_string(),
@@ -1150,12 +1153,7 @@ fn timestamp_parser<T: TimeZone>(
         };
     }
 
-    match timestamp {
-        Some(ts) => Ok(Some(ts)),
-        None => Err(SparkError::Internal(
-            "Failed to parse timestamp".to_string(),
-        )),
-    }
+    Ok(timestamp)
 }
 
 fn parse_str_to_time_only_timestamp<T: TimeZone>(value: &str, tz: &T) -> SparkResult<Option<i64>> {
@@ -1202,17 +1200,20 @@ fn date_parser(date_str: &str, eval_mode: EvalMode) -> SparkResult<Option<i32>> 
     }
 
     fn is_valid_digits(segment: i32, digits: usize) -> bool {
-        // An integer is able to represent a date within [+-]5 million years.
+        // NaiveDate is bounded to [-262142, 262142] (6 digits). We allow up to 7 digits to support
+        // leading-zero year strings like "0002020" (= year 2020), matching Spark's
+        // isValidDigits. Values outside the bounds are caught by an explicit bounds
+        // check below.
         let max_digits_year = 7;
-        //year (segment 0) can be between 4 to 7 digits,
-        //month and day (segment 1 and 2) can be between 1 to 2 digits
+        // year (segment 0) can be between 4 to 7 digits,
+        // month and day (segment 1 and 2) can be between 1 to 2 digits
         (segment == 0 && digits >= 4 && digits <= max_digits_year)
             || (segment != 0 && digits > 0 && digits <= 2)
     }
 
     fn return_result(date_str: &str, eval_mode: EvalMode) -> SparkResult<Option<i32>> {
         if eval_mode == EvalMode::Ansi {
-            Err(SparkError::CastInvalidValue {
+            Err(SparkError::InvalidInputInCastToDatetime {
                 value: date_str.to_string(),
                 from_type: "STRING".to_string(),
                 to_type: "DATE".to_string(),
@@ -1285,11 +1286,13 @@ fn date_parser(date_str: &str, eval_mode: EvalMode) -> SparkResult<Option<i32>> 
 
     date_segments[current_segment as usize] = current_segment_value.0;
 
-    match NaiveDate::from_ymd_opt(
-        sign * date_segments[0],
-        date_segments[1] as u32,
-        date_segments[2] as u32,
-    ) {
+    // Reject out-of-range years explicitly
+    let year = sign * date_segments[0];
+    if !(-262143..=262142).contains(&year) {
+        return Ok(None);
+    }
+
+    match NaiveDate::from_ymd_opt(year, date_segments[1] as u32, date_segments[2] as u32) {
         Some(date) => {
             let duration_since_epoch = date
                 .signed_duration_since(DateTime::UNIX_EPOCH.naive_utc().date())
@@ -1341,13 +1344,41 @@ mod tests {
             TimestampMicrosecondType,
             timestamp_parser,
             tz
-        );
+        )
+        .unwrap();
 
         assert_eq!(
             result.data_type(),
             &DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()))
         );
         assert_eq!(result.len(), 4);
+    }
+
+    #[test]
+    fn test_cast_string_to_timestamp_ansi_error() {
+        // In ANSI mode, an invalid timestamp string must produce an error rather than null.
+        let array: ArrayRef = Arc::new(StringArray::from(vec![
+            Some("2020-01-01T12:34:56.123456"),
+            Some("not_a_timestamp"),
+        ]));
+        let tz = &timezone::Tz::from_str("UTC").unwrap();
+        let string_array = array
+            .as_any()
+            .downcast_ref::<GenericStringArray<i32>>()
+            .expect("Expected a string array");
+
+        let eval_mode = EvalMode::Ansi;
+        let result = cast_utf8_to_timestamp!(
+            &string_array,
+            eval_mode,
+            TimestampMicrosecondType,
+            timestamp_parser,
+            tz
+        );
+        assert!(
+            result.is_err(),
+            "ANSI mode should return Err for an invalid timestamp string"
+        );
     }
 
     #[test]
