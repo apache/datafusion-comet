@@ -1834,12 +1834,13 @@ dependencies = [
  "aws-config",
  "aws-credential-types",
  "bytes",
- "crc32fast",
  "criterion",
  "datafusion",
+ "datafusion-comet-common",
  "datafusion-comet-jni-bridge",
  "datafusion-comet-objectstore-hdfs",
  "datafusion-comet-proto",
+ "datafusion-comet-shuffle",
  "datafusion-comet-spark-expr",
  "datafusion-datasource",
  "datafusion-functions-nested",
@@ -1856,7 +1857,6 @@ dependencies = [
  "lazy_static",
  "log",
  "log4rs",
- "lz4_flex 0.13.0",
  "mimalloc",
  "num",
  "object_store",
@@ -1872,15 +1872,12 @@ dependencies = [
  "rand 0.10.0",
  "reqwest",
  "serde_json",
- "simd-adler32",
- "snap",
  "tempfile",
  "tikv-jemalloc-ctl",
  "tikv-jemallocator",
  "tokio",
  "url",
  "uuid",
- "zstd",
 ]
 
 [[package]]
@@ -1947,6 +1944,31 @@ version = "0.15.0"
 dependencies = [
  "prost",
  "prost-build",
+]
+
+[[package]]
+name = "datafusion-comet-shuffle"
+version = "0.15.0"
+dependencies = [
+ "arrow",
+ "async-trait",
+ "bytes",
+ "crc32fast",
+ "criterion",
+ "datafusion",
+ "datafusion-comet-common",
+ "datafusion-comet-jni-bridge",
+ "datafusion-comet-spark-expr",
+ "futures",
+ "itertools 0.14.0",
+ "jni",
+ "log",
+ "lz4_flex 0.13.0",
+ "simd-adler32",
+ "snap",
+ "tempfile",
+ "tokio",
+ "zstd",
 ]
 
 [[package]]

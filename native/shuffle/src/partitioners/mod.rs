@@ -15,8 +15,21 @@
 // specific language governing permissions and limitations
 // under the License.
 
-mod buf_batch_writer;
-mod partition_writer;
+mod multi_partition;
+mod partitioned_batch_iterator;
+mod single_partition;
 
-pub(super) use buf_batch_writer::BufBatchWriter;
-pub(super) use partition_writer::PartitionWriter;
+use arrow::record_batch::RecordBatch;
+use datafusion::common::Result;
+
+pub(crate) use multi_partition::MultiPartitionShuffleRepartitioner;
+pub(crate) use partitioned_batch_iterator::PartitionedBatchIterator;
+pub(crate) use single_partition::SinglePartitionShufflePartitioner;
+
+#[async_trait::async_trait]
+pub(crate) trait ShufflePartitioner: Send + Sync {
+    /// Insert a batch into the partitioner
+    async fn insert_batch(&mut self, batch: RecordBatch) -> Result<()>;
+    /// Write shuffle data and shuffle index file to disk
+    fn shuffle_write(&mut self) -> Result<()>;
+}

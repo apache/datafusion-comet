@@ -15,11 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-mod error;
-mod query_context;
-pub mod tracing;
-mod utils;
+mod buf_batch_writer;
+mod partition_writer;
 
-pub use error::{decimal_overflow_error, SparkError, SparkErrorWithContext, SparkResult};
-pub use query_context::{create_query_context_map, QueryContext, QueryContextMap};
-pub use utils::bytes_to_i128;
+pub(crate) use buf_batch_writer::BufBatchWriter;
+pub(crate) use partition_writer::PartitionWriter;

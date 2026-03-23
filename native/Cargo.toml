@@ -16,8 +16,8 @@
 # under the License.
 
 [workspace]
-default-members = ["core", "spark-expr", "common", "proto", "jni-bridge"]
-members = ["core", "spark-expr", "common", "proto", "jni-bridge", "hdfs", "fs-hdfs"]
+default-members = ["core", "spark-expr", "common", "proto", "jni-bridge", "shuffle"]
+members = ["core", "spark-expr", "common", "proto", "jni-bridge", "shuffle", "hdfs", "fs-hdfs"]
 resolver = "2"
 
 [workspace.package]
@@ -46,6 +46,7 @@ datafusion-comet-spark-expr = { path = "spark-expr" }
 datafusion-comet-common = { path = "common" }
 datafusion-comet-jni-bridge = { path = "jni-bridge" }
 datafusion-comet-proto = { path = "proto" }
+datafusion-comet-shuffle = { path = "shuffle" }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 chrono-tz = { version = "0.10" }
 futures = "0.3.32"
