@@ -980,20 +980,25 @@ fn get_timestamp_values<T: TimeZone>(
     } else {
         (1i32, value)
     };
-    let values: Vec<_> = date_part.split(['T', ' ', '-', ':', '.']).collect();
-    let year = sign * values[0].parse::<i32>().unwrap_or_default();
+    let mut parts = date_part.split(['T', ' ', '-', ':', '.']);
+    let year = sign
+        * parts
+            .next()
+            .unwrap_or("")
+            .parse::<i32>()
+            .unwrap_or_default();
 
     // NaiveDate (used internally by chrono's with_ymd_and_hms) is bounded to ±262142.
     if !(-262143..=262142).contains(&year) {
         return Ok(None);
     }
 
-    let month = values.get(1).map_or(1, |m| m.parse::<u32>().unwrap_or(1));
-    let day = values.get(2).map_or(1, |d| d.parse::<u32>().unwrap_or(1));
-    let hour = values.get(3).map_or(0, |h| h.parse::<u32>().unwrap_or(0));
-    let minute = values.get(4).map_or(0, |m| m.parse::<u32>().unwrap_or(0));
-    let second = values.get(5).map_or(0, |s| s.parse::<u32>().unwrap_or(0));
-    let microsecond = values.get(6).map_or(0, |ms| ms.parse::<u32>().unwrap_or(0));
+    let month = parts.next().map_or(1, |m| m.parse::<u32>().unwrap_or(1));
+    let day = parts.next().map_or(1, |d| d.parse::<u32>().unwrap_or(1));
+    let hour = parts.next().map_or(0, |h| h.parse::<u32>().unwrap_or(0));
+    let minute = parts.next().map_or(0, |m| m.parse::<u32>().unwrap_or(0));
+    let second = parts.next().map_or(0, |s| s.parse::<u32>().unwrap_or(0));
+    let microsecond = parts.next().map_or(0, |ms| ms.parse::<u32>().unwrap_or(0));
 
     let mut timestamp_info = TimeStampInfo::default();
 
