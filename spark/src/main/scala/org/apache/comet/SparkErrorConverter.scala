@@ -100,7 +100,7 @@ object SparkErrorConverter extends ShimSparkErrorConverter {
       case None => Array.empty[QueryContext] // No context
     }
 
-    val summary: String = errorJson.summary.orNull
+    val summary: String = errorJson.summary.getOrElse("")
 
     // Delegate to version-specific shim - let conversion exceptions propagate
     val optEx = convertErrorType(errorJson.errorType, errorClass, params, sparkContext, summary)
