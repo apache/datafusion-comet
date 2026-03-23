@@ -23,6 +23,15 @@ diff --git a/spark/v3.5/build.gradle b/spark/v3.5/build.gradle
 index e2d2c7a7a..f64232dc5 100644
 --- a/spark/v3.5/build.gradle
 +++ b/spark/v3.5/build.gradle
+@@ -75,7 +75,7 @@ project(":iceberg-spark:iceberg-spark-${sparkMajorVersion}_${scalaVersion}") {
+       exclude group: 'org.roaringbitmap'
+     }
+
+-    compileOnly "org.apache.datafusion:comet-spark-spark${sparkMajorVersion}_${scalaVersion}:0.5.0"
++    compileOnly "org.apache.datafusion:comet-spark-spark${sparkMajorVersion}_${scalaVersion}:${libs.versions.comet.get()}"
+
+     implementation libs.parquet.column
+     implementation libs.parquet.hadoop
 @@ -183,7 +183,7 @@ project(":iceberg-spark:iceberg-spark-extensions-${sparkMajorVersion}_${scalaVer
      testImplementation libs.avro.avro
      testImplementation libs.parquet.hadoop
