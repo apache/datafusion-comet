@@ -54,7 +54,7 @@ class Native extends NativeBase {
   // scalastyle:off
   @native def createPlan(
       id: Long,
-      iterators: Array[CometBatchIterator],
+      iterators: Array[Object],
       plan: Array[Byte],
       configMapProto: Array[Byte],
       partitionCount: Int,
