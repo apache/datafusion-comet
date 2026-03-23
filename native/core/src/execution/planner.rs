@@ -22,7 +22,6 @@ pub mod macros;
 pub mod operator_registry;
 
 use crate::execution::operators::init_csv_datasource_exec;
-use crate::execution::operators::IcebergScanExec;
 use crate::execution::{
     expressions::subquery::Subquery,
     operators::{ExecutionError, ExpandExec, ParquetWriterExec, ScanExec, ShuffleScanExec},
@@ -1302,15 +1301,6 @@ impl PhysicalPlanner {
 
                 let required_schema =
                     convert_spark_types_to_arrow_schema(common.required_schema.as_slice());
-                let catalog_properties: HashMap<String, String> = common
-                    .catalog_properties
-                    .iter()
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect();
-                let metadata_location = common.metadata_location.clone();
-                let tasks = parse_file_scan_tasks_from_common(common, &scan.file_scan_tasks)?;
-                let data_file_concurrency_limit = common.data_file_concurrency_limit as usize;
-
                 // TEMPORARY: return garbage data to identify which Iceberg tests use Comet
                 let garbage_exec = Arc::new(PlaceholderRowExec::new(required_schema));
                 Ok((
@@ -2849,6 +2839,7 @@ fn convert_spark_types_to_arrow_schema(
 
 /// Converts a protobuf PartitionValue to an iceberg Literal.
 ///
+#[allow(dead_code)]
 fn partition_value_to_literal(
     proto_value: &spark_operator::PartitionValue,
 ) -> Result<Option<iceberg::spec::Literal>, ExecutionError> {
@@ -2932,6 +2923,7 @@ fn partition_value_to_literal(
 /// Uses the existing Struct::from_iter() API from iceberg-rust to construct the struct
 /// from the list of partition values.
 /// This can potentially be upstreamed to iceberg_rust
+#[allow(dead_code)]
 fn partition_data_to_struct(
     proto_partition: &spark_operator::PartitionData,
 ) -> Result<iceberg::spec::Struct, ExecutionError> {
@@ -2951,6 +2943,7 @@ fn partition_data_to_struct(
 ///
 /// This function uses deduplication pools from the IcebergScanCommon to avoid redundant
 /// parsing of schemas, partition specs, partition types, name mappings, and other repeated data.
+#[allow(dead_code)]
 fn parse_file_scan_tasks_from_common(
     proto_common: &spark_operator::IcebergScanCommon,
     proto_tasks: &[spark_operator::IcebergFileScanTask],
@@ -3406,6 +3399,7 @@ fn literal_to_array_ref(
 // always returns MIGHT_MATCH (never prunes row groups). These are handled by CometFilter post-scan.
 
 /// Converts a protobuf Spark expression to an Iceberg predicate for row-group filtering.
+#[allow(dead_code)]
 fn convert_spark_expr_to_predicate(
     expr: &spark_expression::Expr,
 ) -> Option<iceberg::expr::Predicate> {
@@ -3537,6 +3531,7 @@ fn convert_spark_expr_to_predicate(
     }
 }
 
+#[allow(dead_code)]
 fn convert_binary_to_predicate(
     left: &Option<Box<spark_expression::Expr>>,
     right: &Option<Box<spark_expression::Expr>>,
@@ -3585,6 +3580,7 @@ fn convert_binary_to_predicate(
     None
 }
 
+#[allow(dead_code)]
 fn extract_column_reference(expr: &spark_expression::Expr) -> Option<String> {
     use spark_expression::expr::ExprStruct;
 
@@ -3594,6 +3590,7 @@ fn extract_column_reference(expr: &spark_expression::Expr) -> Option<String> {
     }
 }
 
+#[allow(dead_code)]
 fn extract_literal_as_datum(expr: &spark_expression::Expr) -> Option<iceberg::spec::Datum> {
     use spark_expression::expr::ExprStruct;
 
