@@ -19,8 +19,6 @@
 
 package org.apache.spark.sql.comet.execution.arrow
 
-import scala.collection.mutable
-
 import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.vector.VectorSchemaRoot
 import org.apache.arrow.vector.types.pojo.Schema
@@ -53,13 +51,13 @@ object CometArrowConverters extends Logging {
     protected val allocator: BufferAllocator =
       CometArrowAllocator.newChildAllocator(s"to${this.getClass.getSimpleName}", 0, Long.MaxValue)
 
-    // Track all roots created so they can be closed before the allocator is released.
-    // Roots must outlive the batch (so native can export them), but must be closed
-    // before the allocator to avoid memory leak errors.
-    private val roots = mutable.ArrayBuffer.empty[VectorSchemaRoot]
+    // The previous root is closed when the next batch is requested, so only one
+    // root is alive at a time. The last root is closed when the task completes.
+    private var prevRoot: VectorSchemaRoot = _
 
-    protected def trackRoot(root: VectorSchemaRoot): VectorSchemaRoot = {
-      roots += root
+    protected def closeAndTrack(root: VectorSchemaRoot): VectorSchemaRoot = {
+      if (prevRoot != null) prevRoot.close()
+      prevRoot = root
       root
     }
 
@@ -76,8 +74,10 @@ object CometArrowConverters extends Logging {
     protected def close(closeAllocator: Boolean): Unit = {
       // the allocator shall be closed when the task is finished
       if (closeAllocator) {
-        roots.foreach(_.close())
-        roots.clear()
+        if (prevRoot != null) {
+          prevRoot.close()
+          prevRoot = null
+        }
         allocator.close()
       }
     }
@@ -106,7 +106,7 @@ object CometArrowConverters extends Logging {
 
     override protected def nextBatch(): ColumnarBatch = {
       if (rowIter.hasNext) {
-        val root = trackRoot(VectorSchemaRoot.create(arrowSchema, allocator))
+        val root = closeAndTrack(VectorSchemaRoot.create(arrowSchema, allocator))
         val arrowWriter = ArrowWriter.create(root)
         var rowCount = 0L
         while (rowIter.hasNext && (maxRecordsPerBatch <= 0 || rowCount < maxRecordsPerBatch)) {
@@ -150,7 +150,7 @@ object CometArrowConverters extends Logging {
     override protected def nextBatch(): ColumnarBatch = {
       val rowsInBatch = colBatch.numRows()
       if (rowsProduced < rowsInBatch) {
-        val root = trackRoot(VectorSchemaRoot.create(arrowSchema, allocator))
+        val root = closeAndTrack(VectorSchemaRoot.create(arrowSchema, allocator))
         val arrowWriter = ArrowWriter.create(root)
         val rowsToProduce =
           if (maxRecordsPerBatch <= 0) rowsInBatch - rowsProduced
