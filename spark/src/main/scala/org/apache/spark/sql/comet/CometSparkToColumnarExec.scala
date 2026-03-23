@@ -139,6 +139,10 @@ case class CometSparkToColumnarExec(child: SparkPlan)
 }
 
 object CometSparkToColumnarExec extends CometSink[SparkPlan] with DataTypeSupport {
+
+  // uses CometArrowConverters, which re-uses arrays
+  override def isFfiSafe: Boolean = false
+
   override def createExec(
       nativeOp: OperatorOuterClass.Operator,
       op: SparkPlan): CometNativeExec = {
