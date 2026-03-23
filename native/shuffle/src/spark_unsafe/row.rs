@@ -17,18 +17,10 @@
 
 //! Utils for supporting native sort-based columnar shuffle.
 
-use crate::{
-    errors::CometError,
-    execution::{
-        shuffle::{
-            codec::{Checksum, ShuffleBlockWriter},
-            spark_unsafe::{
-                list::{append_list_element, SparkUnsafeArray},
-                map::{append_map_elements, get_map_key_value_fields, SparkUnsafeMap},
-            },
-        },
-        utils::bytes_to_i128,
-    },
+use crate::codec::{Checksum, ShuffleBlockWriter};
+use crate::spark_unsafe::{
+    list::{append_list_element, SparkUnsafeArray},
+    map::{append_map_elements, get_map_key_value_fields, SparkUnsafeMap},
 };
 use arrow::array::{
     builder::{
@@ -44,6 +36,8 @@ use arrow::compute::cast;
 use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 use arrow::error::ArrowError;
 use datafusion::physical_plan::metrics::Time;
+use datafusion_comet_common::bytes_to_i128;
+use datafusion_comet_jni_bridge::errors::CometError;
 use jni::sys::{jint, jlong};
 use std::{
     fs::OpenOptions,
@@ -403,7 +397,7 @@ macro_rules! get_field_builder {
 }
 
 // Expose the macro for other modules.
-use crate::execution::shuffle::CompressionCodec;
+use crate::CompressionCodec;
 pub(crate) use downcast_builder_ref;
 
 /// Appends field of row to the given struct builder. `dt` is the data type of the field.
