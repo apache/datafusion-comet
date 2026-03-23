@@ -41,7 +41,7 @@ import org.apache.comet.serde.QueryPlanSerde.{serializeDataType, supportedDataTy
 abstract class CometSink[T <: SparkPlan] extends CometOperatorSerde[T] {
 
   /** Whether the data produced by the Comet operator is FFI safe */
-  def isFfiSafe: Boolean = false
+  def isFfiSafe: Boolean = true
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] = None
 
@@ -89,8 +89,6 @@ abstract class CometSink[T <: SparkPlan] extends CometOperatorSerde[T] {
 }
 
 object CometExchangeSink extends CometSink[SparkPlan] {
-
-  override def isFfiSafe: Boolean = true
 
   override def convert(
       op: SparkPlan,
