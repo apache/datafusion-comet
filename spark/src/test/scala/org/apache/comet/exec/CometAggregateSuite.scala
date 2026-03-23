@@ -1917,6 +1917,43 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("SumDecimal and AvgDecimal nullability depends on ANSI mode and input nullability") {
+    // Non-nullable input: in ANSI mode the result should be non-nullable because overflows
+    // throw exceptions instead of producing nulls.
+    val nonNullableData: Seq[(java.math.BigDecimal, Int)] = Seq(
+      (new java.math.BigDecimal("10.00"), 1),
+      (new java.math.BigDecimal("20.00"), 1),
+      (new java.math.BigDecimal("30.00"), 2))
+
+    // Nullable input: result should always be nullable regardless of ANSI mode.
+    val nullableData: Seq[(java.math.BigDecimal, Int)] = Seq(
+      (new java.math.BigDecimal("10.00"), 1),
+      (null.asInstanceOf[java.math.BigDecimal], 1),
+      (new java.math.BigDecimal("30.00"), 2))
+
+    Seq(true, false).foreach { ansiEnabled =>
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString) {
+        // Test SUM with non-nullable input
+        withParquetTable(nonNullableData, "tbl") {
+          val sumRes = sql("SELECT _2, sum(_1) FROM tbl GROUP BY _2")
+          checkSparkAnswerAndOperator(sumRes)
+
+          val avgRes = sql("SELECT _2, avg(_1) FROM tbl GROUP BY _2")
+          checkSparkAnswerAndOperator(avgRes)
+        }
+
+        // Test SUM/AVG with nullable input
+        withParquetTable(nullableData, "tbl") {
+          val sumRes = sql("SELECT _2, sum(_1) FROM tbl GROUP BY _2")
+          checkSparkAnswerAndOperator(sumRes)
+
+          val avgRes = sql("SELECT _2, avg(_1) FROM tbl GROUP BY _2")
+          checkSparkAnswerAndOperator(avgRes)
+        }
+      }
+    }
+  }
+
   protected def checkSparkAnswerAndNumOfAggregates(query: String, numAggregates: Int): Unit = {
     val df = sql(query)
     checkSparkAnswer(df)

@@ -41,6 +41,8 @@ pub struct SumDecimal {
     /// Decimal scale
     scale: i8,
     eval_mode: EvalMode,
+    /// Whether the input expression is nullable
+    input_nullable: bool,
     /// Optional expression ID for query context lookup during error creation
     expr_id: Option<u64>,
     /// Session-scoped query context registry for error reporting
@@ -54,6 +56,7 @@ impl PartialEq for SumDecimal {
         self.precision == other.precision
             && self.scale == other.scale
             && self.eval_mode == other.eval_mode
+            && self.input_nullable == other.input_nullable
             && self.expr_id == other.expr_id
             && self.result_type == other.result_type
     }
@@ -66,6 +69,7 @@ impl std::hash::Hash for SumDecimal {
         self.precision.hash(state);
         self.scale.hash(state);
         self.eval_mode.hash(state);
+        self.input_nullable.hash(state);
         self.expr_id.hash(state);
         self.result_type.hash(state);
     }
@@ -75,6 +79,7 @@ impl SumDecimal {
     pub fn try_new(
         data_type: DataType,
         eval_mode: EvalMode,
+        input_nullable: bool,
         expr_id: Option<u64>,
         registry: Arc<crate::QueryContextMap>,
     ) -> DFResult<Self> {
@@ -92,6 +97,7 @@ impl SumDecimal {
             precision,
             scale,
             eval_mode,
+            input_nullable,
             expr_id,
             registry,
         })
@@ -164,8 +170,14 @@ impl AggregateUDFImpl for SumDecimal {
     }
 
     fn is_nullable(&self) -> bool {
-        // SumDecimal is always nullable because overflows can cause null values
-        true
+        // In ANSI mode, overflows cause exceptions rather than null values.
+        // If the input is non-nullable, the result is also non-nullable.
+        // In non-ANSI mode, overflows produce null values, so always nullable.
+        if self.eval_mode == EvalMode::Ansi {
+            self.input_nullable
+        } else {
+            true
+        }
     }
 }
 
@@ -630,6 +642,7 @@ mod tests {
         assert!(SumDecimal::try_new(
             DataType::Int32,
             EvalMode::Legacy,
+            true,
             None,
             crate::create_query_context_map(),
         )
@@ -657,6 +670,7 @@ mod tests {
         let aggregate_udf = Arc::new(AggregateUDF::new_from_impl(SumDecimal::try_new(
             data_type.clone(),
             EvalMode::Legacy,
+            true,
             None,
             crate::create_query_context_map(),
         )?));
