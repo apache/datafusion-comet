@@ -21,3 +21,5 @@ mod numeric;
 mod string;
 mod temporal;
 mod utils;
+
+pub(crate) use string::cast_string_to_date;
