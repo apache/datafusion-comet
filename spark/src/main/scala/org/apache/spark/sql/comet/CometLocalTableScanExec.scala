@@ -19,8 +19,6 @@
 
 package org.apache.spark.sql.comet
 
-import scala.jdk.CollectionConverters._
-
 import org.apache.spark.TaskContext
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
@@ -34,9 +32,7 @@ import org.apache.spark.sql.vectorized.ColumnarBatch
 import com.google.common.base.Objects
 
 import org.apache.comet.{CometConf, ConfigEntry}
-import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass}
 import org.apache.comet.serde.OperatorOuterClass.Operator
-import org.apache.comet.serde.QueryPlanSerde.serializeDataType
 import org.apache.comet.serde.operator.CometSink
 
 case class CometLocalTableScanExec(
