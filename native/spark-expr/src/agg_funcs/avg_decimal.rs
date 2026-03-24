@@ -62,8 +62,6 @@ pub struct AvgDecimal {
     sum_data_type: DataType,
     result_data_type: DataType,
     eval_mode: EvalMode,
-    /// Whether the input expression is nullable
-    input_nullable: bool,
     expr_id: Option<u64>,
     registry: Arc<crate::QueryContextMap>,
 }
@@ -74,7 +72,6 @@ impl PartialEq for AvgDecimal {
         self.sum_data_type == other.sum_data_type
             && self.result_data_type == other.result_data_type
             && self.eval_mode == other.eval_mode
-            && self.input_nullable == other.input_nullable
             && self.expr_id == other.expr_id
     }
 }
@@ -86,7 +83,6 @@ impl std::hash::Hash for AvgDecimal {
         self.sum_data_type.hash(state);
         self.result_data_type.hash(state);
         self.eval_mode.hash(state);
-        self.input_nullable.hash(state);
         self.expr_id.hash(state);
     }
 }
@@ -97,7 +93,6 @@ impl AvgDecimal {
         result_type: DataType,
         sum_type: DataType,
         eval_mode: EvalMode,
-        input_nullable: bool,
         expr_id: Option<u64>,
         registry: Arc<crate::QueryContextMap>,
     ) -> Self {
@@ -106,7 +101,6 @@ impl AvgDecimal {
             result_data_type: result_type,
             sum_data_type: sum_type,
             eval_mode,
-            input_nullable,
             expr_id,
             registry,
         }
@@ -215,14 +209,9 @@ impl AggregateUDFImpl for AvgDecimal {
     }
 
     fn is_nullable(&self) -> bool {
-        // In ANSI mode, overflows cause exceptions rather than null values.
-        // If the input is non-nullable, the result is also non-nullable.
-        // In non-ANSI mode, overflows produce null values, so always nullable.
-        if self.eval_mode == EvalMode::Ansi {
-            self.input_nullable
-        } else {
-            true
-        }
+        // In Spark, Sum.nullable and Average.nullable both return true irrespective of ANSI mode.
+        // AvgDecimal is always nullable because overflows can cause null values.
+        true
     }
 }
 

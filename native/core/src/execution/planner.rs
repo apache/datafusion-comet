@@ -2019,11 +2019,9 @@ impl PhysicalPlanner {
                 let builder = match datatype {
                     DataType::Decimal128(_, _) => {
                         let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
-                        let input_nullable = child.nullable(&schema)?;
                         let func = AggregateUDF::new_from_impl(SumDecimal::try_new(
                             datatype,
                             eval_mode,
-                            input_nullable,
                             spark_expr.expr_id,
                             Arc::clone(&self.query_context_registry),
                         )?);
@@ -2059,12 +2057,10 @@ impl PhysicalPlanner {
                 let builder = match datatype {
                     DataType::Decimal128(_, _) => {
                         let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
-                        let input_nullable = child.nullable(&schema)?;
                         let func = AggregateUDF::new_from_impl(AvgDecimal::new(
                             datatype,
                             input_datatype,
                             eval_mode,
-                            input_nullable,
                             spark_expr.expr_id,
                             Arc::clone(&self.query_context_registry),
                         ));
