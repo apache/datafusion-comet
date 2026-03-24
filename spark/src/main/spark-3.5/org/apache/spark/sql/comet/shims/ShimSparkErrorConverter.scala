@@ -140,9 +140,9 @@ trait ShimSparkErrorConverter {
         Some(QueryExecutionErrors.exceedMapSizeLimitError(params("size").toString.toInt))
 
       case "CollectionSizeLimitExceeded" =>
+        // createArrayWithElementsExceedLimitError takes (count: Any) in Spark 3.5
         Some(
           QueryExecutionErrors.createArrayWithElementsExceedLimitError(
-            "array",
             params("numElements").toString.toLong))
 
       case "NotNullAssertViolation" =>
