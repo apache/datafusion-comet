@@ -542,7 +542,7 @@ index 93275487f29..601cb6647fe 100644
                case _ => "_LEGACY_ERROR_TEMP_2055"
              }
 +            // native_datafusion Parquet scan cannot throw a SparkFileNotFoundException
-+            assume(CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_DATAFUSION)
++            assume(!Seq(CometConf.SCAN_NATIVE_DATAFUSION, CometConf.SCAN_AUTO).contains(CometConf.COMET_NATIVE_SCAN_IMPL.get()))
              checkErrorMatchPVals(
                exception = intercept[SparkException] {
                  testIgnoreMissingFiles(options)
@@ -2343,7 +2343,7 @@ index 27c2a2148fd..df04a15fb1f 100644
    private def testRowIndexGeneration(label: String, conf: RowIndexTestConf): Unit = {
      test (s"$label - ${conf.desc}") {
 +      // native_datafusion Parquet scan does not support row index generation.
-+      assume(CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_DATAFUSION)
++      assume(!Seq(CometConf.SCAN_NATIVE_DATAFUSION, CometConf.SCAN_AUTO).contains(CometConf.COMET_NATIVE_SCAN_IMPL.get()))
        withSQLConf(conf.sqlConfs: _*) {
          withTempPath { path =>
            // Read row index using _metadata.row_index if that is supported by the file format.
@@ -2365,7 +2365,7 @@ index 27c2a2148fd..df04a15fb1f 100644
  
      test(s"invalid row index column type - ${conf.desc}") {
 +      // native_datafusion Parquet scan does not support row index generation.
-+      assume(CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_DATAFUSION)
++      assume(!Seq(CometConf.SCAN_NATIVE_DATAFUSION, CometConf.SCAN_AUTO).contains(CometConf.COMET_NATIVE_SCAN_IMPL.get()))
        withSQLConf(conf.sqlConfs: _*) {
          withTempPath{ path =>
            val df = spark.range(0, 10, 1, 1).toDF("id")

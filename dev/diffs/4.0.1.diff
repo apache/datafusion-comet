@@ -3052,7 +3052,7 @@ index 08fd8a9ecb5..24baf360234 100644
 +        s"Skipping failing config: ${conf.desc}")
 +
 +      // native_datafusion Parquet scan does not support row index generation.
-+      assume(CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_DATAFUSION)
++      assume(!Seq(CometConf.SCAN_NATIVE_DATAFUSION, CometConf.SCAN_AUTO).contains(CometConf.COMET_NATIVE_SCAN_IMPL.get()))
        withSQLConf(conf.sqlConfs: _*) {
          withTempPath { path =>
            // Read row index using _metadata.row_index if that is supported by the file format.
@@ -3074,7 +3074,7 @@ index 08fd8a9ecb5..24baf360234 100644
  
      test(s"invalid row index column type - ${conf.desc}") {
 +      // native_datafusion Parquet scan does not support row index generation.
-+      assume(CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_DATAFUSION)
++      assume(!Seq(CometConf.SCAN_NATIVE_DATAFUSION, CometConf.SCAN_AUTO).contains(CometConf.COMET_NATIVE_SCAN_IMPL.get()))
        withSQLConf(conf.sqlConfs: _*) {
          withTempPath{ path =>
            val df = spark.range(0, 10, 1, 1).toDF("id")
