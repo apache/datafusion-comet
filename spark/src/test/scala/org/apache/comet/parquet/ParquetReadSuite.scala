@@ -985,6 +985,8 @@ abstract class ParquetReadSuite extends CometTestBase {
               val isNativeDataFusionScan =
                 scan == CometConf.SCAN_NATIVE_DATAFUSION || scan == CometConf.SCAN_AUTO
               if (enableSchemaEvolution || isNativeDataFusionScan) {
+                // native_datafusion has more permissive schema evolution
+                // https://github.com/apache/datafusion-comet/issues/3720
                 checkAnswer(df, data.map(Row.fromTuple))
               } else {
                 assertThrows[SparkException](df.collect())
