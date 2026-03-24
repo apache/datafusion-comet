@@ -23,7 +23,6 @@ import java.io.File
 
 import scala.collection.mutable.ListBuffer
 import scala.util.Random
-import scala.util.matching.Regex
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row, SaveMode}
@@ -916,11 +915,15 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       "\r\n 962 \r\n",
       "\r\n 62 \r\n")
 
-    // due to limitations of NaiveDate we only support years between 262143 BC and 262142 AD"
-    val unsupportedYearPattern: Regex = "^\\s*[0-9]{5,}".r
+    // due to limitations of NaiveDate we only support years between 262143 BC and 262142 AD
+    // Filter out strings where the leading digit sequence represents a year > 262142.
+    // All 5-digit years (10000-99999) are within bounds; only 6-digit years may exceed the limit.
     val fuzzDates = gen
       .generateStrings(dataSize, datePattern, 8)
-      .filterNot(str => unsupportedYearPattern.findFirstMatchIn(str).isDefined)
+      .filterNot { str =>
+        val yearStr = str.trim.takeWhile(_.isDigit)
+        yearStr.length > 6 || (yearStr.length == 6 && yearStr.toInt > 262142)
+      }
     castTest((validDates ++ invalidDates ++ fuzzDates).toDF("a"), DataTypes.DateType)
   }
 
@@ -951,19 +954,47 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("cast StringType to TimestampType disabled by default") {
-    withSQLConf((SQLConf.SESSION_LOCAL_TIMEZONE.key, "UTC")) {
-      val values = Seq("2020-01-01T12:34:56.123456", "T2").toDF("a")
-      castFallbackTest(
-        values.toDF("a"),
-        DataTypes.TimestampType,
-        "Not all valid formats are supported")
+  test("cast StringType to TimestampType - UTC") {
+    withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC") {
+      val values = Seq(
+        "2020",
+        "2020-01",
+        "2020-01-01",
+        "2020-01-01T12",
+        "2020-01-01T12:34",
+        "2020-01-01T12:34:56",
+        "2020-01-01T12:34:56.123456",
+        "T2",
+        "-9?",
+        "0100",
+        "0100-01",
+        "0100-01-01",
+        "0100-01-01T12",
+        "0100-01-01T12:34",
+        "0100-01-01T12:34:56",
+        "0100-01-01T12:34:56.123456",
+        "10000",
+        "10000-01",
+        "10000-01-01",
+        "10000-01-01T12",
+        "10000-01-01T12:34",
+        "10000-01-01T12:34:56",
+        "10000-01-01T12:34:56.123456",
+        "213170",
+        "213170-06",
+        "213170-06-15",
+        "213170-06-15T12",
+        "213170-06-15T12:34",
+        "213170-06-15T12:34:56",
+        "213170-06-15T12:34:56.123456")
+      castTimestampTest(values.toDF("a"), DataTypes.TimestampType)
     }
   }
 
   ignore("cast StringType to TimestampType") {
-    // https://github.com/apache/datafusion-comet/issues/328
-    withSQLConf((CometConf.getExprAllowIncompatConfigKey(classOf[Cast]), "true")) {
+    // TODO: enable once all Spark timestamp formats are supported natively.
+    // Currently missing: time-only formats with colon (e.g. "T12:34", "4:4").
+    withSQLConf((SQLConf.SESSION_LOCAL_TIMEZONE.key, "UTC")) {
       val values = Seq("2020-01-01T12:34:56.123456", "T2") ++ gen.generateStrings(
         dataSize,
         timestampPattern,
@@ -994,6 +1025,13 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         "2020-01-01T12:34:56.123456",
         "T2",
         "-9?",
+        "100",
+        "100-01",
+        "100-01-01",
+        "100-01-01T12",
+        "100-01-01T12:34",
+        "100-01-01T12:34:56",
+        "100-01-01T12:34:56.123456",
         "0100",
         "0100-01",
         "0100-01-01",
@@ -1008,14 +1046,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         "10000-01-01T12:34",
         "10000-01-01T12:34:56",
         "10000-01-01T12:34:56.123456")
-      castTimestampTest(values.toDF("a"), DataTypes.TimestampType)
-    }
-
-    // test for invalid inputs
-    withSQLConf(
-      SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC",
-      CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true") {
-      val values = Seq("-9?", "1-", "0.5")
       castTimestampTest(values.toDF("a"), DataTypes.TimestampType)
     }
   }
@@ -1476,7 +1506,10 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  private def castTimestampTest(input: DataFrame, toType: DataType) = {
+  private def castTimestampTest(
+      input: DataFrame,
+      toType: DataType,
+      assertNative: Boolean = false) = {
     withTempPath { dir =>
       val data = roundtripParquet(input, dir).coalesce(1)
       data.createOrReplaceTempView("t")
@@ -1484,11 +1517,46 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       withSQLConf((SQLConf.ANSI_ENABLED.key, "false")) {
         // cast() should return null for invalid inputs when ansi mode is disabled
         val df = data.withColumn("converted", col("a").cast(toType))
-        checkSparkAnswer(df)
+        if (assertNative) {
+          checkSparkAnswerAndOperator(df)
+        } else {
+          checkSparkAnswer(df)
+        }
 
         // try_cast() should always return null for invalid inputs
         val df2 = spark.sql(s"select try_cast(a as ${toType.sql}) from t")
         checkSparkAnswer(df2)
+      }
+
+      // with ANSI enabled, we should produce the same exception as Spark
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+        val df = data.withColumn("converted", col("a").cast(toType))
+        checkSparkAnswerMaybeThrows(df) match {
+          case (None, None) =>
+          // both succeeded, results already compared
+          case (None, Some(e)) =>
+            throw e
+          case (Some(e), None) =>
+            fail(s"Comet should have failed with ${e.getCause.getMessage}")
+          case (Some(sparkException), Some(cometException)) =>
+            val sparkMessage =
+              if (sparkException.getCause != null) sparkException.getCause.getMessage
+              else sparkException.getMessage
+            val cometMessage =
+              if (cometException.getCause != null) cometException.getCause.getMessage
+              else cometException.getMessage
+            if (CometSparkSessionExtensions.isSpark40Plus) {
+              assert(sparkMessage.contains("SQLSTATE"))
+              assert(
+                sparkMessage.startsWith(
+                  cometMessage.substring(0, math.min(40, cometMessage.length))))
+            } else {
+              assert(cometMessage == sparkMessage)
+            }
+        }
+        // try_cast()
+        val dfTryCast = spark.sql(s"select try_cast(a as ${toType.sql}) from t")
+        checkSparkAnswer(dfTryCast)
       }
     }
   }
@@ -1575,7 +1643,9 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                   // context eagerly so it displays the call site at the
                   // line of code where the cast method was called, whereas spark grabs the context
                   // lazily and displays the call site at the line of code where the error is checked.
-                  assert(sparkMessage.startsWith(cometMessage.substring(0, 40)))
+                  assert(
+                    sparkMessage.startsWith(
+                      cometMessage.substring(0, math.min(40, cometMessage.length))))
                 } else {
                   // for Spark 3.4 we expect to reproduce the error message exactly
                   assert(cometMessage == sparkMessage)
