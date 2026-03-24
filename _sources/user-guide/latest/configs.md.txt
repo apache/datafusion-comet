@@ -239,6 +239,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.DayOfMonth.enabled` | Enable Comet acceleration for `DayOfMonth` | true |
 | `spark.comet.expression.DayOfWeek.enabled` | Enable Comet acceleration for `DayOfWeek` | true |
 | `spark.comet.expression.DayOfYear.enabled` | Enable Comet acceleration for `DayOfYear` | true |
+| `spark.comet.expression.Days.enabled` | Enable Comet acceleration for `Days` | true |
 | `spark.comet.expression.Divide.enabled` | Enable Comet acceleration for `Divide` | true |
 | `spark.comet.expression.ElementAt.enabled` | Enable Comet acceleration for `ElementAt` | true |
 | `spark.comet.expression.EndsWith.enabled` | Enable Comet acceleration for `EndsWith` | true |

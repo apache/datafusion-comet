@@ -723,92 +723,97 @@ of expressions that be disabled.</p>
 <td><p>Yes</p></td>
 <td><p>Supported values of <code class="docutils literal notranslate"><span class="pre">field</span></code>: <code class="docutils literal notranslate"><span class="pre">year</span></code>/<code class="docutils literal notranslate"><span class="pre">month</span></code>/<code class="docutils literal notranslate"><span class="pre">week</span></code>/<code class="docutils literal notranslate"><span class="pre">day</span></code>/<code class="docutils literal notranslate"><span class="pre">dayofweek</span></code>/<code class="docutils literal notranslate"><span class="pre">dayofweek_iso</span></code>/<code class="docutils literal notranslate"><span class="pre">doy</span></code>/<code class="docutils literal notranslate"><span class="pre">quarter</span></code>/<code class="docutils literal notranslate"><span class="pre">hour</span></code>/<code class="docutils literal notranslate"><span class="pre">minute</span></code></p></td>
 </tr>
-<tr class="row-odd"><td><p>Extract</p></td>
+<tr class="row-odd"><td><p>Days</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">days</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p>V2 partition transform. Supports DateType and TimestampType inputs.</p></td>
+</tr>
+<tr class="row-even"><td><p>Extract</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">extract(field</span> <span class="pre">FROM</span> <span class="pre">source)</span></code></p></td>
 <td><p>Yes</p></td>
 <td><p>Supported values of <code class="docutils literal notranslate"><span class="pre">field</span></code>: <code class="docutils literal notranslate"><span class="pre">year</span></code>/<code class="docutils literal notranslate"><span class="pre">month</span></code>/<code class="docutils literal notranslate"><span class="pre">week</span></code>/<code class="docutils literal notranslate"><span class="pre">day</span></code>/<code class="docutils literal notranslate"><span class="pre">dayofweek</span></code>/<code class="docutils literal notranslate"><span class="pre">dayofweek_iso</span></code>/<code class="docutils literal notranslate"><span class="pre">doy</span></code>/<code class="docutils literal notranslate"><span class="pre">quarter</span></code>/<code class="docutils literal notranslate"><span class="pre">hour</span></code>/<code class="docutils literal notranslate"><span class="pre">minute</span></code></p></td>
 </tr>
-<tr class="row-even"><td><p>FromUnixTime</p></td>
+<tr class="row-odd"><td><p>FromUnixTime</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">from_unixtime</span></code></p></td>
 <td><p>No</p></td>
 <td><p>Does not support format, supports only -8334601211038 &lt;= sec &lt;= 8210266876799</p></td>
 </tr>
-<tr class="row-odd"><td><p>Hour</p></td>
+<tr class="row-even"><td><p>Hour</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">hour</span></code></p></td>
 <td><p>No</p></td>
 <td><p>Incorrectly applies timezone conversion to TimestampNTZ inputs (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3180">#3180</a>)</p></td>
 </tr>
-<tr class="row-even"><td><p>LastDay</p></td>
+<tr class="row-odd"><td><p>LastDay</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">last_day</span></code></p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p>Minute</p></td>
+<tr class="row-even"><td><p>Minute</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">minute</span></code></p></td>
 <td><p>No</p></td>
 <td><p>Incorrectly applies timezone conversion to TimestampNTZ inputs (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3180">#3180</a>)</p></td>
 </tr>
-<tr class="row-even"><td><p>Second</p></td>
+<tr class="row-odd"><td><p>Second</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">second</span></code></p></td>
 <td><p>No</p></td>
 <td><p>Incorrectly applies timezone conversion to TimestampNTZ inputs (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3180">#3180</a>)</p></td>
 </tr>
-<tr class="row-odd"><td><p>TruncDate</p></td>
+<tr class="row-even"><td><p>TruncDate</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">trunc</span></code></p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p>TruncTimestamp</p></td>
+<tr class="row-odd"><td><p>TruncTimestamp</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">date_trunc</span></code></p></td>
 <td><p>No</p></td>
 <td><p>Incorrect results in non-UTC timezones (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2649">#2649</a>)</p></td>
 </tr>
-<tr class="row-odd"><td><p>UnixDate</p></td>
+<tr class="row-even"><td><p>UnixDate</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">unix_date</span></code></p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p>UnixTimestamp</p></td>
+<tr class="row-odd"><td><p>UnixTimestamp</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">unix_timestamp</span></code></p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p>Year</p></td>
+<tr class="row-even"><td><p>Year</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">year</span></code></p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p>Month</p></td>
+<tr class="row-odd"><td><p>Month</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">month</span></code></p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p>DayOfMonth</p></td>
+<tr class="row-even"><td><p>DayOfMonth</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">day</span></code>/<code class="docutils literal notranslate"><span class="pre">dayofmonth</span></code></p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p>DayOfWeek</p></td>
+<tr class="row-odd"><td><p>DayOfWeek</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">dayofweek</span></code></p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p>WeekDay</p></td>
+<tr class="row-even"><td><p>WeekDay</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">weekday</span></code></p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p>DayOfYear</p></td>
+<tr class="row-odd"><td><p>DayOfYear</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">dayofyear</span></code></p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p>WeekOfYear</p></td>
+<tr class="row-even"><td><p>WeekOfYear</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">weekofyear</span></code></p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p>Quarter</p></td>
+<tr class="row-odd"><td><p>Quarter</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">quarter</span></code></p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
