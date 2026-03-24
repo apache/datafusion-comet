@@ -43,8 +43,9 @@ import org.apache.comet.exceptions.CometQueryExecutionException
 object SparkErrorConverter extends ShimSparkErrorConverter {
 
   implicit val formats: DefaultFormats.type = DefaultFormats
+  private val UNKNOWN_ERROR = "UNKNOWN_ERROR_TEMP_COMET"
 
-  case class QueryContextJson(
+  private case class QueryContextJson(
       sqlText: String,
       startIndex: Int,
       stopIndex: Int,
@@ -53,7 +54,7 @@ object SparkErrorConverter extends ShimSparkErrorConverter {
       line: Int,
       startPosition: Int)
 
-  case class ErrorJson(
+  private case class ErrorJson(
       errorType: String,
       errorClass: Option[String],
       params: Option[Map[String, Any]],
@@ -83,7 +84,8 @@ object SparkErrorConverter extends ShimSparkErrorConverter {
     val json = parse(e.getMessage)
     val errorJson = json.extract[ErrorJson]
     val params = errorJson.params.getOrElse(Map.empty)
-    val errorClass = errorJson.errorClass.getOrElse("UNKNOWN_ERROR_TEMP_COMET")
+    val errorClass =
+      errorJson.errorClass.map(_.trim).filter(_.nonEmpty).getOrElse(UNKNOWN_ERROR)
 
     // Build Spark SQLQueryContext if context is present (Not all errors carry the query context)
     val sparkContext: Array[QueryContext] = errorJson.context match {
@@ -111,10 +113,12 @@ object SparkErrorConverter extends ShimSparkErrorConverter {
 
       case None =>
         // Unknown error type - fallback to generic SparkException
-        new SparkException(
-          errorClass = errorClass,
-          messageParameters = paramsToStringMap(params),
-          cause = null)
+        val msgParams = paramsToStringMap(params)
+        if (errorClass.equals(UNKNOWN_ERROR)) {
+          new SparkException(msgParams.mkString(", "))
+        } else {
+          new SparkException(errorClass = errorClass, messageParameters = msgParams, cause = null)
+        }
     }
   }
 
