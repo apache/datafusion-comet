@@ -1699,12 +1699,7 @@ impl PhysicalPlanner {
                     // null doesn't equal to null in Spark join key. If the join key is
                     // `EqualNullSafe`, Spark will rewrite it during planning.
                     NullEquality::NullEqualsNothing,
-                    // null_aware is for null-aware anti joins (NOT IN subqueries).
-                    // NullEquality controls whether NULL = NULL in join keys generally,
-                    // while null_aware changes anti-join semantics so any NULL changes
-                    // the entire result. Spark doesn't use this path (it rewrites
-                    // EqualNullSafe at plan time), so false is correct.
-                    false,
+                    join.null_aware_anti_join,
                 )?);
 
                 // If the hash join is build right, we need to swap the left and right
@@ -4038,6 +4033,7 @@ mod tests {
                 join_type: 0,
                 condition: None,
                 build_side: 0,
+                null_aware_anti_join: false,
             })),
         };
 

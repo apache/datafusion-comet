@@ -1710,9 +1710,17 @@ trait CometHashJoin {
       return None
     }
 
-    if (join.buildSide == BuildRight && join.joinType == LeftAnti) {
+    // Null-aware anti-join is only supported for BroadcastHashJoinExec.
+    // For ShuffledHashJoinExec, BuildRight+LeftAnti is a regular anti-join which
+    // does not have the NOT IN null semantics so it remains unsupported.
+    val isNullAwareAntiJoin = join match {
+      case bhj: BroadcastHashJoinExec => bhj.isNullAwareAntiJoin
+      case _ => false
+    }
+
+    if (join.buildSide == BuildRight && join.joinType == LeftAnti && !isNullAwareAntiJoin) {
       // https://github.com/apache/datafusion-comet/issues/457
-      withInfo(join, "BuildRight with LeftAnti is not supported")
+      withInfo(join, "BuildRight with LeftAnti is not supported (use null-aware anti-join via NOT IN)")
       return None
     }
 
@@ -1760,6 +1768,7 @@ trait CometHashJoin {
         .addAllRightJoinKeys(rightKeys.map(_.get).asJava)
         .setBuildSide(if (join.buildSide == BuildLeft) OperatorOuterClass.BuildSide.BuildLeft
         else OperatorOuterClass.BuildSide.BuildRight)
+        .setNullAwareAntiJoin(isNullAwareAntiJoin)
       condition.foreach(joinBuilder.setCondition)
       Some(builder.setHashJoin(joinBuilder).build())
     } else {
