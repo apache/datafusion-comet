@@ -71,37 +71,6 @@ def is_select_statement(sql):
     return first_keyword(sql) in ("select", "with")
 
 
-def collect_execution_metrics(df):
-    """Extract execution metrics from the executed plan after df.collect().
-
-    Returns a dict with operator-level metrics including rows scanned,
-    bytes read, shuffle bytes, etc.
-    """
-    metrics = {}
-    plan = df._jdf.queryExecution().executedPlan()
-
-    def walk(node, depth=0):
-        name = node.nodeName()
-        node_metrics = {}
-        metric_map = node.metrics()
-        keys = list(metric_map.keys())
-        for k in keys:
-            m = metric_map.apply(k)
-            node_metrics[k] = m.value()
-        if node_metrics:
-            key = f"{name}_{depth}"
-            metrics[key] = node_metrics
-        children = list(node.children())
-        for child in children:
-            walk(child, depth + 1)
-
-    try:
-        walk(plan)
-    except Exception:
-        pass  # Best-effort metric extraction
-    return metrics
-
-
 def main(
     benchmark: str,
     data_path: str,
@@ -115,7 +84,6 @@ def main(
     write_path: str = None,
     options: Dict[str, str] = None,
     plan_dir: str = None,
-    metrics_dir: str = None,
 ):
     if options is None:
         options = {}
@@ -260,16 +228,6 @@ def main(
                             query_result["row_count"] = row_count
                             query_result["result_hash"] = row_hash
 
-                        # Save execution metrics after collect() (benchmark feature)
-                        if metrics_dir is not None:
-                            os.makedirs(metrics_dir, exist_ok=True)
-                            metrics = collect_execution_metrics(df)
-                            metrics_path = os.path.join(
-                                metrics_dir, f"{name}-q{query_label}.metrics.json")
-                            with open(metrics_path, "w") as mf:
-                                json.dump(metrics, mf, indent=2)
-                            print(f"Metrics saved to {metrics_path}")
-
         iter_end_time = time.time()
         print(f"\nIteration {iteration + 1} took {iter_end_time - iter_start_time:.2f} seconds")
 
@@ -337,10 +295,6 @@ if __name__ == "__main__":
         help="Optional directory to write formatted plans per query"
     )
     parser.add_argument(
-        "--metrics-dir",
-        help="Optional directory to write execution metrics per query"
-    )
-    parser.add_argument(
         "--query", type=int,
         help="Specific query number (1-based). If omitted, run all."
     )
@@ -363,5 +317,4 @@ if __name__ == "__main__":
         args.write,
         args.options,
         args.plan_dir,
-        args.metrics_dir,
     )
