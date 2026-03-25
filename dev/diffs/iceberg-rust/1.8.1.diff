@@ -1,5 +1,5 @@
 diff --git a/gradle/libs.versions.toml b/gradle/libs.versions.toml
-index 04ffa8f4e..3a57af315 100644
+index 04ffa8f4ed..2d2c0d6e76 100644
 --- a/gradle/libs.versions.toml
 +++ b/gradle/libs.versions.toml
 @@ -34,6 +34,7 @@ azuresdk-bom = "1.2.31"
@@ -19,41 +19,42 @@ index 04ffa8f4e..3a57af315 100644
  sqlite-jdbc = "3.48.0.0"
  testcontainers = "1.20.4"
  tez010 = "0.10.4"
-diff --git a/spark/v3.5/build.gradle b/spark/v3.5/build.gradle
-index e2d2c7a7a..f64232dc5 100644
---- a/spark/v3.5/build.gradle
-+++ b/spark/v3.5/build.gradle
+diff --git a/spark/v3.4/build.gradle b/spark/v3.4/build.gradle
+index 6eb26e8b73..38d9cf3ca3 100644
+--- a/spark/v3.4/build.gradle
++++ b/spark/v3.4/build.gradle
 @@ -75,7 +75,7 @@ project(":iceberg-spark:iceberg-spark-${sparkMajorVersion}_${scalaVersion}") {
        exclude group: 'org.roaringbitmap'
      }
-
+ 
 -    compileOnly "org.apache.datafusion:comet-spark-spark${sparkMajorVersion}_${scalaVersion}:0.5.0"
 +    compileOnly "org.apache.datafusion:comet-spark-spark${sparkMajorVersion}_${scalaVersion}:${libs.versions.comet.get()}"
-
+ 
      implementation libs.parquet.column
      implementation libs.parquet.hadoop
-@@ -183,7 +183,7 @@ project(":iceberg-spark:iceberg-spark-extensions-${sparkMajorVersion}_${scalaVer
+@@ -185,7 +185,7 @@ project(":iceberg-spark:iceberg-spark-extensions-${sparkMajorVersion}_${scalaVer
      testImplementation libs.avro.avro
      testImplementation libs.parquet.hadoop
-     testImplementation libs.awaitility
+     testImplementation libs.junit.vintage.engine
 -    testImplementation "org.apache.datafusion:comet-spark-spark${sparkMajorVersion}_${scalaVersion}:0.5.0"
 +    testImplementation "org.apache.datafusion:comet-spark-spark${sparkMajorVersion}_${scalaVersion}:${libs.versions.comet.get()}"
  
      // Required because we remove antlr plugin dependencies from the compile configuration, see note above
      runtimeOnly libs.antlr.runtime
-@@ -263,6 +263,7 @@ project(":iceberg-spark:iceberg-spark-runtime-${sparkMajorVersion}_${scalaVersio
+@@ -260,6 +260,8 @@ project(":iceberg-spark:iceberg-spark-runtime-${sparkMajorVersion}_${scalaVersio
      integrationImplementation project(path: ':iceberg-hive-metastore', configuration: 'testArtifacts')
      integrationImplementation project(path: ":iceberg-spark:iceberg-spark-${sparkMajorVersion}_${scalaVersion}", configuration: 'testArtifacts')
      integrationImplementation project(path: ":iceberg-spark:iceberg-spark-extensions-${sparkMajorVersion}_${scalaVersion}", configuration: 'testArtifacts')
 +    integrationImplementation "org.apache.datafusion:comet-spark-spark${sparkMajorVersion}_${scalaVersion}:${libs.versions.comet.get()}"
++    integrationImplementation "org.apache.datafusion:comet-spark-spark${sparkMajorVersion}_${scalaVersion}:${libs.versions.comet.get()}"
  
      // runtime dependencies for running Hive Catalog based integration test
      integrationRuntimeOnly project(':iceberg-hive-metastore')
-diff --git a/spark/v3.5/spark-extensions/src/test/java/org/apache/iceberg/spark/extensions/ExtensionsTestBase.java b/spark/v3.5/spark-extensions/src/test/java/org/apache/iceberg/spark/extensions/ExtensionsTestBase.java
-index 578845e3d..4f44a73db 100644
---- a/spark/v3.5/spark-extensions/src/test/java/org/apache/iceberg/spark/extensions/ExtensionsTestBase.java
-+++ b/spark/v3.5/spark-extensions/src/test/java/org/apache/iceberg/spark/extensions/ExtensionsTestBase.java
-@@ -57,6 +57,16 @@ public abstract class ExtensionsTestBase extends CatalogTestBase {
+diff --git a/spark/v3.4/spark-extensions/src/test/java/org/apache/iceberg/spark/extensions/SparkExtensionsTestBase.java b/spark/v3.4/spark-extensions/src/test/java/org/apache/iceberg/spark/extensions/SparkExtensionsTestBase.java
+index 4f137f5b8d..4f06c036e1 100644
+--- a/spark/v3.4/spark-extensions/src/test/java/org/apache/iceberg/spark/extensions/SparkExtensionsTestBase.java
++++ b/spark/v3.4/spark-extensions/src/test/java/org/apache/iceberg/spark/extensions/SparkExtensionsTestBase.java
+@@ -60,7 +60,27 @@ public abstract class SparkExtensionsTestBase extends SparkCatalogTestBase {
              .config("spark.sql.legacy.respectNullabilityInTextDatasetConversion", "true")
              .config(
                  SQLConf.ADAPTIVE_EXECUTION_ENABLED().key(), String.valueOf(RANDOM.nextBoolean()))
@@ -68,13 +69,24 @@ index 578845e3d..4f44a73db 100644
 +            .config("spark.comet.use.lazyMaterialization", "false")
 +            .config("spark.comet.schemaEvolution.enabled", "true")
              .enableHiveSupport()
++            .config("spark.plugins", "org.apache.spark.CometPlugin")
++            .config(
++                "spark.shuffle.manager",
++                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++            .config("spark.comet.explainFallback.enabled", "true")
++            .config("spark.comet.scan.icebergNative.enabled", "true")
++            .config("spark.memory.offHeap.enabled", "true")
++            .config("spark.memory.offHeap.size", "10g")
++            .config("spark.comet.use.lazyMaterialization", "false")
++            .config("spark.comet.schemaEvolution.enabled", "true")
              .getOrCreate();
  
-diff --git a/spark/v3.5/spark-extensions/src/test/java/org/apache/iceberg/spark/extensions/TestCallStatementParser.java b/spark/v3.5/spark-extensions/src/test/java/org/apache/iceberg/spark/extensions/TestCallStatementParser.java
-index ade19de36..9111397e9 100644
---- a/spark/v3.5/spark-extensions/src/test/java/org/apache/iceberg/spark/extensions/TestCallStatementParser.java
-+++ b/spark/v3.5/spark-extensions/src/test/java/org/apache/iceberg/spark/extensions/TestCallStatementParser.java
-@@ -56,6 +56,16 @@ public class TestCallStatementParser {
+     SparkTestBase.catalog =
+diff --git a/spark/v3.4/spark-extensions/src/test/java/org/apache/iceberg/spark/extensions/TestCallStatementParser.java b/spark/v3.4/spark-extensions/src/test/java/org/apache/iceberg/spark/extensions/TestCallStatementParser.java
+index 55a413063e..e34bfa57ed 100644
+--- a/spark/v3.4/spark-extensions/src/test/java/org/apache/iceberg/spark/extensions/TestCallStatementParser.java
++++ b/spark/v3.4/spark-extensions/src/test/java/org/apache/iceberg/spark/extensions/TestCallStatementParser.java
+@@ -61,6 +61,16 @@ public class TestCallStatementParser {
              .master("local[2]")
              .config("spark.sql.extensions", IcebergSparkSessionExtensions.class.getName())
              .config("spark.extra.prop", "value")
@@ -91,11 +103,11 @@ index ade19de36..9111397e9 100644
              .getOrCreate();
      TestCallStatementParser.parser = spark.sessionState().sqlParser();
    }
-diff --git a/spark/v3.5/spark/src/jmh/java/org/apache/iceberg/spark/action/DeleteOrphanFilesBenchmark.java b/spark/v3.5/spark/src/jmh/java/org/apache/iceberg/spark/action/DeleteOrphanFilesBenchmark.java
-index 64edb1002..0fc10120f 100644
---- a/spark/v3.5/spark/src/jmh/java/org/apache/iceberg/spark/action/DeleteOrphanFilesBenchmark.java
-+++ b/spark/v3.5/spark/src/jmh/java/org/apache/iceberg/spark/action/DeleteOrphanFilesBenchmark.java
-@@ -179,6 +179,16 @@ public class DeleteOrphanFilesBenchmark {
+diff --git a/spark/v3.4/spark/src/jmh/java/org/apache/iceberg/spark/action/DeleteOrphanFilesBenchmark.java b/spark/v3.4/spark/src/jmh/java/org/apache/iceberg/spark/action/DeleteOrphanFilesBenchmark.java
+index b6ade2bff3..c12127d618 100644
+--- a/spark/v3.4/spark/src/jmh/java/org/apache/iceberg/spark/action/DeleteOrphanFilesBenchmark.java
++++ b/spark/v3.4/spark/src/jmh/java/org/apache/iceberg/spark/action/DeleteOrphanFilesBenchmark.java
+@@ -170,6 +170,16 @@ public class DeleteOrphanFilesBenchmark {
              .config("spark.sql.catalog.spark_catalog", SparkSessionCatalog.class.getName())
              .config("spark.sql.catalog.spark_catalog.type", "hadoop")
              .config("spark.sql.catalog.spark_catalog.warehouse", catalogWarehouse())
@@ -112,11 +124,11 @@ index 64edb1002..0fc10120f 100644
              .master("local");
      spark = builder.getOrCreate();
    }
-diff --git a/spark/v3.5/spark/src/jmh/java/org/apache/iceberg/spark/action/IcebergSortCompactionBenchmark.java b/spark/v3.5/spark/src/jmh/java/org/apache/iceberg/spark/action/IcebergSortCompactionBenchmark.java
-index a5d0456b0..f0759f837 100644
---- a/spark/v3.5/spark/src/jmh/java/org/apache/iceberg/spark/action/IcebergSortCompactionBenchmark.java
-+++ b/spark/v3.5/spark/src/jmh/java/org/apache/iceberg/spark/action/IcebergSortCompactionBenchmark.java
-@@ -392,6 +392,16 @@ public class IcebergSortCompactionBenchmark {
+diff --git a/spark/v3.4/spark/src/jmh/java/org/apache/iceberg/spark/action/IcebergSortCompactionBenchmark.java b/spark/v3.4/spark/src/jmh/java/org/apache/iceberg/spark/action/IcebergSortCompactionBenchmark.java
+index b08c352819..4ffee26156 100644
+--- a/spark/v3.4/spark/src/jmh/java/org/apache/iceberg/spark/action/IcebergSortCompactionBenchmark.java
++++ b/spark/v3.4/spark/src/jmh/java/org/apache/iceberg/spark/action/IcebergSortCompactionBenchmark.java
+@@ -386,6 +386,16 @@ public class IcebergSortCompactionBenchmark {
                  "spark.sql.catalog.spark_catalog", "org.apache.iceberg.spark.SparkSessionCatalog")
              .config("spark.sql.catalog.spark_catalog.type", "hadoop")
              .config("spark.sql.catalog.spark_catalog.warehouse", getCatalogWarehouse())
@@ -133,52 +145,10 @@ index a5d0456b0..f0759f837 100644
              .master("local[*]");
      spark = builder.getOrCreate();
      Configuration sparkHadoopConf = spark.sessionState().newHadoopConf();
-diff --git a/spark/v3.5/spark/src/jmh/java/org/apache/iceberg/spark/source/DVReaderBenchmark.java b/spark/v3.5/spark/src/jmh/java/org/apache/iceberg/spark/source/DVReaderBenchmark.java
-index c6794e43c..457d2823e 100644
---- a/spark/v3.5/spark/src/jmh/java/org/apache/iceberg/spark/source/DVReaderBenchmark.java
-+++ b/spark/v3.5/spark/src/jmh/java/org/apache/iceberg/spark/source/DVReaderBenchmark.java
-@@ -239,6 +239,16 @@ public class DVReaderBenchmark {
-             .config("spark.sql.catalog.spark_catalog", SparkSessionCatalog.class.getName())
-             .config("spark.sql.catalog.spark_catalog.type", "hadoop")
-             .config("spark.sql.catalog.spark_catalog.warehouse", newWarehouseDir())
-+            .config("spark.plugins", "org.apache.spark.CometPlugin")
-+            .config(
-+                "spark.shuffle.manager",
-+                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
-+            .config("spark.comet.explainFallback.enabled", "true")
-+            .config("spark.comet.scan.icebergNative.enabled", "true")
-+            .config("spark.memory.offHeap.enabled", "true")
-+            .config("spark.memory.offHeap.size", "10g")
-+            .config("spark.comet.use.lazyMaterialization", "false")
-+            .config("spark.comet.schemaEvolution.enabled", "true")
-             .master("local[*]")
-             .getOrCreate();
-   }
-diff --git a/spark/v3.5/spark/src/jmh/java/org/apache/iceberg/spark/source/DVWriterBenchmark.java b/spark/v3.5/spark/src/jmh/java/org/apache/iceberg/spark/source/DVWriterBenchmark.java
-index ac74fb5a1..eab09293d 100644
---- a/spark/v3.5/spark/src/jmh/java/org/apache/iceberg/spark/source/DVWriterBenchmark.java
-+++ b/spark/v3.5/spark/src/jmh/java/org/apache/iceberg/spark/source/DVWriterBenchmark.java
-@@ -223,6 +223,16 @@ public class DVWriterBenchmark {
-             .config("spark.sql.catalog.spark_catalog", SparkSessionCatalog.class.getName())
-             .config("spark.sql.catalog.spark_catalog.type", "hadoop")
-             .config("spark.sql.catalog.spark_catalog.warehouse", newWarehouseDir())
-+            .config("spark.plugins", "org.apache.spark.CometPlugin")
-+            .config(
-+                "spark.shuffle.manager",
-+                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
-+            .config("spark.comet.explainFallback.enabled", "true")
-+            .config("spark.comet.scan.icebergNative.enabled", "true")
-+            .config("spark.memory.offHeap.enabled", "true")
-+            .config("spark.memory.offHeap.size", "10g")
-+            .config("spark.comet.use.lazyMaterialization", "false")
-+            .config("spark.comet.schemaEvolution.enabled", "true")
-             .master("local[*]")
-             .getOrCreate();
-   }
-diff --git a/spark/v3.5/spark/src/jmh/java/org/apache/iceberg/spark/source/IcebergSourceBenchmark.java b/spark/v3.5/spark/src/jmh/java/org/apache/iceberg/spark/source/IcebergSourceBenchmark.java
-index 68c537e34..1e9e90d53 100644
---- a/spark/v3.5/spark/src/jmh/java/org/apache/iceberg/spark/source/IcebergSourceBenchmark.java
-+++ b/spark/v3.5/spark/src/jmh/java/org/apache/iceberg/spark/source/IcebergSourceBenchmark.java
+diff --git a/spark/v3.4/spark/src/jmh/java/org/apache/iceberg/spark/source/IcebergSourceBenchmark.java b/spark/v3.4/spark/src/jmh/java/org/apache/iceberg/spark/source/IcebergSourceBenchmark.java
+index 68c537e34a..1e9e90d539 100644
+--- a/spark/v3.4/spark/src/jmh/java/org/apache/iceberg/spark/source/IcebergSourceBenchmark.java
++++ b/spark/v3.4/spark/src/jmh/java/org/apache/iceberg/spark/source/IcebergSourceBenchmark.java
 @@ -94,7 +94,19 @@ public abstract class IcebergSourceBenchmark {
    }
  
@@ -200,705 +170,6 @@ index 68c537e34..1e9e90d53 100644
      if (!enableDictionaryEncoding) {
        builder
            .config("parquet.dictionary.page.size", "1")
-diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/SparkDistributedDataScanTestBase.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/SparkDistributedDataScanTestBase.java
-index 404ba7284..00e97e96f 100644
---- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/SparkDistributedDataScanTestBase.java
-+++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/SparkDistributedDataScanTestBase.java
-@@ -90,6 +90,16 @@ public abstract class SparkDistributedDataScanTestBase
-         .master("local[2]")
-         .config("spark.serializer", serializer)
-         .config(SQLConf.SHUFFLE_PARTITIONS().key(), "4")
-+        .config("spark.plugins", "org.apache.spark.CometPlugin")
-+        .config(
-+            "spark.shuffle.manager",
-+            "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
-+        .config("spark.comet.explainFallback.enabled", "true")
-+        .config("spark.comet.scan.icebergNative.enabled", "true")
-+        .config("spark.memory.offHeap.enabled", "true")
-+        .config("spark.memory.offHeap.size", "10g")
-+        .config("spark.comet.use.lazyMaterialization", "false")
-+        .config("spark.comet.schemaEvolution.enabled", "true")
-         .getOrCreate();
-   }
- }
-diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/TestSparkDistributedDataScanDeletes.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/TestSparkDistributedDataScanDeletes.java
-index 659507e4c..9076ec24d 100644
---- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/TestSparkDistributedDataScanDeletes.java
-+++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/TestSparkDistributedDataScanDeletes.java
-@@ -73,6 +73,16 @@ public class TestSparkDistributedDataScanDeletes
-             .master("local[2]")
-             .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
-             .config(SQLConf.SHUFFLE_PARTITIONS().key(), "4")
-+            .config("spark.plugins", "org.apache.spark.CometPlugin")
-+            .config(
-+                "spark.shuffle.manager",
-+                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
-+            .config("spark.comet.explainFallback.enabled", "true")
-+            .config("spark.comet.scan.icebergNative.enabled", "true")
-+            .config("spark.memory.offHeap.enabled", "true")
-+            .config("spark.memory.offHeap.size", "10g")
-+            .config("spark.comet.use.lazyMaterialization", "false")
-+            .config("spark.comet.schemaEvolution.enabled", "true")
-             .getOrCreate();
-   }
- 
-diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/TestSparkDistributedDataScanFilterFiles.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/TestSparkDistributedDataScanFilterFiles.java
-index a218f965e..eca0125ac 100644
---- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/TestSparkDistributedDataScanFilterFiles.java
-+++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/TestSparkDistributedDataScanFilterFiles.java
-@@ -62,6 +62,16 @@ public class TestSparkDistributedDataScanFilterFiles
-             .master("local[2]")
-             .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
-             .config(SQLConf.SHUFFLE_PARTITIONS().key(), "4")
-+            .config("spark.plugins", "org.apache.spark.CometPlugin")
-+            .config(
-+                "spark.shuffle.manager",
-+                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
-+            .config("spark.comet.explainFallback.enabled", "true")
-+            .config("spark.comet.scan.icebergNative.enabled", "true")
-+            .config("spark.memory.offHeap.enabled", "true")
-+            .config("spark.memory.offHeap.size", "10g")
-+            .config("spark.comet.use.lazyMaterialization", "false")
-+            .config("spark.comet.schemaEvolution.enabled", "true")
-             .getOrCreate();
-   }
- 
-diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/TestSparkDistributedDataScanReporting.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/TestSparkDistributedDataScanReporting.java
-index 2665d7ba8..2381d0aa1 100644
---- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/TestSparkDistributedDataScanReporting.java
-+++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/TestSparkDistributedDataScanReporting.java
-@@ -63,6 +63,16 @@ public class TestSparkDistributedDataScanReporting
-             .master("local[2]")
-             .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
-             .config(SQLConf.SHUFFLE_PARTITIONS().key(), "4")
-+            .config("spark.plugins", "org.apache.spark.CometPlugin")
-+            .config(
-+                "spark.shuffle.manager",
-+                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
-+            .config("spark.comet.explainFallback.enabled", "true")
-+            .config("spark.comet.scan.icebergNative.enabled", "true")
-+            .config("spark.memory.offHeap.enabled", "true")
-+            .config("spark.memory.offHeap.size", "10g")
-+            .config("spark.comet.use.lazyMaterialization", "false")
-+            .config("spark.comet.schemaEvolution.enabled", "true")
-             .getOrCreate();
-   }
- 
-diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/TestBase.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/TestBase.java
-index de68351f6..2b5325e26 100644
---- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/TestBase.java
-+++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/TestBase.java
-@@ -77,6 +77,17 @@ public abstract class TestBase extends SparkTestHelperBase {
-             .config(SQLConf.PARTITION_OVERWRITE_MODE().key(), "dynamic")
-             .config("spark.hadoop." + METASTOREURIS.varname, hiveConf.get(METASTOREURIS.varname))
-             .config("spark.sql.legacy.respectNullabilityInTextDatasetConversion", "true")
-+            .config("spark.plugins", "org.apache.spark.CometPlugin")
-+            .config(
-+                "spark.shuffle.manager",
-+                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
-+            .config("spark.comet.explainFallback.enabled", "true")
-+            .config("spark.comet.scan.icebergNative.enabled", "true")
-+            .config("spark.memory.offHeap.enabled", "true")
-+            .config("spark.memory.offHeap.size", "10g")
-+            .config("spark.comet.use.lazyMaterialization", "false")
-+            .config("spark.comet.schemaEvolution.enabled", "true")
-+            .config("spark.comet.exec.broadcastExchange.enabled", "false")
-             .enableHiveSupport()
-             .getOrCreate();
- 
-diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/data/parquet/vectorized/TestParquetDictionaryEncodedVectorizedReads.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/data/parquet/vectorized/TestParquetDictionaryEncodedVectorizedReads.java
-index bc4e722bc..3bbff053f 100644
---- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/data/parquet/vectorized/TestParquetDictionaryEncodedVectorizedReads.java
-+++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/data/parquet/vectorized/TestParquetDictionaryEncodedVectorizedReads.java
-@@ -59,7 +59,20 @@ public class TestParquetDictionaryEncodedVectorizedReads extends TestParquetVect
- 
-   @BeforeAll
-   public static void startSpark() {
--    spark = SparkSession.builder().master("local[2]").getOrCreate();
-+    spark =
-+        SparkSession.builder()
-+            .master("local[2]")
-+            .config("spark.plugins", "org.apache.spark.CometPlugin")
-+            .config(
-+                "spark.shuffle.manager",
-+                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
-+            .config("spark.comet.explainFallback.enabled", "true")
-+            .config("spark.comet.scan.icebergNative.enabled", "true")
-+            .config("spark.memory.offHeap.enabled", "true")
-+            .config("spark.memory.offHeap.size", "10g")
-+            .config("spark.comet.use.lazyMaterialization", "false")
-+            .config("spark.comet.schemaEvolution.enabled", "true")
-+            .getOrCreate();
-   }
- 
-   @AfterAll
-diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/ScanTestBase.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/ScanTestBase.java
-index 3a269740b..42ecd7ac7 100644
---- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/ScanTestBase.java
-+++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/ScanTestBase.java
-@@ -54,7 +54,20 @@ public abstract class ScanTestBase extends AvroDataTest {
- 
-   @BeforeAll
-   public static void startSpark() {
--    ScanTestBase.spark = SparkSession.builder().master("local[2]").getOrCreate();
-+    ScanTestBase.spark =
-+        SparkSession.builder()
-+            .master("local[2]")
-+            .config("spark.plugins", "org.apache.spark.CometPlugin")
-+            .config(
-+                "spark.shuffle.manager",
-+                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
-+            .config("spark.comet.explainFallback.enabled", "true")
-+            .config("spark.comet.scan.icebergNative.enabled", "true")
-+            .config("spark.memory.offHeap.enabled", "true")
-+            .config("spark.memory.offHeap.size", "10g")
-+            .config("spark.comet.use.lazyMaterialization", "false")
-+            .config("spark.comet.schemaEvolution.enabled", "true")
-+            .getOrCreate();
-     ScanTestBase.sc = JavaSparkContext.fromSparkContext(spark.sparkContext());
-   }
- 
-diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestCompressionSettings.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestCompressionSettings.java
-index f411920a5..afb7830aa 100644
---- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestCompressionSettings.java
-+++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestCompressionSettings.java
-@@ -144,7 +144,20 @@ public class TestCompressionSettings extends CatalogTestBase {
- 
-   @BeforeAll
-   public static void startSpark() {
--    TestCompressionSettings.spark = SparkSession.builder().master("local[2]").getOrCreate();
-+    TestCompressionSettings.spark =
-+        SparkSession.builder()
-+            .master("local[2]")
-+            .config("spark.plugins", "org.apache.spark.CometPlugin")
-+            .config(
-+                "spark.shuffle.manager",
-+                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
-+            .config("spark.comet.explainFallback.enabled", "true")
-+            .config("spark.comet.scan.icebergNative.enabled", "true")
-+            .config("spark.memory.offHeap.enabled", "true")
-+            .config("spark.memory.offHeap.size", "10g")
-+            .config("spark.comet.use.lazyMaterialization", "false")
-+            .config("spark.comet.schemaEvolution.enabled", "true")
-+            .getOrCreate();
-   }
- 
-   @BeforeEach
-diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestDataSourceOptions.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestDataSourceOptions.java
-index c4ba96e63..98398968b 100644
---- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestDataSourceOptions.java
-+++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestDataSourceOptions.java
-@@ -75,7 +75,20 @@ public class TestDataSourceOptions extends TestBaseWithCatalog {
- 
-   @BeforeAll
-   public static void startSpark() {
--    TestDataSourceOptions.spark = SparkSession.builder().master("local[2]").getOrCreate();
-+    TestDataSourceOptions.spark =
-+        SparkSession.builder()
-+            .master("local[2]")
-+            .config("spark.plugins", "org.apache.spark.CometPlugin")
-+            .config(
-+                "spark.shuffle.manager",
-+                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
-+            .config("spark.comet.explainFallback.enabled", "true")
-+            .config("spark.comet.scan.icebergNative.enabled", "true")
-+            .config("spark.memory.offHeap.enabled", "true")
-+            .config("spark.memory.offHeap.size", "10g")
-+            .config("spark.comet.use.lazyMaterialization", "false")
-+            .config("spark.comet.schemaEvolution.enabled", "true")
-+            .getOrCreate();
-   }
- 
-   @AfterAll
-diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestFilteredScan.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestFilteredScan.java
-index 348173596..9017b4a37 100644
---- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestFilteredScan.java
-+++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestFilteredScan.java
-@@ -110,7 +110,20 @@ public class TestFilteredScan {
- 
-   @BeforeAll
-   public static void startSpark() {
--    TestFilteredScan.spark = SparkSession.builder().master("local[2]").getOrCreate();
-+    TestFilteredScan.spark =
-+        SparkSession.builder()
-+            .master("local[2]")
-+            .config("spark.plugins", "org.apache.spark.CometPlugin")
-+            .config(
-+                "spark.shuffle.manager",
-+                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
-+            .config("spark.comet.explainFallback.enabled", "true")
-+            .config("spark.comet.scan.icebergNative.enabled", "true")
-+            .config("spark.memory.offHeap.enabled", "true")
-+            .config("spark.memory.offHeap.size", "10g")
-+            .config("spark.comet.use.lazyMaterialization", "false")
-+            .config("spark.comet.schemaEvolution.enabled", "true")
-+            .getOrCreate();
-   }
- 
-   @AfterAll
-diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestForwardCompatibility.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestForwardCompatibility.java
-index 84c99a575..1d60b01df 100644
---- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestForwardCompatibility.java
-+++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestForwardCompatibility.java
-@@ -93,7 +93,20 @@ public class TestForwardCompatibility {
- 
-   @BeforeAll
-   public static void startSpark() {
--    TestForwardCompatibility.spark = SparkSession.builder().master("local[2]").getOrCreate();
-+    TestForwardCompatibility.spark =
-+        SparkSession.builder()
-+            .master("local[2]")
-+            .config("spark.plugins", "org.apache.spark.CometPlugin")
-+            .config(
-+                "spark.shuffle.manager",
-+                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
-+            .config("spark.comet.explainFallback.enabled", "true")
-+            .config("spark.comet.scan.icebergNative.enabled", "true")
-+            .config("spark.memory.offHeap.enabled", "true")
-+            .config("spark.memory.offHeap.size", "10g")
-+            .config("spark.comet.use.lazyMaterialization", "false")
-+            .config("spark.comet.schemaEvolution.enabled", "true")
-+            .getOrCreate();
-   }
- 
-   @AfterAll
-diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestIcebergSpark.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestIcebergSpark.java
-index 7eff93d20..7aab7f968 100644
---- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestIcebergSpark.java
-+++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestIcebergSpark.java
-@@ -46,7 +46,20 @@ public class TestIcebergSpark {
- 
-   @BeforeAll
-   public static void startSpark() {
--    TestIcebergSpark.spark = SparkSession.builder().master("local[2]").getOrCreate();
-+    TestIcebergSpark.spark =
-+        SparkSession.builder()
-+            .master("local[2]")
-+            .config("spark.plugins", "org.apache.spark.CometPlugin")
-+            .config(
-+                "spark.shuffle.manager",
-+                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
-+            .config("spark.comet.explainFallback.enabled", "true")
-+            .config("spark.comet.scan.icebergNative.enabled", "true")
-+            .config("spark.memory.offHeap.enabled", "true")
-+            .config("spark.memory.offHeap.size", "10g")
-+            .config("spark.comet.use.lazyMaterialization", "false")
-+            .config("spark.comet.schemaEvolution.enabled", "true")
-+            .getOrCreate();
-   }
- 
-   @AfterAll
-diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestPartitionPruning.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestPartitionPruning.java
-index 9464f687b..ca4e3e035 100644
---- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestPartitionPruning.java
-+++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestPartitionPruning.java
-@@ -112,7 +112,20 @@ public class TestPartitionPruning {
- 
-   @BeforeAll
-   public static void startSpark() {
--    TestPartitionPruning.spark = SparkSession.builder().master("local[2]").getOrCreate();
-+    TestPartitionPruning.spark =
-+        SparkSession.builder()
-+            .master("local[2]")
-+            .config("spark.plugins", "org.apache.spark.CometPlugin")
-+            .config(
-+                "spark.shuffle.manager",
-+                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
-+            .config("spark.comet.explainFallback.enabled", "true")
-+            .config("spark.comet.scan.icebergNative.enabled", "true")
-+            .config("spark.memory.offHeap.enabled", "true")
-+            .config("spark.memory.offHeap.size", "10g")
-+            .config("spark.comet.use.lazyMaterialization", "false")
-+            .config("spark.comet.schemaEvolution.enabled", "true")
-+            .getOrCreate();
-     TestPartitionPruning.sparkContext = JavaSparkContext.fromSparkContext(spark.sparkContext());
- 
-     String optionKey = String.format("fs.%s.impl", CountOpenLocalFileSystem.scheme);
-diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestPartitionValues.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestPartitionValues.java
-index 5c218f21c..1d2222821 100644
---- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestPartitionValues.java
-+++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestPartitionValues.java
-@@ -107,7 +107,20 @@ public class TestPartitionValues {
- 
-   @BeforeAll
-   public static void startSpark() {
--    TestPartitionValues.spark = SparkSession.builder().master("local[2]").getOrCreate();
-+    TestPartitionValues.spark =
-+        SparkSession.builder()
-+            .master("local[2]")
-+            .config("spark.plugins", "org.apache.spark.CometPlugin")
-+            .config(
-+                "spark.shuffle.manager",
-+                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
-+            .config("spark.comet.explainFallback.enabled", "true")
-+            .config("spark.comet.scan.icebergNative.enabled", "true")
-+            .config("spark.memory.offHeap.enabled", "true")
-+            .config("spark.memory.offHeap.size", "10g")
-+            .config("spark.comet.use.lazyMaterialization", "false")
-+            .config("spark.comet.schemaEvolution.enabled", "true")
-+            .getOrCreate();
-   }
- 
-   @AfterAll
-diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSnapshotSelection.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSnapshotSelection.java
-index a7334a580..ecd25670f 100644
---- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSnapshotSelection.java
-+++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSnapshotSelection.java
-@@ -87,7 +87,20 @@ public class TestSnapshotSelection {
- 
-   @BeforeAll
-   public static void startSpark() {
--    TestSnapshotSelection.spark = SparkSession.builder().master("local[2]").getOrCreate();
-+    TestSnapshotSelection.spark =
-+        SparkSession.builder()
-+            .master("local[2]")
-+            .config("spark.plugins", "org.apache.spark.CometPlugin")
-+            .config(
-+                "spark.shuffle.manager",
-+                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
-+            .config("spark.comet.explainFallback.enabled", "true")
-+            .config("spark.comet.scan.icebergNative.enabled", "true")
-+            .config("spark.memory.offHeap.enabled", "true")
-+            .config("spark.memory.offHeap.size", "10g")
-+            .config("spark.comet.use.lazyMaterialization", "false")
-+            .config("spark.comet.schemaEvolution.enabled", "true")
-+            .getOrCreate();
-   }
- 
-   @AfterAll
-diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkDataFile.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkDataFile.java
-index 182b1ef8f..205892e4a 100644
---- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkDataFile.java
-+++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkDataFile.java
-@@ -120,7 +120,20 @@ public class TestSparkDataFile {
- 
-   @BeforeAll
-   public static void startSpark() {
--    TestSparkDataFile.spark = SparkSession.builder().master("local[2]").getOrCreate();
-+    TestSparkDataFile.spark =
-+        SparkSession.builder()
-+            .master("local[2]")
-+            .config("spark.plugins", "org.apache.spark.CometPlugin")
-+            .config(
-+                "spark.shuffle.manager",
-+                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
-+            .config("spark.comet.explainFallback.enabled", "true")
-+            .config("spark.comet.scan.icebergNative.enabled", "true")
-+            .config("spark.memory.offHeap.enabled", "true")
-+            .config("spark.memory.offHeap.size", "10g")
-+            .config("spark.comet.use.lazyMaterialization", "false")
-+            .config("spark.comet.schemaEvolution.enabled", "true")
-+            .getOrCreate();
-     TestSparkDataFile.sparkContext = JavaSparkContext.fromSparkContext(spark.sparkContext());
-   }
- 
-diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkDataWrite.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkDataWrite.java
-index fb2b312be..3fca3330d 100644
---- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkDataWrite.java
-+++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkDataWrite.java
-@@ -96,7 +96,20 @@ public class TestSparkDataWrite {
- 
-   @BeforeAll
-   public static void startSpark() {
--    TestSparkDataWrite.spark = SparkSession.builder().master("local[2]").getOrCreate();
-+    TestSparkDataWrite.spark =
-+        SparkSession.builder()
-+            .master("local[2]")
-+            .config("spark.plugins", "org.apache.spark.CometPlugin")
-+            .config(
-+                "spark.shuffle.manager",
-+                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
-+            .config("spark.comet.explainFallback.enabled", "true")
-+            .config("spark.comet.scan.icebergNative.enabled", "true")
-+            .config("spark.memory.offHeap.enabled", "true")
-+            .config("spark.memory.offHeap.size", "10g")
-+            .config("spark.comet.use.lazyMaterialization", "false")
-+            .config("spark.comet.schemaEvolution.enabled", "true")
-+            .getOrCreate();
-   }
- 
-   @AfterEach
-@@ -140,7 +153,7 @@ public class TestSparkDataWrite {
-     Dataset<Row> result = spark.read().format("iceberg").load(targetLocation);
- 
-     List<SimpleRecord> actual =
--        result.orderBy("id").as(Encoders.bean(SimpleRecord.class)).collectAsList();
-+        result.orderBy("id", "data").as(Encoders.bean(SimpleRecord.class)).collectAsList();
-     assertThat(actual).as("Number of rows should match").hasSameSizeAs(expected);
-     assertThat(actual).as("Result rows should match").isEqualTo(expected);
-     for (ManifestFile manifest :
-@@ -210,7 +223,7 @@ public class TestSparkDataWrite {
-     Dataset<Row> result = spark.read().format("iceberg").load(targetLocation);
- 
-     List<SimpleRecord> actual =
--        result.orderBy("id").as(Encoders.bean(SimpleRecord.class)).collectAsList();
-+        result.orderBy("id", "data").as(Encoders.bean(SimpleRecord.class)).collectAsList();
-     assertThat(actual).as("Number of rows should match").hasSameSizeAs(expected);
-     assertThat(actual).as("Result rows should match").isEqualTo(expected);
-   }
-@@ -256,7 +269,7 @@ public class TestSparkDataWrite {
-     Dataset<Row> result = spark.read().format("iceberg").load(targetLocation);
- 
-     List<SimpleRecord> actual =
--        result.orderBy("id").as(Encoders.bean(SimpleRecord.class)).collectAsList();
-+        result.orderBy("id", "data").as(Encoders.bean(SimpleRecord.class)).collectAsList();
-     assertThat(actual).as("Number of rows should match").hasSameSizeAs(expected);
-     assertThat(actual).as("Result rows should match").isEqualTo(expected);
-   }
-@@ -309,7 +322,7 @@ public class TestSparkDataWrite {
-     Dataset<Row> result = spark.read().format("iceberg").load(targetLocation);
- 
-     List<SimpleRecord> actual =
--        result.orderBy("id").as(Encoders.bean(SimpleRecord.class)).collectAsList();
-+        result.orderBy("id", "data").as(Encoders.bean(SimpleRecord.class)).collectAsList();
-     assertThat(actual).as("Number of rows should match").hasSameSizeAs(expected);
-     assertThat(actual).as("Result rows should match").isEqualTo(expected);
-   }
-@@ -352,7 +365,7 @@ public class TestSparkDataWrite {
-     Dataset<Row> result = spark.read().format("iceberg").load(targetLocation);
- 
-     List<SimpleRecord> actual =
--        result.orderBy("id").as(Encoders.bean(SimpleRecord.class)).collectAsList();
-+        result.orderBy("id", "data").as(Encoders.bean(SimpleRecord.class)).collectAsList();
-     assertThat(actual).as("Number of rows should match").hasSameSizeAs(expected);
-     assertThat(actual).as("Result rows should match").isEqualTo(expected);
-   }
-@@ -392,7 +405,7 @@ public class TestSparkDataWrite {
-     Dataset<Row> result = spark.read().format("iceberg").load(targetLocation);
- 
-     List<SimpleRecord> actual =
--        result.orderBy("id").as(Encoders.bean(SimpleRecord.class)).collectAsList();
-+        result.orderBy("id", "data").as(Encoders.bean(SimpleRecord.class)).collectAsList();
-     assertThat(actual).as("Number of rows should match").hasSameSizeAs(expected);
-     assertThat(actual).as("Result rows should match").isEqualTo(expected);
- 
-@@ -458,7 +471,7 @@ public class TestSparkDataWrite {
-     Dataset<Row> result = spark.read().format("iceberg").load(targetLocation);
- 
-     List<SimpleRecord> actual =
--        result.orderBy("id").as(Encoders.bean(SimpleRecord.class)).collectAsList();
-+        result.orderBy("id", "data").as(Encoders.bean(SimpleRecord.class)).collectAsList();
-     assertThat(actual).as("Number of rows should match").hasSameSizeAs(expected);
-     assertThat(actual).as("Result rows should match").isEqualTo(expected);
-   }
-@@ -622,7 +635,7 @@ public class TestSparkDataWrite {
-     Dataset<Row> result = spark.read().format("iceberg").load(targetLocation);
- 
-     List<SimpleRecord> actual =
--        result.orderBy("id").as(Encoders.bean(SimpleRecord.class)).collectAsList();
-+        result.orderBy("id", "data").as(Encoders.bean(SimpleRecord.class)).collectAsList();
-     assertThat(actual).as("Number of rows should match").hasSameSizeAs(expected);
-     assertThat(actual).as("Result rows should match").isEqualTo(expected);
- 
-@@ -708,7 +721,7 @@ public class TestSparkDataWrite {
-     // Since write and commit succeeded, the rows should be readable
-     Dataset<Row> result = spark.read().format("iceberg").load(targetLocation);
-     List<SimpleRecord> actual =
--        result.orderBy("id").as(Encoders.bean(SimpleRecord.class)).collectAsList();
-+        result.orderBy("id", "data").as(Encoders.bean(SimpleRecord.class)).collectAsList();
-     assertThat(actual).as("Number of rows should match").hasSize(records.size() + records2.size());
-     assertThat(actual)
-         .describedAs("Result rows should match")
-diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkReadProjection.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkReadProjection.java
-index becf6a064..21701450a 100644
---- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkReadProjection.java
-+++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkReadProjection.java
-@@ -83,7 +83,20 @@ public class TestSparkReadProjection extends TestReadProjection {
- 
-   @BeforeAll
-   public static void startSpark() {
--    TestSparkReadProjection.spark = SparkSession.builder().master("local[2]").getOrCreate();
-+    TestSparkReadProjection.spark =
-+        SparkSession.builder()
-+            .master("local[2]")
-+            .config("spark.plugins", "org.apache.spark.CometPlugin")
-+            .config(
-+                "spark.shuffle.manager",
-+                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
-+            .config("spark.comet.explainFallback.enabled", "true")
-+            .config("spark.comet.scan.icebergNative.enabled", "true")
-+            .config("spark.memory.offHeap.enabled", "true")
-+            .config("spark.memory.offHeap.size", "10g")
-+            .config("spark.comet.use.lazyMaterialization", "false")
-+            .config("spark.comet.schemaEvolution.enabled", "true")
-+            .getOrCreate();
-     ImmutableMap<String, String> config =
-         ImmutableMap.of(
-             "type", "hive",
-diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkReaderDeletes.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkReaderDeletes.java
-index 4f1cef5d3..f0f427732 100644
---- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkReaderDeletes.java
-+++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkReaderDeletes.java
-@@ -136,6 +136,16 @@ public class TestSparkReaderDeletes extends DeleteReadTests {
-             .config("spark.ui.liveUpdate.period", 0)
-             .config(SQLConf.PARTITION_OVERWRITE_MODE().key(), "dynamic")
-             .config("spark.hadoop." + METASTOREURIS.varname, hiveConf.get(METASTOREURIS.varname))
-+            .config("spark.plugins", "org.apache.spark.CometPlugin")
-+            .config(
-+                "spark.shuffle.manager",
-+                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
-+            .config("spark.comet.explainFallback.enabled", "true")
-+            .config("spark.comet.scan.icebergNative.enabled", "true")
-+            .config("spark.memory.offHeap.enabled", "true")
-+            .config("spark.memory.offHeap.size", "10g")
-+            .config("spark.comet.use.lazyMaterialization", "false")
-+            .config("spark.comet.schemaEvolution.enabled", "true")
-             .enableHiveSupport()
-             .getOrCreate();
- 
-@@ -204,7 +214,8 @@ public class TestSparkReaderDeletes extends DeleteReadTests {
-   }
- 
-   protected boolean countDeletes() {
--    return true;
-+    // TODO: Enable once iceberg-rust exposes delete count metrics to Comet
-+    return false;
-   }
- 
-   @Override
-diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkReaderWithBloomFilter.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkReaderWithBloomFilter.java
-index baf7fa8f8..150cc8969 100644
---- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkReaderWithBloomFilter.java
-+++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkReaderWithBloomFilter.java
-@@ -182,6 +182,16 @@ public class TestSparkReaderWithBloomFilter {
-         SparkSession.builder()
-             .master("local[2]")
-             .config("spark.hadoop." + METASTOREURIS.varname, hiveConf.get(METASTOREURIS.varname))
-+            .config("spark.plugins", "org.apache.spark.CometPlugin")
-+            .config(
-+                "spark.shuffle.manager",
-+                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
-+            .config("spark.comet.explainFallback.enabled", "true")
-+            .config("spark.comet.scan.icebergNative.enabled", "true")
-+            .config("spark.memory.offHeap.enabled", "true")
-+            .config("spark.memory.offHeap.size", "10g")
-+            .config("spark.comet.use.lazyMaterialization", "false")
-+            .config("spark.comet.schemaEvolution.enabled", "true")
-             .enableHiveSupport()
-             .getOrCreate();
- 
-diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestStructuredStreaming.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestStructuredStreaming.java
-index 17db46b85..d7e91b4ee 100644
---- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestStructuredStreaming.java
-+++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestStructuredStreaming.java
-@@ -65,6 +65,16 @@ public class TestStructuredStreaming {
-         SparkSession.builder()
-             .master("local[2]")
-             .config("spark.sql.shuffle.partitions", 4)
-+            .config("spark.plugins", "org.apache.spark.CometPlugin")
-+            .config(
-+                "spark.shuffle.manager",
-+                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
-+            .config("spark.comet.explainFallback.enabled", "true")
-+            .config("spark.comet.scan.icebergNative.enabled", "true")
-+            .config("spark.memory.offHeap.enabled", "true")
-+            .config("spark.memory.offHeap.size", "10g")
-+            .config("spark.comet.use.lazyMaterialization", "false")
-+            .config("spark.comet.schemaEvolution.enabled", "true")
-             .getOrCreate();
-   }
- 
-diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestTimestampWithoutZone.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestTimestampWithoutZone.java
-index 306444b9f..b661aa8ce 100644
---- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestTimestampWithoutZone.java
-+++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestTimestampWithoutZone.java
-@@ -75,7 +75,20 @@ public class TestTimestampWithoutZone extends TestBase {
- 
-   @BeforeAll
-   public static void startSpark() {
--    TestTimestampWithoutZone.spark = SparkSession.builder().master("local[2]").getOrCreate();
-+    TestTimestampWithoutZone.spark =
-+        SparkSession.builder()
-+            .master("local[2]")
-+            .config("spark.plugins", "org.apache.spark.CometPlugin")
-+            .config(
-+                "spark.shuffle.manager",
-+                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
-+            .config("spark.comet.explainFallback.enabled", "true")
-+            .config("spark.comet.scan.icebergNative.enabled", "true")
-+            .config("spark.memory.offHeap.enabled", "true")
-+            .config("spark.memory.offHeap.size", "10g")
-+            .config("spark.comet.use.lazyMaterialization", "false")
-+            .config("spark.comet.schemaEvolution.enabled", "true")
-+            .getOrCreate();
-   }
- 
-   @AfterAll
-diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestWriteMetricsConfig.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestWriteMetricsConfig.java
-index 841268a6b..2fcc92bcb 100644
---- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestWriteMetricsConfig.java
-+++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestWriteMetricsConfig.java
-@@ -80,7 +80,20 @@ public class TestWriteMetricsConfig {
- 
-   @BeforeAll
-   public static void startSpark() {
--    TestWriteMetricsConfig.spark = SparkSession.builder().master("local[2]").getOrCreate();
-+    TestWriteMetricsConfig.spark =
-+        SparkSession.builder()
-+            .master("local[2]")
-+            .config("spark.plugins", "org.apache.spark.CometPlugin")
-+            .config(
-+                "spark.shuffle.manager",
-+                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
-+            .config("spark.comet.explainFallback.enabled", "true")
-+            .config("spark.comet.scan.icebergNative.enabled", "true")
-+            .config("spark.memory.offHeap.enabled", "true")
-+            .config("spark.memory.offHeap.size", "10g")
-+            .config("spark.comet.use.lazyMaterialization", "false")
-+            .config("spark.comet.schemaEvolution.enabled", "true")
-+            .getOrCreate();
-     TestWriteMetricsConfig.sc = JavaSparkContext.fromSparkContext(spark.sparkContext());
-   }
- 
-diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/sql/TestAggregatePushDown.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/sql/TestAggregatePushDown.java
-index 6e0925270..e0d743180 100644
---- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/sql/TestAggregatePushDown.java
-+++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/sql/TestAggregatePushDown.java
-@@ -60,6 +60,16 @@ public class TestAggregatePushDown extends CatalogTestBase {
-         SparkSession.builder()
-             .master("local[2]")
-             .config("spark.sql.iceberg.aggregate_pushdown", "true")
-+            .config("spark.plugins", "org.apache.spark.CometPlugin")
-+            .config(
-+                "spark.shuffle.manager",
-+                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
-+            .config("spark.comet.explainFallback.enabled", "true")
-+            .config("spark.comet.scan.icebergNative.enabled", "true")
-+            .config("spark.memory.offHeap.enabled", "true")
-+            .config("spark.memory.offHeap.size", "10g")
-+            .config("spark.comet.use.lazyMaterialization", "false")
-+            .config("spark.comet.schemaEvolution.enabled", "true")
-             .enableHiveSupport()
-             .getOrCreate();
- 
-diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/sql/TestFilterPushDown.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/sql/TestFilterPushDown.java
-index 9d2ce2b38..5e2336884 100644
---- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/sql/TestFilterPushDown.java
-+++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/sql/TestFilterPushDown.java
-@@ -598,9 +598,7 @@ public class TestFilterPushDown extends TestBaseWithCatalog {
-     String planAsString = sparkPlan.toString().replaceAll("#(\\d+L?)", "");
- 
-     if (sparkFilter != null) {
--      assertThat(planAsString)
--          .as("Post scan filter should match")
--          .contains("Filter (" + sparkFilter + ")");
-+      assertThat(planAsString).as("Post scan filter should match").contains("CometFilter");
-     } else {
-       assertThat(planAsString).as("Should be no post scan filter").doesNotContain("Filter (");
-     }
-diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/sql/TestStoragePartitionedJoins.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/sql/TestStoragePartitionedJoins.java
-index 6719c45ca..251545440 100644
---- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/sql/TestStoragePartitionedJoins.java
-+++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/sql/TestStoragePartitionedJoins.java
-@@ -616,7 +616,7 @@ public class TestStoragePartitionedJoins extends TestBaseWithCatalog {
-             + "FROM %s t1 "
-             + "INNER JOIN %s t2 "
-             + "ON t1.id = t2.id AND t1.%s = t2.%s "
--            + "ORDER BY t1.id, t1.%s",
-+            + "ORDER BY t1.id, t1.%s, t1.salary",
-         sourceColumnName,
-         tableName,
-         tableName(OTHER_TABLE_NAME),
 diff --git a/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometColumnReader.java b/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometColumnReader.java
 deleted file mode 100644
 index 4794863ab1..0000000000
@@ -1638,10 +909,10 @@ index d36f1a7274..0000000000
 -  }
 -}
 diff --git a/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/VectorizedSparkParquetReaders.java b/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/VectorizedSparkParquetReaders.java
-index b523bc5bff..4aa274a0c7 100644
+index b523bc5bff..636ad3be7d 100644
 --- a/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/VectorizedSparkParquetReaders.java
 +++ b/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/VectorizedSparkParquetReaders.java
-@@ -70,22 +70,6 @@ public class VectorizedSparkParquetReaders {
+@@ -70,23 +70,6 @@ public class VectorizedSparkParquetReaders {
                  deleteFilter));
    }
  
@@ -1661,9 +932,10 @@ index b523bc5bff..4aa274a0c7 100644
 -                readers -> new CometColumnarBatchReader(readers, expectedSchema),
 -                deleteFilter));
 -  }
- 
+-
    // enables unsafe memory access to avoid costly checks to see if index is within bounds
    // as long as it is not configured explicitly (see BoundsChecking in Arrow)
+   private static void enableUnsafeMemoryAccess() {
 diff --git a/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/source/BaseBatchReader.java b/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/source/BaseBatchReader.java
 index 780e1750a5..25f253eede 100644
 --- a/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/source/BaseBatchReader.java
@@ -1695,6 +967,882 @@ index 780e1750a5..25f253eede 100644
          .recordsPerBatch(parquetConf.batchSize())
          .filter(residual)
          .caseSensitive(caseSensitive())
+diff --git a/spark/v3.4/spark/src/test/java/org/apache/iceberg/SparkDistributedDataScanTestBase.java b/spark/v3.4/spark/src/test/java/org/apache/iceberg/SparkDistributedDataScanTestBase.java
+index 404ba72846..00e97e96f9 100644
+--- a/spark/v3.4/spark/src/test/java/org/apache/iceberg/SparkDistributedDataScanTestBase.java
++++ b/spark/v3.4/spark/src/test/java/org/apache/iceberg/SparkDistributedDataScanTestBase.java
+@@ -90,6 +90,16 @@ public abstract class SparkDistributedDataScanTestBase
+         .master("local[2]")
+         .config("spark.serializer", serializer)
+         .config(SQLConf.SHUFFLE_PARTITIONS().key(), "4")
++        .config("spark.plugins", "org.apache.spark.CometPlugin")
++        .config(
++            "spark.shuffle.manager",
++            "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++        .config("spark.comet.explainFallback.enabled", "true")
++        .config("spark.comet.scan.icebergNative.enabled", "true")
++        .config("spark.memory.offHeap.enabled", "true")
++        .config("spark.memory.offHeap.size", "10g")
++        .config("spark.comet.use.lazyMaterialization", "false")
++        .config("spark.comet.schemaEvolution.enabled", "true")
+         .getOrCreate();
+   }
+ }
+diff --git a/spark/v3.4/spark/src/test/java/org/apache/iceberg/TestSparkDistributedDataScanDeletes.java b/spark/v3.4/spark/src/test/java/org/apache/iceberg/TestSparkDistributedDataScanDeletes.java
+index 9361c63176..9a78bbf3b6 100644
+--- a/spark/v3.4/spark/src/test/java/org/apache/iceberg/TestSparkDistributedDataScanDeletes.java
++++ b/spark/v3.4/spark/src/test/java/org/apache/iceberg/TestSparkDistributedDataScanDeletes.java
+@@ -69,6 +69,16 @@ public class TestSparkDistributedDataScanDeletes
+             .master("local[2]")
+             .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
+             .config(SQLConf.SHUFFLE_PARTITIONS().key(), "4")
++            .config("spark.plugins", "org.apache.spark.CometPlugin")
++            .config(
++                "spark.shuffle.manager",
++                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++            .config("spark.comet.explainFallback.enabled", "true")
++            .config("spark.comet.scan.icebergNative.enabled", "true")
++            .config("spark.memory.offHeap.enabled", "true")
++            .config("spark.memory.offHeap.size", "10g")
++            .config("spark.comet.use.lazyMaterialization", "false")
++            .config("spark.comet.schemaEvolution.enabled", "true")
+             .getOrCreate();
+   }
+ 
+diff --git a/spark/v3.4/spark/src/test/java/org/apache/iceberg/TestSparkDistributedDataScanFilterFiles.java b/spark/v3.4/spark/src/test/java/org/apache/iceberg/TestSparkDistributedDataScanFilterFiles.java
+index a218f965ea..eca0125ace 100644
+--- a/spark/v3.4/spark/src/test/java/org/apache/iceberg/TestSparkDistributedDataScanFilterFiles.java
++++ b/spark/v3.4/spark/src/test/java/org/apache/iceberg/TestSparkDistributedDataScanFilterFiles.java
+@@ -62,6 +62,16 @@ public class TestSparkDistributedDataScanFilterFiles
+             .master("local[2]")
+             .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
+             .config(SQLConf.SHUFFLE_PARTITIONS().key(), "4")
++            .config("spark.plugins", "org.apache.spark.CometPlugin")
++            .config(
++                "spark.shuffle.manager",
++                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++            .config("spark.comet.explainFallback.enabled", "true")
++            .config("spark.comet.scan.icebergNative.enabled", "true")
++            .config("spark.memory.offHeap.enabled", "true")
++            .config("spark.memory.offHeap.size", "10g")
++            .config("spark.comet.use.lazyMaterialization", "false")
++            .config("spark.comet.schemaEvolution.enabled", "true")
+             .getOrCreate();
+   }
+ 
+diff --git a/spark/v3.4/spark/src/test/java/org/apache/iceberg/TestSparkDistributedDataScanReporting.java b/spark/v3.4/spark/src/test/java/org/apache/iceberg/TestSparkDistributedDataScanReporting.java
+index acd4688440..9be94eab2f 100644
+--- a/spark/v3.4/spark/src/test/java/org/apache/iceberg/TestSparkDistributedDataScanReporting.java
++++ b/spark/v3.4/spark/src/test/java/org/apache/iceberg/TestSparkDistributedDataScanReporting.java
+@@ -59,6 +59,16 @@ public class TestSparkDistributedDataScanReporting
+             .master("local[2]")
+             .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
+             .config(SQLConf.SHUFFLE_PARTITIONS().key(), "4")
++            .config("spark.plugins", "org.apache.spark.CometPlugin")
++            .config(
++                "spark.shuffle.manager",
++                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++            .config("spark.comet.explainFallback.enabled", "true")
++            .config("spark.comet.scan.icebergNative.enabled", "true")
++            .config("spark.memory.offHeap.enabled", "true")
++            .config("spark.memory.offHeap.size", "10g")
++            .config("spark.comet.use.lazyMaterialization", "false")
++            .config("spark.comet.schemaEvolution.enabled", "true")
+             .getOrCreate();
+   }
+ 
+diff --git a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/SparkTestBase.java b/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/SparkTestBase.java
+index 3e8953fb95..cac4f75e95 100644
+--- a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/SparkTestBase.java
++++ b/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/SparkTestBase.java
+@@ -77,6 +77,16 @@ public abstract class SparkTestBase extends SparkTestHelperBase {
+             .config(SQLConf.PARTITION_OVERWRITE_MODE().key(), "dynamic")
+             .config("spark.hadoop." + METASTOREURIS.varname, hiveConf.get(METASTOREURIS.varname))
+             .config("spark.sql.legacy.respectNullabilityInTextDatasetConversion", "true")
++            .config("spark.plugins", "org.apache.spark.CometPlugin")
++            .config(
++                "spark.shuffle.manager",
++                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++            .config("spark.comet.explainFallback.enabled", "true")
++            .config("spark.comet.scan.icebergNative.enabled", "true")
++            .config("spark.memory.offHeap.enabled", "true")
++            .config("spark.memory.offHeap.size", "10g")
++            .config("spark.comet.use.lazyMaterialization", "false")
++            .config("spark.comet.schemaEvolution.enabled", "true")
+             .enableHiveSupport()
+             .getOrCreate();
+ 
+diff --git a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/ScanTestBase.java b/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/ScanTestBase.java
+index 3a269740b7..42ecd7ac7b 100644
+--- a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/ScanTestBase.java
++++ b/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/ScanTestBase.java
+@@ -54,7 +54,20 @@ public abstract class ScanTestBase extends AvroDataTest {
+ 
+   @BeforeAll
+   public static void startSpark() {
+-    ScanTestBase.spark = SparkSession.builder().master("local[2]").getOrCreate();
++    ScanTestBase.spark =
++        SparkSession.builder()
++            .master("local[2]")
++            .config("spark.plugins", "org.apache.spark.CometPlugin")
++            .config(
++                "spark.shuffle.manager",
++                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++            .config("spark.comet.explainFallback.enabled", "true")
++            .config("spark.comet.scan.icebergNative.enabled", "true")
++            .config("spark.memory.offHeap.enabled", "true")
++            .config("spark.memory.offHeap.size", "10g")
++            .config("spark.comet.use.lazyMaterialization", "false")
++            .config("spark.comet.schemaEvolution.enabled", "true")
++            .getOrCreate();
+     ScanTestBase.sc = JavaSparkContext.fromSparkContext(spark.sparkContext());
+   }
+ 
+diff --git a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestCompressionSettings.java b/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestCompressionSettings.java
+index 724c6edde2..40b17106b0 100644
+--- a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestCompressionSettings.java
++++ b/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestCompressionSettings.java
+@@ -103,7 +103,20 @@ public class TestCompressionSettings extends SparkCatalogTestBase {
+ 
+   @BeforeClass
+   public static void startSpark() {
+-    TestCompressionSettings.spark = SparkSession.builder().master("local[2]").getOrCreate();
++    TestCompressionSettings.spark =
++        SparkSession.builder()
++            .master("local[2]")
++            .config("spark.plugins", "org.apache.spark.CometPlugin")
++            .config(
++                "spark.shuffle.manager",
++                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++            .config("spark.comet.explainFallback.enabled", "true")
++            .config("spark.comet.scan.icebergNative.enabled", "true")
++            .config("spark.memory.offHeap.enabled", "true")
++            .config("spark.memory.offHeap.size", "10g")
++            .config("spark.comet.use.lazyMaterialization", "false")
++            .config("spark.comet.schemaEvolution.enabled", "true")
++            .getOrCreate();
+   }
+ 
+   @Parameterized.AfterParam
+diff --git a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestDataSourceOptions.java b/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestDataSourceOptions.java
+index 013b8d4386..613f35417e 100644
+--- a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestDataSourceOptions.java
++++ b/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestDataSourceOptions.java
+@@ -76,7 +76,20 @@ public class TestDataSourceOptions extends SparkTestBaseWithCatalog {
+ 
+   @BeforeClass
+   public static void startSpark() {
+-    TestDataSourceOptions.spark = SparkSession.builder().master("local[2]").getOrCreate();
++    TestDataSourceOptions.spark =
++        SparkSession.builder()
++            .master("local[2]")
++            .config("spark.plugins", "org.apache.spark.CometPlugin")
++            .config(
++                "spark.shuffle.manager",
++                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++            .config("spark.comet.explainFallback.enabled", "true")
++            .config("spark.comet.scan.icebergNative.enabled", "true")
++            .config("spark.memory.offHeap.enabled", "true")
++            .config("spark.memory.offHeap.size", "10g")
++            .config("spark.comet.use.lazyMaterialization", "false")
++            .config("spark.comet.schemaEvolution.enabled", "true")
++            .getOrCreate();
+   }
+ 
+   @AfterClass
+diff --git a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestFilteredScan.java b/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestFilteredScan.java
+index ba13d005bd..73d76e2d3e 100644
+--- a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestFilteredScan.java
++++ b/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestFilteredScan.java
+@@ -118,7 +118,20 @@ public class TestFilteredScan {
+ 
+   @BeforeClass
+   public static void startSpark() {
+-    TestFilteredScan.spark = SparkSession.builder().master("local[2]").getOrCreate();
++    TestFilteredScan.spark =
++        SparkSession.builder()
++            .master("local[2]")
++            .config("spark.plugins", "org.apache.spark.CometPlugin")
++            .config(
++                "spark.shuffle.manager",
++                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++            .config("spark.comet.explainFallback.enabled", "true")
++            .config("spark.comet.scan.icebergNative.enabled", "true")
++            .config("spark.memory.offHeap.enabled", "true")
++            .config("spark.memory.offHeap.size", "10g")
++            .config("spark.comet.use.lazyMaterialization", "false")
++            .config("spark.comet.schemaEvolution.enabled", "true")
++            .getOrCreate();
+ 
+     // define UDFs used by partition tests
+     Function<Object, Integer> bucket4 = Transforms.bucket(4).bind(Types.LongType.get());
+diff --git a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestForwardCompatibility.java b/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestForwardCompatibility.java
+index 9f97753094..a69cf4f33d 100644
+--- a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestForwardCompatibility.java
++++ b/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestForwardCompatibility.java
+@@ -94,7 +94,20 @@ public class TestForwardCompatibility {
+ 
+   @BeforeClass
+   public static void startSpark() {
+-    TestForwardCompatibility.spark = SparkSession.builder().master("local[2]").getOrCreate();
++    TestForwardCompatibility.spark =
++        SparkSession.builder()
++            .master("local[2]")
++            .config("spark.plugins", "org.apache.spark.CometPlugin")
++            .config(
++                "spark.shuffle.manager",
++                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++            .config("spark.comet.explainFallback.enabled", "true")
++            .config("spark.comet.scan.icebergNative.enabled", "true")
++            .config("spark.memory.offHeap.enabled", "true")
++            .config("spark.memory.offHeap.size", "10g")
++            .config("spark.comet.use.lazyMaterialization", "false")
++            .config("spark.comet.schemaEvolution.enabled", "true")
++            .getOrCreate();
+   }
+ 
+   @AfterClass
+diff --git a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestIcebergSpark.java b/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestIcebergSpark.java
+index 0154506f86..79138afc26 100644
+--- a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestIcebergSpark.java
++++ b/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestIcebergSpark.java
+@@ -46,7 +46,20 @@ public class TestIcebergSpark {
+ 
+   @BeforeClass
+   public static void startSpark() {
+-    TestIcebergSpark.spark = SparkSession.builder().master("local[2]").getOrCreate();
++    TestIcebergSpark.spark =
++        SparkSession.builder()
++            .master("local[2]")
++            .config("spark.plugins", "org.apache.spark.CometPlugin")
++            .config(
++                "spark.shuffle.manager",
++                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++            .config("spark.comet.explainFallback.enabled", "true")
++            .config("spark.comet.scan.icebergNative.enabled", "true")
++            .config("spark.memory.offHeap.enabled", "true")
++            .config("spark.memory.offHeap.size", "10g")
++            .config("spark.comet.use.lazyMaterialization", "false")
++            .config("spark.comet.schemaEvolution.enabled", "true")
++            .getOrCreate();
+   }
+ 
+   @AfterClass
+diff --git a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestPartitionPruning.java b/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestPartitionPruning.java
+index 639d37c793..c4570510a6 100644
+--- a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestPartitionPruning.java
++++ b/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestPartitionPruning.java
+@@ -111,7 +111,20 @@ public class TestPartitionPruning {
+ 
+   @BeforeClass
+   public static void startSpark() {
+-    TestPartitionPruning.spark = SparkSession.builder().master("local[2]").getOrCreate();
++    TestPartitionPruning.spark =
++        SparkSession.builder()
++            .master("local[2]")
++            .config("spark.plugins", "org.apache.spark.CometPlugin")
++            .config(
++                "spark.shuffle.manager",
++                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++            .config("spark.comet.explainFallback.enabled", "true")
++            .config("spark.comet.scan.icebergNative.enabled", "true")
++            .config("spark.memory.offHeap.enabled", "true")
++            .config("spark.memory.offHeap.size", "10g")
++            .config("spark.comet.use.lazyMaterialization", "false")
++            .config("spark.comet.schemaEvolution.enabled", "true")
++            .getOrCreate();
+     TestPartitionPruning.sparkContext = JavaSparkContext.fromSparkContext(spark.sparkContext());
+ 
+     String optionKey = String.format("fs.%s.impl", CountOpenLocalFileSystem.scheme);
+diff --git a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestPartitionValues.java b/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestPartitionValues.java
+index ad0984ef42..cb143ac2fc 100644
+--- a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestPartitionValues.java
++++ b/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestPartitionValues.java
+@@ -104,7 +104,20 @@ public class TestPartitionValues {
+ 
+   @BeforeClass
+   public static void startSpark() {
+-    TestPartitionValues.spark = SparkSession.builder().master("local[2]").getOrCreate();
++    TestPartitionValues.spark =
++        SparkSession.builder()
++            .master("local[2]")
++            .config("spark.plugins", "org.apache.spark.CometPlugin")
++            .config(
++                "spark.shuffle.manager",
++                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++            .config("spark.comet.explainFallback.enabled", "true")
++            .config("spark.comet.scan.icebergNative.enabled", "true")
++            .config("spark.memory.offHeap.enabled", "true")
++            .config("spark.memory.offHeap.size", "10g")
++            .config("spark.comet.use.lazyMaterialization", "false")
++            .config("spark.comet.schemaEvolution.enabled", "true")
++            .getOrCreate();
+   }
+ 
+   @AfterClass
+diff --git a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestSnapshotSelection.java b/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestSnapshotSelection.java
+index 9fc576dde5..2765862300 100644
+--- a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestSnapshotSelection.java
++++ b/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestSnapshotSelection.java
+@@ -83,7 +83,20 @@ public class TestSnapshotSelection {
+ 
+   @BeforeClass
+   public static void startSpark() {
+-    TestSnapshotSelection.spark = SparkSession.builder().master("local[2]").getOrCreate();
++    TestSnapshotSelection.spark =
++        SparkSession.builder()
++            .master("local[2]")
++            .config("spark.plugins", "org.apache.spark.CometPlugin")
++            .config(
++                "spark.shuffle.manager",
++                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++            .config("spark.comet.explainFallback.enabled", "true")
++            .config("spark.comet.scan.icebergNative.enabled", "true")
++            .config("spark.memory.offHeap.enabled", "true")
++            .config("spark.memory.offHeap.size", "10g")
++            .config("spark.comet.use.lazyMaterialization", "false")
++            .config("spark.comet.schemaEvolution.enabled", "true")
++            .getOrCreate();
+   }
+ 
+   @AfterClass
+diff --git a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkDataFile.java b/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkDataFile.java
+index 16fde3c954..9c01167064 100644
+--- a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkDataFile.java
++++ b/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkDataFile.java
+@@ -121,7 +121,20 @@ public class TestSparkDataFile {
+ 
+   @BeforeClass
+   public static void startSpark() {
+-    TestSparkDataFile.spark = SparkSession.builder().master("local[2]").getOrCreate();
++    TestSparkDataFile.spark =
++        SparkSession.builder()
++            .master("local[2]")
++            .config("spark.plugins", "org.apache.spark.CometPlugin")
++            .config(
++                "spark.shuffle.manager",
++                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++            .config("spark.comet.explainFallback.enabled", "true")
++            .config("spark.comet.scan.icebergNative.enabled", "true")
++            .config("spark.memory.offHeap.enabled", "true")
++            .config("spark.memory.offHeap.size", "10g")
++            .config("spark.comet.use.lazyMaterialization", "false")
++            .config("spark.comet.schemaEvolution.enabled", "true")
++            .getOrCreate();
+     TestSparkDataFile.sparkContext = JavaSparkContext.fromSparkContext(spark.sparkContext());
+   }
+ 
+diff --git a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkDataWrite.java b/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkDataWrite.java
+index 63c18277aa..d214d7c23c 100644
+--- a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkDataWrite.java
++++ b/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkDataWrite.java
+@@ -89,7 +89,20 @@ public class TestSparkDataWrite {
+ 
+   @BeforeClass
+   public static void startSpark() {
+-    TestSparkDataWrite.spark = SparkSession.builder().master("local[2]").getOrCreate();
++    TestSparkDataWrite.spark =
++        SparkSession.builder()
++            .master("local[2]")
++            .config("spark.plugins", "org.apache.spark.CometPlugin")
++            .config(
++                "spark.shuffle.manager",
++                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++            .config("spark.comet.explainFallback.enabled", "true")
++            .config("spark.comet.scan.icebergNative.enabled", "true")
++            .config("spark.memory.offHeap.enabled", "true")
++            .config("spark.memory.offHeap.size", "10g")
++            .config("spark.comet.use.lazyMaterialization", "false")
++            .config("spark.comet.schemaEvolution.enabled", "true")
++            .getOrCreate();
+   }
+ 
+   @Parameterized.AfterParam
+@@ -138,7 +151,7 @@ public class TestSparkDataWrite {
+     Dataset<Row> result = spark.read().format("iceberg").load(targetLocation);
+ 
+     List<SimpleRecord> actual =
+-        result.orderBy("id").as(Encoders.bean(SimpleRecord.class)).collectAsList();
++        result.orderBy("id", "data").as(Encoders.bean(SimpleRecord.class)).collectAsList();
+     Assert.assertEquals("Number of rows should match", expected.size(), actual.size());
+     Assert.assertEquals("Result rows should match", expected, actual);
+     for (ManifestFile manifest :
+@@ -208,7 +221,7 @@ public class TestSparkDataWrite {
+     Dataset<Row> result = spark.read().format("iceberg").load(targetLocation);
+ 
+     List<SimpleRecord> actual =
+-        result.orderBy("id").as(Encoders.bean(SimpleRecord.class)).collectAsList();
++        result.orderBy("id", "data").as(Encoders.bean(SimpleRecord.class)).collectAsList();
+     Assert.assertEquals("Number of rows should match", expected.size(), actual.size());
+     Assert.assertEquals("Result rows should match", expected, actual);
+   }
+@@ -254,7 +267,7 @@ public class TestSparkDataWrite {
+     Dataset<Row> result = spark.read().format("iceberg").load(targetLocation);
+ 
+     List<SimpleRecord> actual =
+-        result.orderBy("id").as(Encoders.bean(SimpleRecord.class)).collectAsList();
++        result.orderBy("id", "data").as(Encoders.bean(SimpleRecord.class)).collectAsList();
+     Assert.assertEquals("Number of rows should match", expected.size(), actual.size());
+     Assert.assertEquals("Result rows should match", expected, actual);
+   }
+@@ -307,7 +320,7 @@ public class TestSparkDataWrite {
+     Dataset<Row> result = spark.read().format("iceberg").load(targetLocation);
+ 
+     List<SimpleRecord> actual =
+-        result.orderBy("id").as(Encoders.bean(SimpleRecord.class)).collectAsList();
++        result.orderBy("id", "data").as(Encoders.bean(SimpleRecord.class)).collectAsList();
+     Assert.assertEquals("Number of rows should match", expected.size(), actual.size());
+     Assert.assertEquals("Result rows should match", expected, actual);
+   }
+@@ -350,7 +363,7 @@ public class TestSparkDataWrite {
+     Dataset<Row> result = spark.read().format("iceberg").load(targetLocation);
+ 
+     List<SimpleRecord> actual =
+-        result.orderBy("id").as(Encoders.bean(SimpleRecord.class)).collectAsList();
++        result.orderBy("id", "data").as(Encoders.bean(SimpleRecord.class)).collectAsList();
+     Assert.assertEquals("Number of rows should match", expected.size(), actual.size());
+     Assert.assertEquals("Result rows should match", expected, actual);
+   }
+@@ -390,7 +403,7 @@ public class TestSparkDataWrite {
+     Dataset<Row> result = spark.read().format("iceberg").load(targetLocation);
+ 
+     List<SimpleRecord> actual =
+-        result.orderBy("id").as(Encoders.bean(SimpleRecord.class)).collectAsList();
++        result.orderBy("id", "data").as(Encoders.bean(SimpleRecord.class)).collectAsList();
+     Assert.assertEquals("Number of rows should match", expected.size(), actual.size());
+     Assert.assertEquals("Result rows should match", expected, actual);
+ 
+@@ -455,7 +468,7 @@ public class TestSparkDataWrite {
+     Dataset<Row> result = spark.read().format("iceberg").load(targetLocation);
+ 
+     List<SimpleRecord> actual =
+-        result.orderBy("id").as(Encoders.bean(SimpleRecord.class)).collectAsList();
++        result.orderBy("id", "data").as(Encoders.bean(SimpleRecord.class)).collectAsList();
+     Assert.assertEquals("Number of rows should match", expected.size(), actual.size());
+     Assert.assertEquals("Result rows should match", expected, actual);
+   }
+@@ -619,7 +632,7 @@ public class TestSparkDataWrite {
+     Dataset<Row> result = spark.read().format("iceberg").load(targetLocation);
+ 
+     List<SimpleRecord> actual =
+-        result.orderBy("id").as(Encoders.bean(SimpleRecord.class)).collectAsList();
++        result.orderBy("id", "data").as(Encoders.bean(SimpleRecord.class)).collectAsList();
+     Assert.assertEquals("Number of rows should match", expected.size(), actual.size());
+     Assert.assertEquals("Result rows should match", expected, actual);
+ 
+@@ -705,7 +718,7 @@ public class TestSparkDataWrite {
+     // Since write and commit succeeded, the rows should be readable
+     Dataset<Row> result = spark.read().format("iceberg").load(targetLocation);
+     List<SimpleRecord> actual =
+-        result.orderBy("id").as(Encoders.bean(SimpleRecord.class)).collectAsList();
++        result.orderBy("id", "data").as(Encoders.bean(SimpleRecord.class)).collectAsList();
+     Assert.assertEquals(
+         "Number of rows should match", records.size() + records2.size(), actual.size());
+     assertThat(actual)
+diff --git a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkReadProjection.java b/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkReadProjection.java
+index 3a4b235c46..2de0760813 100644
+--- a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkReadProjection.java
++++ b/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkReadProjection.java
+@@ -86,7 +86,20 @@ public class TestSparkReadProjection extends TestReadProjection {
+ 
+   @BeforeClass
+   public static void startSpark() {
+-    TestSparkReadProjection.spark = SparkSession.builder().master("local[2]").getOrCreate();
++    TestSparkReadProjection.spark =
++        SparkSession.builder()
++            .master("local[2]")
++            .config("spark.plugins", "org.apache.spark.CometPlugin")
++            .config(
++                "spark.shuffle.manager",
++                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++            .config("spark.comet.explainFallback.enabled", "true")
++            .config("spark.comet.scan.icebergNative.enabled", "true")
++            .config("spark.memory.offHeap.enabled", "true")
++            .config("spark.memory.offHeap.size", "10g")
++            .config("spark.comet.use.lazyMaterialization", "false")
++            .config("spark.comet.schemaEvolution.enabled", "true")
++            .getOrCreate();
+     ImmutableMap<String, String> config =
+         ImmutableMap.of(
+             "type", "hive",
+diff --git a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkReaderDeletes.java b/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkReaderDeletes.java
+index dda49b4946..529992de6b 100644
+--- a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkReaderDeletes.java
++++ b/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkReaderDeletes.java
+@@ -131,7 +131,27 @@ public class TestSparkReaderDeletes extends DeleteReadTests {
+             .config("spark.ui.liveUpdate.period", 0)
+             .config(SQLConf.PARTITION_OVERWRITE_MODE().key(), "dynamic")
+             .config("spark.hadoop." + METASTOREURIS.varname, hiveConf.get(METASTOREURIS.varname))
++            .config("spark.plugins", "org.apache.spark.CometPlugin")
++            .config(
++                "spark.shuffle.manager",
++                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++            .config("spark.comet.explainFallback.enabled", "true")
++            .config("spark.comet.scan.icebergNative.enabled", "true")
++            .config("spark.memory.offHeap.enabled", "true")
++            .config("spark.memory.offHeap.size", "10g")
++            .config("spark.comet.use.lazyMaterialization", "false")
++            .config("spark.comet.schemaEvolution.enabled", "true")
+             .enableHiveSupport()
++            .config("spark.plugins", "org.apache.spark.CometPlugin")
++            .config(
++                "spark.shuffle.manager",
++                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++            .config("spark.comet.explainFallback.enabled", "true")
++            .config("spark.comet.scan.icebergNative.enabled", "true")
++            .config("spark.memory.offHeap.enabled", "true")
++            .config("spark.memory.offHeap.size", "10g")
++            .config("spark.comet.use.lazyMaterialization", "false")
++            .config("spark.comet.schemaEvolution.enabled", "true")
+             .getOrCreate();
+ 
+     catalog =
+diff --git a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkReaderWithBloomFilter.java b/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkReaderWithBloomFilter.java
+index e5831b76e4..5c45a111d9 100644
+--- a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkReaderWithBloomFilter.java
++++ b/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkReaderWithBloomFilter.java
+@@ -176,7 +176,27 @@ public class TestSparkReaderWithBloomFilter {
+         SparkSession.builder()
+             .master("local[2]")
+             .config("spark.hadoop." + METASTOREURIS.varname, hiveConf.get(METASTOREURIS.varname))
++            .config("spark.plugins", "org.apache.spark.CometPlugin")
++            .config(
++                "spark.shuffle.manager",
++                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++            .config("spark.comet.explainFallback.enabled", "true")
++            .config("spark.comet.scan.icebergNative.enabled", "true")
++            .config("spark.memory.offHeap.enabled", "true")
++            .config("spark.memory.offHeap.size", "10g")
++            .config("spark.comet.use.lazyMaterialization", "false")
++            .config("spark.comet.schemaEvolution.enabled", "true")
+             .enableHiveSupport()
++            .config("spark.plugins", "org.apache.spark.CometPlugin")
++            .config(
++                "spark.shuffle.manager",
++                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++            .config("spark.comet.explainFallback.enabled", "true")
++            .config("spark.comet.scan.icebergNative.enabled", "true")
++            .config("spark.memory.offHeap.enabled", "true")
++            .config("spark.memory.offHeap.size", "10g")
++            .config("spark.comet.use.lazyMaterialization", "false")
++            .config("spark.comet.schemaEvolution.enabled", "true")
+             .getOrCreate();
+ 
+     catalog =
+diff --git a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestStructuredStreaming.java b/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestStructuredStreaming.java
+index f420f1b955..d64dbfa61a 100644
+--- a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestStructuredStreaming.java
++++ b/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestStructuredStreaming.java
+@@ -66,6 +66,16 @@ public class TestStructuredStreaming {
+         SparkSession.builder()
+             .master("local[2]")
+             .config("spark.sql.shuffle.partitions", 4)
++            .config("spark.plugins", "org.apache.spark.CometPlugin")
++            .config(
++                "spark.shuffle.manager",
++                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++            .config("spark.comet.explainFallback.enabled", "true")
++            .config("spark.comet.scan.icebergNative.enabled", "true")
++            .config("spark.memory.offHeap.enabled", "true")
++            .config("spark.memory.offHeap.size", "10g")
++            .config("spark.comet.use.lazyMaterialization", "false")
++            .config("spark.comet.schemaEvolution.enabled", "true")
+             .getOrCreate();
+   }
+ 
+diff --git a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestTimestampWithoutZone.java b/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestTimestampWithoutZone.java
+index ac674e2e62..4460d597b3 100644
+--- a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestTimestampWithoutZone.java
++++ b/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestTimestampWithoutZone.java
+@@ -73,7 +73,20 @@ public class TestTimestampWithoutZone extends SparkTestBase {
+ 
+   @BeforeClass
+   public static void startSpark() {
+-    TestTimestampWithoutZone.spark = SparkSession.builder().master("local[2]").getOrCreate();
++    TestTimestampWithoutZone.spark =
++        SparkSession.builder()
++            .master("local[2]")
++            .config("spark.plugins", "org.apache.spark.CometPlugin")
++            .config(
++                "spark.shuffle.manager",
++                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++            .config("spark.comet.explainFallback.enabled", "true")
++            .config("spark.comet.scan.icebergNative.enabled", "true")
++            .config("spark.memory.offHeap.enabled", "true")
++            .config("spark.memory.offHeap.size", "10g")
++            .config("spark.comet.use.lazyMaterialization", "false")
++            .config("spark.comet.schemaEvolution.enabled", "true")
++            .getOrCreate();
+   }
+ 
+   @AfterClass
+diff --git a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestWriteMetricsConfig.java b/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestWriteMetricsConfig.java
+index 73827b309b..aa5e28e34d 100644
+--- a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestWriteMetricsConfig.java
++++ b/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestWriteMetricsConfig.java
+@@ -80,7 +80,20 @@ public class TestWriteMetricsConfig {
+ 
+   @BeforeClass
+   public static void startSpark() {
+-    TestWriteMetricsConfig.spark = SparkSession.builder().master("local[2]").getOrCreate();
++    TestWriteMetricsConfig.spark =
++        SparkSession.builder()
++            .master("local[2]")
++            .config("spark.plugins", "org.apache.spark.CometPlugin")
++            .config(
++                "spark.shuffle.manager",
++                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++            .config("spark.comet.explainFallback.enabled", "true")
++            .config("spark.comet.scan.icebergNative.enabled", "true")
++            .config("spark.memory.offHeap.enabled", "true")
++            .config("spark.memory.offHeap.size", "10g")
++            .config("spark.comet.use.lazyMaterialization", "false")
++            .config("spark.comet.schemaEvolution.enabled", "true")
++            .getOrCreate();
+     TestWriteMetricsConfig.sc = JavaSparkContext.fromSparkContext(spark.sparkContext());
+   }
+ 
+diff --git a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/sql/TestAggregatePushDown.java b/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/sql/TestAggregatePushDown.java
+index 1a4e2f3e1c..641cb855e9 100644
+--- a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/sql/TestAggregatePushDown.java
++++ b/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/sql/TestAggregatePushDown.java
+@@ -65,7 +65,27 @@ public class TestAggregatePushDown extends SparkCatalogTestBase {
+         SparkSession.builder()
+             .master("local[2]")
+             .config("spark.sql.iceberg.aggregate_pushdown", "true")
++            .config("spark.plugins", "org.apache.spark.CometPlugin")
++            .config(
++                "spark.shuffle.manager",
++                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++            .config("spark.comet.explainFallback.enabled", "true")
++            .config("spark.comet.scan.icebergNative.enabled", "true")
++            .config("spark.memory.offHeap.enabled", "true")
++            .config("spark.memory.offHeap.size", "10g")
++            .config("spark.comet.use.lazyMaterialization", "false")
++            .config("spark.comet.schemaEvolution.enabled", "true")
+             .enableHiveSupport()
++            .config("spark.plugins", "org.apache.spark.CometPlugin")
++            .config(
++                "spark.shuffle.manager",
++                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++            .config("spark.comet.explainFallback.enabled", "true")
++            .config("spark.comet.scan.icebergNative.enabled", "true")
++            .config("spark.memory.offHeap.enabled", "true")
++            .config("spark.memory.offHeap.size", "10g")
++            .config("spark.comet.use.lazyMaterialization", "false")
++            .config("spark.comet.schemaEvolution.enabled", "true")
+             .getOrCreate();
+ 
+     SparkTestBase.catalog =
+diff --git a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/sql/TestFilterPushDown.java b/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/sql/TestFilterPushDown.java
+index f92055ab7a..95fde91f19 100644
+--- a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/sql/TestFilterPushDown.java
++++ b/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/sql/TestFilterPushDown.java
+@@ -585,9 +585,7 @@ public class TestFilterPushDown extends SparkTestBaseWithCatalog {
+     String planAsString = sparkPlan.toString().replaceAll("#(\\d+L?)", "");
+ 
+     if (sparkFilter != null) {
+-      assertThat(planAsString)
+-          .as("Post scan filter should match")
+-          .contains("Filter (" + sparkFilter + ")");
++      assertThat(planAsString).as("Post scan filter should match").contains("CometFilter");
+     } else {
+       assertThat(planAsString).as("Should be no post scan filter").doesNotContain("Filter (");
+     }
+diff --git a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/sql/TestStoragePartitionedJoins.java b/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/sql/TestStoragePartitionedJoins.java
+index 8a1ec5060f..3611521cc4 100644
+--- a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/sql/TestStoragePartitionedJoins.java
++++ b/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/sql/TestStoragePartitionedJoins.java
+@@ -605,7 +605,7 @@ public class TestStoragePartitionedJoins extends SparkTestBaseWithCatalog {
+             + "FROM %s t1 "
+             + "INNER JOIN %s t2 "
+             + "ON t1.id = t2.id AND t1.%s = t2.%s "
+-            + "ORDER BY t1.id, t1.%s",
++            + "ORDER BY t1.id, t1.%s, t1.salary",
+         sourceColumnName,
+         tableName,
+         tableName(OTHER_TABLE_NAME),
+diff --git a/spark/v3.5/build.gradle b/spark/v3.5/build.gradle
+index e2d2c7a7ac..95cd3c08b5 100644
+--- a/spark/v3.5/build.gradle
++++ b/spark/v3.5/build.gradle
+@@ -75,7 +75,7 @@ project(":iceberg-spark:iceberg-spark-${sparkMajorVersion}_${scalaVersion}") {
+       exclude group: 'org.roaringbitmap'
+     }
+ 
+-    compileOnly "org.apache.datafusion:comet-spark-spark${sparkMajorVersion}_${scalaVersion}:0.5.0"
++    compileOnly "org.apache.datafusion:comet-spark-spark${sparkMajorVersion}_${scalaVersion}:${libs.versions.comet.get()}"
+ 
+     implementation libs.parquet.column
+     implementation libs.parquet.hadoop
+@@ -183,7 +183,7 @@ project(":iceberg-spark:iceberg-spark-extensions-${sparkMajorVersion}_${scalaVer
+     testImplementation libs.avro.avro
+     testImplementation libs.parquet.hadoop
+     testImplementation libs.awaitility
+-    testImplementation "org.apache.datafusion:comet-spark-spark${sparkMajorVersion}_${scalaVersion}:0.5.0"
++    testImplementation "org.apache.datafusion:comet-spark-spark${sparkMajorVersion}_${scalaVersion}:${libs.versions.comet.get()}"
+ 
+     // Required because we remove antlr plugin dependencies from the compile configuration, see note above
+     runtimeOnly libs.antlr.runtime
+@@ -263,6 +263,7 @@ project(":iceberg-spark:iceberg-spark-runtime-${sparkMajorVersion}_${scalaVersio
+     integrationImplementation project(path: ':iceberg-hive-metastore', configuration: 'testArtifacts')
+     integrationImplementation project(path: ":iceberg-spark:iceberg-spark-${sparkMajorVersion}_${scalaVersion}", configuration: 'testArtifacts')
+     integrationImplementation project(path: ":iceberg-spark:iceberg-spark-extensions-${sparkMajorVersion}_${scalaVersion}", configuration: 'testArtifacts')
++    integrationImplementation "org.apache.datafusion:comet-spark-spark${sparkMajorVersion}_${scalaVersion}:${libs.versions.comet.get()}"
+ 
+     // runtime dependencies for running Hive Catalog based integration test
+     integrationRuntimeOnly project(':iceberg-hive-metastore')
+diff --git a/spark/v3.5/spark-extensions/src/test/java/org/apache/iceberg/spark/extensions/ExtensionsTestBase.java b/spark/v3.5/spark-extensions/src/test/java/org/apache/iceberg/spark/extensions/ExtensionsTestBase.java
+index 578845e3da..4f44a73db3 100644
+--- a/spark/v3.5/spark-extensions/src/test/java/org/apache/iceberg/spark/extensions/ExtensionsTestBase.java
++++ b/spark/v3.5/spark-extensions/src/test/java/org/apache/iceberg/spark/extensions/ExtensionsTestBase.java
+@@ -57,6 +57,16 @@ public abstract class ExtensionsTestBase extends CatalogTestBase {
+             .config("spark.sql.legacy.respectNullabilityInTextDatasetConversion", "true")
+             .config(
+                 SQLConf.ADAPTIVE_EXECUTION_ENABLED().key(), String.valueOf(RANDOM.nextBoolean()))
++            .config("spark.plugins", "org.apache.spark.CometPlugin")
++            .config(
++                "spark.shuffle.manager",
++                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++            .config("spark.comet.explainFallback.enabled", "true")
++            .config("spark.comet.scan.icebergNative.enabled", "true")
++            .config("spark.memory.offHeap.enabled", "true")
++            .config("spark.memory.offHeap.size", "10g")
++            .config("spark.comet.use.lazyMaterialization", "false")
++            .config("spark.comet.schemaEvolution.enabled", "true")
+             .enableHiveSupport()
+             .getOrCreate();
+ 
+diff --git a/spark/v3.5/spark-extensions/src/test/java/org/apache/iceberg/spark/extensions/TestCallStatementParser.java b/spark/v3.5/spark-extensions/src/test/java/org/apache/iceberg/spark/extensions/TestCallStatementParser.java
+index ade19de36f..9111397e9c 100644
+--- a/spark/v3.5/spark-extensions/src/test/java/org/apache/iceberg/spark/extensions/TestCallStatementParser.java
++++ b/spark/v3.5/spark-extensions/src/test/java/org/apache/iceberg/spark/extensions/TestCallStatementParser.java
+@@ -56,6 +56,16 @@ public class TestCallStatementParser {
+             .master("local[2]")
+             .config("spark.sql.extensions", IcebergSparkSessionExtensions.class.getName())
+             .config("spark.extra.prop", "value")
++            .config("spark.plugins", "org.apache.spark.CometPlugin")
++            .config(
++                "spark.shuffle.manager",
++                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++            .config("spark.comet.explainFallback.enabled", "true")
++            .config("spark.comet.scan.icebergNative.enabled", "true")
++            .config("spark.memory.offHeap.enabled", "true")
++            .config("spark.memory.offHeap.size", "10g")
++            .config("spark.comet.use.lazyMaterialization", "false")
++            .config("spark.comet.schemaEvolution.enabled", "true")
+             .getOrCreate();
+     TestCallStatementParser.parser = spark.sessionState().sqlParser();
+   }
+diff --git a/spark/v3.5/spark/src/jmh/java/org/apache/iceberg/spark/action/DeleteOrphanFilesBenchmark.java b/spark/v3.5/spark/src/jmh/java/org/apache/iceberg/spark/action/DeleteOrphanFilesBenchmark.java
+index 64edb1002e..0fc10120ff 100644
+--- a/spark/v3.5/spark/src/jmh/java/org/apache/iceberg/spark/action/DeleteOrphanFilesBenchmark.java
++++ b/spark/v3.5/spark/src/jmh/java/org/apache/iceberg/spark/action/DeleteOrphanFilesBenchmark.java
+@@ -179,6 +179,16 @@ public class DeleteOrphanFilesBenchmark {
+             .config("spark.sql.catalog.spark_catalog", SparkSessionCatalog.class.getName())
+             .config("spark.sql.catalog.spark_catalog.type", "hadoop")
+             .config("spark.sql.catalog.spark_catalog.warehouse", catalogWarehouse())
++            .config("spark.plugins", "org.apache.spark.CometPlugin")
++            .config(
++                "spark.shuffle.manager",
++                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++            .config("spark.comet.explainFallback.enabled", "true")
++            .config("spark.comet.scan.icebergNative.enabled", "true")
++            .config("spark.memory.offHeap.enabled", "true")
++            .config("spark.memory.offHeap.size", "10g")
++            .config("spark.comet.use.lazyMaterialization", "false")
++            .config("spark.comet.schemaEvolution.enabled", "true")
+             .master("local");
+     spark = builder.getOrCreate();
+   }
+diff --git a/spark/v3.5/spark/src/jmh/java/org/apache/iceberg/spark/action/IcebergSortCompactionBenchmark.java b/spark/v3.5/spark/src/jmh/java/org/apache/iceberg/spark/action/IcebergSortCompactionBenchmark.java
+index a5d0456b0b..f0759f8378 100644
+--- a/spark/v3.5/spark/src/jmh/java/org/apache/iceberg/spark/action/IcebergSortCompactionBenchmark.java
++++ b/spark/v3.5/spark/src/jmh/java/org/apache/iceberg/spark/action/IcebergSortCompactionBenchmark.java
+@@ -392,6 +392,16 @@ public class IcebergSortCompactionBenchmark {
+                 "spark.sql.catalog.spark_catalog", "org.apache.iceberg.spark.SparkSessionCatalog")
+             .config("spark.sql.catalog.spark_catalog.type", "hadoop")
+             .config("spark.sql.catalog.spark_catalog.warehouse", getCatalogWarehouse())
++            .config("spark.plugins", "org.apache.spark.CometPlugin")
++            .config(
++                "spark.shuffle.manager",
++                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++            .config("spark.comet.explainFallback.enabled", "true")
++            .config("spark.comet.scan.icebergNative.enabled", "true")
++            .config("spark.memory.offHeap.enabled", "true")
++            .config("spark.memory.offHeap.size", "10g")
++            .config("spark.comet.use.lazyMaterialization", "false")
++            .config("spark.comet.schemaEvolution.enabled", "true")
+             .master("local[*]");
+     spark = builder.getOrCreate();
+     Configuration sparkHadoopConf = spark.sessionState().newHadoopConf();
+diff --git a/spark/v3.5/spark/src/jmh/java/org/apache/iceberg/spark/source/DVReaderBenchmark.java b/spark/v3.5/spark/src/jmh/java/org/apache/iceberg/spark/source/DVReaderBenchmark.java
+index c6794e43c6..457d2823ee 100644
+--- a/spark/v3.5/spark/src/jmh/java/org/apache/iceberg/spark/source/DVReaderBenchmark.java
++++ b/spark/v3.5/spark/src/jmh/java/org/apache/iceberg/spark/source/DVReaderBenchmark.java
+@@ -239,6 +239,16 @@ public class DVReaderBenchmark {
+             .config("spark.sql.catalog.spark_catalog", SparkSessionCatalog.class.getName())
+             .config("spark.sql.catalog.spark_catalog.type", "hadoop")
+             .config("spark.sql.catalog.spark_catalog.warehouse", newWarehouseDir())
++            .config("spark.plugins", "org.apache.spark.CometPlugin")
++            .config(
++                "spark.shuffle.manager",
++                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++            .config("spark.comet.explainFallback.enabled", "true")
++            .config("spark.comet.scan.icebergNative.enabled", "true")
++            .config("spark.memory.offHeap.enabled", "true")
++            .config("spark.memory.offHeap.size", "10g")
++            .config("spark.comet.use.lazyMaterialization", "false")
++            .config("spark.comet.schemaEvolution.enabled", "true")
+             .master("local[*]")
+             .getOrCreate();
+   }
+diff --git a/spark/v3.5/spark/src/jmh/java/org/apache/iceberg/spark/source/DVWriterBenchmark.java b/spark/v3.5/spark/src/jmh/java/org/apache/iceberg/spark/source/DVWriterBenchmark.java
+index ac74fb5a10..eab09293de 100644
+--- a/spark/v3.5/spark/src/jmh/java/org/apache/iceberg/spark/source/DVWriterBenchmark.java
++++ b/spark/v3.5/spark/src/jmh/java/org/apache/iceberg/spark/source/DVWriterBenchmark.java
+@@ -223,6 +223,16 @@ public class DVWriterBenchmark {
+             .config("spark.sql.catalog.spark_catalog", SparkSessionCatalog.class.getName())
+             .config("spark.sql.catalog.spark_catalog.type", "hadoop")
+             .config("spark.sql.catalog.spark_catalog.warehouse", newWarehouseDir())
++            .config("spark.plugins", "org.apache.spark.CometPlugin")
++            .config(
++                "spark.shuffle.manager",
++                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++            .config("spark.comet.explainFallback.enabled", "true")
++            .config("spark.comet.scan.icebergNative.enabled", "true")
++            .config("spark.memory.offHeap.enabled", "true")
++            .config("spark.memory.offHeap.size", "10g")
++            .config("spark.comet.use.lazyMaterialization", "false")
++            .config("spark.comet.schemaEvolution.enabled", "true")
+             .master("local[*]")
+             .getOrCreate();
+   }
+diff --git a/spark/v3.5/spark/src/jmh/java/org/apache/iceberg/spark/source/IcebergSourceBenchmark.java b/spark/v3.5/spark/src/jmh/java/org/apache/iceberg/spark/source/IcebergSourceBenchmark.java
+index 68c537e34a..1e9e90d539 100644
+--- a/spark/v3.5/spark/src/jmh/java/org/apache/iceberg/spark/source/IcebergSourceBenchmark.java
++++ b/spark/v3.5/spark/src/jmh/java/org/apache/iceberg/spark/source/IcebergSourceBenchmark.java
+@@ -94,7 +94,19 @@ public abstract class IcebergSourceBenchmark {
+   }
+ 
+   protected void setupSpark(boolean enableDictionaryEncoding) {
+-    SparkSession.Builder builder = SparkSession.builder().config("spark.ui.enabled", false);
++    SparkSession.Builder builder =
++        SparkSession.builder()
++            .config("spark.ui.enabled", false)
++            .config("spark.plugins", "org.apache.spark.CometPlugin")
++            .config(
++                "spark.shuffle.manager",
++                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++            .config("spark.comet.explainFallback.enabled", "true")
++            .config("spark.comet.scan.icebergNative.enabled", "true")
++            .config("spark.memory.offHeap.enabled", "true")
++            .config("spark.memory.offHeap.size", "10g")
++            .config("spark.comet.use.lazyMaterialization", "false")
++            .config("spark.comet.schemaEvolution.enabled", "true");
+     if (!enableDictionaryEncoding) {
+       builder
+           .config("parquet.dictionary.page.size", "1")
 diff --git a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometColumnReader.java b/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometColumnReader.java
 deleted file mode 100644
 index 4794863ab1..0000000000
@@ -2434,9 +2582,10 @@ index d36f1a7274..0000000000
 -  }
 -}
 diff --git a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/VectorizedSparkParquetReaders.java b/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/VectorizedSparkParquetReaders.java
+index b523bc5bff..636ad3be7d 100644
 --- a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/VectorizedSparkParquetReaders.java
 +++ b/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/VectorizedSparkParquetReaders.java
-@@ -70,22 +70,6 @@
+@@ -70,23 +70,6 @@ public class VectorizedSparkParquetReaders {
                  deleteFilter));
    }
  
@@ -2456,13 +2605,15 @@ diff --git a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vector
 -                readers -> new CometColumnarBatchReader(readers, expectedSchema),
 -                deleteFilter));
 -  }
- 
+-
    // enables unsafe memory access to avoid costly checks to see if index is within bounds
    // as long as it is not configured explicitly (see BoundsChecking in Arrow)
+   private static void enableUnsafeMemoryAccess() {
 diff --git a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/source/BaseBatchReader.java b/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/source/BaseBatchReader.java
+index 780e1750a5..25f253eede 100644
 --- a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/source/BaseBatchReader.java
 +++ b/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/source/BaseBatchReader.java
-@@ -34,7 +34,6 @@
+@@ -34,7 +34,6 @@ import org.apache.iceberg.parquet.Parquet;
  import org.apache.iceberg.relocated.com.google.common.collect.Sets;
  import org.apache.iceberg.spark.OrcBatchReadConf;
  import org.apache.iceberg.spark.ParquetBatchReadConf;
@@ -2470,7 +2621,7 @@ diff --git a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/source/Base
  import org.apache.iceberg.spark.data.vectorized.VectorizedSparkOrcReaders;
  import org.apache.iceberg.spark.data.vectorized.VectorizedSparkParquetReaders;
  import org.apache.iceberg.types.TypeUtil;
-@@ -92,15 +91,9 @@
+@@ -92,15 +91,9 @@ abstract class BaseBatchReader<T extends ScanTask> extends BaseReader<ColumnarBa
          .project(requiredSchema)
          .split(start, length)
          .createBatchedReaderFunc(
@@ -2489,3 +2640,702 @@ diff --git a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/source/Base
          .recordsPerBatch(parquetConf.batchSize())
          .filter(residual)
          .caseSensitive(caseSensitive())
+diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/SparkDistributedDataScanTestBase.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/SparkDistributedDataScanTestBase.java
+index 404ba72846..00e97e96f9 100644
+--- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/SparkDistributedDataScanTestBase.java
++++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/SparkDistributedDataScanTestBase.java
+@@ -90,6 +90,16 @@ public abstract class SparkDistributedDataScanTestBase
+         .master("local[2]")
+         .config("spark.serializer", serializer)
+         .config(SQLConf.SHUFFLE_PARTITIONS().key(), "4")
++        .config("spark.plugins", "org.apache.spark.CometPlugin")
++        .config(
++            "spark.shuffle.manager",
++            "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++        .config("spark.comet.explainFallback.enabled", "true")
++        .config("spark.comet.scan.icebergNative.enabled", "true")
++        .config("spark.memory.offHeap.enabled", "true")
++        .config("spark.memory.offHeap.size", "10g")
++        .config("spark.comet.use.lazyMaterialization", "false")
++        .config("spark.comet.schemaEvolution.enabled", "true")
+         .getOrCreate();
+   }
+ }
+diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/TestSparkDistributedDataScanDeletes.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/TestSparkDistributedDataScanDeletes.java
+index 659507e4c5..9076ec24d1 100644
+--- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/TestSparkDistributedDataScanDeletes.java
++++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/TestSparkDistributedDataScanDeletes.java
+@@ -73,6 +73,16 @@ public class TestSparkDistributedDataScanDeletes
+             .master("local[2]")
+             .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
+             .config(SQLConf.SHUFFLE_PARTITIONS().key(), "4")
++            .config("spark.plugins", "org.apache.spark.CometPlugin")
++            .config(
++                "spark.shuffle.manager",
++                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++            .config("spark.comet.explainFallback.enabled", "true")
++            .config("spark.comet.scan.icebergNative.enabled", "true")
++            .config("spark.memory.offHeap.enabled", "true")
++            .config("spark.memory.offHeap.size", "10g")
++            .config("spark.comet.use.lazyMaterialization", "false")
++            .config("spark.comet.schemaEvolution.enabled", "true")
+             .getOrCreate();
+   }
+ 
+diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/TestSparkDistributedDataScanFilterFiles.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/TestSparkDistributedDataScanFilterFiles.java
+index a218f965ea..eca0125ace 100644
+--- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/TestSparkDistributedDataScanFilterFiles.java
++++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/TestSparkDistributedDataScanFilterFiles.java
+@@ -62,6 +62,16 @@ public class TestSparkDistributedDataScanFilterFiles
+             .master("local[2]")
+             .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
+             .config(SQLConf.SHUFFLE_PARTITIONS().key(), "4")
++            .config("spark.plugins", "org.apache.spark.CometPlugin")
++            .config(
++                "spark.shuffle.manager",
++                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++            .config("spark.comet.explainFallback.enabled", "true")
++            .config("spark.comet.scan.icebergNative.enabled", "true")
++            .config("spark.memory.offHeap.enabled", "true")
++            .config("spark.memory.offHeap.size", "10g")
++            .config("spark.comet.use.lazyMaterialization", "false")
++            .config("spark.comet.schemaEvolution.enabled", "true")
+             .getOrCreate();
+   }
+ 
+diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/TestSparkDistributedDataScanReporting.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/TestSparkDistributedDataScanReporting.java
+index 2665d7ba8d..2381d0aa14 100644
+--- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/TestSparkDistributedDataScanReporting.java
++++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/TestSparkDistributedDataScanReporting.java
+@@ -63,6 +63,16 @@ public class TestSparkDistributedDataScanReporting
+             .master("local[2]")
+             .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
+             .config(SQLConf.SHUFFLE_PARTITIONS().key(), "4")
++            .config("spark.plugins", "org.apache.spark.CometPlugin")
++            .config(
++                "spark.shuffle.manager",
++                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++            .config("spark.comet.explainFallback.enabled", "true")
++            .config("spark.comet.scan.icebergNative.enabled", "true")
++            .config("spark.memory.offHeap.enabled", "true")
++            .config("spark.memory.offHeap.size", "10g")
++            .config("spark.comet.use.lazyMaterialization", "false")
++            .config("spark.comet.schemaEvolution.enabled", "true")
+             .getOrCreate();
+   }
+ 
+diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/TestBase.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/TestBase.java
+index de68351f6e..2b5325e266 100644
+--- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/TestBase.java
++++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/TestBase.java
+@@ -77,6 +77,17 @@ public abstract class TestBase extends SparkTestHelperBase {
+             .config(SQLConf.PARTITION_OVERWRITE_MODE().key(), "dynamic")
+             .config("spark.hadoop." + METASTOREURIS.varname, hiveConf.get(METASTOREURIS.varname))
+             .config("spark.sql.legacy.respectNullabilityInTextDatasetConversion", "true")
++            .config("spark.plugins", "org.apache.spark.CometPlugin")
++            .config(
++                "spark.shuffle.manager",
++                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++            .config("spark.comet.explainFallback.enabled", "true")
++            .config("spark.comet.scan.icebergNative.enabled", "true")
++            .config("spark.memory.offHeap.enabled", "true")
++            .config("spark.memory.offHeap.size", "10g")
++            .config("spark.comet.use.lazyMaterialization", "false")
++            .config("spark.comet.schemaEvolution.enabled", "true")
++            .config("spark.comet.exec.broadcastExchange.enabled", "false")
+             .enableHiveSupport()
+             .getOrCreate();
+ 
+diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/data/parquet/vectorized/TestParquetDictionaryEncodedVectorizedReads.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/data/parquet/vectorized/TestParquetDictionaryEncodedVectorizedReads.java
+index bc4e722bc8..3bbff053fd 100644
+--- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/data/parquet/vectorized/TestParquetDictionaryEncodedVectorizedReads.java
++++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/data/parquet/vectorized/TestParquetDictionaryEncodedVectorizedReads.java
+@@ -59,7 +59,20 @@ public class TestParquetDictionaryEncodedVectorizedReads extends TestParquetVect
+ 
+   @BeforeAll
+   public static void startSpark() {
+-    spark = SparkSession.builder().master("local[2]").getOrCreate();
++    spark =
++        SparkSession.builder()
++            .master("local[2]")
++            .config("spark.plugins", "org.apache.spark.CometPlugin")
++            .config(
++                "spark.shuffle.manager",
++                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++            .config("spark.comet.explainFallback.enabled", "true")
++            .config("spark.comet.scan.icebergNative.enabled", "true")
++            .config("spark.memory.offHeap.enabled", "true")
++            .config("spark.memory.offHeap.size", "10g")
++            .config("spark.comet.use.lazyMaterialization", "false")
++            .config("spark.comet.schemaEvolution.enabled", "true")
++            .getOrCreate();
+   }
+ 
+   @AfterAll
+diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/ScanTestBase.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/ScanTestBase.java
+index 3a269740b7..42ecd7ac7b 100644
+--- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/ScanTestBase.java
++++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/ScanTestBase.java
+@@ -54,7 +54,20 @@ public abstract class ScanTestBase extends AvroDataTest {
+ 
+   @BeforeAll
+   public static void startSpark() {
+-    ScanTestBase.spark = SparkSession.builder().master("local[2]").getOrCreate();
++    ScanTestBase.spark =
++        SparkSession.builder()
++            .master("local[2]")
++            .config("spark.plugins", "org.apache.spark.CometPlugin")
++            .config(
++                "spark.shuffle.manager",
++                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++            .config("spark.comet.explainFallback.enabled", "true")
++            .config("spark.comet.scan.icebergNative.enabled", "true")
++            .config("spark.memory.offHeap.enabled", "true")
++            .config("spark.memory.offHeap.size", "10g")
++            .config("spark.comet.use.lazyMaterialization", "false")
++            .config("spark.comet.schemaEvolution.enabled", "true")
++            .getOrCreate();
+     ScanTestBase.sc = JavaSparkContext.fromSparkContext(spark.sparkContext());
+   }
+ 
+diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestCompressionSettings.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestCompressionSettings.java
+index f411920a5d..afb7830aaa 100644
+--- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestCompressionSettings.java
++++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestCompressionSettings.java
+@@ -144,7 +144,20 @@ public class TestCompressionSettings extends CatalogTestBase {
+ 
+   @BeforeAll
+   public static void startSpark() {
+-    TestCompressionSettings.spark = SparkSession.builder().master("local[2]").getOrCreate();
++    TestCompressionSettings.spark =
++        SparkSession.builder()
++            .master("local[2]")
++            .config("spark.plugins", "org.apache.spark.CometPlugin")
++            .config(
++                "spark.shuffle.manager",
++                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++            .config("spark.comet.explainFallback.enabled", "true")
++            .config("spark.comet.scan.icebergNative.enabled", "true")
++            .config("spark.memory.offHeap.enabled", "true")
++            .config("spark.memory.offHeap.size", "10g")
++            .config("spark.comet.use.lazyMaterialization", "false")
++            .config("spark.comet.schemaEvolution.enabled", "true")
++            .getOrCreate();
+   }
+ 
+   @BeforeEach
+diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestDataSourceOptions.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestDataSourceOptions.java
+index c4ba96e634..98398968b0 100644
+--- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestDataSourceOptions.java
++++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestDataSourceOptions.java
+@@ -75,7 +75,20 @@ public class TestDataSourceOptions extends TestBaseWithCatalog {
+ 
+   @BeforeAll
+   public static void startSpark() {
+-    TestDataSourceOptions.spark = SparkSession.builder().master("local[2]").getOrCreate();
++    TestDataSourceOptions.spark =
++        SparkSession.builder()
++            .master("local[2]")
++            .config("spark.plugins", "org.apache.spark.CometPlugin")
++            .config(
++                "spark.shuffle.manager",
++                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++            .config("spark.comet.explainFallback.enabled", "true")
++            .config("spark.comet.scan.icebergNative.enabled", "true")
++            .config("spark.memory.offHeap.enabled", "true")
++            .config("spark.memory.offHeap.size", "10g")
++            .config("spark.comet.use.lazyMaterialization", "false")
++            .config("spark.comet.schemaEvolution.enabled", "true")
++            .getOrCreate();
+   }
+ 
+   @AfterAll
+diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestFilteredScan.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestFilteredScan.java
+index 348173596e..9017b4a37a 100644
+--- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestFilteredScan.java
++++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestFilteredScan.java
+@@ -110,7 +110,20 @@ public class TestFilteredScan {
+ 
+   @BeforeAll
+   public static void startSpark() {
+-    TestFilteredScan.spark = SparkSession.builder().master("local[2]").getOrCreate();
++    TestFilteredScan.spark =
++        SparkSession.builder()
++            .master("local[2]")
++            .config("spark.plugins", "org.apache.spark.CometPlugin")
++            .config(
++                "spark.shuffle.manager",
++                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++            .config("spark.comet.explainFallback.enabled", "true")
++            .config("spark.comet.scan.icebergNative.enabled", "true")
++            .config("spark.memory.offHeap.enabled", "true")
++            .config("spark.memory.offHeap.size", "10g")
++            .config("spark.comet.use.lazyMaterialization", "false")
++            .config("spark.comet.schemaEvolution.enabled", "true")
++            .getOrCreate();
+   }
+ 
+   @AfterAll
+diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestForwardCompatibility.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestForwardCompatibility.java
+index 84c99a575c..1d60b01df5 100644
+--- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestForwardCompatibility.java
++++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestForwardCompatibility.java
+@@ -93,7 +93,20 @@ public class TestForwardCompatibility {
+ 
+   @BeforeAll
+   public static void startSpark() {
+-    TestForwardCompatibility.spark = SparkSession.builder().master("local[2]").getOrCreate();
++    TestForwardCompatibility.spark =
++        SparkSession.builder()
++            .master("local[2]")
++            .config("spark.plugins", "org.apache.spark.CometPlugin")
++            .config(
++                "spark.shuffle.manager",
++                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++            .config("spark.comet.explainFallback.enabled", "true")
++            .config("spark.comet.scan.icebergNative.enabled", "true")
++            .config("spark.memory.offHeap.enabled", "true")
++            .config("spark.memory.offHeap.size", "10g")
++            .config("spark.comet.use.lazyMaterialization", "false")
++            .config("spark.comet.schemaEvolution.enabled", "true")
++            .getOrCreate();
+   }
+ 
+   @AfterAll
+diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestIcebergSpark.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestIcebergSpark.java
+index 7eff93d204..7aab7f9682 100644
+--- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestIcebergSpark.java
++++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestIcebergSpark.java
+@@ -46,7 +46,20 @@ public class TestIcebergSpark {
+ 
+   @BeforeAll
+   public static void startSpark() {
+-    TestIcebergSpark.spark = SparkSession.builder().master("local[2]").getOrCreate();
++    TestIcebergSpark.spark =
++        SparkSession.builder()
++            .master("local[2]")
++            .config("spark.plugins", "org.apache.spark.CometPlugin")
++            .config(
++                "spark.shuffle.manager",
++                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++            .config("spark.comet.explainFallback.enabled", "true")
++            .config("spark.comet.scan.icebergNative.enabled", "true")
++            .config("spark.memory.offHeap.enabled", "true")
++            .config("spark.memory.offHeap.size", "10g")
++            .config("spark.comet.use.lazyMaterialization", "false")
++            .config("spark.comet.schemaEvolution.enabled", "true")
++            .getOrCreate();
+   }
+ 
+   @AfterAll
+diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestPartitionPruning.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestPartitionPruning.java
+index 9464f687b0..ca4e3e0353 100644
+--- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestPartitionPruning.java
++++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestPartitionPruning.java
+@@ -112,7 +112,20 @@ public class TestPartitionPruning {
+ 
+   @BeforeAll
+   public static void startSpark() {
+-    TestPartitionPruning.spark = SparkSession.builder().master("local[2]").getOrCreate();
++    TestPartitionPruning.spark =
++        SparkSession.builder()
++            .master("local[2]")
++            .config("spark.plugins", "org.apache.spark.CometPlugin")
++            .config(
++                "spark.shuffle.manager",
++                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++            .config("spark.comet.explainFallback.enabled", "true")
++            .config("spark.comet.scan.icebergNative.enabled", "true")
++            .config("spark.memory.offHeap.enabled", "true")
++            .config("spark.memory.offHeap.size", "10g")
++            .config("spark.comet.use.lazyMaterialization", "false")
++            .config("spark.comet.schemaEvolution.enabled", "true")
++            .getOrCreate();
+     TestPartitionPruning.sparkContext = JavaSparkContext.fromSparkContext(spark.sparkContext());
+ 
+     String optionKey = String.format("fs.%s.impl", CountOpenLocalFileSystem.scheme);
+diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestPartitionValues.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestPartitionValues.java
+index 5c218f21c4..1d22228217 100644
+--- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestPartitionValues.java
++++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestPartitionValues.java
+@@ -107,7 +107,20 @@ public class TestPartitionValues {
+ 
+   @BeforeAll
+   public static void startSpark() {
+-    TestPartitionValues.spark = SparkSession.builder().master("local[2]").getOrCreate();
++    TestPartitionValues.spark =
++        SparkSession.builder()
++            .master("local[2]")
++            .config("spark.plugins", "org.apache.spark.CometPlugin")
++            .config(
++                "spark.shuffle.manager",
++                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++            .config("spark.comet.explainFallback.enabled", "true")
++            .config("spark.comet.scan.icebergNative.enabled", "true")
++            .config("spark.memory.offHeap.enabled", "true")
++            .config("spark.memory.offHeap.size", "10g")
++            .config("spark.comet.use.lazyMaterialization", "false")
++            .config("spark.comet.schemaEvolution.enabled", "true")
++            .getOrCreate();
+   }
+ 
+   @AfterAll
+diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSnapshotSelection.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSnapshotSelection.java
+index a7334a580c..ecd25670fe 100644
+--- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSnapshotSelection.java
++++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSnapshotSelection.java
+@@ -87,7 +87,20 @@ public class TestSnapshotSelection {
+ 
+   @BeforeAll
+   public static void startSpark() {
+-    TestSnapshotSelection.spark = SparkSession.builder().master("local[2]").getOrCreate();
++    TestSnapshotSelection.spark =
++        SparkSession.builder()
++            .master("local[2]")
++            .config("spark.plugins", "org.apache.spark.CometPlugin")
++            .config(
++                "spark.shuffle.manager",
++                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++            .config("spark.comet.explainFallback.enabled", "true")
++            .config("spark.comet.scan.icebergNative.enabled", "true")
++            .config("spark.memory.offHeap.enabled", "true")
++            .config("spark.memory.offHeap.size", "10g")
++            .config("spark.comet.use.lazyMaterialization", "false")
++            .config("spark.comet.schemaEvolution.enabled", "true")
++            .getOrCreate();
+   }
+ 
+   @AfterAll
+diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkDataFile.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkDataFile.java
+index 182b1ef8f5..205892e4a6 100644
+--- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkDataFile.java
++++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkDataFile.java
+@@ -120,7 +120,20 @@ public class TestSparkDataFile {
+ 
+   @BeforeAll
+   public static void startSpark() {
+-    TestSparkDataFile.spark = SparkSession.builder().master("local[2]").getOrCreate();
++    TestSparkDataFile.spark =
++        SparkSession.builder()
++            .master("local[2]")
++            .config("spark.plugins", "org.apache.spark.CometPlugin")
++            .config(
++                "spark.shuffle.manager",
++                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++            .config("spark.comet.explainFallback.enabled", "true")
++            .config("spark.comet.scan.icebergNative.enabled", "true")
++            .config("spark.memory.offHeap.enabled", "true")
++            .config("spark.memory.offHeap.size", "10g")
++            .config("spark.comet.use.lazyMaterialization", "false")
++            .config("spark.comet.schemaEvolution.enabled", "true")
++            .getOrCreate();
+     TestSparkDataFile.sparkContext = JavaSparkContext.fromSparkContext(spark.sparkContext());
+   }
+ 
+diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkDataWrite.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkDataWrite.java
+index fb2b312bed..3fca3330d0 100644
+--- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkDataWrite.java
++++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkDataWrite.java
+@@ -96,7 +96,20 @@ public class TestSparkDataWrite {
+ 
+   @BeforeAll
+   public static void startSpark() {
+-    TestSparkDataWrite.spark = SparkSession.builder().master("local[2]").getOrCreate();
++    TestSparkDataWrite.spark =
++        SparkSession.builder()
++            .master("local[2]")
++            .config("spark.plugins", "org.apache.spark.CometPlugin")
++            .config(
++                "spark.shuffle.manager",
++                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++            .config("spark.comet.explainFallback.enabled", "true")
++            .config("spark.comet.scan.icebergNative.enabled", "true")
++            .config("spark.memory.offHeap.enabled", "true")
++            .config("spark.memory.offHeap.size", "10g")
++            .config("spark.comet.use.lazyMaterialization", "false")
++            .config("spark.comet.schemaEvolution.enabled", "true")
++            .getOrCreate();
+   }
+ 
+   @AfterEach
+@@ -140,7 +153,7 @@ public class TestSparkDataWrite {
+     Dataset<Row> result = spark.read().format("iceberg").load(targetLocation);
+ 
+     List<SimpleRecord> actual =
+-        result.orderBy("id").as(Encoders.bean(SimpleRecord.class)).collectAsList();
++        result.orderBy("id", "data").as(Encoders.bean(SimpleRecord.class)).collectAsList();
+     assertThat(actual).as("Number of rows should match").hasSameSizeAs(expected);
+     assertThat(actual).as("Result rows should match").isEqualTo(expected);
+     for (ManifestFile manifest :
+@@ -210,7 +223,7 @@ public class TestSparkDataWrite {
+     Dataset<Row> result = spark.read().format("iceberg").load(targetLocation);
+ 
+     List<SimpleRecord> actual =
+-        result.orderBy("id").as(Encoders.bean(SimpleRecord.class)).collectAsList();
++        result.orderBy("id", "data").as(Encoders.bean(SimpleRecord.class)).collectAsList();
+     assertThat(actual).as("Number of rows should match").hasSameSizeAs(expected);
+     assertThat(actual).as("Result rows should match").isEqualTo(expected);
+   }
+@@ -256,7 +269,7 @@ public class TestSparkDataWrite {
+     Dataset<Row> result = spark.read().format("iceberg").load(targetLocation);
+ 
+     List<SimpleRecord> actual =
+-        result.orderBy("id").as(Encoders.bean(SimpleRecord.class)).collectAsList();
++        result.orderBy("id", "data").as(Encoders.bean(SimpleRecord.class)).collectAsList();
+     assertThat(actual).as("Number of rows should match").hasSameSizeAs(expected);
+     assertThat(actual).as("Result rows should match").isEqualTo(expected);
+   }
+@@ -309,7 +322,7 @@ public class TestSparkDataWrite {
+     Dataset<Row> result = spark.read().format("iceberg").load(targetLocation);
+ 
+     List<SimpleRecord> actual =
+-        result.orderBy("id").as(Encoders.bean(SimpleRecord.class)).collectAsList();
++        result.orderBy("id", "data").as(Encoders.bean(SimpleRecord.class)).collectAsList();
+     assertThat(actual).as("Number of rows should match").hasSameSizeAs(expected);
+     assertThat(actual).as("Result rows should match").isEqualTo(expected);
+   }
+@@ -352,7 +365,7 @@ public class TestSparkDataWrite {
+     Dataset<Row> result = spark.read().format("iceberg").load(targetLocation);
+ 
+     List<SimpleRecord> actual =
+-        result.orderBy("id").as(Encoders.bean(SimpleRecord.class)).collectAsList();
++        result.orderBy("id", "data").as(Encoders.bean(SimpleRecord.class)).collectAsList();
+     assertThat(actual).as("Number of rows should match").hasSameSizeAs(expected);
+     assertThat(actual).as("Result rows should match").isEqualTo(expected);
+   }
+@@ -392,7 +405,7 @@ public class TestSparkDataWrite {
+     Dataset<Row> result = spark.read().format("iceberg").load(targetLocation);
+ 
+     List<SimpleRecord> actual =
+-        result.orderBy("id").as(Encoders.bean(SimpleRecord.class)).collectAsList();
++        result.orderBy("id", "data").as(Encoders.bean(SimpleRecord.class)).collectAsList();
+     assertThat(actual).as("Number of rows should match").hasSameSizeAs(expected);
+     assertThat(actual).as("Result rows should match").isEqualTo(expected);
+ 
+@@ -458,7 +471,7 @@ public class TestSparkDataWrite {
+     Dataset<Row> result = spark.read().format("iceberg").load(targetLocation);
+ 
+     List<SimpleRecord> actual =
+-        result.orderBy("id").as(Encoders.bean(SimpleRecord.class)).collectAsList();
++        result.orderBy("id", "data").as(Encoders.bean(SimpleRecord.class)).collectAsList();
+     assertThat(actual).as("Number of rows should match").hasSameSizeAs(expected);
+     assertThat(actual).as("Result rows should match").isEqualTo(expected);
+   }
+@@ -622,7 +635,7 @@ public class TestSparkDataWrite {
+     Dataset<Row> result = spark.read().format("iceberg").load(targetLocation);
+ 
+     List<SimpleRecord> actual =
+-        result.orderBy("id").as(Encoders.bean(SimpleRecord.class)).collectAsList();
++        result.orderBy("id", "data").as(Encoders.bean(SimpleRecord.class)).collectAsList();
+     assertThat(actual).as("Number of rows should match").hasSameSizeAs(expected);
+     assertThat(actual).as("Result rows should match").isEqualTo(expected);
+ 
+@@ -708,7 +721,7 @@ public class TestSparkDataWrite {
+     // Since write and commit succeeded, the rows should be readable
+     Dataset<Row> result = spark.read().format("iceberg").load(targetLocation);
+     List<SimpleRecord> actual =
+-        result.orderBy("id").as(Encoders.bean(SimpleRecord.class)).collectAsList();
++        result.orderBy("id", "data").as(Encoders.bean(SimpleRecord.class)).collectAsList();
+     assertThat(actual).as("Number of rows should match").hasSize(records.size() + records2.size());
+     assertThat(actual)
+         .describedAs("Result rows should match")
+diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkReadProjection.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkReadProjection.java
+index becf6a064d..21701450a8 100644
+--- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkReadProjection.java
++++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkReadProjection.java
+@@ -83,7 +83,20 @@ public class TestSparkReadProjection extends TestReadProjection {
+ 
+   @BeforeAll
+   public static void startSpark() {
+-    TestSparkReadProjection.spark = SparkSession.builder().master("local[2]").getOrCreate();
++    TestSparkReadProjection.spark =
++        SparkSession.builder()
++            .master("local[2]")
++            .config("spark.plugins", "org.apache.spark.CometPlugin")
++            .config(
++                "spark.shuffle.manager",
++                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++            .config("spark.comet.explainFallback.enabled", "true")
++            .config("spark.comet.scan.icebergNative.enabled", "true")
++            .config("spark.memory.offHeap.enabled", "true")
++            .config("spark.memory.offHeap.size", "10g")
++            .config("spark.comet.use.lazyMaterialization", "false")
++            .config("spark.comet.schemaEvolution.enabled", "true")
++            .getOrCreate();
+     ImmutableMap<String, String> config =
+         ImmutableMap.of(
+             "type", "hive",
+diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkReaderDeletes.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkReaderDeletes.java
+index 4f1cef5d37..f0f4277324 100644
+--- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkReaderDeletes.java
++++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkReaderDeletes.java
+@@ -136,6 +136,16 @@ public class TestSparkReaderDeletes extends DeleteReadTests {
+             .config("spark.ui.liveUpdate.period", 0)
+             .config(SQLConf.PARTITION_OVERWRITE_MODE().key(), "dynamic")
+             .config("spark.hadoop." + METASTOREURIS.varname, hiveConf.get(METASTOREURIS.varname))
++            .config("spark.plugins", "org.apache.spark.CometPlugin")
++            .config(
++                "spark.shuffle.manager",
++                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++            .config("spark.comet.explainFallback.enabled", "true")
++            .config("spark.comet.scan.icebergNative.enabled", "true")
++            .config("spark.memory.offHeap.enabled", "true")
++            .config("spark.memory.offHeap.size", "10g")
++            .config("spark.comet.use.lazyMaterialization", "false")
++            .config("spark.comet.schemaEvolution.enabled", "true")
+             .enableHiveSupport()
+             .getOrCreate();
+ 
+@@ -204,7 +214,8 @@ public class TestSparkReaderDeletes extends DeleteReadTests {
+   }
+ 
+   protected boolean countDeletes() {
+-    return true;
++    // TODO: Enable once iceberg-rust exposes delete count metrics to Comet
++    return false;
+   }
+ 
+   @Override
+diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkReaderWithBloomFilter.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkReaderWithBloomFilter.java
+index baf7fa8f88..150cc89696 100644
+--- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkReaderWithBloomFilter.java
++++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkReaderWithBloomFilter.java
+@@ -182,6 +182,16 @@ public class TestSparkReaderWithBloomFilter {
+         SparkSession.builder()
+             .master("local[2]")
+             .config("spark.hadoop." + METASTOREURIS.varname, hiveConf.get(METASTOREURIS.varname))
++            .config("spark.plugins", "org.apache.spark.CometPlugin")
++            .config(
++                "spark.shuffle.manager",
++                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++            .config("spark.comet.explainFallback.enabled", "true")
++            .config("spark.comet.scan.icebergNative.enabled", "true")
++            .config("spark.memory.offHeap.enabled", "true")
++            .config("spark.memory.offHeap.size", "10g")
++            .config("spark.comet.use.lazyMaterialization", "false")
++            .config("spark.comet.schemaEvolution.enabled", "true")
+             .enableHiveSupport()
+             .getOrCreate();
+ 
+diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestStructuredStreaming.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestStructuredStreaming.java
+index 17db46b85c..d7e91b4eef 100644
+--- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestStructuredStreaming.java
++++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestStructuredStreaming.java
+@@ -65,6 +65,16 @@ public class TestStructuredStreaming {
+         SparkSession.builder()
+             .master("local[2]")
+             .config("spark.sql.shuffle.partitions", 4)
++            .config("spark.plugins", "org.apache.spark.CometPlugin")
++            .config(
++                "spark.shuffle.manager",
++                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++            .config("spark.comet.explainFallback.enabled", "true")
++            .config("spark.comet.scan.icebergNative.enabled", "true")
++            .config("spark.memory.offHeap.enabled", "true")
++            .config("spark.memory.offHeap.size", "10g")
++            .config("spark.comet.use.lazyMaterialization", "false")
++            .config("spark.comet.schemaEvolution.enabled", "true")
+             .getOrCreate();
+   }
+ 
+diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestTimestampWithoutZone.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestTimestampWithoutZone.java
+index 306444b9f2..b661aa8ced 100644
+--- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestTimestampWithoutZone.java
++++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestTimestampWithoutZone.java
+@@ -75,7 +75,20 @@ public class TestTimestampWithoutZone extends TestBase {
+ 
+   @BeforeAll
+   public static void startSpark() {
+-    TestTimestampWithoutZone.spark = SparkSession.builder().master("local[2]").getOrCreate();
++    TestTimestampWithoutZone.spark =
++        SparkSession.builder()
++            .master("local[2]")
++            .config("spark.plugins", "org.apache.spark.CometPlugin")
++            .config(
++                "spark.shuffle.manager",
++                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++            .config("spark.comet.explainFallback.enabled", "true")
++            .config("spark.comet.scan.icebergNative.enabled", "true")
++            .config("spark.memory.offHeap.enabled", "true")
++            .config("spark.memory.offHeap.size", "10g")
++            .config("spark.comet.use.lazyMaterialization", "false")
++            .config("spark.comet.schemaEvolution.enabled", "true")
++            .getOrCreate();
+   }
+ 
+   @AfterAll
+diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestWriteMetricsConfig.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestWriteMetricsConfig.java
+index 841268a6be..2fcc92bcb6 100644
+--- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestWriteMetricsConfig.java
++++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestWriteMetricsConfig.java
+@@ -80,7 +80,20 @@ public class TestWriteMetricsConfig {
+ 
+   @BeforeAll
+   public static void startSpark() {
+-    TestWriteMetricsConfig.spark = SparkSession.builder().master("local[2]").getOrCreate();
++    TestWriteMetricsConfig.spark =
++        SparkSession.builder()
++            .master("local[2]")
++            .config("spark.plugins", "org.apache.spark.CometPlugin")
++            .config(
++                "spark.shuffle.manager",
++                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++            .config("spark.comet.explainFallback.enabled", "true")
++            .config("spark.comet.scan.icebergNative.enabled", "true")
++            .config("spark.memory.offHeap.enabled", "true")
++            .config("spark.memory.offHeap.size", "10g")
++            .config("spark.comet.use.lazyMaterialization", "false")
++            .config("spark.comet.schemaEvolution.enabled", "true")
++            .getOrCreate();
+     TestWriteMetricsConfig.sc = JavaSparkContext.fromSparkContext(spark.sparkContext());
+   }
+ 
+diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/sql/TestAggregatePushDown.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/sql/TestAggregatePushDown.java
+index 6e09252704..e0d7431808 100644
+--- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/sql/TestAggregatePushDown.java
++++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/sql/TestAggregatePushDown.java
+@@ -60,6 +60,16 @@ public class TestAggregatePushDown extends CatalogTestBase {
+         SparkSession.builder()
+             .master("local[2]")
+             .config("spark.sql.iceberg.aggregate_pushdown", "true")
++            .config("spark.plugins", "org.apache.spark.CometPlugin")
++            .config(
++                "spark.shuffle.manager",
++                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++            .config("spark.comet.explainFallback.enabled", "true")
++            .config("spark.comet.scan.icebergNative.enabled", "true")
++            .config("spark.memory.offHeap.enabled", "true")
++            .config("spark.memory.offHeap.size", "10g")
++            .config("spark.comet.use.lazyMaterialization", "false")
++            .config("spark.comet.schemaEvolution.enabled", "true")
+             .enableHiveSupport()
+             .getOrCreate();
+ 
+diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/sql/TestFilterPushDown.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/sql/TestFilterPushDown.java
+index 9d2ce2b388..5e23368848 100644
+--- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/sql/TestFilterPushDown.java
++++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/sql/TestFilterPushDown.java
+@@ -598,9 +598,7 @@ public class TestFilterPushDown extends TestBaseWithCatalog {
+     String planAsString = sparkPlan.toString().replaceAll("#(\\d+L?)", "");
+ 
+     if (sparkFilter != null) {
+-      assertThat(planAsString)
+-          .as("Post scan filter should match")
+-          .contains("Filter (" + sparkFilter + ")");
++      assertThat(planAsString).as("Post scan filter should match").contains("CometFilter");
+     } else {
+       assertThat(planAsString).as("Should be no post scan filter").doesNotContain("Filter (");
+     }
+diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/sql/TestStoragePartitionedJoins.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/sql/TestStoragePartitionedJoins.java
+index 6719c45ca9..2515454401 100644
+--- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/sql/TestStoragePartitionedJoins.java
++++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/sql/TestStoragePartitionedJoins.java
+@@ -616,7 +616,7 @@ public class TestStoragePartitionedJoins extends TestBaseWithCatalog {
+             + "FROM %s t1 "
+             + "INNER JOIN %s t2 "
+             + "ON t1.id = t2.id AND t1.%s = t2.%s "
+-            + "ORDER BY t1.id, t1.%s",
++            + "ORDER BY t1.id, t1.%s, t1.salary",
+         sourceColumnName,
+         tableName,
+         tableName(OTHER_TABLE_NAME),
