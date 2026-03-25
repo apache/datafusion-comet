@@ -1008,6 +1008,27 @@ index acd4688440..9be94eab2f 100644
              .getOrCreate();
    }
  
+diff --git a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/TestBase.java b/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/TestBase.java
+index 3c32b46936..5ba2c6dd95 100644
+--- a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/TestBase.java
++++ b/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/TestBase.java
+@@ -79,6 +79,16 @@ public abstract class TestBase extends SparkTestHelperBase {
+             .config(SQLConf.PARTITION_OVERWRITE_MODE().key(), "dynamic")
+             .config("spark.hadoop." + METASTOREURIS.varname, hiveConf.get(METASTOREURIS.varname))
+             .config("spark.sql.legacy.respectNullabilityInTextDatasetConversion", "true")
++            .config("spark.plugins", "org.apache.spark.CometPlugin")
++            .config(
++                "spark.shuffle.manager",
++                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++            .config("spark.comet.explainFallback.enabled", "true")
++            .config("spark.comet.scan.icebergNative.enabled", "true")
++            .config("spark.memory.offHeap.enabled", "true")
++            .config("spark.memory.offHeap.size", "10g")
++            .config("spark.comet.use.lazyMaterialization", "false")
++            .config("spark.comet.schemaEvolution.enabled", "true")
+             .enableHiveSupport()
+             .getOrCreate();
+ 
 diff --git a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/ScanTestBase.java b/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/ScanTestBase.java
 index 6647a1b483..b8b428229b 100644
 --- a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/ScanTestBase.java
