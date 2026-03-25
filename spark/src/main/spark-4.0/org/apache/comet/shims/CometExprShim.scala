@@ -66,7 +66,8 @@ trait CometExprShim extends CommonStringExprs {
                 val arrayChild = filter.left
                 val elementType = arrayChild.dataType.asInstanceOf[ArrayType].elementType
                 val arrayExprProto = exprToProtoInternal(arrayChild, inputs, binding)
-                val nullLiteralProto = exprToProtoInternal(Literal(null, elementType), Seq.empty)
+                val nullLiteralProto =
+                  exprToProtoInternal(Literal(null, elementType), Seq.empty, false)
                 val scalarExpr = scalarFunctionExprToProtoWithReturnType(
                   "array_remove_all",
                   knc.dataType,
