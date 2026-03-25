@@ -330,12 +330,14 @@ jobs:
               org.apache.comet.CometTemporalExpressionSuite
               org.apache.comet.CometArrayExpressionSuite
               org.apache.comet.CometCastSuite
+              org.apache.comet.CometDateTimeUtilsSuite
               org.apache.comet.CometMathExpressionSuite
               org.apache.comet.CometStringExpressionSuite
               org.apache.comet.CometBitwiseExpressionSuite
               org.apache.comet.CometMapExpressionSuite
               org.apache.comet.CometCsvExpressionSuite
               org.apache.comet.CometJsonExpressionSuite
+              org.apache.comet.CometDateTimeUtilsSuite
               org.apache.comet.expressions.conditional.CometIfSuite
               org.apache.comet.expressions.conditional.CometCoalesceSuite
               org.apache.comet.expressions.conditional.CometCaseWhenSuite
