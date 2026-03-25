@@ -44,7 +44,7 @@ import org.apache.spark.sql.types._
 
 import com.google.common.primitives.UnsignedLong
 
-import org.apache.comet.CometConf
+import org.apache.comet.{CometConf, CometSparkSessionExtensions}
 
 abstract class ParquetReadSuite extends CometTestBase {
   import testImplicits._
@@ -981,9 +981,10 @@ abstract class ParquetReadSuite extends CometTestBase {
                 Seq(StructField("_1", LongType, false), StructField("_2", DoubleType, false)))
 
             withParquetDataFrame(data, schema = Some(readSchema)) { df =>
-              // TODO: validate with Spark 3.x and 'usingDataFusionParquetExec=true'
-              if (enableSchemaEvolution || CometConf.COMET_NATIVE_SCAN_IMPL
-                  .get(conf) == CometConf.SCAN_NATIVE_DATAFUSION) {
+              // Type widening (Int→Long, Float→Double) is allowed when schema evolution
+              // is enabled or on Spark 4.0+ (which has native type widening support).
+              if (enableSchemaEvolution ||
+                CometSparkSessionExtensions.isSpark40Plus) {
                 checkAnswer(df, data.map(Row.fromTuple))
               } else {
                 assertThrows[SparkException](df.collect())
@@ -1367,6 +1368,51 @@ abstract class ParquetReadSuite extends CometTestBase {
           checkAnswer(df, answer)
         }
       }
+    }
+  }
+
+  test("schema mismatch: Comet should match Spark behavior for incompatible type reads") {
+    // Spark 4 is more permissive than Spark 3 for some of these, so we verify Comet
+    // matches Spark rather than asserting a specific outcome.
+    val cases: Seq[(DataType, DataType, String)] = Seq(
+      (IntegerType, StringType, "int-as-string"),
+      (StringType, IntegerType, "string-as-int"),
+      (BooleanType, IntegerType, "boolean-as-int"),
+      (IntegerType, TimestampType, "int-as-timestamp"),
+      (DoubleType, IntegerType, "double-as-int"))
+
+    Seq(CometConf.SCAN_NATIVE_DATAFUSION, CometConf.SCAN_NATIVE_ICEBERG_COMPAT).foreach {
+      scanMode =>
+        withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> scanMode) {
+          cases.foreach { case (writeType, readType, desc) =>
+            withTempPath { path =>
+              val writeSchema = StructType(Seq(StructField("col", writeType, true)))
+              val rows = (0 until 10).map { i =>
+                val v: Any = writeType match {
+                  case IntegerType => i
+                  case StringType => s"str_$i"
+                  case BooleanType => i % 2 == 0
+                  case DoubleType => i.toDouble
+                }
+                Row(v)
+              }
+              spark
+                .createDataFrame(spark.sparkContext.parallelize(rows), writeSchema)
+                .write
+                .parquet(path.getCanonicalPath)
+
+              val readSchema = StructType(Seq(StructField("col", readType, true)))
+              readParquetFile(path.getCanonicalPath, Some(readSchema)) { df =>
+                val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
+                assert(
+                  sparkError.isDefined == cometError.isDefined,
+                  s"[$scanMode] $desc: Spark " +
+                    s"${if (sparkError.isDefined) "errored" else "succeeded"}" +
+                    s" but Comet ${if (cometError.isDefined) "errored" else "succeeded"}")
+              }
+            }
+          }
+        }
     }
   }
 }

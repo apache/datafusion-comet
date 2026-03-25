@@ -73,13 +73,16 @@ pub(crate) fn init_datasource_exec(
     case_sensitive: bool,
     session_ctx: &Arc<SessionContext>,
     encryption_enabled: bool,
+    extra_partition_column_names: Option<Vec<String>>,
+    allow_type_widening: bool,
 ) -> Result<Arc<DataSourceExec>, ExecutionError> {
-    let (table_parquet_options, spark_parquet_options) = get_options(
+    let (table_parquet_options, mut spark_parquet_options) = get_options(
         session_timezone,
         case_sensitive,
         &object_store_url,
         encryption_enabled,
     );
+    spark_parquet_options.allow_type_widening = allow_type_widening;
 
     // Determine the schema and projection to use for ParquetSource.
     // When data_schema is provided, use it as the base schema so DataFusion knows the full
@@ -150,13 +153,24 @@ pub(crate) fn init_datasource_exec(
         );
     }
 
+    let partition_column_names: Vec<String> = if let Some(extra) = extra_partition_column_names {
+        extra
+    } else {
+        partition_schema
+            .iter()
+            .flat_map(|s| s.fields().iter())
+            .map(|f| f.name().clone())
+            .collect()
+    };
+
     // Use caching reader factory to avoid redundant footer reads across partitions
     let store = session_ctx.runtime_env().object_store(&object_store_url)?;
     parquet_source = parquet_source
         .with_parquet_file_reader_factory(Arc::new(CachingParquetReaderFactory::new(store)));
 
     let expr_adapter_factory: Arc<dyn PhysicalExprAdapterFactory> = Arc::new(
-        SparkPhysicalExprAdapterFactory::new(spark_parquet_options, default_values),
+        SparkPhysicalExprAdapterFactory::new(spark_parquet_options, default_values)
+            .with_partition_column_names(partition_column_names),
     );
 
     let file_source: Arc<dyn FileSource> = Arc::new(parquet_source);

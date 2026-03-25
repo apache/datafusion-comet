@@ -1212,6 +1212,8 @@ impl PhysicalPlanner {
                     common.case_sensitive,
                     self.session_ctx(),
                     common.encryption_enabled,
+                    None,
+                    common.allow_type_widening,
                 )?;
                 Ok((
                     vec![],

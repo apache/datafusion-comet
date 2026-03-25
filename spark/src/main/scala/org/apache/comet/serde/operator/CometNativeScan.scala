@@ -32,7 +32,7 @@ import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometConf.COMET_EXEC_ENABLED
-import org.apache.comet.CometSparkSessionExtensions.{hasExplainInfo, withInfo}
+import org.apache.comet.CometSparkSessionExtensions.{hasExplainInfo, isSpark40Plus, withInfo}
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.serde.{CometOperatorSerde, Compatible, OperatorOuterClass, SupportLevel}
@@ -180,6 +180,8 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
         .newHadoopConfWithOptions(scan.relation.options)
 
       commonBuilder.setEncryptionEnabled(CometParquetUtils.encryptionEnabled(hadoopConf))
+      commonBuilder.setAllowTypeWidening(
+        isSpark40Plus || CometConf.COMET_SCHEMA_EVOLUTION_ENABLED.get(scan.conf))
 
       firstPartition.foreach { partitionFile =>
         val objectStoreOptions =

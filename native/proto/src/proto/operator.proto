@@ -107,6 +107,7 @@ message NativeScanCommon {
   bool encryption_enabled = 11;
   string source = 12;
   repeated spark.spark_expression.DataType fields = 13;
+  bool allow_type_widening = 14;
 }
 
 message NativeScan {

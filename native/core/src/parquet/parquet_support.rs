@@ -76,6 +76,9 @@ pub struct SparkParquetOptions {
     pub use_legacy_date_timestamp_or_ntz: bool,
     // Whether schema field names are case sensitive
     pub case_sensitive: bool,
+    /// Whether Spark 4.0+ type widening rules apply (allows more permissive
+    /// Parquet schema coercions like Int→Long, LTZ→NTZ, Decimal↔Decimal).
+    pub allow_type_widening: bool,
 }
 
 impl SparkParquetOptions {
@@ -88,6 +91,7 @@ impl SparkParquetOptions {
             use_decimal_128: false,
             use_legacy_date_timestamp_or_ntz: false,
             case_sensitive: false,
+            allow_type_widening: false,
         }
     }
 
@@ -100,6 +104,7 @@ impl SparkParquetOptions {
             use_decimal_128: false,
             use_legacy_date_timestamp_or_ntz: false,
             case_sensitive: false,
+            allow_type_widening: false,
         }
     }
 }

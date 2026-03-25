@@ -479,6 +479,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
     object_store_options: JObject,
     key_unwrapper_obj: JObject,
     metrics_node: JObject,
+    partition_column_names: JObjectArray,
+    allow_type_widening: jboolean,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| unsafe {
         JVMClasses::init(&mut env);
@@ -538,6 +540,19 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
             false
         };
 
+        // Extract partition column names from JNI string array
+        let partition_col_names = {
+            let len = env.get_array_length(&partition_column_names)? as usize;
+            let mut names = Vec::with_capacity(len);
+            for i in 0..len {
+                let jstr =
+                    JString::from(env.get_object_array_element(&partition_column_names, i as i32)?);
+                let name: String = env.get_string(&jstr)?.into();
+                names.push(name);
+            }
+            names
+        };
+
         let scan = init_datasource_exec(
             required_schema,
             Some(data_schema),
@@ -551,6 +566,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
             case_sensitive != JNI_FALSE,
             session_ctx,
             encryption_enabled,
+            Some(partition_col_names),
+            allow_type_widening != JNI_FALSE,
         )?;
 
         let partition_index: usize = 0;

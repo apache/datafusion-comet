@@ -240,7 +240,9 @@ public final class Native extends NativeBase {
       boolean caseSensitive,
       Map<String, String> objectStoreOptions,
       CometFileKeyUnwrapper keyUnwrapper,
-      Object metricsNode);
+      Object metricsNode,
+      String[] partitionColumnNames,
+      boolean allowTypeWidening);
 
   // arrow native version of read batch
 

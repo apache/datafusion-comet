@@ -566,6 +566,20 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
           conf.getInt(
               CometConf.COMET_BATCH_SIZE().key(),
               (Integer) CometConf.COMET_BATCH_SIZE().defaultValue().get());
+      // Extract partition column names so the native side can skip them during
+      // schema validation (partition columns get values from directory paths,
+      // not from the Parquet file, so type mismatches are expected).
+      String[] partColNames;
+      if (partitionSchema != null && partitionSchema.size() > 0) {
+        StructField[] pFields = partitionSchema.fields();
+        partColNames = new String[pFields.length];
+        for (int i = 0; i < pFields.length; i++) {
+          partColNames[i] = pFields[i].name();
+        }
+      } else {
+        partColNames = new String[0];
+      }
+
       this.handle =
           Native.initRecordBatchReader(
               filePath,
@@ -580,7 +594,10 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
               caseSensitive,
               objectStoreOptions,
               keyUnwrapper,
-              metricsNode);
+              metricsNode,
+              partColNames,
+              TypeUtil.isSpark40Plus()
+                  || (boolean) CometConf.COMET_SCHEMA_EVOLUTION_ENABLED().get());
 
       // Build spark field index map for efficient lookups during batch loading
       StructField[] sparkFields = sparkSchema.fields();
