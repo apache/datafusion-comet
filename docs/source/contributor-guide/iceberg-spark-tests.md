@@ -51,7 +51,7 @@ Clone Apache Iceberg locally and apply the diff file from Comet against the matc
 git clone git@github.com:apache/iceberg.git apache-iceberg
 cd apache-iceberg
 git checkout apache-iceberg-1.8.1
-git apply ../datafusion-comet/dev/diffs/iceberg-rust/1.8.1.diff
+git apply ../datafusion-comet/dev/diffs/iceberg/1.8.1.diff
 ```
 
 ## 3. Run Iceberg Spark Tests
@@ -76,14 +76,14 @@ regenerate:
 ```shell
 cd apache-iceberg
 git reset --hard apache-iceberg-1.8.1 && git clean -fd
-git apply ../datafusion-comet/dev/diffs/iceberg-rust/1.8.1.diff
+git apply ../datafusion-comet/dev/diffs/iceberg/1.8.1.diff
 
 # Make changes, then run spotless to fix formatting
 ./gradlew spotlessApply
 
 # Stage any new or deleted files, then generate the diff
 git add -A
-git diff apache-iceberg-1.8.1 > ../datafusion-comet/dev/diffs/iceberg-rust/1.8.1.diff
+git diff apache-iceberg-1.8.1 > ../datafusion-comet/dev/diffs/iceberg/1.8.1.diff
 ```
 
 Repeat for each Iceberg version (1.8.1, 1.9.1, 1.10.0). The file contents differ between versions, so each
@@ -93,4 +93,4 @@ diff must be generated against its own tag.
 
 The `iceberg_spark_test.yml` workflow applies these diffs and runs the three Gradle targets above against
 each Iceberg version. The test matrix covers Spark 3.4 and 3.5 across Iceberg 1.8.1, 1.9.1, and 1.10.0
-with Java 11 and 17. The workflow only runs when the PR title contains `[iceberg]`.
+with Java 11 and 17. The workflow runs on all pull requests and pushes to the main branch.
