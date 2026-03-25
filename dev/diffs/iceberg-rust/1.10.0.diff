@@ -1008,6 +1008,27 @@ index acd4688440..9be94eab2f 100644
              .getOrCreate();
    }
  
+diff --git a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/TestBase.java b/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/TestBase.java
+index 3c32b46936..5ba2c6dd95 100644
+--- a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/TestBase.java
++++ b/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/TestBase.java
+@@ -79,6 +79,16 @@ public abstract class TestBase extends SparkTestHelperBase {
+             .config(SQLConf.PARTITION_OVERWRITE_MODE().key(), "dynamic")
+             .config("spark.hadoop." + METASTOREURIS.varname, hiveConf.get(METASTOREURIS.varname))
+             .config("spark.sql.legacy.respectNullabilityInTextDatasetConversion", "true")
++            .config("spark.plugins", "org.apache.spark.CometPlugin")
++            .config(
++                "spark.shuffle.manager",
++                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++            .config("spark.comet.explainFallback.enabled", "true")
++            .config("spark.comet.scan.icebergNative.enabled", "true")
++            .config("spark.memory.offHeap.enabled", "true")
++            .config("spark.memory.offHeap.size", "10g")
++            .config("spark.comet.use.lazyMaterialization", "false")
++            .config("spark.comet.schemaEvolution.enabled", "true")
+             .enableHiveSupport()
+             .getOrCreate();
+ 
 diff --git a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/ScanTestBase.java b/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/ScanTestBase.java
 index 6647a1b483..b8b428229b 100644
 --- a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/ScanTestBase.java
@@ -1229,7 +1250,7 @@ index 833a0b6b5e..95007024d1 100644
      TestSparkDataFile.sparkContext = JavaSparkContext.fromSparkContext(spark.sparkContext());
    }
 diff --git a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkDataWrite.java b/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkDataWrite.java
-index 8884654fe0..e666553d91 100644
+index 8884654fe0..aacaf584f3 100644
 --- a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkDataWrite.java
 +++ b/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkDataWrite.java
 @@ -100,6 +100,16 @@ public class TestSparkDataWrite {
@@ -1249,6 +1270,78 @@ index 8884654fe0..e666553d91 100644
              .getOrCreate();
    }
  
+@@ -144,7 +154,7 @@ public class TestSparkDataWrite {
+     Dataset<Row> result = spark.read().format("iceberg").load(targetLocation);
+ 
+     List<SimpleRecord> actual =
+-        result.orderBy("id").as(Encoders.bean(SimpleRecord.class)).collectAsList();
++        result.orderBy("id", "data").as(Encoders.bean(SimpleRecord.class)).collectAsList();
+     assertThat(actual).hasSameSizeAs(expected).isEqualTo(expected);
+     for (ManifestFile manifest :
+         SnapshotUtil.latestSnapshot(table, branch).allManifests(table.io())) {
+@@ -213,7 +223,7 @@ public class TestSparkDataWrite {
+     Dataset<Row> result = spark.read().format("iceberg").load(targetLocation);
+ 
+     List<SimpleRecord> actual =
+-        result.orderBy("id").as(Encoders.bean(SimpleRecord.class)).collectAsList();
++        result.orderBy("id", "data").as(Encoders.bean(SimpleRecord.class)).collectAsList();
+     assertThat(actual).hasSameSizeAs(expected).isEqualTo(expected);
+   }
+ 
+@@ -258,7 +268,7 @@ public class TestSparkDataWrite {
+     Dataset<Row> result = spark.read().format("iceberg").load(targetLocation);
+ 
+     List<SimpleRecord> actual =
+-        result.orderBy("id").as(Encoders.bean(SimpleRecord.class)).collectAsList();
++        result.orderBy("id", "data").as(Encoders.bean(SimpleRecord.class)).collectAsList();
+     assertThat(actual).hasSameSizeAs(expected).isEqualTo(expected);
+   }
+ 
+@@ -310,7 +320,7 @@ public class TestSparkDataWrite {
+     Dataset<Row> result = spark.read().format("iceberg").load(targetLocation);
+ 
+     List<SimpleRecord> actual =
+-        result.orderBy("id").as(Encoders.bean(SimpleRecord.class)).collectAsList();
++        result.orderBy("id", "data").as(Encoders.bean(SimpleRecord.class)).collectAsList();
+     assertThat(actual).hasSameSizeAs(expected).isEqualTo(expected);
+   }
+ 
+@@ -352,7 +362,7 @@ public class TestSparkDataWrite {
+     Dataset<Row> result = spark.read().format("iceberg").load(targetLocation);
+ 
+     List<SimpleRecord> actual =
+-        result.orderBy("id").as(Encoders.bean(SimpleRecord.class)).collectAsList();
++        result.orderBy("id", "data").as(Encoders.bean(SimpleRecord.class)).collectAsList();
+     assertThat(actual).hasSameSizeAs(expected).isEqualTo(expected);
+   }
+ 
+@@ -391,7 +401,7 @@ public class TestSparkDataWrite {
+     Dataset<Row> result = spark.read().format("iceberg").load(targetLocation);
+ 
+     List<SimpleRecord> actual =
+-        result.orderBy("id").as(Encoders.bean(SimpleRecord.class)).collectAsList();
++        result.orderBy("id", "data").as(Encoders.bean(SimpleRecord.class)).collectAsList();
+     assertThat(actual).hasSameSizeAs(expected).isEqualTo(expected);
+ 
+     List<DataFile> files = Lists.newArrayList();
+@@ -459,7 +469,7 @@ public class TestSparkDataWrite {
+     Dataset<Row> result = spark.read().format("iceberg").load(targetLocation);
+ 
+     List<SimpleRecord> actual =
+-        result.orderBy("id").as(Encoders.bean(SimpleRecord.class)).collectAsList();
++        result.orderBy("id", "data").as(Encoders.bean(SimpleRecord.class)).collectAsList();
+     assertThat(actual).hasSameSizeAs(expected).isEqualTo(expected);
+   }
+ 
+@@ -707,7 +717,7 @@ public class TestSparkDataWrite {
+     // Since write and commit succeeded, the rows should be readable
+     Dataset<Row> result = spark.read().format("iceberg").load(targetLocation);
+     List<SimpleRecord> actual =
+-        result.orderBy("id").as(Encoders.bean(SimpleRecord.class)).collectAsList();
++        result.orderBy("id", "data").as(Encoders.bean(SimpleRecord.class)).collectAsList();
+     assertThat(actual)
+         .hasSize(records.size() + records2.size())
+         .containsExactlyInAnyOrder(
 diff --git a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkReadProjection.java b/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkReadProjection.java
 index 596d05d30b..e681d81704 100644
 --- a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkReadProjection.java

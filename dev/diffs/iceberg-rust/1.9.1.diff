@@ -1025,6 +1025,27 @@ index acd4688440..9be94eab2f 100644
              .getOrCreate();
    }
  
+diff --git a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/SparkTestBase.java b/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/SparkTestBase.java
+index 3e8953fb95..cac4f75e95 100644
+--- a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/SparkTestBase.java
++++ b/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/SparkTestBase.java
+@@ -77,6 +77,16 @@ public abstract class SparkTestBase extends SparkTestHelperBase {
+             .config(SQLConf.PARTITION_OVERWRITE_MODE().key(), "dynamic")
+             .config("spark.hadoop." + METASTOREURIS.varname, hiveConf.get(METASTOREURIS.varname))
+             .config("spark.sql.legacy.respectNullabilityInTextDatasetConversion", "true")
++            .config("spark.plugins", "org.apache.spark.CometPlugin")
++            .config(
++                "spark.shuffle.manager",
++                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++            .config("spark.comet.explainFallback.enabled", "true")
++            .config("spark.comet.scan.icebergNative.enabled", "true")
++            .config("spark.memory.offHeap.enabled", "true")
++            .config("spark.memory.offHeap.size", "10g")
++            .config("spark.comet.use.lazyMaterialization", "false")
++            .config("spark.comet.schemaEvolution.enabled", "true")
+             .enableHiveSupport()
+             .getOrCreate();
+ 
 diff --git a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/ScanTestBase.java b/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/ScanTestBase.java
 index 06d5e0c44f..b4f6d3907a 100644
 --- a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/ScanTestBase.java
@@ -1286,7 +1307,7 @@ index 16fde3c954..9c01167064 100644
    }
  
 diff --git a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkDataWrite.java b/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkDataWrite.java
-index 63c18277aa..c8c5c49009 100644
+index 63c18277aa..d214d7c23c 100644
 --- a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkDataWrite.java
 +++ b/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkDataWrite.java
 @@ -89,7 +89,20 @@ public class TestSparkDataWrite {
@@ -1311,6 +1332,87 @@ index 63c18277aa..c8c5c49009 100644
    }
  
    @Parameterized.AfterParam
+@@ -138,7 +151,7 @@ public class TestSparkDataWrite {
+     Dataset<Row> result = spark.read().format("iceberg").load(targetLocation);
+ 
+     List<SimpleRecord> actual =
+-        result.orderBy("id").as(Encoders.bean(SimpleRecord.class)).collectAsList();
++        result.orderBy("id", "data").as(Encoders.bean(SimpleRecord.class)).collectAsList();
+     Assert.assertEquals("Number of rows should match", expected.size(), actual.size());
+     Assert.assertEquals("Result rows should match", expected, actual);
+     for (ManifestFile manifest :
+@@ -208,7 +221,7 @@ public class TestSparkDataWrite {
+     Dataset<Row> result = spark.read().format("iceberg").load(targetLocation);
+ 
+     List<SimpleRecord> actual =
+-        result.orderBy("id").as(Encoders.bean(SimpleRecord.class)).collectAsList();
++        result.orderBy("id", "data").as(Encoders.bean(SimpleRecord.class)).collectAsList();
+     Assert.assertEquals("Number of rows should match", expected.size(), actual.size());
+     Assert.assertEquals("Result rows should match", expected, actual);
+   }
+@@ -254,7 +267,7 @@ public class TestSparkDataWrite {
+     Dataset<Row> result = spark.read().format("iceberg").load(targetLocation);
+ 
+     List<SimpleRecord> actual =
+-        result.orderBy("id").as(Encoders.bean(SimpleRecord.class)).collectAsList();
++        result.orderBy("id", "data").as(Encoders.bean(SimpleRecord.class)).collectAsList();
+     Assert.assertEquals("Number of rows should match", expected.size(), actual.size());
+     Assert.assertEquals("Result rows should match", expected, actual);
+   }
+@@ -307,7 +320,7 @@ public class TestSparkDataWrite {
+     Dataset<Row> result = spark.read().format("iceberg").load(targetLocation);
+ 
+     List<SimpleRecord> actual =
+-        result.orderBy("id").as(Encoders.bean(SimpleRecord.class)).collectAsList();
++        result.orderBy("id", "data").as(Encoders.bean(SimpleRecord.class)).collectAsList();
+     Assert.assertEquals("Number of rows should match", expected.size(), actual.size());
+     Assert.assertEquals("Result rows should match", expected, actual);
+   }
+@@ -350,7 +363,7 @@ public class TestSparkDataWrite {
+     Dataset<Row> result = spark.read().format("iceberg").load(targetLocation);
+ 
+     List<SimpleRecord> actual =
+-        result.orderBy("id").as(Encoders.bean(SimpleRecord.class)).collectAsList();
++        result.orderBy("id", "data").as(Encoders.bean(SimpleRecord.class)).collectAsList();
+     Assert.assertEquals("Number of rows should match", expected.size(), actual.size());
+     Assert.assertEquals("Result rows should match", expected, actual);
+   }
+@@ -390,7 +403,7 @@ public class TestSparkDataWrite {
+     Dataset<Row> result = spark.read().format("iceberg").load(targetLocation);
+ 
+     List<SimpleRecord> actual =
+-        result.orderBy("id").as(Encoders.bean(SimpleRecord.class)).collectAsList();
++        result.orderBy("id", "data").as(Encoders.bean(SimpleRecord.class)).collectAsList();
+     Assert.assertEquals("Number of rows should match", expected.size(), actual.size());
+     Assert.assertEquals("Result rows should match", expected, actual);
+ 
+@@ -455,7 +468,7 @@ public class TestSparkDataWrite {
+     Dataset<Row> result = spark.read().format("iceberg").load(targetLocation);
+ 
+     List<SimpleRecord> actual =
+-        result.orderBy("id").as(Encoders.bean(SimpleRecord.class)).collectAsList();
++        result.orderBy("id", "data").as(Encoders.bean(SimpleRecord.class)).collectAsList();
+     Assert.assertEquals("Number of rows should match", expected.size(), actual.size());
+     Assert.assertEquals("Result rows should match", expected, actual);
+   }
+@@ -619,7 +632,7 @@ public class TestSparkDataWrite {
+     Dataset<Row> result = spark.read().format("iceberg").load(targetLocation);
+ 
+     List<SimpleRecord> actual =
+-        result.orderBy("id").as(Encoders.bean(SimpleRecord.class)).collectAsList();
++        result.orderBy("id", "data").as(Encoders.bean(SimpleRecord.class)).collectAsList();
+     Assert.assertEquals("Number of rows should match", expected.size(), actual.size());
+     Assert.assertEquals("Result rows should match", expected, actual);
+ 
+@@ -705,7 +718,7 @@ public class TestSparkDataWrite {
+     // Since write and commit succeeded, the rows should be readable
+     Dataset<Row> result = spark.read().format("iceberg").load(targetLocation);
+     List<SimpleRecord> actual =
+-        result.orderBy("id").as(Encoders.bean(SimpleRecord.class)).collectAsList();
++        result.orderBy("id", "data").as(Encoders.bean(SimpleRecord.class)).collectAsList();
+     Assert.assertEquals(
+         "Number of rows should match", records.size() + records2.size(), actual.size());
+     assertThat(actual)
 diff --git a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkReadProjection.java b/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkReadProjection.java
 index 584a6b1c70..6b38a1195a 100644
 --- a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkReadProjection.java
