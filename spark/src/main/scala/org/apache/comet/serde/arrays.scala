@@ -305,7 +305,7 @@ object CometArrayRepeat extends CometExpressionSerde[ArrayRepeat] {
 
 object CometArrayCompact extends CometExpressionSerde[Expression] {
 
-  override def getSupportLevel(expr: Expression): SupportLevel = Incompatible(None)
+  override def getSupportLevel(expr: Expression): SupportLevel = Compatible()
 
   override def convert(
       expr: Expression,
@@ -319,7 +319,7 @@ object CometArrayCompact extends CometExpressionSerde[Expression] {
 
     val arrayCompactScalarExpr = scalarFunctionExprToProtoWithReturnType(
       "array_remove_all",
-      ArrayType(elementType = elementType),
+      expr.dataType,
       false,
       arrayExprProto,
       nullLiteralProto)
