@@ -101,7 +101,7 @@ jobs:
           path: native/target/ci/libcomet.so
           retention-days: 1
 
-  iceberg-spark-rust:
+  iceberg-spark:
     needs: build-native
     strategy:
       matrix:
@@ -111,7 +111,7 @@ jobs:
         spark-version: [{short: '3.4', full: '3.4.3'}, {short: '3.5', full: '3.5.8'}]
         scala-version: ['2.13']
       fail-fast: false
-    name: iceberg-spark-rust/${{ matrix.os }}/iceberg-${{ matrix.iceberg-version.full }}/spark-${{ matrix.spark-version.full }}/scala-${{ matrix.scala-version }}/java-${{ matrix.java-version }}
+    name: iceberg-spark/${{ matrix.os }}/iceberg-${{ matrix.iceberg-version.full }}/spark-${{ matrix.spark-version.full }}/scala-${{ matrix.scala-version }}/java-${{ matrix.java-version }}
     runs-on: ${{ matrix.os }}
     container:
       image: amd64/rust
@@ -136,7 +136,7 @@ jobs:
         uses: ./.github/actions/setup-iceberg-builder
         with:
           iceberg-version: ${{ matrix.iceberg-version.full }}
-      - name: Run Iceberg Spark tests (Rust)
+      - name: Run Iceberg Spark tests
         run: |
           cd apache-iceberg
           rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups
@@ -144,7 +144,7 @@ jobs:
             :iceberg-spark:iceberg-spark-${{ matrix.spark-version.short }}_${{ matrix.scala-version }}:test \
             -Pquick=true -x javadoc
 
-  iceberg-spark-extensions-rust:
+  iceberg-spark-extensions:
     needs: build-native
     strategy:
       matrix:
@@ -154,7 +154,7 @@ jobs:
         spark-version: [{short: '3.4', full: '3.4.3'}, {short: '3.5', full: '3.5.8'}]
         scala-version: ['2.13']
       fail-fast: false
-    name: iceberg-spark-extensions-rust/${{ matrix.os }}/iceberg-${{ matrix.iceberg-version.full }}/spark-${{ matrix.spark-version.full }}/scala-${{ matrix.scala-version }}/java-${{ matrix.java-version }}
+    name: iceberg-spark-extensions/${{ matrix.os }}/iceberg-${{ matrix.iceberg-version.full }}/spark-${{ matrix.spark-version.full }}/scala-${{ matrix.scala-version }}/java-${{ matrix.java-version }}
     runs-on: ${{ matrix.os }}
     container:
       image: amd64/rust
@@ -179,7 +179,7 @@ jobs:
         uses: ./.github/actions/setup-iceberg-builder
         with:
           iceberg-version: ${{ matrix.iceberg-version.full }}
-      - name: Run Iceberg Spark extensions tests (Rust)
+      - name: Run Iceberg Spark extensions tests
         run: |
           cd apache-iceberg
           rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups
@@ -187,7 +187,7 @@ jobs:
             :iceberg-spark:iceberg-spark-extensions-${{ matrix.spark-version.short }}_${{ matrix.scala-version }}:test \
             -Pquick=true -x javadoc
 
-  iceberg-spark-runtime-rust:
+  iceberg-spark-runtime:
     needs: build-native
     strategy:
       matrix:
@@ -197,7 +197,7 @@ jobs:
         spark-version: [{short: '3.4', full: '3.4.3'}, {short: '3.5', full: '3.5.8'}]
         scala-version: ['2.13']
       fail-fast: false
-    name: iceberg-spark-runtime-rust/${{ matrix.os }}/iceberg-${{ matrix.iceberg-version.full }}/spark-${{ matrix.spark-version.full }}/scala-${{ matrix.scala-version }}/java-${{ matrix.java-version }}
+    name: iceberg-spark-runtime/${{ matrix.os }}/iceberg-${{ matrix.iceberg-version.full }}/spark-${{ matrix.spark-version.full }}/scala-${{ matrix.scala-version }}/java-${{ matrix.java-version }}
     runs-on: ${{ matrix.os }}
     container:
       image: amd64/rust
@@ -222,7 +222,7 @@ jobs:
         uses: ./.github/actions/setup-iceberg-builder
         with:
           iceberg-version: ${{ matrix.iceberg-version.full }}
-      - name: Run Iceberg Spark runtime tests (Rust)
+      - name: Run Iceberg Spark runtime tests
         run: |
           cd apache-iceberg
           rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups
