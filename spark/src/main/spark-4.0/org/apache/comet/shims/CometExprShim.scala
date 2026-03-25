@@ -23,13 +23,13 @@ import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.types.StringTypeWithCollation
-import org.apache.spark.sql.types.{BinaryType, BooleanType, DataTypes, StringType}
+import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, DataTypes, StringType}
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.serde.{CommonStringExprs, Compatible, ExprOuterClass, Incompatible}
 import org.apache.comet.serde.ExprOuterClass.{BinaryOutputStyle, Expr}
-import org.apache.comet.serde.QueryPlanSerde.exprToProtoInternal
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProtoWithReturnType}
 
 /**
  * `CometExprShim` acts as a shim for parsing expressions from different Spark versions.
@@ -55,6 +55,34 @@ trait CometExprShim extends CommonStringExprs {
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
     expr match {
+      case knc: KnownNotContainsNull =>
+        // On Spark 4.0, array_compact rewrites to KnownNotContainsNull(ArrayFilter(IsNotNull)).
+        // Strip the wrapper and serialize the inner ArrayFilter as array_remove_all.
+        knc.child match {
+          case filter: ArrayFilter =>
+            filter.function.children.headOption match {
+              case Some(_: IsNotNull) =>
+                val arrayChild = filter.left
+                val elementType = arrayChild.dataType.asInstanceOf[ArrayType].elementType
+                val arrayExprProto = exprToProtoInternal(arrayChild, inputs, binding)
+                val nullLiteralProto =
+                  exprToProtoInternal(Literal(null, elementType), Seq.empty, false)
+                // Pass containsNull=true because DataFusion's array_remove_all always returns
+                // a list type with nullable elements; knc.dataType has containsNull=false
+                // which would cause a runtime type-mismatch assertion in DataFusion.
+                val returnType = ArrayType(elementType, containsNull = true)
+                val scalarExpr = scalarFunctionExprToProtoWithReturnType(
+                  "array_remove_all",
+                  returnType,
+                  false,
+                  arrayExprProto,
+                  nullLiteralProto)
+                optExprWithInfo(scalarExpr, knc, arrayChild)
+              case _ => None
+            }
+          case _ => None
+        }
+
       case s: StaticInvoke
           if s.staticObject == classOf[StringDecode] &&
             s.dataType.isInstanceOf[StringType] &&

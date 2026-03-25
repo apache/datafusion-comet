@@ -305,7 +305,7 @@ object CometArrayRepeat extends CometExpressionSerde[ArrayRepeat] {
 
 object CometArrayCompact extends CometExpressionSerde[Expression] {
 
-  override def getSupportLevel(expr: Expression): SupportLevel = Incompatible(None)
+  override def getSupportLevel(expr: Expression): SupportLevel = Compatible()
 
   override def convert(
       expr: Expression,
@@ -317,9 +317,13 @@ object CometArrayCompact extends CometExpressionSerde[Expression] {
     val arrayExprProto = exprToProto(child, inputs, binding)
     val nullLiteralProto = exprToProto(Literal(null, elementType), Seq.empty)
 
+    // Pass containsNull=true because DataFusion's array_remove_all always returns
+    // a list type with nullable elements; the containsNull=false from Spark's expr.dataType
+    // would cause a runtime type-mismatch assertion in DataFusion's ScalarFunctionExpr.
+    val returnType = ArrayType(elementType, containsNull = true)
     val arrayCompactScalarExpr = scalarFunctionExprToProtoWithReturnType(
       "array_remove_all",
-      ArrayType(elementType = elementType),
+      returnType,
       false,
       arrayExprProto,
       nullLiteralProto)
