@@ -65,6 +65,8 @@ under the License.
     <script async="true" defer="true" src="https://buttons.github.io/buttons.js"></script>
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="SQL File Tests" href="sql-file-tests.html" />
+    <link rel="prev" title="Running Spark SQL Tests" href="spark-sql-tests.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="" />
@@ -161,7 +163,7 @@ under the License.
 </li>
 
 
-<li class="nav-item ">
+<li class="nav-item current active">
   <a class="nav-link nav-internal" href="index.html">
     Contributor Guide
   </a>
@@ -243,8 +245,6 @@ under the License.
       
       
       
-        
-      
       <dialog id="pst-primary-sidebar-modal"></dialog>
       <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
         
@@ -275,7 +275,7 @@ under the License.
 </li>
 
 
-<li class="nav-item ">
+<li class="nav-item current active">
   <a class="nav-link nav-internal" href="index.html">
     Contributor Guide
   </a>
@@ -349,10 +349,32 @@ under the License.
 <nav class="bd-links" id="bd-docs-nav" aria-label="Main navigation">
   <div class="bd-toc-item active">
     <p aria-level="2" class="caption" role="heading"><span class="caption-text">Index</span></p>
-<ul>
+<ul class="current">
 <li class="toctree-l1"><a class="reference internal" href="../about/index.html">Comet Overview</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../user-guide/index.html">User Guide</a></li>
-<li class="toctree-l1"><a class="reference internal" href="index.html">Contributor Guide</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="index.html">Contributor Guide</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="contributing.html">Getting Started</a></li>
+<li class="toctree-l2"><a class="reference internal" href="plugin_overview.html">Comet Plugin Architecture</a></li>
+<li class="toctree-l2"><a class="reference internal" href="plugin_overview.html#plugin-components">Plugin Components</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ffi.html">Arrow FFI</a></li>
+<li class="toctree-l2"><a class="reference internal" href="jvm_shuffle.html">JVM Shuffle</a></li>
+<li class="toctree-l2"><a class="reference internal" href="native_shuffle.html">Native Shuffle</a></li>
+<li class="toctree-l2"><a class="reference internal" href="parquet_scans.html">Parquet Scans</a></li>
+<li class="toctree-l2"><a class="reference internal" href="development.html">Development Guide</a></li>
+<li class="toctree-l2"><a class="reference internal" href="debugging.html">Debugging Guide</a></li>
+<li class="toctree-l2"><a class="reference internal" href="benchmarking.html">Benchmarking Guide</a></li>
+<li class="toctree-l2"><a class="reference internal" href="adding_a_new_operator.html">Adding a New Operator</a></li>
+<li class="toctree-l2"><a class="reference internal" href="adding_a_new_expression.html">Adding a New Expression</a></li>
+<li class="toctree-l2"><a class="reference internal" href="tracing.html">Tracing</a></li>
+<li class="toctree-l2"><a class="reference internal" href="profiling_native_code.html">Profiling Native Code</a></li>
+<li class="toctree-l2"><a class="reference internal" href="spark-sql-tests.html">Spark SQL Tests</a></li>
+<li class="toctree-l2 current"><a class="current reference internal" href="#">Iceberg Spark Tests</a></li>
+<li class="toctree-l2"><a class="reference internal" href="sql-file-tests.html">SQL File Tests</a></li>
+<li class="toctree-l2"><a class="reference internal" href="roadmap.html">Roadmap</a></li>
+<li class="toctree-l2"><a class="reference internal" href="release_process.html">Release Process</a></li>
+<li class="toctree-l2"><a class="reference external" href="https://github.com/apache/datafusion-comet">Github and Issue Tracker</a></li>
+</ul>
+</li>
 <li class="toctree-l1"><a class="reference internal" href="../asf/index.html">ASF Links</a></li>
 </ul>
 
@@ -396,6 +418,9 @@ under the License.
         <i class="fa-solid fa-home"></i>
       </a>
     </li>
+    
+    <li class="breadcrumb-item"><a href="index.html" class="nav-link">Comet Contributor Guide</a></li>
+    
     <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Running Iceberg Spark Tests</span></li>
   </ul>
 </nav>
@@ -458,7 +483,7 @@ plugin and shuffle manager</p></li>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>clone<span class="w"> </span>git@github.com:apache/iceberg.git<span class="w"> </span>apache-iceberg
 <span class="nb">cd</span><span class="w"> </span>apache-iceberg
 git<span class="w"> </span>checkout<span class="w"> </span>apache-iceberg-1.8.1
-git<span class="w"> </span>apply<span class="w"> </span>../datafusion-comet/dev/diffs/iceberg-rust/1.8.1.diff
+git<span class="w"> </span>apply<span class="w"> </span>../datafusion-comet/dev/diffs/iceberg/1.8.1.diff
 </pre></div>
 </div>
 </section>
@@ -470,11 +495,25 @@ git<span class="w"> </span>apply<span class="w"> </span>../datafusion-comet/dev/
 </pre></div>
 </div>
 <p>The three Gradle targets tested in CI are:</p>
-<ul class="simple">
-<li><p><code class="docutils literal notranslate"><span class="pre">:iceberg-spark:iceberg-spark-&lt;sparkVersion&gt;_&lt;scalaVersion&gt;:test</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">:iceberg-spark:iceberg-spark-extensions-&lt;sparkVersion&gt;_&lt;scalaVersion&gt;:test</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">:iceberg-spark:iceberg-spark-runtime-&lt;sparkVersion&gt;_&lt;scalaVersion&gt;:integrationTest</span></code></p></li>
-</ul>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Gradle Target</p></th>
+<th class="head"><p>What It Covers</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">iceberg-spark-&lt;ver&gt;:test</span></code></p></td>
+<td><p>Core read/write paths (Parquet, Avro, ORC, vectorized), scan operations, filtering, bloom filters, runtime filtering, deletion handling, structured streaming, DDL/DML (create/alter/drop, writes, deletes), filter and aggregate pushdown, actions (snapshot expiration, file rewriting, orphan cleanup, table migration), serialization, and data format conversions.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">iceberg-spark-extensions-&lt;ver&gt;:test</span></code></p></td>
+<td><p>SQL extensions: stored procedures (migrate, snapshot, cherrypick, rollback, rewrite-data-files, rewrite-manifests, expire-snapshots, remove-orphan-files, etc.), row-level operations (copy-on-write and merge-on-read update/delete/merge), DDL extensions (branches, tags, alter schema, partition fields), changelog tables/views, metadata tables, and views.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">iceberg-spark-runtime-&lt;ver&gt;:integrationTest</span></code></p></td>
+<td><p>A single smoke test (<code class="docutils literal notranslate"><span class="pre">SmokeTest.java</span></code>) that validates the shaded runtime JAR. The <code class="docutils literal notranslate"><span class="pre">spark-runtime</span></code> module has no main source — it packages Iceberg and all dependencies into a shaded uber-JAR. The smoke test exercises basic create, insert, merge, query, partition field, and sort order operations to confirm the shaded JAR works end-to-end.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
 </section>
 <section id="updating-diffs">
 <h2>Updating Diffs<a class="headerlink" href="#updating-diffs" title="Link to this heading">#</a></h2>
@@ -482,14 +521,14 @@ git<span class="w"> </span>apply<span class="w"> </span>../datafusion-comet/dev/
 regenerate:</p>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nb">cd</span><span class="w"> </span>apache-iceberg
 git<span class="w"> </span>reset<span class="w"> </span>--hard<span class="w"> </span>apache-iceberg-1.8.1<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>clean<span class="w"> </span>-fd
-git<span class="w"> </span>apply<span class="w"> </span>../datafusion-comet/dev/diffs/iceberg-rust/1.8.1.diff
+git<span class="w"> </span>apply<span class="w"> </span>../datafusion-comet/dev/diffs/iceberg/1.8.1.diff
 
 <span class="c1"># Make changes, then run spotless to fix formatting</span>
 ./gradlew<span class="w"> </span>spotlessApply
 
 <span class="c1"># Stage any new or deleted files, then generate the diff</span>
 git<span class="w"> </span>add<span class="w"> </span>-A
-git<span class="w"> </span>diff<span class="w"> </span>apache-iceberg-1.8.1<span class="w"> </span>&gt;<span class="w"> </span>../datafusion-comet/dev/diffs/iceberg-rust/1.8.1.diff
+git<span class="w"> </span>diff<span class="w"> </span>apache-iceberg-1.8.1<span class="w"> </span>&gt;<span class="w"> </span>../datafusion-comet/dev/diffs/iceberg/1.8.1.diff
 </pre></div>
 </div>
 <p>Repeat for each Iceberg version (1.8.1, 1.9.1, 1.10.0). The file contents differ between versions, so each
@@ -499,7 +538,7 @@ diff must be generated against its own tag.</p>
 <h2>Running Tests in CI<a class="headerlink" href="#running-tests-in-ci" title="Link to this heading">#</a></h2>
 <p>The <code class="docutils literal notranslate"><span class="pre">iceberg_spark_test.yml</span></code> workflow applies these diffs and runs the three Gradle targets above against
 each Iceberg version. The test matrix covers Spark 3.4 and 3.5 across Iceberg 1.8.1, 1.9.1, and 1.10.0
-with Java 11 and 17. The workflow only runs when the PR title contains <code class="docutils literal notranslate"><span class="pre">[iceberg]</span></code>.</p>
+with Java 11 and 17. The workflow runs on all pull requests and pushes to the main branch.</p>
 </section>
 </section>
 
@@ -513,6 +552,24 @@ with Java 11 and 17. The workflow only runs when the PR title contains <code cla
                 <footer class="prev-next-footer d-print-none">
                   
 <div class="prev-next-area">
+    <a class="left-prev"
+       href="spark-sql-tests.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">Running Spark SQL Tests</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="sql-file-tests.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">SQL File Tests</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
 </div>
                 </footer>
               
