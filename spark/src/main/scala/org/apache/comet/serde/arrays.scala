@@ -100,10 +100,13 @@ object CometArrayAppend extends CometExpressionSerde[ArrayAppend] {
     val arrayExprProto = exprToProto(expr.children.head, inputs, binding)
     val keyExprProto = exprToProto(expr.children(1), inputs, binding)
 
+    // DataFusion's array_append always returns a list with nullable elements,
+    // so we must promise ArrayType(elementType, containsNull = true) here even if
+    // Spark's expr.dataType has containsNull = false (e.g. for array(1,2,3)).
     val arrayAppendScalarExpr =
       scalarFunctionExprToProtoWithReturnType(
         "array_append",
-        expr.dataType,
+        ArrayType(elementType, containsNull = true),
         false,
         arrayExprProto,
         keyExprProto)
