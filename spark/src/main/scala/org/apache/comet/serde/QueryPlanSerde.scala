@@ -106,6 +106,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[Log2] -> CometLog2,
     classOf[Log10] -> CometLog10,
     classOf[Multiply] -> CometMultiply,
+    classOf[NaNvl] -> CometScalarFunction("nanvl"),
     classOf[Pow] -> CometScalarFunction("pow"),
     classOf[Rand] -> CometRand,
     classOf[Randn] -> CometRandn,
