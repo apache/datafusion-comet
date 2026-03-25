@@ -317,9 +317,13 @@ object CometArrayCompact extends CometExpressionSerde[Expression] {
     val arrayExprProto = exprToProto(child, inputs, binding)
     val nullLiteralProto = exprToProto(Literal(null, elementType), Seq.empty)
 
+    // Pass containsNull=true because DataFusion's array_remove_all always returns
+    // a list type with nullable elements; the containsNull=false from Spark's expr.dataType
+    // would cause a runtime type-mismatch assertion in DataFusion's ScalarFunctionExpr.
+    val returnType = ArrayType(elementType, containsNull = true)
     val arrayCompactScalarExpr = scalarFunctionExprToProtoWithReturnType(
       "array_remove_all",
-      expr.dataType,
+      returnType,
       false,
       arrayExprProto,
       nullLiteralProto)
