@@ -164,7 +164,8 @@ impl AggregateUDFImpl for SumDecimal {
     }
 
     fn is_nullable(&self) -> bool {
-        // SumDecimal is always nullable because overflows can cause null values
+        // In Spark, Sum.nullable and Average.nullable both return true irrespective of ANSI mode.
+        // SumDecimal is always nullable because overflows can cause null values.
         true
     }
 }
