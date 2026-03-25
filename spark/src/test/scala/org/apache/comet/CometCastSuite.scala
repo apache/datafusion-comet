@@ -992,8 +992,10 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   ignore("cast StringType to TimestampType") {
-    // TODO: enable once all Spark timestamp formats are supported natively.
-    // Currently missing: time-only formats with colon (e.g. "T12:34", "4:4").
+    // TODO: enable once string→timestamp is marked Compatible in CometCast.canCastFromString.
+    // All Spark timestamp formats are now supported natively (space separator, Z/offset suffix,
+    // T-prefixed and bare H:M time-only, negative years). The fuzz filter below can be removed
+    // when enabling the native path.
     withSQLConf((SQLConf.SESSION_LOCAL_TIMEZONE.key, "UTC")) {
       val values = Seq("2020-01-01T12:34:56.123456", "T2") ++ gen.generateStrings(
         dataSize,
@@ -1045,7 +1047,25 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         "10000-01-01T12",
         "10000-01-01T12:34",
         "10000-01-01T12:34:56",
-        "10000-01-01T12:34:56.123456")
+        "10000-01-01T12:34:56.123456",
+        // Space separator
+        "2020-01-01 12",
+        "2020-01-01 12:34",
+        "2020-01-01 12:34:56",
+        "2020-01-01 12:34:56.123456",
+        // Z and offset suffixes
+        "2020-01-01T12:34:56Z",
+        "2020-01-01T12:34:56+05:30",
+        "2020-01-01T12:34:56-08:00",
+        // T-prefixed time-only with colon
+        "T12:34",
+        "T12:34:56",
+        "T12:34:56.123456",
+        // Bare time-only (hour:minute)
+        "12:34",
+        "12:34:56",
+        // Negative year
+        "-0001-01-01T12:34:56")
       castTimestampTest(values.toDF("a"), DataTypes.TimestampType)
     }
   }
