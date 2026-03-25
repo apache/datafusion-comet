@@ -88,7 +88,7 @@ object CometArrayRemove
 
 object CometArrayAppend extends CometExpressionSerde[ArrayAppend] {
 
-  override def getSupportLevel(expr: ArrayAppend): SupportLevel = Incompatible(None)
+  override def getSupportLevel(expr: ArrayAppend): SupportLevel = Compatible()
 
   override def convert(
       expr: ArrayAppend,
@@ -103,7 +103,7 @@ object CometArrayAppend extends CometExpressionSerde[ArrayAppend] {
     val arrayAppendScalarExpr =
       scalarFunctionExprToProtoWithReturnType(
         "array_append",
-        ArrayType(elementType = elementType),
+        expr.dataType,
         false,
         arrayExprProto,
         keyExprProto)

@@ -16,7 +16,6 @@
 -- under the License.
 
 -- Config: spark.comet.expression.ArrayInsert.allowIncompatible=true
--- Config: spark.comet.expression.ArrayAppend.allowIncompatible=true
 -- ConfigMatrix: parquet.enable.dictionary=false,true
 
 statement
