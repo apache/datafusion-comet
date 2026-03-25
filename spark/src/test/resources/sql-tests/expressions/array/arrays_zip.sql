@@ -117,3 +117,28 @@ INSERT INTO test_arrays_zip_nested VALUES
 
 query spark_answer_only
 SELECT arrays_zip(a, b) FROM test_arrays_zip_nested
+
+-- field names: column references produce fields named after the columns
+-- access by name verifies the struct schema, not just the values
+query spark_answer_only
+SELECT z.ints, z.longs FROM (SELECT explode(arrays_zip(ints, longs)) z FROM test_arrays_zip WHERE ints IS NOT NULL AND longs IS NOT NULL)
+
+query spark_answer_only
+SELECT z.ints, z.strs, z.bools FROM (SELECT explode(arrays_zip(ints, strs, bools)) z FROM test_arrays_zip WHERE ints IS NOT NULL AND strs IS NOT NULL AND bools IS NOT NULL)
+
+-- field names: literal array() expressions fall back to positional names "0", "1", etc.
+query spark_answer_only
+SELECT z.`0`, z.`1` FROM (SELECT explode(arrays_zip(array(1, 2), array('a', 'b'))) z)
+
+-- field names: qualified column reference foo.bar uses last name part "bar"
+statement
+CREATE TABLE test_arrays_zip_qualified(
+  vals array<int>,
+  tags array<string>
+) USING parquet
+
+statement
+INSERT INTO test_arrays_zip_qualified VALUES (array(1, 2), array('x', 'y'))
+
+query spark_answer_only
+SELECT z.vals, z.tags FROM (SELECT explode(arrays_zip(t.vals, t.tags)) z FROM test_arrays_zip_qualified t)
