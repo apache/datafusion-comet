@@ -9,6 +9,7 @@ Audit the Comet implementation of the `$ARGUMENTS` expression for correctness an
 ## Overview
 
 This audit covers:
+
 1. Spark implementation across versions 3.4.3, 3.5.8, and 4.0.1
 2. Comet Scala serde implementation
 3. Comet Rust / DataFusion implementation
@@ -57,6 +58,7 @@ done
 ### Read the Spark source for each version
 
 For each Spark version, read the expression file and note:
+
 - The `eval`, `nullSafeEval`, and `doGenCode` / `doGenCodeSafe` methods
 - The `inputTypes` and `dataType` fields (accepted input types, return type)
 - Null handling strategy (`nullable`, `nullSafeEval`)
@@ -67,10 +69,12 @@ For each Spark version, read the expression file and note:
 ### Compare across Spark versions
 
 Produce a concise diff summary of what changed between:
+
 - 3.4.3 → 3.5.8
 - 3.5.8 → 4.0.1
 
 Pay attention to:
+
 - New input types added or removed
 - Behavior changes for edge cases (null, overflow, empty, boundary)
 - New ANSI mode branches
@@ -91,6 +95,7 @@ done
 ```
 
 Read the relevant Spark test files and produce a list of:
+
 - Input types covered
 - Edge cases exercised (null, empty, overflow, negative, boundary values, special characters, etc.)
 - ANSI mode tests
@@ -111,6 +116,7 @@ grep -r "$ARGUMENTS" spark/src/main/scala/org/apache/comet/ --include="*.scala" 
 ```
 
 Read the serde implementation and check:
+
 - Which Spark versions the serde handles
 - Whether `getSupportLevel` is implemented and accurate
 - Whether all input types are handled
@@ -141,6 +147,7 @@ grep -r "$ARGUMENTS" ~/.cargo/registry/src/ --include="*.rs" -l 2>/dev/null | he
 ```
 
 Read the Rust implementation and check:
+
 - Null handling (does it propagate nulls correctly?)
 - Overflow / error handling (returns `Err` vs panics)
 - Type dispatch (does it handle all types that Spark supports?)
@@ -162,6 +169,7 @@ find spark/src/test/resources/sql-tests/expressions/ -name "*$(echo $ARGUMENTS |
 ```
 
 Read every SQL test file found and list:
+
 - Table schemas and data values used
 - Queries exercised
 - Query modes used (`query`, `spark_answer_only`, `tolerance`, `ignore`, `expect_error`)
@@ -174,6 +182,7 @@ grep -r "$ARGUMENTS" spark/src/test/scala/ --include="*.scala" -l
 ```
 
 Read the relevant Scala test files and list:
+
 - Input types covered
 - Edge cases exercised
 - Whether constant folding is disabled for literal tests
@@ -188,21 +197,21 @@ Compare the Spark test coverage (Step 2) against the Comet test coverage (Step 4
 
 For each of the following dimensions, note whether it is covered in Comet tests or missing:
 
-| Dimension | Spark tests it | Comet SQL test | Comet Scala test | Gap? |
-|-----------|---------------|----------------|-----------------|------|
-| Column reference argument(s) | | | | |
-| Literal argument(s) | | | | |
-| NULL input | | | | |
-| Empty string / empty array / empty map | | | | |
-| Zero, negative values (numeric) | | | | |
-| Boundary values (INT_MIN, INT_MAX, Long.MinValue, etc.) | | | | |
-| NaN, Infinity, -Infinity (float/double) | | | | |
-| Multibyte / special UTF-8 characters | | | | |
-| ANSI mode (failOnError=true) | | | | |
-| Non-ANSI mode (failOnError=false) | | | | |
-| All supported input types | | | | |
-| Parquet dictionary encoding (ConfigMatrix) | | | | |
-| Cross-version behavior differences | | | | |
+| Dimension                                               | Spark tests it | Comet SQL test | Comet Scala test | Gap? |
+| ------------------------------------------------------- | -------------- | -------------- | ---------------- | ---- |
+| Column reference argument(s)                            |                |                |                  |      |
+| Literal argument(s)                                     |                |                |                  |      |
+| NULL input                                              |                |                |                  |      |
+| Empty string / empty array / empty map                  |                |                |                  |      |
+| Zero, negative values (numeric)                         |                |                |                  |      |
+| Boundary values (INT_MIN, INT_MAX, Long.MinValue, etc.) |                |                |                  |      |
+| NaN, Infinity, -Infinity (float/double)                 |                |                |                  |      |
+| Multibyte / special UTF-8 characters                    |                |                |                  |      |
+| ANSI mode (failOnError=true)                            |                |                |                  |      |
+| Non-ANSI mode (failOnError=false)                       |                |                |                  |      |
+| All supported input types                               |                |                |                  |      |
+| Parquet dictionary encoding (ConfigMatrix)              |                |                |                  |      |
+| Cross-version behavior differences                      |                |                |                  |      |
 
 ### Implementation gaps
 
@@ -220,12 +229,15 @@ Also review the Comet implementation (Step 3) against the Spark behavior (Step 1
 Summarize findings as a prioritized list:
 
 ### High priority
+
 Issues where Comet may silently produce wrong results compared to Spark.
 
 ### Medium priority
+
 Missing test coverage for edge cases that could expose bugs.
 
 ### Low priority
+
 Minor gaps, cosmetic improvements, or nice-to-have tests.
 
 ---
