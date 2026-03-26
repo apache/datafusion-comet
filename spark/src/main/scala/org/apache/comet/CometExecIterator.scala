@@ -27,6 +27,7 @@ import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.internal.Logging
 import org.apache.spark.network.util.ByteUnit
 import org.apache.spark.sql.comet.CometMetricNode
+import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.vectorized._
 import org.apache.spark.util.SerializableConfiguration
@@ -168,7 +169,20 @@ class CometExecIterator(
 
         val parquetError: scala.util.matching.Regex =
           """^Parquet error: (?:.*)$""".r
+        val schemaConvertError: scala.util.matching.Regex =
+          """^Column: \[(.+)\], Expected: (.+), Found: (.+)$""".r
         e.getMessage match {
+          case schemaConvertError(column, logicalType, physicalType) =>
+            // Convert to Spark's SchemaColumnConvertNotSupportedException so that
+            // the error chain matches what Spark tests expect:
+            // SparkException("Parquet column cannot be converted...") →
+            //   SchemaColumnConvertNotSupportedException(column, physical, logical)
+            val scnse =
+              new SchemaColumnConvertNotSupportedException(column, physicalType, logicalType)
+            throw new SparkException(
+              "Parquet column cannot be converted in file. " +
+                s"Column: [$column], Expected: $logicalType, Found: $physicalType",
+              scnse)
           case parquetError() =>
             // See org.apache.spark.sql.errors.QueryExecutionErrors.failedToReadDataError
             // See org.apache.parquet.hadoop.ParquetFileReader for error message.

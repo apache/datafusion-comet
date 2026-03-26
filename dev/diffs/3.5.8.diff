@@ -2188,10 +2188,29 @@ index 8e88049f51e..b713ccddfcb 100644
          case _ =>
            throw new AnalysisException("Can not match ParquetTable in the query.")
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
-index 8ed9ef1630e..eed2a6f5ad5 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
-@@ -1345,7 +1345,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
+@@ -1071,7 +1071,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
+     withParquetFile(data) { path =>
+       val errMsg = intercept[Exception](spark.read.schema(readSchema).parquet(path).collect())
+           .getMessage
+-      assert(errMsg.contains("Parquet column cannot be converted in file"))
++      assert(errMsg.contains("Parquet column cannot be converted in file") ||
++             errMsg.contains("Expected:"))
+     }
+   }
+
+@@ -1082,7 +1083,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
+     withParquetFile(data) { path =>
+       val errMsg = intercept[Exception](spark.read.schema(readSchema).parquet(path).collect())
+           .getMessage
+-      assert(errMsg.contains("Parquet column cannot be converted in file"))
++      assert(errMsg.contains("Parquet column cannot be converted in file") ||
++             errMsg.contains("Expected:"))
+     }
+   }
+
+@@ -1345,7 +1347,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
      }
    }
  
@@ -2202,10 +2221,27 @@ index 8ed9ef1630e..eed2a6f5ad5 100644
        checkAnswer(
          // "fruit" column in this file is encoded using DELTA_LENGTH_BYTE_ARRAY.
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
-index f6472ba3d9d..7a8f5317ed7 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
-@@ -998,7 +998,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
+@@ -27,6 +27,7 @@ import org.apache.parquet.hadoop.ParquetOutputFormat
+
+ import org.apache.spark.{DebugFilesystem, SparkConf, SparkException}
+ import org.apache.spark.sql._
++import org.apache.spark.sql.IgnoreCometNativeDataFusion
+ import org.apache.spark.sql.catalyst.{InternalRow, TableIdentifier}
+ import org.apache.spark.sql.catalyst.expressions.SpecificInternalRow
+ import org.apache.spark.sql.catalyst.util.ArrayData
+@@ -185,7 +186,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
+     }
+   }
+
+-  test("SPARK-36182: can't read TimestampLTZ as TimestampNTZ") {
++  test("SPARK-36182: can't read TimestampLTZ as TimestampNTZ",
++    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3720")) {
+     val data = (1 to 1000).map { i =>
+       val ts = new java.sql.Timestamp(i)
+       Row(ts)
+@@ -998,7 +1000,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
      }
    }
  
@@ -2218,7 +2254,7 @@ index f6472ba3d9d..7a8f5317ed7 100644
 @@ -1067,7 +1068,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
          checkAnswer(readParquet(schema, path), df)
        }
- 
+
 -      withSQLConf(SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "false") {
 +      withSQLConf(SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "false",
 +          "spark.comet.enabled" -> "false") {
@@ -2347,7 +2383,7 @@ index 3f47c5e506f..bc1ee1ec0ba 100644
  import org.apache.parquet.schema.Type._
  
  import org.apache.spark.SparkException
-+import org.apache.spark.sql.IgnoreComet
++import org.apache.spark.sql.{IgnoreComet, IgnoreCometNativeDataFusion}
  import org.apache.spark.sql.catalyst.expressions.Cast.toSQLType
  import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException
  import org.apache.spark.sql.functions.desc
@@ -2361,6 +2397,16 @@ index 3f47c5e506f..bc1ee1ec0ba 100644
      withTempPath { dir =>
        val e = testSchemaMismatch(dir.getCanonicalPath, vectorizedReaderEnabled = false)
        val expectedMessage = "Encountered error while reading file"
+@@ -1048,7 +1050,8 @@ class ParquetSchemaSuite extends ParquetSchemaTest {
+     }
+   }
+
+-  test("schema mismatch failure error message for parquet vectorized reader") {
++  test("schema mismatch failure error message for parquet vectorized reader",
++      IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3720")) {
+     withTempPath { dir =>
+       val e = testSchemaMismatch(dir.getCanonicalPath, vectorizedReaderEnabled = true)
+       assert(e.getCause.isInstanceOf[SparkException])
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/debug/DebuggingSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/debug/DebuggingSuite.scala
 index b8f3ea3c6f3..bbd44221288 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/debug/DebuggingSuite.scala

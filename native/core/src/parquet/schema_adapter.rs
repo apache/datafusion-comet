@@ -568,7 +568,6 @@ fn is_spark_compatible_read(
         (Int8 | Int16 | Int32, Int64) => allow_type_widening,
         (Int64, Int64) => true,
         (Int32 | Int8 | Int16, Date32) => true,
-        (Int8 | Int16 | Int32 | Int64, Decimal128(_, _)) => true,
 
         // Unsigned int conversions
         (UInt8, Int8 | Int16 | Int32 | Int64) => true,
@@ -601,15 +600,14 @@ fn is_spark_compatible_read(
 
         // BINARY / String interop
         (Binary | LargeBinary | Utf8 | LargeUtf8, Binary | LargeBinary | Utf8 | LargeUtf8) => true,
-        (Binary | LargeBinary | FixedSizeBinary(_), Decimal128(_, _)) => true,
         (FixedSizeBinary(_), Binary | LargeBinary | Utf8 | LargeUtf8) => true,
 
         // Decimal conversions:
         // Spark 3.x: physical precision <= logical, scales must match.
-        // Spark 4.0+: all Decimal↔Decimal allowed (reader handles overflow).
+        // Spark 4.0+: decimal widening allowed (precision and scale can only increase).
         (Decimal128(p1, s1), Decimal128(p2, s2)) => {
             if allow_type_widening {
-                true
+                p1 <= p2 && s1 <= s2
             } else {
                 p1 <= p2 && s1 == s2
             }

@@ -2866,7 +2866,17 @@ diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/
 index 4474ec1fd42..97910c4fc3a 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
-@@ -1344,7 +1344,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
+@@ -1062,7 +1062,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
+     }
+   }
+
+-  test("SPARK-35640: read binary as timestamp should throw schema incompatible error") {
++  test("SPARK-35640: read binary as timestamp should throw schema incompatible error",
++      IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3720")) {
+     val data = (1 to 4).map(i => Tuple1(i.toString))
+     val readSchema = StructType(Seq(StructField("_1", DataTypes.TimestampType)))
+
+@@ -1344,7 +1345,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
      }
    }
  
@@ -2921,7 +2931,19 @@ index bba71f1c48d..e55612527a6 100644
          val schema1 = "a DECIMAL(3, 2), b DECIMAL(18, 3), c DECIMAL(37, 3)"
          checkAnswer(readParquet(schema1, path), df)
          val schema2 = "a DECIMAL(3, 0), b DECIMAL(18, 1), c DECIMAL(37, 1)"
-@@ -1084,7 +1091,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
+@@ -1077,7 +1084,10 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
+         Seq("a DECIMAL(3, 0)", "b DECIMAL(18, 1)", "c DECIMAL(37, 1)").foreach { schema =>
+           val e = intercept[SparkException] {
+             readParquet(schema, path).collect()
+-          }.getCause
++          }.getCause match {
++            case se: SparkException => se.getCause // Comet adds extra SparkException layer
++            case other => other
++          }
+           assert(e.isInstanceOf[SchemaColumnConvertNotSupportedException])
+         }
+       }
+@@ -1084,7 +1094,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
        val df = sql(s"SELECT 1 a, 123456 b, ${Int.MaxValue.toLong * 10} c, CAST('1.2' AS BINARY) d")
        df.write.parquet(path.toString)
  
@@ -2931,6 +2953,19 @@ index bba71f1c48d..e55612527a6 100644
          checkAnswer(readParquet("a DECIMAL(3, 2)", path), sql("SELECT 1.00"))
          checkAnswer(readParquet("a DECIMAL(11, 2)", path), sql("SELECT 1.00"))
          checkAnswer(readParquet("b DECIMAL(3, 2)", path), Row(null))
+@@ -1103,7 +1116,10 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
+       withSQLConf(SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "true") {
+         Seq("a DECIMAL(3, 2)", "c DECIMAL(18, 1)", "d DECIMAL(37, 1)").foreach { schema =>
+           val e = intercept[SparkException] {
+             readParquet(schema, path).collect()
+-          }.getCause
++          }.getCause match {
++            case se: SparkException => se.getCause // Comet adds extra SparkException layer
++            case other => other
++          }
+           assert(e.isInstanceOf[SchemaColumnConvertNotSupportedException])
+         }
+       }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRebaseDatetimeSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRebaseDatetimeSuite.scala
 index 30503af0fab..1491f4bc2d5 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRebaseDatetimeSuite.scala
@@ -3059,7 +3094,7 @@ index 0acb21f3e6f..42cbe451e30 100644
  
  import org.apache.spark.SparkException
 -import org.apache.spark.sql.{AnalysisException, Row}
-+import org.apache.spark.sql.{AnalysisException, IgnoreComet, Row}
++import org.apache.spark.sql.{AnalysisException, IgnoreComet, IgnoreCometNativeDataFusion, Row}
  import org.apache.spark.sql.catalyst.expressions.Cast.toSQLType
  import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException
  import org.apache.spark.sql.functions.desc
@@ -3073,6 +3108,28 @@ index 0acb21f3e6f..42cbe451e30 100644
      withTempPath { dir =>
        val e = testSchemaMismatch(dir.getCanonicalPath, vectorizedReaderEnabled = false)
        val expectedMessage = "Encountered error while reading file"
+@@ -1049,7 +1050,8 @@ class ParquetSchemaSuite extends ParquetSchemaTest {
+     }
+   }
+
+-  test("schema mismatch failure error message for parquet vectorized reader") {
++  test("schema mismatch failure error message for parquet vectorized reader",
++      IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3720")) {
+     withTempPath { dir =>
+       val e = testSchemaMismatch(dir.getCanonicalPath, vectorizedReaderEnabled = true)
+       assert(e.getCause.isInstanceOf[SchemaColumnConvertNotSupportedException])
+@@ -1094,7 +1098,10 @@ class ParquetSchemaSuite extends ParquetSchemaTest {
+         val e = intercept[SparkException] {
+           spark.read.schema(df2.schema).parquet(s"$path/parquet").collect()
+         }
+-        assert(e.getCause.isInstanceOf[SchemaColumnConvertNotSupportedException])
++        // Comet wraps native errors in SparkException -> SchemaColumnConvertNotSupportedException,
++        // adding one extra layer compared to vanilla Spark.
++        assert(e.getCause.isInstanceOf[SchemaColumnConvertNotSupportedException] ||
++          e.getCause.getCause.isInstanceOf[SchemaColumnConvertNotSupportedException])
+       }
+     }
+   }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetTypeWideningSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetTypeWideningSuite.scala
 index 09ed6955a51..6f9174c9545 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetTypeWideningSuite.scala

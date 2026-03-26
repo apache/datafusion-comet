@@ -1199,6 +1199,12 @@ impl PhysicalPlanner {
                 let files = self.get_partitioned_files(partition_files)?;
                 let file_groups: Vec<Vec<PartitionedFile>> = vec![files];
 
+                let partition_col_names: Vec<String> = partition_schema
+                    .fields()
+                    .iter()
+                    .map(|f| f.name().clone())
+                    .collect();
+
                 let scan = init_datasource_exec(
                     required_schema,
                     Some(data_schema),
@@ -1212,7 +1218,7 @@ impl PhysicalPlanner {
                     common.case_sensitive,
                     self.session_ctx(),
                     common.encryption_enabled,
-                    None,
+                    Some(partition_col_names),
                     common.allow_type_widening,
                 )?;
                 Ok((

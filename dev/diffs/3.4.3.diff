@@ -2143,7 +2143,27 @@ diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/
 index 8670d95c65e..b624c3811dd 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
-@@ -1335,7 +1335,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
+@@ -1071,7 +1071,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
+     withParquetFile(data) { path =>
+       val errMsg = intercept[Exception](spark.read.schema(readSchema).parquet(path).collect())
+           .getMessage
+-      assert(errMsg.contains("Parquet column cannot be converted in file"))
++      assert(errMsg.contains("Parquet column cannot be converted in file") ||
++             errMsg.contains("Expected:"))
+     }
+   }
+
+@@ -1082,7 +1083,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
+     withParquetFile(data) { path =>
+       val errMsg = intercept[Exception](spark.read.schema(readSchema).parquet(path).collect())
+           .getMessage
+-      assert(errMsg.contains("Parquet column cannot be converted in file"))
++      assert(errMsg.contains("Parquet column cannot be converted in file") ||
++             errMsg.contains("Expected:"))
+     }
+   }
+
+@@ -1335,7 +1337,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
      }
    }
  
@@ -2157,17 +2177,35 @@ diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/
 index 29cb224c878..44837aa953b 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
-@@ -978,7 +978,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
+@@ -27,6 +27,7 @@ import org.apache.parquet.hadoop.ParquetOutputFormat
+
+ import org.apache.spark.{DebugFilesystem, SparkConf, SparkException}
+ import org.apache.spark.sql._
++import org.apache.spark.sql.IgnoreCometNativeDataFusion
+ import org.apache.spark.sql.catalyst.{InternalRow, TableIdentifier}
+ import org.apache.spark.sql.catalyst.expressions.SpecificInternalRow
+ import org.apache.spark.sql.catalyst.util.ArrayData
+@@ -185,7 +186,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
      }
    }
- 
+
+-  test("SPARK-36182: can't read TimestampLTZ as TimestampNTZ") {
++  test("SPARK-36182: can't read TimestampLTZ as TimestampNTZ",
++    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3720")) {
+     val data = (1 to 1000).map { i =>
+       val ts = new java.sql.Timestamp(i)
+       Row(ts)
+@@ -978,7 +980,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
+     }
+   }
+
 -  test("SPARK-26677: negated null-safe equality comparison should not filter matched row groups") {
 +  test("SPARK-26677: negated null-safe equality comparison should not filter matched row groups",
 +    IgnoreCometNativeScan("Native scans had the filter pushed into DF operator, cannot strip")) {
      withAllParquetReaders {
        withTempPath { path =>
          // Repeated values for dictionary encoding.
-@@ -1047,7 +1048,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
+@@ -1047,7 +1050,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
          checkAnswer(readParquet(schema, path), df)
        }
  
@@ -2177,7 +2215,7 @@ index 29cb224c878..44837aa953b 100644
          val schema1 = "a DECIMAL(3, 2), b DECIMAL(18, 3), c DECIMAL(37, 3)"
          checkAnswer(readParquet(schema1, path), df)
          val schema2 = "a DECIMAL(3, 0), b DECIMAL(18, 1), c DECIMAL(37, 1)"
-@@ -1069,7 +1071,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
+@@ -1069,7 +1073,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
        val df = sql(s"SELECT 1 a, 123456 b, ${Int.MaxValue.toLong * 10} c, CAST('1.2' AS BINARY) d")
        df.write.parquet(path.toString)
  
@@ -2187,7 +2225,7 @@ index 29cb224c878..44837aa953b 100644
          checkAnswer(readParquet("a DECIMAL(3, 2)", path), sql("SELECT 1.00"))
          checkAnswer(readParquet("b DECIMAL(3, 2)", path), Row(null))
          checkAnswer(readParquet("b DECIMAL(11, 1)", path), sql("SELECT 123456.0"))
-@@ -1128,7 +1131,7 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
+@@ -1128,7 +1133,7 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
              .where(s"a < ${Long.MaxValue}")
              .collect()
          }
@@ -2299,7 +2337,7 @@ index bf5c51b89bb..ca22370ca3b 100644
  import org.apache.parquet.schema.Type._
  
  import org.apache.spark.SparkException
-+import org.apache.spark.sql.IgnoreComet
++import org.apache.spark.sql.{IgnoreComet, IgnoreCometNativeDataFusion}
  import org.apache.spark.sql.catalyst.ScalaReflection
  import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException
  import org.apache.spark.sql.functions.desc
@@ -2313,6 +2351,16 @@ index bf5c51b89bb..ca22370ca3b 100644
      withTempPath { dir =>
        val e = testSchemaMismatch(dir.getCanonicalPath, vectorizedReaderEnabled = false)
        val expectedMessage = "Encountered error while reading file"
+@@ -1026,7 +1028,8 @@ class ParquetSchemaSuite extends ParquetSchemaTest {
+     }
+   }
+
+-  test("schema mismatch failure error message for parquet vectorized reader") {
++  test("schema mismatch failure error message for parquet vectorized reader",
++      IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3720")) {
+     withTempPath { dir =>
+       val e = testSchemaMismatch(dir.getCanonicalPath, vectorizedReaderEnabled = true)
+       assert(e.getCause.isInstanceOf[SparkException])
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/debug/DebuggingSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/debug/DebuggingSuite.scala
 index 3a0bd35cb70..b28f06a757f 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/debug/DebuggingSuite.scala
