@@ -2173,6 +2173,38 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("Native_datafusion reports correct files and bytes scanned") {
+    withTempDir { dir =>
+      val path = new java.io.File(dir, "test_metrics").getAbsolutePath
+      spark.range(100).repartition(2).write.mode("overwrite").parquet(path)
+
+      withSQLConf(
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true") {
+        val df = spark.read.parquet(path)
+
+        // Trigger two different actions to ensure metrics are not duplicated
+        df.count()
+        df.collect()
+
+        val scanNode = stripAQEPlan(df.queryExecution.executedPlan)
+          .collectFirst {
+            case n: org.apache.spark.sql.comet.CometNativeScanExec => n
+            case n: org.apache.spark.sql.comet.CometScanExec => n
+          }
+          .getOrElse {
+            fail(
+              s"Comet scan node not found in the physical plan. Plan: \n${df.queryExecution.executedPlan}")
+          }
+
+        val numFiles = scanNode.metrics("numFiles").value
+        assert(
+          numFiles == 2,
+          s"Expected exactly 2 files to be scanned, but got metrics reporting $numFiles")
+      }
+    }
+  }
+
 }
 
 case class BucketedTableTestSpec(
