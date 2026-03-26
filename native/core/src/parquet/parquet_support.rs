@@ -511,8 +511,8 @@ pub(crate) fn prepare_object_store_with_configs(
     let (object_store, object_store_path): (Arc<dyn ObjectStore>, Path) =
         if let Some(store) = cached {
             debug!("Reusing cached object store for {url_key}");
-            let path =
-                Path::parse(url.path()).map_err(|e| ExecutionError::GeneralError(e.to_string()))?;
+            let path = Path::from_url_path(url.path())
+                .map_err(|e| ExecutionError::GeneralError(e.to_string()))?;
             (store, path)
         } else {
             debug!("Creating new object store for {url_key}");
