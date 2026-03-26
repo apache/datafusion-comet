@@ -23,9 +23,13 @@ import java.util.Locale
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, DateAdd, DateDiff, DateFormatClass, DateSub, DayOfMonth, DayOfWeek, DayOfYear, GetDateField, Hour, LastDay, Literal, MakeDate, Minute, Month, NextDay, PreciseTimestampConversion, Quarter, Second, TruncDate, TruncTimestamp, UnixDate, UnixTimestamp, WeekDay, WeekOfYear, Year}
 import org.apache.spark.sql.types.{DateType, IntegerType, LongType, StringType, TimestampType}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, DateAdd, DateDiff, DateFormatClass, DateSub, DayOfMonth, DayOfWeek, DayOfYear, Days, GetDateField, Hour, LastDay, Literal, MakeDate, Minute, Month, NextDay, Quarter, Second, TruncDate, TruncTimestamp, UnixDate, UnixTimestamp, WeekDay, WeekOfYear, Year}
+import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.types.{DateType, IntegerType, StringType, TimestampType}
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.serde.CometGetDateField.CometGetDateField
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde._
@@ -603,5 +607,51 @@ object CometPreciseTimestampConversion extends CometExpressionSerde[PreciseTimes
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     // Both types are i64 micros in Arrow, so no conversion needed — return child directly.
     exprToProtoInternal(expr.child, inputs, binding)
+/**
+ * Converts a timestamp or date to the number of days since Unix epoch (1970-01-01). This is a V2
+ * partition transform expression.
+ *
+ * For DateType: dates are internally stored as days since epoch, so this is a simple cast to
+ * integer (same as CometUnixDate).
+ *
+ * For TimestampType: uses a timezone-aware Cast(Timestamp to Date) followed by Cast(Date to Int).
+ * The first cast respects the session timezone to correctly determine the date boundary.
+ */
+object CometDays extends CometExpressionSerde[Days] {
+  override def convert(
+      expr: Days,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val childExpr = exprToProtoInternal(expr.child, inputs, binding)
+
+    // Normalize input to DateType (Timestamp converts to Date first)
+    val dateExprOpt = expr.child.dataType match {
+      case DateType => childExpr
+      case TimestampType =>
+        val timezone = SQLConf.get.sessionLocalTimeZone
+        childExpr.flatMap { child =>
+          CometCast.castToProto(expr, Some(timezone), DateType, child, CometEvalMode.LEGACY)
+        }
+      case other =>
+        withInfo(expr, s"Days does not support input type: $other")
+        None
+    }
+
+    // Convert DateType to IntegerType (days since epoch)
+    val optExpr = dateExprOpt.map { dateExpr =>
+      Expr
+        .newBuilder()
+        .setCast(
+          ExprOuterClass.Cast
+            .newBuilder()
+            .setChild(dateExpr)
+            .setDatatype(serializeDataType(IntegerType).get)
+            .setEvalMode(ExprOuterClass.EvalMode.LEGACY)
+            .setAllowIncompat(false)
+            .build())
+        .build()
+    }
+
+    optExprWithInfo(optExpr, expr, expr.child)
   }
 }
