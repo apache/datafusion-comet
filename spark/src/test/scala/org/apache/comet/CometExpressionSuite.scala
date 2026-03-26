@@ -1271,6 +1271,51 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("scalar decimal overflow - legacy mode produces null") {
+    // Multiplying two scalar decimal literals can overflow and go through the scalar
+    // branch of CheckOverflow. In non-ANSI mode the result should be null, not an error.
+    withTable("tbl") {
+      withSQLConf(
+        CometConf.COMET_ENABLED.key -> "true",
+        SQLConf.ANSI_ENABLED.key -> "false",
+        "spark.sql.optimizer.excludedRules" ->
+          "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+        sql("CREATE TABLE tbl (a INT) USING PARQUET")
+        sql("INSERT INTO tbl VALUES (0)")
+        // DECIMAL(38,0) * DECIMAL(38,0) overflows the representable range → null in legacy mode
+        checkSparkAnswerAndOperator(
+          "SELECT CAST(9999999999999999999999999999999999999 AS DECIMAL(38,0))" +
+            " * CAST(9999999999999999999999999999999999999 AS DECIMAL(38,0)) FROM tbl")
+      }
+    }
+  }
+
+  test("scalar decimal overflow - ANSI mode throws ArithmeticException") {
+    // Same overflow as above, but with ANSI mode on: CheckOverflow must propagate an error
+    // rather than panic. This is the scalar-path counterpart of the array-path ANSI support
+    // and exercises the bug fixed in checkoverflow.rs (line 204).
+    withTable("tbl") {
+      withSQLConf(
+        CometConf.COMET_ENABLED.key -> "true",
+        SQLConf.ANSI_ENABLED.key -> "true",
+        "spark.sql.optimizer.excludedRules" ->
+          "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+        sql("CREATE TABLE tbl (a INT) USING PARQUET")
+        sql("INSERT INTO tbl VALUES (0)")
+        val res = sql(
+          "SELECT CAST(9999999999999999999999999999999999999 AS DECIMAL(38,0))" +
+            " * CAST(9999999999999999999999999999999999999 AS DECIMAL(38,0)) FROM tbl")
+        checkSparkAnswerMaybeThrows(res) match {
+          case (Some(sparkExc), Some(cometExc)) =>
+            assert(sparkExc.getMessage.contains("NUMERIC_VALUE_OUT_OF_RANGE"))
+            assert(cometExc.getMessage.contains("NUMERIC_VALUE_OUT_OF_RANGE"))
+          case _ =>
+            fail("Expected ArithmeticException for scalar decimal overflow in ANSI mode")
+        }
+      }
+    }
+  }
+
   test("cast decimals to int") {
     Seq(16, 1024).foreach { batchSize =>
       withSQLConf(
