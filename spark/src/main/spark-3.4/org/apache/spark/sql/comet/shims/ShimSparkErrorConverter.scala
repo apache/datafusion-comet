@@ -19,11 +19,19 @@
 
 package org.apache.spark.sql.comet.shims
 
-import org.apache.spark.{QueryContext, SparkException}
+import java.io.FileNotFoundException
+
+import scala.util.matching.Regex
+
+import org.apache.spark.{QueryContext, SparkDateTimeException, SparkException}
 import org.apache.spark.sql.catalyst.trees.SQLQueryContext
 import org.apache.spark.sql.errors.QueryExecutionErrors
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
+
+object ShimSparkErrorConverter {
+  val ObjectLocationPattern: Regex = "Object at location (.+?) not found".r
+}
 
 /**
  * Spark 3.4 implementation for converting error types to proper Spark exceptions.
@@ -164,6 +172,22 @@ trait ShimSparkErrorConverter {
           QueryExecutionErrors
             .invalidInputInCastToNumberError(targetType, str, sqlCtx(context)))
 
+      case "InvalidInputInCastToDatetime" =>
+        val expression =
+          s"'${params("value").toString.replace("\\", "\\\\").replace("'", "\\'")}'"
+        val sourceType = s""""${params("fromType").toString}""""
+        val targetType = s""""${params("toType").toString}""""
+        Some(
+          new SparkDateTimeException(
+            errorClass = "CAST_INVALID_INPUT",
+            messageParameters = Map(
+              "expression" -> expression,
+              "sourceType" -> sourceType,
+              "targetType" -> targetType,
+              "ansiConfig" -> "\"spark.sql.ansi.enabled\""),
+            context = context,
+            summary = summary))
+
       case "CastOverFlow" =>
         val fromType = getDataType(params("fromType").toString)
         val toType = getDataType(params("toType").toString)
@@ -242,6 +266,24 @@ trait ShimSparkErrorConverter {
         Some(
           QueryExecutionErrors
             .intervalArithmeticOverflowError("Interval arithmetic overflow", "", sqlCtx(context)))
+
+      case "DuplicateFieldCaseInsensitive" =>
+        Some(
+          QueryExecutionErrors.foundDuplicateFieldInCaseInsensitiveModeError(
+            params("requiredFieldName").toString,
+            params("matchedOrcFields").toString))
+
+      case "FileNotFound" =>
+        val msg = params("message").toString
+        // Extract file path from native error message and format like Hadoop's
+        // FileNotFoundException: "File <path> does not exist"
+        val path = ShimSparkErrorConverter.ObjectLocationPattern
+          .findFirstMatchIn(msg)
+          .map(_.group(1))
+          .getOrElse(msg)
+        Some(
+          QueryExecutionErrors.readCurrentFileNotFoundError(
+            new FileNotFoundException(s"File $path does not exist")))
 
       case _ =>
         None

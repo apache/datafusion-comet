@@ -16,12 +16,12 @@
 # under the License.
 
 [workspace]
-default-members = ["core", "spark-expr", "proto"]
-members = ["core", "spark-expr", "proto", "hdfs", "fs-hdfs"]
+default-members = ["core", "spark-expr", "common", "proto", "jni-bridge", "shuffle"]
+members = ["core", "spark-expr", "common", "proto", "jni-bridge", "shuffle", "hdfs", "fs-hdfs"]
 resolver = "2"
 
 [workspace.package]
-version = "0.14.0"
+version = "0.15.0"
 homepage = "https://datafusion.apache.org/comet"
 repository = "https://github.com/apache/datafusion-comet"
 authors = ["Apache DataFusion <dev@datafusion.apache.org>"]
@@ -38,12 +38,15 @@ arrow = { version = "57.3.0", features = ["prettyprint", "ffi", "chrono-tz"] }
 async-trait = { version = "0.1" }
 bytes = { version = "1.11.1" }
 parquet = { version = "57.3.0", default-features = false, features = ["experimental"] }
-datafusion = { version = "52.3.0", default-features = false, features = ["unicode_expressions", "crypto_expressions", "nested_expressions", "parquet"] }
-datafusion-datasource = { version = "52.3.0" }
-datafusion-physical-expr-adapter = { version = "52.3.0" }
-datafusion-spark = { version = "52.3.0" }
+datafusion = { version = "52.4.0", default-features = false, features = ["unicode_expressions", "crypto_expressions", "nested_expressions", "parquet"] }
+datafusion-datasource = { version = "52.4.0" }
+datafusion-physical-expr-adapter = { version = "52.4.0" }
+datafusion-spark = { version = "52.4.0" }
 datafusion-comet-spark-expr = { path = "spark-expr" }
+datafusion-comet-common = { path = "common" }
+datafusion-comet-jni-bridge = { path = "jni-bridge" }
 datafusion-comet-proto = { path = "proto" }
+datafusion-comet-shuffle = { path = "shuffle" }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 chrono-tz = { version = "0.10" }
 futures = "0.3.32"
