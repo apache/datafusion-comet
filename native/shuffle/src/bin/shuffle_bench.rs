@@ -16,11 +16,10 @@
 // under the License.
 
 //! Standalone shuffle benchmark tool for profiling Comet shuffle write and read
-//! outside of Spark.
+//! outside of Spark. Streams input directly from Parquet files.
 //!
 //! # Usage
 //!
-//! Read from Parquet files (e.g. TPC-H lineitem):
 //! ```sh
 //! cargo run --release --bin shuffle_bench -- \
 //!   --input /data/tpch-sf100/lineitem/ \
@@ -30,14 +29,6 @@
 //!   --read-back
 //! ```
 //!
-//! Generate synthetic data:
-//! ```sh
-//! cargo run --release --bin shuffle_bench -- \
-//!   --generate --gen-rows 10000000 --gen-string-cols 4 --gen-int-cols 4 \
-//!   --gen-decimal-cols 2 --gen-avg-string-len 32 \
-//!   --partitions 200 --codec lz4 --read-back
-//! ```
-//!
 //! Profile with flamegraph:
 //! ```sh
 //! cargo flamegraph --release --bin shuffle_bench -- \
@@ -45,23 +36,19 @@
 //!   --partitions 200 --codec zstd --zstd-level 1
 //! ```
 
-use arrow::array::builder::{Date32Builder, Decimal128Builder, Int64Builder, StringBuilder};
-use arrow::array::RecordBatch;
-use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+use arrow::datatypes::{DataType, SchemaRef};
 use clap::Parser;
-use datafusion::datasource::memory::MemorySourceConfig;
-use datafusion::datasource::source::DataSourceExec;
 use datafusion::execution::config::SessionConfig;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::physical_expr::expressions::Column;
+use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::common::collect;
 use datafusion::physical_plan::ExecutionPlan;
-use datafusion::prelude::SessionContext;
+use datafusion::prelude::{ParquetReadOptions, SessionContext};
 use datafusion_comet_shuffle::{
     read_ipc_compressed, CometPartitioning, CompressionCodec, ShuffleWriterExec,
 };
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-use rand::RngExt;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -75,37 +62,9 @@ use std::time::Instant;
 struct Args {
     /// Path to input Parquet file or directory of Parquet files
     #[arg(long)]
-    input: Option<PathBuf>,
+    input: PathBuf,
 
-    /// Generate synthetic data instead of reading from Parquet
-    #[arg(long, default_value_t = false)]
-    generate: bool,
-
-    /// Number of rows to generate (requires --generate)
-    #[arg(long, default_value_t = 1_000_000)]
-    gen_rows: usize,
-
-    /// Number of Int64 columns to generate
-    #[arg(long, default_value_t = 4)]
-    gen_int_cols: usize,
-
-    /// Number of Utf8 string columns to generate
-    #[arg(long, default_value_t = 2)]
-    gen_string_cols: usize,
-
-    /// Number of Decimal128 columns to generate
-    #[arg(long, default_value_t = 2)]
-    gen_decimal_cols: usize,
-
-    /// Number of Date32 columns to generate
-    #[arg(long, default_value_t = 1)]
-    gen_date_cols: usize,
-
-    /// Average string length for generated string columns
-    #[arg(long, default_value_t = 24)]
-    gen_avg_string_len: usize,
-
-    /// Batch size for reading Parquet or generating data
+    /// Batch size for reading Parquet data
     #[arg(long, default_value_t = 8192)]
     batch_size: usize,
 
@@ -153,70 +112,37 @@ struct Args {
     #[arg(long, default_value_t = 1048576)]
     write_buffer_size: usize,
 
-    /// Maximum number of rows to use (default: 1,000,000)
-    #[arg(long, default_value_t = 1_000_000)]
+    /// Maximum number of batches to buffer before spilling (0 = no limit)
+    #[arg(long, default_value_t = 0)]
+    max_buffered_batches: usize,
+
+    /// Limit rows processed per iteration (0 = no limit)
+    #[arg(long, default_value_t = 0)]
     limit: usize,
 }
 
 fn main() {
     let args = Args::parse();
 
-    // Validate args
-    if args.input.is_none() && !args.generate {
-        eprintln!("Error: must specify either --input <path> or --generate");
-        std::process::exit(1);
-    }
-
     // Create output directory
     fs::create_dir_all(&args.output_dir).expect("Failed to create output directory");
-
     let data_file = args.output_dir.join("data.out");
     let index_file = args.output_dir.join("index.out");
 
-    // Load data
-    let load_start = Instant::now();
-    let batches = if let Some(ref input_path) = args.input {
-        load_parquet(input_path, args.batch_size, args.limit)
-    } else {
-        generate_data(&args)
-    };
-    let load_elapsed = load_start.elapsed();
-
-    let schema = batches[0].schema();
-    let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
-    let total_bytes: usize = batches.iter().map(|b| b.get_array_memory_size()).sum();
-
-    println!("=== Shuffle Benchmark ===");
-    println!(
-        "Data source:    {}",
-        if args.input.is_some() {
-            "parquet"
-        } else {
-            "generated"
-        }
-    );
-    println!(
-        "Schema:         {} columns ({} fields)",
-        schema.fields().len(),
-        describe_schema(&schema)
-    );
-    println!("Total rows:     {}", format_number(total_rows));
-    println!("Total size:     {}", format_bytes(total_bytes));
-    println!("Batches:        {}", batches.len());
-    println!(
-        "Rows/batch:     ~{}",
-        if batches.is_empty() {
-            0
-        } else {
-            total_rows / batches.len()
-        }
-    );
-    println!("Load time:      {:.3}s", load_elapsed.as_secs_f64());
-    println!();
+    let (schema, total_rows) = read_parquet_metadata(&args.input, args.limit);
 
     let codec = parse_codec(&args.codec, args.zstd_level);
     let hash_col_indices = parse_hash_columns(&args.hash_columns);
 
+    println!("=== Shuffle Benchmark ===");
+    println!("Input:          {}", args.input.display());
+    println!(
+        "Schema:         {} columns ({})",
+        schema.fields().len(),
+        describe_schema(&schema)
+    );
+    println!("Total rows:     {}", format_number(total_rows as usize));
+    println!("Batch size:     {}", format_number(args.batch_size));
     println!("Partitioning:   {}", args.partitioning);
     println!("Partitions:     {}", args.partitions);
     println!("Codec:          {:?}", codec);
@@ -224,13 +150,15 @@ fn main() {
     if let Some(mem_limit) = args.memory_limit {
         println!("Memory limit:   {}", format_bytes(mem_limit));
     }
+    if args.max_buffered_batches > 0 {
+        println!("Max buf batches:{}", args.max_buffered_batches);
+    }
     println!(
         "Iterations:     {} (warmup: {})",
         args.iterations, args.warmup
     );
     println!();
 
-    // Run warmup + timed iterations
     let total_iters = args.warmup + args.iterations;
     let mut write_times = Vec::with_capacity(args.iterations);
     let mut read_times = Vec::with_capacity(args.iterations);
@@ -244,9 +172,8 @@ fn main() {
             format!("iter {}/{}", i - args.warmup + 1, args.iterations)
         };
 
-        // Write phase
         let write_elapsed = run_shuffle_write(
-            &batches,
+            &args.input,
             &schema,
             &codec,
             &hash_col_indices,
@@ -264,7 +191,6 @@ fn main() {
         print!("  [{label}] write: {:.3}s", write_elapsed);
         print!("  output: {}", format_bytes(data_size as usize));
 
-        // Read phase
         if args.read_back {
             let read_elapsed = run_shuffle_read(
                 data_file.to_str().unwrap(),
@@ -279,7 +205,6 @@ fn main() {
         println!();
     }
 
-    // Print summary
     if args.iterations > 0 {
         println!();
         println!("=== Results ===");
@@ -287,12 +212,6 @@ fn main() {
         let avg_write = write_times.iter().sum::<f64>() / write_times.len() as f64;
         let avg_data_size = data_file_sizes.iter().sum::<u64>() / data_file_sizes.len() as u64;
         let write_throughput_rows = total_rows as f64 / avg_write;
-        let write_throughput_bytes = total_bytes as f64 / avg_write;
-        let compression_ratio = if avg_data_size > 0 {
-            total_bytes as f64 / avg_data_size as f64
-        } else {
-            0.0
-        };
 
         println!("Write:");
         println!("  avg time:         {:.3}s", avg_write);
@@ -305,15 +224,13 @@ fn main() {
             println!("  min/max:          {:.3}s / {:.3}s", min, max);
         }
         println!(
-            "  throughput:       {}/s ({} rows/s)",
-            format_bytes(write_throughput_bytes as usize),
+            "  throughput:       {} rows/s",
             format_number(write_throughput_rows as usize)
         );
         println!(
             "  output size:      {}",
             format_bytes(avg_data_size as usize)
         );
-        println!("  compression:      {:.2}x", compression_ratio);
 
         if !read_times.is_empty() {
             let avg_read = read_times.iter().sum::<f64>() / read_times.len() as f64;
@@ -333,21 +250,45 @@ fn main() {
         }
     }
 
-    // Cleanup
     let _ = fs::remove_file(&data_file);
     let _ = fs::remove_file(&index_file);
 }
 
-fn load_parquet(path: &PathBuf, batch_size: usize, limit: usize) -> Vec<RecordBatch> {
-    let mut batches = Vec::new();
-    let mut total_rows = 0usize;
+/// Read schema and total row count from Parquet metadata without loading any data.
+fn read_parquet_metadata(path: &PathBuf, limit: usize) -> (SchemaRef, u64) {
+    let paths = collect_parquet_paths(path);
+    let mut schema = None;
+    let mut total_rows = 0u64;
 
-    let paths = if path.is_dir() {
+    for file_path in &paths {
+        let file = fs::File::open(file_path)
+            .unwrap_or_else(|e| panic!("Failed to open {}: {}", file_path.display(), e));
+        let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap_or_else(|e| {
+            panic!(
+                "Failed to read Parquet metadata from {}: {}",
+                file_path.display(),
+                e
+            )
+        });
+        if schema.is_none() {
+            schema = Some(Arc::clone(builder.schema()));
+        }
+        total_rows += builder.metadata().file_metadata().num_rows() as u64;
+        if limit > 0 && total_rows >= limit as u64 {
+            total_rows = total_rows.min(limit as u64);
+            break;
+        }
+    }
+
+    (schema.expect("No parquet files found"), total_rows)
+}
+
+fn collect_parquet_paths(path: &PathBuf) -> Vec<PathBuf> {
+    if path.is_dir() {
         let mut files: Vec<PathBuf> = fs::read_dir(path)
-            .expect("Failed to read input directory")
+            .unwrap_or_else(|e| panic!("Failed to read directory {}: {}", path.display(), e))
             .filter_map(|entry| {
-                let entry = entry.ok()?;
-                let p = entry.path();
+                let p = entry.ok()?.path();
                 if p.extension().and_then(|e| e.to_str()) == Some("parquet") {
                     Some(p)
                 } else {
@@ -362,184 +303,11 @@ fn load_parquet(path: &PathBuf, batch_size: usize, limit: usize) -> Vec<RecordBa
         files
     } else {
         vec![path.clone()]
-    };
-
-    'outer: for file_path in &paths {
-        let file = fs::File::open(file_path)
-            .unwrap_or_else(|e| panic!("Failed to open {}: {}", file_path.display(), e));
-        let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap_or_else(|e| {
-            panic!(
-                "Failed to read Parquet metadata from {}: {}",
-                file_path.display(),
-                e
-            )
-        });
-        let reader = builder
-            .with_batch_size(batch_size)
-            .build()
-            .unwrap_or_else(|e| {
-                panic!(
-                    "Failed to build Parquet reader for {}: {}",
-                    file_path.display(),
-                    e
-                )
-            });
-        for batch_result in reader {
-            let batch = batch_result.unwrap_or_else(|e| {
-                panic!("Failed to read batch from {}: {}", file_path.display(), e)
-            });
-            if batch.num_rows() == 0 {
-                continue;
-            }
-            let remaining = limit - total_rows;
-            if batch.num_rows() <= remaining {
-                total_rows += batch.num_rows();
-                batches.push(batch);
-            } else {
-                batches.push(batch.slice(0, remaining));
-                total_rows += remaining;
-            }
-            if total_rows >= limit {
-                break 'outer;
-            }
-        }
     }
-
-    if batches.is_empty() {
-        panic!("No data read from input");
-    }
-
-    println!(
-        "Loaded {} batches ({} rows) from {} file(s)",
-        batches.len(),
-        format_number(total_rows),
-        paths.len()
-    );
-    batches
-}
-
-fn generate_data(args: &Args) -> Vec<RecordBatch> {
-    let mut fields = Vec::new();
-    let mut col_idx = 0;
-
-    // Int64 columns
-    for _ in 0..args.gen_int_cols {
-        fields.push(Field::new(
-            format!("int_col_{col_idx}"),
-            DataType::Int64,
-            true,
-        ));
-        col_idx += 1;
-    }
-    // String columns
-    for _ in 0..args.gen_string_cols {
-        fields.push(Field::new(
-            format!("str_col_{col_idx}"),
-            DataType::Utf8,
-            true,
-        ));
-        col_idx += 1;
-    }
-    // Decimal columns
-    for _ in 0..args.gen_decimal_cols {
-        fields.push(Field::new(
-            format!("dec_col_{col_idx}"),
-            DataType::Decimal128(18, 2),
-            true,
-        ));
-        col_idx += 1;
-    }
-    // Date columns
-    for _ in 0..args.gen_date_cols {
-        fields.push(Field::new(
-            format!("date_col_{col_idx}"),
-            DataType::Date32,
-            true,
-        ));
-        col_idx += 1;
-    }
-
-    let schema = Arc::new(Schema::new(fields));
-    let mut batches = Vec::new();
-    let mut rng = rand::rng();
-    let mut remaining = args.gen_rows;
-
-    while remaining > 0 {
-        let batch_rows = remaining.min(args.batch_size);
-        remaining -= batch_rows;
-
-        let mut columns: Vec<Arc<dyn arrow::array::Array>> = Vec::new();
-
-        // Int64 columns
-        for _ in 0..args.gen_int_cols {
-            let mut builder = Int64Builder::with_capacity(batch_rows);
-            for _ in 0..batch_rows {
-                if rng.random_range(0..100) < 5 {
-                    builder.append_null();
-                } else {
-                    builder.append_value(rng.random_range(0..1_000_000i64));
-                }
-            }
-            columns.push(Arc::new(builder.finish()));
-        }
-        // String columns
-        for _ in 0..args.gen_string_cols {
-            let mut builder =
-                StringBuilder::with_capacity(batch_rows, batch_rows * args.gen_avg_string_len);
-            for _ in 0..batch_rows {
-                if rng.random_range(0..100) < 5 {
-                    builder.append_null();
-                } else {
-                    let len = rng.random_range(1..args.gen_avg_string_len * 2);
-                    let s: String = (0..len)
-                        .map(|_| rng.random_range(b'a'..=b'z') as char)
-                        .collect();
-                    builder.append_value(&s);
-                }
-            }
-            columns.push(Arc::new(builder.finish()));
-        }
-        // Decimal columns
-        for _ in 0..args.gen_decimal_cols {
-            let mut builder = Decimal128Builder::with_capacity(batch_rows)
-                .with_precision_and_scale(18, 2)
-                .unwrap();
-            for _ in 0..batch_rows {
-                if rng.random_range(0..100) < 5 {
-                    builder.append_null();
-                } else {
-                    builder.append_value(rng.random_range(0..100_000_000i128));
-                }
-            }
-            columns.push(Arc::new(builder.finish()));
-        }
-        // Date columns
-        for _ in 0..args.gen_date_cols {
-            let mut builder = Date32Builder::with_capacity(batch_rows);
-            for _ in 0..batch_rows {
-                if rng.random_range(0..100) < 5 {
-                    builder.append_null();
-                } else {
-                    builder.append_value(rng.random_range(0..20000i32));
-                }
-            }
-            columns.push(Arc::new(builder.finish()));
-        }
-
-        let batch = RecordBatch::try_new(Arc::clone(&schema), columns).unwrap();
-        batches.push(batch);
-    }
-
-    println!(
-        "Generated {} batches ({} rows)",
-        batches.len(),
-        args.gen_rows
-    );
-    batches
 }
 
 fn run_shuffle_write(
-    batches: &[RecordBatch],
+    input_path: &PathBuf,
     schema: &SchemaRef,
     codec: &CompressionCodec,
     hash_col_indices: &[usize],
@@ -554,40 +322,61 @@ fn run_shuffle_write(
         schema,
     );
 
-    let partitions = &[batches.to_vec()];
-    let exec = ShuffleWriterExec::try_new(
-        Arc::new(DataSourceExec::new(Arc::new(
-            MemorySourceConfig::try_new(partitions, Arc::clone(schema), None).unwrap(),
-        ))),
-        partitioning,
-        codec.clone(),
-        data_file.to_string(),
-        index_file.to_string(),
-        false,
-        args.write_buffer_size,
-    )
-    .expect("Failed to create ShuffleWriterExec");
-
-    let config = SessionConfig::new().with_batch_size(args.batch_size);
-    let mut runtime_builder = RuntimeEnvBuilder::new();
-    if let Some(mem_limit) = args.memory_limit {
-        runtime_builder = runtime_builder.with_memory_limit(mem_limit, 1.0);
-    }
-    let runtime_env = Arc::new(runtime_builder.build().unwrap());
-    let ctx = SessionContext::new_with_config_rt(config, runtime_env);
-    let task_ctx = ctx.task_ctx();
-
-    let start = Instant::now();
-    let stream = exec.execute(0, task_ctx).unwrap();
     let rt = tokio::runtime::Runtime::new().unwrap();
-    rt.block_on(collect(stream)).unwrap();
-    start.elapsed().as_secs_f64()
+    rt.block_on(async {
+        let config = SessionConfig::new().with_batch_size(args.batch_size);
+        let mut runtime_builder = RuntimeEnvBuilder::new();
+        if let Some(mem_limit) = args.memory_limit {
+            runtime_builder = runtime_builder.with_memory_limit(mem_limit, 1.0);
+        }
+        let runtime_env = Arc::new(runtime_builder.build().unwrap());
+        let ctx = SessionContext::new_with_config_rt(config, runtime_env);
+
+        let path_str = input_path.to_str().unwrap();
+        let mut df = ctx
+            .read_parquet(path_str, ParquetReadOptions::default())
+            .await
+            .expect("Failed to create Parquet scan");
+        if args.limit > 0 {
+            df = df.limit(0, Some(args.limit)).unwrap();
+        }
+
+        let parquet_plan = df
+            .create_physical_plan()
+            .await
+            .expect("Failed to create physical plan");
+
+        // ShuffleWriterExec reads from a single input partition
+        let input: Arc<dyn ExecutionPlan> =
+            if parquet_plan.properties().output_partitioning().partition_count() > 1 {
+                Arc::new(CoalescePartitionsExec::new(parquet_plan))
+            } else {
+                parquet_plan
+            };
+
+        let exec = ShuffleWriterExec::try_new(
+            input,
+            partitioning,
+            codec.clone(),
+            data_file.to_string(),
+            index_file.to_string(),
+            false,
+            args.write_buffer_size,
+            args.max_buffered_batches,
+        )
+        .expect("Failed to create ShuffleWriterExec");
+
+        let task_ctx = ctx.task_ctx();
+        let start = Instant::now();
+        let stream = exec.execute(0, task_ctx).unwrap();
+        collect(stream).await.unwrap();
+        start.elapsed().as_secs_f64()
+    })
 }
 
 fn run_shuffle_read(data_file: &str, index_file: &str, num_partitions: usize) -> f64 {
     let start = Instant::now();
 
-    // Read index file to get partition offsets
     let index_bytes = fs::read(index_file).expect("Failed to read index file");
     let num_offsets = index_bytes.len() / 8;
     let offsets: Vec<i64> = (0..num_offsets)
@@ -597,34 +386,27 @@ fn run_shuffle_read(data_file: &str, index_file: &str, num_partitions: usize) ->
         })
         .collect();
 
-    // Read data file
     let data_bytes = fs::read(data_file).expect("Failed to read data file");
 
     let mut total_rows = 0usize;
     let mut total_batches = 0usize;
 
-    // Decode each partition's data
     for p in 0..num_partitions.min(offsets.len().saturating_sub(1)) {
         let start_offset = offsets[p] as usize;
         let end_offset = offsets[p + 1] as usize;
 
         if start_offset >= end_offset {
-            continue; // Empty partition
+            continue;
         }
 
-        // Read all IPC blocks within this partition
         let mut offset = start_offset;
         while offset < end_offset {
-            // First 8 bytes: IPC length
             let ipc_length =
                 u64::from_le_bytes(data_bytes[offset..offset + 8].try_into().unwrap()) as usize;
-
-            // Skip 8-byte length prefix, then 8 bytes of field_count + codec header
             let block_data = &data_bytes[offset + 16..offset + 8 + ipc_length];
             let batch = read_ipc_compressed(block_data).expect("Failed to decode shuffle block");
             total_rows += batch.num_rows();
             total_batches += 1;
-
             offset += 8 + ipc_length;
         }
     }
@@ -686,7 +468,7 @@ fn parse_hash_columns(s: &str) -> Vec<usize> {
         .collect()
 }
 
-fn describe_schema(schema: &Schema) -> String {
+fn describe_schema(schema: &arrow::datatypes::Schema) -> String {
     let mut counts = std::collections::HashMap::new();
     for field in schema.fields() {
         let type_name = match field.data_type() {

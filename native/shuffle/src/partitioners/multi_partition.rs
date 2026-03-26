@@ -124,6 +124,8 @@ pub(crate) struct MultiPartitionShuffleRepartitioner {
     tracing_enabled: bool,
     /// Size of the write buffer in bytes
     write_buffer_size: usize,
+    /// Maximum number of batches to buffer before spilling (0 = no limit)
+    max_buffered_batches: usize,
 }
 
 impl MultiPartitionShuffleRepartitioner {
@@ -140,6 +142,7 @@ impl MultiPartitionShuffleRepartitioner {
         codec: CompressionCodec,
         tracing_enabled: bool,
         write_buffer_size: usize,
+        max_buffered_batches: usize,
     ) -> datafusion::common::Result<Self> {
         let num_output_partitions = partitioning.partition_count();
         assert_ne!(
@@ -189,6 +192,7 @@ impl MultiPartitionShuffleRepartitioner {
             reservation,
             tracing_enabled,
             write_buffer_size,
+            max_buffered_batches,
         })
     }
 
@@ -397,6 +401,13 @@ impl MultiPartitionShuffleRepartitioner {
         partition_row_indices: &[u32],
         partition_starts: &[u32],
     ) -> datafusion::common::Result<()> {
+        // Spill before buffering if we've reached the configured batch count limit.
+        if self.max_buffered_batches > 0
+            && self.buffered_batches.len() >= self.max_buffered_batches
+        {
+            self.spill()?;
+        }
+
         let mut mem_growth: usize = input.get_array_memory_size();
         let buffered_partition_idx = self.buffered_batches.len() as u32;
         self.buffered_batches.push(input);
