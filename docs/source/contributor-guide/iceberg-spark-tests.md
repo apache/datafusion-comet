@@ -51,7 +51,7 @@ Clone Apache Iceberg locally and apply the diff file from Comet against the matc
 git clone git@github.com:apache/iceberg.git apache-iceberg
 cd apache-iceberg
 git checkout apache-iceberg-1.8.1
-git apply ../datafusion-comet/dev/diffs/iceberg-rust/1.8.1.diff
+git apply ../datafusion-comet/dev/diffs/iceberg/1.8.1.diff
 ```
 
 ## 3. Run Iceberg Spark Tests
@@ -64,9 +64,11 @@ ENABLE_COMET=true ./gradlew -DsparkVersions=3.5 -DscalaVersion=2.13 -DflinkVersi
 
 The three Gradle targets tested in CI are:
 
-- `:iceberg-spark:iceberg-spark-<sparkVersion>_<scalaVersion>:test`
-- `:iceberg-spark:iceberg-spark-extensions-<sparkVersion>_<scalaVersion>:test`
-- `:iceberg-spark:iceberg-spark-runtime-<sparkVersion>_<scalaVersion>:integrationTest`
+| Gradle Target                                 | What It Covers                                                                                                                                                                                                                                                                                                                                                          |
+| --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `iceberg-spark-<ver>:test`                    | Core read/write paths (Parquet, Avro, ORC, vectorized), scan operations, filtering, bloom filters, runtime filtering, deletion handling, structured streaming, DDL/DML (create/alter/drop, writes, deletes), filter and aggregate pushdown, actions (snapshot expiration, file rewriting, orphan cleanup, table migration), serialization, and data format conversions. |
+| `iceberg-spark-extensions-<ver>:test`         | SQL extensions: stored procedures (migrate, snapshot, cherrypick, rollback, rewrite-data-files, rewrite-manifests, expire-snapshots, remove-orphan-files, etc.), row-level operations (copy-on-write and merge-on-read update/delete/merge), DDL extensions (branches, tags, alter schema, partition fields), changelog tables/views, metadata tables, and views.       |
+| `iceberg-spark-runtime-<ver>:integrationTest` | A single smoke test (`SmokeTest.java`) that validates the shaded runtime JAR. The `spark-runtime` module has no main source — it packages Iceberg and all dependencies into a shaded uber-JAR. The smoke test exercises basic create, insert, merge, query, partition field, and sort order operations to confirm the shaded JAR works end-to-end.                      |
 
 ## Updating Diffs
 
@@ -76,14 +78,14 @@ regenerate:
 ```shell
 cd apache-iceberg
 git reset --hard apache-iceberg-1.8.1 && git clean -fd
-git apply ../datafusion-comet/dev/diffs/iceberg-rust/1.8.1.diff
+git apply ../datafusion-comet/dev/diffs/iceberg/1.8.1.diff
 
 # Make changes, then run spotless to fix formatting
 ./gradlew spotlessApply
 
 # Stage any new or deleted files, then generate the diff
 git add -A
-git diff apache-iceberg-1.8.1 > ../datafusion-comet/dev/diffs/iceberg-rust/1.8.1.diff
+git diff apache-iceberg-1.8.1 > ../datafusion-comet/dev/diffs/iceberg/1.8.1.diff
 ```
 
 Repeat for each Iceberg version (1.8.1, 1.9.1, 1.10.0). The file contents differ between versions, so each
@@ -93,4 +95,4 @@ diff must be generated against its own tag.
 
 The `iceberg_spark_test.yml` workflow applies these diffs and runs the three Gradle targets above against
 each Iceberg version. The test matrix covers Spark 3.4 and 3.5 across Iceberg 1.8.1, 1.9.1, and 1.10.0
-with Java 11 and 17. The workflow only runs when the PR title contains `[iceberg]`.
+with Java 11 and 17. The workflow runs on all pull requests and pushes to the main branch.
