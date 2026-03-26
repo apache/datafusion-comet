@@ -402,8 +402,7 @@ impl MultiPartitionShuffleRepartitioner {
         partition_starts: &[u32],
     ) -> datafusion::common::Result<()> {
         // Spill before buffering if we've reached the configured batch count limit.
-        if self.max_buffered_batches > 0
-            && self.buffered_batches.len() >= self.max_buffered_batches
+        if self.max_buffered_batches > 0 && self.buffered_batches.len() >= self.max_buffered_batches
         {
             self.spill()?;
         }
