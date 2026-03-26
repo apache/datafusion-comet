@@ -24,6 +24,7 @@ import scala.util.Random
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.Cast
+import org.apache.spark.sql.catalyst.expressions.aggregate.Corr
 import org.apache.spark.sql.catalyst.optimizer.EliminateSorts
 import org.apache.spark.sql.comet.CometHashAggregateExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
@@ -1319,7 +1320,9 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("covariance & correlation") {
-    withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
+    withSQLConf(
+      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.getExprAllowIncompatConfigKey(classOf[Corr]) -> "true") {
       Seq("jvm", "native").foreach { cometShuffleMode =>
         withSQLConf(CometConf.COMET_SHUFFLE_MODE.key -> cometShuffleMode) {
           Seq(true, false).foreach { dictionary =>
@@ -1911,6 +1914,45 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       val res = sql("SELECT _2, try_sum(_1) FROM tbl GROUP BY _2")
       // Group 1 should be NULL, Group 2 should be 500
       checkSparkAnswerAndOperator(res)
+    }
+  }
+
+  test("SumDecimal and AvgDecimal nullable should always be true") {
+    // SumDecimal and AvgDecimal currently hardcode nullable=true.
+    // This matches Spark's Sum.nullable and Average.nullable which always return true,
+    // regardless of ANSI mode or input nullability.
+    val nonNullableData: Seq[(java.math.BigDecimal, Int)] = Seq(
+      (new java.math.BigDecimal("10.00"), 1),
+      (new java.math.BigDecimal("20.00"), 1),
+      (new java.math.BigDecimal("30.00"), 2))
+
+    val nullableData: Seq[(java.math.BigDecimal, Int)] = Seq(
+      (new java.math.BigDecimal("10.00"), 1),
+      (null.asInstanceOf[java.math.BigDecimal], 1),
+      (new java.math.BigDecimal("30.00"), 2))
+
+    Seq(true, false).foreach { ansiEnabled =>
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString) {
+        withParquetTable(nonNullableData, "tbl") {
+          val sumRes = sql("SELECT _2, sum(_1) FROM tbl GROUP BY _2")
+          checkSparkAnswerAndOperator(sumRes)
+          assert(sumRes.schema.fields(1).nullable == true)
+
+          val avgRes = sql("SELECT _2, avg(_1) FROM tbl GROUP BY _2")
+          checkSparkAnswerAndOperator(avgRes)
+          assert(avgRes.schema.fields(1).nullable == true)
+        }
+
+        withParquetTable(nullableData, "tbl") {
+          val sumRes = sql("SELECT _2, sum(_1) FROM tbl GROUP BY _2")
+          checkSparkAnswerAndOperator(sumRes)
+          assert(sumRes.schema.fields(1).nullable == true)
+
+          val avgRes = sql("SELECT _2, avg(_1) FROM tbl GROUP BY _2")
+          checkSparkAnswerAndOperator(avgRes)
+          assert(avgRes.schema.fields(1).nullable == true)
+        }
+      }
     }
   }
 

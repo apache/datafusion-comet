@@ -31,6 +31,7 @@ import org.apache.spark.sql.types.{IntegerType, StringType, StructType}
 import org.apache.comet.CometConf
 
 class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper {
+
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
       pos: Position): Unit = {
     Seq(CometConf.SCAN_NATIVE_DATAFUSION, CometConf.SCAN_NATIVE_ICEBERG_COMPAT).foreach(scan =>

@@ -114,12 +114,6 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithEnvVarOrDefault("ENABLE_COMET_WRITE", false)
 
-  // Deprecated: native_comet uses mutable buffers incompatible with Arrow FFI best practices
-  // and does not support complex types. Use native_iceberg_compat or auto instead.
-  // This will be removed in a future release.
-  // See: https://github.com/apache/datafusion-comet/issues/2186
-  @deprecated("Use SCAN_AUTO instead. native_comet will be removed in a future release.", "0.9.0")
-  val SCAN_NATIVE_COMET = "native_comet"
   val SCAN_NATIVE_DATAFUSION = "native_datafusion"
   val SCAN_NATIVE_ICEBERG_COMPAT = "native_iceberg_compat"
   val SCAN_AUTO = "auto"
@@ -312,9 +306,9 @@ object CometConf extends ShimCometConf {
         "Whether to enable native columnar to row conversion. When enabled, Comet will use " +
           "native Rust code to convert Arrow columnar data to Spark UnsafeRow format instead " +
           "of the JVM implementation. This can improve performance for queries that need to " +
-          "convert between columnar and row formats. This is an experimental feature.")
+          "convert between columnar and row formats.")
       .booleanConf
-      .createWithDefault(false)
+      .createWithDefault(true)
 
   val COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.sortMergeJoinWithJoinFilter.enabled")
@@ -346,6 +340,17 @@ object CometConf extends ShimCometConf {
           "`org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager`. " +
           "`spark.shuffle.manager` must be set before starting the Spark application and " +
           "cannot be changed during the application.")
+      .booleanConf
+      .createWithDefault(true)
+
+  val COMET_SHUFFLE_DIRECT_READ_ENABLED: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.directRead.enabled")
+      .category(CATEGORY_SHUFFLE)
+      .doc(
+        "When enabled, native operators that consume shuffle output will read " +
+          "compressed shuffle blocks directly in native code, bypassing Arrow FFI. " +
+          "Applies to both native shuffle and JVM columnar shuffle. " +
+          "Requires spark.comet.exec.shuffle.enabled to be true.")
       .booleanConf
       .createWithDefault(true)
 
