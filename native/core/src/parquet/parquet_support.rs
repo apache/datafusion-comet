@@ -41,8 +41,8 @@ use object_store::{parse_url, ObjectStore};
 use std::collections::HashMap;
 use std::sync::OnceLock;
 use std::time::Duration;
-use std::{fmt::Debug, hash::Hash, sync::Arc};
 use std::{collections::hash_map::DefaultHasher, hash::Hasher, sync::RwLock};
+use std::{fmt::Debug, hash::Hash, sync::Arc};
 use url::Url;
 
 use super::objectstore;
@@ -508,31 +508,30 @@ pub(crate) fn prepare_object_store_with_configs(
         cache.get(&cache_key).cloned()
     };
 
-    let (object_store, object_store_path): (Arc<dyn ObjectStore>, Path) = if let Some(store) =
-        cached
-    {
-        debug!("Reusing cached object store for {url_key}");
-        let path = Path::parse(url.path())
-            .map_err(|e| ExecutionError::GeneralError(e.to_string()))?;
-        (store, path)
-    } else {
-        debug!("Creating new object store for {url_key}");
-        let (store, path): (Box<dyn ObjectStore>, Path) = if is_hdfs_scheme {
-            create_hdfs_object_store(&url)
-        } else if scheme == "s3" {
-            objectstore::s3::create_store(&url, object_store_configs, Duration::from_secs(300))
+    let (object_store, object_store_path): (Arc<dyn ObjectStore>, Path) =
+        if let Some(store) = cached {
+            debug!("Reusing cached object store for {url_key}");
+            let path =
+                Path::parse(url.path()).map_err(|e| ExecutionError::GeneralError(e.to_string()))?;
+            (store, path)
         } else {
-            parse_url(&url)
-        }
-        .map_err(|e| ExecutionError::GeneralError(e.to_string()))?;
+            debug!("Creating new object store for {url_key}");
+            let (store, path): (Box<dyn ObjectStore>, Path) = if is_hdfs_scheme {
+                create_hdfs_object_store(&url)
+            } else if scheme == "s3" {
+                objectstore::s3::create_store(&url, object_store_configs, Duration::from_secs(300))
+            } else {
+                parse_url(&url)
+            }
+            .map_err(|e| ExecutionError::GeneralError(e.to_string()))?;
 
-        let store: Arc<dyn ObjectStore> = Arc::from(store);
-        // Insert into cache
-        if let Ok(mut cache) = object_store_cache().write() {
-            cache.insert(cache_key, Arc::clone(&store));
-        }
-        (store, path)
-    };
+            let store: Arc<dyn ObjectStore> = Arc::from(store);
+            // Insert into cache
+            if let Ok(mut cache) = object_store_cache().write() {
+                cache.insert(cache_key, Arc::clone(&store));
+            }
+            (store, path)
+        };
 
     let object_store_url = ObjectStoreUrl::parse(url_key.clone())?;
     runtime_env.register_object_store(&url, object_store);
