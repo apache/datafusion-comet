@@ -26,7 +26,6 @@ use std::fs::{File, OpenOptions};
 
 struct SpillFile {
     temp_file: RefCountedTempFile,
-    file: File,
 }
 
 pub(crate) struct PartitionWriter {
@@ -53,24 +52,26 @@ impl PartitionWriter {
         runtime: &RuntimeEnv,
     ) -> datafusion::common::Result<()> {
         if self.spill_file.is_none() {
-            // Spill file is not yet created, create it
             let spill_file = runtime
                 .disk_manager
                 .create_tmp_file("shuffle writer spill")?;
-            let spill_data = OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .open(spill_file.path())
-                .map_err(|e| {
-                    DataFusionError::Execution(format!("Error occurred while spilling {e}"))
-                })?;
+            // Create the file (truncating any pre-existing content)
+            File::create(spill_file.path()).map_err(|e| {
+                DataFusionError::Execution(format!("Error occurred while spilling {e}"))
+            })?;
             self.spill_file = Some(SpillFile {
                 temp_file: spill_file,
-                file: spill_data,
             });
         }
         Ok(())
+    }
+
+    fn open_spill_file_for_append(&self) -> datafusion::common::Result<File> {
+        OpenOptions::new()
+            .write(true)
+            .append(true)
+            .open(self.spill_file.as_ref().unwrap().temp_file.path())
+            .map_err(|e| DataFusionError::Execution(format!("Error occurred while spilling {e}")))
     }
 
     pub(crate) fn spill(
@@ -84,10 +85,13 @@ impl PartitionWriter {
         if let Some(batch) = iter.next() {
             self.ensure_spill_file_created(runtime)?;
 
+            // Open the file for this spill and close it when done, so we don't
+            // hold open one FD per partition across multiple spill events.
+            let mut spill_data = self.open_spill_file_for_append()?;
             let total_bytes_written = {
                 let mut buf_batch_writer = BufBatchWriter::new(
                     &mut self.shuffle_block_writer,
-                    &mut self.spill_file.as_mut().unwrap().file,
+                    &mut spill_data,
                     write_buffer_size,
                     batch_size,
                 );
@@ -104,6 +108,7 @@ impl PartitionWriter {
                 buf_batch_writer.flush(&metrics.encode_time, &metrics.write_time)?;
                 bytes_written
             };
+            // spill_data is dropped here, closing the file descriptor
 
             Ok(total_bytes_written)
         } else {

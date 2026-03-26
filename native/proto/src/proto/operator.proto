@@ -294,6 +294,9 @@ message ShuffleWriter {
   // Size of the write buffer in bytes used when writing shuffle data to disk.
   // Larger values may improve write performance but use more memory.
   int32 write_buffer_size = 8;
+  // Maximum number of batches to buffer before spilling to disk.
+  // 0 means no limit (spill only when memory pool is exhausted).
+  int32 max_buffered_batches = 9;
 }
 
 message ParquetWriter {
