@@ -19,7 +19,7 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Abs, Atan2, Attribute, Ceil, CheckOverflow, Expression, Floor, Hex, If, LessThanOrEqual, Literal, Log, Log10, Log2, Tan, Unhex}
+import org.apache.spark.sql.catalyst.expressions.{Abs, Atan2, Attribute, Ceil, CheckOverflow, Expression, Floor, Hex, If, LessThanOrEqual, Literal, Log, Log10, Log2, Logarithm, Tan, Unhex}
 import org.apache.spark.sql.types.{DecimalType, NumericType}
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
@@ -135,6 +135,20 @@ object CometLog2 extends CometExpressionSerde[Log2] with MathExprBase {
     val optExpr = scalarFunctionExprToProto("log2", childExpr)
     optExprWithInfo(optExpr, expr, expr.child)
 
+  }
+}
+
+object CometLogarithm extends CometExpressionSerde[Logarithm] with MathExprBase {
+  override def convert(
+      expr: Logarithm,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    // Spark's Logarithm(left=base, right=value) returns null when result is NaN,
+    // which happens when base <= 0 or value <= 0. Apply nullIfNegative to both.
+    val leftExpr = exprToProtoInternal(nullIfNegative(expr.left), inputs, binding)
+    val rightExpr = exprToProtoInternal(nullIfNegative(expr.right), inputs, binding)
+    val optExpr = scalarFunctionExprToProto("log", leftExpr, rightExpr)
+    optExprWithInfo(optExpr, expr, expr.left, expr.right)
   }
 }
 
