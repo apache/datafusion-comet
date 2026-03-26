@@ -17,6 +17,7 @@
 
 use log::{debug, error};
 use std::collections::HashMap;
+use std::sync::OnceLock;
 use url::Url;
 
 use crate::execution::jni_api::get_runtime;
@@ -111,13 +112,32 @@ pub fn create_store(
     Ok((Box::new(object_store), path))
 }
 
+/// Cache for resolved bucket regions to avoid redundant HeadBucket API calls.
+///
+/// Without this cache, every Parquet file read triggers a HeadBucket request to determine
+/// the bucket's region (when region is not explicitly configured), each requiring its own
+/// DNS lookup. This is a significant contributor to DNS query volume in large workloads.
+fn region_cache() -> &'static RwLock<HashMap<String, String>> {
+    static CACHE: OnceLock<RwLock<HashMap<String, String>>> = OnceLock::new();
+    CACHE.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
 /// Get the bucket region using the [HeadBucket API]. This will fail if the bucket does not exist.
+/// Results are cached per bucket to avoid redundant network calls.
 ///
 /// [HeadBucket API]: https://docs.aws.amazon.com/AmazonS3/latest/API/API_HeadBucket.html
 ///
 /// TODO this is copied from the object store crate and has been adapted as a workaround
 /// for https://github.com/apache/arrow-rs-object-store/issues/479
 pub async fn resolve_bucket_region(bucket: &str) -> Result<String, Box<dyn Error>> {
+    // Check cache first
+    if let Ok(cache) = region_cache().read() {
+        if let Some(region) = cache.get(bucket) {
+            debug!("Using cached region '{region}' for bucket '{bucket}'");
+            return Ok(region.clone());
+        }
+    }
+
     let endpoint = format!("https://{bucket}.s3.amazonaws.com");
     let client = reqwest::Client::new();
 
@@ -141,6 +161,12 @@ pub async fn resolve_bucket_region(bucket: &str) -> Result<String, Box<dyn Error
         })?
         .to_str()?
         .to_string();
+
+    // Cache the resolved region
+    if let Ok(mut cache) = region_cache().write() {
+        debug!("Caching region '{region}' for bucket '{bucket}'");
+        cache.insert(bucket.to_string(), region.clone());
+    }
 
     Ok(region)
 }

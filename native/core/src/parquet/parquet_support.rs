@@ -35,11 +35,14 @@ use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::physical_plan::ColumnarValue;
 use datafusion_comet_spark_expr::EvalMode;
+use log::debug;
 use object_store::path::Path;
 use object_store::{parse_url, ObjectStore};
 use std::collections::HashMap;
+use std::sync::OnceLock;
 use std::time::Duration;
 use std::{fmt::Debug, hash::Hash, sync::Arc};
+use std::{collections::hash_map::DefaultHasher, hash::Hasher, sync::RwLock};
 use url::Url;
 
 use super::objectstore;
@@ -444,6 +447,32 @@ fn create_hdfs_object_store(
     })
 }
 
+type ObjectStoreCache = RwLock<HashMap<(String, u64), Arc<dyn ObjectStore>>>;
+
+/// Global cache of object stores keyed by (url_key, config_hash).
+///
+/// This avoids creating a new S3 client (and thus a new HTTP connection pool and DNS
+/// resolution) for every Parquet file read. Without this cache, each call to
+/// `initRecordBatchReader` from the JVM creates a fresh `reqwest::Client`, leading to
+/// excessive DNS queries that can overwhelm DNS resolvers (e.g., Route53 Resolver limits
+/// in EKS environments).
+fn object_store_cache() -> &'static ObjectStoreCache {
+    static CACHE: OnceLock<ObjectStoreCache> = OnceLock::new();
+    CACHE.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+/// Compute a hash of the object store configuration for cache keying.
+fn hash_object_store_configs(configs: &HashMap<String, String>) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    let mut keys: Vec<&String> = configs.keys().collect();
+    keys.sort();
+    for key in keys {
+        key.hash(&mut hasher);
+        configs[key].hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
 /// Parses the url, registers the object store with configurations, and returns a tuple of the object store url
 /// and object store path
 pub(crate) fn prepare_object_store_with_configs(
@@ -467,17 +496,46 @@ pub(crate) fn prepare_object_store_with_configs(
         &url[url::Position::BeforeHost..url::Position::AfterPort],
     );
 
-    let (object_store, object_store_path): (Box<dyn ObjectStore>, Path) = if is_hdfs_scheme {
-        create_hdfs_object_store(&url)
-    } else if scheme == "s3" {
-        objectstore::s3::create_store(&url, object_store_configs, Duration::from_secs(300))
+    let config_hash = hash_object_store_configs(object_store_configs);
+    let cache_key = (url_key.clone(), config_hash);
+
+    // Check the cache first to reuse existing object store instances.
+    // This enables HTTP connection pooling and avoids redundant DNS lookups.
+    let cached = {
+        let cache = object_store_cache()
+            .read()
+            .map_err(|e| ExecutionError::GeneralError(format!("Object store cache error: {e}")))?;
+        cache.get(&cache_key).cloned()
+    };
+
+    let (object_store, object_store_path): (Arc<dyn ObjectStore>, Path) = if let Some(store) =
+        cached
+    {
+        debug!("Reusing cached object store for {url_key}");
+        let path = Path::parse(url.path())
+            .map_err(|e| ExecutionError::GeneralError(e.to_string()))?;
+        (store, path)
     } else {
-        parse_url(&url)
-    }
-    .map_err(|e| ExecutionError::GeneralError(e.to_string()))?;
+        debug!("Creating new object store for {url_key}");
+        let (store, path): (Box<dyn ObjectStore>, Path) = if is_hdfs_scheme {
+            create_hdfs_object_store(&url)
+        } else if scheme == "s3" {
+            objectstore::s3::create_store(&url, object_store_configs, Duration::from_secs(300))
+        } else {
+            parse_url(&url)
+        }
+        .map_err(|e| ExecutionError::GeneralError(e.to_string()))?;
+
+        let store: Arc<dyn ObjectStore> = Arc::from(store);
+        // Insert into cache
+        if let Ok(mut cache) = object_store_cache().write() {
+            cache.insert(cache_key, Arc::clone(&store));
+        }
+        (store, path)
+    };
 
     let object_store_url = ObjectStoreUrl::parse(url_key.clone())?;
-    runtime_env.register_object_store(&url, Arc::from(object_store));
+    runtime_env.register_object_store(&url, object_store);
     Ok((object_store_url, object_store_path))
 }
 
