@@ -34,6 +34,7 @@ class CometPluginsSuite extends CometTestBase {
     conf.set("spark.comet.enabled", "true")
     conf.set("spark.comet.exec.enabled", "true")
     conf.set("spark.comet.exec.onHeap.enabled", "true")
+    conf.set("spark.comet.metrics.enabled", "true")
     conf
   }
 
