@@ -118,7 +118,9 @@ pub fn create_store(
 ///
 /// See the equivalent rationale on `object_store_cache` in `parquet_support.rs`: the JNI
 /// call site creates a new `RuntimeEnv` per file, leaving the executor process as the only
-/// available scope for cross-call state.
+/// available scope for cross-call state.  In the standard Spark-on-Kubernetes deployment
+/// model each executor is dedicated to a single application, so process and application
+/// lifetimes are equivalent.
 ///
 /// ## Unbounded size
 ///

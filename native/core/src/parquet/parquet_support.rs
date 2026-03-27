@@ -457,7 +457,10 @@ type ObjectStoreCache = RwLock<HashMap<(String, u64), Arc<dyn ObjectStore>>>;
 /// call constructs a fresh `RuntimeEnv`.  There is therefore no executor-scoped Rust object
 /// with a lifetime longer than a single file read that could own this cache.  The executor
 /// process itself is the natural scope for HTTP connection-pool reuse, so process lifetime
-/// (i.e. `static`) is the appropriate choice here.
+/// (i.e. `static`) is the appropriate choice here.  In the standard Spark-on-Kubernetes
+/// deployment model each executor process is dedicated to a single Spark application, so
+/// process lifetime and application lifetime are equivalent; the cache is reclaimed when
+/// the executor pod terminates.
 ///
 /// ## Unbounded size
 ///
