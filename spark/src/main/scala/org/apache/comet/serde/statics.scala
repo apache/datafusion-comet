@@ -35,7 +35,8 @@ object CometStaticInvoke extends CometExpressionSerde[StaticInvoke] {
     Map(
       ("readSidePadding", classOf[CharVarcharCodegenUtils]) -> CometScalarFunction(
         "read_side_padding"),
-      ("isLuhnNumber", classOf[ExpressionImplUtils]) -> CometScalarFunction("luhn_check"))
+      ("isLuhnNumber", classOf[ExpressionImplUtils]) -> CometScalarFunction("luhn_check"),
+      ("aesDecrypt", classOf[ExpressionImplUtils]) -> CometAesDecryptStaticInvoke)
 
   override def convert(
       expr: StaticInvoke,

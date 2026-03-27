@@ -223,6 +223,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
 
   private val miscExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     // TODO PromotePrecision
+    // AesDecrypt extends RuntimeReplaceable and is rewritten to StaticInvoke before Comet's
+    // serde runs, so it is handled via CometStaticInvoke / CometAesDecryptStaticInvoke.
     classOf[Alias] -> CometAlias,
     classOf[AttributeReference] -> CometAttributeReference,
     classOf[BloomFilterMightContain] -> CometBloomFilterMightContain,
