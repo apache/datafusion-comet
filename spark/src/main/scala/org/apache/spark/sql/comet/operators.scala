@@ -1345,7 +1345,9 @@ trait CometBaseAggregate {
     val multiMode = modes.size > 1
     // For a final mode HashAggregate, we only need to transform the HashAggregate
     // if there is Comet partial aggregation.
-    val sparkFinalMode = modes.contains(Final) && findCometPartialAgg(aggregate.child).isEmpty
+    val allowMixed = CometConf.COMET_ALLOW_MIXED_AGGREGATE.get(aggregate.conf)
+    val sparkFinalMode =
+      !allowMixed && modes.contains(Final) && findCometPartialAgg(aggregate.child).isEmpty
 
     if (multiMode || sparkFinalMode) {
       return None
@@ -1551,6 +1553,19 @@ object CometObjectHashAggregateExec
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
     CometConf.COMET_EXEC_AGGREGATE_ENABLED)
+
+  override def getSupportLevel(op: ObjectHashAggregateExec): SupportLevel = {
+    if (!CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE.get(op.conf) &&
+      op.aggregateExpressions
+        .exists(expr => expr.mode == Partial || expr.mode == PartialMerge)) {
+      return Unsupported(Some("Partial aggregates disabled via test config"))
+    }
+    if (!CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.get(op.conf) &&
+      op.aggregateExpressions.exists(_.mode == Final)) {
+      return Unsupported(Some("Final aggregates disabled via test config"))
+    }
+    Compatible()
+  }
 
   override def convert(
       aggregate: ObjectHashAggregateExec,
