@@ -28,12 +28,12 @@ identified and addressed before less critical issues.
 Every bug should have exactly one priority label. When filing or triaging a bug, apply the
 appropriate label from the table below.
 
-| Label | Color | Description | Examples |
-|-------|-------|-------------|----------|
-| `priority:critical` | Red | Data corruption, silent wrong results, security vulnerabilities | Wrong aggregation results, FFI data corruption, incorrect cast output |
-| `priority:high` | Orange | Crashes, panics, segfaults, major functional breakage affecting production workloads | Native engine panic, JVM segfault, NPE on supported code path |
-| `priority:medium` | Yellow | Functional bugs, performance regressions, broken features that have workarounds | Missing expression support, writer feature gaps, excessive spilling |
-| `priority:low` | Green | Minor issues, test-only failures, tooling, CI flakes, cosmetic issues | Flaky CI test, build script edge case, documentation generator bug |
+| Label               | Color  | Description                                                                          | Examples                                                              |
+| ------------------- | ------ | ------------------------------------------------------------------------------------ | --------------------------------------------------------------------- |
+| `priority:critical` | Red    | Data corruption, silent wrong results, security vulnerabilities                      | Wrong aggregation results, FFI data corruption, incorrect cast output |
+| `priority:high`     | Orange | Crashes, panics, segfaults, major functional breakage affecting production workloads | Native engine panic, JVM segfault, NPE on supported code path         |
+| `priority:medium`   | Yellow | Functional bugs, performance regressions, broken features that have workarounds      | Missing expression support, writer feature gaps, excessive spilling   |
+| `priority:low`      | Green  | Minor issues, test-only failures, tooling, CI flakes, cosmetic issues                | Flaky CI test, build script edge case, documentation generator bug    |
 
 ### How to Choose a Priority
 
@@ -63,15 +63,15 @@ A bug should be escalated to a higher priority if:
 Area labels indicate which subsystem is affected. A bug may have multiple area labels. These
 help contributors find bugs in their area of expertise.
 
-| Label | Description |
-|-------|-------------|
-| `area:writer` | Native Parquet writer |
-| `area:shuffle` | Shuffle (JVM and native) |
+| Label              | Description                            |
+| ------------------ | -------------------------------------- |
+| `area:writer`      | Native Parquet writer                  |
+| `area:shuffle`     | Shuffle (JVM and native)               |
 | `area:aggregation` | Hash aggregates, aggregate expressions |
-| `area:scan` | Parquet scan / data reading |
-| `area:expressions` | Expression evaluation |
-| `area:ffi` | Arrow FFI / JNI boundary |
-| `area:ci` | CI/CD, GitHub Actions, build tooling |
+| `area:scan`        | Parquet scan / data reading            |
+| `area:expressions` | Expression evaluation                  |
+| `area:ffi`         | Arrow FFI / JNI boundary               |
+| `area:ci`          | CI/CD, GitHub Actions, build tooling   |
 
 The following pre-existing labels also serve as area indicators: `native_datafusion`,
 `native_iceberg_compat`, `spark 4`, `spark sql tests`.
