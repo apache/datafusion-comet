@@ -29,7 +29,7 @@ import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSet, Expression, ExpressionSet, Generator, NamedExpression, SortOrder}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, Final, Partial, PartialMerge}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, BloomFilterAggregate, Final, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.catalyst.plans.physical._
@@ -1344,8 +1344,12 @@ trait CometBaseAggregate {
     // In distinct aggregates there can be a combination of modes
     val multiMode = modes.size > 1
     // For a final mode HashAggregate, we only need to transform the HashAggregate
-    // if there is Comet partial aggregation.
-    val allowMixed = CometConf.COMET_ALLOW_MIXED_AGGREGATE.get(aggregate.conf)
+    // if there is Comet partial aggregation. Some aggregate functions (e.g. BloomFilterAggregate)
+    // have compatible intermediate buffer formats between Spark and Comet, so they can safely
+    // run as Comet final even when Spark did the partial.
+    val allowMixed =
+      aggregate.aggregateExpressions.forall(
+        _.aggregateFunction.isInstanceOf[BloomFilterAggregate])
     val sparkFinalMode =
       !allowMixed && modes.contains(Final) && findCometPartialAgg(aggregate.child).isEmpty
 

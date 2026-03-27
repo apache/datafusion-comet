@@ -2000,13 +2000,11 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
     try {
       withParquetTable((0 until 100).map(i => (i.toLong, i.toLong % 5)), "bloom_tbl") {
-        // Disable Comet partial aggregate so Spark does partial, and allow mixed
-        // Spark partial + Comet final to reproduce issue #2889 where the intermediate
-        // buffer formats are incompatible (Spark uses 12-byte header + big-endian bits,
-        // Comet expects raw native-endian bits).
-        withSQLConf(
-          CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE.key -> "false",
-          CometConf.COMET_ALLOW_MIXED_AGGREGATE.key -> "true") {
+        // Disable Comet partial aggregate so Spark does partial. BloomFilterAggregate
+        // is allowed to run as Comet final even with Spark partial, since the Rust
+        // merge_filter now handles both Spark's serialization format (12-byte header +
+        // big-endian bits) and Comet's raw native-endian bits format.
+        withSQLConf(CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE.key -> "false") {
           val df = sql("SELECT bloom_filter_agg(cast(_1 as long)) FROM bloom_tbl")
           // Verify we have the mixed execution: Spark partial + Comet final
           val plan = stripAQEPlan(df.queryExecution.executedPlan)

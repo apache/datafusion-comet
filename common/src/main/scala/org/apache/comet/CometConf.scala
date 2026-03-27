@@ -748,15 +748,6 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(true)
 
-  val COMET_ALLOW_MIXED_AGGREGATE: ConfigEntry[Boolean] =
-    conf("spark.comet.testing.aggregate.allowMixed")
-      .internal()
-      .category(CATEGORY_TESTING)
-      .doc("When true, allows Comet final aggregate even when partial aggregate " +
-        "ran in Spark. This setting is used in unit tests.")
-      .booleanConf
-      .createWithDefault(false)
-
   val COMET_SPARK_TO_ARROW_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.sparkToColumnar.enabled")
       .category(CATEGORY_TESTING)
