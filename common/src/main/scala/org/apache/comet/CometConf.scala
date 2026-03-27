@@ -635,12 +635,6 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
-  val COMET_PARQUET_ENABLE_DIRECT_BUFFER: ConfigEntry[Boolean] =
-    conf("spark.comet.parquet.enable.directBuffer")
-      .category(CATEGORY_PARQUET)
-      .doc("Whether to use Java direct byte buffer when reading Parquet.")
-      .booleanConf
-      .createWithDefault(false)
 
   val COMET_ONHEAP_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.onHeap.enabled")
