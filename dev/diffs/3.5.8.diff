@@ -518,7 +518,7 @@ index a206e97c353..79813d8e259 100644
  
    test("SPARK-35884: Explain Formatted") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/FileBasedDataSourceSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/FileBasedDataSourceSuite.scala
-index 93275487f29..601cb6647fe 100644
+index 93275487f29..77a27d1c40a 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/FileBasedDataSourceSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/FileBasedDataSourceSuite.scala
 @@ -23,6 +23,7 @@ import java.nio.file.{Files, StandardOpenOption}
@@ -546,7 +546,40 @@ index 93275487f29..601cb6647fe 100644
              checkErrorMatchPVals(
                exception = intercept[SparkException] {
                  testIgnoreMissingFiles(options)
-@@ -955,6 +959,7 @@ class FileBasedDataSourceSuite extends QueryTest
+@@ -656,18 +660,25 @@ class FileBasedDataSourceSuite extends QueryTest
+             checkAnswer(sql(s"select A from $tableName"), data.select("A"))
+ 
+             // RuntimeException is triggered at executor side, which is then wrapped as
+-            // SparkException at driver side
++            // SparkException at driver side. Comet native readers throw
++            // SparkRuntimeException directly without the SparkException wrapper.
++            def getDuplicateFieldError(query: String): SparkRuntimeException = {
++              try {
++                sql(query).collect()
++                fail("Expected an exception").asInstanceOf[SparkRuntimeException]
++              } catch {
++                case e: SparkException =>
++                  e.getCause.asInstanceOf[SparkRuntimeException]
++                case e: SparkRuntimeException => e
++              }
++            }
+             checkError(
+-              exception = intercept[SparkException] {
+-                sql(s"select b from $tableName").collect()
+-              }.getCause.asInstanceOf[SparkRuntimeException],
++              exception = getDuplicateFieldError(s"select b from $tableName"),
+               errorClass = "_LEGACY_ERROR_TEMP_2093",
+               parameters = Map("requiredFieldName" -> "b", "matchedOrcFields" -> "[b, B]")
+             )
+             checkError(
+-              exception = intercept[SparkException] {
+-                sql(s"select B from $tableName").collect()
+-              }.getCause.asInstanceOf[SparkRuntimeException],
++              exception = getDuplicateFieldError(s"select B from $tableName"),
+               errorClass = "_LEGACY_ERROR_TEMP_2093",
+               parameters = Map("requiredFieldName" -> "b", "matchedOrcFields" -> "[b, B]")
+             )
+@@ -955,6 +966,7 @@ class FileBasedDataSourceSuite extends QueryTest
              assert(bJoinExec.isEmpty)
              val smJoinExec = collect(joinedDF.queryExecution.executedPlan) {
                case smJoin: SortMergeJoinExec => smJoin
@@ -554,7 +587,7 @@ index 93275487f29..601cb6647fe 100644
              }
              assert(smJoinExec.nonEmpty)
            }
-@@ -1015,6 +1020,7 @@ class FileBasedDataSourceSuite extends QueryTest
+@@ -1015,6 +1027,7 @@ class FileBasedDataSourceSuite extends QueryTest
  
            val fileScan = df.queryExecution.executedPlan collectFirst {
              case BatchScanExec(_, f: FileScan, _, _, _, _) => f
@@ -562,7 +595,7 @@ index 93275487f29..601cb6647fe 100644
            }
            assert(fileScan.nonEmpty)
            assert(fileScan.get.partitionFilters.nonEmpty)
-@@ -1056,6 +1062,7 @@ class FileBasedDataSourceSuite extends QueryTest
+@@ -1056,6 +1069,7 @@ class FileBasedDataSourceSuite extends QueryTest
  
            val fileScan = df.queryExecution.executedPlan collectFirst {
              case BatchScanExec(_, f: FileScan, _, _, _, _) => f
@@ -570,7 +603,7 @@ index 93275487f29..601cb6647fe 100644
            }
            assert(fileScan.nonEmpty)
            assert(fileScan.get.partitionFilters.isEmpty)
-@@ -1240,6 +1247,9 @@ class FileBasedDataSourceSuite extends QueryTest
+@@ -1240,6 +1254,9 @@ class FileBasedDataSourceSuite extends QueryTest
            val filters = df.queryExecution.executedPlan.collect {
              case f: FileSourceScanLike => f.dataFilters
              case b: BatchScanExec => b.scan.asInstanceOf[FileScan].dataFilters
@@ -2022,7 +2055,7 @@ index 07e2849ce6f..3e73645b638 100644
        ParquetOutputFormat.WRITER_VERSION -> ParquetProperties.WriterVersion.PARQUET_2_0.toString
      )
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFilterSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFilterSuite.scala
-index 8e88049f51e..b713ccddfcb 100644
+index 8e88049f51e..f9d515edee1 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFilterSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFilterSuite.scala
 @@ -1095,7 +1095,11 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
@@ -2111,17 +2144,25 @@ index 8e88049f51e..b713ccddfcb 100644
      val schema = StructType(Seq(
        StructField("a", IntegerType, nullable = false)
      ))
-@@ -1952,8 +1968,17 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
-           val e = intercept[SparkException] {
+@@ -1949,11 +1965,24 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
+            """.stripMargin)
+ 
+         withSQLConf(SQLConf.CASE_SENSITIVE.key -> "false") {
+-          val e = intercept[SparkException] {
++          // Spark native readers wrap the error in SparkException(FAILED_READ_FILE).
++          // Comet native readers throw SparkRuntimeException directly.
++          val msg = try {
              sql(s"select a from $tableName where b > 0").collect()
++            fail("Expected an exception")
++          } catch {
++            case e: SparkException =>
++              assert(e.getCause.isInstanceOf[RuntimeException])
++              e.getCause.getMessage
++            case e: RuntimeException =>
++              e.getMessage
            }
 -          assert(e.getCause.isInstanceOf[RuntimeException] && e.getCause.getMessage.contains(
 -            """Found duplicate field(s) "B": [B, b] in case-insensitive mode"""))
-+          assert(e.getCause.isInstanceOf[RuntimeException])
-+          val msg = e.getCause.getMessage
-+          // native_datafusion converts DataFusion's "Unable to get field named" error
-+          // to _LEGACY_ERROR_TEMP_2093 but with a lowercase field name ("b" vs "B")
-+          // because DataFusion resolves field names case-insensitively
 +          assert(
 +            msg.contains(
 +              """Found duplicate field(s) "B": [B, b] in case-insensitive mode""") ||
@@ -2131,7 +2172,7 @@ index 8e88049f51e..b713ccddfcb 100644
          }
  
          withSQLConf(SQLConf.CASE_SENSITIVE.key -> "true") {
-@@ -1984,7 +2009,8 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
+@@ -1984,7 +2013,8 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
      }
    }
  
@@ -2141,7 +2182,7 @@ index 8e88049f51e..b713ccddfcb 100644
      // block 1:
      //                      null count  min                                       max
      // page-0                         0  0                                         99
-@@ -2044,7 +2070,8 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
+@@ -2044,7 +2074,8 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
      }
    }
  
@@ -2151,7 +2192,7 @@ index 8e88049f51e..b713ccddfcb 100644
      withTempPath { dir =>
        val path = dir.getCanonicalPath
        spark.range(100).selectExpr("id * 2 AS id")
-@@ -2276,7 +2303,11 @@ class ParquetV1FilterSuite extends ParquetFilterSuite {
+@@ -2276,7 +2307,11 @@ class ParquetV1FilterSuite extends ParquetFilterSuite {
            assert(pushedParquetFilters.exists(_.getClass === filterClass),
              s"${pushedParquetFilters.map(_.getClass).toList} did not contain ${filterClass}.")
  
@@ -2164,7 +2205,7 @@ index 8e88049f51e..b713ccddfcb 100644
          } else {
            assert(selectedFilters.isEmpty, "There is filter pushed down")
          }
-@@ -2336,7 +2367,11 @@ class ParquetV2FilterSuite extends ParquetFilterSuite {
+@@ -2336,7 +2371,11 @@ class ParquetV2FilterSuite extends ParquetFilterSuite {
            assert(pushedParquetFilters.exists(_.getClass === filterClass),
              s"${pushedParquetFilters.map(_.getClass).toList} did not contain ${filterClass}.")
  
