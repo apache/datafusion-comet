@@ -340,12 +340,16 @@ fn run_shuffle_write(
             .expect("Failed to create physical plan");
 
         // ShuffleWriterExec reads from a single input partition
-        let input: Arc<dyn ExecutionPlan> =
-            if parquet_plan.properties().output_partitioning().partition_count() > 1 {
-                Arc::new(CoalescePartitionsExec::new(parquet_plan))
-            } else {
-                parquet_plan
-            };
+        let input: Arc<dyn ExecutionPlan> = if parquet_plan
+            .properties()
+            .output_partitioning()
+            .partition_count()
+            > 1
+        {
+            Arc::new(CoalescePartitionsExec::new(parquet_plan))
+        } else {
+            parquet_plan
+        };
 
         let exec = ShuffleWriterExec::try_new(
             input,
