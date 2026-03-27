@@ -90,13 +90,15 @@ impl ScalarUDFImpl for SparkHoursTransform {
                             ))
                         })?;
                         arrow::compute::kernels::arity::try_unary(ts_array, |micros| {
-                            let dt = as_datetime::<TimestampMicrosecondType>(micros)
-                                .ok_or_else(|| {
+                            let dt = as_datetime::<TimestampMicrosecondType>(micros).ok_or_else(
+                                || {
                                     DataFusionError::Execution(format!(
                                         "Cannot convert {micros} to datetime"
                                     ))
-                                })?;
-                            let offset_secs = tz.offset_from_utc_datetime(&dt).fix().local_minus_utc() as i64;
+                                },
+                            )?;
+                            let offset_secs =
+                                tz.offset_from_utc_datetime(&dt).fix().local_minus_utc() as i64;
                             let local_micros = micros + offset_secs * 1_000_000;
                             Ok(local_micros.div_euclid(MICROS_PER_HOUR) as i32)
                         })?
