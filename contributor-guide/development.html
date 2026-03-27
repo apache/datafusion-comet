@@ -560,6 +560,85 @@ to unwrap decryption keys during Parquet reads. It uses a stored <code class="do
 </div>
 </section>
 </section>
+<section id="global-singletons">
+<h2>Global singletons<a class="headerlink" href="#global-singletons" title="Link to this heading">#</a></h2>
+<p>Comet code runs in both the driver and executor JVM processes, and different parts of the
+codebase run in each. Global singletons have <strong>process lifetime</strong> — they are created once and
+never dropped until the JVM exits. Since multiple Spark jobs, queries, and tasks share the same
+process, this makes it difficult to reason about what state a singleton holds and whether it is
+still valid.</p>
+<section id="how-to-recognize-them">
+<h3>How to recognize them<a class="headerlink" href="#how-to-recognize-them" title="Link to this heading">#</a></h3>
+<p><strong>Rust:</strong> <code class="docutils literal notranslate"><span class="pre">static</span></code> variables using <code class="docutils literal notranslate"><span class="pre">OnceLock</span></code>, <code class="docutils literal notranslate"><span class="pre">LazyLock</span></code>, <code class="docutils literal notranslate"><span class="pre">OnceCell</span></code>, <code class="docutils literal notranslate"><span class="pre">Lazy</span></code>, or <code class="docutils literal notranslate"><span class="pre">lazy_static!</span></code>:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">static</span><span class="w"> </span><span class="n">TOKIO_RUNTIME</span><span class="p">:</span><span class="w"> </span><span class="nc">OnceLock</span><span class="o">&lt;</span><span class="n">Runtime</span><span class="o">&gt;</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">OnceLock</span><span class="p">::</span><span class="n">new</span><span class="p">();</span>
+<span class="k">static</span><span class="w"> </span><span class="n">TASK_SHARED_MEMORY_POOLS</span><span class="p">:</span><span class="w"> </span><span class="nc">Lazy</span><span class="o">&lt;</span><span class="n">Mutex</span><span class="o">&lt;</span><span class="n">HashMap</span><span class="o">&lt;</span><span class="kt">i64</span><span class="p">,</span><span class="w"> </span><span class="n">PerTaskMemoryPool</span><span class="o">&gt;&gt;&gt;</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Lazy</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="o">..</span><span class="p">);</span>
+</pre></div>
+</div>
+<p><strong>Java:</strong> <code class="docutils literal notranslate"><span class="pre">static</span></code> fields, especially mutable collections:</p>
+<div class="highlight-java notranslate"><div class="highlight"><pre><span></span><span class="kd">private</span><span class="w"> </span><span class="kd">static</span><span class="w"> </span><span class="kd">final</span><span class="w"> </span><span class="n">HashMap</span><span class="o">&lt;</span><span class="n">Long</span><span class="p">,</span><span class="w"> </span><span class="n">HashMap</span><span class="o">&lt;</span><span class="n">Long</span><span class="p">,</span><span class="w"> </span><span class="n">ScalarSubquery</span><span class="o">&gt;&gt;</span><span class="w"> </span><span class="n">subqueryMap</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">HashMap</span><span class="o">&lt;&gt;</span><span class="p">();</span>
+</pre></div>
+</div>
+<p><strong>Scala:</strong> <code class="docutils literal notranslate"><span class="pre">object</span></code> declarations (companion objects are JVM singletons) holding mutable state:</p>
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="k">object</span><span class="w"> </span><span class="nc">MyCache</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="k">private</span><span class="w"> </span><span class="kd">val</span><span class="w"> </span><span class="n">cache</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="nc">ConcurrentHashMap</span><span class="p">[</span><span class="nc">String</span><span class="p">,</span><span class="w"> </span><span class="nc">Value</span><span class="p">]()</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+</section>
+<section id="why-they-are-dangerous">
+<h3>Why they are dangerous<a class="headerlink" href="#why-they-are-dangerous" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p><strong>Credential staleness.</strong> A singleton caching an authenticated client will hold stale
+credentials after token rotation, causing silent failures mid-job.</p></li>
+<li><p><strong>Unbounded growth.</strong> A cache keyed by file path or configuration grows with every query
+but never shrinks. Over hours of process uptime this becomes a memory leak.</p></li>
+<li><p><strong>Cross-job contamination.</strong> Different Spark jobs on the same process may use different
+configurations. A singleton initialized by the first job silently serves wrong state to
+subsequent jobs.</p></li>
+<li><p><strong>Testing difficulty.</strong> Global state persists across test cases, making tests
+order-dependent.</p></li>
+</ul>
+</section>
+<section id="when-a-singleton-is-acceptable">
+<h3>When a singleton is acceptable<a class="headerlink" href="#when-a-singleton-is-acceptable" title="Link to this heading">#</a></h3>
+<p>Some state genuinely has process lifetime:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Singleton</p></th>
+<th class="head"><p>Why it is safe</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">TOKIO_RUNTIME</span></code></p></td>
+<td><p>One runtime per executor, no configuration variance</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">JAVA_VM</span></code> / <code class="docutils literal notranslate"><span class="pre">JVM_CLASSES</span></code></p></td>
+<td><p>One JVM per process, set once at JNI load</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">OperatorRegistry</span></code> / <code class="docutils literal notranslate"><span class="pre">ExpressionRegistry</span></code></p></td>
+<td><p>Immutable after initialization</p></td>
+</tr>
+<tr class="row-odd"><td><p>Compiled <code class="docutils literal notranslate"><span class="pre">Regex</span></code> patterns (<code class="docutils literal notranslate"><span class="pre">LazyLock&lt;Regex&gt;</span></code>)</p></td>
+<td><p>Stateless and immutable</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<section id="when-to-avoid-a-singleton">
+<h3>When to avoid a singleton<a class="headerlink" href="#when-to-avoid-a-singleton" title="Link to this heading">#</a></h3>
+<p>If any of these apply, do <strong>not</strong> use a global singleton:</p>
+<ul class="simple">
+<li><p>The state depends on configuration that can vary between jobs or queries</p></li>
+<li><p>The state holds credentials or authenticated connections that will not expire or invalidate appropriately</p></li>
+<li><p>The state grows proportionally to the number of queries or files processed</p></li>
+<li><p>The state needs cleanup or refresh during process lifetime</p></li>
+</ul>
+<p>Instead, scope state to the plan or task by adding the cache as a field in an existing session or context object.</p>
+<p>If a singleton is truly needed, add a comment explaining why <code class="docutils literal notranslate"><span class="pre">static</span></code> is the right lifetime,
+whether the cache is bounded, and how credential refresh is handled (if applicable).</p>
+</section>
+</section>
 <section id="development-setup">
 <h2>Development Setup<a class="headerlink" href="#development-setup" title="Link to this heading">#</a></h2>
 <ol class="arabic simple">
