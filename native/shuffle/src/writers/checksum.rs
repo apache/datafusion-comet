@@ -16,18 +16,22 @@
 // under the License.
 
 use bytes::Buf;
-use crc32fast::Hasher;
 use datafusion_comet_jni_bridge::errors::{CometError, CometResult};
 use simd_adler32::Adler32;
+use std::hash::Hasher;
 use std::io::{Cursor, SeekFrom};
+use std::default::Default;
+use crate::spark_crc32c_hasher::SparkCrc32cHasher;
 
 /// Checksum algorithms for writing IPC bytes.
 #[derive(Clone)]
 pub(crate) enum Checksum {
     /// CRC32 checksum algorithm.
-    CRC32(Hasher),
+    CRC32(crc32fast::Hasher),
     /// Adler32 checksum algorithm.
     Adler32(Adler32),
+    /// CRC32C checksum algorithm.
+    CRC32C(SparkCrc32cHasher),
 }
 
 impl Checksum {
@@ -35,9 +39,9 @@ impl Checksum {
         match algo {
             0 => {
                 let hasher = if let Some(initial) = initial_opt {
-                    Hasher::new_with_initial(initial)
+                    crc32fast::Hasher::new_with_initial(initial)
                 } else {
-                    Hasher::new()
+                    crc32fast::Hasher::new()
                 };
                 Ok(Checksum::CRC32(hasher))
             }
@@ -50,6 +54,14 @@ impl Checksum {
                     Adler32::new()
                 };
                 Ok(Checksum::Adler32(hasher))
+            }
+            2 => {
+               let hasher = if let Some(initial) = initial_opt {
+                       SparkCrc32cHasher::new(initial)
+                  } else {
+                   Default::default()
+                };
+                Ok(Checksum::CRC32C(hasher))
             }
             _ => Err(CometError::Internal(
                 "Unsupported checksum algorithm".to_string(),
@@ -69,6 +81,11 @@ impl Checksum {
                 hasher.write(cursor.chunk());
                 Ok(())
             }
+            Checksum::CRC32C(hasher) => {
+                std::io::Seek::seek(cursor, SeekFrom::Start(0))?;
+                hasher.write(cursor.chunk());
+                Ok(())
+            }
         }
     }
 
@@ -76,6 +93,59 @@ impl Checksum {
         match self {
             Checksum::CRC32(hasher) => hasher.finalize(),
             Checksum::Adler32(hasher) => hasher.finish(),
+            Checksum::CRC32C(hasher) => hasher.finalize(),
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn test_crc32() {
+        let mut checksum = Checksum::try_new(0, None).unwrap();
+        let message = b"123456789";
+
+        let mut vector: Vec<u8> = message.to_vec();
+        let mut buff = Cursor::new(&mut vector);
+
+        checksum.update(&mut buff).unwrap();
+        let result = checksum.finalize();
+
+        let expected_crc = 0xcbf43926u32;
+        assert_eq!(result, expected_crc)
+    }
+
+    #[test]
+    fn test_adler32() {
+        let mut checksum = Checksum::try_new(1, None).unwrap();
+        let message = b"123456789";
+
+        let mut vector: Vec<u8> = message.to_vec();
+        let mut buff = Cursor::new(&mut vector);
+
+        checksum.update(&mut buff).unwrap();
+        let result = checksum.finalize();
+
+        let expected_crc = 0x091e01deu32;
+        assert_eq!(result, expected_crc)
+    }
+
+    #[test]
+    fn test_crc32c() {
+        let mut checksum = Checksum::try_new(2, None).unwrap();
+        let message = b"123456789";
+
+        let mut vector: Vec<u8> = message.to_vec();
+        let mut buff = Cursor::new(&mut vector);
+
+        checksum.update(&mut buff).unwrap();
+        let result = checksum.finalize();
+
+        let expected_crc = 0xe3069283u32;
+        assert_eq!(result, expected_crc)
+    }
+
 }
