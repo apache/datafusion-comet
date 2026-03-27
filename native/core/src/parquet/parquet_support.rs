@@ -449,13 +449,34 @@ fn create_hdfs_object_store(
 
 type ObjectStoreCache = RwLock<HashMap<(String, u64), Arc<dyn ObjectStore>>>;
 
-/// Global cache of object stores keyed by (url_key, config_hash).
+/// Process-wide cache of object stores, keyed by `(scheme://host:port, config_hash)`.
 ///
-/// This avoids creating a new S3 client (and thus a new HTTP connection pool and DNS
-/// resolution) for every Parquet file read. Without this cache, each call to
-/// `initRecordBatchReader` from the JVM creates a fresh `reqwest::Client`, leading to
-/// excessive DNS queries that can overwhelm DNS resolvers (e.g., Route53 Resolver limits
-/// in EKS environments).
+/// ## Why static / process lifetime?
+///
+/// Comet's JNI architecture calls `initRecordBatchReader` once per Parquet file, and each
+/// call constructs a fresh `RuntimeEnv`.  There is therefore no executor-scoped Rust object
+/// with a lifetime longer than a single file read that could own this cache.  The executor
+/// process itself is the natural scope for HTTP connection-pool reuse, so process lifetime
+/// (i.e. `static`) is the appropriate choice here.
+///
+/// ## Unbounded size
+///
+/// Cache entries are indexed by `(scheme://host:port, hash-of-configs)`.  A typical Spark
+/// job accesses a small, fixed set of buckets with a stable configuration, so the number of
+/// distinct keys is O(buckets × credential-configs) and remains small throughout the job.
+/// Entries are cheap relative to the cost of creating a new object store (new HTTP
+/// connection pool + DNS resolution), and there is no meaningful benefit from eviction, so
+/// no eviction policy is applied.
+///
+/// ## Credential invalidation
+///
+/// Object stores that use dynamic credentials (IMDS, WebIdentity, ECS role, STS assume-role)
+/// delegate credential refresh to a `CometCredentialProvider` that fetches fresh credentials
+/// on every request, so credential rotation is transparent and requires no cache
+/// invalidation.  Object stores whose credentials are embedded in the Hadoop configuration
+/// (e.g. `fs.s3a.access.key` / `fs.s3a.secret.key`) produce a different `config_hash` when
+/// those values change, which causes a new store to be created and inserted under the new
+/// key; the old entry is harmlessly superseded.
 fn object_store_cache() -> &'static ObjectStoreCache {
     static CACHE: OnceLock<ObjectStoreCache> = OnceLock::new();
     CACHE.get_or_init(|| RwLock::new(HashMap::new()))

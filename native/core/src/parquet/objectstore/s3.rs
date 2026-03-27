@@ -112,11 +112,25 @@ pub fn create_store(
     Ok((Box::new(object_store), path))
 }
 
-/// Cache for resolved bucket regions to avoid redundant HeadBucket API calls.
+/// Process-wide cache of resolved S3 bucket regions, keyed by bucket name.
 ///
-/// Without this cache, every Parquet file read triggers a HeadBucket request to determine
-/// the bucket's region (when region is not explicitly configured), each requiring its own
-/// DNS lookup. This is a significant contributor to DNS query volume in large workloads.
+/// ## Why static / process lifetime?
+///
+/// See the equivalent rationale on `object_store_cache` in `parquet_support.rs`: the JNI
+/// call site creates a new `RuntimeEnv` per file, leaving the executor process as the only
+/// available scope for cross-call state.
+///
+/// ## Unbounded size
+///
+/// A Spark job accesses a bounded, typically small set of S3 buckets, so the number of
+/// entries stays proportional to the number of distinct buckets.  Entries are just
+/// `(String, String)` pairs and the set does not grow beyond what the job actually touches.
+///
+/// ## Invalidation
+///
+/// An S3 bucket's region is permanently fixed at creation time and cannot change; no
+/// invalidation is therefore needed.  This is what makes a static, never-evicting cache
+/// safe here and on the equivalent region-resolution path inside the `object_store` crate.
 fn region_cache() -> &'static RwLock<HashMap<String, String>> {
     static CACHE: OnceLock<RwLock<HashMap<String, String>>> = OnceLock::new();
     CACHE.get_or_init(|| RwLock::new(HashMap::new()))
