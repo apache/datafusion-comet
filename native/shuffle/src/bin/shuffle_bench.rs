@@ -112,10 +112,6 @@ struct Args {
     #[arg(long, default_value_t = 1048576)]
     write_buffer_size: usize,
 
-    /// Maximum number of batches to buffer before spilling (0 = no limit)
-    #[arg(long, default_value_t = 0)]
-    max_buffered_batches: usize,
-
     /// Limit rows processed per iteration (0 = no limit)
     #[arg(long, default_value_t = 0)]
     limit: usize,
@@ -149,9 +145,6 @@ fn main() {
     println!("Hash columns:   {:?}", hash_col_indices);
     if let Some(mem_limit) = args.memory_limit {
         println!("Memory limit:   {}", format_bytes(mem_limit));
-    }
-    if args.max_buffered_batches > 0 {
-        println!("Max buf batches:{}", args.max_buffered_batches);
     }
     println!(
         "Iterations:     {} (warmup: {})",
@@ -362,7 +355,6 @@ fn run_shuffle_write(
             index_file.to_string(),
             false,
             args.write_buffer_size,
-            args.max_buffered_batches,
         )
         .expect("Failed to create ShuffleWriterExec");
 

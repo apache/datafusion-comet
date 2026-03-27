@@ -153,7 +153,6 @@ fn create_shuffle_writer_exec(
         "/tmp/index.out".to_string(),
         false,
         1024 * 1024,
-        0, // max_buffered_batches: no limit
     )
     .unwrap()
 }

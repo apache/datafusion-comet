@@ -68,8 +68,6 @@ pub struct ShuffleWriterExec {
     tracing_enabled: bool,
     /// Size of the write buffer in bytes
     write_buffer_size: usize,
-    /// Maximum number of batches to buffer before spilling (0 = no limit)
-    max_buffered_batches: usize,
 }
 
 impl ShuffleWriterExec {
@@ -83,7 +81,6 @@ impl ShuffleWriterExec {
         output_index_file: String,
         tracing_enabled: bool,
         write_buffer_size: usize,
-        max_buffered_batches: usize,
     ) -> Result<Self> {
         let cache = PlanProperties::new(
             EquivalenceProperties::new(Arc::clone(&input.schema())),
@@ -102,7 +99,6 @@ impl ShuffleWriterExec {
             codec,
             tracing_enabled,
             write_buffer_size,
-            max_buffered_batches,
         })
     }
 }
@@ -167,7 +163,6 @@ impl ExecutionPlan for ShuffleWriterExec {
                 self.output_index_file.clone(),
                 self.tracing_enabled,
                 self.write_buffer_size,
-                self.max_buffered_batches,
             )?)),
             _ => panic!("ShuffleWriterExec wrong number of children"),
         }
@@ -195,7 +190,6 @@ impl ExecutionPlan for ShuffleWriterExec {
                     self.codec.clone(),
                     self.tracing_enabled,
                     self.write_buffer_size,
-                    self.max_buffered_batches,
                 )
                 .map_err(|e| ArrowError::ExternalError(Box::new(e))),
             )
@@ -216,7 +210,6 @@ async fn external_shuffle(
     codec: CompressionCodec,
     tracing_enabled: bool,
     write_buffer_size: usize,
-    max_buffered_batches: usize,
 ) -> Result<SendableRecordBatchStream> {
     with_trace_async("external_shuffle", tracing_enabled, || async {
         let schema = input.schema();
@@ -245,7 +238,6 @@ async fn external_shuffle(
                 codec,
                 tracing_enabled,
                 write_buffer_size,
-                max_buffered_batches,
             )?),
         };
 
@@ -370,7 +362,6 @@ mod test {
             CompressionCodec::Lz4Frame,
             false,
             1024 * 1024, // write_buffer_size: 1MB default
-            0,           // max_buffered_batches: no limit
         )
         .unwrap();
 
@@ -475,7 +466,6 @@ mod test {
                 "/tmp/index.out".to_string(),
                 false,
                 1024 * 1024, // write_buffer_size: 1MB default
-                0,           // max_buffered_batches: no limit
             )
             .unwrap();
 
@@ -535,7 +525,6 @@ mod test {
                 index_file.clone(),
                 false,
                 1024 * 1024,
-                0, // max_buffered_batches: no limit
             )
             .unwrap();
 

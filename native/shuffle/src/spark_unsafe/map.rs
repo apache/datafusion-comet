@@ -20,6 +20,7 @@ use arrow::array::builder::{ArrayBuilder, MapBuilder, MapFieldNames};
 use arrow::datatypes::{DataType, FieldRef};
 use datafusion_comet_jni_bridge::errors::CometError;
 
+/// A Spark `UnsafeMap` backed by JVM-allocated memory, containing parallel keys and values arrays.
 pub struct SparkUnsafeMap {
     pub(crate) keys: SparkUnsafeArray,
     pub(crate) values: SparkUnsafeArray,

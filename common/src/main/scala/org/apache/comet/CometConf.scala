@@ -534,18 +534,6 @@ object CometConf extends ShimCometConf {
       .checkValue(v => v > 0, "Write buffer size must be positive")
       .createWithDefault(1)
 
-  val COMET_SHUFFLE_MAX_BUFFERED_BATCHES: ConfigEntry[Int] =
-    conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.maxBufferedBatches")
-      .category(CATEGORY_SHUFFLE)
-      .doc("Maximum number of batches to buffer in memory before spilling to disk during " +
-        "native shuffle. Setting this to a small value causes earlier spilling, which reduces " +
-        "peak memory usage on executors at the cost of more disk I/O. " +
-        "The default value of 0 disables this limit and spills only when the memory pool is " +
-        "exhausted.")
-      .intConf
-      .checkValue(v => v >= 0, "Max buffered batches must be non-negative")
-      .createWithDefault(0)
-
   val COMET_SHUFFLE_PREFER_DICTIONARY_RATIO: ConfigEntry[Double] = conf(
     "spark.comet.shuffle.preferDictionary.ratio")
     .category(CATEGORY_SHUFFLE)
