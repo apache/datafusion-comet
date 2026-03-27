@@ -1570,7 +1570,8 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
       withSQLConf((SQLConf.ANSI_ENABLED.key, "false")) {
         // cast() should return null for invalid inputs when ansi mode is disabled
-        val df = data.select(col("a"), col("a").cast(toType)).orderBy(col("a"))
+        // val df = data.select(col("a"), col("a").cast(toType)).orderBy(col("a"))
+        val df = data.select(col("a"), col("a").cast(toType))
         if (useDataFrameDiff) {
           assertDataFrameEqualsWithExceptions(df, assertCometNative = !hasIncompatibleType)
         } else {
@@ -1585,7 +1586,8 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           data.createOrReplaceTempView("t")
           // try_cast() should always return null for invalid inputs
           // not using spark DSL since it `try_cast` is only available from Spark 4x
-          val df2 = spark.sql(s"select a, try_cast(a as ${toType.sql}) from t order by a")
+          // val df2 = spark.sql(s"select a, try_cast(a as ${toType.sql}) from t order by a")
+          val df2 = spark.sql(s"select a, try_cast(a as ${toType.sql}) from t")
           if (hasIncompatibleType) {
             checkSparkAnswer(df2)
           } else {
@@ -1653,7 +1655,8 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         // try_cast() should always return null for invalid inputs
         if (testTry) {
           data.createOrReplaceTempView("t")
-          val df2 = spark.sql(s"select a, try_cast(a as ${toType.sql}) from t order by a")
+          // val df2 = spark.sql(s"select a, try_cast(a as ${toType.sql}) from t order by a")
+          val df2 = spark.sql(s"select a, try_cast(a as ${toType.sql}) from t")
           if (useDataFrameDiff) {
             assertDataFrameEqualsWithExceptions(df2, assertCometNative = !hasIncompatibleType)
           } else {
