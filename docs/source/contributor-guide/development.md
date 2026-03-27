@@ -101,6 +101,74 @@ The runtime is created once per executor JVM in a `Lazy<Runtime>` static:
 | Storing `JNIEnv` in an operator           | **No** | `JNIEnv` is thread-specific              |
 | Capturing state at plan creation time     | Yes    | Runs on executor thread, store in struct |
 
+## Global singletons
+
+Comet code runs in both the driver and executor JVM processes, and different parts of the
+codebase run in each. Global singletons have **process lifetime** — they are created once and
+never dropped until the JVM exits. Since multiple Spark jobs, queries, and tasks share the same
+process, this makes it difficult to reason about what state a singleton holds and whether it is
+still valid.
+
+### How to recognize them
+
+**Rust:** `static` variables using `OnceLock`, `LazyLock`, `OnceCell`, `Lazy`, or `lazy_static!`:
+
+```rust
+static TOKIO_RUNTIME: OnceLock<Runtime> = OnceLock::new();
+static TASK_SHARED_MEMORY_POOLS: Lazy<Mutex<HashMap<i64, PerTaskMemoryPool>>> = Lazy::new(..);
+```
+
+**Java:** `static` fields, especially mutable collections:
+
+```java
+private static final HashMap<Long, HashMap<Long, ScalarSubquery>> subqueryMap = new HashMap<>();
+```
+
+**Scala:** `object` declarations (companion objects are JVM singletons) holding mutable state:
+
+```scala
+object MyCache {
+  private val cache = new ConcurrentHashMap[String, Value]()
+}
+```
+
+### Why they are dangerous
+
+- **Credential staleness.** A singleton caching an authenticated client will hold stale
+  credentials after token rotation, causing silent failures mid-job.
+- **Unbounded growth.** A cache keyed by file path or configuration grows with every query
+  but never shrinks. Over hours of process uptime this becomes a memory leak.
+- **Cross-job contamination.** Different Spark jobs on the same process may use different
+  configurations. A singleton initialized by the first job silently serves wrong state to
+  subsequent jobs.
+- **Testing difficulty.** Global state persists across test cases, making tests
+  order-dependent.
+
+### When a singleton is acceptable
+
+Some state genuinely has process lifetime:
+
+| Singleton                                     | Why it is safe                                      |
+| --------------------------------------------- | --------------------------------------------------- |
+| `TOKIO_RUNTIME`                               | One runtime per executor, no configuration variance |
+| `JAVA_VM` / `JVM_CLASSES`                     | One JVM per process, set once at JNI load           |
+| `OperatorRegistry` / `ExpressionRegistry`     | Immutable after initialization                      |
+| Compiled `Regex` patterns (`LazyLock<Regex>`) | Stateless and immutable                             |
+
+### When to avoid a singleton
+
+If any of these apply, do **not** use a global singleton:
+
+- The state depends on configuration that can vary between jobs or queries
+- The state holds credentials or authenticated connections
+- The state grows proportionally to the number of queries or files processed
+- The state needs cleanup or refresh during process lifetime
+
+Instead, scope state to the plan or task by passing it into operator constructors.
+
+If a singleton is truly needed, add a comment explaining why `static` is the right lifetime,
+whether the cache is bounded, and how credential refresh is handled (if applicable).
+
 ## Development Setup
 
 1. Make sure `JAVA_HOME` is set and point to JDK using [support matrix](../user-guide/latest/installation.md)
