@@ -69,6 +69,8 @@ class DataGenerator(r: Random) {
       -1.0f,
       Short.MinValue.toFloat,
       Short.MaxValue.toFloat,
+      0.0f,
+      -0.0f,
       0.0f) ++
       Range(0, n).map(_ => r.nextFloat())
   }
@@ -81,6 +83,12 @@ class DataGenerator(r: Random) {
       Double.NaN,
       Double.PositiveInfinity,
       Double.NegativeInfinity,
+      1.0d,
+      -1.0d,
+      Int.MinValue.toDouble,
+      Int.MaxValue.toDouble,
+      0.0d,
+      -0.0d,
       0.0d) ++
       Range(0, n).map(_ => r.nextDouble())
   }
