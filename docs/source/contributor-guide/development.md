@@ -160,11 +160,11 @@ Some state genuinely has process lifetime:
 If any of these apply, do **not** use a global singleton:
 
 - The state depends on configuration that can vary between jobs or queries
-- The state holds credentials or authenticated connections
+- The state holds credentials or authenticated connections that will not be cleared as needed
 - The state grows proportionally to the number of queries or files processed
 - The state needs cleanup or refresh during process lifetime
 
-Instead, scope state to the plan or task by passing it into operator constructors.
+Instead, scope state to the plan or task by adding the cache as a field in an existing session or context object.
 
 If a singleton is truly needed, add a comment explaining why `static` is the right lifetime,
 whether the cache is bounded, and how credential refresh is handled (if applicable).
