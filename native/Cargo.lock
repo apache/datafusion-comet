@@ -1996,7 +1996,6 @@ dependencies = [
  "log",
  "lz4_flex 0.13.0",
  "parquet",
- "rand 0.10.0",
  "simd-adler32",
  "snap",
  "tempfile",
