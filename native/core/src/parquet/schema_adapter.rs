@@ -96,10 +96,7 @@ fn remap_physical_schema_names(
 
 /// Check if a specific column name has duplicate matches in the physical schema
 /// (case-insensitive). Returns the error info if so.
-fn check_column_duplicate(
-    col_name: &str,
-    physical_schema: &SchemaRef,
-) -> Option<(String, String)> {
+fn check_column_duplicate(col_name: &str, physical_schema: &SchemaRef) -> Option<(String, String)> {
     let matches: Vec<&str> = physical_schema
         .fields()
         .iter()
@@ -220,8 +217,7 @@ impl PhysicalExprAdapter for SparkPhysicalExprAdapter {
             let mut duplicate_err: Option<DataFusionError> = None;
             let _ = expr.clone().transform(|e| {
                 if let Some(col) = e.as_any().downcast_ref::<Column>() {
-                    if let Some((req, matched)) =
-                        check_column_duplicate(col.name(), orig_physical)
+                    if let Some((req, matched)) = check_column_duplicate(col.name(), orig_physical)
                     {
                         duplicate_err = Some(DataFusionError::External(Box::new(
                             SparkError::DuplicateFieldCaseInsensitive {
@@ -604,15 +600,12 @@ mod test {
         let filename = get_temp_filename();
         let filename = filename.as_path().as_os_str().to_str().unwrap().to_string();
         let file = File::create(&filename).unwrap();
-        let mut writer =
-            ArrowWriter::try_new(file, Arc::clone(&batch.schema()), None).unwrap();
+        let mut writer = ArrowWriter::try_new(file, Arc::clone(&batch.schema()), None).unwrap();
         writer.write(&batch).unwrap();
         writer.close().unwrap();
 
         // Read with case-insensitive mode, requesting column "b" which matches both "B" and "b"
-        let required_schema = Arc::new(Schema::new(vec![
-            Field::new("b", DataType::Int32, false),
-        ]));
+        let required_schema = Arc::new(Schema::new(vec![Field::new("b", DataType::Int32, false)]));
 
         let mut spark_parquet_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
         spark_parquet_options.case_sensitive = false;
@@ -623,7 +616,9 @@ mod test {
 
         let object_store_url = ObjectStoreUrl::local_filesystem();
         let parquet_source = ParquetSource::new(required_schema);
-        let files = FileGroup::new(vec![PartitionedFile::from_path(filename.to_string()).unwrap()]);
+        let files = FileGroup::new(vec![
+            PartitionedFile::from_path(filename.to_string()).unwrap()
+        ]);
         let file_scan_config =
             FileScanConfigBuilder::new(object_store_url, Arc::new(parquet_source))
                 .with_file_groups(vec![files])
@@ -631,7 +626,9 @@ mod test {
                 .build();
 
         let parquet_exec = DataSourceExec::new(Arc::new(file_scan_config));
-        let mut stream = parquet_exec.execute(0, Arc::new(TaskContext::default())).unwrap();
+        let mut stream = parquet_exec
+            .execute(0, Arc::new(TaskContext::default()))
+            .unwrap();
         let result = stream.next().await.unwrap();
 
         // Should fail with duplicate field error
