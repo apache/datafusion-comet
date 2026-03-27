@@ -182,13 +182,46 @@ class CometCoverageStats {
   var cometOperators: Int = 0
   var transitions: Int = 0
 
+  def eligible: Int = sparkOperators + cometOperators
+
+  def coveragePercent: Double =
+    if (eligible == 0) 0.0 else cometOperators.toDouble / eligible * 100.0
+
   override def toString(): String = {
-    val eligible = sparkOperators + cometOperators
-    val converted =
-      if (eligible == 0) 0.0 else cometOperators.toDouble / eligible * 100.0
     s"Comet accelerated $cometOperators out of $eligible " +
-      s"eligible operators (${converted.toInt}%). " +
+      s"eligible operators (${coveragePercent.toInt}%). " +
       s"Final plan contains $transitions transitions between Spark and Comet."
+  }
+}
+
+object CometCoverageStats {
+  def fromPlan(plan: SparkPlan): CometCoverageStats = {
+    val stats = new CometCoverageStats()
+    collectStats(getActualPlan(plan), stats)
+    stats
+  }
+
+  private def collectStats(node: TreeNode[_], stats: CometCoverageStats): Unit = {
+    node match {
+      case _: AdaptiveSparkPlanExec | _: InputAdapter | _: QueryStageExec |
+          _: WholeStageCodegenExec | _: ReusedExchangeExec | _: AQEShuffleReadExec =>
+      // ignore
+      case _: RowToColumnarExec | _: ColumnarToRowExec | _: CometColumnarToRowExec |
+          _: CometNativeColumnarToRowExec | _: CometSparkToColumnarExec =>
+        stats.transitions += 1
+      case _: CometPlan =>
+        stats.cometOperators += 1
+      case _ =>
+        stats.sparkOperators += 1
+    }
+    node.innerChildren.foreach {
+      case c: TreeNode[_] => collectStats(getActualPlan(c), stats)
+      case _ =>
+    }
+    node.children.foreach {
+      case c: TreeNode[_] => collectStats(getActualPlan(c), stats)
+      case _ =>
+    }
   }
 }
 
