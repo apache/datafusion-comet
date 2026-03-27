@@ -481,11 +481,11 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       val threshold = CometConf.COMET_EXEC_COVERAGE_THRESHOLD.get(conf)
       if (threshold > 0.0) {
         val stats = CometCoverageStats.fromPlan(finalPlan)
-        val coverage = stats.coveragePercent / 100.0
-        if (stats.eligible > 0 && coverage < threshold) {
+        if (stats.eligible > 0 && stats.coverageFraction < threshold) {
           logWarning(
-            s"Comet native coverage ${(coverage * 100).toInt}% is below threshold " +
-              s"${(threshold * 100).toInt}% ($stats). Falling back to Spark plan.")
+            s"Comet native coverage ${(stats.coverageFraction * 100).toInt}% " +
+              s"is below threshold ${(threshold * 100).toInt}% " +
+              s"($stats). Falling back to Spark plan.")
           return plan
         }
       }
