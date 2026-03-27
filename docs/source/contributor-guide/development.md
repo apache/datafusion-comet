@@ -160,7 +160,7 @@ Some state genuinely has process lifetime:
 If any of these apply, do **not** use a global singleton:
 
 - The state depends on configuration that can vary between jobs or queries
-- The state holds credentials or authenticated connections that will not be cleared as needed
+- The state holds credentials or authenticated connections that will not expire or invalidate appropriately
 - The state grows proportionally to the number of queries or files processed
 - The state needs cleanup or refresh during process lifetime
 
