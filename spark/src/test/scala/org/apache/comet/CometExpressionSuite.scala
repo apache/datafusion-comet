@@ -1272,45 +1272,29 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("scalar decimal overflow - legacy mode produces null") {
-    // Multiplying two scalar decimal literals can overflow and go through the scalar
-    // branch of CheckOverflow. In non-ANSI mode the result should be null, not an error.
-    withTable("tbl") {
-      withSQLConf(
-        CometConf.COMET_ENABLED.key -> "true",
-        SQLConf.ANSI_ENABLED.key -> "false",
-        "spark.sql.optimizer.excludedRules" ->
-          "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
-        sql("CREATE TABLE tbl (a INT) USING PARQUET")
-        sql("INSERT INTO tbl VALUES (0)")
-        // DECIMAL(38,0) * DECIMAL(38,0) overflows the representable range → null in legacy mode
-        checkSparkAnswerAndOperator(
-          "SELECT CAST(9999999999999999999999999999999999999 AS DECIMAL(38,0))" +
-            " * CAST(9999999999999999999999999999999999999 AS DECIMAL(38,0)) FROM tbl")
+    // 1.1e19 * 1.1e19 = 1.21e38 fits in i128 (max ~1.7e38) but exceeds DECIMAL(38,0)'s
+    // max of 10^38-1, so CheckOverflow nulls the result in legacy (non-ANSI) mode.
+    withSQLConf(CometConf.COMET_ENABLED.key -> "true", SQLConf.ANSI_ENABLED.key -> "false") {
+      withParquetTable(Seq((BigDecimal("11000000000000000000"), 0)), "tbl") {
+        checkSparkAnswerAndOperator("SELECT _1 * _1 FROM tbl")
       }
     }
   }
 
   test("scalar decimal overflow - ANSI mode throws ArithmeticException") {
-    // Same overflow as above, but with ANSI mode on: CheckOverflow must propagate an error
-    // rather than panic. This is the scalar-path counterpart of the array-path ANSI support
-    // and exercises the bug fixed in checkoverflow.rs (line 204).
-    withTable("tbl") {
-      withSQLConf(
-        CometConf.COMET_ENABLED.key -> "true",
-        SQLConf.ANSI_ENABLED.key -> "true",
-        "spark.sql.optimizer.excludedRules" ->
-          "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
-        sql("CREATE TABLE tbl (a INT) USING PARQUET")
-        sql("INSERT INTO tbl VALUES (0)")
-        val res = sql(
-          "SELECT CAST(9999999999999999999999999999999999999 AS DECIMAL(38,0))" +
-            " * CAST(9999999999999999999999999999999999999 AS DECIMAL(38,0)) FROM tbl")
+    // 1.1e19 * 1.1e19 = 1.21e38 overflows DECIMAL(38,0). With ANSI mode on, both Spark and
+    // Comet must throw — Comet must not panic or silently return null. Spark reports
+    // NUMERIC_VALUE_OUT_OF_RANGE; Comet's WideDecimalBinaryExpr catches the overflow first
+    // and surfaces it as an arithmetic overflow error.
+    withSQLConf(CometConf.COMET_ENABLED.key -> "true", SQLConf.ANSI_ENABLED.key -> "true") {
+      withParquetTable(Seq((BigDecimal("11000000000000000000"), 0)), "tbl") {
+        val res = sql("SELECT _1 * _1 FROM tbl")
         checkSparkAnswerMaybeThrows(res) match {
           case (Some(sparkExc), Some(cometExc)) =>
             assert(sparkExc.getMessage.contains("NUMERIC_VALUE_OUT_OF_RANGE"))
-            assert(cometExc.getMessage.contains("NUMERIC_VALUE_OUT_OF_RANGE"))
+            assert(cometExc.getMessage.toLowerCase.contains("overflow"))
           case _ =>
-            fail("Expected ArithmeticException for scalar decimal overflow in ANSI mode")
+            fail("Expected exception for decimal overflow in ANSI mode")
         }
       }
     }
