@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import java.util.Locale
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, DateAdd, DateDiff, DateFormatClass, DateSub, DayOfMonth, DayOfWeek, DayOfYear, Days, GetDateField, Hour, LastDay, Literal, MakeDate, Minute, Month, NextDay, Quarter, Second, TruncDate, TruncTimestamp, UnixDate, UnixTimestamp, WeekDay, WeekOfYear, Year}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, DateAdd, DateDiff, DateFormatClass, DateSub, DayOfMonth, DayOfWeek, DayOfYear, Days, GetDateField, Hour, Hours, LastDay, Literal, MakeDate, Minute, Month, NextDay, Quarter, Second, TruncDate, TruncTimestamp, UnixDate, UnixTimestamp, WeekDay, WeekOfYear, Year}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DateType, IntegerType, StringType, TimestampType}
 import org.apache.spark.unsafe.types.UTF8String
@@ -585,6 +585,39 @@ object CometDateFormat extends CometExpressionSerde[DateFormatClass] {
       case None =>
         withInfo(expr, expr.left, expr.right)
         None
+    }
+  }
+}
+
+/**
+ * Converts a timestamp to the number of hours since Unix epoch (1970-01-01 00:00:00 UTC). This is
+ * a V2 partition transform expression.
+ *
+ * For TimestampType: uses timezone-aware conversion to determine the local hour boundary. For
+ * TimestampNTZType: directly divides the raw microsecond value (wall-clock time).
+ */
+object CometHours extends CometExpressionSerde[Hours] {
+  override def convert(
+      expr: Hours,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val childExpr = exprToProtoInternal(expr.child, inputs, binding)
+
+    if (childExpr.isDefined) {
+      val builder = ExprOuterClass.HoursTransform.newBuilder()
+      builder.setChild(childExpr.get)
+
+      val timeZone = SQLConf.get.sessionLocalTimeZone
+      builder.setTimezone(timeZone)
+
+      Some(
+        ExprOuterClass.Expr
+          .newBuilder()
+          .setHoursTransform(builder)
+          .build())
+    } else {
+      withInfo(expr, expr.child)
+      None
     }
   }
 }
