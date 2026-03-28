@@ -140,21 +140,27 @@ impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
     pub(crate) fn into_writer(self) -> W {
         self.writer
     }
+}
 
-    /// Returns a reference to the underlying writer.
-    pub(crate) fn inner_ref(&self) -> &W {
-        &self.writer
+impl<S: Borrow<ShuffleBlockWriter>> BufBatchWriter<S, Cursor<Vec<u8>>> {
+    /// Returns the total bytes buffered: the staging buffer (pre-flush to writer)
+    /// plus the accumulated output in the Cursor's Vec.
+    pub(crate) fn buffered_output_size(&self) -> usize {
+        self.buffer.len() + self.writer.get_ref().len()
     }
 
-    /// Returns a mutable reference to the underlying writer.
-    pub(crate) fn inner_mut(&mut self) -> &mut W {
-        &mut self.writer
+    /// Reset the output buffer, keeping allocated capacity for reuse.
+    /// Returns the number of bytes that were in the output buffer.
+    pub(crate) fn reset_output_buffer(&mut self) -> usize {
+        let len = self.writer.get_ref().len();
+        self.writer.get_mut().clear();
+        self.writer.set_position(0);
+        len
     }
 
-    /// Returns the total buffered size: the internal byte buffer plus
-    /// the BufBatchWriter's own serialization buffer.
-    pub(crate) fn inner_buffer_len(&self) -> usize {
-        self.buffer.len()
+    /// Returns a reference to the accumulated output bytes.
+    pub(crate) fn output_bytes(&self) -> &[u8] {
+        self.writer.get_ref()
     }
 }
 

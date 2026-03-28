@@ -23,7 +23,6 @@ use arrow::array::RecordBatch;
 use arrow::datatypes::SchemaRef;
 use datafusion::common::DataFusionError;
 use std::fs::{File, OpenOptions};
-use std::io::{BufWriter, Write};
 use tokio::time::Instant;
 
 /// A partitioner that writes all shuffle data to a single file and a single index file
@@ -169,19 +168,8 @@ impl ShufflePartitioner for SinglePartitionShufflePartitioner {
         self.output_data_writer
             .flush(&self.metrics.encode_time, &self.metrics.write_time)?;
 
-        // Write index file. It should only contain 2 entries: 0 and the total number of bytes written
-        let index_file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(self.output_index_path.clone())
-            .map_err(|e| DataFusionError::Execution(format!("shuffle write error: {e:?}")))?;
-        let mut index_buf_writer = BufWriter::new(index_file);
         let data_file_length = self.output_data_writer.writer_stream_position()?;
-        for offset in [0, data_file_length] {
-            index_buf_writer.write_all(&(offset as i64).to_le_bytes()[..])?;
-        }
-        index_buf_writer.flush()?;
+        crate::writers::write_index_file(&self.output_index_path, &[0, data_file_length])?;
 
         self.metrics
             .baseline

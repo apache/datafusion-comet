@@ -371,14 +371,7 @@ impl ShufflePartitioner for MultiPartitionShuffleRepartitioner {
             offsets[num_output_partitions] = output_data.stream_position()?;
 
             let mut write_timer = self.metrics.write_time.timer();
-            let mut output_index =
-                BufWriter::new(File::create(index_file).map_err(|e| {
-                    DataFusionError::Execution(format!("shuffle write error: {e:?}"))
-                })?);
-            for offset in offsets {
-                output_index.write_all(&(offset as i64).to_le_bytes()[..])?;
-            }
-            output_index.flush()?;
+            crate::writers::write_index_file(&index_file, &offsets)?;
             write_timer.stop();
 
             self.metrics

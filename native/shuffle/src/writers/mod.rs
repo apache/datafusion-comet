@@ -24,3 +24,20 @@ pub(crate) use buf_batch_writer::BufBatchWriter;
 pub(crate) use checksum::Checksum;
 pub use shuffle_block_writer::{CompressionCodec, ShuffleBlockWriter};
 pub(crate) use spill::PartitionWriter;
+
+use datafusion::common::DataFusionError;
+use std::fs::File;
+use std::io::{BufWriter, Write};
+
+/// Write shuffle index file: an array of i64 little-endian byte offsets.
+pub(crate) fn write_index_file(path: &str, offsets: &[u64]) -> datafusion::common::Result<()> {
+    let mut writer = BufWriter::new(
+        File::create(path)
+            .map_err(|e| DataFusionError::Execution(format!("shuffle write error: {e:?}")))?,
+    );
+    for &offset in offsets {
+        writer.write_all(&(offset as i64).to_le_bytes()[..])?;
+    }
+    writer.flush()?;
+    Ok(())
+}

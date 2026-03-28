@@ -15,19 +15,14 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! An immediate-mode shuffle partitioner that repartitions incoming batches and writes
-//! per-partition data to in-memory buffers containing compressed IPC blocks. Unlike
-//! `MultiPartitionShuffleRepartitioner`, this implementation does not buffer raw Arrow
-//! `RecordBatch` objects — it uses Arrow `take` to extract per-partition slices and
-//! serializes them immediately through per-partition `BufBatchWriter`s into `Vec<u8>`
-//! buffers. Under memory pressure, buffers are spilled to per-partition temp files.
-//! At `shuffle_write` time, spill files (if any) and remaining in-memory buffers are
-//! concatenated into the final shuffle data file and index.
+//! Immediate-mode shuffle partitioner: repartitions each incoming batch via Arrow `take`,
+//! serializes per-partition slices into in-memory compressed IPC buffers, and spills to
+//! disk under memory pressure.
 
 use crate::metrics::ShufflePartitionerMetrics;
 use crate::partitioners::scratch::ScratchSpace;
 use crate::partitioners::ShufflePartitioner;
-use crate::writers::BufBatchWriter;
+use crate::writers::{write_index_file, BufBatchWriter};
 use crate::{CometPartitioning, CompressionCodec, ShuffleBlockWriter};
 use arrow::array::{ArrayRef, RecordBatch, UInt32Array};
 use arrow::compute::take;
@@ -44,24 +39,17 @@ use std::io::{BufWriter, Cursor, Seek, Write};
 use std::sync::Arc;
 use tokio::time::Instant;
 
-/// Per-partition state: in-memory buffer for compressed IPC, plus an optional
-/// spill file from prior memory-pressure events.
 struct PartitionBuffer {
     writer: BufBatchWriter<ShuffleBlockWriter, Cursor<Vec<u8>>>,
-    /// Spill file accumulating data from prior spill events. Created lazily
-    /// on first spill. Subsequent spills append to the same file.
     spill_file: Option<SpillFile>,
 }
 
 struct SpillFile {
-    _temp_file: RefCountedTempFile,
+    /// Kept alive to prevent temp file deletion (RAII guard).
+    temp_file: RefCountedTempFile,
     file: File,
 }
 
-/// An immediate-mode shuffle partitioner with memory accounting and spilling.
-/// Each incoming batch is repartitioned using `arrow::compute::take` and the
-/// per-partition slices are serialized into per-partition `Vec<u8>` buffers
-/// (compressed IPC). Under memory pressure, buffers are spilled to temp files.
 pub(crate) struct ImmediateShufflePartitioner {
     output_data_file: String,
     output_index_file: String,
@@ -137,38 +125,27 @@ impl ImmediateShufflePartitioner {
         }
     }
 
-    /// Spill all in-memory partition buffers to disk.
     fn spill(&mut self) -> datafusion::common::Result<()> {
-        let total_buffered: usize = self
-            .partition_buffers
-            .iter()
-            .filter_map(|pb| pb.as_ref())
-            .map(|pb| pb.writer.inner_buffer_len())
-            .sum();
-
-        if total_buffered == 0 {
+        if self.partition_buffers.iter().all(|pb| pb.is_none()) {
             return Ok(());
         }
 
         log::info!(
-            "ImmediateShufflePartitioner spilling {} to disk ({} time(s) so far)",
-            total_buffered,
+            "ImmediateShufflePartitioner spilling to disk ({} time(s) so far)",
             self.metrics.spill_count.value()
         );
 
         let mut spilled_bytes = 0usize;
 
         for pb in self.partition_buffers.iter_mut().flatten() {
-            // Flush the BufBatchWriter's coalescer into the Cursor<Vec<u8>>
             pb.writer
                 .flush(&self.metrics.encode_time, &self.metrics.write_time)?;
 
-            let buf = pb.writer.inner_mut().get_ref();
+            let buf = pb.writer.output_bytes();
             if buf.is_empty() {
                 continue;
             }
 
-            // Ensure spill file exists
             if pb.spill_file.is_none() {
                 let temp_file = self
                     .runtime
@@ -182,23 +159,16 @@ impl ImmediateShufflePartitioner {
                     .map_err(|e| {
                         DataFusionError::Execution(format!("Error creating spill file: {e}"))
                     })?;
-                pb.spill_file = Some(SpillFile {
-                    _temp_file: temp_file,
-                    file,
-                });
+                pb.spill_file = Some(SpillFile { temp_file, file });
             }
 
-            // Append buffer contents to spill file
             let spill = pb.spill_file.as_mut().unwrap();
             let mut write_timer = self.metrics.write_time.timer();
             spill.file.write_all(buf)?;
             write_timer.stop();
             spilled_bytes += buf.len();
 
-            // Reset the in-memory buffer (keep allocated capacity for reuse)
-            let cursor = pb.writer.inner_mut();
-            cursor.get_mut().clear();
-            cursor.set_position(0);
+            pb.writer.reset_output_buffer();
         }
 
         self.reservation.free();
@@ -208,13 +178,11 @@ impl ImmediateShufflePartitioner {
         Ok(())
     }
 
-    /// Returns the total size of in-memory buffers across all partitions.
-    /// Includes both the BufBatchWriter staging buffer and the Cursor<Vec<u8>> output.
     fn total_buffer_size(&self) -> usize {
         self.partition_buffers
             .iter()
             .filter_map(|pb| pb.as_ref())
-            .map(|pb| pb.writer.inner_buffer_len() + pb.writer.inner_ref().get_ref().len())
+            .map(|pb| pb.writer.buffered_output_size())
             .sum()
     }
 
@@ -278,8 +246,7 @@ impl ImmediateShufflePartitioner {
             )?;
         }
 
-        let size_after = self.total_buffer_size();
-        let mem_growth = size_after.saturating_sub(size_before);
+        let mem_growth = self.total_buffer_size().saturating_sub(size_before);
         if mem_growth > 0 && self.reservation.try_grow(mem_growth).is_err() {
             self.spill()?;
         }
@@ -335,17 +302,14 @@ impl ShufflePartitioner for ImmediateShufflePartitioner {
                 offsets[partition_id] = output_data.stream_position()?;
 
                 if let Some(mut pb) = pb_slot.take() {
-                    // Copy spill file contents first (from prior spill events)
                     if let Some(mut spill) = pb.spill_file.take() {
                         spill.file.flush()?;
-                        let spill_path = spill._temp_file.path().to_path_buf();
-                        let mut spill_reader = File::open(&spill_path)?;
+                        let mut spill_reader = File::open(spill.temp_file.path())?;
                         let mut write_timer = self.metrics.write_time.timer();
                         std::io::copy(&mut spill_reader, &mut output_data)?;
                         write_timer.stop();
                     }
 
-                    // Flush and write remaining in-memory buffer
                     pb.writer
                         .flush(&self.metrics.encode_time, &self.metrics.write_time)?;
 
@@ -365,14 +329,7 @@ impl ShufflePartitioner for ImmediateShufflePartitioner {
             offsets[num_output_partitions] = output_data.stream_position()?;
 
             let mut write_timer = self.metrics.write_time.timer();
-            let mut output_index =
-                BufWriter::new(File::create(&self.output_index_file).map_err(|e| {
-                    DataFusionError::Execution(format!("shuffle write error: {e:?}"))
-                })?);
-            for offset in offsets {
-                output_index.write_all(&(offset as i64).to_le_bytes()[..])?;
-            }
-            output_index.flush()?;
+            write_index_file(&self.output_index_file, &offsets)?;
             write_timer.stop();
 
             self.metrics
