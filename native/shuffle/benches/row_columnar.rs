@@ -23,9 +23,8 @@
 
 use arrow::datatypes::{DataType as ArrowDataType, Field, Fields};
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
-use datafusion_comet_shuffle::spark_unsafe::row::{
-    process_sorted_row_partition, SparkUnsafeObject, SparkUnsafeRow,
-};
+use datafusion_comet_shuffle::spark_unsafe::row::{process_sorted_row_partition, SparkUnsafeRow};
+use datafusion_comet_shuffle::spark_unsafe::unsafe_object::SparkUnsafeObject;
 use datafusion_comet_shuffle::CompressionCodec;
 use std::sync::Arc;
 use tempfile::Builder;

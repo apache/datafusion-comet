@@ -19,6 +19,7 @@ use arrow::row::{OwnedRow, RowConverter};
 use datafusion::physical_expr::{LexOrdering, PhysicalExpr};
 use std::sync::Arc;
 
+/// Partitioning scheme for distributing rows across shuffle output partitions.
 #[derive(Debug, Clone)]
 pub enum CometPartitioning {
     SinglePartition,

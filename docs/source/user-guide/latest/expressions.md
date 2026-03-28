@@ -232,7 +232,7 @@ Comet supports using the following aggregate functions within window contexts wi
 
 | Expression     | Spark-Compatible? | Compatibility Notes                                                                                                                                                                       |
 | -------------- | ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| ArrayAppend    | No                |                                                                                                                                                                                           |
+| ArrayAppend    | Yes               |                                                                                                                                                                                           |
 | ArrayCompact   | No                |                                                                                                                                                                                           |
 | ArrayContains  | No                | Returns null instead of false for empty arrays with literal values ([#3346](https://github.com/apache/datafusion-comet/issues/3346))                                                      |
 | ArrayDistinct  | No                | Behaves differently than spark. Comet first sorts then removes duplicates while Spark preserves the original order.                                                                       |
