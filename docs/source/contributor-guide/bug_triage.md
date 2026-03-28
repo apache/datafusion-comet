@@ -78,6 +78,10 @@ The following pre-existing labels also serve as area indicators: `native_datafus
 
 ## Triage Process
 
+Every new issue is automatically labeled with `requires-triage` when it is opened. This makes it
+easy to find issues that have not yet been triaged by filtering on that label. Once an issue has
+been triaged, remove the `requires-triage` label and apply the appropriate priority and area labels.
+
 ### For New Issues
 
 When a new bug is filed:
@@ -89,6 +93,7 @@ When a new bug is filed:
 3. **Apply a priority label** using the decision tree above.
 4. **Apply area labels** to indicate the affected subsystem(s).
 5. **Apply `good first issue`** if the fix is likely straightforward and well-scoped.
+6. **Remove the `requires-triage` label** to indicate triage is complete.
 
 ### For Existing Bugs
 
