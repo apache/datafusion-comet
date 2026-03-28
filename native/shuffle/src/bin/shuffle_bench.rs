@@ -115,6 +115,11 @@ struct Args {
     /// Limit rows processed per iteration (0 = no limit)
     #[arg(long, default_value_t = 0)]
     limit: usize,
+
+    /// Number of concurrent shuffle tasks to simulate executor parallelism.
+    /// Each task reads the same input and writes to its own output files.
+    #[arg(long, default_value_t = 1)]
+    concurrent_tasks: usize,
 }
 
 fn main() {
@@ -146,6 +151,9 @@ fn main() {
     if let Some(mem_limit) = args.memory_limit {
         println!("Memory limit:   {}", format_bytes(mem_limit));
     }
+    if args.concurrent_tasks > 1 {
+        println!("Concurrent:     {} tasks", args.concurrent_tasks);
+    }
     println!(
         "Iterations:     {} (warmup: {})",
         args.iterations, args.warmup
@@ -165,15 +173,19 @@ fn main() {
             format!("iter {}/{}", i - args.warmup + 1, args.iterations)
         };
 
-        let write_elapsed = run_shuffle_write(
-            &args.input,
-            &schema,
-            &codec,
-            &hash_col_indices,
-            &args,
-            data_file.to_str().unwrap(),
-            index_file.to_str().unwrap(),
-        );
+        let write_elapsed = if args.concurrent_tasks > 1 {
+            run_concurrent_shuffle_writes(&args.input, &schema, &codec, &hash_col_indices, &args)
+        } else {
+            run_shuffle_write(
+                &args.input,
+                &schema,
+                &codec,
+                &hash_col_indices,
+                &args,
+                data_file.to_str().unwrap(),
+                index_file.to_str().unwrap(),
+            )
+        };
         let data_size = fs::metadata(&data_file).map(|m| m.len()).unwrap_or(0);
 
         if !is_warmup {
@@ -182,9 +194,11 @@ fn main() {
         }
 
         print!("  [{label}] write: {:.3}s", write_elapsed);
-        print!("  output: {}", format_bytes(data_size as usize));
+        if args.concurrent_tasks <= 1 {
+            print!("  output: {}", format_bytes(data_size as usize));
+        }
 
-        if args.read_back {
+        if args.read_back && args.concurrent_tasks <= 1 {
             let read_elapsed = run_shuffle_read(
                 data_file.to_str().unwrap(),
                 index_file.to_str().unwrap(),
@@ -203,8 +217,7 @@ fn main() {
         println!("=== Results ===");
 
         let avg_write = write_times.iter().sum::<f64>() / write_times.len() as f64;
-        let avg_data_size = data_file_sizes.iter().sum::<u64>() / data_file_sizes.len() as u64;
-        let write_throughput_rows = total_rows as f64 / avg_write;
+        let write_throughput_rows = (total_rows as f64 * args.concurrent_tasks as f64) / avg_write;
 
         println!("Write:");
         println!("  avg time:         {:.3}s", avg_write);
@@ -217,15 +230,20 @@ fn main() {
             println!("  min/max:          {:.3}s / {:.3}s", min, max);
         }
         println!(
-            "  throughput:       {} rows/s",
-            format_number(write_throughput_rows as usize)
+            "  throughput:       {} rows/s (total across {} tasks)",
+            format_number(write_throughput_rows as usize),
+            args.concurrent_tasks
         );
-        println!(
-            "  output size:      {}",
-            format_bytes(avg_data_size as usize)
-        );
+        if args.concurrent_tasks <= 1 {
+            let avg_data_size = data_file_sizes.iter().sum::<u64>() / data_file_sizes.len() as u64;
+            println!(
+                "  output size:      {}",
+                format_bytes(avg_data_size as usize)
+            );
+        }
 
         if !read_times.is_empty() {
+            let avg_data_size = data_file_sizes.iter().sum::<u64>() / data_file_sizes.len() as u64;
             let avg_read = read_times.iter().sum::<f64>() / read_times.len() as f64;
             let read_throughput_bytes = avg_data_size as f64 / avg_read;
 
@@ -317,55 +335,144 @@ fn run_shuffle_write(
 
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
-        let config = SessionConfig::new().with_batch_size(args.batch_size);
-        let mut runtime_builder = RuntimeEnvBuilder::new();
-        if let Some(mem_limit) = args.memory_limit {
-            runtime_builder = runtime_builder.with_memory_limit(mem_limit, 1.0);
-        }
-        let runtime_env = Arc::new(runtime_builder.build().unwrap());
-        let ctx = SessionContext::new_with_config_rt(config, runtime_env);
-
-        let path_str = input_path.to_str().unwrap();
-        let mut df = ctx
-            .read_parquet(path_str, ParquetReadOptions::default())
-            .await
-            .expect("Failed to create Parquet scan");
-        if args.limit > 0 {
-            df = df.limit(0, Some(args.limit)).unwrap();
-        }
-
-        let parquet_plan = df
-            .create_physical_plan()
-            .await
-            .expect("Failed to create physical plan");
-
-        // ShuffleWriterExec reads from a single input partition
-        let input: Arc<dyn ExecutionPlan> = if parquet_plan
-            .properties()
-            .output_partitioning()
-            .partition_count()
-            > 1
-        {
-            Arc::new(CoalescePartitionsExec::new(parquet_plan))
-        } else {
-            parquet_plan
-        };
-
-        let exec = ShuffleWriterExec::try_new(
-            input,
-            partitioning,
+        let start = Instant::now();
+        execute_shuffle_write(
+            input_path.to_str().unwrap(),
             codec.clone(),
+            partitioning,
+            args.batch_size,
+            args.memory_limit,
+            args.write_buffer_size,
+            args.limit,
             data_file.to_string(),
             index_file.to_string(),
-            false,
-            args.write_buffer_size,
         )
-        .expect("Failed to create ShuffleWriterExec");
+        .await
+        .unwrap();
+        start.elapsed().as_secs_f64()
+    })
+}
 
-        let task_ctx = ctx.task_ctx();
+/// Core async shuffle write logic shared by single and concurrent paths.
+async fn execute_shuffle_write(
+    input_path: &str,
+    codec: CompressionCodec,
+    partitioning: CometPartitioning,
+    batch_size: usize,
+    memory_limit: Option<usize>,
+    write_buffer_size: usize,
+    limit: usize,
+    data_file: String,
+    index_file: String,
+) -> datafusion::common::Result<()> {
+    let config = SessionConfig::new().with_batch_size(batch_size);
+    let mut runtime_builder = RuntimeEnvBuilder::new();
+    if let Some(mem_limit) = memory_limit {
+        runtime_builder = runtime_builder.with_memory_limit(mem_limit, 1.0);
+    }
+    let runtime_env = Arc::new(runtime_builder.build().unwrap());
+    let ctx = SessionContext::new_with_config_rt(config, runtime_env);
+
+    let mut df = ctx
+        .read_parquet(input_path, ParquetReadOptions::default())
+        .await
+        .expect("Failed to create Parquet scan");
+    if limit > 0 {
+        df = df.limit(0, Some(limit)).unwrap();
+    }
+
+    let parquet_plan = df
+        .create_physical_plan()
+        .await
+        .expect("Failed to create physical plan");
+
+    let input: Arc<dyn ExecutionPlan> = if parquet_plan
+        .properties()
+        .output_partitioning()
+        .partition_count()
+        > 1
+    {
+        Arc::new(CoalescePartitionsExec::new(parquet_plan))
+    } else {
+        parquet_plan
+    };
+
+    let exec = ShuffleWriterExec::try_new(
+        input,
+        partitioning,
+        codec,
+        data_file,
+        index_file,
+        false,
+        write_buffer_size,
+    )
+    .expect("Failed to create ShuffleWriterExec");
+
+    let task_ctx = ctx.task_ctx();
+    let stream = exec.execute(0, task_ctx).unwrap();
+    collect(stream).await.unwrap();
+    Ok(())
+}
+
+/// Run N concurrent shuffle writes to simulate executor parallelism.
+/// Returns wall-clock time for all tasks to complete.
+fn run_concurrent_shuffle_writes(
+    input_path: &PathBuf,
+    schema: &SchemaRef,
+    codec: &CompressionCodec,
+    hash_col_indices: &[usize],
+    args: &Args,
+) -> f64 {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
         let start = Instant::now();
-        let stream = exec.execute(0, task_ctx).unwrap();
-        collect(stream).await.unwrap();
+
+        let mut handles = Vec::with_capacity(args.concurrent_tasks);
+        for task_id in 0..args.concurrent_tasks {
+            let task_dir = args.output_dir.join(format!("task_{task_id}"));
+            fs::create_dir_all(&task_dir).expect("Failed to create task output directory");
+            let data_file = task_dir.join("data.out").to_str().unwrap().to_string();
+            let index_file = task_dir.join("index.out").to_str().unwrap().to_string();
+
+            let input_str = input_path.to_str().unwrap().to_string();
+            let codec = codec.clone();
+            let partitioning = build_partitioning(
+                &args.partitioning,
+                args.partitions,
+                hash_col_indices,
+                schema,
+            );
+            let batch_size = args.batch_size;
+            let memory_limit = args.memory_limit;
+            let write_buffer_size = args.write_buffer_size;
+            let limit = args.limit;
+
+            handles.push(tokio::spawn(async move {
+                execute_shuffle_write(
+                    &input_str,
+                    codec,
+                    partitioning,
+                    batch_size,
+                    memory_limit,
+                    write_buffer_size,
+                    limit,
+                    data_file,
+                    index_file,
+                )
+                .await
+                .unwrap();
+            }));
+        }
+
+        for handle in handles {
+            handle.await.expect("Task panicked");
+        }
+
+        for task_id in 0..args.concurrent_tasks {
+            let task_dir = args.output_dir.join(format!("task_{task_id}"));
+            let _ = fs::remove_dir_all(&task_dir);
+        }
+
         start.elapsed().as_secs_f64()
     })
 }
