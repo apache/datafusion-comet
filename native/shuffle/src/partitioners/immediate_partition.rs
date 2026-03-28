@@ -15,9 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Immediate-mode shuffle partitioner: repartitions each incoming batch via Arrow `take`,
-//! serializes per-partition slices into in-memory compressed IPC buffers, and spills to
-//! disk under memory pressure.
+//! Immediate-mode shuffle partitioner: repartitions each incoming batch via per-partition
+//! Arrow `take`, serializes through per-partition `BufBatchWriter`s into in-memory
+//! compressed IPC buffers, and spills to disk under memory pressure.
 
 use crate::metrics::ShufflePartitionerMetrics;
 use crate::partitioners::scratch::ScratchSpace;
@@ -126,10 +126,6 @@ impl ImmediateShufflePartitioner {
     }
 
     fn spill(&mut self) -> datafusion::common::Result<()> {
-        if self.partition_buffers.iter().all(|pb| pb.is_none()) {
-            return Ok(());
-        }
-
         log::info!(
             "ImmediateShufflePartitioner spilling to disk ({} time(s) so far)",
             self.metrics.spill_count.value()
@@ -178,14 +174,6 @@ impl ImmediateShufflePartitioner {
         Ok(())
     }
 
-    fn total_buffer_size(&self) -> usize {
-        self.partition_buffers
-            .iter()
-            .filter_map(|pb| pb.as_ref())
-            .map(|pb| pb.writer.buffered_output_size())
-            .sum()
-    }
-
     fn partitioning_batch(&mut self, input: RecordBatch) -> datafusion::common::Result<()> {
         if input.num_rows() == 0 {
             return Ok(());
@@ -210,21 +198,14 @@ impl ImmediateShufflePartitioner {
             timer.stop();
         }
 
-        // Single take per column to reorder entire batch by partition assignment,
-        // then zero-copy slice per partition. This replaces P*C take calls with just C.
+        // Build a single UInt32Array from partition_row_indices and slice per partition
+        // to avoid per-partition allocation. Per-partition take produces small batches
+        // (~40 rows) that the BufBatchWriter's BatchCoalescer accumulates into batch_size
+        // chunks before serializing to compressed IPC.
         let num_rows = input.num_rows();
         let all_indices = UInt32Array::from_iter_values(
             scratch.partition_row_indices[..num_rows].iter().copied(),
         );
-        let sorted_columns: Vec<ArrayRef> = input
-            .columns()
-            .iter()
-            .map(|col| {
-                take(col, &all_indices, None)
-                    .map_err(|e| DataFusionError::ArrowError(Box::from(e), None))
-            })
-            .collect::<datafusion::common::Result<Vec<_>>>()?;
-        let sorted_batch = RecordBatch::try_new(input.schema(), sorted_columns)?;
 
         let size_before = self.total_buffer_size();
 
@@ -235,7 +216,16 @@ impl ImmediateShufflePartitioner {
                 continue;
             }
 
-            let partition_batch = sorted_batch.slice(start, end - start);
+            let indices = all_indices.slice(start, end - start);
+            let columns: Vec<ArrayRef> = input
+                .columns()
+                .iter()
+                .map(|col| {
+                    take(col, &indices, None)
+                        .map_err(|e| DataFusionError::ArrowError(Box::from(e), None))
+                })
+                .collect::<datafusion::common::Result<Vec<_>>>()?;
+            let partition_batch = RecordBatch::try_new(input.schema(), columns)?;
 
             self.ensure_partition_buffer(partition_id);
             let pb = self.partition_buffers[partition_id].as_mut().unwrap();
@@ -253,6 +243,14 @@ impl ImmediateShufflePartitioner {
 
         self.scratch = scratch;
         Ok(())
+    }
+
+    fn total_buffer_size(&self) -> usize {
+        self.partition_buffers
+            .iter()
+            .filter_map(|pb| pb.as_ref())
+            .map(|pb| pb.writer.buffered_output_size())
+            .sum()
     }
 }
 

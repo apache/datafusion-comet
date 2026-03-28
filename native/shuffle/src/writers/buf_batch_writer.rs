@@ -143,22 +143,18 @@ impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
 }
 
 impl<S: Borrow<ShuffleBlockWriter>> BufBatchWriter<S, Cursor<Vec<u8>>> {
-    /// Returns the total bytes buffered: the staging buffer (pre-flush to writer)
-    /// plus the accumulated output in the Cursor's Vec.
+    /// Total bytes buffered: staging buffer + accumulated compressed IPC output.
     pub(crate) fn buffered_output_size(&self) -> usize {
         self.buffer.len() + self.writer.get_ref().len()
     }
 
     /// Reset the output buffer, keeping allocated capacity for reuse.
-    /// Returns the number of bytes that were in the output buffer.
-    pub(crate) fn reset_output_buffer(&mut self) -> usize {
-        let len = self.writer.get_ref().len();
+    pub(crate) fn reset_output_buffer(&mut self) {
         self.writer.get_mut().clear();
         self.writer.set_position(0);
-        len
     }
 
-    /// Returns a reference to the accumulated output bytes.
+    /// Returns a reference to the accumulated compressed IPC output.
     pub(crate) fn output_bytes(&self) -> &[u8] {
         self.writer.get_ref()
     }
