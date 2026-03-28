@@ -241,7 +241,6 @@ async fn external_shuffle(
                     Arc::clone(&schema),
                     partitioning,
                     metrics,
-                    context.runtime_env(),
                     context.session_config().batch_size(),
                     codec,
                     tracing_enabled,
