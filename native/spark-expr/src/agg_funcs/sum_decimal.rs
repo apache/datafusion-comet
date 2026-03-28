@@ -446,7 +446,6 @@ impl GroupsAccumulator for SumDecimalGroupsAccumulator {
         opt_filter: Option<&BooleanArray>,
         total_num_groups: usize,
     ) -> DFResult<()> {
-        assert!(opt_filter.is_none(), "opt_filter is not supported yet");
         assert_eq!(values.len(), 1);
         let values = values[0].as_primitive::<Decimal128Type>();
         let data = values.values();
@@ -454,12 +453,17 @@ impl GroupsAccumulator for SumDecimalGroupsAccumulator {
         self.resize_helper(total_num_groups);
 
         let iter = group_indices.iter().zip(data.iter());
-        if values.null_count() == 0 {
+        if opt_filter.is_none() && values.null_count() == 0 {
             for (&group_index, &value) in iter {
                 self.update_single(group_index, value)?;
             }
         } else {
             for (idx, (&group_index, &value)) in iter.enumerate() {
+                if let Some(f) = opt_filter {
+                    if !f.is_valid(idx) || !f.value(idx) {
+                        continue;
+                    }
+                }
                 if values.is_null(idx) {
                     continue;
                 }
@@ -540,7 +544,7 @@ impl GroupsAccumulator for SumDecimalGroupsAccumulator {
         opt_filter: Option<&BooleanArray>,
         total_num_groups: usize,
     ) -> DFResult<()> {
-        assert!(opt_filter.is_none(), "opt_filter is not supported yet");
+        debug_assert!(opt_filter.is_none(), "opt_filter is not supported in merge_batch");
 
         self.resize_helper(total_num_groups);
 
@@ -711,5 +715,65 @@ mod tests {
 
         let schema = Schema::new(fields);
         RecordBatch::try_new(Arc::new(schema), columns).unwrap()
+    }
+
+    #[test]
+    fn test_update_batch_with_filter() {
+        use arrow::array::Decimal128Array;
+        use datafusion::logical_expr::{EmitTo, GroupsAccumulator};
+
+        let data_type = DataType::Decimal128(10, 2);
+        let mut acc = SumDecimalGroupsAccumulator::new(
+            data_type.clone(),
+            10,
+            EvalMode::Legacy,
+            None,
+            crate::create_query_context_map(),
+        );
+
+        // values: [100, 200, 300, 400], filter: [T, F, T, F] => sum = 100+300 = 400
+        let values: ArrayRef = Arc::new(
+            Decimal128Array::from(vec![100i128, 200, 300, 400])
+                .with_data_type(data_type.clone()),
+        );
+        let filter = BooleanArray::from(vec![true, false, true, false]);
+        acc.update_batch(&[values], &[0, 0, 0, 0], Some(&filter), 1)
+            .unwrap();
+
+        let result = acc.evaluate(EmitTo::All).unwrap();
+        let result = result
+            .as_any()
+            .downcast_ref::<Decimal128Array>()
+            .unwrap();
+        assert_eq!(result.value(0), 400);
+    }
+
+    #[test]
+    fn test_update_batch_filter_null_treated_as_exclude() {
+        use arrow::array::Decimal128Array;
+        use datafusion::logical_expr::{EmitTo, GroupsAccumulator};
+
+        let data_type = DataType::Decimal128(10, 2);
+        let mut acc = SumDecimalGroupsAccumulator::new(
+            data_type.clone(),
+            10,
+            EvalMode::Legacy,
+            None,
+            crate::create_query_context_map(),
+        );
+
+        let values: ArrayRef = Arc::new(
+            Decimal128Array::from(vec![10i128, 20, 30]).with_data_type(data_type.clone()),
+        );
+        let filter = BooleanArray::from(vec![Some(true), None, Some(true)]);
+        acc.update_batch(&[values], &[0, 0, 0], Some(&filter), 1)
+            .unwrap();
+
+        let result = acc.evaluate(EmitTo::All).unwrap();
+        let result = result
+            .as_any()
+            .downcast_ref::<Decimal128Array>()
+            .unwrap();
+        assert_eq!(result.value(0), 40); // 10 + 30 = 40
     }
 }

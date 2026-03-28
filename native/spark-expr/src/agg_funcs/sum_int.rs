@@ -457,12 +457,18 @@ impl GroupsAccumulator for SumIntGroupsAccumulatorLegacy {
             int_array: &PrimitiveArray<T>,
             group_indices: &[usize],
             sums: &mut [Option<i64>],
+            opt_filter: Option<&BooleanArray>,
         ) -> DFResult<()>
         where
             T: ArrowPrimitiveType,
             T::Native: ArrowNativeType,
         {
             for (i, &group_index) in group_indices.iter().enumerate() {
+                if let Some(f) = opt_filter {
+                    if !f.is_valid(i) || !f.value(i) {
+                        continue;
+                    }
+                }
                 if !int_array.is_null(i) {
                     let v = int_array.value(i).to_i64().ok_or_else(|| {
                         DataFusionError::Internal("Failed to convert value to i64".to_string())
@@ -473,7 +479,6 @@ impl GroupsAccumulator for SumIntGroupsAccumulatorLegacy {
             Ok(())
         }
 
-        debug_assert!(opt_filter.is_none(), "opt_filter is not supported yet");
         let values = &values[0];
         self.sums.resize(total_num_groups, None);
 
@@ -482,21 +487,25 @@ impl GroupsAccumulator for SumIntGroupsAccumulatorLegacy {
                 as_primitive_array::<Int64Type>(values),
                 group_indices,
                 &mut self.sums,
+                opt_filter,
             )?,
             DataType::Int32 => update_groups_sum(
                 as_primitive_array::<Int32Type>(values),
                 group_indices,
                 &mut self.sums,
+                opt_filter,
             )?,
             DataType::Int16 => update_groups_sum(
                 as_primitive_array::<Int16Type>(values),
                 group_indices,
                 &mut self.sums,
+                opt_filter,
             )?,
             DataType::Int8 => update_groups_sum(
                 as_primitive_array::<Int8Type>(values),
                 group_indices,
                 &mut self.sums,
+                opt_filter,
             )?,
             _ => {
                 return Err(DataFusionError::Internal(format!(
@@ -534,7 +543,7 @@ impl GroupsAccumulator for SumIntGroupsAccumulatorLegacy {
         opt_filter: Option<&BooleanArray>,
         total_num_groups: usize,
     ) -> DFResult<()> {
-        debug_assert!(opt_filter.is_none(), "opt_filter is not supported yet");
+        debug_assert!(opt_filter.is_none(), "opt_filter is not supported in merge_batch");
 
         if values.len() != 1 {
             return Err(DataFusionError::Internal(format!(
@@ -589,12 +598,18 @@ impl GroupsAccumulator for SumIntGroupsAccumulatorAnsi {
             int_array: &PrimitiveArray<T>,
             group_indices: &[usize],
             sums: &mut [Option<i64>],
+            opt_filter: Option<&BooleanArray>,
         ) -> DFResult<()>
         where
             T: ArrowPrimitiveType,
             T::Native: ArrowNativeType,
         {
             for (i, &group_index) in group_indices.iter().enumerate() {
+                if let Some(f) = opt_filter {
+                    if !f.is_valid(i) || !f.value(i) {
+                        continue;
+                    }
+                }
                 if !int_array.is_null(i) {
                     let v = int_array.value(i).to_i64().ok_or_else(|| {
                         DataFusionError::Internal("Failed to convert value to i64".to_string())
@@ -608,7 +623,6 @@ impl GroupsAccumulator for SumIntGroupsAccumulatorAnsi {
             Ok(())
         }
 
-        debug_assert!(opt_filter.is_none(), "opt_filter is not supported yet");
         let values = &values[0];
         self.sums.resize(total_num_groups, None);
 
@@ -617,21 +631,25 @@ impl GroupsAccumulator for SumIntGroupsAccumulatorAnsi {
                 as_primitive_array::<Int64Type>(values),
                 group_indices,
                 &mut self.sums,
+                opt_filter,
             )?,
             DataType::Int32 => update_groups_sum(
                 as_primitive_array::<Int32Type>(values),
                 group_indices,
                 &mut self.sums,
+                opt_filter,
             )?,
             DataType::Int16 => update_groups_sum(
                 as_primitive_array::<Int16Type>(values),
                 group_indices,
                 &mut self.sums,
+                opt_filter,
             )?,
             DataType::Int8 => update_groups_sum(
                 as_primitive_array::<Int8Type>(values),
                 group_indices,
                 &mut self.sums,
+                opt_filter,
             )?,
             _ => {
                 return Err(DataFusionError::Internal(format!(
@@ -669,7 +687,7 @@ impl GroupsAccumulator for SumIntGroupsAccumulatorAnsi {
         opt_filter: Option<&BooleanArray>,
         total_num_groups: usize,
     ) -> DFResult<()> {
-        debug_assert!(opt_filter.is_none(), "opt_filter is not supported yet");
+        debug_assert!(opt_filter.is_none(), "opt_filter is not supported in merge_batch");
 
         if values.len() != 1 {
             return Err(DataFusionError::Internal(format!(
@@ -737,12 +755,18 @@ impl GroupsAccumulator for SumIntGroupsAccumulatorTry {
             group_indices: &[usize],
             sums: &mut [Option<i64>],
             has_all_nulls: &mut [bool],
+            opt_filter: Option<&BooleanArray>,
         ) -> DFResult<()>
         where
             T: ArrowPrimitiveType,
             T::Native: ArrowNativeType,
         {
             for (i, &group_index) in group_indices.iter().enumerate() {
+                if let Some(f) = opt_filter {
+                    if !f.is_valid(i) || !f.value(i) {
+                        continue;
+                    }
+                }
                 if !int_array.is_null(i) {
                     // Skip if this group already overflowed
                     if !has_all_nulls[group_index] && sums[group_index].is_none() {
@@ -760,8 +784,6 @@ impl GroupsAccumulator for SumIntGroupsAccumulatorTry {
             }
             Ok(())
         }
-
-        debug_assert!(opt_filter.is_none(), "opt_filter is not supported yet");
         let values = &values[0];
         self.sums.resize(total_num_groups, Some(0));
         self.has_all_nulls.resize(total_num_groups, true);
@@ -772,24 +794,28 @@ impl GroupsAccumulator for SumIntGroupsAccumulatorTry {
                 group_indices,
                 &mut self.sums,
                 &mut self.has_all_nulls,
+                opt_filter,
             )?,
             DataType::Int32 => update_groups_sum(
                 as_primitive_array::<Int32Type>(values),
                 group_indices,
                 &mut self.sums,
                 &mut self.has_all_nulls,
+                opt_filter,
             )?,
             DataType::Int16 => update_groups_sum(
                 as_primitive_array::<Int16Type>(values),
                 group_indices,
                 &mut self.sums,
                 &mut self.has_all_nulls,
+                opt_filter,
             )?,
             DataType::Int8 => update_groups_sum(
                 as_primitive_array::<Int8Type>(values),
                 group_indices,
                 &mut self.sums,
                 &mut self.has_all_nulls,
+                opt_filter,
             )?,
             _ => {
                 return Err(DataFusionError::Internal(format!(
@@ -842,7 +868,7 @@ impl GroupsAccumulator for SumIntGroupsAccumulatorTry {
         opt_filter: Option<&BooleanArray>,
         total_num_groups: usize,
     ) -> DFResult<()> {
-        debug_assert!(opt_filter.is_none(), "opt_filter is not supported yet");
+        debug_assert!(opt_filter.is_none(), "opt_filter is not supported in merge_batch");
 
         if values.len() != 2 {
             return Err(DataFusionError::Internal(format!(
@@ -898,5 +924,102 @@ impl GroupsAccumulator for SumIntGroupsAccumulatorTry {
 
     fn size(&self) -> usize {
         std::mem::size_of_val(self)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::array::Int64Array;
+    use datafusion::logical_expr::{EmitTo, GroupsAccumulator};
+
+    fn run_update_batch_with_filter(
+        acc: &mut dyn GroupsAccumulator,
+        values: Vec<i64>,
+        groups: Vec<usize>,
+        filter: Vec<bool>,
+        num_groups: usize,
+    ) -> Vec<Option<i64>> {
+        let values: ArrayRef = Arc::new(Int64Array::from(values));
+        let filter = BooleanArray::from(filter);
+        acc.update_batch(&[values], &groups, Some(&filter), num_groups)
+            .unwrap();
+        acc.evaluate(EmitTo::All)
+            .unwrap()
+            .as_primitive::<Int64Type>()
+            .iter()
+            .collect()
+    }
+
+    #[test]
+    fn test_legacy_update_batch_with_filter() {
+        let mut acc = SumIntGroupsAccumulatorLegacy::new();
+        // values: [1, 2, 3, 4, 5], filter: [T, F, T, F, T] => sum = 1+3+5 = 9
+        let result = run_update_batch_with_filter(
+            &mut acc,
+            vec![1, 2, 3, 4, 5],
+            vec![0, 0, 0, 0, 0],
+            vec![true, false, true, false, true],
+            1,
+        );
+        assert_eq!(result, vec![Some(9)]);
+    }
+
+    #[test]
+    fn test_legacy_update_batch_filter_null_treated_as_exclude() {
+        let mut acc = SumIntGroupsAccumulatorLegacy::new();
+        let values: ArrayRef = Arc::new(Int64Array::from(vec![10i64, 20, 30]));
+        // null filter entry should be treated as exclude
+        let filter = BooleanArray::from(vec![Some(true), None, Some(true)]);
+        acc.update_batch(&[values], &[0, 0, 0], Some(&filter), 1)
+            .unwrap();
+        let result: Vec<Option<i64>> = acc
+            .evaluate(EmitTo::All)
+            .unwrap()
+            .as_primitive::<Int64Type>()
+            .iter()
+            .collect();
+        assert_eq!(result, vec![Some(40)]); // 10 + 30 = 40
+    }
+
+    #[test]
+    fn test_ansi_update_batch_with_filter() {
+        let mut acc = SumIntGroupsAccumulatorAnsi::new();
+        let result = run_update_batch_with_filter(
+            &mut acc,
+            vec![10, 20, 30, 40],
+            vec![0, 1, 0, 1],
+            vec![true, true, false, true],
+            2,
+        );
+        // group 0: 10 (30 filtered out); group 1: 20+40 = 60
+        assert_eq!(result, vec![Some(10), Some(60)]);
+    }
+
+    #[test]
+    fn test_try_update_batch_with_filter() {
+        let mut acc = SumIntGroupsAccumulatorTry::new();
+        let result = run_update_batch_with_filter(
+            &mut acc,
+            vec![1, 2, 3, 4, 5],
+            vec![0, 0, 0, 0, 0],
+            vec![true, false, true, false, true],
+            1,
+        );
+        assert_eq!(result, vec![Some(9)]); // 1+3+5 = 9
+    }
+
+    #[test]
+    fn test_no_filter_still_works() {
+        let mut acc = SumIntGroupsAccumulatorLegacy::new();
+        let values: ArrayRef = Arc::new(Int64Array::from(vec![1i64, 2, 3]));
+        acc.update_batch(&[values], &[0, 0, 0], None, 1).unwrap();
+        let result: Vec<Option<i64>> = acc
+            .evaluate(EmitTo::All)
+            .unwrap()
+            .as_primitive::<Int64Type>()
+            .iter()
+            .collect();
+        assert_eq!(result, vec![Some(6)]);
     }
 }
