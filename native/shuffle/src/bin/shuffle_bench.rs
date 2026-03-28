@@ -46,7 +46,7 @@ use datafusion::physical_plan::common::collect;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::{ParquetReadOptions, SessionContext};
 use datafusion_comet_shuffle::{
-    read_ipc_compressed, CometPartitioning, CompressionCodec, ShuffleWriterExec,
+    read_ipc_compressed, CometPartitioning, CompressionCodec, ShuffleMode, ShuffleWriterExec,
 };
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use std::fs;
@@ -115,6 +115,10 @@ struct Args {
     /// Limit rows processed per iteration (0 = no limit)
     #[arg(long, default_value_t = 0)]
     limit: usize,
+
+    /// Shuffle mode: default or immediate
+    #[arg(long, default_value = "default")]
+    shuffle_mode: String,
 }
 
 fn main() {
@@ -143,6 +147,7 @@ fn main() {
     println!("Partitions:     {}", args.partitions);
     println!("Codec:          {:?}", codec);
     println!("Hash columns:   {:?}", hash_col_indices);
+    println!("Shuffle mode:   {}", args.shuffle_mode);
     if let Some(mem_limit) = args.memory_limit {
         println!("Memory limit:   {}", format_bytes(mem_limit));
     }
@@ -351,6 +356,11 @@ fn run_shuffle_write(
             parquet_plan
         };
 
+        let shuffle_mode = match args.shuffle_mode.as_str() {
+            "immediate" => ShuffleMode::Immediate,
+            _ => ShuffleMode::Default,
+        };
+
         let exec = ShuffleWriterExec::try_new(
             input,
             partitioning,
@@ -359,6 +369,7 @@ fn run_shuffle_write(
             index_file.to_string(),
             false,
             args.write_buffer_size,
+            shuffle_mode,
         )
         .expect("Failed to create ShuffleWriterExec");
 

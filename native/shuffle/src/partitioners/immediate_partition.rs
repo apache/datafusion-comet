@@ -37,7 +37,7 @@ use datafusion_comet_common::tracing::{with_trace, with_trace_async};
 use std::fmt;
 use std::fmt::{Debug, Formatter};
 use std::fs::{File, OpenOptions};
-use std::io::{BufReader, BufWriter, Seek, Write};
+use std::io::{BufWriter, Seek, Write};
 use std::sync::Arc;
 use tokio::time::Instant;
 
@@ -152,6 +152,22 @@ impl ImmediateShufflePartitioner {
             timer.stop();
         }
 
+        // Single take per column to reorder entire batch by partition assignment,
+        // then zero-copy slice per partition. This replaces P*C take calls with just C.
+        let num_rows = input.num_rows();
+        let all_indices = UInt32Array::from_iter_values(
+            scratch.partition_row_indices[..num_rows].iter().copied(),
+        );
+        let sorted_columns: Vec<ArrayRef> = input
+            .columns()
+            .iter()
+            .map(|col| {
+                take(col, &all_indices, None)
+                    .map_err(|e| DataFusionError::ArrowError(Box::from(e), None))
+            })
+            .collect::<datafusion::common::Result<Vec<_>>>()?;
+        let sorted_batch = RecordBatch::try_new(input.schema(), sorted_columns)?;
+
         for partition_id in 0..num_output_partitions {
             let start = scratch.partition_starts[partition_id] as usize;
             let end = scratch.partition_starts[partition_id + 1] as usize;
@@ -159,18 +175,7 @@ impl ImmediateShufflePartitioner {
                 continue;
             }
 
-            let indices = UInt32Array::from_iter_values(
-                scratch.partition_row_indices[start..end].iter().copied(),
-            );
-            let columns: Vec<ArrayRef> = input
-                .columns()
-                .iter()
-                .map(|col| {
-                    take(col, &indices, None)
-                        .map_err(|e| DataFusionError::ArrowError(Box::from(e), None))
-                })
-                .collect::<datafusion::common::Result<Vec<_>>>()?;
-            let partition_batch = RecordBatch::try_new(input.schema(), columns)?;
+            let partition_batch = sorted_batch.slice(start, end - start);
 
             self.ensure_partition_writer(partition_id)?;
             let pw = self.partition_writers[partition_id].as_mut().unwrap();
@@ -231,11 +236,13 @@ impl ShufflePartitioner for ImmediateShufflePartitioner {
             for (partition_id, pw_slot) in self.partition_writers.iter_mut().enumerate() {
                 offsets[partition_id] = output_data.stream_position()?;
 
-                if let Some(pw) = pw_slot {
+                if let Some(mut pw) = pw_slot.take() {
                     pw.writer
                         .flush(&self.metrics.encode_time, &self.metrics.write_time)?;
 
-                    let mut spill_file = BufReader::new(File::open(pw.temp_file.path())?);
+                    // Reopen for read without BufReader to allow kernel zero-copy
+                    // (copy_file_range/sendfile) on supported platforms
+                    let mut spill_file = File::open(pw.temp_file.path())?;
                     let mut write_timer = self.metrics.write_time.timer();
                     std::io::copy(&mut spill_file, &mut output_data)?;
                     write_timer.stop();
