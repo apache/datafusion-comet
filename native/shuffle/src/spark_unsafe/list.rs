@@ -17,10 +17,8 @@
 
 use crate::spark_unsafe::{
     map::append_map_elements,
-    row::{
-        append_field, downcast_builder_ref, impl_primitive_accessors, SparkUnsafeObject,
-        SparkUnsafeRow,
-    },
+    row::{append_field, downcast_builder_ref, SparkUnsafeRow},
+    unsafe_object::{impl_primitive_accessors, SparkUnsafeObject},
 };
 use arrow::array::{
     builder::{
@@ -86,6 +84,7 @@ macro_rules! impl_append_to_builder {
     };
 }
 
+/// A Spark `UnsafeArray` backed by JVM-allocated memory, providing element access by index.
 pub struct SparkUnsafeArray {
     row_addr: i64,
     num_elements: usize,

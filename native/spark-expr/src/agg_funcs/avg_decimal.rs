@@ -207,6 +207,12 @@ impl AggregateUDFImpl for AvgDecimal {
     fn return_type(&self, arg_types: &[DataType]) -> Result<DataType> {
         avg_return_type(self.name(), &arg_types[0])
     }
+
+    fn is_nullable(&self) -> bool {
+        // In Spark, Sum.nullable and Average.nullable both return true irrespective of ANSI mode.
+        // AvgDecimal is always nullable because overflows can cause null values.
+        true
+    }
 }
 
 /// An accumulator to compute the average for decimals

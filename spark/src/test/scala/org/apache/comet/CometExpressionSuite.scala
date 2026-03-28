@@ -1271,6 +1271,35 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("scalar decimal overflow - legacy mode produces null") {
+    // 1.1e19 * 1.1e19 = 1.21e38 fits in i128 (max ~1.7e38) but exceeds DECIMAL(38,0)'s
+    // max of 10^38-1, so CheckOverflow nulls the result in legacy (non-ANSI) mode.
+    withSQLConf(CometConf.COMET_ENABLED.key -> "true", SQLConf.ANSI_ENABLED.key -> "false") {
+      withParquetTable(Seq((BigDecimal("11000000000000000000"), 0)), "tbl") {
+        checkSparkAnswerAndOperator("SELECT _1 * _1 FROM tbl")
+      }
+    }
+  }
+
+  test("scalar decimal overflow - ANSI mode throws ArithmeticException") {
+    // 1.1e19 * 1.1e19 = 1.21e38 overflows DECIMAL(38,0). With ANSI mode on, both Spark and
+    // Comet must throw — Comet must not panic or silently return null. Spark reports
+    // NUMERIC_VALUE_OUT_OF_RANGE; Comet's WideDecimalBinaryExpr catches the overflow first
+    // and surfaces it as an arithmetic overflow error.
+    withSQLConf(CometConf.COMET_ENABLED.key -> "true", SQLConf.ANSI_ENABLED.key -> "true") {
+      withParquetTable(Seq((BigDecimal("11000000000000000000"), 0)), "tbl") {
+        val res = sql("SELECT _1 * _1 FROM tbl")
+        checkSparkAnswerMaybeThrows(res) match {
+          case (Some(sparkExc), Some(cometExc)) =>
+            assert(sparkExc.getMessage.contains("NUMERIC_VALUE_OUT_OF_RANGE"))
+            assert(cometExc.getMessage.toLowerCase.contains("overflow"))
+          case _ =>
+            fail("Expected exception for decimal overflow in ANSI mode")
+        }
+      }
+    }
+  }
+
   test("cast decimals to int") {
     Seq(16, 1024).foreach { batchSize =>
       withSQLConf(
