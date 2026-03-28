@@ -140,6 +140,22 @@ impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
     pub(crate) fn into_writer(self) -> W {
         self.writer
     }
+
+    /// Returns a reference to the underlying writer.
+    pub(crate) fn inner_ref(&self) -> &W {
+        &self.writer
+    }
+
+    /// Returns a mutable reference to the underlying writer.
+    pub(crate) fn inner_mut(&mut self) -> &mut W {
+        &mut self.writer
+    }
+
+    /// Returns the total buffered size: the internal byte buffer plus
+    /// the BufBatchWriter's own serialization buffer.
+    pub(crate) fn inner_buffer_len(&self) -> usize {
+        self.buffer.len()
+    }
 }
 
 impl<S: Borrow<ShuffleBlockWriter>, W: Write + Seek> BufBatchWriter<S, W> {

@@ -179,13 +179,7 @@ fn main() {
         };
 
         let write_elapsed = if args.concurrent_tasks > 1 {
-            run_concurrent_shuffle_writes(
-                &args.input,
-                &schema,
-                &codec,
-                &hash_col_indices,
-                &args,
-            )
+            run_concurrent_shuffle_writes(&args.input, &schema, &codec, &hash_col_indices, &args)
         } else {
             run_shuffle_write(
                 &args.input,
@@ -228,8 +222,7 @@ fn main() {
         println!("=== Results ===");
 
         let avg_write = write_times.iter().sum::<f64>() / write_times.len() as f64;
-        let write_throughput_rows =
-            (total_rows as f64 * args.concurrent_tasks as f64) / avg_write;
+        let write_throughput_rows = (total_rows as f64 * args.concurrent_tasks as f64) / avg_write;
 
         println!("Write:");
         println!("  avg time:         {:.3}s", avg_write);
@@ -247,8 +240,7 @@ fn main() {
             args.concurrent_tasks
         );
         if args.concurrent_tasks <= 1 {
-            let avg_data_size =
-                data_file_sizes.iter().sum::<u64>() / data_file_sizes.len() as u64;
+            let avg_data_size = data_file_sizes.iter().sum::<u64>() / data_file_sizes.len() as u64;
             println!(
                 "  output size:      {}",
                 format_bytes(avg_data_size as usize)
@@ -256,8 +248,7 @@ fn main() {
         }
 
         if !read_times.is_empty() {
-            let avg_data_size =
-                data_file_sizes.iter().sum::<u64>() / data_file_sizes.len() as u64;
+            let avg_data_size = data_file_sizes.iter().sum::<u64>() / data_file_sizes.len() as u64;
             let avg_read = read_times.iter().sum::<f64>() / read_times.len() as f64;
             let read_throughput_bytes = avg_data_size as f64 / avg_read;
 

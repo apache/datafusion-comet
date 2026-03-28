@@ -236,11 +236,13 @@ async fn external_shuffle(
             }
             _ if shuffle_mode == ShuffleMode::Immediate => {
                 Box::new(ImmediateShufflePartitioner::try_new(
+                    partition,
                     output_data_file,
                     output_index_file,
                     Arc::clone(&schema),
                     partitioning,
                     metrics,
+                    context.runtime_env(),
                     context.session_config().batch_size(),
                     codec,
                     tracing_enabled,
