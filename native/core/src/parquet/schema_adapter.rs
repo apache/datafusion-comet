@@ -215,7 +215,7 @@ impl PhysicalExprAdapter for SparkPhysicalExprAdapter {
         if let Some(orig_physical) = &self.original_physical_schema {
             // Walk the expression tree to find Column references
             let mut duplicate_err: Option<DataFusionError> = None;
-            let _ = expr.clone().transform(|e| {
+            let _ = Arc::<dyn PhysicalExpr>::clone(&expr).transform(|e| {
                 if let Some(col) = e.as_any().downcast_ref::<Column>() {
                     if let Some((req, matched)) = check_column_duplicate(col.name(), orig_physical)
                     {
