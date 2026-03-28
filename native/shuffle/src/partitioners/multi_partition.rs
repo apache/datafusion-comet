@@ -39,6 +39,7 @@ use std::io::{BufReader, BufWriter, Seek, Write};
 use std::sync::Arc;
 use tokio::time::Instant;
 
+/// Reusable scratch buffers for computing row-to-partition assignments.
 #[derive(Default)]
 struct ScratchSpace {
     /// Hashes for each row in the current batch.

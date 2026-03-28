@@ -42,7 +42,7 @@ itertools = "0.14.0"
 jni = "0.21"
 log = "0.4"
 lz4_flex = { version = "0.13.0", default-features = false, features = ["frame"] }
-simd-adler32 = "0.3.7"
+simd-adler32 = "0.3.9"
 snap = "1.1"
 tokio = { version = "1", features = ["rt-multi-thread"] }
 zstd = "0.13.3"

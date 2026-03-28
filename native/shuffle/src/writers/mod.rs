@@ -16,7 +16,11 @@
 // under the License.
 
 mod buf_batch_writer;
-mod partition_writer;
+mod checksum;
+mod shuffle_block_writer;
+mod spill;
 
 pub(crate) use buf_batch_writer::BufBatchWriter;
-pub(crate) use partition_writer::PartitionWriter;
+pub(crate) use checksum::Checksum;
+pub use shuffle_block_writer::{CompressionCodec, ShuffleBlockWriter};
+pub(crate) use spill::PartitionWriter;

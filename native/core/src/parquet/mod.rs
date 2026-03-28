@@ -33,16 +33,14 @@ mod objectstore;
 
 use std::collections::HashMap;
 use std::task::Poll;
-use std::{boxed::Box, ptr::NonNull, sync::Arc};
+use std::{boxed::Box, sync::Arc};
 
 use crate::errors::{try_unwrap_or_throw, CometError};
-
-use arrow::ffi::FFI_ArrowArray;
 
 /// JNI exposed methods
 use jni::JNIEnv;
 use jni::{
-    objects::{GlobalRef, JByteBuffer, JClass},
+    objects::{GlobalRef, JClass},
     sys::{jboolean, jint, jlong},
 };
 
@@ -60,7 +58,7 @@ use crate::parquet::encryption_support::{CometEncryptionFactory, ENCRYPTION_FACT
 use crate::parquet::parquet_exec::init_datasource_exec;
 use crate::parquet::parquet_support::prepare_object_store_with_configs;
 use arrow::array::{Array, RecordBatch};
-use arrow::buffer::{Buffer, MutableBuffer};
+use arrow::buffer::MutableBuffer;
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::execution::SendableRecordBatchStream;
 use datafusion::physical_plan::ExecutionPlan;
@@ -75,7 +73,6 @@ use util::jni::{convert_column_descriptor, convert_encoding, deserialize_schema}
 /// Parquet read context maintained across multiple JNI calls.
 struct Context {
     pub column_reader: ColumnReader,
-    last_data_page: Option<GlobalRef>,
 }
 
 #[no_mangle]
@@ -132,7 +129,6 @@ pub extern "system" fn Java_org_apache_comet_parquet_Native_initColumnReader(
                 use_decimal_128 != 0,
                 use_legacy_date_timestamp != 0,
             ),
-            last_data_page: None,
         };
         let res = Box::new(ctx);
         Ok(Box::into_raw(res) as i64)
@@ -189,44 +185,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_setPageV1(
         env.get_byte_array_region(&page_data, 0, from_u8_slice(buffer.as_slice_mut()))?;
 
         reader.set_page_v1(page_value_count as usize, buffer.into(), encoding);
-        Ok(())
-    })
-}
-
-/// # Safety
-/// This function is inheritly unsafe since it deals with raw pointers passed from JNI.
-#[no_mangle]
-pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_setPageBufferV1(
-    e: JNIEnv,
-    _jclass: JClass,
-    handle: jlong,
-    page_value_count: jint,
-    buffer: JByteBuffer,
-    value_encoding: jint,
-) {
-    try_unwrap_or_throw(&e, |env| {
-        let ctx = get_context(handle)?;
-        let reader = &mut ctx.column_reader;
-
-        // convert value encoding ordinal to the native encoding definition
-        let encoding = convert_encoding(value_encoding);
-
-        // Convert the page to global reference so it won't get GC'd by Java. Also free the last
-        // page if there is any.
-        ctx.last_data_page = Some(env.new_global_ref(&buffer)?);
-
-        let buf_slice = env.get_direct_buffer_address(&buffer)?;
-        let buf_capacity = env.get_direct_buffer_capacity(&buffer)?;
-
-        unsafe {
-            let page_ptr = NonNull::new_unchecked(buf_slice);
-            let buffer = Buffer::from_custom_allocation(
-                page_ptr,
-                buf_capacity,
-                Arc::new(FFI_ArrowArray::empty()),
-            );
-            reader.set_page_v1(page_value_count as usize, buffer, encoding);
-        }
         Ok(())
     })
 }
