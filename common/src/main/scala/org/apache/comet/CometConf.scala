@@ -546,7 +546,7 @@ object CometConf extends ShimCometConf {
           "The 'immediate' mode is experimental.")
       .stringConf
       .checkValues(Set("default", "immediate"))
-      .createWithDefault("default")
+      .createWithDefault("immediate")
 
   val COMET_SHUFFLE_PREFER_DICTIONARY_RATIO: ConfigEntry[Double] = conf(
     "spark.comet.shuffle.preferDictionary.ratio")
