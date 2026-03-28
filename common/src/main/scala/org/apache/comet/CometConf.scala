@@ -534,6 +534,20 @@ object CometConf extends ShimCometConf {
       .checkValue(v => v > 0, "Write buffer size must be positive")
       .createWithDefault(1)
 
+  val COMET_NATIVE_SHUFFLE_MODE: ConfigEntry[String] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.nativeMode")
+      .category(CATEGORY_SHUFFLE)
+      .doc(
+        "Selects which native shuffle implementation to use for multi-partition shuffles. " +
+          "'default' buffers input batches and tracks per-partition row indices, writing all " +
+          "partitions at the end with memory-pressure-driven spilling. " +
+          "'immediate' repartitions each incoming batch using take and writes per-partition " +
+          "data directly to individual files, avoiding in-memory buffering of input batches. " +
+          "The 'immediate' mode is experimental.")
+      .stringConf
+      .checkValues(Set("default", "immediate"))
+      .createWithDefault("default")
+
   val COMET_SHUFFLE_PREFER_DICTIONARY_RATIO: ConfigEntry[Double] = conf(
     "spark.comet.shuffle.preferDictionary.ratio")
     .category(CATEGORY_SHUFFLE)

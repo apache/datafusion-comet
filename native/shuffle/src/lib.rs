@@ -27,3 +27,15 @@ pub use comet_partitioning::CometPartitioning;
 pub use ipc::read_ipc_compressed;
 pub use shuffle_writer::ShuffleWriterExec;
 pub use writers::{CompressionCodec, ShuffleBlockWriter};
+
+/// Selects which shuffle implementation to use for multi-partition shuffles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShuffleMode {
+    /// Default: buffer input batches, track per-partition row indices, and write
+    /// all partitions at the end with memory-pressure-driven spilling.
+    Default,
+    /// Experimental: repartition each incoming batch immediately using `take` and
+    /// write per-partition data directly to individual spill files, avoiding
+    /// in-memory buffering of input batches.
+    Immediate,
+}

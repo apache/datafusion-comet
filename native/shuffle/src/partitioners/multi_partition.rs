@@ -19,10 +19,11 @@ use crate::metrics::ShufflePartitionerMetrics;
 use crate::partitioners::partitioned_batch_iterator::{
     PartitionedBatchIterator, PartitionedBatchesProducer,
 };
+use crate::partitioners::scratch::ScratchSpace;
 use crate::partitioners::ShufflePartitioner;
 use crate::writers::{BufBatchWriter, PartitionWriter};
-use crate::{comet_partitioning, CometPartitioning, CompressionCodec, ShuffleBlockWriter};
-use arrow::array::{ArrayRef, RecordBatch};
+use crate::{CometPartitioning, CompressionCodec, ShuffleBlockWriter};
+use arrow::array::RecordBatch;
 use arrow::datatypes::SchemaRef;
 use datafusion::common::utils::proxy::VecAllocExt;
 use datafusion::common::DataFusionError;
@@ -30,7 +31,6 @@ use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::physical_plan::metrics::Time;
 use datafusion_comet_common::tracing::{with_trace, with_trace_async};
-use datafusion_comet_spark_expr::murmur3::create_murmur3_hashes;
 use itertools::Itertools;
 use std::fmt;
 use std::fmt::{Debug, Formatter};
@@ -38,71 +38,6 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufReader, BufWriter, Seek, Write};
 use std::sync::Arc;
 use tokio::time::Instant;
-
-/// Reusable scratch buffers for computing row-to-partition assignments.
-#[derive(Default)]
-struct ScratchSpace {
-    /// Hashes for each row in the current batch.
-    hashes_buf: Vec<u32>,
-    /// Partition ids for each row in the current batch.
-    partition_ids: Vec<u32>,
-    /// The row indices of the rows in each partition. This array is conceptually divided into
-    /// partitions, where each partition contains the row indices of the rows in that partition.
-    /// The length of this array is the same as the number of rows in the batch.
-    partition_row_indices: Vec<u32>,
-    /// The start indices of partitions in partition_row_indices. partition_starts[K] and
-    /// partition_starts[K + 1] are the start and end indices of partition K in partition_row_indices.
-    /// The length of this array is 1 + the number of partitions.
-    partition_starts: Vec<u32>,
-}
-
-impl ScratchSpace {
-    fn map_partition_ids_to_starts_and_indices(
-        &mut self,
-        num_output_partitions: usize,
-        num_rows: usize,
-    ) {
-        let partition_ids = &mut self.partition_ids[..num_rows];
-
-        // count each partition size, while leaving the last extra element as 0
-        let partition_counters = &mut self.partition_starts;
-        partition_counters.resize(num_output_partitions + 1, 0);
-        partition_counters.fill(0);
-        partition_ids
-            .iter()
-            .for_each(|partition_id| partition_counters[*partition_id as usize] += 1);
-
-        // accumulate partition counters into partition ends
-        // e.g. partition counter: [1, 3, 2, 1, 0] => [1, 4, 6, 7, 7]
-        let partition_ends = partition_counters;
-        let mut accum = 0;
-        partition_ends.iter_mut().for_each(|v| {
-            *v += accum;
-            accum = *v;
-        });
-
-        // calculate partition row indices and partition starts
-        // e.g. partition ids: [3, 1, 1, 1, 2, 2, 0] will produce the following partition_row_indices
-        // and partition_starts arrays:
-        //
-        //  partition_row_indices: [6, 1, 2, 3, 4, 5, 0]
-        //  partition_starts: [0, 1, 4, 6, 7]
-        //
-        // partition_starts conceptually splits partition_row_indices into smaller slices.
-        // Each slice partition_row_indices[partition_starts[K]..partition_starts[K + 1]] contains the
-        // row indices of the input batch that are partitioned into partition K. For example,
-        // first partition 0 has one row index [6], partition 1 has row indices [1, 2, 3], etc.
-        let partition_row_indices = &mut self.partition_row_indices;
-        partition_row_indices.resize(num_rows, 0);
-        for (index, partition_id) in partition_ids.iter().enumerate().rev() {
-            partition_ends[*partition_id as usize] -= 1;
-            let end = partition_ends[*partition_id as usize];
-            partition_row_indices[end as usize] = index as u32;
-        }
-
-        // after calculating, partition ends become partition starts
-    }
-}
 
 /// A partitioner that uses a hash function to partition data into multiple partitions
 pub(crate) struct MultiPartitionShuffleRepartitioner {
@@ -148,22 +83,7 @@ impl MultiPartitionShuffleRepartitioner {
             "Use SinglePartitionShufflePartitioner for 1 output partition."
         );
 
-        // Vectors in the scratch space will be filled with valid values before being used, this
-        // initialization code is simply initializing the vectors to the desired size.
-        // The initial values are not used.
-        let scratch = ScratchSpace {
-            hashes_buf: match partitioning {
-                // Allocate hashes_buf for hash and round robin partitioning.
-                // Round robin hashes all columns to achieve even, deterministic distribution.
-                CometPartitioning::Hash(_, _) | CometPartitioning::RoundRobin(_, _) => {
-                    vec![0; batch_size]
-                }
-                _ => vec![],
-            },
-            partition_ids: vec![0; batch_size],
-            partition_row_indices: vec![0; batch_size],
-            partition_starts: vec![0; num_output_partitions + 1],
-        };
+        let scratch = ScratchSpace::new(&partitioning, batch_size, num_output_partitions);
 
         let shuffle_block_writer = ShuffleBlockWriter::try_new(schema.as_ref(), codec.clone())?;
 
@@ -217,178 +137,20 @@ impl MultiPartitionShuffleRepartitioner {
         // number of rows those are written to output data file.
         self.metrics.baseline.record_output(input.num_rows());
 
-        match &self.partitioning {
-            CometPartitioning::Hash(exprs, num_output_partitions) => {
-                let mut scratch = std::mem::take(&mut self.scratch);
-                let (partition_starts, partition_row_indices): (&Vec<u32>, &Vec<u32>) = {
-                    let mut timer = self.metrics.repart_time.timer();
-
-                    // Evaluate partition expressions to get rows to apply partitioning scheme.
-                    let arrays = exprs
-                        .iter()
-                        .map(|expr| expr.evaluate(&input)?.into_array(input.num_rows()))
-                        .collect::<datafusion::common::Result<Vec<_>>>()?;
-
-                    let num_rows = arrays[0].len();
-
-                    // Use identical seed as Spark hash partitioning.
-                    let hashes_buf = &mut scratch.hashes_buf[..num_rows];
-                    hashes_buf.fill(42_u32);
-
-                    // Generate partition ids for every row.
-                    {
-                        // Hash arrays and compute partition ids based on number of partitions.
-                        let partition_ids = &mut scratch.partition_ids[..num_rows];
-                        create_murmur3_hashes(&arrays, hashes_buf)?
-                            .iter()
-                            .enumerate()
-                            .for_each(|(idx, hash)| {
-                                partition_ids[idx] =
-                                    comet_partitioning::pmod(*hash, *num_output_partitions) as u32;
-                            });
-                    }
-
-                    // We now have partition ids for every input row, map that to partition starts
-                    // and partition indices to eventually right these rows to partition buffers.
-                    scratch
-                        .map_partition_ids_to_starts_and_indices(*num_output_partitions, num_rows);
-
-                    timer.stop();
-                    Ok::<(&Vec<u32>, &Vec<u32>), DataFusionError>((
-                        &scratch.partition_starts,
-                        &scratch.partition_row_indices,
-                    ))
-                }?;
-
-                self.buffer_partitioned_batch_may_spill(
-                    input,
-                    partition_row_indices,
-                    partition_starts,
-                )
-                .await?;
-                self.scratch = scratch;
-            }
-            CometPartitioning::RangePartitioning(
-                lex_ordering,
-                num_output_partitions,
-                row_converter,
-                bounds,
-            ) => {
-                let mut scratch = std::mem::take(&mut self.scratch);
-                let (partition_starts, partition_row_indices): (&Vec<u32>, &Vec<u32>) = {
-                    let mut timer = self.metrics.repart_time.timer();
-
-                    // Evaluate partition expressions for values to apply partitioning scheme on.
-                    let arrays = lex_ordering
-                        .iter()
-                        .map(|expr| expr.expr.evaluate(&input)?.into_array(input.num_rows()))
-                        .collect::<datafusion::common::Result<Vec<_>>>()?;
-
-                    let num_rows = arrays[0].len();
-
-                    // Generate partition ids for every row, first by converting the partition
-                    // arrays to Rows, and then doing binary search for each Row against the
-                    // bounds Rows.
-                    {
-                        let row_batch = row_converter.convert_columns(arrays.as_slice())?;
-                        let partition_ids = &mut scratch.partition_ids[..num_rows];
-
-                        row_batch.iter().enumerate().for_each(|(row_idx, row)| {
-                            partition_ids[row_idx] = bounds
-                                .as_slice()
-                                .partition_point(|bound| bound.row() <= row)
-                                as u32
-                        });
-                    }
-
-                    // We now have partition ids for every input row, map that to partition starts
-                    // and partition indices to eventually right these rows to partition buffers.
-                    scratch
-                        .map_partition_ids_to_starts_and_indices(*num_output_partitions, num_rows);
-
-                    timer.stop();
-                    Ok::<(&Vec<u32>, &Vec<u32>), DataFusionError>((
-                        &scratch.partition_starts,
-                        &scratch.partition_row_indices,
-                    ))
-                }?;
-
-                self.buffer_partitioned_batch_may_spill(
-                    input,
-                    partition_row_indices,
-                    partition_starts,
-                )
-                .await?;
-                self.scratch = scratch;
-            }
-            CometPartitioning::RoundRobin(num_output_partitions, max_hash_columns) => {
-                // Comet implements "round robin" as hash partitioning on columns.
-                // This achieves the same goal as Spark's round robin (even distribution
-                // without semantic grouping) while being deterministic for fault tolerance.
-                //
-                // Note: This produces different partition assignments than Spark's round robin,
-                // which sorts by UnsafeRow binary representation before assigning partitions.
-                // However, both approaches provide even distribution and determinism.
-                let mut scratch = std::mem::take(&mut self.scratch);
-                let (partition_starts, partition_row_indices): (&Vec<u32>, &Vec<u32>) = {
-                    let mut timer = self.metrics.repart_time.timer();
-
-                    let num_rows = input.num_rows();
-
-                    // Collect columns for hashing, respecting max_hash_columns limit
-                    // max_hash_columns of 0 means no limit (hash all columns)
-                    // Negative values are normalized to 0 in the planner
-                    let num_columns_to_hash = if *max_hash_columns == 0 {
-                        input.num_columns()
-                    } else {
-                        (*max_hash_columns).min(input.num_columns())
-                    };
-                    let columns_to_hash: Vec<ArrayRef> = (0..num_columns_to_hash)
-                        .map(|i| Arc::clone(input.column(i)))
-                        .collect();
-
-                    // Use identical seed as Spark hash partitioning.
-                    let hashes_buf = &mut scratch.hashes_buf[..num_rows];
-                    hashes_buf.fill(42_u32);
-
-                    // Compute hash for selected columns
-                    create_murmur3_hashes(&columns_to_hash, hashes_buf)?;
-
-                    // Assign partition IDs based on hash (same as hash partitioning)
-                    let partition_ids = &mut scratch.partition_ids[..num_rows];
-                    hashes_buf.iter().enumerate().for_each(|(idx, hash)| {
-                        partition_ids[idx] =
-                            comet_partitioning::pmod(*hash, *num_output_partitions) as u32;
-                    });
-
-                    // We now have partition ids for every input row, map that to partition starts
-                    // and partition indices to eventually write these rows to partition buffers.
-                    scratch
-                        .map_partition_ids_to_starts_and_indices(*num_output_partitions, num_rows);
-
-                    timer.stop();
-                    Ok::<(&Vec<u32>, &Vec<u32>), DataFusionError>((
-                        &scratch.partition_starts,
-                        &scratch.partition_row_indices,
-                    ))
-                }?;
-
-                self.buffer_partitioned_batch_may_spill(
-                    input,
-                    partition_row_indices,
-                    partition_starts,
-                )
-                .await?;
-                self.scratch = scratch;
-            }
-            other => {
-                // this should be unreachable as long as the validation logic
-                // in the constructor is kept up-to-date
-                return Err(DataFusionError::NotImplemented(format!(
-                    "Unsupported shuffle partitioning scheme {other:?}"
-                )));
-            }
+        let mut scratch = std::mem::take(&mut self.scratch);
+        {
+            let mut timer = self.metrics.repart_time.timer();
+            scratch.compute_partition_ids(&self.partitioning, &input)?;
+            timer.stop();
         }
+
+        self.buffer_partitioned_batch_may_spill(
+            input,
+            &scratch.partition_row_indices,
+            &scratch.partition_starts,
+        )
+        .await?;
+        self.scratch = scratch;
         Ok(())
     }
 

@@ -29,7 +29,7 @@ use crate::execution::{
     planner::expression_registry::ExpressionRegistry,
     planner::operator_registry::OperatorRegistry,
     serde::to_arrow_datatype,
-    shuffle::ShuffleWriterExec,
+    shuffle::{ShuffleMode, ShuffleWriterExec},
 };
 use arrow::compute::CastOptions;
 use arrow::datatypes::{DataType, Field, FieldRef, Schema, TimeUnit, DECIMAL128_MAX_PRECISION};
@@ -116,7 +116,8 @@ use datafusion_comet_proto::{
     spark_operator::{
         self, lower_window_frame_bound::LowerFrameBoundStruct, operator::OpStruct,
         upper_window_frame_bound::UpperFrameBoundStruct, BuildSide,
-        CompressionCodec as SparkCompressionCodec, JoinType, Operator, WindowFrameType,
+        CompressionCodec as SparkCompressionCodec, JoinType, Operator,
+        ShuffleMode as SparkShuffleMode, WindowFrameType,
     },
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
@@ -1352,6 +1353,10 @@ impl PhysicalPlanner {
                 }?;
 
                 let write_buffer_size = writer.write_buffer_size as usize;
+                let shuffle_mode = match writer.shuffle_mode.try_into() {
+                    Ok(SparkShuffleMode::ImmediateShuffle) => ShuffleMode::Immediate,
+                    _ => ShuffleMode::Default,
+                };
                 let shuffle_writer = Arc::new(ShuffleWriterExec::try_new(
                     Arc::clone(&child.native_plan),
                     partitioning,
@@ -1360,6 +1365,7 @@ impl PhysicalPlanner {
                     writer.output_index_file.clone(),
                     writer.tracing_enabled,
                     write_buffer_size,
+                    shuffle_mode,
                 )?);
 
                 Ok((

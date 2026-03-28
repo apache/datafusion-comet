@@ -284,6 +284,12 @@ enum CompressionCodec {
   Snappy = 3;
 }
 
+// Selects which shuffle implementation to use for multi-partition shuffles.
+enum ShuffleMode {
+  DefaultShuffle = 0;
+  ImmediateShuffle = 1;
+}
+
 message ShuffleWriter {
   spark.spark_partitioning.Partitioning partitioning = 1;
   string output_data_file = 3;
@@ -294,6 +300,8 @@ message ShuffleWriter {
   // Size of the write buffer in bytes used when writing shuffle data to disk.
   // Larger values may improve write performance but use more memory.
   int32 write_buffer_size = 8;
+  // Which shuffle implementation to use for multi-partition shuffles.
+  ShuffleMode shuffle_mode = 9;
 }
 
 message ParquetWriter {

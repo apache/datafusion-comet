@@ -193,6 +193,12 @@ class CometNativeShuffleWriter[K, V](
       shuffleWriterBuilder.setWriteBufferSize(
         CometConf.COMET_SHUFFLE_WRITE_BUFFER_SIZE.get().max(Int.MaxValue).toInt)
 
+      val shuffleMode = CometConf.COMET_NATIVE_SHUFFLE_MODE.get() match {
+        case "immediate" => OperatorOuterClass.ShuffleMode.ImmediateShuffle
+        case _ => OperatorOuterClass.ShuffleMode.DefaultShuffle
+      }
+      shuffleWriterBuilder.setShuffleMode(shuffleMode)
+
       outputPartitioning match {
         case p if isSinglePartitioning(p) =>
           val partitioning = PartitioningOuterClass.SinglePartition.newBuilder()
