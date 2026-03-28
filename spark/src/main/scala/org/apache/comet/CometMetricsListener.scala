@@ -30,5 +30,9 @@ class CometMetricsListener extends QueryExecutionListener {
     CometSource.recordStats(stats)
   }
 
-  override def onFailure(funcName: String, qe: QueryExecution, exception: Exception): Unit = {}
+  override def onFailure(funcName: String, qe: QueryExecution, exception: Exception): Unit = {
+    // Record stats even on failure since the query was still planned
+    val stats = CometCoverageStats.forPlan(qe.executedPlan)
+    CometSource.recordStats(stats)
+  }
 }

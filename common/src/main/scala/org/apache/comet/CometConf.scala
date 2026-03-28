@@ -814,7 +814,8 @@ object CometConf extends ShimCometConf {
           "queries planned, transitions, and acceleration ratio. These metrics can be " +
           "visualized through tools like Grafana when a metrics sink (e.g., Prometheus) is " +
           "configured. Disabled by default because Spark plan traversal adds overhead and " +
-          "metrics require a sink to be useful.")
+          "metrics require a sink to be useful. " +
+          "This config must be set before the SparkSession is created to take effect.")
       .booleanConf
       .createWithDefault(false)
 
