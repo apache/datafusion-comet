@@ -1354,8 +1354,8 @@ impl PhysicalPlanner {
 
                 let write_buffer_size = writer.write_buffer_size as usize;
                 let shuffle_mode = match writer.shuffle_mode.try_into() {
-                    Ok(SparkShuffleMode::ImmediateShuffle) => ShuffleMode::Immediate,
-                    _ => ShuffleMode::Default,
+                    Ok(SparkShuffleMode::BufferedShuffle) => ShuffleMode::Buffered,
+                    _ => ShuffleMode::Immediate,
                 };
                 let shuffle_writer = Arc::new(ShuffleWriterExec::try_new(
                     Arc::clone(&child.native_plan),

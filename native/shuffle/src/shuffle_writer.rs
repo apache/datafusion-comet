@@ -488,7 +488,7 @@ mod test {
                 "/tmp/index.out".to_string(),
                 false,
                 1024 * 1024, // write_buffer_size: 1MB default
-                ShuffleMode::Default,
+                ShuffleMode::Buffered,
             )
             .unwrap();
 
@@ -548,7 +548,7 @@ mod test {
                 index_file.clone(),
                 false,
                 1024 * 1024,
-                ShuffleMode::Default,
+                ShuffleMode::Buffered,
             )
             .unwrap();
 

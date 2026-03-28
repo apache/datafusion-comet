@@ -539,13 +539,12 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_SHUFFLE)
       .doc(
         "Selects which native shuffle implementation to use for multi-partition shuffles. " +
-          "'default' buffers input batches and tracks per-partition row indices, writing all " +
+          "'buffered' buffers input batches and tracks per-partition row indices, writing all " +
           "partitions at the end with memory-pressure-driven spilling. " +
           "'immediate' repartitions each incoming batch using take and writes per-partition " +
-          "data directly to individual files, avoiding in-memory buffering of input batches. " +
-          "The 'immediate' mode is experimental.")
+          "data directly to individual files, avoiding in-memory buffering of input batches.")
       .stringConf
-      .checkValues(Set("default", "immediate"))
+      .checkValues(Set("buffered", "immediate"))
       .createWithDefault("immediate")
 
   val COMET_SHUFFLE_PREFER_DICTIONARY_RATIO: ConfigEntry[Double] = conf(

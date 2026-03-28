@@ -116,8 +116,8 @@ struct Args {
     #[arg(long, default_value_t = 0)]
     limit: usize,
 
-    /// Shuffle mode: default or immediate
-    #[arg(long, default_value = "default")]
+    /// Shuffle mode: buffered or immediate
+    #[arg(long, default_value = "immediate")]
     shuffle_mode: String,
 }
 
@@ -357,8 +357,8 @@ fn run_shuffle_write(
         };
 
         let shuffle_mode = match args.shuffle_mode.as_str() {
-            "immediate" => ShuffleMode::Immediate,
-            _ => ShuffleMode::Default,
+            "buffered" => ShuffleMode::Buffered,
+            _ => ShuffleMode::Immediate,
         };
 
         let exec = ShuffleWriterExec::try_new(

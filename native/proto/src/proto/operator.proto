@@ -286,7 +286,7 @@ enum CompressionCodec {
 
 // Selects which shuffle implementation to use for multi-partition shuffles.
 enum ShuffleMode {
-  DefaultShuffle = 0;
+  BufferedShuffle = 0;
   ImmediateShuffle = 1;
 }
 

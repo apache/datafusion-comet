@@ -194,8 +194,8 @@ class CometNativeShuffleWriter[K, V](
         CometConf.COMET_SHUFFLE_WRITE_BUFFER_SIZE.get().max(Int.MaxValue).toInt)
 
       val shuffleMode = CometConf.COMET_NATIVE_SHUFFLE_MODE.get() match {
-        case "immediate" => OperatorOuterClass.ShuffleMode.ImmediateShuffle
-        case _ => OperatorOuterClass.ShuffleMode.DefaultShuffle
+        case "buffered" => OperatorOuterClass.ShuffleMode.BufferedShuffle
+        case _ => OperatorOuterClass.ShuffleMode.ImmediateShuffle
       }
       shuffleWriterBuilder.setShuffleMode(shuffleMode)
 
