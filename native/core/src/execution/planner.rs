@@ -975,12 +975,27 @@ impl PhysicalPlanner {
 
                 let num_agg = agg.agg_exprs.len();
                 let aggr_expr = agg_exprs?.into_iter().map(Arc::new).collect();
+
+                // Build per-aggregate filter expressions from the FILTER (WHERE ...) clause.
+                // Filters are only present in Partial mode; Final/PartialMerge always get None.
+                let filter_exprs: Result<Vec<Option<Arc<dyn PhysicalExpr>>>, ExecutionError> = agg
+                    .agg_exprs
+                    .iter()
+                    .map(|expr| {
+                        if let Some(f) = expr.filter.as_deref() {
+                            self.create_expr(f, Arc::clone(&schema)).map(Some)
+                        } else {
+                            Ok(None)
+                        }
+                    })
+                    .collect();
+
                 let aggregate: Arc<dyn ExecutionPlan> = Arc::new(
                     datafusion::physical_plan::aggregates::AggregateExec::try_new(
                         mode,
                         group_by,
                         aggr_expr,
-                        vec![None; num_agg], // no filter expressions
+                        filter_exprs?,
                         Arc::clone(&child.native_plan),
                         Arc::clone(&schema),
                     )?,

@@ -37,33 +37,33 @@ INSERT INTO test_agg_filter VALUES
   ('b', NULL, NULL, NULL, true)
 
 -- Basic FILTER on SUM(int)
-query expect_fallback(Aggregate expression with filter is not supported)
+query
 SELECT SUM(i) FILTER (WHERE flag = true) FROM test_agg_filter
 
 -- FILTER on SUM with GROUP BY
-query expect_fallback(Aggregate expression with filter is not supported)
+query
 SELECT grp, SUM(i) FILTER (WHERE flag = true) FROM test_agg_filter GROUP BY grp ORDER BY grp
 
 -- FILTER on SUM(long)
-query expect_fallback(Aggregate expression with filter is not supported)
+query
 SELECT SUM(l) FILTER (WHERE flag = true) FROM test_agg_filter
 
 -- FILTER on SUM(decimal)
-query expect_fallback(Aggregate expression with filter is not supported)
+query
 SELECT SUM(d) FILTER (WHERE flag = true) FROM test_agg_filter
 
 -- Multiple aggregates: one with filter, one without
-query expect_fallback(Aggregate expression with filter is not supported)
+query
 SELECT SUM(i), SUM(i) FILTER (WHERE flag = true) FROM test_agg_filter
 
 -- FILTER with NULL rows: NULLs should not be included even when filter passes
-query expect_fallback(Aggregate expression with filter is not supported)
+query
 SELECT grp, SUM(i) FILTER (WHERE flag = true) FROM test_agg_filter GROUP BY grp ORDER BY grp
 
 -- FILTER with COUNT
-query expect_fallback(Aggregate expression with filter is not supported)
+query
 SELECT COUNT(*) FILTER (WHERE flag = true) FROM test_agg_filter
 
 -- FILTER with COUNT GROUP BY
-query expect_fallback(Aggregate expression with filter is not supported)
+query
 SELECT grp, COUNT(*) FILTER (WHERE flag = true) FROM test_agg_filter GROUP BY grp ORDER BY grp
