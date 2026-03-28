@@ -545,7 +545,7 @@ object CometConf extends ShimCometConf {
           "data directly to individual files, avoiding in-memory buffering of input batches.")
       .stringConf
       .checkValues(Set("buffered", "immediate"))
-      .createWithDefault("immediate")
+      .createWithDefault("buffered")
 
   val COMET_SHUFFLE_PREFER_DICTIONARY_RATIO: ConfigEntry[Double] = conf(
     "spark.comet.shuffle.preferDictionary.ratio")
