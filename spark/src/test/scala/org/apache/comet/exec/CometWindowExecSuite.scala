@@ -605,8 +605,7 @@ class CometWindowExecSuite extends CometTestBase {
     }
   }
 
-  // TODO: LAG produces incorrect results
-  ignore("window: LAG with default offset") {
+  test("window: LAG with default offset") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, i))
@@ -626,8 +625,7 @@ class CometWindowExecSuite extends CometTestBase {
     }
   }
 
-  // TODO: LAG with offset 2 produces incorrect results
-  ignore("window: LAG with offset 2 and default value") {
+  test("window: LAG with offset 2 and default value") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, i))
