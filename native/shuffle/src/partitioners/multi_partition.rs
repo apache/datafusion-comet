@@ -618,7 +618,8 @@ impl ShufflePartitioner for MultiPartitionShuffleRepartitioner {
                         )?;
                     }
                     ShuffleFormat::IpcStream => {
-                        let mut ipc_writer = IpcStreamWriter::try_new(
+                        let start_pos = output_data.stream_position()?;
+                        let mut ipc_writer = IpcStreamWriter::try_new_length_prefixed(
                             &mut output_data,
                             self.schema.as_ref(),
                             self.codec.clone(),
@@ -636,7 +637,7 @@ impl ShufflePartitioner for MultiPartitionShuffleRepartitioner {
                         while let Some(b) = coalescer.next_completed_batch() {
                             ipc_writer.write_batch(&b, &self.metrics.encode_time)?;
                         }
-                        ipc_writer.finish()?;
+                        ipc_writer.finish_length_prefixed(start_pos)?;
                     }
                 }
             }

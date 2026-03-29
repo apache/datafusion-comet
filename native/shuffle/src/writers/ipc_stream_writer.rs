@@ -22,7 +22,7 @@ use arrow::ipc::CompressionType;
 use datafusion::common::DataFusionError;
 use datafusion::error::Result;
 use datafusion::physical_plan::metrics::Time;
-use std::io::Write;
+use std::io::{Seek, SeekFrom, Write};
 
 use super::CompressionCodec;
 
@@ -102,6 +102,35 @@ impl<W: Write> IpcStreamWriter<W> {
     pub fn finish(mut self) -> Result<W> {
         self.writer.finish()?;
         self.writer.into_inner().map_err(Into::into)
+    }
+}
+
+impl<W: Write + Seek> IpcStreamWriter<W> {
+    /// Creates a new IPC stream writer with space reserved for an 8-byte length
+    /// prefix. Call [`finish_length_prefixed`](Self::finish_length_prefixed)
+    /// instead of `finish` to fill in the prefix.
+    pub fn try_new_length_prefixed(
+        mut output: W,
+        schema: &Schema,
+        codec: CompressionCodec,
+    ) -> Result<Self> {
+        // Reserve 8 bytes for the length prefix (filled in on finish)
+        output.write_all(&[0u8; 8])?;
+        Self::try_new(output, schema, codec)
+    }
+
+    /// Finishes the IPC stream and fills in the 8-byte length prefix that was
+    /// reserved by [`try_new_length_prefixed`](Self::try_new_length_prefixed).
+    ///
+    /// The length prefix covers the IPC stream data only (not itself).
+    pub fn finish_length_prefixed(self, start_pos: u64) -> Result<W> {
+        let mut output = self.finish()?;
+        let end_pos = output.stream_position()?;
+        let ipc_length = end_pos - start_pos - 8;
+        output.seek(SeekFrom::Start(start_pos))?;
+        output.write_all(&ipc_length.to_le_bytes())?;
+        output.seek(SeekFrom::Start(end_pos))?;
+        Ok(output)
     }
 }
 

@@ -18,7 +18,9 @@
 use crate::{
     errors::CometError,
     execution::{
-        operators::ExecutionError, planner::TEST_EXEC_CONTEXT_ID, shuffle::ipc::read_ipc_compressed,
+        operators::ExecutionError,
+        planner::TEST_EXEC_CONTEXT_ID,
+        shuffle::ipc::{read_ipc_compressed, read_ipc_stream},
     },
     jvm_bridge::{jni_call, JVMClasses},
 };
@@ -60,6 +62,9 @@ pub struct ShuffleScanExec {
     pub schema: SchemaRef,
     /// The current input batch, populated by get_next_batch() before poll_next().
     pub batch: Arc<Mutex<Option<InputBatch>>>,
+    /// Buffered batches from IPC stream decoding (one IPC stream may contain
+    /// multiple batches). Consumed one at a time by get_next_batch().
+    pending_batches: Vec<arrow::array::RecordBatch>,
     /// Cache of plan properties.
     cache: PlanProperties,
     /// Metrics collector.
@@ -94,6 +99,7 @@ impl ShuffleScanExec {
             input_source,
             data_types,
             batch: Arc::new(Mutex::new(None)),
+            pending_batches: Vec::new(),
             cache,
             metrics: metrics_set,
             baseline_metrics,
@@ -118,13 +124,25 @@ impl ShuffleScanExec {
 
         let mut current_batch = self.batch.try_lock().unwrap();
         if current_batch.is_none() {
-            let next_batch = Self::get_next(
-                self.exec_context_id,
-                self.input_source.as_ref().unwrap().as_obj(),
-                &self.data_types,
-                &self.decode_time,
-            )?;
-            *current_batch = Some(next_batch);
+            // Check for buffered batches from a previous IPC stream decode
+            if let Some(batch) = self.pending_batches.pop() {
+                let num_rows = batch.num_rows();
+                let columns: Vec<ArrayRef> = batch
+                    .columns()
+                    .iter()
+                    .map(|col| unpack_dictionary(col))
+                    .collect();
+                *current_batch = Some(InputBatch::new(columns, Some(num_rows)));
+            } else {
+                let next_batch = Self::get_next(
+                    self.exec_context_id,
+                    self.input_source.as_ref().unwrap().as_obj(),
+                    &self.data_types,
+                    &self.decode_time,
+                    &mut self.pending_batches,
+                )?;
+                *current_batch = Some(next_batch);
+            }
         }
 
         timer.stop();
@@ -133,11 +151,14 @@ impl ShuffleScanExec {
     }
 
     /// Invokes JNI calls to get the next compressed shuffle block and decode it.
+    /// For IPC stream format, multiple batches may be decoded at once; extras
+    /// are stored in `pending_batches` for subsequent calls.
     fn get_next(
         exec_context_id: i64,
         iter: &JObject,
         data_types: &[DataType],
         decode_time: &Time,
+        pending_batches: &mut Vec<arrow::array::RecordBatch>,
     ) -> Result<InputBatch, CometError> {
         if exec_context_id == TEST_EXEC_CONTEXT_ID {
             return Ok(InputBatch::EOF);
@@ -161,7 +182,7 @@ impl ShuffleScanExec {
             return Ok(InputBatch::EOF);
         }
 
-        // Get the DirectByteBuffer containing the compressed shuffle block
+        // Get the DirectByteBuffer containing the shuffle block
         let buffer: JObject = unsafe {
             jni_call!(&mut env,
                 comet_shuffle_block_iterator(iter).get_buffer() -> JObject)?
@@ -172,17 +193,30 @@ impl ShuffleScanExec {
         let length = block_length as usize;
         let slice: &[u8] = unsafe { std::slice::from_raw_parts(raw_pointer, length) };
 
-        // Decode the compressed IPC data
+        // Detect format from the first 4 bytes:
+        // Block format starts with a codec prefix: "SNAP", "LZ4_", "ZSTD", or "NONE"
+        // IPC stream format starts with Arrow continuation: 0xFFFFFFFF
         let mut timer = decode_time.timer();
-        let batch = read_ipc_compressed(slice)?;
+        let is_ipc_stream = length >= 4 && slice[0..4] == [0xFF, 0xFF, 0xFF, 0xFF];
+
+        let batch = if is_ipc_stream {
+            let mut batches = read_ipc_stream(slice)?;
+            if batches.is_empty() {
+                timer.stop();
+                return Ok(InputBatch::EOF);
+            }
+            let first = batches.remove(0);
+            // Store remaining batches in reverse order so pop() returns them in order
+            batches.reverse();
+            *pending_batches = batches;
+            first
+        } else {
+            read_ipc_compressed(slice)?
+        };
         timer.stop();
 
         let num_rows = batch.num_rows();
 
-        // Extract column arrays, unpacking any dictionary-encoded columns.
-        // Native shuffle may dictionary-encode string/binary columns for efficiency,
-        // but downstream DataFusion operators expect the value types declared in the
-        // schema (e.g. Utf8, not Dictionary<Int32, Utf8>).
         let columns: Vec<ArrayRef> = batch
             .columns()
             .iter()

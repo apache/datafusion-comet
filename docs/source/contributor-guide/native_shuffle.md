@@ -88,7 +88,8 @@ Native shuffle (`CometExchange`) is selected when all of the following condition
                     │
                     ▼
 ┌───────────────────────────────────┐
-│ ShuffleBlockWriter                 │
+│ ShuffleBlockWriter (block format)  │
+│ IpcStreamWriter   (stream format)  │
 │ (Arrow IPC + compression)          │
 └───────────────────────────────────┘
                     │
@@ -215,6 +216,64 @@ The `MultiPartitionShuffleRepartitioner` manages:
 - `SpillFile`: Temporary file for spilled data
 - Memory tracking via `MemoryConsumer` trait
 
+## Shuffle Format
+
+Native shuffle supports two data formats, configured via `spark.comet.exec.shuffle.format`:
+
+### Block Format (default)
+
+Each batch is written as a self-contained block:
+
+```
+[8 bytes: block length] [8 bytes: field count] [4 bytes: codec] [compressed Arrow IPC stream]
+```
+
+- The Arrow IPC stream inside each block contains the schema, one batch, and an EOS marker.
+- Compression wraps the entire IPC stream (schema + batch).
+- Supports all codecs: lz4, zstd, snappy.
+- Reader parses the length-prefixed blocks sequentially.
+
+This format is implemented by `ShuffleBlockWriter` in `native/shuffle/src/writers/shuffle_block_writer.rs`.
+
+### IPC Stream Format
+
+Each partition's data is written as a standard Arrow IPC stream:
+
+```
+[schema message] [batch message 1] [batch message 2] ... [EOS marker]
+```
+
+- The schema is written once per partition (not per batch), reducing overhead.
+- Uses Arrow's built-in IPC body compression (per-buffer compression within each message).
+- Supports lz4 and zstd codecs. Snappy is not supported (not part of the Arrow IPC spec).
+- Standard format readable by any Arrow-compatible tool.
+- Small batches are coalesced before writing to reduce per-message IPC overhead.
+
+This format is implemented by `IpcStreamWriter` in `native/shuffle/src/writers/ipc_stream_writer.rs`.
+
+### Spill Behavior
+
+Both formats use the same spill strategy: when memory pressure triggers a spill, partitioned
+data is written to per-partition temporary files. During the final `shuffle_write`:
+
+- **Block format**: Spill file bytes are raw-copied to the output, then remaining in-memory
+  batches are written as additional blocks.
+- **IPC stream format**: The `IpcStreamWriter` is kept open across spill calls so that all
+  spilled data for a partition forms a single IPC stream. The stream is finished and raw-copied
+  to the output, then remaining in-memory batches are written as a second IPC stream.
+
+### Performance Comparison
+
+Benchmark results (200 hash partitions, LZ4, TPC-H SF100 lineitem):
+
+| Metric     | Block       | IPC Stream  |
+| ---------- | ----------- | ----------- |
+| Throughput | 2.40M row/s | 2.37M row/s |
+| Output     | 61 MiB      | 64 MiB      |
+
+For single-partition writes, IPC stream is ~2x faster since the schema is written only once
+instead of per batch.
+
 ## Compression
 
 Native shuffle supports multiple compression codecs configured via
@@ -230,15 +289,19 @@ Native shuffle supports multiple compression codecs configured via
 The compression codec is applied uniformly to all partitions. Each partition's data is
 independently compressed, allowing parallel decompression during reads.
 
+Note: The `snappy` codec is only available with block format. IPC stream format supports
+`lz4` and `zstd` only.
+
 ## Configuration
 
 | Config                                            | Default | Description                              |
 | ------------------------------------------------- | ------- | ---------------------------------------- |
 | `spark.comet.exec.shuffle.enabled`                | `true`  | Enable Comet shuffle                     |
 | `spark.comet.exec.shuffle.mode`                   | `auto`  | Shuffle mode: `native`, `jvm`, or `auto` |
-| `spark.comet.exec.shuffle.compression.codec`      | `zstd`  | Compression codec                        |
+| `spark.comet.exec.shuffle.format`                 | `block` | Data format: `block` or `ipc_stream`     |
+| `spark.comet.exec.shuffle.compression.codec`      | `lz4`   | Compression codec                        |
 | `spark.comet.exec.shuffle.compression.zstd.level` | `1`     | Zstd compression level                   |
-| `spark.comet.shuffle.write.buffer.size`           | `1MB`   | Write buffer size                        |
+| `spark.comet.shuffle.write.buffer.size`            | `1MB`   | Write buffer size                        |
 | `spark.comet.columnar.shuffle.batch.size`         | `8192`  | Target rows per batch                    |
 
 ## Comparison with JVM Shuffle

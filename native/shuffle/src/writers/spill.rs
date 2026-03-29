@@ -24,7 +24,7 @@ use datafusion::common::DataFusionError;
 use datafusion::execution::disk_manager::RefCountedTempFile;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use std::fs::{File, OpenOptions};
-use std::io::BufWriter;
+use std::io::{BufWriter, Seek};
 
 /// Manages encoding and optional disk spilling for a single shuffle partition.
 ///
@@ -38,6 +38,8 @@ pub(crate) struct PartitionWriter {
     /// Persistent IPC stream writer for the spill file, kept open across
     /// multiple `spill()` calls.
     ipc_spill_writer: Option<IpcStreamWriter<BufWriter<File>>>,
+    /// Start position of the current IPC stream in the spill file (for length prefix).
+    ipc_spill_start_pos: u64,
     format: ShuffleFormat,
 }
 
@@ -50,6 +52,7 @@ impl PartitionWriter {
             spill_file: None,
             shuffle_block_writer,
             ipc_spill_writer: None,
+            ipc_spill_start_pos: 0,
             format,
         })
     }
@@ -120,6 +123,8 @@ impl PartitionWriter {
             ShuffleFormat::IpcStream => {
                 // Lazily open the IPC stream writer on first spill. It stays
                 // open so subsequent spills append batches to the same stream.
+                // Uses length prefix so the spill file can be raw-copied into
+                // the output and the reader can frame it.
                 if self.ipc_spill_writer.is_none() {
                     let file = OpenOptions::new()
                         .write(true)
@@ -131,9 +136,15 @@ impl PartitionWriter {
                                 "Error occurred while spilling {e}"
                             ))
                         })?;
-                    let buf_writer = BufWriter::with_capacity(write_buffer_size, file);
-                    self.ipc_spill_writer =
-                        Some(IpcStreamWriter::try_new(buf_writer, schema, codec.clone())?);
+                    let mut buf_writer = BufWriter::with_capacity(write_buffer_size, file);
+                    self.ipc_spill_start_pos = buf_writer.stream_position()?;
+                    self.ipc_spill_writer = Some(
+                        IpcStreamWriter::try_new_length_prefixed(
+                            buf_writer,
+                            schema,
+                            codec.clone(),
+                        )?,
+                    );
                 }
                 let ipc_writer = self.ipc_spill_writer.as_mut().unwrap();
                 ipc_writer.write_batch(&batch?, &metrics.encode_time)?;
@@ -149,7 +160,7 @@ impl PartitionWriter {
     /// before raw-copying the spill file to the output.
     pub(crate) fn finish_spill(&mut self) -> datafusion::common::Result<()> {
         if let Some(writer) = self.ipc_spill_writer.take() {
-            let buf_writer = writer.finish()?;
+            let buf_writer = writer.finish_length_prefixed(self.ipc_spill_start_pos)?;
             buf_writer
                 .into_inner()
                 .map_err(|e| DataFusionError::Execution(format!("flush error: {e}")))?;

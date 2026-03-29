@@ -43,35 +43,49 @@ public class CometShuffleBlockIterator implements Closeable {
 
   private static final int INITIAL_BUFFER_SIZE = 128 * 1024;
 
+  /** Block format header: 8-byte length + 8-byte field count. */
+  private static final int BLOCK_HEADER_SIZE = 16;
+  /** IPC stream format header: 8-byte length only. */
+  private static final int IPC_STREAM_HEADER_SIZE = 8;
+
   private final ReadableByteChannel channel;
   private final InputStream inputStream;
-  private final ByteBuffer headerBuf = ByteBuffer.allocate(16).order(ByteOrder.LITTLE_ENDIAN);
+  private final ByteBuffer headerBuf = ByteBuffer.allocate(BLOCK_HEADER_SIZE)
+      .order(ByteOrder.LITTLE_ENDIAN);
   private ByteBuffer dataBuf = ByteBuffer.allocateDirect(INITIAL_BUFFER_SIZE);
   private boolean closed = false;
   private int currentBlockLength = 0;
+  private final boolean isIpcStream;
 
   public CometShuffleBlockIterator(InputStream in) {
+    this(in, false);
+  }
+
+  public CometShuffleBlockIterator(InputStream in, boolean isIpcStream) {
     this.inputStream = in;
     this.channel = Channels.newChannel(in);
+    this.isIpcStream = isIpcStream;
   }
 
   /**
-   * Reads the next block header and loads the compressed body into the internal buffer. Called by
-   * native code via JNI.
+   * Reads the next block header and loads the body into the internal buffer. Called by native code
+   * via JNI.
    *
-   * <p>Header format: 8-byte compressedLength (includes field count but not itself) + 8-byte
-   * fieldCount (discarded, schema comes from protobuf).
+   * <p>Block format header: 8-byte compressedLength (includes field count but not itself) + 8-byte
+   * fieldCount (discarded). Body is: 4-byte codec prefix + compressed IPC data.
    *
-   * @return the compressed body length in bytes (codec prefix + compressed IPC), or -1 if EOF
+   * <p>IPC stream format header: 8-byte length. Body is: raw Arrow IPC stream data.
+   *
+   * @return the body length in bytes, or -1 if EOF
    */
   public int hasNext() throws IOException {
     if (closed) {
       return -1;
     }
 
-    // Read 16-byte header: clear() resets position=0, limit=capacity,
-    // preparing the buffer for channel.read() to fill it
+    int headerSize = isIpcStream ? IPC_STREAM_HEADER_SIZE : BLOCK_HEADER_SIZE;
     headerBuf.clear();
+    headerBuf.limit(headerSize);
     while (headerBuf.hasRemaining()) {
       int bytesRead = channel.read(headerBuf);
       if (bytesRead < 0) {
@@ -83,19 +97,25 @@ public class CometShuffleBlockIterator implements Closeable {
       }
     }
     headerBuf.flip();
-    long compressedLength = headerBuf.getLong();
-    // Field count discarded - schema determined by ShuffleScan protobuf fields
-    headerBuf.getLong();
+    long length = headerBuf.getLong();
 
-    // Subtract 8 because compressedLength includes the 8-byte field count we already read
-    long bytesToRead = compressedLength - 8;
+    long bytesToRead;
+    if (isIpcStream) {
+      // IPC stream: length is the IPC stream data size
+      bytesToRead = length;
+    } else {
+      // Block format: length includes the 8-byte field count we already read
+      headerBuf.getLong(); // discard field count
+      bytesToRead = length - 8;
+    }
+
     if (bytesToRead > Integer.MAX_VALUE) {
       throw new IllegalStateException(
           "Native shuffle block size of "
               + bytesToRead
               + " exceeds maximum of "
               + Integer.MAX_VALUE
-              + ". Try reducing spark.comet.columnar.shuffle.batch.size.");
+              + ". Try reducing shuffle batch size.");
     }
 
     currentBlockLength = (int) bytesToRead;
@@ -113,8 +133,6 @@ public class CometShuffleBlockIterator implements Closeable {
         throw new EOFException("Data corrupt: unexpected EOF while reading compressed batch");
       }
     }
-    // Note: native side uses get_direct_buffer_address (base pointer) + currentBlockLength,
-    // not the buffer's position/limit. No flip needed.
 
     return currentBlockLength;
   }

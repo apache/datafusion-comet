@@ -82,7 +82,8 @@ impl SinglePartitionShufflePartitioner {
             ShuffleFormat::IpcStream => {
                 let buf_writer =
                     BufWriter::with_capacity(write_buffer_size, output_data_file);
-                let writer = IpcStreamWriter::try_new(buf_writer, schema.as_ref(), codec)?;
+                let writer =
+                    IpcStreamWriter::try_new_length_prefixed(buf_writer, schema.as_ref(), codec)?;
                 OutputWriter::IpcStream {
                     writer: Some(writer),
                     coalescer: None,
@@ -181,7 +182,8 @@ impl SinglePartitionShufflePartitioner {
     fn finish_ipc_stream(&mut self) -> datafusion::common::Result<()> {
         if let OutputWriter::IpcStream { writer, .. } = &mut self.output {
             if let Some(w) = writer.take() {
-                let buf_writer = w.finish()?;
+                // start_pos is 0 for single partition (length prefix is at file start)
+                let buf_writer = w.finish_length_prefixed(0)?;
                 buf_writer
                     .into_inner()
                     .map_err(|e| DataFusionError::Execution(format!("flush error: {e}")))?;
