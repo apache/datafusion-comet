@@ -67,3 +67,15 @@ SELECT COUNT(*) FILTER (WHERE flag = true) FROM test_agg_filter
 -- FILTER with COUNT GROUP BY
 query
 SELECT grp, COUNT(*) FILTER (WHERE flag = true) FROM test_agg_filter GROUP BY grp ORDER BY grp
+
+-- FILTER on AVG(int)
+query
+SELECT AVG(i) FILTER (WHERE flag = true) FROM test_agg_filter
+
+-- FILTER on AVG with GROUP BY
+query
+SELECT grp, AVG(i) FILTER (WHERE flag = true) FROM test_agg_filter GROUP BY grp ORDER BY grp
+
+-- FILTER on AVG(decimal)
+query
+SELECT AVG(d) FILTER (WHERE flag = true) FROM test_agg_filter
