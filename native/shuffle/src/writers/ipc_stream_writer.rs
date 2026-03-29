@@ -106,6 +106,11 @@ impl<W: Write> IpcStreamWriter<W> {
 }
 
 impl<W: Write + Seek> IpcStreamWriter<W> {
+    /// Returns the current stream position of the underlying writer.
+    pub fn stream_position(&mut self) -> std::io::Result<u64> {
+        self.writer.get_mut().stream_position()
+    }
+
     /// Creates a new IPC stream writer with space reserved for an 8-byte length
     /// prefix. Call [`finish_length_prefixed`](Self::finish_length_prefixed)
     /// instead of `finish` to fill in the prefix.

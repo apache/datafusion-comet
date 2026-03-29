@@ -229,7 +229,9 @@ impl ShuffleScanExec {
             // yields batches one at a time (no bulk materialization).
             let owned = slice.to_vec();
             let cursor = std::io::Cursor::new(owned);
-            let mut reader = StreamReader::try_new(cursor, None)?;
+            let mut reader = unsafe {
+                StreamReader::try_new(cursor, None)?.with_skip_validation(true)
+            };
             let first = match reader.next() {
                 Some(Ok(batch)) => batch,
                 Some(Err(e)) => {

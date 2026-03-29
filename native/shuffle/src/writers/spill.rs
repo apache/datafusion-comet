@@ -138,11 +138,13 @@ impl PartitionWriter {
                     )?);
                 }
                 let ipc_writer = self.ipc_spill_writer.as_mut().unwrap();
+                let pos_before = ipc_writer.stream_position()?;
                 ipc_writer.write_batch(&batch?, &metrics.encode_time)?;
                 for batch in iter {
                     ipc_writer.write_batch(&batch?, &metrics.encode_time)?;
                 }
-                Ok(0)
+                let pos_after = ipc_writer.stream_position()?;
+                Ok((pos_after - pos_before) as usize)
             }
         }
     }
