@@ -982,7 +982,7 @@ impl PhysicalPlanner {
                     .agg_exprs
                     .iter()
                     .map(|expr| {
-                        if let Some(f) = expr.filter.as_deref() {
+                        if let Some(f) = expr.filter.as_ref() {
                             self.create_expr(f, Arc::clone(&schema)).map(Some)
                         } else {
                             Ok(None)
