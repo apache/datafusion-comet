@@ -192,13 +192,13 @@ abstract class CometTestBase
 
   /**
    * Check that the query returns the correct results when Comet is enabled and that Comet
-   * replaced all possible operators. Use the provided `tol` when comparing floating-point
+   * replaced all possible operators. Use the provided `absTol` when comparing floating-point
    * results.
    */
   protected def checkSparkAnswerAndOperatorWithTolerance(
       query: String,
       absTol: Double = 1e-6): (SparkPlan, SparkPlan) = {
-    internalCheckSparkAnswer(sql(query), assertCometNative = true, withTol = Some(absTol))
+    checkSparkAnswerAndOperatorWithTol(sql(query), absTol)
   }
 
   /**
