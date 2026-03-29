@@ -257,4 +257,159 @@ mod tests {
     fn test_single_batch() {
         roundtrip(CompressionCodec::None, 1);
     }
+
+    /// Regression test: an IPC stream with zero batches (schema + EOS only)
+    /// must be readable without error. This happens when a partition receives
+    /// no rows from a map task. Previously this caused "Empty IPC stream in
+    /// shuffle block" errors in the reader.
+    #[test]
+    fn test_empty_stream_no_batches() {
+        let schema = test_schema();
+
+        // Write a stream with zero batches
+        let mut buf = Vec::new();
+        {
+            let cursor = Cursor::new(&mut buf);
+            let writer =
+                IpcStreamWriter::try_new(cursor, &schema, CompressionCodec::None).unwrap();
+            // Finish immediately without writing any batches
+            writer.finish().unwrap();
+        }
+
+        assert!(!buf.is_empty(), "Stream should contain schema + EOS");
+
+        // Read back — should yield zero batches, not error
+        let cursor = Cursor::new(&buf);
+        let reader = StreamReader::try_new(cursor, None).unwrap();
+        let batches: Vec<RecordBatch> = reader.map(|r| r.unwrap()).collect();
+        assert_eq!(batches.len(), 0);
+    }
+
+    /// Regression test: length-prefixed IPC streams must roundtrip correctly.
+    /// The length prefix is needed so the Java reader can frame IPC stream
+    /// data without parsing Arrow IPC message headers.
+    #[test]
+    fn test_length_prefixed_roundtrip() {
+        let schema = test_schema();
+        let ipc_time = Time::default();
+
+        let mut buf = Vec::new();
+        let mut cursor = Cursor::new(&mut buf);
+
+        // Write a length-prefixed stream
+        let start_pos = cursor.stream_position().unwrap();
+        let mut writer = IpcStreamWriter::try_new_length_prefixed(
+            &mut cursor,
+            &schema,
+            CompressionCodec::None,
+        )
+        .unwrap();
+        writer
+            .write_batch(&test_batch(&schema, 0), &ipc_time)
+            .unwrap();
+        writer
+            .write_batch(&test_batch(&schema, 10), &ipc_time)
+            .unwrap();
+        writer.finish_length_prefixed(start_pos).unwrap();
+
+        // Verify: first 8 bytes are length prefix, remaining is valid IPC stream
+        let length = u64::from_le_bytes(buf[0..8].try_into().unwrap());
+        assert_eq!(length as usize, buf.len() - 8);
+
+        // The IPC stream data after the prefix should be readable
+        let ipc_data = &buf[8..];
+        let reader = StreamReader::try_new(ipc_data, None).unwrap();
+        let batches: Vec<RecordBatch> = reader.map(|r| r.unwrap()).collect();
+        assert_eq!(batches.len(), 2);
+        assert_eq!(batches[0].num_rows(), 3);
+        assert_eq!(batches[1].num_rows(), 3);
+    }
+
+    /// Regression test: length-prefixed empty stream (no batches).
+    /// The reader must handle this as EOF rather than erroring.
+    #[test]
+    fn test_length_prefixed_empty_stream() {
+        let schema = test_schema();
+
+        let mut buf = Vec::new();
+        let mut cursor = Cursor::new(&mut buf);
+
+        let start_pos = cursor.stream_position().unwrap();
+        let writer = IpcStreamWriter::try_new_length_prefixed(
+            &mut cursor,
+            &schema,
+            CompressionCodec::None,
+        )
+        .unwrap();
+        writer.finish_length_prefixed(start_pos).unwrap();
+
+        // Length prefix should point to valid (empty) IPC stream
+        let length = u64::from_le_bytes(buf[0..8].try_into().unwrap());
+        assert_eq!(length as usize, buf.len() - 8);
+
+        let ipc_data = &buf[8..];
+        let reader = StreamReader::try_new(ipc_data, None).unwrap();
+        let batches: Vec<RecordBatch> = reader.map(|r| r.unwrap()).collect();
+        assert_eq!(batches.len(), 0);
+    }
+
+    /// Tests that multiple length-prefixed IPC streams can be written
+    /// back-to-back and read independently. This is how the multi-partition
+    /// output file is structured (spill stream + remaining-batches stream).
+    #[test]
+    fn test_multiple_length_prefixed_streams() {
+        let schema = test_schema();
+        let ipc_time = Time::default();
+
+        let mut buf = Vec::new();
+        let mut cursor = Cursor::new(&mut buf);
+
+        // Write two length-prefixed streams back to back
+        for base in [0, 100] {
+            let start_pos = cursor.stream_position().unwrap();
+            let mut writer = IpcStreamWriter::try_new_length_prefixed(
+                &mut cursor,
+                &schema,
+                CompressionCodec::None,
+            )
+            .unwrap();
+            writer
+                .write_batch(&test_batch(&schema, base), &ipc_time)
+                .unwrap();
+            writer.finish_length_prefixed(start_pos).unwrap();
+        }
+
+        // Read them back: parse length prefix, read IPC stream, repeat
+        let mut offset = 0;
+        let mut all_batches = Vec::new();
+        while offset < buf.len() {
+            let length =
+                u64::from_le_bytes(buf[offset..offset + 8].try_into().unwrap()) as usize;
+            let ipc_data = &buf[offset + 8..offset + 8 + length];
+            let reader = StreamReader::try_new(ipc_data, None).unwrap();
+            for batch in reader {
+                all_batches.push(batch.unwrap());
+            }
+            offset += 8 + length;
+        }
+        assert_eq!(all_batches.len(), 2);
+        assert_eq!(
+            all_batches[0]
+                .column(0)
+                .as_any()
+                .downcast_ref::<Int32Array>()
+                .unwrap()
+                .value(0),
+            0
+        );
+        assert_eq!(
+            all_batches[1]
+                .column(0)
+                .as_any()
+                .downcast_ref::<Int32Array>()
+                .unwrap()
+                .value(0),
+            100
+        );
+    }
 }

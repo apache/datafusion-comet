@@ -350,6 +350,41 @@ mod test {
         shuffle_write_test(10000, 100, 200, Some(10 * 1024 * 1024));
     }
 
+    // --- IPC stream format tests ---
+    // These mirror the block format tests above to ensure IPC stream format
+    // produces valid output for the same scenarios.
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_ipc_stream_single_partition() {
+        shuffle_write_test_with_format(1000, 100, 1, None, ShuffleFormat::IpcStream);
+        shuffle_write_test_with_format(10000, 10, 1, None, ShuffleFormat::IpcStream);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_ipc_stream_multi_partition() {
+        shuffle_write_test_with_format(1000, 10, 16, None, ShuffleFormat::IpcStream);
+    }
+
+    /// Regression: many partitions means some receive zero rows, producing
+    /// empty IPC streams (schema + EOS, no batches). The reader must treat
+    /// these as EOF rather than erroring.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_ipc_stream_many_partitions_some_empty() {
+        // 200 partitions with only 1000 rows — many partitions will be empty
+        shuffle_write_test_with_format(1000, 1, 200, None, ShuffleFormat::IpcStream);
+    }
+
+    /// Regression: spilling with IPC stream format must produce valid
+    /// length-prefixed streams that can be raw-copied to the output file.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_ipc_stream_with_spilling() {
+        shuffle_write_test_with_format(10000, 100, 200, Some(10 * 1024 * 1024), ShuffleFormat::IpcStream);
+    }
+
     #[tokio::test]
     async fn shuffle_partitioner_memory() {
         let batch = create_batch(900);
@@ -413,6 +448,22 @@ mod test {
         num_partitions: usize,
         memory_limit: Option<usize>,
     ) {
+        shuffle_write_test_with_format(
+            batch_size,
+            num_batches,
+            num_partitions,
+            memory_limit,
+            ShuffleFormat::Block,
+        );
+    }
+
+    fn shuffle_write_test_with_format(
+        batch_size: usize,
+        num_batches: usize,
+        num_partitions: usize,
+        memory_limit: Option<usize>,
+        format: ShuffleFormat,
+    ) {
         let batch = create_batch(batch_size);
 
         let lex_ordering = LexOrdering::new(vec![PhysicalSortExpr::new_default(
@@ -472,7 +523,7 @@ mod test {
                 ))),
                 partitioning,
                 CompressionCodec::Zstd(1),
-                ShuffleFormat::Block,
+                format.clone(),
                 "/tmp/data.out".to_string(),
                 "/tmp/index.out".to_string(),
                 false,
