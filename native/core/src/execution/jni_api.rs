@@ -893,7 +893,20 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlock(
             let raw_pointer = env.get_direct_buffer_address(&byte_buffer)?;
             let length = length as usize;
             let slice: &[u8] = unsafe { std::slice::from_raw_parts(raw_pointer, length) };
-            let batch = read_ipc_compressed(slice)?;
+
+            // Auto-detect format: IPC stream starts with Arrow continuation 0xFFFFFFFF
+            let is_ipc_stream = length >= 4 && slice[0..4] == [0xFF, 0xFF, 0xFF, 0xFF];
+            let batch = if is_ipc_stream {
+                use arrow::ipc::reader::StreamReader;
+                let mut reader = StreamReader::try_new(slice, None)?;
+                reader.next().ok_or_else(|| {
+                    datafusion::common::DataFusionError::Execution(
+                        "Empty IPC stream in shuffle block".to_string(),
+                    )
+                })??
+            } else {
+                read_ipc_compressed(slice)?
+            };
             prepare_output(&mut env, array_addrs, schema_addrs, batch, false)
         })
     })

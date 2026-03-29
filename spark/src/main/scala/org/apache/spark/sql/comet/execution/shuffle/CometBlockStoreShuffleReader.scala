@@ -114,7 +114,8 @@ class CometBlockStoreShuffleReader[K, C](
           dep.decodeTime,
           nativeLib,
           nativeUtil,
-          tracingEnabled)
+          tracingEnabled,
+          dep.schema.map(_.fields.length).getOrElse(-1))
         currentReadIterator
       })
       .map(b => (0, b))

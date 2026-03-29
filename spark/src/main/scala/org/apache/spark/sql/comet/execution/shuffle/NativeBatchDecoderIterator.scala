@@ -26,7 +26,7 @@ import java.nio.channels.{Channels, ReadableByteChannel}
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
-import org.apache.comet.Native
+import org.apache.comet.{CometConf, Native}
 import org.apache.comet.vector.NativeUtil
 
 /**
@@ -39,13 +39,14 @@ case class NativeBatchDecoderIterator(
     decodeTime: SQLMetric,
     nativeLib: Native,
     nativeUtil: NativeUtil,
-    tracingEnabled: Boolean)
+    tracingEnabled: Boolean,
+    numColumns: Int = -1)
     extends Iterator[ColumnarBatch] {
 
   private var isClosed = false
   private val longBuf = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN)
   private var currentBatch: ColumnarBatch = null
-  private var batch = fetchNext()
+  private val isIpcStream = CometConf.COMET_EXEC_SHUFFLE_FORMAT.get() == "ipc_stream"
 
   import NativeBatchDecoderIterator._
 
@@ -54,6 +55,8 @@ case class NativeBatchDecoderIterator(
   } else {
     null
   }
+
+  private var batch = fetchNext()
 
   def hasNext(): Boolean = {
     if (channel == null || isClosed) {
@@ -94,7 +97,7 @@ case class NativeBatchDecoderIterator(
       return None
     }
 
-    // read compressed batch size from header
+    // read length from header
     try {
       longBuf.clear()
       while (longBuf.hasRemaining && channel.read(longBuf) >= 0) {}
@@ -104,8 +107,6 @@ case class NativeBatchDecoderIterator(
         return None
     }
 
-    // If we reach the end of the stream, we are done, or if we read partial length
-    // then the stream is corrupted.
     if (longBuf.hasRemaining) {
       if (longBuf.position() == 0) {
         close()
@@ -114,31 +115,30 @@ case class NativeBatchDecoderIterator(
       throw new EOFException("Data corrupt: unexpected EOF while reading compressed ipc lengths")
     }
 
-    // get compressed length (including headers)
     longBuf.flip()
-    val compressedLength = longBuf.getLong
+    val length = longBuf.getLong
 
-    // read field count from header
-    longBuf.clear()
-    while (longBuf.hasRemaining && channel.read(longBuf) >= 0) {}
-    if (longBuf.hasRemaining) {
-      throw new EOFException("Data corrupt: unexpected EOF while reading field count")
+    val (fieldCount, bytesToRead) = if (isIpcStream) {
+      // IPC stream: length is the data size, field count from schema
+      (numColumns, length)
+    } else {
+      // Block format: read 8-byte field count header
+      longBuf.clear()
+      while (longBuf.hasRemaining && channel.read(longBuf) >= 0) {}
+      if (longBuf.hasRemaining) {
+        throw new EOFException("Data corrupt: unexpected EOF while reading field count")
+      }
+      longBuf.flip()
+      (longBuf.getLong.toInt, length - 8)
     }
-    longBuf.flip()
-    val fieldCount = longBuf.getLong.toInt
 
-    // read body
-    val bytesToRead = compressedLength - 8
     if (bytesToRead > Integer.MAX_VALUE) {
-      // very unlikely that shuffle block will reach 2GB
       throw new IllegalStateException(
         s"Native shuffle block size of $bytesToRead exceeds " +
           s"maximum of ${Integer.MAX_VALUE}. Try reducing shuffle batch size.")
     }
     var dataBuf = threadLocalDataBuf.get()
     if (dataBuf.capacity() < bytesToRead) {
-      // it is unlikely that we would overflow here since it would
-      // require a 1GB compressed shuffle block but we check anyway
       val newCapacity = (bytesToRead * 2L).min(Integer.MAX_VALUE).toInt
       dataBuf = ByteBuffer.allocateDirect(newCapacity)
       threadLocalDataBuf.set(dataBuf)
