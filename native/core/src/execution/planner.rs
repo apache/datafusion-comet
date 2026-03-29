@@ -973,7 +973,6 @@ impl PhysicalPlanner {
                     .map(|expr| self.create_agg_expr(expr, Arc::clone(&schema)))
                     .collect();
 
-                let num_agg = agg.agg_exprs.len();
                 let aggr_expr = agg_exprs?.into_iter().map(Arc::new).collect();
 
                 // Build per-aggregate filter expressions from the FILTER (WHERE ...) clause.
