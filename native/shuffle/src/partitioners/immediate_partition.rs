@@ -198,14 +198,23 @@ impl ImmediateShufflePartitioner {
             timer.stop();
         }
 
-        // Build a single UInt32Array from partition_row_indices and slice per partition
-        // to avoid per-partition allocation. Per-partition take produces small batches
-        // (~40 rows) that the BufBatchWriter's BatchCoalescer accumulates into batch_size
-        // chunks before serializing to compressed IPC.
+        // Reorder the entire batch once by partition using a single take(), then
+        // use zero-copy slice() per partition. This replaces N per-partition take()
+        // calls (each allocating new arrays) with 1 take() + N free slice() calls.
         let num_rows = input.num_rows();
         let all_indices = UInt32Array::from_iter_values(
             scratch.partition_row_indices[..num_rows].iter().copied(),
         );
+
+        let reordered_columns: Vec<ArrayRef> = input
+            .columns()
+            .iter()
+            .map(|col| {
+                take(col, &all_indices, None)
+                    .map_err(|e| DataFusionError::ArrowError(Box::from(e), None))
+            })
+            .collect::<datafusion::common::Result<Vec<_>>>()?;
+        let reordered = RecordBatch::try_new(input.schema(), reordered_columns)?;
 
         let size_before = self.total_buffer_size();
 
@@ -216,16 +225,7 @@ impl ImmediateShufflePartitioner {
                 continue;
             }
 
-            let indices = all_indices.slice(start, end - start);
-            let columns: Vec<ArrayRef> = input
-                .columns()
-                .iter()
-                .map(|col| {
-                    take(col, &indices, None)
-                        .map_err(|e| DataFusionError::ArrowError(Box::from(e), None))
-                })
-                .collect::<datafusion::common::Result<Vec<_>>>()?;
-            let partition_batch = RecordBatch::try_new(input.schema(), columns)?;
+            let partition_batch = reordered.slice(start, end - start);
 
             self.ensure_partition_buffer(partition_id);
             let pb = self.partition_buffers[partition_id].as_mut().unwrap();
