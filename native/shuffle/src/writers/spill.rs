@@ -26,20 +26,18 @@ use datafusion::execution::runtime_env::RuntimeEnv;
 use std::fs::{File, OpenOptions};
 use std::io::BufWriter;
 
-/// A temporary disk file for spilling a partition's intermediate shuffle data.
-struct SpillFile {
-    temp_file: RefCountedTempFile,
-    file: File,
-}
-
 /// Manages encoding and optional disk spilling for a single shuffle partition.
+///
+/// For block format, each `spill()` call appends self-contained blocks to the
+/// spill file. For IPC stream format, an `IpcStreamWriter` is kept open across
+/// spill calls so that all spilled data forms a single IPC stream (one schema
+/// header, many batch messages, one EOS marker written at finish time).
 pub(crate) struct PartitionWriter {
-    /// Spill file for intermediate shuffle output for this partition. Each spill event
-    /// will append to this file and the contents will be copied to the shuffle file at
-    /// the end of processing.
-    spill_file: Option<SpillFile>,
-    /// Writer that performs encoding and compression (block format)
+    spill_file: Option<RefCountedTempFile>,
     shuffle_block_writer: ShuffleBlockWriter,
+    /// Persistent IPC stream writer for the spill file, kept open across
+    /// multiple `spill()` calls.
+    ipc_spill_writer: Option<IpcStreamWriter<BufWriter<File>>>,
     format: ShuffleFormat,
 }
 
@@ -51,6 +49,7 @@ impl PartitionWriter {
         Ok(Self {
             spill_file: None,
             shuffle_block_writer,
+            ipc_spill_writer: None,
             format,
         })
     }
@@ -60,21 +59,11 @@ impl PartitionWriter {
         runtime: &RuntimeEnv,
     ) -> datafusion::common::Result<()> {
         if self.spill_file.is_none() {
-            let spill_file = runtime
-                .disk_manager
-                .create_tmp_file("shuffle writer spill")?;
-            let spill_data = OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .open(spill_file.path())
-                .map_err(|e| {
-                    DataFusionError::Execution(format!("Error occurred while spilling {e}"))
-                })?;
-            self.spill_file = Some(SpillFile {
-                temp_file: spill_file,
-                file: spill_data,
-            });
+            self.spill_file = Some(
+                runtime
+                    .disk_manager
+                    .create_tmp_file("shuffle writer spill")?,
+            );
         }
         Ok(())
     }
@@ -90,59 +79,86 @@ impl PartitionWriter {
         codec: &crate::CompressionCodec,
         schema: &arrow::datatypes::Schema,
     ) -> datafusion::common::Result<usize> {
-        if let Some(batch) = iter.next() {
-            self.ensure_spill_file_created(runtime)?;
-            let file = &mut self.spill_file.as_mut().unwrap().file;
+        let Some(batch) = iter.next() else {
+            return Ok(0);
+        };
 
-            match &self.format {
-                ShuffleFormat::Block => {
-                    let mut buf_batch_writer = BufBatchWriter::new(
-                        &mut self.shuffle_block_writer,
-                        file,
-                        write_buffer_size,
-                        batch_size,
-                    );
-                    let mut bytes_written = buf_batch_writer.write(
+        self.ensure_spill_file_created(runtime)?;
+        let spill_path = self.spill_file.as_ref().unwrap().path().to_owned();
+
+        match &self.format {
+            ShuffleFormat::Block => {
+                let mut file = OpenOptions::new()
+                    .append(true)
+                    .open(&spill_path)
+                    .map_err(|e| {
+                        DataFusionError::Execution(format!(
+                            "Error occurred while spilling {e}"
+                        ))
+                    })?;
+                let mut buf_batch_writer = BufBatchWriter::new(
+                    &mut self.shuffle_block_writer,
+                    &mut file,
+                    write_buffer_size,
+                    batch_size,
+                );
+                let mut bytes_written = buf_batch_writer.write(
+                    &batch?,
+                    &metrics.encode_time,
+                    &metrics.write_time,
+                )?;
+                for batch in iter {
+                    bytes_written += buf_batch_writer.write(
                         &batch?,
                         &metrics.encode_time,
                         &metrics.write_time,
                     )?;
-                    for batch in iter {
-                        bytes_written += buf_batch_writer.write(
-                            &batch?,
-                            &metrics.encode_time,
-                            &metrics.write_time,
-                        )?;
-                    }
-                    buf_batch_writer.flush(&metrics.encode_time, &metrics.write_time)?;
-                    Ok(bytes_written)
                 }
-                ShuffleFormat::IpcStream => {
-                    let buf_writer = BufWriter::with_capacity(write_buffer_size, file);
-                    let mut ipc_writer =
-                        IpcStreamWriter::try_new(buf_writer, schema, codec.clone())?;
-                    ipc_writer.write_batch(&batch?, &metrics.encode_time)?;
-                    for batch in iter {
-                        ipc_writer.write_batch(&batch?, &metrics.encode_time)?;
-                    }
-                    let buf_writer = ipc_writer.finish()?;
-                    buf_writer.into_inner().map_err(|e| {
-                        DataFusionError::Execution(format!("flush error: {e}"))
-                    })?;
-                    // IPC stream doesn't easily track bytes written; return 0
-                    // (spilled_bytes metric will be approximate)
-                    Ok(0)
-                }
+                buf_batch_writer.flush(&metrics.encode_time, &metrics.write_time)?;
+                Ok(bytes_written)
             }
-        } else {
-            Ok(0)
+            ShuffleFormat::IpcStream => {
+                // Lazily open the IPC stream writer on first spill. It stays
+                // open so subsequent spills append batches to the same stream.
+                if self.ipc_spill_writer.is_none() {
+                    let file = OpenOptions::new()
+                        .write(true)
+                        .create(true)
+                        .truncate(true)
+                        .open(&spill_path)
+                        .map_err(|e| {
+                            DataFusionError::Execution(format!(
+                                "Error occurred while spilling {e}"
+                            ))
+                        })?;
+                    let buf_writer = BufWriter::with_capacity(write_buffer_size, file);
+                    self.ipc_spill_writer =
+                        Some(IpcStreamWriter::try_new(buf_writer, schema, codec.clone())?);
+                }
+                let ipc_writer = self.ipc_spill_writer.as_mut().unwrap();
+                ipc_writer.write_batch(&batch?, &metrics.encode_time)?;
+                for batch in iter {
+                    ipc_writer.write_batch(&batch?, &metrics.encode_time)?;
+                }
+                Ok(0)
+            }
         }
     }
 
+    /// Finish the IPC spill stream writer if one is open. Must be called
+    /// before raw-copying the spill file to the output.
+    pub(crate) fn finish_spill(&mut self) -> datafusion::common::Result<()> {
+        if let Some(writer) = self.ipc_spill_writer.take() {
+            let buf_writer = writer.finish()?;
+            buf_writer
+                .into_inner()
+                .map_err(|e| DataFusionError::Execution(format!("flush error: {e}")))?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn path(&self) -> Option<&std::path::Path> {
-        self.spill_file
-            .as_ref()
-            .map(|spill_file| spill_file.temp_file.path())
+        self.spill_file.as_ref().map(|f| f.path())
     }
 
     #[cfg(test)]

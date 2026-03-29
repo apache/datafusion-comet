@@ -468,7 +468,6 @@ impl MultiPartitionShuffleRepartitioner {
         Ok(())
     }
 
-
     fn used(&self) -> usize {
         self.reservation.size()
     }
@@ -595,16 +594,19 @@ impl ShufflePartitioner for MultiPartitionShuffleRepartitioner {
 
                 let mut partition_iter = partitioned_batches.produce(i);
 
+                // Finish any open IPC spill stream before copying
+                self.partition_writers[i].finish_spill()?;
+
+                // Copy spill file contents into the output
+                if let Some(spill_path) = self.partition_writers[i].path() {
+                    let mut spill_file = BufReader::new(File::open(spill_path)?);
+                    let mut write_timer = self.metrics.write_time.timer();
+                    std::io::copy(&mut spill_file, &mut output_data)?;
+                    write_timer.stop();
+                }
+
                 match &self.format {
                     ShuffleFormat::Block => {
-                        // Raw-copy spill file bytes (they are already in block format)
-                        if let Some(spill_path) = self.partition_writers[i].path() {
-                            let mut spill_file = BufReader::new(File::open(spill_path)?);
-                            let mut write_timer = self.metrics.write_time.timer();
-                            std::io::copy(&mut spill_file, &mut output_data)?;
-                            write_timer.stop();
-                        }
-
                         Self::shuffle_write_partition_block(
                             &mut partition_iter,
                             &mut self.shuffle_block_writer,
@@ -616,16 +618,6 @@ impl ShufflePartitioner for MultiPartitionShuffleRepartitioner {
                         )?;
                     }
                     ShuffleFormat::IpcStream => {
-                        // Raw-copy spill file (already in IPC stream format)
-                        if let Some(spill_path) = self.partition_writers[i].path() {
-                            let mut spill_file = BufReader::new(File::open(spill_path)?);
-                            let mut write_timer = self.metrics.write_time.timer();
-                            std::io::copy(&mut spill_file, &mut output_data)?;
-                            write_timer.stop();
-                        }
-
-                        // Write remaining in-memory batches as an IPC stream,
-                        // coalescing small batches to reduce per-message overhead
                         let mut ipc_writer = IpcStreamWriter::try_new(
                             &mut output_data,
                             self.schema.as_ref(),
