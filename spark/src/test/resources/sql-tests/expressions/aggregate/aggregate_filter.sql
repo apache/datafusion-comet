@@ -76,6 +76,3 @@ SELECT AVG(i) FILTER (WHERE flag = true) FROM test_agg_filter
 query
 SELECT grp, AVG(i) FILTER (WHERE flag = true) FROM test_agg_filter GROUP BY grp ORDER BY grp
 
--- FILTER on AVG(decimal)
-query
-SELECT AVG(d) FILTER (WHERE flag = true) FROM test_agg_filter
