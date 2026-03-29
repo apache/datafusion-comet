@@ -20,12 +20,13 @@ use crate::{
     execution::{
         operators::ExecutionError,
         planner::TEST_EXEC_CONTEXT_ID,
-        shuffle::ipc::{read_ipc_compressed, read_ipc_stream},
+        shuffle::ipc::read_ipc_compressed,
     },
     jvm_bridge::{jni_call, JVMClasses},
 };
 use arrow::array::ArrayRef;
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+use arrow::ipc::reader::StreamReader;
 use datafusion::common::{arrow_datafusion_err, Result as DataFusionResult};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::metrics::{
@@ -47,6 +48,9 @@ use std::{
 
 use super::scan::InputBatch;
 
+/// A StreamReader over owned bytes, used for streaming IPC batches one at a time.
+type IpcBatchReader = StreamReader<std::io::Cursor<Vec<u8>>>;
+
 /// ShuffleScanExec reads compressed shuffle blocks from JVM via JNI and decodes them natively.
 /// Unlike ScanExec which receives Arrow arrays via FFI, ShuffleScanExec receives raw compressed
 /// bytes from CometShuffleBlockIterator and decodes them using read_ipc_compressed().
@@ -62,9 +66,9 @@ pub struct ShuffleScanExec {
     pub schema: SchemaRef,
     /// The current input batch, populated by get_next_batch() before poll_next().
     pub batch: Arc<Mutex<Option<InputBatch>>>,
-    /// Buffered batches from IPC stream decoding (one IPC stream may contain
-    /// multiple batches). Consumed one at a time by get_next_batch().
-    pending_batches: Vec<arrow::array::RecordBatch>,
+    /// Active IPC stream reader for streaming batches one at a time.
+    /// Wrapped in Arc<Mutex> so ShuffleScanExec can derive Clone.
+    ipc_stream_reader: Arc<Mutex<Option<IpcBatchReader>>>,
     /// Cache of plan properties.
     cache: PlanProperties,
     /// Metrics collector.
@@ -99,7 +103,7 @@ impl ShuffleScanExec {
             input_source,
             data_types,
             batch: Arc::new(Mutex::new(None)),
-            pending_batches: Vec::new(),
+            ipc_stream_reader: Arc::new(Mutex::new(None)),
             cache,
             metrics: metrics_set,
             baseline_metrics,
@@ -117,106 +121,52 @@ impl ShuffleScanExec {
     /// because JNI calls cannot happen from within poll_next on tokio threads.
     pub fn get_next_batch(&mut self) -> Result<(), CometError> {
         if self.input_source.is_none() {
-            // Unit test mode - no JNI calls needed.
             return Ok(());
         }
         let mut timer = self.baseline_metrics.elapsed_compute().timer();
 
         let mut current_batch = self.batch.try_lock().unwrap();
         if current_batch.is_none() {
-            // Check for buffered batches from a previous IPC stream decode
-            if let Some(batch) = self.pending_batches.pop() {
-                let num_rows = batch.num_rows();
-                let columns: Vec<ArrayRef> = batch
-                    .columns()
-                    .iter()
-                    .map(|col| unpack_dictionary(col))
-                    .collect();
-                *current_batch = Some(InputBatch::new(columns, Some(num_rows)));
+            // Try to read the next batch from an active IPC stream reader
+            let batch_from_reader = {
+                let mut reader_guard = self.ipc_stream_reader.try_lock().unwrap();
+                if let Some(reader) = reader_guard.as_mut() {
+                    match reader.next() {
+                        Some(Ok(batch)) => Some(batch),
+                        _ => {
+                            // Stream exhausted or error — drop the reader
+                            *reader_guard = None;
+                            None
+                        }
+                    }
+                } else {
+                    None
+                }
+            };
+
+            if let Some(batch) = batch_from_reader {
+                *current_batch = Some(Self::batch_to_input(&batch, &self.data_types));
             } else {
                 let next_batch = Self::get_next(
                     self.exec_context_id,
                     self.input_source.as_ref().unwrap().as_obj(),
                     &self.data_types,
                     &self.decode_time,
-                    &mut self.pending_batches,
+                    &self.ipc_stream_reader,
                 )?;
                 *current_batch = Some(next_batch);
             }
         }
 
         timer.stop();
-
         Ok(())
     }
 
-    /// Invokes JNI calls to get the next compressed shuffle block and decode it.
-    /// For IPC stream format, multiple batches may be decoded at once; extras
-    /// are stored in `pending_batches` for subsequent calls.
-    fn get_next(
-        exec_context_id: i64,
-        iter: &JObject,
+    fn batch_to_input(
+        batch: &arrow::array::RecordBatch,
         data_types: &[DataType],
-        decode_time: &Time,
-        pending_batches: &mut Vec<arrow::array::RecordBatch>,
-    ) -> Result<InputBatch, CometError> {
-        if exec_context_id == TEST_EXEC_CONTEXT_ID {
-            return Ok(InputBatch::EOF);
-        }
-
-        if iter.is_null() {
-            return Err(CometError::from(ExecutionError::GeneralError(format!(
-                "Null shuffle block iterator object. Plan id: {exec_context_id}"
-            ))));
-        }
-
-        let mut env = JVMClasses::get_env()?;
-
-        // has_next() reads the next block and returns its length, or -1 if EOF
-        let block_length: i32 = unsafe {
-            jni_call!(&mut env,
-                comet_shuffle_block_iterator(iter).has_next() -> i32)?
-        };
-
-        if block_length == -1 {
-            return Ok(InputBatch::EOF);
-        }
-
-        // Get the DirectByteBuffer containing the shuffle block
-        let buffer: JObject = unsafe {
-            jni_call!(&mut env,
-                comet_shuffle_block_iterator(iter).get_buffer() -> JObject)?
-        };
-
-        let byte_buffer = JByteBuffer::from(buffer);
-        let raw_pointer = env.get_direct_buffer_address(&byte_buffer)?;
-        let length = block_length as usize;
-        let slice: &[u8] = unsafe { std::slice::from_raw_parts(raw_pointer, length) };
-
-        // Detect format from the first 4 bytes:
-        // Block format starts with a codec prefix: "SNAP", "LZ4_", "ZSTD", or "NONE"
-        // IPC stream format starts with Arrow continuation: 0xFFFFFFFF
-        let mut timer = decode_time.timer();
-        let is_ipc_stream = length >= 4 && slice[0..4] == [0xFF, 0xFF, 0xFF, 0xFF];
-
-        let batch = if is_ipc_stream {
-            let mut batches = read_ipc_stream(slice)?;
-            if batches.is_empty() {
-                timer.stop();
-                return Ok(InputBatch::EOF);
-            }
-            let first = batches.remove(0);
-            // Store remaining batches in reverse order so pop() returns them in order
-            batches.reverse();
-            *pending_batches = batches;
-            first
-        } else {
-            read_ipc_compressed(slice)?
-        };
-        timer.stop();
-
+    ) -> InputBatch {
         let num_rows = batch.num_rows();
-
         let columns: Vec<ArrayRef> = batch
             .columns()
             .iter()
@@ -231,7 +181,81 @@ impl ShuffleScanExec {
             data_types.len()
         );
 
-        Ok(InputBatch::new(columns, Some(num_rows)))
+        InputBatch::new(columns, Some(num_rows))
+    }
+
+    /// Invokes JNI calls to get the next shuffle block and decode it.
+    /// For IPC stream format, creates a `StreamReader` that yields batches
+    /// one at a time (stored in `ipc_stream_reader` for subsequent calls).
+    fn get_next(
+        exec_context_id: i64,
+        iter: &JObject,
+        data_types: &[DataType],
+        decode_time: &Time,
+        ipc_stream_reader: &Arc<Mutex<Option<IpcBatchReader>>>,
+    ) -> Result<InputBatch, CometError> {
+        if exec_context_id == TEST_EXEC_CONTEXT_ID {
+            return Ok(InputBatch::EOF);
+        }
+
+        if iter.is_null() {
+            return Err(CometError::from(ExecutionError::GeneralError(format!(
+                "Null shuffle block iterator object. Plan id: {exec_context_id}"
+            ))));
+        }
+
+        let mut env = JVMClasses::get_env()?;
+
+        let block_length: i32 = unsafe {
+            jni_call!(&mut env,
+                comet_shuffle_block_iterator(iter).has_next() -> i32)?
+        };
+
+        if block_length == -1 {
+            return Ok(InputBatch::EOF);
+        }
+
+        let buffer: JObject = unsafe {
+            jni_call!(&mut env,
+                comet_shuffle_block_iterator(iter).get_buffer() -> JObject)?
+        };
+
+        let byte_buffer = JByteBuffer::from(buffer);
+        let raw_pointer = env.get_direct_buffer_address(&byte_buffer)?;
+        let length = block_length as usize;
+        let slice: &[u8] = unsafe { std::slice::from_raw_parts(raw_pointer, length) };
+
+        // Detect format: block starts with codec prefix, IPC stream starts with 0xFFFFFFFF
+        let mut timer = decode_time.timer();
+        let is_ipc_stream = length >= 4 && slice[0..4] == [0xFF, 0xFF, 0xFF, 0xFF];
+
+        let batch = if is_ipc_stream {
+            // Copy bytes into owned memory and create a StreamReader that
+            // yields batches one at a time (no bulk materialization).
+            let owned = slice.to_vec();
+            let cursor = std::io::Cursor::new(owned);
+            let mut reader = StreamReader::try_new(cursor, None)?;
+            let first = match reader.next() {
+                Some(Ok(batch)) => batch,
+                Some(Err(e)) => {
+                    timer.stop();
+                    return Err(e.into());
+                }
+                None => {
+                    timer.stop();
+                    return Ok(InputBatch::EOF);
+                }
+            };
+            // Store the reader so subsequent calls can pull more batches
+            // without another JNI round-trip.
+            *ipc_stream_reader.try_lock().unwrap() = Some(reader);
+            first
+        } else {
+            read_ipc_compressed(slice)?
+        };
+        timer.stop();
+
+        Ok(Self::batch_to_input(&batch, data_types))
     }
 }
 
