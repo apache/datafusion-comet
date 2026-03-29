@@ -382,7 +382,13 @@ mod test {
     #[test]
     #[cfg_attr(miri, ignore)]
     fn test_ipc_stream_with_spilling() {
-        shuffle_write_test_with_format(10000, 100, 200, Some(10 * 1024 * 1024), ShuffleFormat::IpcStream);
+        shuffle_write_test_with_format(
+            10000,
+            100,
+            200,
+            Some(10 * 1024 * 1024),
+            ShuffleFormat::IpcStream,
+        );
     }
 
     #[tokio::test]

@@ -275,8 +275,7 @@ mod tests {
         let mut buf = Vec::new();
         {
             let cursor = Cursor::new(&mut buf);
-            let writer =
-                IpcStreamWriter::try_new(cursor, &schema, CompressionCodec::None).unwrap();
+            let writer = IpcStreamWriter::try_new(cursor, &schema, CompressionCodec::None).unwrap();
             // Finish immediately without writing any batches
             writer.finish().unwrap();
         }
@@ -303,12 +302,9 @@ mod tests {
 
         // Write a length-prefixed stream
         let start_pos = cursor.stream_position().unwrap();
-        let mut writer = IpcStreamWriter::try_new_length_prefixed(
-            &mut cursor,
-            &schema,
-            CompressionCodec::None,
-        )
-        .unwrap();
+        let mut writer =
+            IpcStreamWriter::try_new_length_prefixed(&mut cursor, &schema, CompressionCodec::None)
+                .unwrap();
         writer
             .write_batch(&test_batch(&schema, 0), &ipc_time)
             .unwrap();
@@ -340,12 +336,9 @@ mod tests {
         let mut cursor = Cursor::new(&mut buf);
 
         let start_pos = cursor.stream_position().unwrap();
-        let writer = IpcStreamWriter::try_new_length_prefixed(
-            &mut cursor,
-            &schema,
-            CompressionCodec::None,
-        )
-        .unwrap();
+        let writer =
+            IpcStreamWriter::try_new_length_prefixed(&mut cursor, &schema, CompressionCodec::None)
+                .unwrap();
         writer.finish_length_prefixed(start_pos).unwrap();
 
         // Length prefix should point to valid (empty) IPC stream
@@ -388,8 +381,7 @@ mod tests {
         let mut offset = 0;
         let mut all_batches = Vec::new();
         while offset < buf.len() {
-            let length =
-                u64::from_le_bytes(buf[offset..offset + 8].try_into().unwrap()) as usize;
+            let length = u64::from_le_bytes(buf[offset..offset + 8].try_into().unwrap()) as usize;
             let ipc_data = &buf[offset + 8..offset + 8 + length];
             let reader = StreamReader::try_new(ipc_data, None).unwrap();
             for batch in reader {
