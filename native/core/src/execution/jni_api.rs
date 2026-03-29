@@ -896,18 +896,20 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlock(
 
             // Auto-detect format: IPC stream starts with Arrow continuation 0xFFFFFFFF
             let is_ipc_stream = length >= 4 && slice[0..4] == [0xFF, 0xFF, 0xFF, 0xFF];
-            let batch = if is_ipc_stream {
+            if is_ipc_stream {
                 use arrow::ipc::reader::StreamReader;
                 let mut reader = StreamReader::try_new(slice, None)?;
-                reader.next().ok_or_else(|| {
-                    datafusion::common::DataFusionError::Execution(
-                        "Empty IPC stream in shuffle block".to_string(),
-                    )
-                })??
+                match reader.next() {
+                    Some(Ok(batch)) => {
+                        prepare_output(&mut env, array_addrs, schema_addrs, batch, false)
+                    }
+                    Some(Err(e)) => Err(e.into()),
+                    None => Ok(-1), // empty stream = EOF
+                }
             } else {
-                read_ipc_compressed(slice)?
-            };
-            prepare_output(&mut env, array_addrs, schema_addrs, batch, false)
+                let batch = read_ipc_compressed(slice)?;
+                prepare_output(&mut env, array_addrs, schema_addrs, batch, false)
+            }
         })
     })
 }
