@@ -544,7 +544,10 @@ impl GroupsAccumulator for SumDecimalGroupsAccumulator {
         opt_filter: Option<&BooleanArray>,
         total_num_groups: usize,
     ) -> DFResult<()> {
-        debug_assert!(opt_filter.is_none(), "opt_filter is not supported in merge_batch");
+        debug_assert!(
+            opt_filter.is_none(),
+            "opt_filter is not supported in merge_batch"
+        );
 
         self.resize_helper(total_num_groups);
 
@@ -733,18 +736,14 @@ mod tests {
 
         // values: [100, 200, 300, 400], filter: [T, F, T, F] => sum = 100+300 = 400
         let values: ArrayRef = Arc::new(
-            Decimal128Array::from(vec![100i128, 200, 300, 400])
-                .with_data_type(data_type.clone()),
+            Decimal128Array::from(vec![100i128, 200, 300, 400]).with_data_type(data_type.clone()),
         );
         let filter = BooleanArray::from(vec![true, false, true, false]);
         acc.update_batch(&[values], &[0, 0, 0, 0], Some(&filter), 1)
             .unwrap();
 
         let result = acc.evaluate(EmitTo::All).unwrap();
-        let result = result
-            .as_any()
-            .downcast_ref::<Decimal128Array>()
-            .unwrap();
+        let result = result.as_any().downcast_ref::<Decimal128Array>().unwrap();
         assert_eq!(result.value(0), 400);
     }
 
@@ -762,18 +761,14 @@ mod tests {
             crate::create_query_context_map(),
         );
 
-        let values: ArrayRef = Arc::new(
-            Decimal128Array::from(vec![10i128, 20, 30]).with_data_type(data_type.clone()),
-        );
+        let values: ArrayRef =
+            Arc::new(Decimal128Array::from(vec![10i128, 20, 30]).with_data_type(data_type.clone()));
         let filter = BooleanArray::from(vec![Some(true), None, Some(true)]);
         acc.update_batch(&[values], &[0, 0, 0], Some(&filter), 1)
             .unwrap();
 
         let result = acc.evaluate(EmitTo::All).unwrap();
-        let result = result
-            .as_any()
-            .downcast_ref::<Decimal128Array>()
-            .unwrap();
+        let result = result.as_any().downcast_ref::<Decimal128Array>().unwrap();
         assert_eq!(result.value(0), 40); // 10 + 30 = 40
     }
 }

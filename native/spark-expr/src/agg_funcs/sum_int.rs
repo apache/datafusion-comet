@@ -543,7 +543,10 @@ impl GroupsAccumulator for SumIntGroupsAccumulatorLegacy {
         opt_filter: Option<&BooleanArray>,
         total_num_groups: usize,
     ) -> DFResult<()> {
-        debug_assert!(opt_filter.is_none(), "opt_filter is not supported in merge_batch");
+        debug_assert!(
+            opt_filter.is_none(),
+            "opt_filter is not supported in merge_batch"
+        );
 
         if values.len() != 1 {
             return Err(DataFusionError::Internal(format!(
@@ -687,7 +690,10 @@ impl GroupsAccumulator for SumIntGroupsAccumulatorAnsi {
         opt_filter: Option<&BooleanArray>,
         total_num_groups: usize,
     ) -> DFResult<()> {
-        debug_assert!(opt_filter.is_none(), "opt_filter is not supported in merge_batch");
+        debug_assert!(
+            opt_filter.is_none(),
+            "opt_filter is not supported in merge_batch"
+        );
 
         if values.len() != 1 {
             return Err(DataFusionError::Internal(format!(
@@ -868,7 +874,10 @@ impl GroupsAccumulator for SumIntGroupsAccumulatorTry {
         opt_filter: Option<&BooleanArray>,
         total_num_groups: usize,
     ) -> DFResult<()> {
-        debug_assert!(opt_filter.is_none(), "opt_filter is not supported in merge_batch");
+        debug_assert!(
+            opt_filter.is_none(),
+            "opt_filter is not supported in merge_batch"
+        );
 
         if values.len() != 2 {
             return Err(DataFusionError::Internal(format!(
