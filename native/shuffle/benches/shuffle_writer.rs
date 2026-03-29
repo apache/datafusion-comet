@@ -149,6 +149,7 @@ fn create_shuffle_writer_exec(
         ))),
         partitioning,
         compression_codec,
+        datafusion_comet_shuffle::ShuffleFormat::Block,
         "/tmp/data.out".to_string(),
         "/tmp/index.out".to_string(),
         false,

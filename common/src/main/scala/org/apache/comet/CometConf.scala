@@ -430,6 +430,18 @@ object CometConf extends ShimCometConf {
         "The maximum number of columns to hash for round robin partitioning must be non-negative.")
       .createWithDefault(0)
 
+  val COMET_EXEC_SHUFFLE_FORMAT: ConfigEntry[String] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.format")
+      .category(CATEGORY_SHUFFLE)
+      .doc(
+        "The format used for writing shuffle data. 'block' uses a custom block format with " +
+          "per-batch headers and supports all compression codecs (lz4, zstd, snappy). " +
+          "'ipc_stream' uses standard Arrow IPC stream format with the schema written once " +
+          "and supports lz4 and zstd compression (snappy is not supported).")
+      .stringConf
+      .checkValues(Set("block", "ipc_stream"))
+      .createWithDefault("block")
+
   val COMET_EXEC_SHUFFLE_COMPRESSION_CODEC: ConfigEntry[String] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.compression.codec")
       .category(CATEGORY_SHUFFLE)

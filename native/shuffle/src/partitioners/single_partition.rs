@@ -18,18 +18,32 @@
 use crate::metrics::ShufflePartitionerMetrics;
 use crate::partitioners::ShufflePartitioner;
 use crate::writers::BufBatchWriter;
-use crate::{CompressionCodec, ShuffleBlockWriter};
+use crate::{CompressionCodec, IpcStreamWriter, ShuffleBlockWriter, ShuffleFormat};
 use arrow::array::RecordBatch;
+use arrow::compute::kernels::coalesce::BatchCoalescer;
 use arrow::datatypes::SchemaRef;
 use datafusion::common::DataFusionError;
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
 use tokio::time::Instant;
 
+/// Output strategy for writing shuffle data in either block or IPC stream format.
+enum OutputWriter {
+    /// Block format: uses BufBatchWriter wrapping ShuffleBlockWriter
+    Block(BufBatchWriter<ShuffleBlockWriter, File>),
+    /// IPC stream format: uses IpcStreamWriter with batch coalescing.
+    /// The writer is wrapped in Option so it can be taken for finish().
+    IpcStream {
+        writer: Option<IpcStreamWriter<BufWriter<File>>>,
+        coalescer: Option<BatchCoalescer>,
+        batch_size: usize,
+    },
+}
+
 /// A partitioner that writes all shuffle data to a single file and a single index file
 pub(crate) struct SinglePartitionShufflePartitioner {
-    // output_data_file: File,
-    output_data_writer: BufBatchWriter<ShuffleBlockWriter, File>,
+    output: OutputWriter,
+    output_data_file: File,
     output_index_path: String,
     /// Batches that are smaller than the batch size and to be concatenated
     buffered_batches: Vec<RecordBatch>,
@@ -42,6 +56,7 @@ pub(crate) struct SinglePartitionShufflePartitioner {
 }
 
 impl SinglePartitionShufflePartitioner {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn try_new(
         output_data_path: String,
         output_index_path: String,
@@ -49,25 +64,42 @@ impl SinglePartitionShufflePartitioner {
         metrics: ShufflePartitionerMetrics,
         batch_size: usize,
         codec: CompressionCodec,
+        format: ShuffleFormat,
         write_buffer_size: usize,
     ) -> datafusion::common::Result<Self> {
-        let shuffle_block_writer = ShuffleBlockWriter::try_new(schema.as_ref(), codec.clone())?;
-
         let output_data_file = OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(true)
             .open(output_data_path)?;
 
-        let output_data_writer = BufBatchWriter::new(
-            shuffle_block_writer,
-            output_data_file,
-            write_buffer_size,
-            batch_size,
-        );
+        let output = match format {
+            ShuffleFormat::Block => {
+                let shuffle_block_writer =
+                    ShuffleBlockWriter::try_new(schema.as_ref(), codec.clone())?;
+                let output_data_writer = BufBatchWriter::new(
+                    shuffle_block_writer,
+                    output_data_file.try_clone()?,
+                    write_buffer_size,
+                    batch_size,
+                );
+                OutputWriter::Block(output_data_writer)
+            }
+            ShuffleFormat::IpcStream => {
+                let buf_writer =
+                    BufWriter::with_capacity(write_buffer_size, output_data_file.try_clone()?);
+                let writer = IpcStreamWriter::try_new(buf_writer, schema.as_ref(), codec)?;
+                OutputWriter::IpcStream {
+                    writer: Some(writer),
+                    coalescer: None,
+                    batch_size,
+                }
+            }
+        };
 
         Ok(Self {
-            output_data_writer,
+            output,
+            output_data_file,
             output_index_path,
             buffered_batches: vec![],
             num_buffered_rows: 0,
@@ -106,6 +138,68 @@ impl SinglePartitionShufflePartitioner {
             }
         }
     }
+
+    fn write_batch(&mut self, batch: &RecordBatch) -> datafusion::common::Result<()> {
+        match &mut self.output {
+            OutputWriter::Block(writer) => {
+                writer.write(batch, &self.metrics.encode_time, &self.metrics.write_time)?;
+                Ok(())
+            }
+            OutputWriter::IpcStream {
+                writer,
+                coalescer,
+                batch_size,
+            } => {
+                let w = writer.as_mut().ok_or_else(|| {
+                    DataFusionError::Internal("IPC stream writer already finished".to_string())
+                })?;
+                let coal = coalescer
+                    .get_or_insert_with(|| BatchCoalescer::new(batch.schema(), *batch_size));
+                coal.push_batch(batch.clone())?;
+
+                while let Some(b) = coal.next_completed_batch() {
+                    w.write_batch(&b, &self.metrics.encode_time)?;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn flush_output(&mut self) -> datafusion::common::Result<()> {
+        match &mut self.output {
+            OutputWriter::Block(writer) => {
+                writer.flush(&self.metrics.encode_time, &self.metrics.write_time)
+            }
+            OutputWriter::IpcStream {
+                writer, coalescer, ..
+            } => {
+                let w = writer.as_mut().ok_or_else(|| {
+                    DataFusionError::Internal("IPC stream writer already finished".to_string())
+                })?;
+                // Flush remaining coalesced batches
+                if let Some(coal) = coalescer {
+                    coal.finish_buffered_batch()?;
+                    while let Some(b) = coal.next_completed_batch() {
+                        w.write_batch(&b, &self.metrics.encode_time)?;
+                    }
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// Finish the IPC stream writer (writes EOS marker and flushes).
+    fn finish_ipc_stream(&mut self) -> datafusion::common::Result<()> {
+        if let OutputWriter::IpcStream { writer, .. } = &mut self.output {
+            if let Some(w) = writer.take() {
+                let buf_writer = w.finish()?;
+                buf_writer
+                    .into_inner()
+                    .map_err(|e| DataFusionError::Execution(format!("flush error: {e}")))?;
+            }
+        }
+        Ok(())
+    }
 }
 
 #[async_trait::async_trait]
@@ -123,20 +217,12 @@ impl ShufflePartitioner for SinglePartitionShufflePartitioner {
 
                 // Write the concatenated buffered batch
                 if let Some(batch) = concatenated_batch {
-                    self.output_data_writer.write(
-                        &batch,
-                        &self.metrics.encode_time,
-                        &self.metrics.write_time,
-                    )?;
+                    self.write_batch(&batch)?;
                 }
 
                 if num_rows >= self.batch_size {
                     // Write the new batch
-                    self.output_data_writer.write(
-                        &batch,
-                        &self.metrics.encode_time,
-                        &self.metrics.write_time,
-                    )?;
+                    self.write_batch(&batch)?;
                 } else {
                     // Add the new batch to the buffer
                     self.add_buffered_batch(batch);
@@ -160,16 +246,13 @@ impl ShufflePartitioner for SinglePartitionShufflePartitioner {
 
         // Write the concatenated buffered batch
         if let Some(batch) = concatenated_batch {
-            self.output_data_writer.write(
-                &batch,
-                &self.metrics.encode_time,
-                &self.metrics.write_time,
-            )?;
+            self.write_batch(&batch)?;
         }
-        self.output_data_writer
-            .flush(&self.metrics.encode_time, &self.metrics.write_time)?;
+        self.flush_output()?;
+        self.finish_ipc_stream()?;
 
         // Write index file. It should only contain 2 entries: 0 and the total number of bytes written
+        let data_file_length = self.output_data_file.metadata()?.len();
         let index_file = OpenOptions::new()
             .write(true)
             .create(true)
@@ -177,7 +260,6 @@ impl ShufflePartitioner for SinglePartitionShufflePartitioner {
             .open(self.output_index_path.clone())
             .map_err(|e| DataFusionError::Execution(format!("shuffle write error: {e:?}")))?;
         let mut index_buf_writer = BufWriter::new(index_file);
-        let data_file_length = self.output_data_writer.writer_stream_position()?;
         for offset in [0, data_file_length] {
             index_buf_writer.write_all(&(offset as i64).to_le_bytes()[..])?;
         }

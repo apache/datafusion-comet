@@ -17,10 +17,12 @@
 
 mod buf_batch_writer;
 mod checksum;
+mod ipc_stream_writer;
 mod shuffle_block_writer;
 mod spill;
 
 pub(crate) use buf_batch_writer::BufBatchWriter;
 pub(crate) use checksum::Checksum;
+pub use ipc_stream_writer::IpcStreamWriter;
 pub use shuffle_block_writer::{CompressionCodec, ShuffleBlockWriter};
 pub(crate) use spill::PartitionWriter;

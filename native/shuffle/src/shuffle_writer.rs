@@ -21,7 +21,7 @@ use crate::metrics::ShufflePartitionerMetrics;
 use crate::partitioners::{
     MultiPartitionShuffleRepartitioner, ShufflePartitioner, SinglePartitionShufflePartitioner,
 };
-use crate::{CometPartitioning, CompressionCodec};
+use crate::{CometPartitioning, CompressionCodec, ShuffleFormat};
 use async_trait::async_trait;
 use datafusion::common::exec_datafusion_err;
 use datafusion::physical_expr::{EquivalenceProperties, Partitioning};
@@ -65,6 +65,8 @@ pub struct ShuffleWriterExec {
     cache: PlanProperties,
     /// The compression codec to use when compressing shuffle blocks
     codec: CompressionCodec,
+    /// The shuffle data format (Block or IpcStream)
+    format: ShuffleFormat,
     tracing_enabled: bool,
     /// Size of the write buffer in bytes
     write_buffer_size: usize,
@@ -77,6 +79,7 @@ impl ShuffleWriterExec {
         input: Arc<dyn ExecutionPlan>,
         partitioning: CometPartitioning,
         codec: CompressionCodec,
+        format: ShuffleFormat,
         output_data_file: String,
         output_index_file: String,
         tracing_enabled: bool,
@@ -97,6 +100,7 @@ impl ShuffleWriterExec {
             output_index_file,
             cache,
             codec,
+            format,
             tracing_enabled,
             write_buffer_size,
         })
@@ -159,6 +163,7 @@ impl ExecutionPlan for ShuffleWriterExec {
                 Arc::clone(&children[0]),
                 self.partitioning.clone(),
                 self.codec.clone(),
+                self.format.clone(),
                 self.output_data_file.clone(),
                 self.output_index_file.clone(),
                 self.tracing_enabled,
@@ -188,6 +193,7 @@ impl ExecutionPlan for ShuffleWriterExec {
                     metrics,
                     context,
                     self.codec.clone(),
+                    self.format.clone(),
                     self.tracing_enabled,
                     self.write_buffer_size,
                 )
@@ -208,6 +214,7 @@ async fn external_shuffle(
     metrics: ShufflePartitionerMetrics,
     context: Arc<TaskContext>,
     codec: CompressionCodec,
+    format: ShuffleFormat,
     tracing_enabled: bool,
     write_buffer_size: usize,
 ) -> Result<SendableRecordBatchStream> {
@@ -223,6 +230,7 @@ async fn external_shuffle(
                     metrics,
                     context.session_config().batch_size(),
                     codec,
+                    format,
                     write_buffer_size,
                 )?)
             }
@@ -236,6 +244,7 @@ async fn external_shuffle(
                 context.runtime_env(),
                 context.session_config().batch_size(),
                 codec,
+                format,
                 tracing_enabled,
                 write_buffer_size,
             )?),
@@ -360,6 +369,7 @@ mod test {
             runtime_env,
             1024,
             CompressionCodec::Lz4Frame,
+            ShuffleFormat::Block,
             false,
             1024 * 1024, // write_buffer_size: 1MB default
         )
@@ -462,6 +472,7 @@ mod test {
                 ))),
                 partitioning,
                 CompressionCodec::Zstd(1),
+                ShuffleFormat::Block,
                 "/tmp/data.out".to_string(),
                 "/tmp/index.out".to_string(),
                 false,
@@ -521,6 +532,7 @@ mod test {
                 ))),
                 CometPartitioning::RoundRobin(num_partitions, 0),
                 CompressionCodec::Zstd(1),
+                ShuffleFormat::Block,
                 data_file.clone(),
                 index_file.clone(),
                 false,

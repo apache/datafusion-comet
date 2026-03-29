@@ -73,7 +73,7 @@ use datafusion_comet_spark_expr::{
 use iceberg::expr::Bind;
 
 use crate::execution::operators::ExecutionError::GeneralError;
-use crate::execution::shuffle::{CometPartitioning, CompressionCodec};
+use crate::execution::shuffle::{CometPartitioning, CompressionCodec, ShuffleFormat};
 use crate::execution::spark_plan::SparkPlan;
 use crate::parquet::parquet_support::prepare_object_store_with_configs;
 use datafusion::common::scalar::ScalarStructBuilder;
@@ -116,7 +116,8 @@ use datafusion_comet_proto::{
     spark_operator::{
         self, lower_window_frame_bound::LowerFrameBoundStruct, operator::OpStruct,
         upper_window_frame_bound::UpperFrameBoundStruct, BuildSide,
-        CompressionCodec as SparkCompressionCodec, JoinType, Operator, WindowFrameType,
+        CompressionCodec as SparkCompressionCodec, JoinType, Operator,
+        ShuffleWriterFormat as SparkShuffleWriterFormat, WindowFrameType,
     },
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
@@ -1351,11 +1352,17 @@ impl PhysicalPlanner {
                     ))),
                 }?;
 
+                let format = match writer.format.try_into() {
+                    Ok(SparkShuffleWriterFormat::IpcStream) => ShuffleFormat::IpcStream,
+                    _ => ShuffleFormat::Block,
+                };
+
                 let write_buffer_size = writer.write_buffer_size as usize;
                 let shuffle_writer = Arc::new(ShuffleWriterExec::try_new(
                     Arc::clone(&child.native_plan),
                     partitioning,
                     codec,
+                    format,
                     writer.output_data_file.clone(),
                     writer.output_index_file.clone(),
                     writer.tracing_enabled,

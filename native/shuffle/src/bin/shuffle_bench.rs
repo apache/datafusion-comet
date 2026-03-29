@@ -120,6 +120,10 @@ struct Args {
     /// Each task reads the same input and writes to its own output files.
     #[arg(long, default_value_t = 1)]
     concurrent_tasks: usize,
+
+    /// Shuffle format: block or ipc_stream
+    #[arg(long, default_value = "block")]
+    format: String,
 }
 
 fn main() {
@@ -133,6 +137,7 @@ fn main() {
     let (schema, total_rows) = read_parquet_metadata(&args.input, args.limit);
 
     let codec = parse_codec(&args.codec, args.zstd_level);
+    let format = parse_format(&args.format);
     let hash_col_indices = parse_hash_columns(&args.hash_columns);
 
     println!("=== Shuffle Benchmark ===");
@@ -147,6 +152,7 @@ fn main() {
     println!("Partitioning:   {}", args.partitioning);
     println!("Partitions:     {}", args.partitions);
     println!("Codec:          {:?}", codec);
+    println!("Format:         {:?}", format);
     println!("Hash columns:   {:?}", hash_col_indices);
     if let Some(mem_limit) = args.memory_limit {
         println!("Memory limit:   {}", format_bytes(mem_limit));
@@ -174,12 +180,20 @@ fn main() {
         };
 
         let write_elapsed = if args.concurrent_tasks > 1 {
-            run_concurrent_shuffle_writes(&args.input, &schema, &codec, &hash_col_indices, &args)
+            run_concurrent_shuffle_writes(
+                &args.input,
+                &schema,
+                &codec,
+                &format,
+                &hash_col_indices,
+                &args,
+            )
         } else {
             run_shuffle_write(
                 &args.input,
                 &schema,
                 &codec,
+                &format,
                 &hash_col_indices,
                 &args,
                 data_file.to_str().unwrap(),
@@ -321,6 +335,7 @@ fn run_shuffle_write(
     input_path: &PathBuf,
     schema: &SchemaRef,
     codec: &CompressionCodec,
+    format: &datafusion_comet_shuffle::ShuffleFormat,
     hash_col_indices: &[usize],
     args: &Args,
     data_file: &str,
@@ -339,6 +354,7 @@ fn run_shuffle_write(
         execute_shuffle_write(
             input_path.to_str().unwrap(),
             codec.clone(),
+            format.clone(),
             partitioning,
             args.batch_size,
             args.memory_limit,
@@ -357,6 +373,7 @@ fn run_shuffle_write(
 async fn execute_shuffle_write(
     input_path: &str,
     codec: CompressionCodec,
+    format: datafusion_comet_shuffle::ShuffleFormat,
     partitioning: CometPartitioning,
     batch_size: usize,
     memory_limit: Option<usize>,
@@ -401,6 +418,7 @@ async fn execute_shuffle_write(
         input,
         partitioning,
         codec,
+        format,
         data_file,
         index_file,
         false,
@@ -420,6 +438,7 @@ fn run_concurrent_shuffle_writes(
     input_path: &PathBuf,
     schema: &SchemaRef,
     codec: &CompressionCodec,
+    format: &datafusion_comet_shuffle::ShuffleFormat,
     hash_col_indices: &[usize],
     args: &Args,
 ) -> f64 {
@@ -436,6 +455,7 @@ fn run_concurrent_shuffle_writes(
 
             let input_str = input_path.to_str().unwrap().to_string();
             let codec = codec.clone();
+            let format = format.clone();
             let partitioning = build_partitioning(
                 &args.partitioning,
                 args.partitions,
@@ -451,6 +471,7 @@ fn run_concurrent_shuffle_writes(
                 execute_shuffle_write(
                     &input_str,
                     codec,
+                    format,
                     partitioning,
                     batch_size,
                     memory_limit,
@@ -548,6 +569,13 @@ fn build_partitioning(
             eprintln!("Unknown partitioning scheme: {other}. Using hash.");
             build_partitioning("hash", num_partitions, hash_col_indices, schema)
         }
+    }
+}
+
+fn parse_format(format: &str) -> datafusion_comet_shuffle::ShuffleFormat {
+    match format.to_lowercase().as_str() {
+        "ipc_stream" | "ipc-stream" | "stream" => datafusion_comet_shuffle::ShuffleFormat::IpcStream,
+        _ => datafusion_comet_shuffle::ShuffleFormat::Block,
     }
 }
 

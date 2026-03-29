@@ -38,7 +38,7 @@ import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.CometConf
 import org.apache.comet.serde.{OperatorOuterClass, PartitioningOuterClass, QueryPlanSerde}
-import org.apache.comet.serde.OperatorOuterClass.{CompressionCodec, Operator}
+import org.apache.comet.serde.OperatorOuterClass.{CompressionCodec, Operator, ShuffleWriterFormat}
 import org.apache.comet.serde.QueryPlanSerde.serializeDataType
 
 /**
@@ -192,6 +192,12 @@ class CometNativeShuffleWriter[K, V](
         CometConf.COMET_EXEC_SHUFFLE_COMPRESSION_ZSTD_LEVEL.get)
       shuffleWriterBuilder.setWriteBufferSize(
         CometConf.COMET_SHUFFLE_WRITE_BUFFER_SIZE.get().max(Int.MaxValue).toInt)
+
+      val format = CometConf.COMET_EXEC_SHUFFLE_FORMAT.get() match {
+        case "ipc_stream" => ShuffleWriterFormat.IPC_STREAM
+        case _ => ShuffleWriterFormat.BLOCK
+      }
+      shuffleWriterBuilder.setFormat(format)
 
       outputPartitioning match {
         case p if isSinglePartitioning(p) =>

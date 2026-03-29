@@ -284,6 +284,11 @@ enum CompressionCodec {
   Snappy = 3;
 }
 
+enum ShuffleWriterFormat {
+  BLOCK = 0;
+  IPC_STREAM = 1;
+}
+
 message ShuffleWriter {
   spark.spark_partitioning.Partitioning partitioning = 1;
   string output_data_file = 3;
@@ -294,6 +299,8 @@ message ShuffleWriter {
   // Size of the write buffer in bytes used when writing shuffle data to disk.
   // Larger values may improve write performance but use more memory.
   int32 write_buffer_size = 8;
+  // The shuffle data format to use (Block or IpcStream).
+  ShuffleWriterFormat format = 9;
 }
 
 message ParquetWriter {

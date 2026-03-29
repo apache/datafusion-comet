@@ -24,6 +24,17 @@ pub mod spark_unsafe;
 pub(crate) mod writers;
 
 pub use comet_partitioning::CometPartitioning;
-pub use ipc::read_ipc_compressed;
+pub use ipc::{read_ipc_compressed, read_ipc_stream};
 pub use shuffle_writer::ShuffleWriterExec;
-pub use writers::{CompressionCodec, ShuffleBlockWriter};
+pub use writers::{CompressionCodec, IpcStreamWriter, ShuffleBlockWriter};
+
+/// The format used for writing shuffle data.
+#[derive(Debug, Clone)]
+pub enum ShuffleFormat {
+    /// Custom block format: each batch is a self-contained block with a
+    /// length-prefix + field-count + codec header followed by compressed Arrow IPC.
+    Block,
+    /// Standard Arrow IPC stream format: schema written once, batches as IPC
+    /// messages, with optional Arrow IPC body compression (LZ4_FRAME or ZSTD).
+    IpcStream,
+}

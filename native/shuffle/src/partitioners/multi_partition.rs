@@ -21,8 +21,12 @@ use crate::partitioners::partitioned_batch_iterator::{
 };
 use crate::partitioners::ShufflePartitioner;
 use crate::writers::{BufBatchWriter, PartitionWriter};
-use crate::{comet_partitioning, CometPartitioning, CompressionCodec, ShuffleBlockWriter};
+use crate::{
+    comet_partitioning, CometPartitioning, CompressionCodec, IpcStreamWriter, ShuffleBlockWriter,
+    ShuffleFormat,
+};
 use arrow::array::{ArrayRef, RecordBatch};
+use arrow::compute::kernels::coalesce::BatchCoalescer;
 use arrow::datatypes::SchemaRef;
 use datafusion::common::utils::proxy::VecAllocExt;
 use datafusion::common::DataFusionError;
@@ -108,6 +112,7 @@ impl ScratchSpace {
 pub(crate) struct MultiPartitionShuffleRepartitioner {
     output_data_file: String,
     output_index_file: String,
+    schema: SchemaRef,
     buffered_batches: Vec<RecordBatch>,
     partition_indices: Vec<Vec<(u32, u32)>>,
     partition_writers: Vec<PartitionWriter>,
@@ -122,6 +127,8 @@ pub(crate) struct MultiPartitionShuffleRepartitioner {
     batch_size: usize,
     /// Reservation for repartitioning
     reservation: MemoryReservation,
+    codec: CompressionCodec,
+    format: ShuffleFormat,
     tracing_enabled: bool,
     /// Size of the write buffer in bytes
     write_buffer_size: usize,
@@ -139,6 +146,7 @@ impl MultiPartitionShuffleRepartitioner {
         runtime: Arc<RuntimeEnv>,
         batch_size: usize,
         codec: CompressionCodec,
+        format: ShuffleFormat,
         tracing_enabled: bool,
         write_buffer_size: usize,
     ) -> datafusion::common::Result<Self> {
@@ -168,7 +176,7 @@ impl MultiPartitionShuffleRepartitioner {
         let shuffle_block_writer = ShuffleBlockWriter::try_new(schema.as_ref(), codec.clone())?;
 
         let partition_writers = (0..num_output_partitions)
-            .map(|_| PartitionWriter::try_new(shuffle_block_writer.clone()))
+            .map(|_| PartitionWriter::try_new(shuffle_block_writer.clone(), format.clone()))
             .collect::<datafusion::common::Result<Vec<_>>>()?;
 
         let reservation = MemoryConsumer::new(format!("ShuffleRepartitioner[{partition}]"))
@@ -178,6 +186,7 @@ impl MultiPartitionShuffleRepartitioner {
         Ok(Self {
             output_data_file,
             output_index_file,
+            schema,
             buffered_batches: vec![],
             partition_indices: vec![vec![]; num_output_partitions],
             partition_writers,
@@ -188,6 +197,8 @@ impl MultiPartitionShuffleRepartitioner {
             scratch,
             batch_size,
             reservation,
+            codec,
+            format,
             tracing_enabled,
             write_buffer_size,
         })
@@ -434,7 +445,7 @@ impl MultiPartitionShuffleRepartitioner {
         Ok(())
     }
 
-    fn shuffle_write_partition(
+    fn shuffle_write_partition_block(
         partition_iter: &mut PartitionedBatchIterator,
         shuffle_block_writer: &mut ShuffleBlockWriter,
         output_data: &mut BufWriter<File>,
@@ -456,6 +467,7 @@ impl MultiPartitionShuffleRepartitioner {
         buf_batch_writer.flush(encode_time, write_time)?;
         Ok(())
     }
+
 
     fn used(&self) -> usize {
         self.reservation.size()
@@ -513,6 +525,8 @@ impl MultiPartitionShuffleRepartitioner {
                     &self.metrics,
                     self.write_buffer_size,
                     self.batch_size,
+                    &self.codec,
+                    self.schema.as_ref(),
                 )?;
             }
 
@@ -579,26 +593,60 @@ impl ShufflePartitioner for MultiPartitionShuffleRepartitioner {
             for i in 0..num_output_partitions {
                 offsets[i] = output_data.stream_position()?;
 
-                // if we wrote a spill file for this partition then copy the
-                // contents into the shuffle file
-                if let Some(spill_path) = self.partition_writers[i].path() {
-                    let mut spill_file = BufReader::new(File::open(spill_path)?);
-                    let mut write_timer = self.metrics.write_time.timer();
-                    std::io::copy(&mut spill_file, &mut output_data)?;
-                    write_timer.stop();
-                }
-
-                // Write in memory batches to output data file
                 let mut partition_iter = partitioned_batches.produce(i);
-                Self::shuffle_write_partition(
-                    &mut partition_iter,
-                    &mut self.shuffle_block_writer,
-                    &mut output_data,
-                    &self.metrics.encode_time,
-                    &self.metrics.write_time,
-                    self.write_buffer_size,
-                    self.batch_size,
-                )?;
+
+                match &self.format {
+                    ShuffleFormat::Block => {
+                        // Raw-copy spill file bytes (they are already in block format)
+                        if let Some(spill_path) = self.partition_writers[i].path() {
+                            let mut spill_file = BufReader::new(File::open(spill_path)?);
+                            let mut write_timer = self.metrics.write_time.timer();
+                            std::io::copy(&mut spill_file, &mut output_data)?;
+                            write_timer.stop();
+                        }
+
+                        Self::shuffle_write_partition_block(
+                            &mut partition_iter,
+                            &mut self.shuffle_block_writer,
+                            &mut output_data,
+                            &self.metrics.encode_time,
+                            &self.metrics.write_time,
+                            self.write_buffer_size,
+                            self.batch_size,
+                        )?;
+                    }
+                    ShuffleFormat::IpcStream => {
+                        // Raw-copy spill file (already in IPC stream format)
+                        if let Some(spill_path) = self.partition_writers[i].path() {
+                            let mut spill_file = BufReader::new(File::open(spill_path)?);
+                            let mut write_timer = self.metrics.write_time.timer();
+                            std::io::copy(&mut spill_file, &mut output_data)?;
+                            write_timer.stop();
+                        }
+
+                        // Write remaining in-memory batches as an IPC stream,
+                        // coalescing small batches to reduce per-message overhead
+                        let mut ipc_writer = IpcStreamWriter::try_new(
+                            &mut output_data,
+                            self.schema.as_ref(),
+                            self.codec.clone(),
+                        )?;
+                        let mut coalescer =
+                            BatchCoalescer::new(Arc::clone(&self.schema), self.batch_size);
+                        for batch in &mut partition_iter {
+                            coalescer.push_batch(batch?)?;
+                            while let Some(b) = coalescer.next_completed_batch() {
+                                ipc_writer
+                                    .write_batch(&b, &self.metrics.encode_time)?;
+                            }
+                        }
+                        coalescer.finish_buffered_batch()?;
+                        while let Some(b) = coalescer.next_completed_batch() {
+                            ipc_writer.write_batch(&b, &self.metrics.encode_time)?;
+                        }
+                        ipc_writer.finish()?;
+                    }
+                }
             }
 
             let mut write_timer = self.metrics.write_time.timer();

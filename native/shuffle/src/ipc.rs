@@ -20,6 +20,19 @@ use arrow::ipc::reader::StreamReader;
 use datafusion::common::DataFusionError;
 use datafusion::error::Result;
 
+/// Reads all record batches from a standard Arrow IPC stream.
+///
+/// This is the counterpart to [`crate::writers::IpcStreamWriter`]. The input
+/// should be a complete Arrow IPC stream (schema + batch messages + EOS marker),
+/// optionally with Arrow IPC body compression (LZ4_FRAME or ZSTD).
+pub fn read_ipc_stream(bytes: &[u8]) -> Result<Vec<RecordBatch>> {
+    let reader = StreamReader::try_new(bytes, None)?;
+    reader
+        .into_iter()
+        .map(|r| r.map_err(|e| e.into()))
+        .collect()
+}
+
 pub fn read_ipc_compressed(bytes: &[u8]) -> Result<RecordBatch> {
     match &bytes[0..4] {
         b"SNAP" => {
