@@ -76,3 +76,12 @@ SELECT AVG(i) FILTER (WHERE flag = true) FROM test_agg_filter
 query
 SELECT grp, AVG(i) FILTER (WHERE flag = true) FROM test_agg_filter GROUP BY grp ORDER BY grp
 
+-- FILTER on AVG(decimal): requires allowIncompatible due to rounding in cast back to decimal
+--SET spark.comet.expression.Cast.allowIncompatible=true
+
+query
+SELECT AVG(d) FILTER (WHERE flag = true) FROM test_agg_filter
+
+query
+SELECT grp, AVG(d) FILTER (WHERE flag = true) FROM test_agg_filter GROUP BY grp ORDER BY grp
+
