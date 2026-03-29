@@ -301,7 +301,7 @@ Note: The `snappy` codec is only available with block format. IPC stream format 
 | `spark.comet.exec.shuffle.format`                 | `block` | Data format: `block` or `ipc_stream`     |
 | `spark.comet.exec.shuffle.compression.codec`      | `lz4`   | Compression codec                        |
 | `spark.comet.exec.shuffle.compression.zstd.level` | `1`     | Zstd compression level                   |
-| `spark.comet.shuffle.write.buffer.size`            | `1MB`   | Write buffer size                        |
+| `spark.comet.shuffle.write.buffer.size`           | `1MB`   | Write buffer size                        |
 | `spark.comet.columnar.shuffle.batch.size`         | `8192`  | Target rows per batch                    |
 
 ## Comparison with JVM Shuffle

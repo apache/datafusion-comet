@@ -109,13 +109,17 @@ class CometBlockStoreShuffleReader[K, C](
         if (currentReadIterator != null) {
           currentReadIterator.close()
         }
+        val numCols = dep.schema
+          .map(_.fields.length)
+          .orElse(Some(dep.outputAttributes.length).filter(_ > 0))
+          .getOrElse(-1)
         currentReadIterator = NativeBatchDecoderIterator(
           blockIdAndStream._2,
           dep.decodeTime,
           nativeLib,
           nativeUtil,
           tracingEnabled,
-          dep.schema.map(_.fields.length).getOrElse(-1))
+          numCols)
         currentReadIterator
       })
       .map(b => (0, b))
