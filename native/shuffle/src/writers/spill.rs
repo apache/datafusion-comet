@@ -95,9 +95,7 @@ impl PartitionWriter {
                     .append(true)
                     .open(&spill_path)
                     .map_err(|e| {
-                        DataFusionError::Execution(format!(
-                            "Error occurred while spilling {e}"
-                        ))
+                        DataFusionError::Execution(format!("Error occurred while spilling {e}"))
                     })?;
                 let mut buf_batch_writer = BufBatchWriter::new(
                     &mut self.shuffle_block_writer,
@@ -105,11 +103,8 @@ impl PartitionWriter {
                     write_buffer_size,
                     batch_size,
                 );
-                let mut bytes_written = buf_batch_writer.write(
-                    &batch?,
-                    &metrics.encode_time,
-                    &metrics.write_time,
-                )?;
+                let mut bytes_written =
+                    buf_batch_writer.write(&batch?, &metrics.encode_time, &metrics.write_time)?;
                 for batch in iter {
                     bytes_written += buf_batch_writer.write(
                         &batch?,
@@ -132,19 +127,15 @@ impl PartitionWriter {
                         .truncate(true)
                         .open(&spill_path)
                         .map_err(|e| {
-                            DataFusionError::Execution(format!(
-                                "Error occurred while spilling {e}"
-                            ))
+                            DataFusionError::Execution(format!("Error occurred while spilling {e}"))
                         })?;
                     let mut buf_writer = BufWriter::with_capacity(write_buffer_size, file);
                     self.ipc_spill_start_pos = buf_writer.stream_position()?;
-                    self.ipc_spill_writer = Some(
-                        IpcStreamWriter::try_new_length_prefixed(
-                            buf_writer,
-                            schema,
-                            codec.clone(),
-                        )?,
-                    );
+                    self.ipc_spill_writer = Some(IpcStreamWriter::try_new_length_prefixed(
+                        buf_writer,
+                        schema,
+                        codec.clone(),
+                    )?);
                 }
                 let ipc_writer = self.ipc_spill_writer.as_mut().unwrap();
                 ipc_writer.write_batch(&batch?, &metrics.encode_time)?;

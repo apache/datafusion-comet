@@ -80,8 +80,7 @@ impl SinglePartitionShufflePartitioner {
                 ))
             }
             ShuffleFormat::IpcStream => {
-                let buf_writer =
-                    BufWriter::with_capacity(write_buffer_size, output_data_file);
+                let buf_writer = BufWriter::with_capacity(write_buffer_size, output_data_file);
                 let writer =
                     IpcStreamWriter::try_new_length_prefixed(buf_writer, schema.as_ref(), codec)?;
                 OutputWriter::IpcStream {

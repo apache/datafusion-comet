@@ -629,8 +629,7 @@ impl ShufflePartitioner for MultiPartitionShuffleRepartitioner {
                         for batch in &mut partition_iter {
                             coalescer.push_batch(batch?)?;
                             while let Some(b) = coalescer.next_completed_batch() {
-                                ipc_writer
-                                    .write_batch(&b, &self.metrics.encode_time)?;
+                                ipc_writer.write_batch(&b, &self.metrics.encode_time)?;
                             }
                         }
                         coalescer.finish_buffered_batch()?;

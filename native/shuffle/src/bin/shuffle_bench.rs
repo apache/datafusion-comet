@@ -574,7 +574,9 @@ fn build_partitioning(
 
 fn parse_format(format: &str) -> datafusion_comet_shuffle::ShuffleFormat {
     match format.to_lowercase().as_str() {
-        "ipc_stream" | "ipc-stream" | "stream" => datafusion_comet_shuffle::ShuffleFormat::IpcStream,
+        "ipc_stream" | "ipc-stream" | "stream" => {
+            datafusion_comet_shuffle::ShuffleFormat::IpcStream
+        }
         _ => datafusion_comet_shuffle::ShuffleFormat::Block,
     }
 }

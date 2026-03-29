@@ -155,11 +155,7 @@ mod tests {
             Arc::new(schema.clone()),
             vec![
                 Arc::new(Int32Array::from(vec![n, n + 1, n + 2])),
-                Arc::new(StringArray::from(vec![
-                    Some("hello"),
-                    None,
-                    Some("world"),
-                ])),
+                Arc::new(StringArray::from(vec![Some("hello"), None, Some("world")])),
             ],
         )
         .unwrap()
@@ -172,8 +168,7 @@ mod tests {
         let mut buf = Vec::new();
         {
             let cursor = Cursor::new(&mut buf);
-            let mut writer =
-                IpcStreamWriter::try_new(cursor, &schema, codec).unwrap();
+            let mut writer = IpcStreamWriter::try_new(cursor, &schema, codec).unwrap();
             for i in 0..num_batches {
                 let batch = test_batch(&schema, (i * 10) as i32);
                 writer.write_batch(&batch, &ipc_time).unwrap();

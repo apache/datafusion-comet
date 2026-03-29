@@ -18,9 +18,7 @@
 use crate::{
     errors::CometError,
     execution::{
-        operators::ExecutionError,
-        planner::TEST_EXEC_CONTEXT_ID,
-        shuffle::ipc::read_ipc_compressed,
+        operators::ExecutionError, planner::TEST_EXEC_CONTEXT_ID, shuffle::ipc::read_ipc_compressed,
     },
     jvm_bridge::{jni_call, JVMClasses},
 };
@@ -162,10 +160,7 @@ impl ShuffleScanExec {
         Ok(())
     }
 
-    fn batch_to_input(
-        batch: &arrow::array::RecordBatch,
-        data_types: &[DataType],
-    ) -> InputBatch {
+    fn batch_to_input(batch: &arrow::array::RecordBatch, data_types: &[DataType]) -> InputBatch {
         let num_rows = batch.num_rows();
         let columns: Vec<ArrayRef> = batch
             .columns()

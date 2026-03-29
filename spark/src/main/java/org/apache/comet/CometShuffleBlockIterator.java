@@ -45,13 +45,14 @@ public class CometShuffleBlockIterator implements Closeable {
 
   /** Block format header: 8-byte length + 8-byte field count. */
   private static final int BLOCK_HEADER_SIZE = 16;
+
   /** IPC stream format header: 8-byte length only. */
   private static final int IPC_STREAM_HEADER_SIZE = 8;
 
   private final ReadableByteChannel channel;
   private final InputStream inputStream;
-  private final ByteBuffer headerBuf = ByteBuffer.allocate(BLOCK_HEADER_SIZE)
-      .order(ByteOrder.LITTLE_ENDIAN);
+  private final ByteBuffer headerBuf =
+      ByteBuffer.allocate(BLOCK_HEADER_SIZE).order(ByteOrder.LITTLE_ENDIAN);
   private ByteBuffer dataBuf = ByteBuffer.allocateDirect(INITIAL_BUFFER_SIZE);
   private boolean closed = false;
   private int currentBlockLength = 0;
