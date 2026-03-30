@@ -133,9 +133,7 @@ pub fn spark_log(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionErro
                 (ScalarValue::Float64(Some(base)), ScalarValue::Float64(Some(value))) => {
                     ScalarValue::Float64(compute(*base, *value))
                 }
-                (ScalarValue::Float64(_), ScalarValue::Float64(_)) => {
-                    ScalarValue::Float64(None)
-                }
+                (ScalarValue::Float64(_), ScalarValue::Float64(_)) => ScalarValue::Float64(None),
                 _ => {
                     return Err(DataFusionError::Internal(format!(
                         "spark_log expected Float64 scalars, got {base_scalar:?} and {val_scalar:?}",
