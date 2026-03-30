@@ -523,6 +523,18 @@ object CometConf extends ShimCometConf {
         "Should not be larger than batch size `spark.comet.batchSize`")
       .createWithDefault(8192)
 
+  val COMET_SHUFFLE_PARTITIONER_MODE: ConfigEntry[String] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.partitionerMode")
+      .category(CATEGORY_SHUFFLE)
+      .doc(
+        "The partitioner mode used by the native shuffle writer. " +
+          "'immediate' writes partitioned IPC blocks immediately as batches arrive, " +
+          "reducing memory usage. 'buffered' buffers all rows before writing, which may " +
+          "improve performance for small datasets but uses more memory.")
+      .stringConf
+      .checkValues(Set("immediate", "buffered"))
+      .createWithDefault("immediate")
+
   val COMET_SHUFFLE_WRITE_BUFFER_SIZE: ConfigEntry[Long] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.writeBufferSize")
       .category(CATEGORY_SHUFFLE)

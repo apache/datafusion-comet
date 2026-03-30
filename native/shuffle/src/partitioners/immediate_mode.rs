@@ -39,14 +39,12 @@ use tokio::time::Instant;
 /// - 8 bytes: field_count (usize LE)
 /// - 4 bytes: codec tag (b"SNAP", b"LZ4_", b"ZSTD", or b"NONE")
 /// - N bytes: compressed Arrow IPC stream data
-#[allow(dead_code)]
 pub(crate) struct PartitionOutputStream {
     schema: SchemaRef,
     codec: CompressionCodec,
     buffer: Vec<u8>,
 }
 
-#[allow(dead_code)]
 impl PartitionOutputStream {
     pub(crate) fn try_new(schema: SchemaRef, codec: CompressionCodec) -> Result<Self> {
         Ok(Self {
@@ -138,6 +136,7 @@ impl PartitionOutputStream {
     }
 
     /// Returns the number of bytes currently in the buffer.
+    #[cfg(test)]
     fn buffered_bytes(&self) -> usize {
         self.buffer.len()
     }
@@ -148,12 +147,12 @@ impl PartitionOutputStream {
     }
 
     /// Consumes self and returns the buffer.
+    #[cfg(test)]
     fn finish(self) -> Result<Vec<u8>> {
         Ok(self.buffer)
     }
 }
 
-#[allow(dead_code)]
 struct SpillFile {
     _temp_file: datafusion::execution::disk_manager::RefCountedTempFile,
     file: File,
@@ -162,7 +161,6 @@ struct SpillFile {
 /// A partitioner that immediately writes IPC blocks per partition as batches arrive,
 /// rather than buffering all data until shuffle_write. Supports spilling per-partition
 /// buffers to disk under memory pressure.
-#[allow(dead_code)]
 pub(crate) struct ImmediateModePartitioner {
     output_data_file: String,
     output_index_file: String,
@@ -177,7 +175,6 @@ pub(crate) struct ImmediateModePartitioner {
     batch_size: usize,
 }
 
-#[allow(dead_code)]
 impl ImmediateModePartitioner {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn try_new(
