@@ -43,6 +43,7 @@ use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::physical_expr::expressions::Column;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::common::collect;
+use datafusion::physical_plan::metrics::MetricsSet;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::{ParquetReadOptions, SessionContext};
 use datafusion_comet_shuffle::{
@@ -50,7 +51,7 @@ use datafusion_comet_shuffle::{
 };
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -164,6 +165,7 @@ fn main() {
     let mut write_times = Vec::with_capacity(args.iterations);
     let mut read_times = Vec::with_capacity(args.iterations);
     let mut data_file_sizes = Vec::with_capacity(args.iterations);
+    let mut last_metrics: Option<MetricsSet> = None;
 
     for i in 0..total_iters {
         let is_warmup = i < args.warmup;
@@ -173,8 +175,15 @@ fn main() {
             format!("iter {}/{}", i - args.warmup + 1, args.iterations)
         };
 
-        let write_elapsed = if args.concurrent_tasks > 1 {
-            run_concurrent_shuffle_writes(&args.input, &schema, &codec, &hash_col_indices, &args)
+        let (write_elapsed, metrics) = if args.concurrent_tasks > 1 {
+            let elapsed = run_concurrent_shuffle_writes(
+                &args.input,
+                &schema,
+                &codec,
+                &hash_col_indices,
+                &args,
+            );
+            (elapsed, None)
         } else {
             run_shuffle_write(
                 &args.input,
@@ -191,6 +200,7 @@ fn main() {
         if !is_warmup {
             write_times.push(write_elapsed);
             data_file_sizes.push(data_size);
+            last_metrics = metrics;
         }
 
         print!("  [{label}] write: {:.3}s", write_elapsed);
@@ -259,14 +269,79 @@ fn main() {
                 format_bytes(read_throughput_bytes as usize)
             );
         }
+
+        if let Some(ref metrics) = last_metrics {
+            println!();
+            println!("Shuffle Metrics (last iteration):");
+            print_shuffle_metrics(metrics, avg_write);
+        }
     }
 
     let _ = fs::remove_file(&data_file);
     let _ = fs::remove_file(&index_file);
 }
 
+fn print_shuffle_metrics(metrics: &MetricsSet, total_wall_time_secs: f64) {
+    let get_metric = |name: &str| -> Option<usize> {
+        metrics
+            .iter()
+            .find(|m| m.value().name() == name)
+            .map(|m| m.value().as_usize())
+    };
+
+    let total_ns = (total_wall_time_secs * 1e9) as u64;
+    let fmt_time = |nanos: usize| -> String {
+        let secs = nanos as f64 / 1e9;
+        let pct = if total_ns > 0 {
+            (nanos as f64 / total_ns as f64) * 100.0
+        } else {
+            0.0
+        };
+        format!("{:.3}s ({:.1}%)", secs, pct)
+    };
+
+    if let Some(input_batches) = get_metric("input_batches") {
+        println!("  input batches:    {}", format_number(input_batches));
+    }
+    if let Some(nanos) = get_metric("repart_time") {
+        println!("  repart time:      {}", fmt_time(nanos));
+    }
+    if let Some(nanos) = get_metric("encode_time") {
+        println!("  encode time:      {}", fmt_time(nanos));
+    }
+    if let Some(nanos) = get_metric("write_time") {
+        println!("  write time:       {}", fmt_time(nanos));
+    }
+    if let (Some(repart), Some(encode), Some(write)) = (
+        get_metric("repart_time"),
+        get_metric("encode_time"),
+        get_metric("write_time"),
+    ) {
+        let accounted = repart + encode + write;
+        if total_ns as usize > accounted {
+            let other = total_ns as usize - accounted;
+            println!("  other time:       {}", fmt_time(other));
+        }
+    }
+    if let Some(spill_count) = get_metric("spill_count") {
+        if spill_count > 0 {
+            println!("  spill count:      {}", format_number(spill_count));
+        }
+    }
+    if let Some(spilled_bytes) = get_metric("spilled_bytes") {
+        if spilled_bytes > 0 {
+            println!("  spilled bytes:    {}", format_bytes(spilled_bytes));
+        }
+    }
+    if let Some(data_size) = get_metric("data_size") {
+        if data_size > 0 {
+            println!("  data size:        {}", format_bytes(data_size));
+        }
+    }
+}
+
 /// Read schema and total row count from Parquet metadata without loading any data.
-fn read_parquet_metadata(path: &PathBuf, limit: usize) -> (SchemaRef, u64) {
+fn read_parquet_metadata(path: &Path, limit: usize) -> (SchemaRef, u64) {
     let paths = collect_parquet_paths(path);
     let mut schema = None;
     let mut total_rows = 0u64;
@@ -294,7 +369,7 @@ fn read_parquet_metadata(path: &PathBuf, limit: usize) -> (SchemaRef, u64) {
     (schema.expect("No parquet files found"), total_rows)
 }
 
-fn collect_parquet_paths(path: &PathBuf) -> Vec<PathBuf> {
+fn collect_parquet_paths(path: &Path) -> Vec<PathBuf> {
     if path.is_dir() {
         let mut files: Vec<PathBuf> = fs::read_dir(path)
             .unwrap_or_else(|e| panic!("Failed to read directory {}: {}", path.display(), e))
@@ -313,19 +388,19 @@ fn collect_parquet_paths(path: &PathBuf) -> Vec<PathBuf> {
         }
         files
     } else {
-        vec![path.clone()]
+        vec![path.to_path_buf()]
     }
 }
 
 fn run_shuffle_write(
-    input_path: &PathBuf,
+    input_path: &Path,
     schema: &SchemaRef,
     codec: &CompressionCodec,
     hash_col_indices: &[usize],
     args: &Args,
     data_file: &str,
     index_file: &str,
-) -> f64 {
+) -> (f64, Option<MetricsSet>) {
     let partitioning = build_partitioning(
         &args.partitioning,
         args.partitions,
@@ -336,7 +411,7 @@ fn run_shuffle_write(
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
         let start = Instant::now();
-        execute_shuffle_write(
+        let metrics = execute_shuffle_write(
             input_path.to_str().unwrap(),
             codec.clone(),
             partitioning,
@@ -349,11 +424,12 @@ fn run_shuffle_write(
         )
         .await
         .unwrap();
-        start.elapsed().as_secs_f64()
+        (start.elapsed().as_secs_f64(), Some(metrics))
     })
 }
 
 /// Core async shuffle write logic shared by single and concurrent paths.
+#[allow(clippy::too_many_arguments)]
 async fn execute_shuffle_write(
     input_path: &str,
     codec: CompressionCodec,
@@ -364,7 +440,7 @@ async fn execute_shuffle_write(
     limit: usize,
     data_file: String,
     index_file: String,
-) -> datafusion::common::Result<()> {
+) -> datafusion::common::Result<MetricsSet> {
     let config = SessionConfig::new().with_batch_size(batch_size);
     let mut runtime_builder = RuntimeEnvBuilder::new();
     if let Some(mem_limit) = memory_limit {
@@ -411,13 +487,13 @@ async fn execute_shuffle_write(
     let task_ctx = ctx.task_ctx();
     let stream = exec.execute(0, task_ctx).unwrap();
     collect(stream).await.unwrap();
-    Ok(())
+    Ok(exec.metrics().unwrap_or_default())
 }
 
 /// Run N concurrent shuffle writes to simulate executor parallelism.
 /// Returns wall-clock time for all tasks to complete.
 fn run_concurrent_shuffle_writes(
-    input_path: &PathBuf,
+    input_path: &Path,
     schema: &SchemaRef,
     codec: &CompressionCodec,
     hash_col_indices: &[usize],
@@ -460,7 +536,7 @@ fn run_concurrent_shuffle_writes(
                     index_file,
                 )
                 .await
-                .unwrap();
+                .unwrap()
             }));
         }
 
