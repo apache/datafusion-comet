@@ -63,15 +63,15 @@ A bug should be escalated to a higher priority if:
 Area labels indicate which subsystem is affected. A bug may have multiple area labels. These
 help contributors find bugs in their area of expertise.
 
-| Label              | Description                            |
-| ------------------ | -------------------------------------- |
-| `area:writer`      | Native Parquet writer                  |
-| `area:shuffle`     | Shuffle (JVM and native)               |
-| `area:aggregation` | Hash aggregates, aggregate expressions |
-| `area:scan`        | Parquet scan / data reading            |
-| `area:expressions` | Expression evaluation                  |
-| `area:ffi`         | Arrow FFI / JNI boundary               |
-| `area:ci`          | CI/CD, GitHub Actions, build tooling   |
+| Label              | Description                               |
+| ------------------ | ----------------------------------------- |
+| `area:writer`      | Native writer (Parquet and other formats) |
+| `area:shuffle`     | Shuffle (JVM and native)                  |
+| `area:aggregation` | Hash aggregates, aggregate expressions    |
+| `area:scan`        | Data source scan (Parquet, CSV, Iceberg)  |
+| `area:expressions` | Expression evaluation                     |
+| `area:ffi`         | Arrow FFI / JNI boundary                  |
+| `area:ci`          | CI/CD, GitHub Actions, build tooling      |
 
 The following pre-existing labels also serve as area indicators: `native_datafusion`,
 `native_iceberg_compat`, `spark 4`, `spark sql tests`.
