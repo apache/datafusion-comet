@@ -74,8 +74,9 @@ class DataGenerator(r: Random) {
       -0.0f,
       0.0f) ++
       Range(0, n).map(_ => r.nextFloat()) ++
-      Range(0, n).map{_ =>
-        Float.MinPositiveValue + r.nextFloat() * (java.lang.Float.MIN_NORMAL - Float.MinPositiveValue)
+      Range(0, n).map { _ =>
+        Float.MinPositiveValue + r
+          .nextFloat() * (java.lang.Float.MIN_NORMAL - Float.MinPositiveValue)
       }
   }
 
@@ -96,8 +97,9 @@ class DataGenerator(r: Random) {
       -0.0d,
       0.0d) ++
       Range(0, n).map(_ => r.nextDouble()) ++
-      Range(0, n).map{_ =>
-        Double.MinPositiveValue + r.nextDouble() * (java.lang.Double.MIN_NORMAL - Double.MinPositiveValue)
+      Range(0, n).map { _ =>
+        Double.MinPositiveValue + r
+          .nextDouble() * (java.lang.Double.MIN_NORMAL - Double.MinPositiveValue)
       }
   }
 
