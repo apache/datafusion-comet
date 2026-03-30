@@ -258,19 +258,16 @@ object CometSortArray extends CometExpressionSerde[SortArray] {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val arrayExprProto = exprToProtoInternal(expr.base, inputs, binding)
-    val sortDirectionExprProto = expr.ascendingOrder match {
+    val (sortDirectionExprProto, nullOrderingExprProto) = expr.ascendingOrder match {
       case Literal(value: Boolean, BooleanType) =>
         val direction = if (value) "ASC" else "DESC"
-        exprToProtoInternal(Literal(direction), inputs, binding)
+        val nullOrdering = if (value) "NULLS FIRST" else "NULLS LAST"
+        (
+          exprToProtoInternal(Literal(direction), inputs, binding),
+          exprToProtoInternal(Literal(nullOrdering), inputs, binding))
       case other =>
         withInfo(expr, s"ascendingOrder must be a boolean literal: $other")
-        None
-    }
-    val nullOrderingExprProto = expr.ascendingOrder match {
-      case Literal(value: Boolean, BooleanType) =>
-        val nullOrdering = if (value) "NULLS FIRST" else "NULLS LAST"
-        exprToProtoInternal(Literal(nullOrdering), inputs, binding)
-      case _ => None
+        (None, None)
     }
 
     val sortArrayScalarExpr =
