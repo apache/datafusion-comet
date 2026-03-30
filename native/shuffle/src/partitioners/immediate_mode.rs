@@ -28,7 +28,7 @@ use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion_comet_spark_expr::murmur3::create_murmur3_hashes;
 use std::fs::{File, OpenOptions};
-use std::io::{BufReader, BufWriter, Seek, Write};
+use std::io::{BufWriter, Seek, Write};
 use std::sync::Arc;
 use tokio::time::Instant;
 
@@ -497,24 +497,16 @@ impl ShufflePartitioner for ImmediateModePartitioner {
         self.metrics.data_size.add(batch.get_array_memory_size());
         self.metrics.baseline.record_output(batch.num_rows());
 
-        let mut start = 0;
-        while start < batch.num_rows() {
-            let end = (start + self.batch_size).min(batch.num_rows());
-            let chunk = batch.slice(start, end - start);
+        let repart_start = Instant::now();
+        self.compute_partition_ids(&batch)?;
+        self.metrics
+            .repart_time
+            .add_duration(repart_start.elapsed());
 
-            let repart_start = Instant::now();
-            self.compute_partition_ids(&chunk)?;
-            self.metrics
-                .repart_time
-                .add_duration(repart_start.elapsed());
+        let bytes_written = self.write_partitioned_rows(&batch)?;
 
-            let bytes_written = self.write_partitioned_rows(&chunk)?;
-
-            if self.reservation.try_grow(bytes_written).is_err() {
-                self.spill_all()?;
-            }
-
-            start = end;
+        if self.reservation.try_grow(bytes_written).is_err() {
+            self.spill_all()?;
         }
 
         self.metrics.input_batches.add(1);
@@ -551,9 +543,8 @@ impl ShufflePartitioner for ImmediateModePartitioner {
                         "Failed to open spill file for reading: {e}"
                     ))
                 })?;
-                let mut reader = BufReader::new(spill_reader);
                 let mut write_timer = self.metrics.write_time.timer();
-                std::io::copy(&mut reader, &mut output_data)?;
+                std::io::copy(&mut &spill_reader, &mut output_data)?;
                 write_timer.stop();
             }
 
