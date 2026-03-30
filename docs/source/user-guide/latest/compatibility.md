@@ -153,6 +153,13 @@ Cast operations in Comet fall into three levels of support:
   Spark.
 - **N/A**: Spark does not support this cast.
 
+### Negative Zero
+
+When casting floating-point values to strings, Spark normalizes negative zero (`-0.0`) to `"0.0"`, but Comet
+may produce `"-0.0"`. Since negative zero and positive zero are semantically equivalent (`-0.0 == 0.0` is true
+in IEEE 754), this difference is unlikely to affect real-world results. See
+[#1036](https://github.com/apache/datafusion-comet/issues/1036) for more details.
+
 ### Legacy Mode
 
 <!--BEGIN:CAST_LEGACY_TABLE-->
