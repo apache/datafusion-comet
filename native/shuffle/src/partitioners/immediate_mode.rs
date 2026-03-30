@@ -21,7 +21,7 @@ use crate::{comet_partitioning, CometPartitioning, CompressionCodec};
 use arrow::array::{ArrayRef, RecordBatch};
 use arrow::compute::kernels::coalesce::BatchCoalescer;
 use arrow::compute::interleave_record_batch;
-use arrow::datatypes::SchemaRef;
+use arrow::datatypes::{DataType, SchemaRef};
 use arrow::ipc::writer::StreamWriter;
 use datafusion::common::{DataFusionError, Result};
 use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
@@ -31,6 +31,42 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufReader, BufWriter, Seek, Write};
 use std::sync::Arc;
 use tokio::time::Instant;
+
+/// Estimate the in-memory byte cost per row for a given schema.
+/// Uses the primitive width for fixed-size types, and a heuristic for
+/// variable-length types (strings, binary, nested).
+fn estimate_row_bytes(schema: &SchemaRef) -> usize {
+    let mut total = 0;
+    for field in schema.fields() {
+        total += estimate_field_bytes(field.data_type());
+        // 1 bit for null bitmap, round up
+        total += 1;
+    }
+    total.max(8) // minimum 8 bytes per row
+}
+
+fn estimate_field_bytes(dt: &DataType) -> usize {
+    match dt {
+        DataType::Boolean => 1,
+        DataType::Null => 0,
+        dt if dt.primitive_width().is_some() => dt.primitive_width().unwrap(),
+        // Variable-length types: use a reasonable default estimate.
+        // 32 bytes covers typical short strings/binary.
+        DataType::Utf8 | DataType::Binary => 32 + 4, // data + 4-byte offset
+        DataType::LargeUtf8 | DataType::LargeBinary => 32 + 8,
+        DataType::Utf8View | DataType::BinaryView => 32 + 16, // data + 16-byte view
+        DataType::List(f) | DataType::LargeList(f) => {
+            4 + estimate_field_bytes(f.data_type())
+        }
+        DataType::Struct(fields) => fields
+            .iter()
+            .map(|f| estimate_field_bytes(f.data_type()) + 1)
+            .sum(),
+        DataType::Dictionary(key_dt, _) => estimate_field_bytes(key_dt),
+        // Fallback for other types
+        _ => 32,
+    }
+}
 
 /// Per-partition output stream that serializes Arrow IPC batches into an
 /// in-memory buffer with compression. The block format matches
@@ -220,6 +256,10 @@ pub(crate) struct ImmediateModePartitioner {
     hashes_buf: Vec<u32>,
     partition_ids: Vec<u32>,
     batch_size: usize,
+    /// Fixed upfront reservation for coalescer buffers across all partitions.
+    /// Each coalescer holds at most batch_size rows; this budget is estimated
+    /// from the schema and reserved once to avoid incremental drift.
+    coalescer_budget: usize,
 }
 
 impl ImmediateModePartitioner {
@@ -251,10 +291,19 @@ impl ImmediateModePartitioner {
             _ => vec![],
         };
 
-        let reservation =
+        let mut reservation =
             MemoryConsumer::new(format!("ImmediateModePartitioner[{partition}]"))
                 .with_can_spill(true)
                 .register(&runtime.memory_pool);
+
+        // Reserve memory upfront for coalescer buffers across all partitions.
+        // Each coalescer holds at most batch_size rows. We estimate per-row bytes
+        // from the schema so this budget is fixed and doesn't drift.
+        let estimated_row_bytes = estimate_row_bytes(&schema);
+        let coalescer_budget = estimated_row_bytes * batch_size * num_output_partitions;
+        // Use try_grow — if the pool can't accommodate the budget, we proceed
+        // without the reservation (spilling will be more aggressive).
+        let _ = reservation.try_grow(coalescer_budget);
 
         Ok(Self {
             output_data_file,
@@ -268,6 +317,7 @@ impl ImmediateModePartitioner {
             hashes_buf,
             partition_ids: vec![0u32; batch_size],
             batch_size,
+            coalescer_budget,
         })
     }
 
@@ -429,7 +479,12 @@ impl ImmediateModePartitioner {
             spill.file.flush()?;
         }
 
-        self.reservation.free();
+        // Shrink reservation to just the coalescer budget (IPC bytes were spilled,
+        // coalescer is empty after flush but will be refilled by future batches).
+        let target = self.coalescer_budget;
+        if self.reservation.size() > target {
+            self.reservation.shrink(self.reservation.size() - target);
+        }
         if spilled_bytes > 0 {
             self.metrics.spill_count.add(1);
             self.metrics.spilled_bytes.add(spilled_bytes);
