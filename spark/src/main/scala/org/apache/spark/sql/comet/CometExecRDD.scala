@@ -140,17 +140,12 @@ private[spark] class CometExecRDD(
         it.close()
         subqueries.foreach(sub => CometScalarSubquery.removeSubquery(it.id, sub))
 
-        // Propagate native scan metrics (bytes_scanned, output_rows) to Spark's task-level
-        // inputMetrics so they appear in the Spark UI "Input" column and are reported via
-        // the listener infrastructure. The native reader bypasses Hadoop's Java FileSystem,
-        // so thread-local FS statistics are never updated -- we bridge the gap here.
-        val bytesScannedMetric = nativeMetrics.findMetric("bytes_scanned")
-        val outputRowsMetric = nativeMetrics.findMetric("output_rows")
-        if (bytesScannedMetric.isDefined || outputRowsMetric.isDefined) {
-          val inputMetrics = ctx.taskMetrics().inputMetrics
-          bytesScannedMetric.foreach(m => inputMetrics.setBytesRead(m.value))
-          outputRowsMetric.foreach(m => inputMetrics.setRecordsRead(m.value))
-        }
+        nativeMetrics.metrics
+          .get("bytes_scanned")
+          .foreach(m => ctx.taskMetrics().inputMetrics.setBytesRead(m.value))
+        nativeMetrics.metrics
+          .get("output_rows")
+          .foreach(m => ctx.taskMetrics().inputMetrics.setRecordsRead(m.value))
       }
     }
 
