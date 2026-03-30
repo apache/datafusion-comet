@@ -19,6 +19,7 @@ mod multi_partition;
 mod partitioned_batch_iterator;
 mod single_partition;
 mod traits;
+mod immediate_mode;
 
 pub(crate) use multi_partition::MultiPartitionShuffleRepartitioner;
 pub(crate) use partitioned_batch_iterator::PartitionedBatchIterator;
