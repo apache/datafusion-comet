@@ -19,7 +19,9 @@
 
 package org.apache.spark
 
-import org.apache.spark.sql.CometTestBase
+import java.io.File
+
+import org.apache.spark.sql.{CometTestBase, SaveMode}
 import org.apache.spark.sql.internal.StaticSQLConf
 
 class CometPluginsSuite extends CometTestBase {
@@ -32,6 +34,7 @@ class CometPluginsSuite extends CometTestBase {
     conf.set("spark.comet.enabled", "true")
     conf.set("spark.comet.exec.enabled", "true")
     conf.set("spark.comet.exec.onHeap.enabled", "true")
+    conf.set("spark.comet.metrics.enabled", "true")
     conf
   }
 
@@ -74,6 +77,43 @@ class CometPluginsSuite extends CometTestBase {
       assert(
         "foo,bar,org.apache.comet.CometSparkSessionExtensions" == conf.get(
           StaticSQLConf.SPARK_SESSION_EXTENSIONS.key))
+    }
+  }
+
+  test("CometSource metrics are recorded") {
+    val nativeBefore = CometSource.NATIVE_OPERATORS.getCount
+    val queriesBefore = CometSource.QUERIES_PLANNED.getCount
+
+    withTempPath { dir =>
+      val path = new File(dir, "test.parquet").toString
+      spark.range(1000).toDF("id").write.mode(SaveMode.Overwrite).parquet(path)
+      spark.read.parquet(path).filter("id > 500").collect()
+    }
+    spark.sparkContext.listenerBus.waitUntilEmpty()
+    assert(
+      CometSource.QUERIES_PLANNED.getCount > queriesBefore,
+      "queries.planned should increment after query")
+    assert(
+      CometSource.NATIVE_OPERATORS.getCount > nativeBefore,
+      "operators.native should increment for native execution")
+  }
+
+  test("metrics not double counted with AQE") {
+    withSQLConf("spark.sql.adaptive.enabled" -> "true") {
+      withTempPath { dir =>
+        val path = new File(dir, "test.parquet").toString
+        spark.range(10000).toDF("id").write.mode(SaveMode.Overwrite).parquet(path)
+
+        spark.sparkContext.listenerBus.waitUntilEmpty()
+        val queriesBefore = CometSource.QUERIES_PLANNED.getCount
+        spark.read.parquet(path).filter("id > 100").collect()
+        spark.read.parquet(path).filter("id > 200").collect()
+        spark.sparkContext.listenerBus.waitUntilEmpty()
+        val queriesAfter = CometSource.QUERIES_PLANNED.getCount
+        assert(
+          queriesAfter == queriesBefore + 2,
+          s"Expected 2 queries, got ${queriesAfter - queriesBefore}")
+      }
     }
   }
 

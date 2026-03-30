@@ -17,9 +17,22 @@
  * under the License.
  */
 
-package org.apache.comet.parquet;
+package org.apache.comet
 
-/** This is implemented in Apache Iceberg */
-public interface SupportsComet {
-  boolean isCometEnabled();
+import org.apache.spark.CometSource
+import org.apache.spark.sql.execution.QueryExecution
+import org.apache.spark.sql.util.QueryExecutionListener
+
+class CometMetricsListener extends QueryExecutionListener {
+
+  override def onSuccess(funcName: String, qe: QueryExecution, durationNs: Long): Unit = {
+    val stats = CometCoverageStats.forPlan(qe.executedPlan)
+    CometSource.recordStats(stats)
+  }
+
+  override def onFailure(funcName: String, qe: QueryExecution, exception: Exception): Unit = {
+    // Record stats even on failure since the query was still planned
+    val stats = CometCoverageStats.forPlan(qe.executedPlan)
+    CometSource.recordStats(stats)
+  }
 }
