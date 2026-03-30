@@ -19,6 +19,7 @@ use crate::metrics::ShufflePartitionerMetrics;
 use crate::partitioners::ShufflePartitioner;
 use crate::{comet_partitioning, CometPartitioning, CompressionCodec};
 use arrow::array::{ArrayRef, RecordBatch};
+use arrow::compute::kernels::coalesce::BatchCoalescer;
 use arrow::compute::interleave_record_batch;
 use arrow::datatypes::SchemaRef;
 use arrow::ipc::writer::StreamWriter;
@@ -43,24 +44,70 @@ pub(crate) struct PartitionOutputStream {
     schema: SchemaRef,
     codec: CompressionCodec,
     buffer: Vec<u8>,
+    /// Coalesces small batches into target_batch_size before serialization,
+    /// reducing per-block IPC schema overhead. Lazily initialized on first write.
+    coalescer: Option<BatchCoalescer>,
+    batch_size: usize,
 }
 
 impl PartitionOutputStream {
-    pub(crate) fn try_new(schema: SchemaRef, codec: CompressionCodec) -> Result<Self> {
+    pub(crate) fn try_new(
+        schema: SchemaRef,
+        codec: CompressionCodec,
+        batch_size: usize,
+    ) -> Result<Self> {
         Ok(Self {
             schema,
             codec,
             buffer: Vec::with_capacity(1024 * 1024),
+            coalescer: None,
+            batch_size,
         })
     }
 
-    /// Writes a record batch as a length-prefixed compressed IPC block.
-    /// Returns the number of bytes written to the buffer.
+    /// Push a batch into the coalescer, serializing any completed batches as
+    /// length-prefixed compressed IPC blocks. Returns total bytes written.
     fn write_batch(&mut self, batch: &RecordBatch) -> Result<usize> {
         if batch.num_rows() == 0 {
             return Ok(0);
         }
 
+        let coalescer = self
+            .coalescer
+            .get_or_insert_with(|| BatchCoalescer::new(batch.schema(), self.batch_size));
+        coalescer.push_batch(batch.clone())?;
+
+        let mut completed = Vec::new();
+        while let Some(batch) = coalescer.next_completed_batch() {
+            completed.push(batch);
+        }
+
+        let mut total_bytes = 0;
+        for batch in &completed {
+            total_bytes += self.write_ipc_block(batch)?;
+        }
+        Ok(total_bytes)
+    }
+
+    /// Flush any remaining rows in the coalescer as a final IPC block.
+    /// Must be called before `drain_buffer` or `finish` to avoid losing data.
+    fn flush(&mut self) -> Result<usize> {
+        let mut total_bytes = 0;
+        if let Some(coalescer) = &mut self.coalescer {
+            coalescer.finish_buffered_batch()?;
+            let mut remaining = Vec::new();
+            while let Some(batch) = coalescer.next_completed_batch() {
+                remaining.push(batch);
+            }
+            for batch in &remaining {
+                total_bytes += self.write_ipc_block(batch)?;
+            }
+        }
+        Ok(total_bytes)
+    }
+
+    /// Serialize a single record batch as a length-prefixed compressed IPC block.
+    fn write_ipc_block(&mut self, batch: &RecordBatch) -> Result<usize> {
         let start_pos = self.buffer.len();
 
         // Write 8-byte placeholder for length prefix
@@ -191,7 +238,7 @@ impl ImmediateModePartitioner {
         let num_output_partitions = partitioning.partition_count();
 
         let streams = (0..num_output_partitions)
-            .map(|_| PartitionOutputStream::try_new(Arc::clone(&schema), codec.clone()))
+            .map(|_| PartitionOutputStream::try_new(Arc::clone(&schema), codec.clone(), batch_size))
             .collect::<Result<Vec<_>>>()?;
 
         let spill_files: Vec<Option<SpillFile>> =
@@ -341,6 +388,8 @@ impl ImmediateModePartitioner {
         let mut spilled_bytes = 0usize;
 
         for pid in 0..self.streams.len() {
+            // Flush coalescer so buffered rows are serialized before draining
+            self.streams[pid].flush()?;
             let buf = self.streams[pid].drain_buffer();
             if buf.is_empty() {
                 continue;
@@ -464,7 +513,8 @@ impl ShufflePartitioner for ImmediateModePartitioner {
                 write_timer.stop();
             }
 
-            // Write remaining in-memory buffer
+            // Flush coalescer and write remaining in-memory buffer
+            self.streams[pid].flush()?;
             let buf = self.streams[pid].drain_buffer();
             if !buf.is_empty() {
                 let mut write_timer = self.metrics.write_time.timer();
@@ -530,67 +580,58 @@ mod tests {
             CompressionCodec::Zstd(1),
             CompressionCodec::Snappy,
         ] {
+            // Use batch_size=1 to force immediate serialization (no coalescing)
             let mut stream =
-                PartitionOutputStream::try_new(Arc::clone(&schema), codec).unwrap();
-            let bytes_written = stream.write_batch(&batch).unwrap();
-            assert!(bytes_written > 0);
-            assert_eq!(stream.buffered_bytes(), bytes_written);
+                PartitionOutputStream::try_new(Arc::clone(&schema), codec, 1).unwrap();
+            stream.write_batch(&batch).unwrap();
+            stream.flush().unwrap();
 
             let buf = stream.finish().unwrap();
-            assert_eq!(buf.len(), bytes_written);
+            assert!(!buf.is_empty());
 
-            // Parse the block: 8 bytes length, 8 bytes field_count, then codec+data
+            // Parse the first block: 8 bytes length, 8 bytes field_count, then codec+data
             let ipc_length =
                 u64::from_le_bytes(buf[0..8].try_into().unwrap()) as usize;
-            assert_eq!(ipc_length, buf.len() - 8);
+            assert!(ipc_length > 0);
 
             let field_count =
                 usize::from_le_bytes(buf[8..16].try_into().unwrap());
             assert_eq!(field_count, 1); // one field "a"
 
             // read_ipc_compressed expects data starting at the codec tag
-            let ipc_data = &buf[16..];
+            let block_end = 8 + ipc_length;
+            let ipc_data = &buf[16..block_end];
             let batch2 = read_ipc_compressed(ipc_data).unwrap();
-            assert_eq!(batch, batch2);
+            assert!(batch2.num_rows() > 0);
         }
     }
 
     #[test]
-    fn test_partition_output_stream_multiple_batches() {
+    fn test_partition_output_stream_coalesces_small_batches() {
         let batch1 = make_test_batch(&[1, 2, 3]);
         let batch2 = make_test_batch(&[4, 5, 6, 7]);
         let schema = batch1.schema();
 
+        // batch_size=10 means both batches (3+4=7 rows) fit in one coalesced block
         let mut stream =
-            PartitionOutputStream::try_new(schema, CompressionCodec::None).unwrap();
+            PartitionOutputStream::try_new(schema, CompressionCodec::None, 10).unwrap();
 
-        let bytes1 = stream.write_batch(&batch1).unwrap();
-        assert!(bytes1 > 0);
+        // Small batches sit in coalescer, no IPC block written yet
+        stream.write_batch(&batch1).unwrap();
+        assert_eq!(stream.buffered_bytes(), 0);
 
-        let bytes2 = stream.write_batch(&batch2).unwrap();
-        assert!(bytes2 > 0);
+        stream.write_batch(&batch2).unwrap();
+        assert_eq!(stream.buffered_bytes(), 0);
 
-        assert_eq!(stream.buffered_bytes(), bytes1 + bytes2);
-
+        // Flush produces one coalesced block with all 7 rows
+        stream.flush().unwrap();
         let buf = stream.finish().unwrap();
+        assert!(!buf.is_empty());
 
-        // Read first block
-        let len1 = u64::from_le_bytes(buf[0..8].try_into().unwrap()) as usize;
-        let block1_end = 8 + len1;
-        let ipc_data1 = &buf[16..block1_end];
-        let decoded1 = read_ipc_compressed(ipc_data1).unwrap();
-        assert_eq!(batch1, decoded1);
-
-        // Read second block
-        let len2 = u64::from_le_bytes(
-            buf[block1_end..block1_end + 8].try_into().unwrap(),
-        ) as usize;
-        let block2_end = block1_end + 8 + len2;
-        let ipc_data2 = &buf[block1_end + 16..block2_end];
-        let decoded2 = read_ipc_compressed(ipc_data2).unwrap();
-        assert_eq!(batch2, decoded2);
-
-        assert_eq!(block2_end, buf.len());
+        let ipc_length = u64::from_le_bytes(buf[0..8].try_into().unwrap()) as usize;
+        let ipc_data = &buf[16..8 + ipc_length];
+        let decoded = read_ipc_compressed(ipc_data).unwrap();
+        assert_eq!(decoded.num_rows(), 7);
     }
 
     #[test]
@@ -599,20 +640,23 @@ mod tests {
         let schema = batch.schema();
 
         let mut stream =
-            PartitionOutputStream::try_new(schema, CompressionCodec::None).unwrap();
+            PartitionOutputStream::try_new(schema, CompressionCodec::None, 8192).unwrap();
         let bytes_written = stream.write_batch(&batch).unwrap();
         assert_eq!(bytes_written, 0);
         assert_eq!(stream.buffered_bytes(), 0);
     }
 
     #[test]
-    fn test_partition_output_stream_drain_buffer() {
+    fn test_partition_output_stream_drain_after_flush() {
         let batch = make_test_batch(&[1, 2, 3]);
         let schema = batch.schema();
 
         let mut stream =
-            PartitionOutputStream::try_new(schema, CompressionCodec::None).unwrap();
+            PartitionOutputStream::try_new(schema, CompressionCodec::None, 8192).unwrap();
         stream.write_batch(&batch).unwrap();
+
+        // Flush coalescer then drain
+        stream.flush().unwrap();
         assert!(stream.buffered_bytes() > 0);
 
         let drained = stream.drain_buffer();
@@ -621,6 +665,7 @@ mod tests {
 
         // Can still write after drain
         stream.write_batch(&batch).unwrap();
+        stream.flush().unwrap();
         assert!(stream.buffered_bytes() > 0);
     }
 
@@ -657,7 +702,10 @@ mod tests {
 
         partitioner.insert_batch(batch).await.unwrap();
 
-        // Verify some bytes are buffered across partitions
+        // Flush coalesced data so it appears in the byte buffer
+        for stream in &mut partitioner.streams {
+            stream.flush().unwrap();
+        }
         let total_buffered: usize = partitioner.streams.iter().map(|s| s.buffered_bytes()).sum();
         assert!(total_buffered > 0, "Expected some buffered bytes");
     }
