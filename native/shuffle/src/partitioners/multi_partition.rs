@@ -427,12 +427,11 @@ impl MultiPartitionShuffleRepartitioner {
             mem_growth += after_size.saturating_sub(before_size);
         }
 
-        // Apply a 2x multiplier to account for untracked memory allocations in the
-        // write path (BufBatchWriter buffers, BatchCoalescer, Arrow IPC serialization,
-        // compression encoder state, and interleave_record_batch output). Benchmarks
-        // show that actual RSS is ~1.5-1.8x the tracked memory, so 2x triggers spills
-        // early enough to keep total process memory closer to the configured limit.
-        if self.reservation.try_grow(mem_growth * 2).is_err() {
+        // Apply a 1.5x multiplier to account for untracked memory allocations
+        // (Arrow alignment padding, validity/offset buffers, Arc overhead per column,
+        // and temporary allocations during spill such as interleave_record_batch output,
+        // IPC serialization, and compression encoder state).
+        if self.reservation.try_grow(mem_growth * 3 / 2).is_err() {
             self.spill()?;
         }
 
@@ -623,6 +622,8 @@ impl ShufflePartitioner for MultiPartitionShuffleRepartitioner {
             }
             output_index.flush()?;
             write_timer.stop();
+
+            self.reservation.free();
 
             self.metrics
                 .baseline
