@@ -39,6 +39,7 @@ Profiling Native Code <profiling_native_code>
 Spark SQL Tests <spark-sql-tests.md>
 Iceberg Spark Tests <iceberg-spark-tests.md>
 SQL File Tests <sql-file-tests.md>
+Bug Triage <bug_triage>
 Roadmap <roadmap.md>
 Release Process <release_process>
 Github and Issue Tracker <https://github.com/apache/datafusion-comet>
