@@ -61,6 +61,7 @@ class DataGenerator(r: Random) {
     Seq(
       Float.MaxValue,
       Float.MinPositiveValue,
+      Float.MinPositiveValue * 2,
       Float.MinValue,
       Float.NaN,
       Float.PositiveInfinity,
@@ -69,20 +70,37 @@ class DataGenerator(r: Random) {
       -1.0f,
       Short.MinValue.toFloat,
       Short.MaxValue.toFloat,
+      0.0f,
+      -0.0f,
       0.0f) ++
-      Range(0, n).map(_ => r.nextFloat())
+      Range(0, n).map(_ => r.nextFloat()) ++
+      Range(0, n).map { _ =>
+        Float.MinPositiveValue + r
+          .nextFloat() * (java.lang.Float.MIN_NORMAL - Float.MinPositiveValue)
+      }
   }
 
   def generateDoubles(n: Int): Seq[Double] = {
     Seq(
       Double.MaxValue,
       Double.MinPositiveValue,
+      Double.MinPositiveValue * 2,
       Double.MinValue,
       Double.NaN,
       Double.PositiveInfinity,
       Double.NegativeInfinity,
+      1.0d,
+      -1.0d,
+      Int.MinValue.toDouble,
+      Int.MaxValue.toDouble,
+      0.0d,
+      -0.0d,
       0.0d) ++
-      Range(0, n).map(_ => r.nextDouble())
+      Range(0, n).map(_ => r.nextDouble()) ++
+      Range(0, n).map { _ =>
+        Double.MinPositiveValue + r
+          .nextDouble() * (java.lang.Double.MIN_NORMAL - Double.MinPositiveValue)
+      }
   }
 
   def generateBytes(n: Int): Seq[Byte] = {

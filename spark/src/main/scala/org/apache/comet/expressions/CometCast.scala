@@ -236,12 +236,7 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
         Compatible()
       case DataTypes.DateType => Compatible()
       case DataTypes.TimestampType => Compatible()
-      case DataTypes.FloatType | DataTypes.DoubleType =>
-        Compatible(
-          Some(
-            "There can be differences in precision. " +
-              "For example, the input \"1.4E-45\" will produce 1.0E-45 " +
-              "instead of 1.4E-45"))
+      case DataTypes.FloatType | DataTypes.DoubleType => Compatible()
       case _: DecimalType =>
         // https://github.com/apache/datafusion-comet/issues/1068
         Compatible(

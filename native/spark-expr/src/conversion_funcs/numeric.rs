@@ -165,7 +165,12 @@ macro_rules! cast_float_to_string {
                             if value.abs() >= UPPER_SCIENTIFIC_BOUND
                                 || value.abs() < LOWER_SCIENTIFIC_BOUND =>
                         {
-                            let formatted = format!("{value:E}");
+                            let formatted = if value.is_subnormal() {
+                                // FIXME: this is not aligned with Java
+                                format!("{value:.1E}")
+                            } else {
+                                format!("{value:E}")
+                            };
 
                             if formatted.contains(".") {
                                 Ok(Some(formatted))
