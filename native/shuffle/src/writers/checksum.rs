@@ -15,13 +15,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::spark_crc32c_hasher::SparkCrc32cHasher;
 use bytes::Buf;
 use datafusion_comet_jni_bridge::errors::{CometError, CometResult};
 use simd_adler32::Adler32;
+use std::default::Default;
 use std::hash::Hasher;
 use std::io::{Cursor, SeekFrom};
-use std::default::Default;
-use crate::spark_crc32c_hasher::SparkCrc32cHasher;
 
 /// Checksum algorithms for writing IPC bytes.
 #[derive(Clone)]
@@ -56,10 +56,10 @@ impl Checksum {
                 Ok(Checksum::Adler32(hasher))
             }
             2 => {
-               let hasher = if let Some(initial) = initial_opt {
-                       SparkCrc32cHasher::new(initial)
-                  } else {
-                   Default::default()
+                let hasher = if let Some(initial) = initial_opt {
+                    SparkCrc32cHasher::new(initial)
+                } else {
+                    Default::default()
                 };
                 Ok(Checksum::CRC32C(hasher))
             }
@@ -147,5 +147,4 @@ mod tests {
         let expected_crc = 0xe3069283u32;
         assert_eq!(result, expected_crc)
     }
-
 }

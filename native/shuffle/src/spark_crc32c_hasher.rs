@@ -81,5 +81,4 @@ mod tests {
         hasher.write(tail);
         assert_eq!(hasher.finish(), CHECKSUM as u64);
     }
-
 }
