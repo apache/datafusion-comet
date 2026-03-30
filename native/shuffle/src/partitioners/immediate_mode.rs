@@ -772,4 +772,101 @@ mod tests {
         assert_eq!(last_offset as u64, data_file_size);
         assert!(data_file_size > 0);
     }
+
+    #[tokio::test]
+    async fn test_block_format_compatible_with_read_ipc_compressed() {
+        let batch = make_test_batch(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+        let schema = batch.schema();
+        let dir = tempfile::tempdir().unwrap();
+        let data_path = dir.path().join("data").to_str().unwrap().to_string();
+        let index_path = dir.path().join("index").to_str().unwrap().to_string();
+
+        let num_partitions = 2;
+        let metrics = ShufflePartitionerMetrics::new(&ExecutionPlanMetricsSet::new(), 0);
+        let runtime = Arc::new(RuntimeEnvBuilder::new().build().unwrap());
+
+        let mut partitioner = ImmediateModePartitioner::try_new(
+            0,
+            data_path.clone(),
+            index_path.clone(),
+            Arc::clone(&schema),
+            make_hash_partitioning("a", num_partitions),
+            metrics,
+            runtime,
+            8192,
+            CompressionCodec::Lz4Frame,
+        )
+        .unwrap();
+
+        partitioner.insert_batch(batch).await.unwrap();
+        partitioner.shuffle_write().unwrap();
+
+        // Read index file to get partition offsets
+        let index_data = std::fs::read(&index_path).unwrap();
+        let mut offsets = Vec::new();
+        for i in 0..=num_partitions {
+            let offset =
+                i64::from_le_bytes(index_data[i * 8..(i + 1) * 8].try_into().unwrap());
+            offsets.push(offset as usize);
+        }
+
+        // Read entire data file
+        let data = std::fs::read(&data_path).unwrap();
+
+        let mut total_rows = 0;
+        for pid in 0..num_partitions {
+            let partition_start = offsets[pid];
+            let partition_end = offsets[pid + 1];
+            if partition_start == partition_end {
+                continue;
+            }
+
+            // Parse blocks within this partition's byte range
+            let mut pos = partition_start;
+            while pos < partition_end {
+                // Read 8-byte length prefix
+                let payload_len = u64::from_le_bytes(
+                    data[pos..pos + 8].try_into().unwrap(),
+                ) as usize;
+                assert!(payload_len > 0, "Block payload length should be > 0");
+
+                // Skip 8-byte field_count
+                let field_count = u64::from_le_bytes(
+                    data[pos + 8..pos + 16].try_into().unwrap(),
+                ) as usize;
+                assert_eq!(field_count, 1, "Expected 1 field");
+
+                // Pass codec tag + IPC data to read_ipc_compressed
+                let block_end = pos + 8 + payload_len;
+                let ipc_data = &data[pos + 16..block_end];
+                let decoded = read_ipc_compressed(ipc_data).unwrap();
+
+                assert_eq!(decoded.num_columns(), 1);
+                assert!(decoded.num_rows() > 0);
+
+                // Verify values are valid Int32
+                let col = decoded
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<Int32Array>()
+                    .expect("Expected Int32Array");
+                for i in 0..col.len() {
+                    let v = col.value(i);
+                    assert!(
+                        (1..=10).contains(&v),
+                        "Value {v} not in expected range 1..=10"
+                    );
+                }
+
+                total_rows += decoded.num_rows();
+                pos = block_end;
+            }
+            assert_eq!(
+                pos, partition_end,
+                "Block parsing should consume exactly the partition's bytes"
+            );
+        }
+
+        assert_eq!(total_rows, 10, "Total decoded rows should match input");
+    }
 }
