@@ -69,4 +69,17 @@ mod tests {
         hasher.write(TEST_STRING);
         assert_eq!(hasher.finish(), CHECKSUM as u64);
     }
+
+    /// Demonstrate writing in multiple chunks by splitting the [TEST_STRING] and getting the same
+    /// [CHECKSUM].
+    #[test]
+    fn can_hash_in_chunks() {
+        let (head, tail) = TEST_STRING.split_at(20);
+
+        let mut hasher = SparkCrc32cHasher::default();
+        hasher.write(head);
+        hasher.write(tail);
+        assert_eq!(hasher.finish(), CHECKSUM as u64);
+    }
+
 }
