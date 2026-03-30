@@ -21,6 +21,8 @@ mod single_partition;
 mod traits;
 mod immediate_mode;
 
+#[allow(unused_imports)]
+pub(crate) use immediate_mode::ImmediateModePartitioner;
 pub(crate) use multi_partition::MultiPartitionShuffleRepartitioner;
 pub(crate) use partitioned_batch_iterator::PartitionedBatchIterator;
 pub(crate) use single_partition::SinglePartitionShufflePartitioner;

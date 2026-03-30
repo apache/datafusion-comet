@@ -226,6 +226,18 @@ async fn external_shuffle(
                     write_buffer_size,
                 )?)
             }
+            // To use ImmediateModePartitioner instead of MultiPartitionShuffleRepartitioner:
+            // _ => Box::new(ImmediateModePartitioner::try_new(
+            //     partition,
+            //     output_data_file,
+            //     output_index_file,
+            //     Arc::clone(&schema),
+            //     partitioning,
+            //     metrics,
+            //     context.runtime_env(),
+            //     context.session_config().batch_size(),
+            //     codec,
+            // )?),
             _ => Box::new(MultiPartitionShuffleRepartitioner::try_new(
                 partition,
                 output_data_file,
