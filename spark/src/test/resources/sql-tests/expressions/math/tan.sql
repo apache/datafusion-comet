@@ -16,6 +16,7 @@
 -- under the License.
 
 -- ConfigMatrix: parquet.enable.dictionary=false,true
+-- Config: spark.comet.expression.Tan.allowIncompatible=true
 
 statement
 CREATE TABLE test_tan(d double) USING parquet
