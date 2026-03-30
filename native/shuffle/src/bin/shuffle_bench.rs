@@ -43,7 +43,7 @@ use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::physical_expr::expressions::Column;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::common::collect;
-use datafusion::physical_plan::metrics::MetricsSet;
+use datafusion::physical_plan::metrics::{MetricValue, MetricsSet};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::{ParquetReadOptions, SessionContext};
 use datafusion_comet_shuffle::{
@@ -166,6 +166,7 @@ fn main() {
     let mut read_times = Vec::with_capacity(args.iterations);
     let mut data_file_sizes = Vec::with_capacity(args.iterations);
     let mut last_metrics: Option<MetricsSet> = None;
+    let mut last_input_metrics: Option<MetricsSet> = None;
 
     for i in 0..total_iters {
         let is_warmup = i < args.warmup;
@@ -175,7 +176,7 @@ fn main() {
             format!("iter {}/{}", i - args.warmup + 1, args.iterations)
         };
 
-        let (write_elapsed, metrics) = if args.concurrent_tasks > 1 {
+        let (write_elapsed, metrics, input_metrics) = if args.concurrent_tasks > 1 {
             let elapsed = run_concurrent_shuffle_writes(
                 &args.input,
                 &schema,
@@ -183,7 +184,7 @@ fn main() {
                 &hash_col_indices,
                 &args,
             );
-            (elapsed, None)
+            (elapsed, None, None)
         } else {
             run_shuffle_write(
                 &args.input,
@@ -201,6 +202,7 @@ fn main() {
             write_times.push(write_elapsed);
             data_file_sizes.push(data_size);
             last_metrics = metrics;
+            last_input_metrics = input_metrics;
         }
 
         print!("  [{label}] write: {:.3}s", write_elapsed);
@@ -270,6 +272,12 @@ fn main() {
             );
         }
 
+        if let Some(ref metrics) = last_input_metrics {
+            println!();
+            println!("Input Metrics (last iteration):");
+            print_input_metrics(metrics);
+        }
+
         if let Some(ref metrics) = last_metrics {
             println!();
             println!("Shuffle Metrics (last iteration):");
@@ -312,17 +320,16 @@ fn print_shuffle_metrics(metrics: &MetricsSet, total_wall_time_secs: f64) {
     if let Some(nanos) = get_metric("write_time") {
         println!("  write time:       {}", fmt_time(nanos));
     }
-    if let (Some(repart), Some(encode), Some(write)) = (
-        get_metric("repart_time"),
-        get_metric("encode_time"),
-        get_metric("write_time"),
-    ) {
-        let accounted = repart + encode + write;
-        if total_ns as usize > accounted {
-            let other = total_ns as usize - accounted;
-            println!("  other time:       {}", fmt_time(other));
-        }
+    if let Some(nanos) = get_metric("interleave_time") {
+        println!("  interleave time:  {}", fmt_time(nanos));
     }
+    if let Some(nanos) = get_metric("coalesce_time") {
+        println!("  coalesce time:    {}", fmt_time(nanos));
+    }
+    if let Some(nanos) = get_metric("memcopy_time") {
+        println!("  memcopy time:     {}", fmt_time(nanos));
+    }
+
     if let Some(spill_count) = get_metric("spill_count") {
         if spill_count > 0 {
             println!("  spill count:      {}", format_number(spill_count));
@@ -336,6 +343,37 @@ fn print_shuffle_metrics(metrics: &MetricsSet, total_wall_time_secs: f64) {
     if let Some(data_size) = get_metric("data_size") {
         if data_size > 0 {
             println!("  data size:        {}", format_bytes(data_size));
+        }
+    }
+}
+
+fn print_input_metrics(metrics: &MetricsSet) {
+    let aggregated = metrics.aggregate_by_name();
+    for m in aggregated.iter() {
+        let value = m.value();
+        let name = value.name();
+        let v = value.as_usize();
+        if v == 0 {
+            continue;
+        }
+        // Format time metrics as seconds, everything else as a number
+        // Skip start/end timestamps — not useful in benchmark output
+        if matches!(
+            value,
+            MetricValue::StartTimestamp(_) | MetricValue::EndTimestamp(_)
+        ) {
+            continue;
+        }
+        let is_time = matches!(
+            value,
+            MetricValue::ElapsedCompute(_) | MetricValue::Time { .. }
+        );
+        if is_time {
+            println!("  {name}: {:.3}s", v as f64 / 1e9);
+        } else if name.contains("bytes") || name.contains("size") {
+            println!("  {name}: {}", format_bytes(v));
+        } else {
+            println!("  {name}: {}", format_number(v));
         }
     }
 }
@@ -400,7 +438,7 @@ fn run_shuffle_write(
     args: &Args,
     data_file: &str,
     index_file: &str,
-) -> (f64, Option<MetricsSet>) {
+) -> (f64, Option<MetricsSet>, Option<MetricsSet>) {
     let partitioning = build_partitioning(
         &args.partitioning,
         args.partitions,
@@ -411,7 +449,7 @@ fn run_shuffle_write(
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
         let start = Instant::now();
-        let metrics = execute_shuffle_write(
+        let (shuffle_metrics, input_metrics) = execute_shuffle_write(
             input_path.to_str().unwrap(),
             codec.clone(),
             partitioning,
@@ -424,7 +462,11 @@ fn run_shuffle_write(
         )
         .await
         .unwrap();
-        (start.elapsed().as_secs_f64(), Some(metrics))
+        (
+            start.elapsed().as_secs_f64(),
+            Some(shuffle_metrics),
+            Some(input_metrics),
+        )
     })
 }
 
@@ -440,7 +482,7 @@ async fn execute_shuffle_write(
     limit: usize,
     data_file: String,
     index_file: String,
-) -> datafusion::common::Result<MetricsSet> {
+) -> datafusion::common::Result<(MetricsSet, MetricsSet)> {
     let config = SessionConfig::new().with_batch_size(batch_size);
     let mut runtime_builder = RuntimeEnvBuilder::new();
     if let Some(mem_limit) = memory_limit {
@@ -487,7 +529,30 @@ async fn execute_shuffle_write(
     let task_ctx = ctx.task_ctx();
     let stream = exec.execute(0, task_ctx).unwrap();
     collect(stream).await.unwrap();
-    Ok(exec.metrics().unwrap_or_default())
+
+    // Collect metrics from the input plan (Parquet scan + optional coalesce)
+    let input_metrics = collect_input_metrics(&exec);
+
+    Ok((exec.metrics().unwrap_or_default(), input_metrics))
+}
+
+/// Walk the plan tree and aggregate all metrics from input plans (everything below shuffle writer).
+fn collect_input_metrics(exec: &ShuffleWriterExec) -> MetricsSet {
+    let mut all_metrics = MetricsSet::new();
+    fn gather(plan: &dyn ExecutionPlan, out: &mut MetricsSet) {
+        if let Some(metrics) = plan.metrics() {
+            for m in metrics.iter() {
+                out.push(Arc::clone(m));
+            }
+        }
+        for child in plan.children() {
+            gather(child.as_ref(), out);
+        }
+    }
+    for child in exec.children() {
+        gather(child.as_ref(), &mut all_metrics);
+    }
+    all_metrics
 }
 
 /// Run N concurrent shuffle writes to simulate executor parallelism.

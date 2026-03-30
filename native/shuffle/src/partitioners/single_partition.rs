@@ -127,6 +127,7 @@ impl ShufflePartitioner for SinglePartitionShufflePartitioner {
                         &batch,
                         &self.metrics.encode_time,
                         &self.metrics.write_time,
+                        &self.metrics.coalesce_time,
                     )?;
                 }
 
@@ -136,6 +137,7 @@ impl ShufflePartitioner for SinglePartitionShufflePartitioner {
                         &batch,
                         &self.metrics.encode_time,
                         &self.metrics.write_time,
+                        &self.metrics.coalesce_time,
                     )?;
                 } else {
                     // Add the new batch to the buffer
@@ -164,10 +166,14 @@ impl ShufflePartitioner for SinglePartitionShufflePartitioner {
                 &batch,
                 &self.metrics.encode_time,
                 &self.metrics.write_time,
+                &self.metrics.coalesce_time,
             )?;
         }
-        self.output_data_writer
-            .flush(&self.metrics.encode_time, &self.metrics.write_time)?;
+        self.output_data_writer.flush(
+            &self.metrics.encode_time,
+            &self.metrics.write_time,
+            &self.metrics.coalesce_time,
+        )?;
 
         // Write index file. It should only contain 2 entries: 0 and the total number of bytes written
         let index_file = OpenOptions::new()
