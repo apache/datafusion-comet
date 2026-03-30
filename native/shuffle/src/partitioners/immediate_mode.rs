@@ -19,8 +19,8 @@ use crate::metrics::ShufflePartitionerMetrics;
 use crate::partitioners::ShufflePartitioner;
 use crate::{comet_partitioning, CometPartitioning, CompressionCodec};
 use arrow::array::{ArrayRef, RecordBatch};
-use arrow::compute::kernels::coalesce::BatchCoalescer;
 use arrow::compute::interleave_record_batch;
+use arrow::compute::kernels::coalesce::BatchCoalescer;
 use arrow::datatypes::{DataType, SchemaRef};
 use arrow::ipc::writer::StreamWriter;
 use datafusion::common::{DataFusionError, Result};
@@ -55,9 +55,7 @@ fn estimate_field_bytes(dt: &DataType) -> usize {
         DataType::Utf8 | DataType::Binary => 32 + 4, // data + 4-byte offset
         DataType::LargeUtf8 | DataType::LargeBinary => 32 + 8,
         DataType::Utf8View | DataType::BinaryView => 32 + 16, // data + 16-byte view
-        DataType::List(f) | DataType::LargeList(f) => {
-            4 + estimate_field_bytes(f.data_type())
-        }
+        DataType::List(f) | DataType::LargeList(f) => 4 + estimate_field_bytes(f.data_type()),
         DataType::Struct(fields) => fields
             .iter()
             .map(|f| estimate_field_bytes(f.data_type()) + 1)
@@ -291,10 +289,9 @@ impl ImmediateModePartitioner {
             _ => vec![],
         };
 
-        let mut reservation =
-            MemoryConsumer::new(format!("ImmediateModePartitioner[{partition}]"))
-                .with_can_spill(true)
-                .register(&runtime.memory_pool);
+        let mut reservation = MemoryConsumer::new(format!("ImmediateModePartitioner[{partition}]"))
+            .with_can_spill(true)
+            .register(&runtime.memory_pool);
 
         // Reserve memory upfront for coalescer buffers across all partitions.
         // Each coalescer holds at most batch_size rows. We estimate per-row bytes
@@ -402,8 +399,7 @@ impl ImmediateModePartitioner {
         let num_rows = batch.num_rows();
 
         // Build per-partition row indices
-        let mut partition_row_indices: Vec<Vec<(usize, usize)>> =
-            vec![Vec::new(); num_partitions];
+        let mut partition_row_indices: Vec<Vec<(usize, usize)>> = vec![Vec::new(); num_partitions];
         for row_idx in 0..num_rows {
             let pid = self.partition_ids[row_idx] as usize;
             partition_row_indices[pid].push((0, row_idx));
@@ -452,14 +448,9 @@ impl ImmediateModePartitioner {
                     .disk_manager
                     .create_tmp_file(&format!("imm_shuffle_p{pid}"))?;
                 let path = temp_file.path().to_owned();
-                let file = OpenOptions::new()
-                    .append(true)
-                    .open(&path)
-                    .map_err(|e| {
-                        DataFusionError::Execution(format!(
-                            "Failed to open spill file: {e}"
-                        ))
-                    })?;
+                let file = OpenOptions::new().append(true).open(&path).map_err(|e| {
+                    DataFusionError::Execution(format!("Failed to open spill file: {e}"))
+                })?;
                 self.spill_files[pid] = Some(SpillFile {
                     _temp_file: temp_file,
                     file,
@@ -545,9 +536,7 @@ impl ShufflePartitioner for ImmediateModePartitioner {
             .create(true)
             .truncate(true)
             .open(&self.output_data_file)
-            .map_err(|e| {
-                DataFusionError::Execution(format!("shuffle write error: {e:?}"))
-            })?;
+            .map_err(|e| DataFusionError::Execution(format!("shuffle write error: {e:?}")))?;
         let mut output_data = BufWriter::new(data_file);
 
         #[allow(clippy::needless_range_loop)]
@@ -588,9 +577,8 @@ impl ShufflePartitioner for ImmediateModePartitioner {
         // Write index file
         let mut write_timer = self.metrics.write_time.timer();
         let mut output_index = BufWriter::new(
-            File::create(&self.output_index_file).map_err(|e| {
-                DataFusionError::Execution(format!("shuffle write error: {e:?}"))
-            })?,
+            File::create(&self.output_index_file)
+                .map_err(|e| DataFusionError::Execution(format!("shuffle write error: {e:?}")))?,
         );
         for offset in &offsets {
             output_index.write_all(&offset.to_le_bytes())?;
@@ -636,8 +624,7 @@ mod tests {
             CompressionCodec::Snappy,
         ] {
             // Use batch_size=1 to force immediate serialization (no coalescing)
-            let mut stream =
-                PartitionOutputStream::try_new(Arc::clone(&schema), codec, 1).unwrap();
+            let mut stream = PartitionOutputStream::try_new(Arc::clone(&schema), codec, 1).unwrap();
             stream.write_batch(&batch).unwrap();
             stream.flush().unwrap();
 
@@ -645,12 +632,10 @@ mod tests {
             assert!(!buf.is_empty());
 
             // Parse the first block: 8 bytes length, 8 bytes field_count, then codec+data
-            let ipc_length =
-                u64::from_le_bytes(buf[0..8].try_into().unwrap()) as usize;
+            let ipc_length = u64::from_le_bytes(buf[0..8].try_into().unwrap()) as usize;
             assert!(ipc_length > 0);
 
-            let field_count =
-                usize::from_le_bytes(buf[8..16].try_into().unwrap());
+            let field_count = usize::from_le_bytes(buf[8..16].try_into().unwrap());
             assert_eq!(field_count, 1); // one field "a"
 
             // read_ipc_compressed expects data starting at the codec tag
@@ -905,8 +890,7 @@ mod tests {
         let index_data = std::fs::read(&index_path).unwrap();
         let mut offsets = Vec::new();
         for i in 0..=num_partitions {
-            let offset =
-                i64::from_le_bytes(index_data[i * 8..(i + 1) * 8].try_into().unwrap());
+            let offset = i64::from_le_bytes(index_data[i * 8..(i + 1) * 8].try_into().unwrap());
             offsets.push(offset as usize);
         }
 
@@ -925,15 +909,13 @@ mod tests {
             let mut pos = partition_start;
             while pos < partition_end {
                 // Read 8-byte length prefix
-                let payload_len = u64::from_le_bytes(
-                    data[pos..pos + 8].try_into().unwrap(),
-                ) as usize;
+                let payload_len =
+                    u64::from_le_bytes(data[pos..pos + 8].try_into().unwrap()) as usize;
                 assert!(payload_len > 0, "Block payload length should be > 0");
 
                 // Skip 8-byte field_count
-                let field_count = u64::from_le_bytes(
-                    data[pos + 8..pos + 16].try_into().unwrap(),
-                ) as usize;
+                let field_count =
+                    u64::from_le_bytes(data[pos + 8..pos + 16].try_into().unwrap()) as usize;
                 assert_eq!(field_count, 1, "Expected 1 field");
 
                 // Pass codec tag + IPC data to read_ipc_compressed

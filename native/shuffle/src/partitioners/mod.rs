@@ -15,11 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
+mod immediate_mode;
 mod multi_partition;
 mod partitioned_batch_iterator;
 mod single_partition;
 mod traits;
-mod immediate_mode;
 
 pub(crate) use immediate_mode::ImmediateModePartitioner;
 pub(crate) use multi_partition::MultiPartitionShuffleRepartitioner;
