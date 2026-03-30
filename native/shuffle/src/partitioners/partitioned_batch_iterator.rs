@@ -59,7 +59,7 @@ pub(crate) struct PartitionedBatchIterator<'a> {
 }
 
 impl<'a> PartitionedBatchIterator<'a> {
-    fn new(
+    pub(super) fn new(
         indices: &'a [(u32, u32)],
         buffered_batches: &'a [RecordBatch],
         batch_size: usize,

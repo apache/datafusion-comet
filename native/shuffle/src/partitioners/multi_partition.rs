@@ -402,6 +402,9 @@ impl MultiPartitionShuffleRepartitioner {
         let buffered_partition_idx = self.buffered_batches.len() as u32;
         self.buffered_batches.push(input);
 
+        // Track which partitions reached batch_size and need flushing
+        let mut partitions_to_flush: Vec<usize> = Vec::new();
+
         // partition_starts conceptually slices partition_row_indices into smaller slices,
         // each slice contains the indices of rows in input that will go into the corresponding
         // partition. The following loop iterates over the slices and put the row indices into
@@ -425,11 +428,50 @@ impl MultiPartitionShuffleRepartitioner {
             }
             let after_size = indices.allocated_size();
             mem_growth += after_size.saturating_sub(before_size);
+
+            if indices.len() >= self.batch_size {
+                partitions_to_flush.push(partition_id);
+            }
+        }
+
+        // Eagerly flush partitions that have accumulated batch_size rows.
+        // This produces full-sized output batches and frees the indices, reducing
+        // memory usage without requiring a full spill of all partitions.
+        for partition_id in partitions_to_flush {
+            self.flush_partition(partition_id)?;
         }
 
         if self.reservation.try_grow(mem_growth).is_err() {
             self.spill()?;
         }
+
+        Ok(())
+    }
+
+    /// Flush a single partition's accumulated indices into its spill file,
+    /// producing full batch_size output batches via interleave_record_batch.
+    fn flush_partition(&mut self, partition_id: usize) -> datafusion::common::Result<()> {
+        let indices = &self.partition_indices[partition_id];
+        if indices.is_empty() {
+            return Ok(());
+        }
+
+        let mut iter = PartitionedBatchIterator::new(
+            indices,
+            &self.buffered_batches,
+            self.batch_size,
+        );
+        let partition_writer = &mut self.partition_writers[partition_id];
+        let spilled_bytes = partition_writer.spill(
+            &mut iter,
+            &self.runtime,
+            &self.metrics,
+            self.write_buffer_size,
+            self.batch_size,
+        )?;
+
+        self.partition_indices[partition_id].clear();
+        self.metrics.spilled_bytes.add(spilled_bytes);
 
         Ok(())
     }
