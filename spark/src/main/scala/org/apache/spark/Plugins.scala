@@ -28,7 +28,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.internal.config.{EXECUTOR_MEMORY, EXECUTOR_MEMORY_OVERHEAD, EXECUTOR_MEMORY_OVERHEAD_FACTOR}
 import org.apache.spark.sql.internal.StaticSQLConf
 
-import org.apache.comet.CometConf.COMET_ONHEAP_ENABLED
+import org.apache.comet.CometConf.{COMET_METRICS_ENABLED, COMET_ONHEAP_ENABLED}
 import org.apache.comet.CometSparkSessionExtensions
 
 /**
@@ -56,6 +56,9 @@ class CometDriverPlugin extends DriverPlugin with Logging with ShimCometDriverPl
 
     // register CometSparkSessionExtensions if it isn't already registered
     CometDriverPlugin.registerCometSessionExtension(sc.conf)
+
+    // Register Comet metrics
+    CometDriverPlugin.registerCometMetrics(sc)
 
     if (CometSparkSessionExtensions.shouldOverrideMemoryConf(sc.getConf)) {
       val execMemOverhead = if (sc.getConf.contains(EXECUTOR_MEMORY_OVERHEAD.key)) {
@@ -101,6 +104,32 @@ class CometDriverPlugin extends DriverPlugin with Logging with ShimCometDriverPl
 }
 
 object CometDriverPlugin extends Logging {
+  def registerCometMetrics(sc: SparkContext): Unit = {
+    if (sc.getConf.getBoolean(
+        COMET_METRICS_ENABLED.key,
+        COMET_METRICS_ENABLED.defaultValue.get)) {
+      sc.env.metricsSystem.registerSource(CometSource)
+
+      val listenerKey = "spark.sql.queryExecutionListeners"
+      val listenerClass = "org.apache.comet.CometMetricsListener"
+      val listeners = sc.conf.get(listenerKey, "")
+      if (listeners.isEmpty) {
+        logInfo(s"Setting $listenerKey=$listenerClass")
+        sc.conf.set(listenerKey, listenerClass)
+      } else {
+        val currentListeners = listeners.split(",").map(_.trim)
+        if (!currentListeners.contains(listenerClass)) {
+          val newValue = s"$listeners,$listenerClass"
+          logInfo(s"Setting $listenerKey=$newValue")
+          sc.conf.set(listenerKey, newValue)
+        }
+      }
+    } else {
+      logInfo(
+        "Comet metrics reporting is disabled. Set spark.comet.metrics.enabled=true to enable.")
+    }
+  }
+
   def registerCometSessionExtension(conf: SparkConf): Unit = {
     val extensionKey = StaticSQLConf.SPARK_SESSION_EXTENSIONS.key
     val extensionClass = classOf[CometSparkSessionExtensions].getName
