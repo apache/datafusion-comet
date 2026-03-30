@@ -79,9 +79,20 @@ case class CometMetricNode(metrics: Map[String, SQLMetric], children: Seq[CometM
     }
   }
 
+  // Called via JNI from `comet_metric_node.rs`
   def set_all_from_bytes(bytes: Array[Byte]): Unit = {
     val metricNode = Metric.NativeMetricNode.parseFrom(bytes)
     set_all(metricNode)
+  }
+
+  /**
+   * Finds a metric by name in this node or any descendant node. Returns the first match found via
+   * depth-first search.
+   */
+  def findMetric(name: String): Option[SQLMetric] = {
+    metrics.get(name).orElse {
+      children.iterator.map(_.findMetric(name)).collectFirst { case Some(m) => m }
+    }
   }
 }
 
