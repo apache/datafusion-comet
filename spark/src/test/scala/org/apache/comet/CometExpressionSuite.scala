@@ -1386,6 +1386,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("atan2 math scalar functions") {
     // TODO we should eventually include negative zero but there are known issues still
+    // https://github.com/apache/datafusion-comet/issues/1897
     val data = doubleValues.filter(n => java.lang.Double.compare(n, -0.0d) == 1).map(n => (n, n))
     withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[Atan2]) -> "true") {
       withParquetTable(data, "tbl") {
