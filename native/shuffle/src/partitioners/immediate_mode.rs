@@ -756,7 +756,13 @@ mod tests {
         let batch = make_test_batch(&[1, 2, 3, 4, 5]);
 
         let mut buf = PartitionBuffer::new(&schema, 3);
-        buf.append_rows(&batch, &[0, 1, 2]).unwrap();
+        scatter_append(
+            buf.builders[0].as_mut(),
+            batch.column(0).as_ref(),
+            &[0, 1, 2],
+        )
+        .unwrap();
+        buf.num_rows += 3;
         assert!(buf.is_full());
 
         let flushed = buf.flush().unwrap();
@@ -764,7 +770,8 @@ mod tests {
         assert_eq!(buf.num_rows, 0);
 
         // Builders are reused after flush
-        buf.append_rows(&batch, &[3, 4]).unwrap();
+        scatter_append(buf.builders[0].as_mut(), batch.column(0).as_ref(), &[3, 4]).unwrap();
+        buf.num_rows += 2;
         assert_eq!(buf.num_rows, 2);
     }
 
