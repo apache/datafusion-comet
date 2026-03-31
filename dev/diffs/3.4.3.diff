@@ -2332,7 +2332,7 @@ index 240bb4e6dcb..8287ffa03ca 100644
  
    import testImplicits._
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRowIndexSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRowIndexSuite.scala
-index 351c6d698fc..583d9225cca 100644
+index 351c6d698fc..cf6d9d6d476 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRowIndexSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRowIndexSuite.scala
 @@ -20,12 +20,14 @@ import java.io.File
@@ -2350,16 +2350,17 @@ index 351c6d698fc..583d9225cca 100644
  import org.apache.spark.sql.execution.FileSourceScanExec
  import org.apache.spark.sql.execution.datasources.FileFormat
  import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
-@@ -172,6 +174,8 @@ class ParquetRowIndexSuite extends QueryTest with SharedSparkSession {
+@@ -172,6 +174,9 @@ class ParquetRowIndexSuite extends QueryTest with SharedSparkSession {
  
    private def testRowIndexGeneration(label: String, conf: RowIndexTestConf): Unit = {
      test (s"$label - ${conf.desc}") {
++      // See https://github.com/apache/datafusion-comet/issues/3432
 +      // native_datafusion Parquet scan does not support row index generation.
 +      assume(!Seq(CometConf.SCAN_NATIVE_DATAFUSION, CometConf.SCAN_AUTO).contains(CometConf.COMET_NATIVE_SCAN_IMPL.get()))
        withSQLConf(conf.sqlConfs: _*) {
          withTempPath { path =>
            val rowIndexColName = FileFormat.ROW_INDEX_TEMPORARY_COLUMN_NAME
-@@ -230,6 +234,12 @@ class ParquetRowIndexSuite extends QueryTest with SharedSparkSession {
+@@ -230,6 +235,12 @@ class ParquetRowIndexSuite extends QueryTest with SharedSparkSession {
              case f: FileSourceScanExec =>
                numPartitions += f.inputRDD.partitions.length
                numOutputRows += f.metrics("numOutputRows").value
@@ -2372,10 +2373,11 @@ index 351c6d698fc..583d9225cca 100644
              case _ =>
            }
            assert(numPartitions > 0)
-@@ -291,6 +301,8 @@ class ParquetRowIndexSuite extends QueryTest with SharedSparkSession {
+@@ -291,6 +302,9 @@ class ParquetRowIndexSuite extends QueryTest with SharedSparkSession {
      val conf = RowIndexTestConf(useDataSourceV2 = useDataSourceV2)
  
      test(s"invalid row index column type - ${conf.desc}") {
++      // See https://github.com/apache/datafusion-comet/issues/3432
 +      // native_datafusion Parquet scan does not support row index generation.
 +      assume(!Seq(CometConf.SCAN_NATIVE_DATAFUSION, CometConf.SCAN_AUTO).contains(CometConf.COMET_NATIVE_SCAN_IMPL.get()))
        withSQLConf(conf.sqlConfs: _*) {
