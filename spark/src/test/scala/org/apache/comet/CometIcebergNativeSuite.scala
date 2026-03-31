@@ -2319,7 +2319,7 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
 
         // Create Iceberg table with hour(timestamp) + truncate(geohash, 3) partitioning
         spark.sql("CREATE NAMESPACE IF NOT EXISTS test_cat.db")
-        spark.sql(s"""
+        spark.sql("""
           CREATE TABLE test_cat.db.int96_hour_test (
             id BIGINT,
             outputTimestamp TIMESTAMP,
