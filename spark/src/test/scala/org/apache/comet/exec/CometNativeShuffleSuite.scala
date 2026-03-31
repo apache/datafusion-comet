@@ -474,4 +474,24 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
       }
     }
   }
+
+  test("native datafusion scan - repartition count") {
+    withTempPath { dir =>
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        spark
+          .range(1000)
+          .selectExpr("id", "concat('name_', id) as name")
+          .repartition(100)
+          .write
+          .parquet(dir.toString)
+      }
+      withSQLConf(
+        CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
+        CometConf.COMET_EXEC_SHUFFLE_WITH_ROUND_ROBIN_PARTITIONING_ENABLED.key -> "true") {
+        val count = spark.read.parquet(dir.toString).repartition(10).count()
+        checkSparkAnswerAndOperator(spark.read.parquet(dir.toString).repartition(10))
+        assert(count == 1000)
+      }
+    }
+  }
 }
