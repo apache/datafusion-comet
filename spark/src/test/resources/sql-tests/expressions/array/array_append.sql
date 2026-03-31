@@ -15,6 +15,9 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
+-- On Spark 4.0, array_append is a RuntimeReplaceable that rewrites to array_insert(-1),
+-- so we need to allow the incompatible array_insert to run natively there.
+-- Config: spark.comet.expression.ArrayInsert.allowIncompatible=true
 -- ConfigMatrix: parquet.enable.dictionary=false,true
 
 statement
@@ -23,17 +26,17 @@ CREATE TABLE test_array_append(arr array<int>, val int) USING parquet
 statement
 INSERT INTO test_array_append VALUES (array(1, 2, 3), 4), (array(), 1), (NULL, 1), (array(1, 2), NULL)
 
-query spark_answer_only
+query
 SELECT array_append(arr, val) FROM test_array_append
 
 -- column + literal
-query spark_answer_only
+query
 SELECT array_append(arr, 99) FROM test_array_append
 
 -- literal + column
-query spark_answer_only
+query
 SELECT array_append(array(1, 2, 3), val) FROM test_array_append
 
 -- literal + literal
-query ignore(https://github.com/apache/datafusion-comet/issues/3338)
+query
 SELECT array_append(array(1, 2, 3), 4), array_append(array(), 1), array_append(cast(NULL as array<int>), 1)

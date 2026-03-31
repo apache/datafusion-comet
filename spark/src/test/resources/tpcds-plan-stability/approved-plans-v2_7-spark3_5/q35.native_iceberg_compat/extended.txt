@@ -1,6 +1,6 @@
 TakeOrderedAndProject
 +- HashAggregate
-   +- CometColumnarToRow
+   +- CometNativeColumnarToRow
       +- CometColumnarExchange
          +- HashAggregate
             +- Project
@@ -11,7 +11,7 @@ TakeOrderedAndProject
                   :     :  +- Filter
                   :     :     +- BroadcastHashJoin
                   :     :        :-  BroadcastHashJoin [COMET: Unsupported join type ExistenceJoin(exists#1)]
-                  :     :        :  :- CometColumnarToRow
+                  :     :        :  :- CometNativeColumnarToRow
                   :     :        :  :  +- CometBroadcastHashJoin
                   :     :        :  :     :- CometFilter
                   :     :        :  :     :  +- CometScan [native_iceberg_compat] parquet spark_catalog.default.customer
@@ -21,7 +21,7 @@ TakeOrderedAndProject
                   :     :        :  :              :- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
                   :     :        :  :              :     +- SubqueryBroadcast
                   :     :        :  :              :        +- BroadcastExchange
-                  :     :        :  :              :           +- CometColumnarToRow
+                  :     :        :  :              :           +- CometNativeColumnarToRow
                   :     :        :  :              :              +- CometProject
                   :     :        :  :              :                 +- CometFilter
                   :     :        :  :              :                    +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
@@ -30,7 +30,7 @@ TakeOrderedAndProject
                   :     :        :  :                    +- CometFilter
                   :     :        :  :                       +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
                   :     :        :  +- BroadcastExchange
-                  :     :        :     +- CometColumnarToRow
+                  :     :        :     +- CometNativeColumnarToRow
                   :     :        :        +- CometProject
                   :     :        :           +- CometBroadcastHashJoin
                   :     :        :              :- CometScan [native_iceberg_compat] parquet spark_catalog.default.web_sales
@@ -40,7 +40,7 @@ TakeOrderedAndProject
                   :     :        :                    +- CometFilter
                   :     :        :                       +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
                   :     :        +- BroadcastExchange
-                  :     :           +- CometColumnarToRow
+                  :     :           +- CometNativeColumnarToRow
                   :     :              +- CometProject
                   :     :                 +- CometBroadcastHashJoin
                   :     :                    :- CometScan [native_iceberg_compat] parquet spark_catalog.default.catalog_sales
@@ -50,12 +50,12 @@ TakeOrderedAndProject
                   :     :                          +- CometFilter
                   :     :                             +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
                   :     +- BroadcastExchange
-                  :        +- CometColumnarToRow
+                  :        +- CometNativeColumnarToRow
                   :           +- CometProject
                   :              +- CometFilter
                   :                 +- CometScan [native_iceberg_compat] parquet spark_catalog.default.customer_address
                   +- BroadcastExchange
-                     +- CometColumnarToRow
+                     +- CometNativeColumnarToRow
                         +- CometProject
                            +- CometFilter
                               +- CometScan [native_iceberg_compat] parquet spark_catalog.default.customer_demographics
