@@ -100,8 +100,21 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       // Collect baseline input metrics from vanilla Spark (Comet disabled)
       val (sparkBytes, sparkRecords) = collectInputMetrics(CometConf.COMET_ENABLED.key -> "false")
 
+      // Verify the plan actually uses CometNativeScanExec before collecting metrics
+      withSQLConf(
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION) {
+        val df = sql("SELECT * FROM tbl")
+        df.collect() // force plan materialization for AQE
+        val plan = stripAQEPlan(df.queryExecution.executedPlan)
+        assert(
+          find(plan)(_.isInstanceOf[CometNativeScanExec]).isDefined,
+          s"Expected CometNativeScanExec in plan:\n${plan.treeString}")
+      }
+
       // Collect input metrics from Comet native_datafusion scan
       val (cometBytes, cometRecords) = collectInputMetrics(
+        CometConf.COMET_ENABLED.key -> "true",
         CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION)
 
       // Records must match exactly
