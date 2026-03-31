@@ -1445,9 +1445,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("ceil and floor") {
     Seq("true", "false").foreach { dictionary =>
       withSQLConf(
-        "parquet.enable.dictionary" -> dictionary,
-        CometConf.getExprAllowIncompatConfigKey(classOf[Ceil]) -> "true",
-        CometConf.getExprAllowIncompatConfigKey(classOf[Floor]) -> "true") {
+        "parquet.enable.dictionary" -> dictionary) {
         withParquetTable(
           (-5 until 5).map(i => (i.toDouble + 0.3, i.toDouble + 0.8)),
           "tbl",

@@ -130,14 +130,14 @@ Expressions that are not Spark-compatible will fall back to Spark by default and
 | Atan           | `atan`    | Yes               |                                                                                                             |
 | Atan2          | `atan2`   | Yes               |                                                                                                             |
 | BRound         | `bround`  | Yes               |                                                                                                             |
-| Ceil           | `ceil`    | No                | Incorrect results for Decimal type inputs ([#1729](https://github.com/apache/datafusion-comet/issues/1729)) |
+| Ceil           | `ceil`    | No                |                                                                                                             |
 | Cos            | `cos`     | Yes               |                                                                                                             |
 | Cosh           | `cosh`    | Yes               |                                                                                                             |
 | Cot            | `cot`     | Yes               |                                                                                                             |
 | Divide         | `/`       | Yes               |                                                                                                             |
 | Exp            | `exp`     | Yes               |                                                                                                             |
 | Expm1          | `expm1`   | Yes               |                                                                                                             |
-| Floor          | `floor`   | No                | Incorrect results for Decimal type inputs ([#1729](https://github.com/apache/datafusion-comet/issues/1729)) |
+| Floor          | `floor`   | No                |                                                                                                             |
 | Hex            | `hex`     | Yes               |                                                                                                             |
 | IntegralDivide | `div`     | Yes               |                                                                                                             |
 | IsNaN          | `isnan`   | Yes               |                                                                                                             |

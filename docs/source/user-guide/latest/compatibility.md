@@ -86,8 +86,6 @@ the [Comet Supported Expressions Guide](expressions.md) for more information on 
 
 ### Math Expressions
 
-- **Ceil, Floor**: Incorrect results for Decimal type inputs.
-  [#1729](https://github.com/apache/datafusion-comet/issues/1729)
 - **Tan**: `tan(-0.0)` produces `0.0` instead of `-0.0`.
   [#1897](https://github.com/apache/datafusion-comet/issues/1897)
 
