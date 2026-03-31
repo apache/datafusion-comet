@@ -23,7 +23,10 @@ use arrow::array::builder::{
     LargeBinaryBuilder, LargeStringBuilder, NullBuilder, PrimitiveBuilder, StringBuilder,
     StringViewBuilder,
 };
-use arrow::array::{Array, ArrayRef, AsArray, BinaryViewArray, RecordBatch, StringViewArray};
+use arrow::array::{
+    Array, ArrayRef, AsArray, BinaryViewArray, RecordBatch, StringViewArray, UInt32Array,
+};
+use arrow::compute::take;
 use arrow::datatypes::{
     DataType, Date32Type, Date64Type, Decimal128Type, Decimal256Type, Float32Type, Float64Type,
     Int16Type, Int32Type, Int64Type, Int8Type, SchemaRef, TimeUnit, TimestampMicrosecondType,
@@ -177,8 +180,49 @@ fn scatter_append(
     Ok(())
 }
 
+/// Per-column strategy: scatter-write via builder for primitive/string types,
+/// or accumulate taken sub-arrays for complex types (List, Map, Struct, etc.).
+enum ColumnBuffer {
+    /// Fast path: direct scatter into a pre-allocated builder.
+    Builder(Box<dyn ArrayBuilder>),
+    /// Fallback for complex types: accumulate `take`-produced sub-arrays,
+    /// concatenate at flush time.
+    Accumulator(Vec<ArrayRef>),
+}
+
+/// Returns true if `scatter_append` can handle this data type directly.
+fn has_scatter_support(dt: &DataType) -> bool {
+    use DataType::*;
+    matches!(
+        dt,
+        Boolean
+            | Int8
+            | Int16
+            | Int32
+            | Int64
+            | UInt8
+            | UInt16
+            | UInt32
+            | UInt64
+            | Float32
+            | Float64
+            | Date32
+            | Date64
+            | Timestamp(_, _)
+            | Decimal128(_, _)
+            | Decimal256(_, _)
+            | Utf8
+            | LargeUtf8
+            | Binary
+            | LargeBinary
+            | Utf8View
+            | BinaryView
+            | Null
+    )
+}
+
 struct PartitionBuffer {
-    builders: Vec<Box<dyn ArrayBuilder>>,
+    columns: Vec<ColumnBuffer>,
     schema: SchemaRef,
     num_rows: usize,
     target_batch_size: usize,
@@ -186,13 +230,19 @@ struct PartitionBuffer {
 
 impl PartitionBuffer {
     fn new(schema: &SchemaRef, target_batch_size: usize) -> Self {
-        let builders = schema
+        let columns = schema
             .fields()
             .iter()
-            .map(|f| make_builder(f.data_type(), target_batch_size))
+            .map(|f| {
+                if has_scatter_support(f.data_type()) {
+                    ColumnBuffer::Builder(make_builder(f.data_type(), target_batch_size))
+                } else {
+                    ColumnBuffer::Accumulator(Vec::new())
+                }
+            })
             .collect();
         Self {
-            builders,
+            columns,
             schema: Arc::clone(schema),
             num_rows: 0,
             target_batch_size,
@@ -203,10 +253,23 @@ impl PartitionBuffer {
         self.num_rows >= self.target_batch_size
     }
 
-    /// Finish builders into a RecordBatch. Builders are reset but retain
-    /// their allocated capacity for reuse.
+    /// Finish all columns into a RecordBatch. Builders are reset (retaining
+    /// capacity); accumulators are concatenated and cleared.
     fn flush(&mut self) -> Result<RecordBatch> {
-        let arrays: Vec<ArrayRef> = self.builders.iter_mut().map(|b| b.finish()).collect();
+        let arrays: Vec<ArrayRef> = self
+            .columns
+            .iter_mut()
+            .map(|col| match col {
+                ColumnBuffer::Builder(b) => b.finish(),
+                ColumnBuffer::Accumulator(chunks) => {
+                    let refs: Vec<&dyn Array> = chunks.iter().map(|a| a.as_ref()).collect();
+                    let result = arrow::compute::concat(&refs)
+                        .expect("concat failed for accumulated arrays");
+                    chunks.clear();
+                    result
+                }
+            })
+            .collect();
         let batch = RecordBatch::try_new(Arc::clone(&self.schema), arrays)
             .map_err(|e| DataFusionError::ArrowError(Box::new(e), None))?;
         self.num_rows = 0;
@@ -493,16 +556,24 @@ impl ImmediateModePartitioner {
         // Column-first scatter: resolve each column's type once, then
         // scatter across all partitions with the same typed path.
         for col_idx in 0..batch.num_columns() {
-            let source = batch.column(col_idx).as_ref();
+            let source = batch.column(col_idx);
             for pid in 0..num_partitions {
-                if self.partition_row_indices[pid].is_empty() {
+                let indices = &self.partition_row_indices[pid];
+                if indices.is_empty() {
                     continue;
                 }
-                scatter_append(
-                    self.partition_buffers[pid].builders[col_idx].as_mut(),
-                    source,
-                    &self.partition_row_indices[pid],
-                )?;
+                match &mut self.partition_buffers[pid].columns[col_idx] {
+                    ColumnBuffer::Builder(builder) => {
+                        scatter_append(builder.as_mut(), source.as_ref(), indices)?;
+                    }
+                    ColumnBuffer::Accumulator(chunks) => {
+                        let idx_array =
+                            UInt32Array::from_iter_values(indices.iter().map(|&i| i as u32));
+                        let taken = take(source.as_ref(), &idx_array, None)
+                            .map_err(|e| DataFusionError::ArrowError(Box::new(e), None))?;
+                        chunks.push(taken);
+                    }
+                }
             }
         }
 
@@ -756,12 +827,12 @@ mod tests {
         let batch = make_test_batch(&[1, 2, 3, 4, 5]);
 
         let mut buf = PartitionBuffer::new(&schema, 3);
-        scatter_append(
-            buf.builders[0].as_mut(),
-            batch.column(0).as_ref(),
-            &[0, 1, 2],
-        )
-        .unwrap();
+        match &mut buf.columns[0] {
+            ColumnBuffer::Builder(b) => {
+                scatter_append(b.as_mut(), batch.column(0).as_ref(), &[0, 1, 2]).unwrap()
+            }
+            _ => panic!("expected Builder"),
+        }
         buf.num_rows += 3;
         assert!(buf.is_full());
 
@@ -770,7 +841,12 @@ mod tests {
         assert_eq!(buf.num_rows, 0);
 
         // Builders are reused after flush
-        scatter_append(buf.builders[0].as_mut(), batch.column(0).as_ref(), &[3, 4]).unwrap();
+        match &mut buf.columns[0] {
+            ColumnBuffer::Builder(b) => {
+                scatter_append(b.as_mut(), batch.column(0).as_ref(), &[3, 4]).unwrap()
+            }
+            _ => panic!("expected Builder"),
+        }
         buf.num_rows += 2;
         assert_eq!(buf.num_rows, 2);
     }
