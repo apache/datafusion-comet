@@ -798,6 +798,20 @@ object CometConf extends ShimCometConf {
       .longConf
       .createWithDefault(3000L)
 
+  val COMET_METRICS_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.metrics.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Whether to enable Comet metrics reporting through Spark's external monitoring system. " +
+          "When enabled, Comet exposes metrics such as native operators, Spark operators, " +
+          "queries planned, transitions, and acceleration ratio. These metrics can be " +
+          "visualized through tools like Grafana when a metrics sink (e.g., Prometheus) is " +
+          "configured. Disabled by default because Spark plan traversal adds overhead and " +
+          "metrics require a sink to be useful. " +
+          "This config must be set before the SparkSession is created to take effect.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_LIBHDFS_SCHEMES_KEY = "fs.comet.libhdfs.schemes"
 
   val COMET_LIBHDFS_SCHEMES: OptionalConfigEntry[String] =
