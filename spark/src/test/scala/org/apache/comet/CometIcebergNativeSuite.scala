@@ -2273,15 +2273,16 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
             StructField("value", DoubleType, nullable = true),
             StructField(
               "ts_struct",
-              StructType(Seq(
-                StructField("inner_ts", TimestampType, nullable = true),
-                StructField("inner_val", DoubleType, nullable = true))),
+              StructType(
+                Seq(
+                  StructField("inner_ts", TimestampType, nullable = true),
+                  StructField("inner_val", DoubleType, nullable = true))),
               nullable = true),
-            StructField("ts_array", ArrayType(TimestampType, containsNull = true), nullable = true),
             StructField(
-              "ts_map",
-              MapType(IntegerType, TimestampType),
-              nullable = true)))
+              "ts_array",
+              ArrayType(TimestampType, containsNull = true),
+              nullable = true),
+            StructField("ts_map", MapType(IntegerType, TimestampType), nullable = true)))
 
         // Default FuzzDataGenerator baseDate is year 3333, outside the i64 nanosecond
         // range (~1677-2262). This triggers the INT96 overflow bug if coercion is missing.
@@ -2310,9 +2311,8 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
         try {
           val parquetSchema = reader.getFooter.getFileMetaData.getSchema
           val int96Columns = parquetSchema.getColumns.asScala
-            .filter(
-              _.getPrimitiveType.getPrimitiveTypeName ==
-                org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName.INT96)
+            .filter(_.getPrimitiveType.getPrimitiveTypeName ==
+              org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName.INT96)
             .map(_.getPath.mkString("."))
           // Expect INT96 for: ts, ts_struct.inner_ts, ts_array.list.element, ts_map.value
           assert(
@@ -2373,12 +2373,9 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
           // ts_struct. Instead, compare Comet's read against the raw Parquet source.
           checkIcebergNativeScan(
             "SELECT id, ts, value, ts_array, ts_map FROM test_cat.db.int96_test ORDER BY id")
-          checkIcebergNativeScan(
-            "SELECT id, ts FROM test_cat.db.int96_test ORDER BY id")
-          checkIcebergNativeScan(
-            "SELECT id, ts_array FROM test_cat.db.int96_test ORDER BY id")
-          checkIcebergNativeScan(
-            "SELECT id, ts_map FROM test_cat.db.int96_test ORDER BY id")
+          checkIcebergNativeScan("SELECT id, ts FROM test_cat.db.int96_test ORDER BY id")
+          checkIcebergNativeScan("SELECT id, ts_array FROM test_cat.db.int96_test ORDER BY id")
+          checkIcebergNativeScan("SELECT id, ts_map FROM test_cat.db.int96_test ORDER BY id")
 
           // Validate ts_struct against raw Parquet since Spark's Iceberg reader can't read it
           val icebergStructDf = spark
@@ -2391,7 +2388,7 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
             .collect()
           assert(
             icebergStructDf.sameElements(parquetStructDf),
-            s"ts_struct mismatch between Comet Iceberg read and raw Parquet")
+            "ts_struct mismatch between Comet Iceberg read and raw Parquet")
 
           spark.sql("DROP TABLE test_cat.db.int96_test")
           spark.sql("DROP TABLE parquet_temp")
