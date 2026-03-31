@@ -97,15 +97,25 @@ impl Iterator for PartitionedBatchIterator<'_> {
 
         let indices_end = std::cmp::min(self.pos + self.batch_size, self.indices.len());
         let indices = &self.indices[self.pos..indices_end];
-        match interleave_record_batch(&self.record_batches, indices) {
-            Ok(batch) => {
-                self.pos = indices_end;
-                Some(Ok(batch))
-            }
-            Err(e) => Some(Err(DataFusionError::ArrowError(
-                Box::from(e),
-                Some(DataFusionError::get_back_trace()),
-            ))),
-        }
+
+        // record_batches is guaranteed non-empty when indices is non-empty
+        // (indices reference rows within the buffered batches)
+        let schema = self.record_batches[0].schema();
+
+        let result = if schema.fields().is_empty() {
+            // For zero-column batches (e.g. COUNT queries), we can't use
+            // interleave_record_batch because Arrow requires either at least one
+            // column or an explicit row count. Create the batch directly.
+            let options =
+                arrow::array::RecordBatchOptions::new().with_row_count(Some(indices.len()));
+            RecordBatch::try_new_with_options(schema, vec![], &options)
+        } else {
+            interleave_record_batch(&self.record_batches, indices)
+        };
+
+        self.pos = indices_end;
+        Some(result.map_err(|e| {
+            DataFusionError::ArrowError(Box::from(e), Some(DataFusionError::get_back_trace()))
+        }))
     }
 }
