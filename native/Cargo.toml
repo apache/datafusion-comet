@@ -55,8 +55,8 @@ object_store = { version = "0.13.1", features = ["gcp", "azure", "aws", "http"] 
 url = "2.2"
 aws-config = "1.8.14"
 aws-credential-types = "1.2.13"
-iceberg = { git = "https://github.com/mbutrovich/iceberg-rust", branch = "df53-upgrade" }
-iceberg-storage-opendal = { git = "https://github.com/mbutrovich/iceberg-rust", branch = "df53-upgrade", features = ["opendal-all"] }
+iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "477a1e5" }
+iceberg-storage-opendal = { git = "https://github.com/apache/iceberg-rust", rev = "477a1e5", features = ["opendal-all"] }
 
 [profile.release]
 debug = true
