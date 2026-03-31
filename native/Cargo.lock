@@ -3321,7 +3321,7 @@ dependencies = [
 [[package]]
 name = "iceberg"
 version = "0.9.0"
-source = "git+https://github.com/mbutrovich/iceberg-rust.git?rev=26e6424#26e6424053e6fa95c9283a9b04c9e22afb2fd05e"
+source = "git+https://github.com/mbutrovich/iceberg-rust.git?rev=fe9264c#fe9264c6c43eb869a158df22e2a603b583a567e4"
 dependencies = [
  "anyhow",
  "apache-avro",
@@ -3374,7 +3374,7 @@ dependencies = [
 [[package]]
 name = "iceberg-storage-opendal"
 version = "0.9.0"
-source = "git+https://github.com/mbutrovich/iceberg-rust.git?rev=26e6424#26e6424053e6fa95c9283a9b04c9e22afb2fd05e"
+source = "git+https://github.com/mbutrovich/iceberg-rust.git?rev=fe9264c#fe9264c6c43eb869a158df22e2a603b583a567e4"
 dependencies = [
  "anyhow",
  "async-trait",
