@@ -966,6 +966,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // spill uses std::io::copy which triggers copy_file_range
     async fn test_immediate_mode_spill() {
         let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
         let dir = tempfile::tempdir().unwrap();
