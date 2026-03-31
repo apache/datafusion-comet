@@ -199,19 +199,6 @@ impl PartitionBuffer {
         }
     }
 
-    /// Scatter-write selected rows from `batch` into this partition's builders.
-    fn append_rows(&mut self, batch: &RecordBatch, row_indices: &[usize]) -> Result<()> {
-        for (col_idx, builder) in self.builders.iter_mut().enumerate() {
-            scatter_append(
-                builder.as_mut(),
-                batch.column(col_idx).as_ref(),
-                row_indices,
-            )?;
-        }
-        self.num_rows += row_indices.len();
-        Ok(())
-    }
-
     fn is_full(&self) -> bool {
         self.num_rows >= self.target_batch_size
     }
@@ -486,6 +473,10 @@ impl ImmediateModePartitioner {
     /// Scatter-write rows from batch into per-partition builders, flushing
     /// any partition that reaches target_batch_size. Returns
     /// `(flushed_builder_bytes, ipc_bytes_written)`.
+    ///
+    /// Uses column-first iteration so each column's type dispatch happens once
+    /// per batch (num_columns times) rather than once per partition per column
+    /// (num_columns × num_partitions times).
     fn repartition_batch(&mut self, batch: &RecordBatch) -> Result<(usize, usize)> {
         let num_partitions = self.partition_buffers.len();
         let num_rows = batch.num_rows();
@@ -499,16 +490,31 @@ impl ImmediateModePartitioner {
             self.partition_row_indices[pid].push(row_idx);
         }
 
-        // Scatter-write into partition builders
+        // Column-first scatter: resolve each column's type once, then
+        // scatter across all partitions with the same typed path.
+        for col_idx in 0..batch.num_columns() {
+            let source = batch.column(col_idx).as_ref();
+            for pid in 0..num_partitions {
+                if self.partition_row_indices[pid].is_empty() {
+                    continue;
+                }
+                scatter_append(
+                    self.partition_buffers[pid].builders[col_idx].as_mut(),
+                    source,
+                    &self.partition_row_indices[pid],
+                )?;
+            }
+        }
+
+        // Update row counts and flush full partitions
         let mut flushed_builder_bytes = 0usize;
         let mut ipc_bytes = 0usize;
         for pid in 0..num_partitions {
-            if self.partition_row_indices[pid].is_empty() {
+            let added = self.partition_row_indices[pid].len();
+            if added == 0 {
                 continue;
             }
-            self.partition_buffers[pid].append_rows(batch, &self.partition_row_indices[pid])?;
-
-            // Flush full partitions
+            self.partition_buffers[pid].num_rows += added;
             if self.partition_buffers[pid].is_full() {
                 let (builder_bytes, written) = self.flush_partition(pid)?;
                 flushed_builder_bytes += builder_bytes;
