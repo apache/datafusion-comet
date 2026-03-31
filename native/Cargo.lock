@@ -1918,6 +1918,7 @@ dependencies = [
  "arrow",
  "async-trait",
  "bytes",
+ "crc32c",
  "crc32fast",
  "criterion",
  "datafusion",
