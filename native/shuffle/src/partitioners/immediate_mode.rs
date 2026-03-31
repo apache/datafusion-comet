@@ -18,13 +18,21 @@
 use crate::metrics::ShufflePartitionerMetrics;
 use crate::partitioners::ShufflePartitioner;
 use crate::{comet_partitioning, CometPartitioning, CompressionCodec};
-use arrow::array::{ArrayRef, RecordBatch};
-use arrow::compute::interleave_record_batch;
-use arrow::compute::kernels::coalesce::BatchCoalescer;
-use arrow::datatypes::{DataType, SchemaRef};
+use arrow::array::builder::{
+    make_builder, ArrayBuilder, BinaryBuilder, BinaryViewBuilder, BooleanBuilder,
+    LargeBinaryBuilder, LargeStringBuilder, NullBuilder, PrimitiveBuilder, StringBuilder,
+    StringViewBuilder,
+};
+use arrow::array::{Array, ArrayRef, AsArray, BinaryViewArray, RecordBatch, StringViewArray};
+use arrow::datatypes::{
+    DataType, Date32Type, Date64Type, Decimal128Type, Decimal256Type, Float32Type, Float64Type,
+    Int16Type, Int32Type, Int64Type, Int8Type, SchemaRef, TimeUnit, TimestampMicrosecondType,
+    TimestampMillisecondType, TimestampNanosecondType, TimestampSecondType, UInt16Type, UInt32Type,
+    UInt64Type, UInt8Type,
+};
 use arrow::ipc::writer::StreamWriter;
 use datafusion::common::{DataFusionError, Result};
-use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
+use datafusion::execution::memory_pool::{MemoryConsumer, MemoryLimit, MemoryReservation};
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion_comet_spark_expr::murmur3::create_murmur3_hashes;
 use std::fs::{File, OpenOptions};
@@ -32,122 +40,219 @@ use std::io::{BufWriter, Seek, Write};
 use std::sync::Arc;
 use tokio::time::Instant;
 
-/// Estimate the in-memory byte cost of BatchCoalescer's InProgressArray builders
-/// per row for a given schema. Uses primitive widths for fixed-size types and a
-/// heuristic for variable-length types.
-fn estimate_builder_bytes_per_row(schema: &SchemaRef) -> usize {
-    let mut total = 0;
-    for field in schema.fields() {
-        total += estimate_field_bytes(field.data_type());
-        // 1 byte for null bitmap (overestimate per row, but simple)
-        total += 1;
-    }
-    total.max(8) // minimum 8 bytes per row
+macro_rules! scatter_byte_array {
+    ($builder:expr, $source:expr, $indices:expr, $offset_type:ty, $builder_type:ty, $cast:ident) => {{
+        let src = $source.$cast::<$offset_type>();
+        let dst = $builder
+            .as_any_mut()
+            .downcast_mut::<$builder_type>()
+            .expect("builder type mismatch");
+        if src.null_count() == 0 {
+            for &idx in $indices {
+                dst.append_value(src.value(idx));
+            }
+        } else {
+            for &idx in $indices {
+                dst.append_option(src.is_valid(idx).then(|| src.value(idx)));
+            }
+        }
+    }};
 }
 
-fn estimate_field_bytes(dt: &DataType) -> usize {
-    match dt {
-        DataType::Boolean => 1,
-        DataType::Null => 0,
-        dt if dt.primitive_width().is_some() => dt.primitive_width().unwrap(),
-        DataType::Utf8 | DataType::Binary => 32 + 4,
-        DataType::LargeUtf8 | DataType::LargeBinary => 32 + 8,
-        DataType::Utf8View | DataType::BinaryView => 32 + 16,
-        DataType::List(f) | DataType::LargeList(f) => 4 + estimate_field_bytes(f.data_type()),
-        DataType::Struct(fields) => fields
+macro_rules! scatter_byte_view {
+    ($builder:expr, $source:expr, $indices:expr, $array_type:ty, $builder_type:ty) => {{
+        let src = $source
+            .as_any()
+            .downcast_ref::<$array_type>()
+            .expect("array type mismatch");
+        let dst = $builder
+            .as_any_mut()
+            .downcast_mut::<$builder_type>()
+            .expect("builder type mismatch");
+        if src.null_count() == 0 {
+            for &idx in $indices {
+                dst.append_value(src.value(idx));
+            }
+        } else {
+            for &idx in $indices {
+                dst.append_option(src.is_valid(idx).then(|| src.value(idx)));
+            }
+        }
+    }};
+}
+
+macro_rules! scatter_primitive {
+    ($builder:expr, $source:expr, $indices:expr, $arrow_type:ty) => {{
+        let src = $source.as_primitive::<$arrow_type>();
+        let dst = $builder
+            .as_any_mut()
+            .downcast_mut::<PrimitiveBuilder<$arrow_type>>()
+            .expect("builder type mismatch");
+        if src.null_count() == 0 {
+            for &idx in $indices {
+                dst.append_value(src.value(idx));
+            }
+        } else {
+            for &idx in $indices {
+                dst.append_option(src.is_valid(idx).then(|| src.value(idx)));
+            }
+        }
+    }};
+}
+
+/// Scatter-append selected rows from `source` into `builder`.
+fn scatter_append(
+    builder: &mut dyn ArrayBuilder,
+    source: &dyn Array,
+    indices: &[usize],
+) -> Result<()> {
+    use DataType::*;
+    match source.data_type() {
+        Boolean => {
+            let src = source.as_boolean();
+            let dst = builder
+                .as_any_mut()
+                .downcast_mut::<BooleanBuilder>()
+                .unwrap();
+            if src.null_count() == 0 {
+                for &idx in indices {
+                    dst.append_value(src.value(idx));
+                }
+            } else {
+                for &idx in indices {
+                    dst.append_option(src.is_valid(idx).then(|| src.value(idx)));
+                }
+            }
+        }
+        Int8 => scatter_primitive!(builder, source, indices, Int8Type),
+        Int16 => scatter_primitive!(builder, source, indices, Int16Type),
+        Int32 => scatter_primitive!(builder, source, indices, Int32Type),
+        Int64 => scatter_primitive!(builder, source, indices, Int64Type),
+        UInt8 => scatter_primitive!(builder, source, indices, UInt8Type),
+        UInt16 => scatter_primitive!(builder, source, indices, UInt16Type),
+        UInt32 => scatter_primitive!(builder, source, indices, UInt32Type),
+        UInt64 => scatter_primitive!(builder, source, indices, UInt64Type),
+        Float32 => scatter_primitive!(builder, source, indices, Float32Type),
+        Float64 => scatter_primitive!(builder, source, indices, Float64Type),
+        Date32 => scatter_primitive!(builder, source, indices, Date32Type),
+        Date64 => scatter_primitive!(builder, source, indices, Date64Type),
+        Timestamp(TimeUnit::Second, _) => {
+            scatter_primitive!(builder, source, indices, TimestampSecondType)
+        }
+        Timestamp(TimeUnit::Millisecond, _) => {
+            scatter_primitive!(builder, source, indices, TimestampMillisecondType)
+        }
+        Timestamp(TimeUnit::Microsecond, _) => {
+            scatter_primitive!(builder, source, indices, TimestampMicrosecondType)
+        }
+        Timestamp(TimeUnit::Nanosecond, _) => {
+            scatter_primitive!(builder, source, indices, TimestampNanosecondType)
+        }
+        Decimal128(_, _) => scatter_primitive!(builder, source, indices, Decimal128Type),
+        Decimal256(_, _) => scatter_primitive!(builder, source, indices, Decimal256Type),
+        Utf8 => scatter_byte_array!(builder, source, indices, i32, StringBuilder, as_string),
+        LargeUtf8 => {
+            scatter_byte_array!(builder, source, indices, i64, LargeStringBuilder, as_string)
+        }
+        Binary => scatter_byte_array!(builder, source, indices, i32, BinaryBuilder, as_binary),
+        LargeBinary => {
+            scatter_byte_array!(builder, source, indices, i64, LargeBinaryBuilder, as_binary)
+        }
+        Utf8View => {
+            scatter_byte_view!(builder, source, indices, StringViewArray, StringViewBuilder)
+        }
+        BinaryView => {
+            scatter_byte_view!(builder, source, indices, BinaryViewArray, BinaryViewBuilder)
+        }
+        Null => {
+            let dst = builder.as_any_mut().downcast_mut::<NullBuilder>().unwrap();
+            dst.append_nulls(indices.len());
+        }
+        dt => {
+            return Err(DataFusionError::NotImplemented(format!(
+                "Scatter append not implemented for {dt}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+struct PartitionBuffer {
+    builders: Vec<Box<dyn ArrayBuilder>>,
+    schema: SchemaRef,
+    num_rows: usize,
+    target_batch_size: usize,
+}
+
+impl PartitionBuffer {
+    fn new(schema: &SchemaRef, target_batch_size: usize) -> Self {
+        let builders = schema
+            .fields()
             .iter()
-            .map(|f| estimate_field_bytes(f.data_type()) + 1)
-            .sum(),
-        DataType::Dictionary(key_dt, _) => estimate_field_bytes(key_dt),
-        _ => 32,
+            .map(|f| make_builder(f.data_type(), target_batch_size))
+            .collect();
+        Self {
+            builders,
+            schema: Arc::clone(schema),
+            num_rows: 0,
+            target_batch_size,
+        }
+    }
+
+    /// Scatter-write selected rows from `batch` into this partition's builders.
+    fn append_rows(&mut self, batch: &RecordBatch, row_indices: &[usize]) -> Result<()> {
+        for (col_idx, builder) in self.builders.iter_mut().enumerate() {
+            scatter_append(
+                builder.as_mut(),
+                batch.column(col_idx).as_ref(),
+                row_indices,
+            )?;
+        }
+        self.num_rows += row_indices.len();
+        Ok(())
+    }
+
+    fn is_full(&self) -> bool {
+        self.num_rows >= self.target_batch_size
+    }
+
+    /// Finish builders into a RecordBatch. Builders are reset but retain
+    /// their allocated capacity for reuse.
+    fn flush(&mut self) -> Result<RecordBatch> {
+        let arrays: Vec<ArrayRef> = self.builders.iter_mut().map(|b| b.finish()).collect();
+        let batch = RecordBatch::try_new(Arc::clone(&self.schema), arrays)
+            .map_err(|e| DataFusionError::ArrowError(Box::new(e), None))?;
+        self.num_rows = 0;
+        Ok(batch)
+    }
+
+    fn has_data(&self) -> bool {
+        self.num_rows > 0
     }
 }
 
-/// Per-partition output stream that serializes Arrow IPC batches into an
-/// in-memory buffer with compression. The block format matches
-/// `ShuffleBlockWriter::write_batch` exactly:
-///
-/// - 8 bytes: payload length (u64 LE) — total bytes after this prefix
-/// - 8 bytes: field_count (usize LE)
-/// - 4 bytes: codec tag (b"SNAP", b"LZ4_", b"ZSTD", or b"NONE")
-/// - N bytes: compressed Arrow IPC stream data
 pub(crate) struct PartitionOutputStream {
     schema: SchemaRef,
     codec: CompressionCodec,
     buffer: Vec<u8>,
-    /// Coalesces small batches into target_batch_size before serialization,
-    /// reducing per-block IPC schema overhead. Lazily initialized on first write.
-    coalescer: Option<BatchCoalescer>,
-    batch_size: usize,
 }
 
 impl PartitionOutputStream {
-    pub(crate) fn try_new(
-        schema: SchemaRef,
-        codec: CompressionCodec,
-        batch_size: usize,
-    ) -> Result<Self> {
+    pub(crate) fn try_new(schema: SchemaRef, codec: CompressionCodec) -> Result<Self> {
         Ok(Self {
             schema,
             codec,
             buffer: Vec::new(),
-            coalescer: None,
-            batch_size,
         })
     }
 
-    /// Push a batch into the coalescer, serializing any completed batches as
-    /// length-prefixed compressed IPC blocks.
-    fn write_batch(&mut self, batch: &RecordBatch) -> Result<()> {
-        if batch.num_rows() == 0 {
-            return Ok(());
-        }
-
-        let coalescer = self
-            .coalescer
-            .get_or_insert_with(|| BatchCoalescer::new(batch.schema(), self.batch_size));
-        coalescer.push_batch(batch.clone())?;
-
-        let mut completed = Vec::new();
-        while let Some(batch) = coalescer.next_completed_batch() {
-            completed.push(batch);
-        }
-
-        for batch in &completed {
-            self.write_ipc_block(batch)?;
-        }
-        Ok(())
-    }
-
-    /// Flush any remaining rows in the coalescer as a final IPC block.
-    /// Must be called before `drain_buffer` or `finish` to avoid losing data.
-    fn flush(&mut self) -> Result<()> {
-        if let Some(coalescer) = &mut self.coalescer {
-            coalescer.finish_buffered_batch()?;
-            let mut remaining = Vec::new();
-            while let Some(batch) = coalescer.next_completed_batch() {
-                remaining.push(batch);
-            }
-            for batch in &remaining {
-                self.write_ipc_block(batch)?;
-            }
-        }
-        Ok(())
-    }
-
-    /// Serialize a single record batch as a length-prefixed compressed IPC block.
     fn write_ipc_block(&mut self, batch: &RecordBatch) -> Result<usize> {
         let start_pos = self.buffer.len();
 
-        // Write 8-byte placeholder for length prefix
         self.buffer.extend_from_slice(&0u64.to_le_bytes());
-
-        // Write field count (8 bytes, usize LE)
         let field_count = self.schema.fields().len();
         self.buffer
             .extend_from_slice(&(field_count as u64).to_le_bytes());
-
-        // Write codec tag (4 bytes)
         let codec_tag: &[u8; 4] = match &self.codec {
             CompressionCodec::Snappy => b"SNAP",
             CompressionCodec::Lz4Frame => b"LZ4_",
@@ -156,78 +261,57 @@ impl PartitionOutputStream {
         };
         self.buffer.extend_from_slice(codec_tag);
 
-        // Write compressed IPC data
         match &self.codec {
             CompressionCodec::None => {
-                let mut arrow_writer = StreamWriter::try_new(&mut self.buffer, &batch.schema())?;
-                arrow_writer.write(batch)?;
-                arrow_writer.finish()?;
-                // StreamWriter::into_inner returns the inner writer; we don't need it
-                // since we're writing directly to self.buffer
-                arrow_writer.into_inner()?;
+                let mut w = StreamWriter::try_new(&mut self.buffer, &batch.schema())?;
+                w.write(batch)?;
+                w.finish()?;
+                w.into_inner()?;
             }
             CompressionCodec::Lz4Frame => {
                 let mut wtr = lz4_flex::frame::FrameEncoder::new(&mut self.buffer);
-                let mut arrow_writer = StreamWriter::try_new(&mut wtr, &batch.schema())?;
-                arrow_writer.write(batch)?;
-                arrow_writer.finish()?;
+                let mut w = StreamWriter::try_new(&mut wtr, &batch.schema())?;
+                w.write(batch)?;
+                w.finish()?;
                 wtr.finish().map_err(|e| {
                     DataFusionError::Execution(format!("lz4 compression error: {e}"))
                 })?;
             }
             CompressionCodec::Zstd(level) => {
-                let encoder = zstd::Encoder::new(&mut self.buffer, *level)?;
-                let mut arrow_writer = StreamWriter::try_new(encoder, &batch.schema())?;
-                arrow_writer.write(batch)?;
-                arrow_writer.finish()?;
-                let zstd_encoder = arrow_writer.into_inner()?;
-                zstd_encoder.finish()?;
+                let enc = zstd::Encoder::new(&mut self.buffer, *level)?;
+                let mut w = StreamWriter::try_new(enc, &batch.schema())?;
+                w.write(batch)?;
+                w.finish()?;
+                w.into_inner()?.finish()?;
             }
             CompressionCodec::Snappy => {
                 let mut wtr = snap::write::FrameEncoder::new(&mut self.buffer);
-                let mut arrow_writer = StreamWriter::try_new(&mut wtr, &batch.schema())?;
-                arrow_writer.write(batch)?;
-                arrow_writer.finish()?;
+                let mut w = StreamWriter::try_new(&mut wtr, &batch.schema())?;
+                w.write(batch)?;
+                w.finish()?;
                 wtr.into_inner().map_err(|e| {
                     DataFusionError::Execution(format!("snappy compression error: {e}"))
                 })?;
             }
         }
 
-        // Backfill length prefix: total bytes after the 8-byte length field
         let end_pos = self.buffer.len();
         let ipc_length = (end_pos - start_pos - 8) as u64;
-
-        let max_size = i32::MAX as u64;
-        if ipc_length > max_size {
+        if ipc_length > i32::MAX as u64 {
             return Err(DataFusionError::Execution(format!(
-                "Shuffle block size {ipc_length} exceeds maximum size of {max_size}. \
-                Try reducing batch size or increasing compression level"
+                "Shuffle block size {ipc_length} exceeds maximum size of {}",
+                i32::MAX
             )));
         }
-
         self.buffer[start_pos..start_pos + 8].copy_from_slice(&ipc_length.to_le_bytes());
 
         Ok(end_pos - start_pos)
     }
 
-    /// Returns the buffer's allocated capacity in bytes.
-    fn buffer_capacity(&self) -> usize {
-        self.buffer.capacity()
-    }
-
-    /// Returns the number of bytes currently in the buffer.
-    #[cfg(test)]
-    fn buffered_bytes(&self) -> usize {
-        self.buffer.len()
-    }
-
-    /// Takes the buffer contents, leaving the buffer empty.
     fn drain_buffer(&mut self) -> Vec<u8> {
         std::mem::take(&mut self.buffer)
     }
 
-    /// Consumes self and returns the buffer.
     #[cfg(test)]
     fn finish(self) -> Result<Vec<u8>> {
         Ok(self.buffer)
@@ -239,12 +323,14 @@ struct SpillFile {
     file: File,
 }
 
-/// A partitioner that immediately writes IPC blocks per partition as batches arrive,
-/// rather than buffering all data until shuffle_write. Supports spilling per-partition
-/// buffers to disk under memory pressure.
+/// A partitioner that scatter-writes incoming rows directly into pre-allocated
+/// per-partition column builders. When a partition's builders reach
+/// `target_batch_size`, the batch is flushed to a compressed IPC block.
+/// No intermediate sub-batches or coalescers are created.
 pub(crate) struct ImmediateModePartitioner {
     output_data_file: String,
     output_index_file: String,
+    partition_buffers: Vec<PartitionBuffer>,
     streams: Vec<PartitionOutputStream>,
     spill_files: Vec<Option<SpillFile>>,
     partitioning: CometPartitioning,
@@ -253,10 +339,11 @@ pub(crate) struct ImmediateModePartitioner {
     metrics: ShufflePartitionerMetrics,
     hashes_buf: Vec<u32>,
     partition_ids: Vec<u32>,
-    /// Reservation for BatchCoalescer InProgressArray builders across all partitions.
-    /// These builders are pre-allocated when each coalescer is first used and persist
-    /// across spills, so this budget is held as a fixed portion of the reservation.
-    coalescer_budget: usize,
+    /// Reusable per-partition row index scratch space.
+    partition_row_indices: Vec<Vec<usize>>,
+    /// Maximum bytes this partitioner will reserve from the memory pool.
+    /// Computed as memory_pool_size * memory_fraction at construction.
+    memory_limit: usize,
 }
 
 impl ImmediateModePartitioner {
@@ -274,8 +361,12 @@ impl ImmediateModePartitioner {
     ) -> Result<Self> {
         let num_output_partitions = partitioning.partition_count();
 
+        let partition_buffers = (0..num_output_partitions)
+            .map(|_| PartitionBuffer::new(&schema, batch_size))
+            .collect();
+
         let streams = (0..num_output_partitions)
-            .map(|_| PartitionOutputStream::try_new(Arc::clone(&schema), codec.clone(), batch_size))
+            .map(|_| PartitionOutputStream::try_new(Arc::clone(&schema), codec.clone()))
             .collect::<Result<Vec<_>>>()?;
 
         let spill_files: Vec<Option<SpillFile>> =
@@ -288,20 +379,21 @@ impl ImmediateModePartitioner {
             _ => vec![],
         };
 
-        let mut reservation = MemoryConsumer::new(format!("ImmediateModePartitioner[{partition}]"))
+        let memory_limit = match runtime.memory_pool.memory_limit() {
+            MemoryLimit::Finite(pool_size) => pool_size,
+            _ => usize::MAX,
+        };
+
+        let reservation = MemoryConsumer::new(format!("ImmediateModePartitioner[{partition}]"))
             .with_can_spill(true)
             .register(&runtime.memory_pool);
 
-        // Reserve memory for BatchCoalescer InProgressArray builders.
-        // Each coalescer pre-allocates batch_size rows of builder capacity per column.
-        // This is approximately constant once initialized and persists across spills.
-        let estimated_row_bytes = estimate_builder_bytes_per_row(&schema);
-        let coalescer_budget = estimated_row_bytes * batch_size * num_output_partitions;
-        let _ = reservation.try_grow(coalescer_budget);
+        let partition_row_indices = (0..num_output_partitions).map(|_| Vec::new()).collect();
 
         Ok(Self {
             output_data_file,
             output_index_file,
+            partition_buffers,
             streams,
             spill_files,
             partitioning,
@@ -310,14 +402,22 @@ impl ImmediateModePartitioner {
             metrics,
             hashes_buf,
             partition_ids: vec![0u32; batch_size],
-            coalescer_budget,
+            partition_row_indices,
+            memory_limit,
         })
     }
 
-    /// Compute partition IDs for each row in the batch, storing results in
-    /// `self.partition_ids`. Returns the number of output partitions.
     fn compute_partition_ids(&mut self, batch: &RecordBatch) -> Result<usize> {
         let num_rows = batch.num_rows();
+
+        // Ensure scratch buffers are large enough for this batch
+        if self.hashes_buf.len() < num_rows {
+            self.hashes_buf.resize(num_rows, 0);
+        }
+        if self.partition_ids.len() < num_rows {
+            self.partition_ids.resize(num_rows, 0);
+        }
+
         match &self.partitioning {
             CometPartitioning::Hash(exprs, num_output_partitions) => {
                 let num_output_partitions = *num_output_partitions;
@@ -325,11 +425,9 @@ impl ImmediateModePartitioner {
                     .iter()
                     .map(|expr| expr.evaluate(batch)?.into_array(num_rows))
                     .collect::<Result<Vec<_>>>()?;
-
                 let hashes_buf = &mut self.hashes_buf[..num_rows];
                 hashes_buf.fill(42_u32);
                 create_murmur3_hashes(&arrays, hashes_buf)?;
-
                 let partition_ids = &mut self.partition_ids[..num_rows];
                 for (idx, hash) in hashes_buf.iter().enumerate() {
                     partition_ids[idx] =
@@ -348,11 +446,9 @@ impl ImmediateModePartitioner {
                 let columns_to_hash: Vec<ArrayRef> = (0..num_columns_to_hash)
                     .map(|i| Arc::clone(batch.column(i)))
                     .collect();
-
                 let hashes_buf = &mut self.hashes_buf[..num_rows];
                 hashes_buf.fill(42_u32);
                 create_murmur3_hashes(&columns_to_hash, hashes_buf)?;
-
                 let partition_ids = &mut self.partition_ids[..num_rows];
                 for (idx, hash) in hashes_buf.iter().enumerate() {
                     partition_ids[idx] =
@@ -371,7 +467,6 @@ impl ImmediateModePartitioner {
                     .iter()
                     .map(|expr| expr.expr.evaluate(batch)?.into_array(num_rows))
                     .collect::<Result<Vec<_>>>()?;
-
                 let row_batch = row_converter.convert_columns(arrays.as_slice())?;
                 let partition_ids = &mut self.partition_ids[..num_rows];
                 for (row_idx, row) in row_batch.iter().enumerate() {
@@ -388,54 +483,71 @@ impl ImmediateModePartitioner {
         }
     }
 
-    /// Route rows to their partition streams using interleave, then write IPC blocks.
-    /// Returns total bytes written across all partitions.
-    fn write_partitioned_rows(&mut self, batch: &RecordBatch) -> Result<()> {
-        let num_partitions = self.streams.len();
+    /// Scatter-write rows from batch into per-partition builders, flushing
+    /// any partition that reaches target_batch_size. Returns
+    /// `(flushed_builder_bytes, ipc_bytes_written)`.
+    fn repartition_batch(&mut self, batch: &RecordBatch) -> Result<(usize, usize)> {
+        let num_partitions = self.partition_buffers.len();
         let num_rows = batch.num_rows();
 
-        // Build per-partition row indices
-        let mut partition_row_indices: Vec<Vec<(usize, usize)>> = vec![Vec::new(); num_partitions];
+        // Build per-partition row indices, reusing scratch vecs
+        for indices in self.partition_row_indices.iter_mut() {
+            indices.clear();
+        }
         for row_idx in 0..num_rows {
             let pid = self.partition_ids[row_idx] as usize;
-            partition_row_indices[pid].push((0, row_idx));
+            self.partition_row_indices[pid].push(row_idx);
         }
 
-        let batch_refs = [batch];
-
-        let mut interleave_timer = self.metrics.interleave_time.timer();
-        for (pid, indices) in partition_row_indices.iter().enumerate() {
-            if indices.is_empty() {
+        // Scatter-write into partition builders
+        let mut flushed_builder_bytes = 0usize;
+        let mut ipc_bytes = 0usize;
+        for pid in 0..num_partitions {
+            if self.partition_row_indices[pid].is_empty() {
                 continue;
             }
-            let sub_batch = interleave_record_batch(&batch_refs, indices)
-                .map_err(|e| DataFusionError::ArrowError(Box::from(e), None))?;
-            interleave_timer.stop();
+            self.partition_buffers[pid].append_rows(batch, &self.partition_row_indices[pid])?;
 
-            let mut encode_timer = self.metrics.encode_time.timer();
-            self.streams[pid].write_batch(&sub_batch)?;
-            encode_timer.stop();
-
-            interleave_timer = self.metrics.interleave_time.timer();
+            // Flush full partitions
+            if self.partition_buffers[pid].is_full() {
+                let (builder_bytes, written) = self.flush_partition(pid)?;
+                flushed_builder_bytes += builder_bytes;
+                ipc_bytes += written;
+            }
         }
-        interleave_timer.stop();
 
-        Ok(())
+        Ok((flushed_builder_bytes, ipc_bytes))
     }
 
-    /// Spill all partition buffers to per-partition temp files.
+    /// Flush a partition's builders to an IPC block in its output stream.
+    /// Returns `(flushed_batch_memory, ipc_bytes_written)`.
+    fn flush_partition(&mut self, pid: usize) -> Result<(usize, usize)> {
+        let output_batch = self.partition_buffers[pid].flush()?;
+        let batch_mem = output_batch.get_array_memory_size();
+        let mut encode_timer = self.metrics.encode_time.timer();
+        let ipc_bytes = self.streams[pid].write_ipc_block(&output_batch)?;
+        encode_timer.stop();
+        Ok((batch_mem, ipc_bytes))
+    }
+
+    /// Spill all partition IPC buffers to per-partition temp files.
     fn spill_all(&mut self) -> Result<()> {
         let mut spilled_bytes = 0usize;
 
+        // Flush any partially-filled partition builders
+        for pid in 0..self.partition_buffers.len() {
+            if self.partition_buffers[pid].has_data() {
+                self.flush_partition(pid)?;
+            }
+        }
+
+        // Drain IPC buffers to disk
         for pid in 0..self.streams.len() {
-            // Flush coalescer so buffered rows are serialized before draining
-            self.streams[pid].flush()?;
             let buf = self.streams[pid].drain_buffer();
             if buf.is_empty() {
                 continue;
             }
 
-            // Create spill file on first spill for this partition
             if self.spill_files[pid].is_none() {
                 let temp_file = self
                     .runtime
@@ -459,17 +571,11 @@ impl ImmediateModePartitioner {
             }
         }
 
-        // Flush all spill files so data is visible when re-opened for reading in shuffle_write
         for spill in self.spill_files.iter_mut().flatten() {
             spill.file.flush()?;
         }
 
-        // Shrink reservation to coalescer_budget — buffer memory was spilled
-        // but the BatchCoalescer InProgressArray builders persist across spills.
-        let target = self.coalescer_budget;
-        if self.reservation.size() > target {
-            self.reservation.shrink(self.reservation.size() - target);
-        }
+        self.reservation.free();
         if spilled_bytes > 0 {
             self.metrics.spill_count.add(1);
             self.metrics.spilled_bytes.add(spilled_bytes);
@@ -488,7 +594,8 @@ impl ShufflePartitioner for ImmediateModePartitioner {
 
         let start_time = Instant::now();
 
-        self.metrics.data_size.add(batch.get_array_memory_size());
+        let batch_mem = batch.get_array_memory_size();
+        self.metrics.data_size.add(batch_mem);
         self.metrics.baseline.record_output(batch.num_rows());
 
         let repart_start = Instant::now();
@@ -497,13 +604,20 @@ impl ShufflePartitioner for ImmediateModePartitioner {
             .repart_time
             .add_duration(repart_start.elapsed());
 
-        let capacity_before: usize = self.streams.iter().map(|s| s.buffer_capacity()).sum();
-        self.write_partitioned_rows(&batch)?;
-        let capacity_after: usize = self.streams.iter().map(|s| s.buffer_capacity()).sum();
-        let capacity_growth = capacity_after.saturating_sub(capacity_before);
+        let (flushed_builder_bytes, ipc_growth) = self.repartition_batch(&batch)?;
+        let builder_growth = batch_mem;
 
-        if capacity_growth > 0 && self.reservation.try_grow(capacity_growth).is_err() {
-            self.spill_all()?;
+        // Net memory change: data entered builders, some was flushed to IPC
+        let net_growth = (builder_growth + ipc_growth).saturating_sub(flushed_builder_bytes);
+
+        if net_growth > 0 {
+            // Use our own memory limit rather than relying solely on the pool,
+            // since the pool doesn't see builder allocations directly.
+            if self.reservation.size() + net_growth > self.memory_limit
+                || self.reservation.try_grow(net_growth).is_err()
+            {
+                self.spill_all()?;
+            }
         }
 
         self.metrics.input_batches.add(1);
@@ -531,7 +645,6 @@ impl ShufflePartitioner for ImmediateModePartitioner {
         for pid in 0..num_output_partitions {
             offsets[pid] = output_data.stream_position()? as i64;
 
-            // Copy spill file contents if any
             if let Some(spill) = &self.spill_files[pid] {
                 let path = spill._temp_file.path().to_owned();
                 let spill_reader = File::open(&path).map_err(|e| {
@@ -544,8 +657,10 @@ impl ShufflePartitioner for ImmediateModePartitioner {
                 write_timer.stop();
             }
 
-            // Flush coalescer and write remaining in-memory buffer
-            self.streams[pid].flush()?;
+            if self.partition_buffers[pid].has_data() {
+                self.flush_partition(pid)?;
+            }
+
             let buf = self.streams[pid].drain_buffer();
             if !buf.is_empty() {
                 let mut write_timer = self.metrics.write_time.timer();
@@ -554,15 +669,12 @@ impl ShufflePartitioner for ImmediateModePartitioner {
             }
         }
 
-        // Drop spill files now that their contents have been copied to the output
         for spill in self.spill_files.iter_mut() {
             *spill = None;
         }
 
-        // Record final offset
         offsets[num_output_partitions] = output_data.stream_position()? as i64;
 
-        // Write index file
         let mut write_timer = self.metrics.write_time.timer();
         let mut output_index = BufWriter::new(
             File::create(&self.output_index_file)
@@ -587,17 +699,67 @@ impl ShufflePartitioner for ImmediateModePartitioner {
 mod tests {
     use super::*;
     use crate::read_ipc_compressed;
-    use arrow::array::Int32Array;
+    use arrow::array::{Int32Array, StringArray};
     use arrow::datatypes::{DataType, Field, Schema};
     use datafusion::execution::memory_pool::GreedyMemoryPool;
     use datafusion::execution::runtime_env::RuntimeEnvBuilder;
     use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
-    use std::sync::Arc;
 
     fn make_test_batch(values: &[i32]) -> RecordBatch {
         let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
         let array = Int32Array::from(values.to_vec());
         RecordBatch::try_new(schema, vec![Arc::new(array)]).unwrap()
+    }
+
+    #[test]
+    fn test_scatter_append_primitives() {
+        let array: ArrayRef = Arc::new(Int32Array::from(vec![10, 20, 30, 40, 50]));
+        let mut builder = make_builder(&DataType::Int32, 8);
+        scatter_append(builder.as_mut(), array.as_ref(), &[0, 2, 4]).unwrap();
+        let result = builder.finish();
+        let result = result.as_primitive::<Int32Type>();
+        assert_eq!(result.values().as_ref(), &[10, 30, 50]);
+    }
+
+    #[test]
+    fn test_scatter_append_strings() {
+        let array: ArrayRef = Arc::new(StringArray::from(vec!["a", "b", "c", "d"]));
+        let mut builder = make_builder(&DataType::Utf8, 4);
+        scatter_append(builder.as_mut(), array.as_ref(), &[1, 3]).unwrap();
+        let result = builder.finish();
+        let result = result.as_string::<i32>();
+        assert_eq!(result.value(0), "b");
+        assert_eq!(result.value(1), "d");
+    }
+
+    #[test]
+    fn test_scatter_append_nulls() {
+        let array: ArrayRef = Arc::new(Int32Array::from(vec![Some(1), None, Some(3)]));
+        let mut builder = make_builder(&DataType::Int32, 4);
+        scatter_append(builder.as_mut(), array.as_ref(), &[0, 1, 2]).unwrap();
+        let result = builder.finish();
+        let result = result.as_primitive::<Int32Type>();
+        assert!(result.is_valid(0));
+        assert!(result.is_null(1));
+        assert!(result.is_valid(2));
+    }
+
+    #[test]
+    fn test_partition_buffer_flush_reuse() {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let batch = make_test_batch(&[1, 2, 3, 4, 5]);
+
+        let mut buf = PartitionBuffer::new(&schema, 3);
+        buf.append_rows(&batch, &[0, 1, 2]).unwrap();
+        assert!(buf.is_full());
+
+        let flushed = buf.flush().unwrap();
+        assert_eq!(flushed.num_rows(), 3);
+        assert_eq!(buf.num_rows, 0);
+
+        // Builders are reused after flush
+        buf.append_rows(&batch, &[3, 4]).unwrap();
+        assert_eq!(buf.num_rows, 2);
     }
 
     #[test]
@@ -611,89 +773,20 @@ mod tests {
             CompressionCodec::Zstd(1),
             CompressionCodec::Snappy,
         ] {
-            // Use batch_size=1 to force immediate serialization (no coalescing)
-            let mut stream = PartitionOutputStream::try_new(Arc::clone(&schema), codec, 1).unwrap();
-            stream.write_batch(&batch).unwrap();
-            stream.flush().unwrap();
+            let mut stream = PartitionOutputStream::try_new(Arc::clone(&schema), codec).unwrap();
+            stream.write_ipc_block(&batch).unwrap();
 
             let buf = stream.finish().unwrap();
             assert!(!buf.is_empty());
 
-            // Parse the first block: 8 bytes length, 8 bytes field_count, then codec+data
             let ipc_length = u64::from_le_bytes(buf[0..8].try_into().unwrap()) as usize;
             assert!(ipc_length > 0);
 
-            let field_count = usize::from_le_bytes(buf[8..16].try_into().unwrap());
-            assert_eq!(field_count, 1); // one field "a"
-
-            // read_ipc_compressed expects data starting at the codec tag
             let block_end = 8 + ipc_length;
             let ipc_data = &buf[16..block_end];
             let batch2 = read_ipc_compressed(ipc_data).unwrap();
-            assert!(batch2.num_rows() > 0);
+            assert_eq!(batch2.num_rows(), 5);
         }
-    }
-
-    #[test]
-    fn test_partition_output_stream_coalesces_small_batches() {
-        let batch1 = make_test_batch(&[1, 2, 3]);
-        let batch2 = make_test_batch(&[4, 5, 6, 7]);
-        let schema = batch1.schema();
-
-        // batch_size=10 means both batches (3+4=7 rows) fit in one coalesced block
-        let mut stream =
-            PartitionOutputStream::try_new(schema, CompressionCodec::None, 10).unwrap();
-
-        // Small batches sit in coalescer, no IPC block written yet
-        stream.write_batch(&batch1).unwrap();
-        assert_eq!(stream.buffered_bytes(), 0);
-
-        stream.write_batch(&batch2).unwrap();
-        assert_eq!(stream.buffered_bytes(), 0);
-
-        // Flush produces one coalesced block with all 7 rows
-        stream.flush().unwrap();
-        let buf = stream.finish().unwrap();
-        assert!(!buf.is_empty());
-
-        let ipc_length = u64::from_le_bytes(buf[0..8].try_into().unwrap()) as usize;
-        let ipc_data = &buf[16..8 + ipc_length];
-        let decoded = read_ipc_compressed(ipc_data).unwrap();
-        assert_eq!(decoded.num_rows(), 7);
-    }
-
-    #[test]
-    fn test_partition_output_stream_empty_batch() {
-        let batch = make_test_batch(&[]);
-        let schema = batch.schema();
-
-        let mut stream =
-            PartitionOutputStream::try_new(schema, CompressionCodec::None, 8192).unwrap();
-        stream.write_batch(&batch).unwrap();
-        assert_eq!(stream.buffered_bytes(), 0);
-    }
-
-    #[test]
-    fn test_partition_output_stream_drain_after_flush() {
-        let batch = make_test_batch(&[1, 2, 3]);
-        let schema = batch.schema();
-
-        let mut stream =
-            PartitionOutputStream::try_new(schema, CompressionCodec::None, 8192).unwrap();
-        stream.write_batch(&batch).unwrap();
-
-        // Flush coalescer then drain
-        stream.flush().unwrap();
-        assert!(stream.buffered_bytes() > 0);
-
-        let drained = stream.drain_buffer();
-        assert!(!drained.is_empty());
-        assert_eq!(stream.buffered_bytes(), 0);
-
-        // Can still write after drain
-        stream.write_batch(&batch).unwrap();
-        stream.flush().unwrap();
-        assert!(stream.buffered_bytes() > 0);
     }
 
     fn make_hash_partitioning(col_name: &str, num_partitions: usize) -> CometPartitioning {
@@ -729,12 +822,12 @@ mod tests {
 
         partitioner.insert_batch(batch).await.unwrap();
 
-        // Flush coalesced data so it appears in the byte buffer
-        for stream in &mut partitioner.streams {
-            stream.flush().unwrap();
-        }
-        let total_buffered: usize = partitioner.streams.iter().map(|s| s.buffered_bytes()).sum();
-        assert!(total_buffered > 0, "Expected some buffered bytes");
+        let total_rows: usize = partitioner
+            .partition_buffers
+            .iter()
+            .map(|b| b.num_rows)
+            .sum();
+        assert_eq!(total_rows, 8);
     }
 
     #[tokio::test]
@@ -767,15 +860,12 @@ mod tests {
         partitioner.insert_batch(batch2).await.unwrap();
         partitioner.shuffle_write().unwrap();
 
-        // Verify index file has (num_partitions + 1) * 8 bytes
         let index_data = std::fs::read(&index_path).unwrap();
         assert_eq!(index_data.len(), (num_partitions + 1) * 8);
 
-        // First offset should be 0
         let first_offset = i64::from_le_bytes(index_data[0..8].try_into().unwrap());
         assert_eq!(first_offset, 0);
 
-        // Last offset should equal data file size
         let data_file_size = std::fs::metadata(&data_path).unwrap().len();
         let last_offset = i64::from_le_bytes(
             index_data[num_partitions * 8..(num_partitions + 1) * 8]
@@ -783,8 +873,6 @@ mod tests {
                 .unwrap(),
         );
         assert_eq!(last_offset as u64, data_file_size);
-
-        // Data file should be non-empty
         assert!(data_file_size > 0);
     }
 
@@ -798,7 +886,6 @@ mod tests {
         let num_partitions = 2;
         let metrics = ShufflePartitionerMetrics::new(&ExecutionPlanMetricsSet::new(), 0);
 
-        // Use a tiny memory pool to force spilling
         let runtime = Arc::new(
             RuntimeEnvBuilder::new()
                 .with_memory_pool(Arc::new(GreedyMemoryPool::new(256)))
@@ -819,7 +906,6 @@ mod tests {
         )
         .unwrap();
 
-        // Insert enough data to exceed the tiny memory pool and trigger spills
         for i in 0..10 {
             let values: Vec<i32> = ((i * 10)..((i + 1) * 10)).collect();
             let batch = make_test_batch(&values);
@@ -828,12 +914,8 @@ mod tests {
 
         partitioner.shuffle_write().unwrap();
 
-        // Verify output is valid
         let index_data = std::fs::read(&index_path).unwrap();
         assert_eq!(index_data.len(), (num_partitions + 1) * 8);
-
-        let first_offset = i64::from_le_bytes(index_data[0..8].try_into().unwrap());
-        assert_eq!(first_offset, 0);
 
         let data_file_size = std::fs::metadata(&data_path).unwrap().len();
         let last_offset = i64::from_le_bytes(
@@ -857,6 +939,7 @@ mod tests {
         let metrics = ShufflePartitionerMetrics::new(&ExecutionPlanMetricsSet::new(), 0);
         let runtime = Arc::new(RuntimeEnvBuilder::new().build().unwrap());
 
+        // Small target to trigger flush during insert
         let mut partitioner = ImmediateModePartitioner::try_new(
             0,
             data_path.clone(),
@@ -865,7 +948,7 @@ mod tests {
             make_hash_partitioning("a", num_partitions),
             metrics,
             runtime,
-            8192,
+            4,
             CompressionCodec::Lz4Frame,
         )
         .unwrap();
@@ -873,7 +956,6 @@ mod tests {
         partitioner.insert_batch(batch).await.unwrap();
         partitioner.shuffle_write().unwrap();
 
-        // Read index file to get partition offsets
         let index_data = std::fs::read(&index_path).unwrap();
         let mut offsets = Vec::new();
         for i in 0..=num_partitions {
@@ -881,61 +963,36 @@ mod tests {
             offsets.push(offset as usize);
         }
 
-        // Read entire data file
         let data = std::fs::read(&data_path).unwrap();
-
         let mut total_rows = 0;
         for pid in 0..num_partitions {
-            let partition_start = offsets[pid];
-            let partition_end = offsets[pid + 1];
-            if partition_start == partition_end {
+            let (start, end) = (offsets[pid], offsets[pid + 1]);
+            if start == end {
                 continue;
             }
-
-            // Parse blocks within this partition's byte range
-            let mut pos = partition_start;
-            while pos < partition_end {
-                // Read 8-byte length prefix
+            let mut pos = start;
+            while pos < end {
                 let payload_len =
                     u64::from_le_bytes(data[pos..pos + 8].try_into().unwrap()) as usize;
-                assert!(payload_len > 0, "Block payload length should be > 0");
-
-                // Skip 8-byte field_count
-                let field_count =
-                    u64::from_le_bytes(data[pos + 8..pos + 16].try_into().unwrap()) as usize;
-                assert_eq!(field_count, 1, "Expected 1 field");
-
-                // Pass codec tag + IPC data to read_ipc_compressed
+                assert!(payload_len > 0);
                 let block_end = pos + 8 + payload_len;
                 let ipc_data = &data[pos + 16..block_end];
                 let decoded = read_ipc_compressed(ipc_data).unwrap();
-
                 assert_eq!(decoded.num_columns(), 1);
                 assert!(decoded.num_rows() > 0);
-
-                // Verify values are valid Int32
                 let col = decoded
                     .column(0)
                     .as_any()
                     .downcast_ref::<Int32Array>()
-                    .expect("Expected Int32Array");
+                    .unwrap();
                 for i in 0..col.len() {
-                    let v = col.value(i);
-                    assert!(
-                        (1..=10).contains(&v),
-                        "Value {v} not in expected range 1..=10"
-                    );
+                    assert!((1..=10).contains(&col.value(i)));
                 }
-
                 total_rows += decoded.num_rows();
                 pos = block_end;
             }
-            assert_eq!(
-                pos, partition_end,
-                "Block parsing should consume exactly the partition's bytes"
-            );
+            assert_eq!(pos, end);
         }
-
-        assert_eq!(total_rows, 10, "Total decoded rows should match input");
+        assert_eq!(total_rows, 10);
     }
 }
