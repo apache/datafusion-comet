@@ -38,18 +38,6 @@ object CometAtan2 extends CometExpressionSerde[Atan2] {
 }
 
 object CometCeil extends CometExpressionSerde[Ceil] {
-
-  override def getSupportLevel(expr: Ceil): SupportLevel = {
-    expr.child.dataType match {
-      case _: DecimalType =>
-        Incompatible(
-          Some(
-            "Incorrect results for Decimal type inputs" +
-              " (https://github.com/apache/datafusion-comet/issues/1729)"))
-      case _ => Compatible()
-    }
-  }
-
   override def convert(
       expr: Ceil,
       inputs: Seq[Attribute],
@@ -70,18 +58,6 @@ object CometCeil extends CometExpressionSerde[Ceil] {
 }
 
 object CometFloor extends CometExpressionSerde[Floor] {
-
-  override def getSupportLevel(expr: Floor): SupportLevel = {
-    expr.child.dataType match {
-      case _: DecimalType =>
-        Incompatible(
-          Some(
-            "Incorrect results for Decimal type inputs" +
-              " (https://github.com/apache/datafusion-comet/issues/1729)"))
-      case _ => Compatible()
-    }
-  }
-
   override def convert(
       expr: Floor,
       inputs: Seq[Attribute],

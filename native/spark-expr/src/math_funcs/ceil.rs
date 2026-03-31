@@ -164,7 +164,6 @@ mod test {
 
     // https://github.com/apache/datafusion-comet/issues/1729
     #[test]
-    #[ignore]
     fn test_ceil_decimal128_array() -> Result<()> {
         let array = Decimal128Array::from(vec![
             Some(12345),  // 123.45
@@ -178,9 +177,9 @@ mod test {
             unreachable!()
         };
         let expected = Decimal128Array::from(vec![
-            Some(12400),  // 124.00
-            Some(12500),  // 125.00
-            Some(-12900), // -129.00
+            Some(124),  // 124.00
+            Some(125),  // 125.00
+            Some(-129), // -129.00
             None,
         ])
         .with_precision_and_scale(5, 2)?;

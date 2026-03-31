@@ -1487,6 +1487,10 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               checkSparkAnswerAndOperator(s"SELECT floor(cast(${n} as decimal(38, 18))) FROM tbl")
               checkSparkAnswerAndOperator(s"SELECT floor(cast(${n} as decimal(20, 0))) FROM tbl")
             }
+            for (n <- Seq("123.45", "125.00", "-129.99")) {
+              checkSparkAnswerAndOperator(s"SELECT ceil(cast(${n} as decimal(5, 2))) FROM tbl")
+              checkSparkAnswerAndOperator(s"SELECT floor(cast(${n} as decimal(5, 2))) FROM tbl")
+            }
           }
         }
       }
