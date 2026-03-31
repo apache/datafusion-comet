@@ -321,7 +321,7 @@ impl ObjectStore for HadoopFileSystem {
                     drop(parts);
 
                     if is_directory {
-                        common_prefixes.insert(prefix.child(common_prefix));
+                        common_prefixes.insert(prefix.clone().join(common_prefix));
                     } else {
                         objects.push(convert_metadata(entry, &hdfs_root));
                     }
