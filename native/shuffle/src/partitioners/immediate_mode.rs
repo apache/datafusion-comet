@@ -32,14 +32,14 @@ use std::io::{BufWriter, Seek, Write};
 use std::sync::Arc;
 use tokio::time::Instant;
 
-/// Estimate the in-memory byte cost per row for a given schema.
-/// Uses the primitive width for fixed-size types, and a heuristic for
-/// variable-length types (strings, binary, nested).
-fn estimate_row_bytes(schema: &SchemaRef) -> usize {
+/// Estimate the in-memory byte cost of BatchCoalescer's InProgressArray builders
+/// per row for a given schema. Uses primitive widths for fixed-size types and a
+/// heuristic for variable-length types.
+fn estimate_builder_bytes_per_row(schema: &SchemaRef) -> usize {
     let mut total = 0;
     for field in schema.fields() {
         total += estimate_field_bytes(field.data_type());
-        // 1 bit for null bitmap, round up
+        // 1 byte for null bitmap (overestimate per row, but simple)
         total += 1;
     }
     total.max(8) // minimum 8 bytes per row
@@ -50,18 +50,15 @@ fn estimate_field_bytes(dt: &DataType) -> usize {
         DataType::Boolean => 1,
         DataType::Null => 0,
         dt if dt.primitive_width().is_some() => dt.primitive_width().unwrap(),
-        // Variable-length types: use a reasonable default estimate.
-        // 32 bytes covers typical short strings/binary.
-        DataType::Utf8 | DataType::Binary => 32 + 4, // data + 4-byte offset
+        DataType::Utf8 | DataType::Binary => 32 + 4,
         DataType::LargeUtf8 | DataType::LargeBinary => 32 + 8,
-        DataType::Utf8View | DataType::BinaryView => 32 + 16, // data + 16-byte view
+        DataType::Utf8View | DataType::BinaryView => 32 + 16,
         DataType::List(f) | DataType::LargeList(f) => 4 + estimate_field_bytes(f.data_type()),
         DataType::Struct(fields) => fields
             .iter()
             .map(|f| estimate_field_bytes(f.data_type()) + 1)
             .sum(),
         DataType::Dictionary(key_dt, _) => estimate_field_bytes(key_dt),
-        // Fallback for other types
         _ => 32,
     }
 }
@@ -93,17 +90,17 @@ impl PartitionOutputStream {
         Ok(Self {
             schema,
             codec,
-            buffer: Vec::with_capacity(1024 * 1024),
+            buffer: Vec::new(),
             coalescer: None,
             batch_size,
         })
     }
 
     /// Push a batch into the coalescer, serializing any completed batches as
-    /// length-prefixed compressed IPC blocks. Returns total bytes written.
-    fn write_batch(&mut self, batch: &RecordBatch) -> Result<usize> {
+    /// length-prefixed compressed IPC blocks.
+    fn write_batch(&mut self, batch: &RecordBatch) -> Result<()> {
         if batch.num_rows() == 0 {
-            return Ok(0);
+            return Ok(());
         }
 
         let coalescer = self
@@ -116,17 +113,15 @@ impl PartitionOutputStream {
             completed.push(batch);
         }
 
-        let mut total_bytes = 0;
         for batch in &completed {
-            total_bytes += self.write_ipc_block(batch)?;
+            self.write_ipc_block(batch)?;
         }
-        Ok(total_bytes)
+        Ok(())
     }
 
     /// Flush any remaining rows in the coalescer as a final IPC block.
     /// Must be called before `drain_buffer` or `finish` to avoid losing data.
-    fn flush(&mut self) -> Result<usize> {
-        let mut total_bytes = 0;
+    fn flush(&mut self) -> Result<()> {
         if let Some(coalescer) = &mut self.coalescer {
             coalescer.finish_buffered_batch()?;
             let mut remaining = Vec::new();
@@ -134,10 +129,10 @@ impl PartitionOutputStream {
                 remaining.push(batch);
             }
             for batch in &remaining {
-                total_bytes += self.write_ipc_block(batch)?;
+                self.write_ipc_block(batch)?;
             }
         }
-        Ok(total_bytes)
+        Ok(())
     }
 
     /// Serialize a single record batch as a length-prefixed compressed IPC block.
@@ -216,6 +211,11 @@ impl PartitionOutputStream {
         Ok(end_pos - start_pos)
     }
 
+    /// Returns the buffer's allocated capacity in bytes.
+    fn buffer_capacity(&self) -> usize {
+        self.buffer.capacity()
+    }
+
     /// Returns the number of bytes currently in the buffer.
     #[cfg(test)]
     fn buffered_bytes(&self) -> usize {
@@ -253,9 +253,9 @@ pub(crate) struct ImmediateModePartitioner {
     metrics: ShufflePartitionerMetrics,
     hashes_buf: Vec<u32>,
     partition_ids: Vec<u32>,
-    /// Fixed upfront reservation for coalescer buffers across all partitions.
-    /// Each coalescer holds at most batch_size rows; this budget is estimated
-    /// from the schema and reserved once to avoid incremental drift.
+    /// Reservation for BatchCoalescer InProgressArray builders across all partitions.
+    /// These builders are pre-allocated when each coalescer is first used and persist
+    /// across spills, so this budget is held as a fixed portion of the reservation.
     coalescer_budget: usize,
 }
 
@@ -288,17 +288,16 @@ impl ImmediateModePartitioner {
             _ => vec![],
         };
 
-        let mut reservation = MemoryConsumer::new(format!("ImmediateModePartitioner[{partition}]"))
-            .with_can_spill(true)
-            .register(&runtime.memory_pool);
+        let mut reservation =
+            MemoryConsumer::new(format!("ImmediateModePartitioner[{partition}]"))
+                .with_can_spill(true)
+                .register(&runtime.memory_pool);
 
-        // Reserve memory upfront for coalescer buffers across all partitions.
-        // Each coalescer holds at most batch_size rows. We estimate per-row bytes
-        // from the schema so this budget is fixed and doesn't drift.
-        let estimated_row_bytes = estimate_row_bytes(&schema);
+        // Reserve memory for BatchCoalescer InProgressArray builders.
+        // Each coalescer pre-allocates batch_size rows of builder capacity per column.
+        // This is approximately constant once initialized and persists across spills.
+        let estimated_row_bytes = estimate_builder_bytes_per_row(&schema);
         let coalescer_budget = estimated_row_bytes * batch_size * num_output_partitions;
-        // Use try_grow — if the pool can't accommodate the budget, we proceed
-        // without the reservation (spilling will be more aggressive).
         let _ = reservation.try_grow(coalescer_budget);
 
         Ok(Self {
@@ -392,7 +391,7 @@ impl ImmediateModePartitioner {
 
     /// Route rows to their partition streams using interleave, then write IPC blocks.
     /// Returns total bytes written across all partitions.
-    fn write_partitioned_rows(&mut self, batch: &RecordBatch) -> Result<usize> {
+    fn write_partitioned_rows(&mut self, batch: &RecordBatch) -> Result<()> {
         let num_partitions = self.streams.len();
         let num_rows = batch.num_rows();
 
@@ -404,7 +403,6 @@ impl ImmediateModePartitioner {
         }
 
         let batch_refs = [batch];
-        let mut total_bytes = 0;
 
         let mut interleave_timer = self.metrics.interleave_time.timer();
         for (pid, indices) in partition_row_indices.iter().enumerate() {
@@ -416,15 +414,14 @@ impl ImmediateModePartitioner {
             interleave_timer.stop();
 
             let mut encode_timer = self.metrics.encode_time.timer();
-            let bytes = self.streams[pid].write_batch(&sub_batch)?;
+            self.streams[pid].write_batch(&sub_batch)?;
             encode_timer.stop();
 
-            total_bytes += bytes;
             interleave_timer = self.metrics.interleave_time.timer();
         }
         interleave_timer.stop();
 
-        Ok(total_bytes)
+        Ok(())
     }
 
     /// Spill all partition buffers to per-partition temp files.
@@ -468,8 +465,8 @@ impl ImmediateModePartitioner {
             spill.file.flush()?;
         }
 
-        // Shrink reservation to just the coalescer budget (IPC bytes were spilled,
-        // coalescer is empty after flush but will be refilled by future batches).
+        // Shrink reservation to coalescer_budget — buffer memory was spilled
+        // but the BatchCoalescer InProgressArray builders persist across spills.
         let target = self.coalescer_budget;
         if self.reservation.size() > target {
             self.reservation.shrink(self.reservation.size() - target);
@@ -501,9 +498,12 @@ impl ShufflePartitioner for ImmediateModePartitioner {
             .repart_time
             .add_duration(repart_start.elapsed());
 
-        let bytes_written = self.write_partitioned_rows(&batch)?;
+        let capacity_before: usize = self.streams.iter().map(|s| s.buffer_capacity()).sum();
+        self.write_partitioned_rows(&batch)?;
+        let capacity_after: usize = self.streams.iter().map(|s| s.buffer_capacity()).sum();
+        let capacity_growth = capacity_after.saturating_sub(capacity_before);
 
-        if self.reservation.try_grow(bytes_written).is_err() {
+        if capacity_growth > 0 && self.reservation.try_grow(capacity_growth).is_err() {
             self.spill_all()?;
         }
 
@@ -553,6 +553,11 @@ impl ShufflePartitioner for ImmediateModePartitioner {
                 output_data.write_all(&buf)?;
                 write_timer.stop();
             }
+        }
+
+        // Drop spill files now that their contents have been copied to the output
+        for spill in self.spill_files.iter_mut() {
+            *spill = None;
         }
 
         // Record final offset
@@ -665,8 +670,7 @@ mod tests {
 
         let mut stream =
             PartitionOutputStream::try_new(schema, CompressionCodec::None, 8192).unwrap();
-        let bytes_written = stream.write_batch(&batch).unwrap();
-        assert_eq!(bytes_written, 0);
+        stream.write_batch(&batch).unwrap();
         assert_eq!(stream.buffered_bytes(), 0);
     }
 

@@ -228,6 +228,10 @@ fn main() {
             print!("  read: {:.3}s", read_elapsed);
         }
         println!();
+
+        // Remove output files after each iteration to avoid filling disk
+        let _ = fs::remove_file(&data_file);
+        let _ = fs::remove_file(&index_file);
     }
 
     if args.iterations > 0 {
