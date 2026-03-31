@@ -488,9 +488,12 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
       withSQLConf(
         CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
         CometConf.COMET_EXEC_SHUFFLE_WITH_ROUND_ROBIN_PARTITIONING_ENABLED.key -> "true") {
-        val count = spark.read.parquet(dir.toString).repartition(10).count()
-        checkSparkAnswerAndOperator(spark.read.parquet(dir.toString).repartition(10))
+        val testDF = spark.read.parquet(dir.toString).repartition(10)
+        // Actual validation, no crash
+        val count = testDF.count()
         assert(count == 1000)
+        // Ensure test df evaluated by Comet
+        checkSparkAnswerAndOperator(testDF)
       }
     }
   }
