@@ -288,10 +288,9 @@ impl ImmediateModePartitioner {
             _ => vec![],
         };
 
-        let mut reservation =
-            MemoryConsumer::new(format!("ImmediateModePartitioner[{partition}]"))
-                .with_can_spill(true)
-                .register(&runtime.memory_pool);
+        let mut reservation = MemoryConsumer::new(format!("ImmediateModePartitioner[{partition}]"))
+            .with_can_spill(true)
+            .register(&runtime.memory_pool);
 
         // Reserve memory for BatchCoalescer InProgressArray builders.
         // Each coalescer pre-allocates batch_size rows of builder capacity per column.
