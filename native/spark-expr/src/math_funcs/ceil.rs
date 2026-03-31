@@ -162,7 +162,6 @@ mod test {
         Ok(())
     }
 
-    // https://github.com/apache/datafusion-comet/issues/1729
     #[test]
     fn test_ceil_decimal128_array() -> Result<()> {
         let array = Decimal128Array::from(vec![
@@ -173,7 +172,7 @@ mod test {
         ])
         .with_precision_and_scale(5, 2)?;
         let args = vec![ColumnarValue::Array(Arc::new(array))];
-        let ColumnarValue::Array(result) = spark_ceil(&args, &DataType::Decimal128(5, 2))? else {
+        let ColumnarValue::Array(result) = spark_ceil(&args, &DataType::Decimal128(4, 0))? else {
             unreachable!()
         };
         let expected = Decimal128Array::from(vec![
@@ -182,7 +181,7 @@ mod test {
             Some(-129), // -129.00
             None,
         ])
-        .with_precision_and_scale(5, 2)?;
+        .with_precision_and_scale(4, 0)?;
         let actual = result.as_any().downcast_ref::<Decimal128Array>().unwrap();
         assert_eq!(actual, &expected);
         Ok(())
@@ -224,21 +223,19 @@ mod test {
         Ok(())
     }
 
-    // https://github.com/apache/datafusion-comet/issues/1729
     #[test]
-    #[ignore]
     fn test_ceil_decimal128_scalar() -> Result<()> {
         let args = vec![ColumnarValue::Scalar(ScalarValue::Decimal128(
             Some(567),
             3,
             1,
         ))]; // 56.7
-        let ColumnarValue::Scalar(ScalarValue::Decimal128(Some(result), 3, 1)) =
-            spark_ceil(&args, &DataType::Decimal128(3, 1))?
+        let ColumnarValue::Scalar(ScalarValue::Decimal128(Some(result), 3, 0)) =
+            spark_ceil(&args, &DataType::Decimal128(3, 0))?
         else {
             unreachable!()
         };
-        assert_eq!(result, 570); // 57.0
+        assert_eq!(result, 57); // 57.0
         Ok(())
     }
 }
