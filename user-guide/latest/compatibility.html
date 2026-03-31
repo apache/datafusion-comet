@@ -599,13 +599,6 @@ recommended for production use.</p></li>
 Spark.</p></li>
 <li><p><strong>N/A</strong>: Spark does not support this cast.</p></li>
 </ul>
-<section id="negative-zero">
-<h3>Negative Zero<a class="headerlink" href="#negative-zero" title="Link to this heading">#</a></h3>
-<p>When casting floating-point values to strings, Spark normalizes negative zero (<code class="docutils literal notranslate"><span class="pre">-0.0</span></code>) to <code class="docutils literal notranslate"><span class="pre">&quot;0.0&quot;</span></code>, but Comet
-may produce <code class="docutils literal notranslate"><span class="pre">&quot;-0.0&quot;</span></code>. Since negative zero and positive zero are semantically equivalent (<code class="docutils literal notranslate"><span class="pre">-0.0</span> <span class="pre">==</span> <span class="pre">0.0</span></code> is true
-in IEEE 754), this difference is unlikely to affect real-world results. See
-<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/1036">#1036</a> for more details.</p>
-</section>
 <section id="legacy-mode">
 <h3>Legacy Mode<a class="headerlink" href="#legacy-mode" title="Link to this heading">#</a></h3>
 <!--BEGIN:CAST_LEGACY_TABLE-->
