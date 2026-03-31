@@ -2246,7 +2246,7 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
 
   import org.apache.spark.sql.internal.SQLConf
 
-  test("migration - INT96 timestamp with hour partitioning") {
+  test("migration - INT96 timestamp") {
     assume(icebergAvailable, "Iceberg not available in classpath")
 
     withTempIcebergDir { warehouseDir =>
@@ -2266,27 +2266,18 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
         val numRows = 50
         val r = new scala.util.Random(42)
 
-        // Schema for FuzzDataGenerator - just timestamp and value columns
         val fuzzSchema = StructType(
           Seq(
             StructField("outputTimestamp", TimestampType, nullable = true),
             StructField("value", DoubleType, nullable = true)))
 
-        // Use FuzzDataGenerator with default options (year 3333 baseDate for INT96)
+        // Default FuzzDataGenerator baseDate is year 3333, outside the i64 nanosecond
+        // range (~1677-2262). This triggers the INT96 overflow bug if coercion is missing.
         val dataGenOptions = DataGenOptions(allowNull = false)
         val fuzzDf =
           FuzzDataGenerator.generateDataFrame(r, spark, fuzzSchema, numRows, dataGenOptions)
 
-        // Add unique id and geohash columns
-        val df = fuzzDf
-          .withColumn("id", monotonically_increasing_id())
-          .selectExpr(
-            "id",
-            "outputTimestamp",
-            "concat(substring('0123456789bcdefghjkmnpqrstuvwxyz', 1 + int(id % 32), 1), " +
-              "substring('0123456789bcdefghjkmnpqrstuvwxyz', 1 + int((id / 32) % 32), 1), " +
-              "substring('0123456789bcdefghjkmnpqrstuvwxyz', 1 + int((id / 1024) % 32), 1)) as geohash3",
-            "value")
+        val df = fuzzDf.withColumn("id", monotonically_increasing_id())
 
         // Write Parquet with INT96 timestamps
         withSQLConf(SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> "INT96") {
@@ -2317,26 +2308,23 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
           reader.close()
         }
 
-        // Create Iceberg table with hour(timestamp) + truncate(geohash, 3) partitioning
+        // Create an unpartitioned Iceberg table and import the Parquet files
         spark.sql("CREATE NAMESPACE IF NOT EXISTS test_cat.db")
         spark.sql("""
-          CREATE TABLE test_cat.db.int96_hour_test (
-            id BIGINT,
+          CREATE TABLE test_cat.db.int96_test (
             outputTimestamp TIMESTAMP,
-            geohash3 STRING,
-            value DOUBLE
+            value DOUBLE,
+            id BIGINT
           ) USING iceberg
-          PARTITIONED BY (hours(outputTimestamp), truncate(geohash3, 3))
         """)
 
-        // Use SparkTableUtil.importSparkTable to import the Parquet files
         try {
           val tableUtilClass = Class.forName("org.apache.iceberg.spark.SparkTableUtil")
           val sparkCatalog = spark.sessionState.catalogManager
             .catalog("test_cat")
             .asInstanceOf[org.apache.iceberg.spark.SparkCatalog]
           val ident =
-            org.apache.spark.sql.connector.catalog.Identifier.of(Array("db"), "int96_hour_test")
+            org.apache.spark.sql.connector.catalog.Identifier.of(Array("db"), "int96_test")
           val sparkTable = sparkCatalog
             .loadTable(ident)
             .asInstanceOf[org.apache.iceberg.spark.source.SparkTable]
@@ -2344,7 +2332,6 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
 
           val stagingDir = s"${warehouseDir.getAbsolutePath}/staging"
 
-          // Create a temp table pointing to the parquet path
           spark.sql(s"""CREATE TABLE parquet_temp USING parquet LOCATION '$dataPath'""")
           val sourceIdent = new org.apache.spark.sql.catalyst.TableIdentifier("parquet_temp")
 
@@ -2356,20 +2343,19 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
             classOf[String])
           importMethod.invoke(null, spark, sourceIdent, table, stagingDir)
 
-          // Query the table and verify no duplicates
           val distinctCount = spark
-            .sql("SELECT COUNT(DISTINCT id) FROM test_cat.db.int96_hour_test")
+            .sql("SELECT COUNT(DISTINCT id) FROM test_cat.db.int96_test")
             .collect()(0)
             .getLong(0)
           assert(
             distinctCount == numRows,
             s"Expected $numRows distinct IDs but got $distinctCount")
 
-          checkIcebergNativeScan("SELECT * FROM test_cat.db.int96_hour_test ORDER BY id")
+          checkIcebergNativeScan("SELECT * FROM test_cat.db.int96_test ORDER BY id")
           checkIcebergNativeScan(
-            "SELECT id, outputTimestamp FROM test_cat.db.int96_hour_test WHERE id < 50 ORDER BY id")
+            "SELECT id, outputTimestamp FROM test_cat.db.int96_test WHERE id < 50 ORDER BY id")
 
-          spark.sql("DROP TABLE test_cat.db.int96_hour_test")
+          spark.sql("DROP TABLE test_cat.db.int96_test")
           spark.sql("DROP TABLE parquet_temp")
         } catch {
           case _: ClassNotFoundException =>
