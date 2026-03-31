@@ -26,6 +26,12 @@ import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType, serializeDataType}
 
 object CometAtan2 extends CometExpressionSerde[Atan2] {
+  override def getSupportLevel(expr: Atan2): SupportLevel =
+    Incompatible(
+      Some(
+        "atan2(-0.0, -0.0) produces incompatible result" +
+          " (https://github.com/apache/datafusion-comet/issues/1897)"))
+
   override def convert(
       expr: Atan2,
       inputs: Seq[Attribute],
@@ -195,24 +201,6 @@ object CometAbs extends CometExpressionSerde[Abs] with MathExprBase {
         childExpr,
         failOnErrorExpr)
     optExprWithInfo(optExpr, expr, expr.child)
-  }
-}
-
-object CometTan extends CometExpressionSerde[Tan] {
-
-  override def getSupportLevel(expr: Tan): SupportLevel =
-    Incompatible(
-      Some(
-        "tan(-0.0) produces incorrect result" +
-          " (https://github.com/apache/datafusion-comet/issues/1897)"))
-
-  override def convert(
-      expr: Tan,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val childExpr = expr.children.map(exprToProtoInternal(_, inputs, binding))
-    val optExpr = scalarFunctionExprToProto("tan", childExpr: _*)
-    optExprWithInfo(optExpr, expr, expr.children: _*)
   }
 }
 

@@ -28,7 +28,7 @@ import org.scalatest.Tag
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
-import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, Ceil, Floor, FromUnixTime, Literal, StructsToJson, Tan, TruncDate, TruncTimestamp}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Atan2, Cast, Ceil, Floor, FromUnixTime, Literal, StructsToJson, TruncDate, TruncTimestamp}
 import org.apache.spark.sql.catalyst.optimizer.SimplifyExtractValueOps
 import org.apache.spark.sql.comet.CometProjectExec
 import org.apache.spark.sql.execution.{ProjectExec, SparkPlan}
@@ -1333,8 +1333,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   private val doubleValues: Seq[Double] = Seq(
     -1.0,
-    // TODO we should eventually enable negative zero but there are known issues still
-    // -0.0,
+    -0.0,
     0.0,
     +1.0,
     Double.MinValue,
@@ -1346,7 +1345,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("various math scalar functions") {
     val data = doubleValues.map(n => (n, n))
-    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[Tan]) -> "true") {
+    withSQLConf() {
       withParquetTable(data, "tbl") {
         // expressions with single arg
         for (expr <- Seq(
@@ -1373,7 +1372,25 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           assert(cometProjectExecs.length == 1, expr)
         }
         // expressions with two args
-        for (expr <- Seq("atan2", "pow")) {
+        for (expr <- Seq("pow")) {
+          val (_, cometPlan) =
+            checkSparkAnswerAndOperatorWithTol(sql(s"SELECT $expr(_1, _2) FROM tbl"))
+          val cometProjectExecs = collect(cometPlan) { case op: CometProjectExec =>
+            op
+          }
+          assert(cometProjectExecs.length == 1, expr)
+        }
+      }
+    }
+  }
+
+  test("atan2 math scalar functions") {
+    // TODO we should eventually include negative zero but there are known issues still
+    val data = doubleValues.filter(n => java.lang.Double.compare(n, -0.0d) == 1).map(n => (n, n))
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[Atan2]) -> "true") {
+      withParquetTable(data, "tbl") {
+        // expressions with two args
+        for (expr <- Seq("atan2")) {
           val (_, cometPlan) =
             checkSparkAnswerAndOperatorWithTol(sql(s"SELECT $expr(_1, _2) FROM tbl"))
           val cometProjectExecs = collect(cometPlan) { case op: CometProjectExec =>
