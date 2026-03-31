@@ -27,6 +27,7 @@ import scala.util.Random
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row, SaveMode}
 import org.apache.spark.sql.catalyst.expressions.Cast
+import org.apache.spark.sql.catalyst.parser.ParseException
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
@@ -1281,8 +1282,13 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     // cast to negative scale
     checkSparkAnswerMaybeThrows(
       spark.sql("select a, cast(a as DECIMAL(10,-4)) from t order by a")) match {
+      case (Some(expected: ParseException), Some(actual: ParseException)) =>
+        assert(
+          expected.getMessage.contains("PARSE_SYNTAX_ERROR") && actual.getMessage.contains(
+            "PARSE_SYNTAX_ERROR"))
       case (expected, actual) =>
-        assert(expected.contains("PARSE_SYNTAX_ERROR") === actual.contains("PARSE_SYNTAX_ERROR"))
+        fail(
+          s"Expected Spark and Comet throw ParseException, but got Spark=$expected and Comet=$actual")
     }
   }
 
