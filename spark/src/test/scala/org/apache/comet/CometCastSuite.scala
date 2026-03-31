@@ -498,6 +498,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       -1.0f,
       Short.MinValue.toFloat,
       Short.MaxValue.toFloat,
+      -0.0f,
       0.0f) ++
       Range(0, dataSize).map(_ => r.nextFloat())
     castTest(withNulls(values).toDF("a"), DataTypes.StringType)
@@ -558,6 +559,11 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       Double.NaN,
       Double.PositiveInfinity,
       Double.NegativeInfinity,
+      1.0d,
+      -1.0d,
+      Int.MinValue.toDouble,
+      Int.MaxValue.toDouble,
+      -0.0d,
       0.0d) ++
       Range(0, dataSize).map(_ => r.nextDouble())
     castTest(withNulls(values).toDF("a"), DataTypes.StringType)
