@@ -253,7 +253,6 @@ pub(crate) struct ImmediateModePartitioner {
     metrics: ShufflePartitionerMetrics,
     hashes_buf: Vec<u32>,
     partition_ids: Vec<u32>,
-    batch_size: usize,
     /// Fixed upfront reservation for coalescer buffers across all partitions.
     /// Each coalescer holds at most batch_size rows; this budget is estimated
     /// from the schema and reserved once to avoid incremental drift.
@@ -313,7 +312,6 @@ impl ImmediateModePartitioner {
             metrics,
             hashes_buf,
             partition_ids: vec![0u32; batch_size],
-            batch_size,
             coalescer_budget,
         })
     }
@@ -523,13 +521,12 @@ impl ShufflePartitioner for ImmediateModePartitioner {
         let num_output_partitions = self.streams.len();
         let mut offsets = vec![0i64; num_output_partitions + 1];
 
-        let data_file = OpenOptions::new()
+        let mut output_data = OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(true)
             .open(&self.output_data_file)
             .map_err(|e| DataFusionError::Execution(format!("shuffle write error: {e:?}")))?;
-        let mut output_data = BufWriter::new(data_file);
 
         #[allow(clippy::needless_range_loop)]
         for pid in 0..num_output_partitions {
@@ -557,10 +554,6 @@ impl ShufflePartitioner for ImmediateModePartitioner {
                 write_timer.stop();
             }
         }
-
-        let mut write_timer = self.metrics.write_time.timer();
-        output_data.flush()?;
-        write_timer.stop();
 
         // Record final offset
         offsets[num_output_partitions] = output_data.stream_position()? as i64;
