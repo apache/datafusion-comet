@@ -312,7 +312,7 @@ dependencies = [
  "arrow-schema",
  "arrow-select",
  "flatbuffers",
- "lz4_flex 0.13.0",
+ "lz4_flex",
 ]
 
 [[package]]
@@ -1825,7 +1825,7 @@ dependencies = [
 
 [[package]]
 name = "datafusion-comet"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "arrow",
  "assertables",
@@ -1833,11 +1833,13 @@ dependencies = [
  "aws-config",
  "aws-credential-types",
  "bytes",
- "crc32fast",
  "criterion",
  "datafusion",
+ "datafusion-comet-common",
+ "datafusion-comet-jni-bridge",
  "datafusion-comet-objectstore-hdfs",
  "datafusion-comet-proto",
+ "datafusion-comet-shuffle",
  "datafusion-comet-spark-expr",
  "datafusion-datasource",
  "datafusion-functions-nested",
@@ -1854,7 +1856,6 @@ dependencies = [
  "lazy_static",
  "log",
  "log4rs",
- "lz4_flex 0.12.1",
  "mimalloc",
  "num",
  "object_store 0.13.2",
@@ -1868,19 +1869,25 @@ dependencies = [
  "procfs",
  "prost",
  "rand 0.10.0",
- "regex",
  "reqwest",
  "serde_json",
- "simd-adler32",
- "snap",
  "tempfile",
- "thiserror 2.0.18",
  "tikv-jemalloc-ctl",
  "tikv-jemallocator",
  "tokio",
  "url",
  "uuid",
- "zstd",
+]
+
+[[package]]
+name = "datafusion-comet-common"
+version = "0.15.0"
+dependencies = [
+ "arrow",
+ "datafusion",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -1899,8 +1906,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "datafusion-comet-jni-bridge"
+version = "0.15.0"
+dependencies = [
+ "arrow",
+ "assertables",
+ "datafusion",
+ "datafusion-comet-common",
+ "jni",
+ "lazy_static",
+ "once_cell",
+ "parquet",
+ "paste",
+ "prost",
+ "regex",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "datafusion-comet-objectstore-hdfs"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1914,15 +1939,41 @@ dependencies = [
 
 [[package]]
 name = "datafusion-comet-proto"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "prost",
  "prost-build",
 ]
 
 [[package]]
+name = "datafusion-comet-shuffle"
+version = "0.15.0"
+dependencies = [
+ "arrow",
+ "async-trait",
+ "bytes",
+ "crc32c",
+ "crc32fast",
+ "criterion",
+ "datafusion",
+ "datafusion-comet-common",
+ "datafusion-comet-jni-bridge",
+ "datafusion-comet-spark-expr",
+ "futures",
+ "itertools 0.14.0",
+ "jni",
+ "log",
+ "lz4_flex",
+ "simd-adler32",
+ "snap",
+ "tempfile",
+ "tokio",
+ "zstd",
+]
+
+[[package]]
 name = "datafusion-comet-spark-expr"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "arrow",
  "base64",
@@ -1930,14 +1981,13 @@ dependencies = [
  "chrono-tz",
  "criterion",
  "datafusion",
+ "datafusion-comet-common",
  "futures",
  "hex",
  "num",
  "rand 0.10.0",
  "regex",
- "serde",
  "serde_json",
- "thiserror 2.0.18",
  "tokio",
  "twox-hash",
 ]
@@ -4000,15 +4050,6 @@ checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 
 [[package]]
 name = "lz4_flex"
-version = "0.12.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "98c23545df7ecf1b16c303910a69b079e8e251d60f7dd2cc9b4177f2afaf1746"
-dependencies = [
- "twox-hash",
-]
-
-[[package]]
-name = "lz4_flex"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "db9a0d582c2874f68138a16ce1867e0ffde6c0bb0a0df85e1f36d04146db488a"
@@ -4470,7 +4511,7 @@ dependencies = [
  "futures",
  "half",
  "hashbrown 0.16.1",
- "lz4_flex 0.13.0",
+ "lz4_flex",
  "num-bigint",
  "num-integer",
  "num-traits",

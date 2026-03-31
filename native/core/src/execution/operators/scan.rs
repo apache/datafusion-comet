@@ -21,7 +21,7 @@ use crate::{
     execution::{
         operators::ExecutionError, planner::TEST_EXEC_CONTEXT_ID, utils::SparkArrowConvert,
     },
-    jvm_bridge::{jni_call, JVMClasses},
+    jvm_bridge::JVMClasses,
 };
 use arrow::array::{make_array, ArrayData, ArrayRef, RecordBatch, RecordBatchOptions};
 use arrow::compute::{cast_with_options, take, CastOptions};

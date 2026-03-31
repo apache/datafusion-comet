@@ -28,7 +28,7 @@ import org.scalatest.Tag
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
-import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, Ceil, Floor, FromUnixTime, GetArrayItem, Literal, StructsToJson, Tan, TruncDate, TruncTimestamp}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, Ceil, Floor, FromUnixTime, Literal, StructsToJson, Tan, TruncDate, TruncTimestamp}
 import org.apache.spark.sql.catalyst.optimizer.SimplifyExtractValueOps
 import org.apache.spark.sql.comet.CometProjectExec
 import org.apache.spark.sql.execution.{ProjectExec, SparkPlan}
@@ -1266,6 +1266,35 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               checkSparkAnswerAndOperator(s"SELECT $left $op $right FROM tbl")
             }
           }
+        }
+      }
+    }
+  }
+
+  test("scalar decimal overflow - legacy mode produces null") {
+    // 1.1e19 * 1.1e19 = 1.21e38 fits in i128 (max ~1.7e38) but exceeds DECIMAL(38,0)'s
+    // max of 10^38-1, so CheckOverflow nulls the result in legacy (non-ANSI) mode.
+    withSQLConf(CometConf.COMET_ENABLED.key -> "true", SQLConf.ANSI_ENABLED.key -> "false") {
+      withParquetTable(Seq((BigDecimal("11000000000000000000"), 0)), "tbl") {
+        checkSparkAnswerAndOperator("SELECT _1 * _1 FROM tbl")
+      }
+    }
+  }
+
+  test("scalar decimal overflow - ANSI mode throws ArithmeticException") {
+    // 1.1e19 * 1.1e19 = 1.21e38 overflows DECIMAL(38,0). With ANSI mode on, both Spark and
+    // Comet must throw — Comet must not panic or silently return null. Spark reports
+    // NUMERIC_VALUE_OUT_OF_RANGE; Comet's WideDecimalBinaryExpr catches the overflow first
+    // and surfaces it as an arithmetic overflow error.
+    withSQLConf(CometConf.COMET_ENABLED.key -> "true", SQLConf.ANSI_ENABLED.key -> "true") {
+      withParquetTable(Seq((BigDecimal("11000000000000000000"), 0)), "tbl") {
+        val res = sql("SELECT _1 * _1 FROM tbl")
+        checkSparkAnswerMaybeThrows(res) match {
+          case (Some(sparkExc), Some(cometExc)) =>
+            assert(sparkExc.getMessage.contains("NUMERIC_VALUE_OUT_OF_RANGE"))
+            assert(cometExc.getMessage.toLowerCase.contains("overflow"))
+          case _ =>
+            fail("Expected exception for decimal overflow in ANSI mode")
         }
       }
     }
@@ -2587,8 +2616,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           withSQLConf(
             SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString(),
             // Prevent the optimizer from collapsing an extract value of a create array
-            SQLConf.OPTIMIZER_EXCLUDED_RULES.key -> SimplifyExtractValueOps.ruleName,
-            CometConf.getExprAllowIncompatConfigKey(classOf[GetArrayItem]) -> "true") {
+            SQLConf.OPTIMIZER_EXCLUDED_RULES.key -> SimplifyExtractValueOps.ruleName) {
             val df = spark.read.parquet(path.toString)
 
             val stringArray = df.select(array(col("_8"), col("_8"), lit(null)).alias("arr"))

@@ -149,6 +149,7 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
         isSupported(dt.elementType, dt1.elementType, timeZoneId, evalMode)
       case (dt: DataType, _) if dt.typeName == "timestamp_ntz" =>
         // https://github.com/apache/datafusion-comet/issues/378
+        // https://github.com/apache/datafusion-comet/issues/3179
         toType match {
           case DataTypes.TimestampType | DataTypes.DateType | DataTypes.StringType =>
             Incompatible()
@@ -217,10 +218,7 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
         Compatible(Some("Only supports years between 262143 BC and 262142 AD"))
       case DataTypes.TimestampType if timeZoneId.exists(tz => tz != "UTC") =>
         Incompatible(Some(s"Cast will use UTC instead of $timeZoneId"))
-      case DataTypes.TimestampType if evalMode == CometEvalMode.ANSI =>
-        Incompatible(Some("ANSI mode not supported"))
       case DataTypes.TimestampType =>
-        // https://github.com/apache/datafusion-comet/issues/328
         Incompatible(Some("Not all valid formats are supported"))
       case _ =>
         unsupported(DataTypes.StringType, toType)

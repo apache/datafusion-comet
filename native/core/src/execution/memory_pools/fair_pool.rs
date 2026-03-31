@@ -22,10 +22,7 @@ use std::{
 
 use jni::objects::GlobalRef;
 
-use crate::{
-    errors::CometResult,
-    jvm_bridge::{jni_call, JVMClasses},
-};
+use crate::{errors::CometResult, jvm_bridge::JVMClasses};
 use datafusion::common::resources_err;
 use datafusion::execution::memory_pool::MemoryConsumer;
 use datafusion::{

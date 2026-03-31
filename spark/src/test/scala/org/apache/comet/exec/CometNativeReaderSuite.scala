@@ -31,7 +31,6 @@ import org.apache.spark.sql.types.{IntegerType, StringType, StructType}
 import org.apache.comet.CometConf
 
 class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper {
-  import org.apache.spark.sql.catalyst.expressions.GetArrayItem
 
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
       pos: Position): Unit = {
@@ -42,8 +41,7 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
           SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
           CometConf.COMET_ENABLED.key -> "true",
           CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "false",
-          CometConf.COMET_NATIVE_SCAN_IMPL.key -> scan,
-          CometConf.getExprAllowIncompatConfigKey(classOf[GetArrayItem]) -> "true") {
+          CometConf.COMET_NATIVE_SCAN_IMPL.key -> scan) {
           testFun
         }
       })
@@ -60,6 +58,42 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
           checkSparkAnswer(df)
         }
       }
+    }
+  }
+
+  test("native reader duplicate fields in case-insensitive mode") {
+    withTempPath { path =>
+      // Write parquet with columns A, B, b (B and b are duplicates case-insensitively)
+      withSQLConf(SQLConf.CASE_SENSITIVE.key -> "true") {
+        spark
+          .range(5)
+          .selectExpr("id as A", "id as B", "id as b")
+          .write
+          .mode("overwrite")
+          .parquet(path.toString)
+      }
+      val tbl = s"dup_fields_${System.currentTimeMillis()}"
+      withSQLConf(SQLConf.CASE_SENSITIVE.key -> "true") {
+        sql(s"create table $tbl (A long, B long) using parquet options (path '${path}')")
+      }
+      // In case-insensitive mode, selecting B should fail because both B and b match
+      withSQLConf(SQLConf.CASE_SENSITIVE.key -> "false") {
+        val e = intercept[Exception] {
+          sql(s"select B from $tbl").collect()
+        }
+        assert(
+          e.getMessage.contains("duplicate field") ||
+            e.getMessage.contains("Found duplicate field") ||
+            (e.getCause != null && e.getCause.getMessage.contains("duplicate field")) ||
+            (e.getCause != null && e.getCause.getMessage.contains("Found duplicate field")),
+          s"Expected duplicate field error, got: ${e.getMessage}")
+      }
+      // In case-sensitive mode, selecting B should work fine
+      withSQLConf(SQLConf.CASE_SENSITIVE.key -> "true") {
+        val df = sql(s"select A from $tbl")
+        assert(df.collect().length == 5)
+      }
+      sql(s"drop table if exists $tbl")
     }
   }
 

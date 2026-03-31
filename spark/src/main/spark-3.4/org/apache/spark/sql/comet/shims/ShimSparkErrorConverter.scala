@@ -23,7 +23,7 @@ import java.io.FileNotFoundException
 
 import scala.util.matching.Regex
 
-import org.apache.spark.{QueryContext, SparkException}
+import org.apache.spark.{QueryContext, SparkDateTimeException, SparkException}
 import org.apache.spark.sql.catalyst.trees.SQLQueryContext
 import org.apache.spark.sql.errors.QueryExecutionErrors
 import org.apache.spark.sql.types._
@@ -43,6 +43,25 @@ trait ShimSparkErrorConverter {
 
   private def sqlCtx(context: Array[QueryContext]): SQLQueryContext =
     context.headOption.map(_.asInstanceOf[SQLQueryContext]).getOrElse(null)
+
+  private def parseFloatLiteral(value: String): Float = {
+    value.toLowerCase match {
+      case "inf" | "+inf" | "infinity" | "+infinity" => Float.PositiveInfinity
+      case "-inf" | "-infinity" => Float.NegativeInfinity
+      case "nan" | "+nan" | "-nan" => Float.NaN
+      case _ => value.toFloat
+    }
+  }
+
+  private def parseDoubleLiteral(value: String): Double = {
+    val normalized = value.toLowerCase.stripSuffix("d")
+    normalized match {
+      case "inf" | "+inf" | "infinity" | "+infinity" => Double.PositiveInfinity
+      case "-inf" | "-infinity" => Double.NegativeInfinity
+      case "nan" | "+nan" | "-nan" => Double.NaN
+      case _ => normalized.toDouble
+    }
+  }
 
   def convertErrorType(
       errorType: String,
@@ -172,6 +191,22 @@ trait ShimSparkErrorConverter {
           QueryExecutionErrors
             .invalidInputInCastToNumberError(targetType, str, sqlCtx(context)))
 
+      case "InvalidInputInCastToDatetime" =>
+        val expression =
+          s"'${params("value").toString.replace("\\", "\\\\").replace("'", "\\'")}'"
+        val sourceType = s""""${params("fromType").toString}""""
+        val targetType = s""""${params("toType").toString}""""
+        Some(
+          new SparkDateTimeException(
+            errorClass = "CAST_INVALID_INPUT",
+            messageParameters = Map(
+              "expression" -> expression,
+              "sourceType" -> sourceType,
+              "targetType" -> targetType,
+              "ansiConfig" -> "\"spark.sql.ansi.enabled\""),
+            context = context,
+            summary = summary))
+
       case "CastOverFlow" =>
         val fromType = getDataType(params("fromType").toString)
         val toType = getDataType(params("toType").toString)
@@ -191,8 +226,8 @@ trait ShimSparkErrorConverter {
           case LongType =>
             val cleanStr = if (valueStr.endsWith("L")) valueStr.dropRight(1) else valueStr
             cleanStr.toLong
-          case FloatType => valueStr.toFloat
-          case DoubleType => valueStr.toDouble
+          case FloatType => parseFloatLiteral(valueStr)
+          case DoubleType => parseDoubleLiteral(valueStr)
           case StringType => UTF8String.fromString(valueStr)
           case _ => valueStr
         }
@@ -250,6 +285,12 @@ trait ShimSparkErrorConverter {
         Some(
           QueryExecutionErrors
             .intervalArithmeticOverflowError("Interval arithmetic overflow", "", sqlCtx(context)))
+
+      case "DuplicateFieldCaseInsensitive" =>
+        Some(
+          QueryExecutionErrors.foundDuplicateFieldInCaseInsensitiveModeError(
+            params("requiredFieldName").toString,
+            params("matchedOrcFields").toString))
 
       case "FileNotFound" =>
         val msg = params("message").toString
