@@ -1466,7 +1466,7 @@ index 2f8e401e743..a4f94417dcc 100644
  import org.apache.spark.scheduler.{SparkListener, SparkListenerEvent, SparkListenerJobStart}
  import org.apache.spark.shuffle.sort.SortShuffleManager
 -import org.apache.spark.sql.{Dataset, QueryTest, Row, SparkSession, Strategy}
-+import org.apache.spark.sql.{Dataset, IgnoreComet, QueryTest, Row, SparkSession, Strategy}
++import org.apache.spark.sql.{Dataset, IgnoreComet, IgnoreCometNativeDataFusion, QueryTest, Row, SparkSession, Strategy}
  import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight}
  import org.apache.spark.sql.catalyst.plans.logical.{Aggregate, LogicalPlan}
 +import org.apache.spark.sql.comet._
@@ -1885,6 +1885,46 @@ index 2f8e401e743..a4f94417dcc 100644
        plan.inputPlan.output.zip(plan.finalPhysicalPlan.output).foreach { case (o1, o2) =>
          assert(o1.semanticEquals(o2), "Different output column order after AQE optimization")
        }
+@@ -1551,7 +1553,8 @@ class AdaptiveQueryExecSuite
+     }
+   }
+ 
+-  test("SPARK-35585: Support propagate empty relation through project/filter") {
++  test("SPARK-35585: Support propagate empty relation through project/filter",
++    IgnoreCometNativeDataFusion("CometHashAggregate prevents AQE empty relation propagation")) {
+     withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+       val (plan1, adaptivePlan1) = runAdaptiveAndVerifyResult(
+@@ -1567,7 +1570,8 @@ class AdaptiveQueryExecSuite
+     }
+   }
+ 
+-  test("SPARK-35442: Support propagate empty relation through aggregate") {
++  test("SPARK-35442: Support propagate empty relation through aggregate",
++    IgnoreCometNativeDataFusion("CometHashAggregate prevents AQE empty relation propagation")) {
+     withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true") {
+       val (plan1, adaptivePlan1) = runAdaptiveAndVerifyResult(
+         "SELECT key, count(*) FROM testData WHERE value = 'no_match' GROUP BY key")
+@@ -1586,7 +1590,8 @@ class AdaptiveQueryExecSuite
+     }
+   }
+ 
+-  test("SPARK-35442: Support propagate empty relation through union") {
++  test("SPARK-35442: Support propagate empty relation through union",
++    IgnoreCometNativeDataFusion("CometHashAggregate prevents AQE empty relation propagation")) {
+     def checkNumUnion(plan: SparkPlan, numUnion: Int): Unit = {
+       assert(
+         collect(plan) {
+@@ -1918,7 +1923,8 @@ class AdaptiveQueryExecSuite
+     }
+   }
+ 
+-  test("SPARK-34980: Support coalesce partition through union") {
++  test("SPARK-34980: Support coalesce partition through union",
++    IgnoreCometNativeDataFusion("CometHashAggregate prevents AQE partition coalescing")) {
+     def checkResultPartition(
+         df: Dataset[Row],
+         numUnion: Int,
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/SchemaPruningSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/SchemaPruningSuite.scala
 index fd52d038ca6..154c800be67 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/SchemaPruningSuite.scala

@@ -1365,12 +1365,6 @@ trait CometBaseAggregate {
       return None
     }
 
-    // Aggregate expressions with filter are not supported yet.
-    if (aggregateExpressions.exists(_.filter.isDefined)) {
-      withInfo(aggregate, "Aggregate expression with filter is not supported")
-      return None
-    }
-
     def containsMapType(dt: DataType): Boolean = dt match {
       case _: MapType => true
       case a: ArrayType => containsMapType(a.elementType)
