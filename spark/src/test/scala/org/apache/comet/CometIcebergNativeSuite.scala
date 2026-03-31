@@ -2521,4 +2521,84 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
       }
     }
   }
+
+  test("filter with nested types in migrated table") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        val dataPath = s"${warehouseDir.getAbsolutePath}/nested_data"
+
+        // Write Parquet WITHOUT Iceberg (simulates pre-migration data)
+        // id is last so its leaf index is after all nested type leaves
+        spark.sql(s"""
+          SELECT
+            named_struct('age', id * 10, 'score', id * 1.5) AS info,
+            array(id, id + 1) AS tags,
+            map('key', id) AS props,
+            id
+          FROM range(10)
+        """).write.parquet(dataPath)
+
+        spark.sql("CREATE NAMESPACE IF NOT EXISTS test_cat.db")
+        spark.sql(s"""
+          CREATE TABLE test_cat.db.nested_migrate (
+            info STRUCT<age: BIGINT, score: DOUBLE>,
+            tags ARRAY<BIGINT>,
+            props MAP<STRING, BIGINT>,
+            id BIGINT
+          ) USING iceberg
+        """)
+
+        try {
+          val tableUtilClass = Class.forName("org.apache.iceberg.spark.SparkTableUtil")
+          val sparkCatalog = spark.sessionState.catalogManager
+            .catalog("test_cat")
+            .asInstanceOf[org.apache.iceberg.spark.SparkCatalog]
+          val ident =
+            org.apache.spark.sql.connector.catalog.Identifier.of(Array("db"), "nested_migrate")
+          val sparkTable = sparkCatalog
+            .loadTable(ident)
+            .asInstanceOf[org.apache.iceberg.spark.source.SparkTable]
+          val table = sparkTable.table()
+
+          val stagingDir = s"${warehouseDir.getAbsolutePath}/staging"
+          spark.sql(s"""CREATE TABLE parquet_temp USING parquet LOCATION '$dataPath'""")
+          val sourceIdent = new org.apache.spark.sql.catalyst.TableIdentifier("parquet_temp")
+
+          val importMethod = tableUtilClass.getMethod(
+            "importSparkTable",
+            classOf[org.apache.spark.sql.SparkSession],
+            classOf[org.apache.spark.sql.catalyst.TableIdentifier],
+            classOf[org.apache.iceberg.Table],
+            classOf[String])
+          importMethod.invoke(null, spark, sourceIdent, table, stagingDir)
+
+          // Select only flat columns to avoid Spark's Iceberg reader returning
+          // null for struct fields in migrated tables (separate Spark bug)
+          checkIcebergNativeScan(
+            "SELECT id FROM test_cat.db.nested_migrate ORDER BY id")
+
+          // Filter on root column with nested types in migrated table:
+          // Parquet files lack Iceberg field IDs, so iceberg-rust falls back to
+          // name mapping where column_map resolution is broken for nested types
+          checkIcebergNativeScan(
+            "SELECT id FROM test_cat.db.nested_migrate WHERE id > 5 ORDER BY id")
+
+          spark.sql("DROP TABLE test_cat.db.nested_migrate")
+          spark.sql("DROP TABLE parquet_temp")
+        } catch {
+          case _: ClassNotFoundException =>
+            cancel("SparkTableUtil not available")
+        }
+      }
+    }
+  }
 }
