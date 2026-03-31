@@ -29,6 +29,7 @@ import org.apache.spark.scheduler.SparkListenerTaskEnd
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.comet.execution.shuffle.CometNativeShuffle
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
+import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 
 import org.apache.comet.CometConf
@@ -98,24 +99,18 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("native_datafusion scan reports task-level input metrics matching Spark") {
     withParquetTable((0 until 10000).map(i => (i, (i + 1).toLong)), "tbl") {
       // Collect baseline input metrics from vanilla Spark (Comet disabled)
-      val (sparkBytes, sparkRecords) = collectInputMetrics(CometConf.COMET_ENABLED.key -> "false")
-
-      // Verify the plan actually uses CometNativeScanExec before collecting metrics
-      withSQLConf(
-        CometConf.COMET_ENABLED.key -> "true",
-        CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION) {
-        val df = sql("SELECT * FROM tbl")
-        df.collect() // force plan materialization for AQE
-        val plan = stripAQEPlan(df.queryExecution.executedPlan)
-        assert(
-          find(plan)(_.isInstanceOf[CometNativeScanExec]).isDefined,
-          s"Expected CometNativeScanExec in plan:\n${plan.treeString}")
-      }
+      val (sparkBytes, sparkRecords, _) =
+        collectInputMetrics(CometConf.COMET_ENABLED.key -> "false")
 
       // Collect input metrics from Comet native_datafusion scan
-      val (cometBytes, cometRecords) = collectInputMetrics(
+      val (cometBytes, cometRecords, cometPlan) = collectInputMetrics(
         CometConf.COMET_ENABLED.key -> "true",
         CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION)
+
+      // Verify the plan actually used CometNativeScanExec
+      assert(
+        find(cometPlan)(_.isInstanceOf[CometNativeScanExec]).isDefined,
+        s"Expected CometNativeScanExec in plan:\n${cometPlan.treeString}")
 
       // Records must match exactly
       assert(
@@ -136,9 +131,9 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   /**
    * Runs `SELECT * FROM tbl` with the given SQL config overrides and returns the aggregated
-   * (bytesRead, recordsRead) across all tasks.
+   * (bytesRead, recordsRead) across all tasks, along with the executed plan.
    */
-  private def collectInputMetrics(confs: (String, String)*): (Long, Long) = {
+  private def collectInputMetrics(confs: (String, String)*): (Long, Long, SparkPlan) = {
     val inputMetricsList = mutable.ArrayBuffer.empty[InputMetrics]
 
     val listener = new SparkListener {
@@ -155,8 +150,11 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       // Drain any earlier events
       spark.sparkContext.listenerBus.waitUntilEmpty()
 
+      var plan: SparkPlan = null
       withSQLConf(confs: _*) {
-        sql("SELECT * FROM tbl").collect()
+        val df = sql("SELECT * FROM tbl where _1 > 2000")
+        df.collect()
+        plan = stripAQEPlan(df.queryExecution.executedPlan)
       }
 
       spark.sparkContext.listenerBus.waitUntilEmpty()
@@ -164,7 +162,7 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       assert(inputMetricsList.nonEmpty, s"No input metrics found for confs=$confs")
       val totalBytes = inputMetricsList.map(_.bytesRead).sum
       val totalRecords = inputMetricsList.map(_.recordsRead).sum
-      (totalBytes, totalRecords)
+      (totalBytes, totalRecords, plan)
     } finally {
       spark.sparkContext.removeSparkListener(listener)
     }
