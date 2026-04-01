@@ -145,9 +145,14 @@ private[spark] class CometExecRDD(
           val leaf = nativeMetrics.leafNode
           leaf.metrics.get("bytes_scanned").foreach { bs =>
             ctx.taskMetrics().inputMetrics.setBytesRead(bs.value)
-            leaf.metrics
-              .get("output_rows")
-              .foreach(m => ctx.taskMetrics().inputMetrics.setRecordsRead(m.value))
+            // Total rows read from Parquet = rows output after pushdown (output_rows)
+            // + rows pruned by pushdown filters (pushdown_rows_pruned).
+            // This matches Spark's recordsRead which counts rows before filtering.
+            val outputRows =
+              leaf.metrics.get("output_rows").map(_.value).getOrElse(0L)
+            val prunedRows =
+              leaf.metrics.get("pushdown_rows_pruned").map(_.value).getOrElse(0L)
+            ctx.taskMetrics().inputMetrics.setRecordsRead(outputRows + prunedRows)
           }
         }
       }
