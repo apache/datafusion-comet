@@ -18,7 +18,6 @@
 use arrow::array::RecordBatch;
 use arrow::compute::interleave_record_batch;
 use datafusion::common::DataFusionError;
-use datafusion::physical_plan::metrics::Time;
 
 /// A helper struct to produce shuffled batches.
 /// This struct takes ownership of the buffered batches and partition indices from the
@@ -42,16 +41,11 @@ impl PartitionedBatchesProducer {
         }
     }
 
-    pub(super) fn produce<'a>(
-        &'a mut self,
-        partition_id: usize,
-        interleave_time: &'a Time,
-    ) -> PartitionedBatchIterator<'a> {
+    pub(super) fn produce(&mut self, partition_id: usize) -> PartitionedBatchIterator<'_> {
         PartitionedBatchIterator::new(
             &self.partition_indices[partition_id],
             &self.buffered_batches,
             self.batch_size,
-            interleave_time,
         )
     }
 }
@@ -62,7 +56,6 @@ pub(crate) struct PartitionedBatchIterator<'a> {
     batch_size: usize,
     indices: Vec<(usize, usize)>,
     pos: usize,
-    interleave_time: &'a Time,
 }
 
 impl<'a> PartitionedBatchIterator<'a> {
@@ -70,7 +63,6 @@ impl<'a> PartitionedBatchIterator<'a> {
         indices: &'a [(u32, u32)],
         buffered_batches: &'a [RecordBatch],
         batch_size: usize,
-        interleave_time: &'a Time,
     ) -> Self {
         if indices.is_empty() {
             // Avoid unnecessary allocations when the partition is empty
@@ -79,7 +71,6 @@ impl<'a> PartitionedBatchIterator<'a> {
                 batch_size,
                 indices: vec![],
                 pos: 0,
-                interleave_time,
             };
         }
         let record_batches = buffered_batches.iter().collect::<Vec<_>>();
@@ -92,7 +83,6 @@ impl<'a> PartitionedBatchIterator<'a> {
             batch_size,
             indices: current_indices,
             pos: 0,
-            interleave_time,
         }
     }
 }
@@ -107,10 +97,7 @@ impl Iterator for PartitionedBatchIterator<'_> {
 
         let indices_end = std::cmp::min(self.pos + self.batch_size, self.indices.len());
         let indices = &self.indices[self.pos..indices_end];
-        let mut timer = self.interleave_time.timer();
-        let result = interleave_record_batch(&self.record_batches, indices);
-        timer.stop();
-        match result {
+        match interleave_record_batch(&self.record_batches, indices) {
             Ok(batch) => {
                 self.pos = indices_end;
                 Some(Ok(batch))

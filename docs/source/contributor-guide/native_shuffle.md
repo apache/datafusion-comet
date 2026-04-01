@@ -124,7 +124,7 @@ Native shuffle (`CometExchange`) is selected when all of the following condition
 | File                    | Location                           | Description                                                                                                           |
 | ----------------------- | ---------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
 | `shuffle_writer.rs`     | `native/shuffle/src/`              | `ShuffleWriterExec` plan. Selects partitioner based on `immediate_mode` flag.                                         |
-| `immediate_mode.rs`     | `native/shuffle/src/partitioners/` | `ImmediateModePartitioner`. Scatter-writes rows into per-partition Arrow builders and flushes IPC blocks immediately. |
+| `immediate_mode.rs`     | `native/shuffle/src/partitioners/` | `ImmediateModePartitioner`. Scatter-writes rows into per-partition Arrow builders and flushes IPC blocks to in-memory buffers eagerly. |
 | `multi_partition.rs`    | `native/shuffle/src/partitioners/` | `MultiPartitionShuffleRepartitioner`. Buffers all rows in memory, then writes partitions.                             |
 | `codec.rs`              | `native/shuffle/src/`              | `ShuffleBlockWriter` for Arrow IPC encoding with compression. Also handles decoding.                                  |
 | `comet_partitioning.rs` | `native/shuffle/src/`              | `CometPartitioning` enum defining partition schemes (Hash, Range, Single).                                            |
@@ -144,8 +144,9 @@ Native shuffle (`CometExchange`) is selected when all of the following condition
    - **Immediate mode** (`ImmediateModePartitioner`): For hash/range/round-robin partitioning.
      As each batch arrives, rows are scattered into per-partition Arrow array builders. When a
      partition's builder reaches the target batch size, it is flushed as a compressed Arrow IPC
-     block directly to the output stream. This keeps memory usage proportional to the number of
-     partitions times the batch size, rather than proportional to the total input size.
+     block to an in-memory buffer. Under memory pressure, these buffers are spilled to
+     per-partition temporary files. This keeps memory usage much lower than buffered mode since
+     data is encoded into compact IPC format eagerly rather than held as raw Arrow arrays.
 
    - **Buffered mode** (`MultiPartitionShuffleRepartitioner`): For hash/range/round-robin
      partitioning. Buffers all input `RecordBatch`es in memory, then partitions and writes
@@ -225,14 +226,18 @@ between the two partitioner modes:
 
 ### Immediate Mode
 
-Immediate mode keeps memory usage low by writing data to disk as it arrives:
+Immediate mode keeps memory usage low by partitioning and encoding data eagerly as it arrives,
+rather than buffering all input rows before writing:
 
 - **Per-partition builders**: Each partition has a set of Arrow array builders sized to the
-  target batch size. When a builder fills up, it is flushed as a compressed IPC block.
-- **Memory footprint**: Proportional to `num_partitions × batch_size`, independent of total
-  input size.
-- **Spilling**: When memory pressure is detected via DataFusion's `MemoryConsumer` trait, all
-  partition buffers are flushed to disk regardless of how full they are.
+  target batch size. When a builder fills up, it is flushed as a compressed IPC block to an
+  in-memory buffer.
+- **Memory footprint**: Proportional to `num_partitions × batch_size` for the builders, plus
+  the accumulated IPC buffers. This is typically much smaller than buffered mode since IPC
+  encoding is more compact than raw Arrow arrays.
+- **Spilling**: When memory pressure is detected via DataFusion's `MemoryConsumer` trait,
+  partition builders are flushed and all IPC buffers are drained to per-partition temporary
+  files on disk.
 
 ### Buffered Mode
 

@@ -93,26 +93,17 @@ impl PartitionWriter {
                     write_buffer_size,
                     batch_size,
                 );
-                let mut bytes_written = buf_batch_writer.write(
-                    &batch?,
-                    &metrics.encode_time,
-                    &metrics.write_time,
-                    &metrics.coalesce_time,
-                )?;
+                let mut bytes_written =
+                    buf_batch_writer.write(&batch?, &metrics.encode_time, &metrics.write_time)?;
                 for batch in iter {
                     let batch = batch?;
                     bytes_written += buf_batch_writer.write(
                         &batch,
                         &metrics.encode_time,
                         &metrics.write_time,
-                        &metrics.coalesce_time,
                     )?;
                 }
-                buf_batch_writer.flush(
-                    &metrics.encode_time,
-                    &metrics.write_time,
-                    &metrics.coalesce_time,
-                )?;
+                buf_batch_writer.flush(&metrics.encode_time, &metrics.write_time)?;
                 bytes_written
             };
 
