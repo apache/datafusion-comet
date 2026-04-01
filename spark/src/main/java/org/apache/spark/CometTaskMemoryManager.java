@@ -25,10 +25,11 @@ import java.util.concurrent.atomic.AtomicLong;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.comet.Native;
 import org.apache.spark.memory.MemoryConsumer;
 import org.apache.spark.memory.MemoryMode;
 import org.apache.spark.memory.TaskMemoryManager;
+
+import org.apache.comet.Native;
 
 /**
  * A adapter class that is used by Comet native to acquire & release memory through Spark's unified
@@ -130,9 +131,7 @@ public class CometTaskMemoryManager {
         return 0;
       }
       logger.info(
-          "Task {} received spill request for {} bytes, forwarding to native",
-          taskAttemptId,
-          size);
+          "Task {} received spill request for {} bytes, forwarding to native", taskAttemptId, size);
       try {
         long freed = new Native().requestSpill(handle, size);
         logger.info("Task {} native spill freed {} bytes", taskAttemptId, freed);
@@ -145,8 +144,7 @@ public class CometTaskMemoryManager {
 
     @Override
     public String toString() {
-      return String.format(
-          "NativeMemoryConsumer(id=%d, taskAttemptId=%d)", id, taskAttemptId);
+      return String.format("NativeMemoryConsumer(id=%d, taskAttemptId=%d)", id, taskAttemptId);
     }
   }
 }
