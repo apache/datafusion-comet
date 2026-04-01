@@ -148,6 +148,43 @@ When Spark calls `spill()`, Gluten:
 across all operators in the task, then retries. `ThrowOnOomMemoryTarget` wraps
 everything with up to 9 retries with exponential backoff.
 
+## Benchmark Results: TPC-H SF100, local[4], Peak RSS
+
+Measured with `benchmarks/tpc/memory-profile.sh` using `/usr/bin/time -l` on macOS
+(96GB RAM, 28 cores, Spark 3.5.8, no container memory limits).
+
+| Config | Q1 (aggregation) | Q5 (5-way join) | Q9 (6-way join) |
+|--------|-----------------|-----------------|-----------------|
+| Spark 4g offHeap | 2700 MB | 5167 MB | 4580 MB |
+| Comet 4g offHeap | 679 MB | 5534 MB | 5911 MB |
+| Comet 8g offHeap | 665 MB | 5440 MB | 6359 MB |
+
+### Analysis
+
+**Aggregation (Q1)**: Comet uses 75% less memory than Spark. No memory concern.
+
+**Join-heavy queries (Q5, Q9)**: Comet uses more memory than Spark.
+- Q5: ~370 MB over Spark, flat across offHeap sizes (fixed overhead)
+- Q9: 1331 MB over Spark at 4g, grows to 1779 MB at 8g (elastic — expands with pool)
+
+**Q9's elastic growth** (450 MB increase from 4g→8g) points to operators that buffer
+greedily up to the pool limit. The shuffle writer is designed this way — it accumulates
+batches in `buffered_batches` until `try_grow()` fails, then spills
+(`multi_partition.rs:395-435`). With more offHeap, it buffers more before spilling.
+
+**Cross-task eviction**: With `spill()` returning 0, Spark cannot reclaim memory from
+one Comet task to give to another. In a container with 16 tasks sharing 16GB, each task's
+shuffle writer competes for the shared pool, and no task can force another to spill.
+
+### Key Insight
+
+The untracked memory sources (ScanExec FFI batches, array copies) are likely secondary.
+The primary memory issue is **elastic buffering combined with broken cross-task eviction**:
+1. Shuffle writer greedily fills available pool space
+2. Multiple concurrent tasks each do this
+3. Spark cannot reclaim from any of them (spill returns 0)
+4. In a constrained container, this leads to OOM
+
 ## Debugging Steps
 
 ### 1. Enable memory debug logging
@@ -155,13 +192,14 @@ everything with up to 9 retries with exponential backoff.
 spark.comet.debug.memory.enabled=true
 ```
 
-### 2. Run targeted TPC-DS queries individually
-- Join-heavy (likely OOM first): q5, q14a, q14b, q23a, q23b, q24a, q24b, q72, q95
-- Sort/aggregate-heavy: q1, q4, q11, q74
+### 2. Run memory profiling script
+```bash
+cd benchmarks/tpc
+./memory-profile.sh --queries "1 5 9 21" --offheap-sizes "4g 8g 16g" --cores 4
+```
 
 ### 3. Disable operator categories to isolate
 ```
-spark.comet.exec.hashJoin.enabled=false
 spark.comet.exec.sortMergeJoin.enabled=false
 # or
 spark.comet.exec.shuffle.enabled=false

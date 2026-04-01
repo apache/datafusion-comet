@@ -133,7 +133,7 @@ run_query() {
     /usr/bin/time -l "$SPARK_HOME/bin/spark-submit" "${conf[@]}" \
         > "$log_file" 2> "$time_file" || exit_code=$?
 
-    # Parse peak RSS from /usr/bin/time -l output (macOS format)
+    # Parse peak RSS from /usr/bin/time -l output (macOS format: bytes)
     local peak_rss_bytes
     peak_rss_bytes=$(grep "maximum resident set size" "$time_file" | awk '{print $1}') || true
     local peak_rss_mb="N/A"
@@ -141,17 +141,12 @@ run_query() {
         peak_rss_mb=$((peak_rss_bytes / 1048576))
     fi
 
-    # Parse wall clock time
-    local wall_time
-    wall_time=$(grep "elapsed" "$time_file" | head -1 | awk '{print $1}') || true
-    # Convert MM:SS.xx or H:MM:SS.xx to seconds
+    # Parse wall clock time (macOS format: "  89.94 real  363.21 user  10.80 sys")
     local wall_secs="N/A"
+    local wall_time
+    wall_time=$(grep "real" "$time_file" | tail -1 | awk '{print $1}') || true
     if [ -n "$wall_time" ]; then
-        wall_secs=$(echo "$wall_time" | awk -F: '{
-            if (NF==3) print $1*3600 + $2*60 + $3;
-            else if (NF==2) print $1*60 + $2;
-            else print $1
-        }')
+        wall_secs="$wall_time"
     fi
 
     if [ "$exit_code" -eq 0 ]; then
