@@ -154,18 +154,17 @@ where
     Ok(())
 }
 
-// Re-applies the timezone to the naive local datetime produced after truncation to get the
-// correct UTC microseconds, properly handling DST transitions.
+// Converts the truncated naive local datetime to UTC microseconds, properly handling
+// DST transitions.
 //
-// The truncation functions (trunc_date_to_year, etc.) modify the date/time fields of a
-// DateTime<Tz> while preserving the original UTC offset. This is incorrect when the DST
-// offset changes across the truncation boundary (e.g. truncating from November to October
-// in America/Denver shifts from MST to MDT). We fix this by extracting the naive local
-// datetime and re-applying the timezone via from_local_datetime(), which performs a fresh
-// DST lookup — matching the behavior of Java's ZonedDateTime.of().
+// Truncation is performed on NaiveDateTime (extracted from the input DateTime<Tz> via
+// naive_local()) to avoid chrono's intermediate timezone resolution at each with_*() step,
+// which can produce incorrect offsets for far-future dates. After truncation, this function
+// performs a single fresh DST lookup via from_local_datetime() — matching the behavior of
+// Java's ZonedDateTime.of().
 #[inline]
-fn as_micros_from_local_datetime_tz(dt: Option<DateTime<Tz>>, tz: &Tz) -> i64 {
-    let naive: NaiveDateTime = dt.unwrap().naive_local();
+fn as_micros_from_naive_datetime_tz(naive: Option<NaiveDateTime>, tz: &Tz) -> i64 {
+    let naive = naive.unwrap();
     match tz.from_local_datetime(&naive) {
         LocalResult::Single(dt) => dt.timestamp_micros(),
         // Ambiguous (fall-back): use the earlier (pre-transition) instant, matching Java
@@ -571,61 +570,87 @@ where
                     iter,
                     builder,
                     tz,
-                    |dt, tz| as_micros_from_local_datetime_tz(trunc_date_to_year(dt), tz),
+                    |dt, tz| {
+                        as_micros_from_naive_datetime_tz(trunc_date_to_year(dt.naive_local()), tz)
+                    },
                 ),
                 "QUARTER" => as_timestamp_tz_with_op::<&PrimitiveArray<T>, T, _>(
                     iter,
                     builder,
                     tz,
-                    |dt, tz| as_micros_from_local_datetime_tz(trunc_date_to_quarter(dt), tz),
+                    |dt, tz| {
+                        as_micros_from_naive_datetime_tz(
+                            trunc_date_to_quarter(dt.naive_local()),
+                            tz,
+                        )
+                    },
                 ),
                 "MONTH" | "MON" | "MM" => as_timestamp_tz_with_op::<&PrimitiveArray<T>, T, _>(
                     iter,
                     builder,
                     tz,
-                    |dt, tz| as_micros_from_local_datetime_tz(trunc_date_to_month(dt), tz),
+                    |dt, tz| {
+                        as_micros_from_naive_datetime_tz(trunc_date_to_month(dt.naive_local()), tz)
+                    },
                 ),
                 "WEEK" => as_timestamp_tz_with_op::<&PrimitiveArray<T>, T, _>(
                     iter,
                     builder,
                     tz,
-                    |dt, tz| as_micros_from_local_datetime_tz(trunc_date_to_week(dt), tz),
+                    |dt, tz| {
+                        as_micros_from_naive_datetime_tz(trunc_date_to_week(dt.naive_local()), tz)
+                    },
                 ),
                 "DAY" | "DD" => as_timestamp_tz_with_op::<&PrimitiveArray<T>, T, _>(
                     iter,
                     builder,
                     tz,
-                    |dt, tz| as_micros_from_local_datetime_tz(trunc_date_to_day(dt), tz),
+                    |dt, tz| {
+                        as_micros_from_naive_datetime_tz(trunc_date_to_day(dt.naive_local()), tz)
+                    },
                 ),
                 "HOUR" => as_timestamp_tz_with_op::<&PrimitiveArray<T>, T, _>(
                     iter,
                     builder,
                     tz,
-                    |dt, tz| as_micros_from_local_datetime_tz(trunc_date_to_hour(dt), tz),
+                    |dt, tz| {
+                        as_micros_from_naive_datetime_tz(trunc_date_to_hour(dt.naive_local()), tz)
+                    },
                 ),
                 "MINUTE" => as_timestamp_tz_with_op::<&PrimitiveArray<T>, T, _>(
                     iter,
                     builder,
                     tz,
-                    |dt, tz| as_micros_from_local_datetime_tz(trunc_date_to_minute(dt), tz),
+                    |dt, tz| {
+                        as_micros_from_naive_datetime_tz(trunc_date_to_minute(dt.naive_local()), tz)
+                    },
                 ),
                 "SECOND" => as_timestamp_tz_with_op::<&PrimitiveArray<T>, T, _>(
                     iter,
                     builder,
                     tz,
-                    |dt, tz| as_micros_from_local_datetime_tz(trunc_date_to_second(dt), tz),
+                    |dt, tz| {
+                        as_micros_from_naive_datetime_tz(trunc_date_to_second(dt.naive_local()), tz)
+                    },
                 ),
                 "MILLISECOND" => as_timestamp_tz_with_op::<&PrimitiveArray<T>, T, _>(
                     iter,
                     builder,
                     tz,
-                    |dt, tz| as_micros_from_local_datetime_tz(trunc_date_to_ms(dt), tz),
+                    |dt, tz| {
+                        as_micros_from_naive_datetime_tz(trunc_date_to_ms(dt.naive_local()), tz)
+                    },
                 ),
                 "MICROSECOND" => as_timestamp_tz_with_op::<&PrimitiveArray<T>, T, _>(
                     iter,
                     builder,
                     tz,
-                    |dt, tz| as_micros_from_local_datetime_tz(trunc_date_to_microsec(dt), tz),
+                    |dt, tz| {
+                        as_micros_from_naive_datetime_tz(
+                            trunc_date_to_microsec(dt.naive_local()),
+                            tz,
+                        )
+                    },
                 ),
                 _ => Err(SparkError::Internal(format!(
                     "Unsupported format: {format:?} for function 'timestamp_trunc'"
@@ -730,64 +755,110 @@ macro_rules! timestamp_trunc_array_fmt_helper {
                             val,
                             &mut builder,
                             &tz,
-                            |dt, tz| as_micros_from_local_datetime_tz(trunc_date_to_year(dt), tz),
+                            |dt, tz| {
+                                as_micros_from_naive_datetime_tz(
+                                    trunc_date_to_year(dt.naive_local()),
+                                    tz,
+                                )
+                            },
                         ),
                         "QUARTER" => as_timestamp_tz_with_op_single::<T, _>(
                             val,
                             &mut builder,
                             &tz,
                             |dt, tz| {
-                                as_micros_from_local_datetime_tz(trunc_date_to_quarter(dt), tz)
+                                as_micros_from_naive_datetime_tz(
+                                    trunc_date_to_quarter(dt.naive_local()),
+                                    tz,
+                                )
                             },
                         ),
                         "MONTH" | "MON" | "MM" => as_timestamp_tz_with_op_single::<T, _>(
                             val,
                             &mut builder,
                             &tz,
-                            |dt, tz| as_micros_from_local_datetime_tz(trunc_date_to_month(dt), tz),
+                            |dt, tz| {
+                                as_micros_from_naive_datetime_tz(
+                                    trunc_date_to_month(dt.naive_local()),
+                                    tz,
+                                )
+                            },
                         ),
                         "WEEK" => as_timestamp_tz_with_op_single::<T, _>(
                             val,
                             &mut builder,
                             &tz,
-                            |dt, tz| as_micros_from_local_datetime_tz(trunc_date_to_week(dt), tz),
+                            |dt, tz| {
+                                as_micros_from_naive_datetime_tz(
+                                    trunc_date_to_week(dt.naive_local()),
+                                    tz,
+                                )
+                            },
                         ),
                         "DAY" | "DD" => as_timestamp_tz_with_op_single::<T, _>(
                             val,
                             &mut builder,
                             &tz,
-                            |dt, tz| as_micros_from_local_datetime_tz(trunc_date_to_day(dt), tz),
+                            |dt, tz| {
+                                as_micros_from_naive_datetime_tz(
+                                    trunc_date_to_day(dt.naive_local()),
+                                    tz,
+                                )
+                            },
                         ),
                         "HOUR" => as_timestamp_tz_with_op_single::<T, _>(
                             val,
                             &mut builder,
                             &tz,
-                            |dt, tz| as_micros_from_local_datetime_tz(trunc_date_to_hour(dt), tz),
+                            |dt, tz| {
+                                as_micros_from_naive_datetime_tz(
+                                    trunc_date_to_hour(dt.naive_local()),
+                                    tz,
+                                )
+                            },
                         ),
                         "MINUTE" => as_timestamp_tz_with_op_single::<T, _>(
                             val,
                             &mut builder,
                             &tz,
-                            |dt, tz| as_micros_from_local_datetime_tz(trunc_date_to_minute(dt), tz),
+                            |dt, tz| {
+                                as_micros_from_naive_datetime_tz(
+                                    trunc_date_to_minute(dt.naive_local()),
+                                    tz,
+                                )
+                            },
                         ),
                         "SECOND" => as_timestamp_tz_with_op_single::<T, _>(
                             val,
                             &mut builder,
                             &tz,
-                            |dt, tz| as_micros_from_local_datetime_tz(trunc_date_to_second(dt), tz),
+                            |dt, tz| {
+                                as_micros_from_naive_datetime_tz(
+                                    trunc_date_to_second(dt.naive_local()),
+                                    tz,
+                                )
+                            },
                         ),
                         "MILLISECOND" => as_timestamp_tz_with_op_single::<T, _>(
                             val,
                             &mut builder,
                             &tz,
-                            |dt, tz| as_micros_from_local_datetime_tz(trunc_date_to_ms(dt), tz),
+                            |dt, tz| {
+                                as_micros_from_naive_datetime_tz(
+                                    trunc_date_to_ms(dt.naive_local()),
+                                    tz,
+                                )
+                            },
                         ),
                         "MICROSECOND" => as_timestamp_tz_with_op_single::<T, _>(
                             val,
                             &mut builder,
                             &tz,
                             |dt, tz| {
-                                as_micros_from_local_datetime_tz(trunc_date_to_microsec(dt), tz)
+                                as_micros_from_naive_datetime_tz(
+                                    trunc_date_to_microsec(dt.naive_local()),
+                                    tz,
+                                )
                             },
                         ),
                         _ => Err(SparkError::Internal(format!(
@@ -871,6 +942,7 @@ mod tests {
         types::{Date32Type, Int32Type, TimestampMicrosecondType},
         Array, Date32Array, PrimitiveArray, StringArray, TimestampMicrosecondArray,
     };
+    use chrono::NaiveDate;
     use std::sync::Arc;
 
     #[test]
@@ -1229,6 +1301,48 @@ mod tests {
                 arrow::datatypes::TimeUnit::Microsecond,
                 Some("America/Denver".into())
             )
+        );
+    }
+
+    /// Verify that timestamp_trunc works correctly for far-future dates (beyond tz database
+    /// explicit transitions, relying on POSIX TZ rule extrapolation).
+    ///
+    /// For America/Los_Angeles with POSIX rule PST8PDT,M3.2.0,M11.1.0:
+    /// - October 1 is still in DST (PDT, UTC-7)
+    /// - Truncating a December timestamp (PST, UTC-8) to QUARTER should produce
+    ///   October 1 00:00:00 PDT (UTC-7), not October 1 00:00:00 PST (UTC-8)
+    #[test]
+    fn test_timestamp_trunc_far_future_dst() {
+        // 3332-12-03 18:00:59 UTC (in PST that's 3332-12-03 10:00:59)
+        // We need a UTC microsecond value for a date in December 3332 in America/Los_Angeles.
+        // Use chrono to compute it precisely.
+        use chrono::TimeZone;
+        let tz: arrow::array::timezone::Tz = "America/Los_Angeles".parse().unwrap();
+        // 3332-12-03 10:00:59 local time in America/Los_Angeles (PST in December)
+        let local_naive = NaiveDate::from_ymd_opt(3332, 12, 3)
+            .unwrap()
+            .and_hms_opt(10, 0, 59)
+            .unwrap();
+        let dt = tz.from_local_datetime(&local_naive).unwrap();
+        let ts_utc_micros = dt.timestamp_micros();
+
+        let array = TimestampMicrosecondArray::from(vec![ts_utc_micros])
+            .with_timezone("America/Los_Angeles");
+
+        let result = timestamp_trunc(&array, "QUARTER".to_string()).unwrap();
+
+        // Expected: 3332-10-01 00:00:00 PDT (UTC-7) = 3332-10-01 07:00:00 UTC
+        let expected_naive = NaiveDate::from_ymd_opt(3332, 10, 1)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap();
+        let expected_dt = tz.from_local_datetime(&expected_naive).unwrap();
+        let expected_utc_micros = expected_dt.timestamp_micros();
+
+        assert_eq!(
+            result.value(0),
+            expected_utc_micros,
+            "Far-future date: expected 3332-10-01 00:00:00 PDT, got wrong offset"
         );
     }
 }
