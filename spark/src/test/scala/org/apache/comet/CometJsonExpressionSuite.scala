@@ -60,7 +60,7 @@ class CometJsonExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
           filename,
           100,
           SchemaGenOptions(generateArray = false, generateStruct = false, generateMap = false),
-          DataGenOptions(generateNaN = false, generateInfinity = false))
+          DataGenOptions(generateNaN = true, generateInfinity = true))
       }
       val table = spark.read.parquet(filename)
       val fieldsNames = table.schema.fields
