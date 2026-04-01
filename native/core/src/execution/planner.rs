@@ -21,8 +21,10 @@ pub mod expression_registry;
 pub mod macros;
 pub mod operator_registry;
 
+use crate::execution::joins::CometSortMergeJoinExec;
 use crate::execution::operators::init_csv_datasource_exec;
 use crate::execution::operators::IcebergScanExec;
+use crate::execution::spark_config::{SparkConfig, COMET_EXEC_SMJ_USE_NATIVE};
 use crate::execution::{
     expressions::subquery::Subquery,
     operators::{ExecutionError, ExpandExec, ParquetWriterExec, ScanExec, ShuffleScanExec},
@@ -163,6 +165,7 @@ pub struct PhysicalPlanner {
     partition: i32,
     session_ctx: Arc<SessionContext>,
     query_context_registry: Arc<datafusion_comet_spark_expr::QueryContextMap>,
+    spark_config: HashMap<String, String>,
 }
 
 impl Default for PhysicalPlanner {
@@ -178,6 +181,7 @@ impl PhysicalPlanner {
             session_ctx,
             partition,
             query_context_registry: datafusion_comet_spark_expr::create_query_context_map(),
+            spark_config: HashMap::new(),
         }
     }
 
@@ -187,6 +191,14 @@ impl PhysicalPlanner {
             partition: self.partition,
             session_ctx: Arc::clone(&self.session_ctx),
             query_context_registry: Arc::clone(&self.query_context_registry),
+            spark_config: self.spark_config,
+        }
+    }
+
+    pub fn with_spark_config(self, spark_config: HashMap<String, String>) -> Self {
+        Self {
+            spark_config,
+            ..self
         }
     }
 
@@ -1625,43 +1637,19 @@ impl PhysicalPlanner {
                 let left = Arc::clone(&join_params.left.native_plan);
                 let right = Arc::clone(&join_params.right.native_plan);
 
-                let join = Arc::new(SortMergeJoinExec::try_new(
-                    Arc::clone(&left),
-                    Arc::clone(&right),
-                    join_params.join_on,
-                    join_params.join_filter,
-                    join_params.join_type,
-                    sort_options,
-                    // null doesn't equal to null in Spark join key. If the join key is
-                    // `EqualNullSafe`, Spark will rewrite it during planning.
-                    NullEquality::NullEqualsNothing,
-                )?);
+                let use_native_smj = self.spark_config.get_bool(COMET_EXEC_SMJ_USE_NATIVE);
 
-                if join.filter.is_some() {
-                    // SMJ with join filter produces lots of tiny batches
-                    let coalesce_batches: Arc<dyn ExecutionPlan> =
-                        Arc::new(CoalesceBatchesExec::new(
-                            Arc::<SortMergeJoinExec>::clone(&join),
-                            self.session_ctx
-                                .state()
-                                .config_options()
-                                .execution
-                                .batch_size,
-                        ));
-                    Ok((
-                        scans,
-                        shuffle_scans,
-                        Arc::new(SparkPlan::new_with_additional(
-                            spark_plan.plan_id,
-                            coalesce_batches,
-                            vec![
-                                Arc::clone(&join_params.left),
-                                Arc::clone(&join_params.right),
-                            ],
-                            vec![join],
-                        )),
-                    ))
-                } else {
+                if use_native_smj {
+                    let join: Arc<dyn ExecutionPlan> =
+                        Arc::new(CometSortMergeJoinExec::try_new(
+                            Arc::clone(&left),
+                            Arc::clone(&right),
+                            join_params.join_on,
+                            join_params.join_filter,
+                            join_params.join_type,
+                            sort_options,
+                            NullEquality::NullEqualsNothing,
+                        )?);
                     Ok((
                         scans,
                         shuffle_scans,
@@ -1674,6 +1662,57 @@ impl PhysicalPlanner {
                             ],
                         )),
                     ))
+                } else {
+                    let join = Arc::new(SortMergeJoinExec::try_new(
+                        Arc::clone(&left),
+                        Arc::clone(&right),
+                        join_params.join_on,
+                        join_params.join_filter,
+                        join_params.join_type,
+                        sort_options,
+                        // null doesn't equal to null in Spark join key. If the join key is
+                        // `EqualNullSafe`, Spark will rewrite it during planning.
+                        NullEquality::NullEqualsNothing,
+                    )?);
+
+                    if join.filter.is_some() {
+                        // SMJ with join filter produces lots of tiny batches
+                        let coalesce_batches: Arc<dyn ExecutionPlan> =
+                            Arc::new(CoalesceBatchesExec::new(
+                                Arc::<SortMergeJoinExec>::clone(&join),
+                                self.session_ctx
+                                    .state()
+                                    .config_options()
+                                    .execution
+                                    .batch_size,
+                            ));
+                        Ok((
+                            scans,
+                            shuffle_scans,
+                            Arc::new(SparkPlan::new_with_additional(
+                                spark_plan.plan_id,
+                                coalesce_batches,
+                                vec![
+                                    Arc::clone(&join_params.left),
+                                    Arc::clone(&join_params.right),
+                                ],
+                                vec![join],
+                            )),
+                        ))
+                    } else {
+                        Ok((
+                            scans,
+                            shuffle_scans,
+                            Arc::new(SparkPlan::new(
+                                spark_plan.plan_id,
+                                join,
+                                vec![
+                                    Arc::clone(&join_params.left),
+                                    Arc::clone(&join_params.right),
+                                ],
+                            )),
+                        ))
+                    }
                 }
             }
             OpStruct::HashJoin(join) => {
