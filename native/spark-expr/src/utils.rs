@@ -36,7 +36,7 @@ use arrow::{
     array::{as_dictionary_array, Array, ArrayRef, PrimitiveArray},
     temporal_conversions::as_datetime,
 };
-use chrono::{DateTime, Offset, TimeZone};
+use chrono::{DateTime, LocalResult, NaiveDateTime, Offset, TimeDelta, TimeZone};
 
 /// Preprocesses input arrays to add timezone information from Spark to Arrow array datatype or
 /// to apply timezone offset.
@@ -174,6 +174,19 @@ fn datetime_cast_err(value: i64) -> ArrowError {
     ))
 }
 
+fn resolve_local_datetime(tz: &Tz, local_datetime: NaiveDateTime) -> DateTime<Tz> {
+    match tz.from_local_datetime(&local_datetime) {
+        LocalResult::Single(dt) => dt,
+        LocalResult::Ambiguous(dt, _) => dt,
+        LocalResult::None => {
+            // Interpret nonexistent local time by shifting from one hour earlier.
+            let shift = TimeDelta::hours(1);
+            let before = tz.from_local_datetime(&(local_datetime - shift)).unwrap();
+            before + shift
+        }
+    }
+}
+
 /// Takes in a Timestamp(Microsecond, None) array and a timezone id, and returns
 /// a Timestamp(Microsecond, Some<_>) array.
 /// The understanding is that the input array has time in the timezone specified in the second
@@ -196,8 +209,8 @@ fn timestamp_ntz_to_timestamp(
                 as_datetime::<TimestampMicrosecondType>(value)
                     .ok_or_else(|| datetime_cast_err(value))
                     .map(|local_datetime| {
-                        let datetime: DateTime<Tz> =
-                            tz.from_local_datetime(&local_datetime).earliest().unwrap();
+                        let datetime = resolve_local_datetime(&tz, local_datetime);
+
                         datetime.timestamp_micros()
                     })
             })?;
@@ -215,8 +228,8 @@ fn timestamp_ntz_to_timestamp(
                 as_datetime::<TimestampMillisecondType>(value)
                     .ok_or_else(|| datetime_cast_err(value))
                     .map(|local_datetime| {
-                        let datetime: DateTime<Tz> =
-                            tz.from_local_datetime(&local_datetime).earliest().unwrap();
+                        let datetime = resolve_local_datetime(&tz, local_datetime);
+
                         datetime.timestamp_millis()
                     })
             })?;
