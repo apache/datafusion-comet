@@ -176,6 +176,39 @@ batches in `buffered_batches` until `try_grow()` fails, then spills
 one Comet task to give to another. In a container with 16 tasks sharing 16GB, each task's
 shuffle writer competes for the shared pool, and no task can force another to spill.
 
+### Isolating Shuffle vs Non-Shuffle Overhead (Q9)
+
+Running Q9 with `spark.comet.exec.shuffle.enabled=false` (Spark handles shuffles,
+Comet handles sort/SMJ/aggregate):
+
+| Config | Q9 Peak RSS |
+|--------|-------------|
+| Spark only | 4580 MB |
+| Comet, shuffle disabled | 5035 MB |
+| Comet, full (4g offHeap) | 5911 MB |
+| Comet, full (8g offHeap) | 6359 MB |
+
+- **Non-shuffle overhead** (sort + SMJ + agg + scan): +455 MB fixed
+- **Shuffle overhead**: +876 MB at 4g, grows with offHeap size
+- **Shuffle elastic growth** (4g→8g): +448 MB
+
+Shuffle accounts for ~2/3 of the extra memory over Spark. This is also the component
+that grows with offHeap size due to greedy buffering.
+
+### New Shuffle Writer (PR #3845)
+
+[PR #3845](https://github.com/apache/datafusion-comet/pull/3845) introduces an
+"immediate mode" shuffle writer that buffers **compressed IPC-encoded blocks** per
+partition instead of raw `RecordBatch` objects. Key differences:
+
+- **Eager encoding**: Data is IPC-encoded and compressed as it arrives, per partition.
+  Memory footprint is bounded by `num_partitions * batch_size`, independent of input size.
+- **Current writer**: Buffers uncompressed `RecordBatch` objects in a `Vec`, with memory
+  proportional to total input data. Delays all encoding until spill or final write.
+- **Expected reduction**: 30-50% peak memory reduction in benchmarks.
+- **Still greedy**: The new writer still buffers until `try_grow()` fails, but the
+  compressed representation means each buffer unit is much smaller.
+
 ### Key Insight
 
 The untracked memory sources (ScanExec FFI batches, array copies) are likely secondary.
@@ -184,6 +217,9 @@ The primary memory issue is **elastic buffering combined with broken cross-task 
 2. Multiple concurrent tasks each do this
 3. Spark cannot reclaim from any of them (spill returns 0)
 4. In a constrained container, this leads to OOM
+
+The new shuffle writer (#3845) will help by reducing per-buffer memory, but the
+cross-task eviction problem remains.
 
 ## Debugging Steps
 
