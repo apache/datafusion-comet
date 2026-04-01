@@ -45,9 +45,7 @@ use datafusion::physical_plan::common::collect;
 use datafusion::physical_plan::metrics::{MetricValue, MetricsSet};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::{ParquetReadOptions, SessionContext};
-use datafusion_comet_shuffle::{
-    CometPartitioning, CompressionCodec, ShuffleWriterExec,
-};
+use datafusion_comet_shuffle::{CometPartitioning, CompressionCodec, ShuffleWriterExec};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -158,7 +156,7 @@ fn main() {
 
     let total_iters = args.warmup + args.iterations;
     let mut write_times = Vec::with_capacity(args.iterations);
-let mut data_file_sizes = Vec::with_capacity(args.iterations);
+    let mut data_file_sizes = Vec::with_capacity(args.iterations);
     let mut last_metrics: Option<MetricsSet> = None;
     let mut last_input_metrics: Option<MetricsSet> = None;
 
