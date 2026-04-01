@@ -305,7 +305,8 @@ case class CometIcebergNativeScanExec(
       numPartitions = perPartitionData.length,
       numOutputCols = output.length,
       nativeMetrics = nativeMetrics,
-      subqueries = Seq.empty)
+      subqueries = Seq.empty,
+      hasNativeScan = true)
   }
 
   /**

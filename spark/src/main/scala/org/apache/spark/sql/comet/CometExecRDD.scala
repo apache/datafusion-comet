@@ -66,7 +66,8 @@ private[spark] class CometExecRDD(
     subqueries: Seq[ScalarSubquery],
     broadcastedHadoopConfForEncryption: Option[Broadcast[SerializableConfiguration]] = None,
     encryptedFilePaths: Seq[String] = Seq.empty,
-    shuffleScanIndices: Set[Int] = Set.empty)
+    shuffleScanIndices: Set[Int] = Set.empty,
+    hasNativeScan: Boolean = false)
     extends RDD[ColumnarBatch](sc, inputRDDs.map(rdd => new OneToOneDependency(rdd))) {
 
   // Determine partition count: from inputs if available, otherwise from parameter
@@ -140,12 +141,15 @@ private[spark] class CometExecRDD(
         it.close()
         subqueries.foreach(sub => CometScalarSubquery.removeSubquery(it.id, sub))
 
-        nativeMetrics.metrics
-          .get("bytes_scanned")
-          .foreach(m => ctx.taskMetrics().inputMetrics.setBytesRead(m.value))
-        nativeMetrics.metrics
-          .get("output_rows")
-          .foreach(m => ctx.taskMetrics().inputMetrics.setRecordsRead(m.value))
+        if (hasNativeScan) {
+          val leaf = nativeMetrics.leafNode
+          leaf.metrics.get("bytes_scanned").foreach { bs =>
+            ctx.taskMetrics().inputMetrics.setBytesRead(bs.value)
+            leaf.metrics
+              .get("output_rows")
+              .foreach(m => ctx.taskMetrics().inputMetrics.setRecordsRead(m.value))
+          }
+        }
       }
     }
 
@@ -187,7 +191,8 @@ object CometExecRDD {
       subqueries: Seq[ScalarSubquery],
       broadcastedHadoopConfForEncryption: Option[Broadcast[SerializableConfiguration]] = None,
       encryptedFilePaths: Seq[String] = Seq.empty,
-      shuffleScanIndices: Set[Int] = Set.empty): CometExecRDD = {
+      shuffleScanIndices: Set[Int] = Set.empty,
+      hasNativeScan: Boolean = false): CometExecRDD = {
     // scalastyle:on
 
     new CometExecRDD(
@@ -202,6 +207,7 @@ object CometExecRDD {
       subqueries,
       broadcastedHadoopConfForEncryption,
       encryptedFilePaths,
-      shuffleScanIndices)
+      shuffleScanIndices,
+      hasNativeScan)
   }
 }

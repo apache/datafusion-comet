@@ -191,7 +191,8 @@ case class CometNativeScanExec(
       nativeMetrics = nativeMetrics,
       subqueries = Seq.empty,
       broadcastedHadoopConfForEncryption = broadcastedHadoopConfForEncryption,
-      encryptedFilePaths = encryptedFilePaths)
+      encryptedFilePaths = encryptedFilePaths,
+      hasNativeScan = true)
   }
 
   override def doCanonicalize(): CometNativeScanExec = {

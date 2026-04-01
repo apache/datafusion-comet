@@ -42,6 +42,16 @@ case class CometMetricNode(metrics: Map[String, SQLMetric], children: Seq[CometM
     extends Logging {
 
   /**
+   * Returns the leaf node (deepest single-child descendant). For a native scan plan like
+   * FilterExec -> DataSourceExec, this returns the DataSourceExec node which has the
+   * bytes_scanned and output_rows metrics from the Parquet reader.
+   */
+  def leafNode: CometMetricNode = {
+    if (children.isEmpty) this
+    else children.head.leafNode
+  }
+
+  /**
    * Gets a child node. Called from native.
    */
   def getChildNode(i: Int): CometMetricNode = {
