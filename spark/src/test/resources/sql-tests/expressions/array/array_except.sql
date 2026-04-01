@@ -14,8 +14,8 @@
 -- KIND, either express or implied.  See the License for the
 -- specific language governing permissions and limitations
 -- under the License.
+
 -- Config: spark.comet.expression.ArrayExcept.allowIncompatible=true
--- ConfigMatrix: parquet.enable.dictionary=false,true
 
 statement
 CREATE TABLE test_array_except(a array<int>, b array<int>) USING parquet

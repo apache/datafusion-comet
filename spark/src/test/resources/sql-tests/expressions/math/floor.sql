@@ -16,7 +16,6 @@
 -- under the License.
 
 -- Config: spark.comet.expression.Floor.allowIncompatible=true
--- ConfigMatrix: parquet.enable.dictionary=false,true
 
 statement
 CREATE TABLE test_floor(f float, d double) USING parquet

@@ -16,7 +16,6 @@
 -- under the License.
 
 -- ConfigMatrix: spark.sql.optimizer.inSetConversionThreshold=100,0
--- ConfigMatrix: parquet.enable.dictionary=false,true
 
 -- test in(set)/not in(set)
 statement

@@ -16,7 +16,6 @@
 -- under the License.
 
 -- Config: spark.comet.expression.ArrayIntersect.allowIncompatible=true
--- ConfigMatrix: parquet.enable.dictionary=false,true
 
 statement
 CREATE TABLE test_array_intersect(a array<int>, b array<int>) USING parquet
