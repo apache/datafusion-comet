@@ -19,6 +19,7 @@
 
 package org.apache.comet.serde
 
+import java.time.ZoneId
 import java.util.Locale
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, DateAdd, DateDiff, DateFormatClass, DateSub, DayOfMonth, DayOfWeek, DayOfYear, Days, GetDateField, Hour, LastDay, Literal, MakeDate, Minute, Month, NextDay, Quarter, Second, TruncDate, TruncTimestamp, UnixDate, UnixTimestamp, WeekDay, WeekOfYear, Year}
@@ -441,17 +442,16 @@ object CometTruncTimestamp extends CometExpressionSerde[TruncTimestamp] {
 
   override def getSupportLevel(expr: TruncTimestamp): SupportLevel = {
     val timezone = expr.timeZoneId.getOrElse("UTC")
-    val isUtc = timezone == "UTC" || timezone == "Etc/UTC"
     expr.format match {
       case Literal(fmt: UTF8String, _) =>
         if (supportedFormats.contains(fmt.toString.toLowerCase(Locale.ROOT))) {
-          if (isUtc) {
-            Compatible()
-          } else {
+          if (hasNonHourDst(timezone)) {
             Incompatible(
               Some(
-                s"Incorrect results in non-UTC timezone '$timezone'" +
+                s"Timezone '$timezone' has non-1-hour DST transitions" +
                   " (https://github.com/apache/datafusion-comet/issues/2649)"))
+          } else {
+            Compatible()
           }
         } else {
           Unsupported(Some(s"Format $fmt is not supported"))
@@ -459,6 +459,21 @@ object CometTruncTimestamp extends CometExpressionSerde[TruncTimestamp] {
       case _ =>
         Incompatible(
           Some("Invalid format strings will throw an exception instead of returning NULL"))
+    }
+  }
+
+  /** Returns true if the timezone has any DST transition that is not a multiple of 1 hour. */
+  private def hasNonHourDst(timezone: String): Boolean = {
+    import scala.jdk.CollectionConverters._
+    try {
+      val rules = ZoneId.of(timezone).getRules
+      rules.getTransitionRules.asScala.exists { rule =>
+        val deltaSecs = math.abs(
+          rule.getOffsetAfter.getTotalSeconds - rule.getOffsetBefore.getTotalSeconds)
+        deltaSecs % 3600 != 0
+      }
+    } catch {
+      case _: Exception => false
     }
   }
 

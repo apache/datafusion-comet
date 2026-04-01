@@ -94,12 +94,13 @@ impl PhysicalExpr for TimestampTruncExpr {
     }
 
     fn data_type(&self, input_schema: &Schema) -> datafusion::common::Result<DataType> {
+        let tz = Some(Arc::from(self.timezone.as_str()));
         match self.child.data_type(input_schema)? {
             DataType::Dictionary(key_type, _) => Ok(DataType::Dictionary(
                 key_type,
-                Box::new(DataType::Timestamp(Microsecond, None)),
+                Box::new(DataType::Timestamp(Microsecond, tz)),
             )),
-            _ => Ok(DataType::Timestamp(Microsecond, None)),
+            _ => Ok(DataType::Timestamp(Microsecond, tz)),
         }
     }
 

@@ -17,7 +17,8 @@
 
 //! temporal kernels
 
-use chrono::{DateTime, Datelike, Duration, NaiveDate, Timelike, Utc};
+use chrono::{DateTime, Datelike, Duration, LocalResult, NaiveDate, NaiveDateTime, Timelike};
+use chrono::offset::TimeZone as ChronoTimeZone;
 
 use std::sync::Arc;
 
@@ -100,23 +101,23 @@ fn trunc_days_to_week(days: i32) -> Option<i32> {
 }
 
 // Based on arrow_arith/temporal.rs:extract_component_from_datetime_array
-// Transforms an array of DateTime<Tz> to an arrayOf TimeStampMicrosecond after applying an
-// operation
+// Transforms an array of DateTime<Tz> to an array of TimestampMicrosecond after applying an
+// operation. The output array is annotated with the same timezone as the input.
 fn as_timestamp_tz_with_op<A: ArrayAccessor<Item = T::Native>, T: ArrowTemporalType, F>(
     iter: ArrayIter<A>,
     mut builder: PrimitiveBuilder<TimestampMicrosecondType>,
-    tz: &str,
+    tz_str: &str,
     op: F,
 ) -> Result<TimestampMicrosecondArray, SparkError>
 where
-    F: Fn(DateTime<Tz>) -> i64,
+    F: Fn(DateTime<Tz>, &Tz) -> i64,
     i64: From<T::Native>,
 {
-    let tz: Tz = tz.parse()?;
+    let tz: Tz = tz_str.parse()?;
     for value in iter {
         match value {
             Some(value) => match as_datetime_with_timezone::<T>(value.into(), tz) {
-                Some(time) => builder.append_value(op(time)),
+                Some(time) => builder.append_value(op(time, &tz)),
                 _ => {
                     return Err(SparkError::Internal(
                         "Unable to read value as datetime".to_string(),
@@ -126,7 +127,7 @@ where
             None => builder.append_null(),
         }
     }
-    Ok(builder.finish())
+    Ok(builder.finish().with_timezone(tz_str))
 }
 
 fn as_timestamp_tz_with_op_single<T: ArrowTemporalType, F>(
@@ -136,12 +137,12 @@ fn as_timestamp_tz_with_op_single<T: ArrowTemporalType, F>(
     op: F,
 ) -> Result<(), SparkError>
 where
-    F: Fn(DateTime<Tz>) -> i64,
+    F: Fn(DateTime<Tz>, &Tz) -> i64,
     i64: From<T::Native>,
 {
     match value {
         Some(value) => match as_datetime_with_timezone::<T>(value.into(), *tz) {
-            Some(time) => builder.append_value(op(time)),
+            Some(time) => builder.append_value(op(time, tz)),
             _ => {
                 return Err(SparkError::Internal(
                     "Unable to read value as datetime".to_string(),
@@ -153,10 +154,34 @@ where
     Ok(())
 }
 
-// Apply the Tz to the Naive Date Time,,convert to UTC, and return as microseconds in Unix epoch
+// Re-applies the timezone to the naive local datetime produced after truncation to get the
+// correct UTC microseconds, properly handling DST transitions.
+//
+// The truncation functions (trunc_date_to_year, etc.) modify the date/time fields of a
+// DateTime<Tz> while preserving the original UTC offset. This is incorrect when the DST
+// offset changes across the truncation boundary (e.g. truncating from November to October
+// in America/Denver shifts from MST to MDT). We fix this by extracting the naive local
+// datetime and re-applying the timezone via from_local_datetime(), which performs a fresh
+// DST lookup — matching the behavior of Java's ZonedDateTime.of().
 #[inline]
-fn as_micros_from_unix_epoch_utc(dt: Option<DateTime<Tz>>) -> i64 {
-    dt.unwrap().with_timezone(&Utc).timestamp_micros()
+fn as_micros_from_local_datetime_tz(dt: Option<DateTime<Tz>>, tz: &Tz) -> i64 {
+    let naive: NaiveDateTime = dt.unwrap().naive_local();
+    match tz.from_local_datetime(&naive) {
+        LocalResult::Single(dt) => dt.timestamp_micros(),
+        // Ambiguous (fall-back): use the earlier (pre-transition) instant, matching Java
+        LocalResult::Ambiguous(dt, _) => dt.timestamp_micros(),
+        // Non-existent (spring-forward gap): advance past the gap, matching Java.
+        // Assumes all DST gaps are exactly 1 hour. Timezones with non-1-hour DST gaps
+        // (e.g. Australia/Lord_Howe at 30 min) are marked Incompatible at the Scala
+        // planning layer and fall back to Spark.
+        LocalResult::None => {
+            let adjusted = naive + Duration::try_hours(1).unwrap();
+            tz.from_local_datetime(&adjusted)
+                .earliest()
+                .unwrap()
+                .timestamp_micros()
+        }
+    }
 }
 
 #[inline]
@@ -543,53 +568,53 @@ where
         DataType::Timestamp(TimeUnit::Microsecond, Some(tz)) => {
             match format.to_uppercase().as_str() {
                 "YEAR" | "YYYY" | "YY" => {
-                    as_timestamp_tz_with_op::<&PrimitiveArray<T>, T, _>(iter, builder, tz, |dt| {
-                        as_micros_from_unix_epoch_utc(trunc_date_to_year(dt))
+                    as_timestamp_tz_with_op::<&PrimitiveArray<T>, T, _>(iter, builder, tz, |dt, tz| {
+                        as_micros_from_local_datetime_tz(trunc_date_to_year(dt), tz)
                     })
                 }
                 "QUARTER" => {
-                    as_timestamp_tz_with_op::<&PrimitiveArray<T>, T, _>(iter, builder, tz, |dt| {
-                        as_micros_from_unix_epoch_utc(trunc_date_to_quarter(dt))
+                    as_timestamp_tz_with_op::<&PrimitiveArray<T>, T, _>(iter, builder, tz, |dt, tz| {
+                        as_micros_from_local_datetime_tz(trunc_date_to_quarter(dt), tz)
                     })
                 }
                 "MONTH" | "MON" | "MM" => {
-                    as_timestamp_tz_with_op::<&PrimitiveArray<T>, T, _>(iter, builder, tz, |dt| {
-                        as_micros_from_unix_epoch_utc(trunc_date_to_month(dt))
+                    as_timestamp_tz_with_op::<&PrimitiveArray<T>, T, _>(iter, builder, tz, |dt, tz| {
+                        as_micros_from_local_datetime_tz(trunc_date_to_month(dt), tz)
                     })
                 }
                 "WEEK" => {
-                    as_timestamp_tz_with_op::<&PrimitiveArray<T>, T, _>(iter, builder, tz, |dt| {
-                        as_micros_from_unix_epoch_utc(trunc_date_to_week(dt))
+                    as_timestamp_tz_with_op::<&PrimitiveArray<T>, T, _>(iter, builder, tz, |dt, tz| {
+                        as_micros_from_local_datetime_tz(trunc_date_to_week(dt), tz)
                     })
                 }
                 "DAY" | "DD" => {
-                    as_timestamp_tz_with_op::<&PrimitiveArray<T>, T, _>(iter, builder, tz, |dt| {
-                        as_micros_from_unix_epoch_utc(trunc_date_to_day(dt))
+                    as_timestamp_tz_with_op::<&PrimitiveArray<T>, T, _>(iter, builder, tz, |dt, tz| {
+                        as_micros_from_local_datetime_tz(trunc_date_to_day(dt), tz)
                     })
                 }
                 "HOUR" => {
-                    as_timestamp_tz_with_op::<&PrimitiveArray<T>, T, _>(iter, builder, tz, |dt| {
-                        as_micros_from_unix_epoch_utc(trunc_date_to_hour(dt))
+                    as_timestamp_tz_with_op::<&PrimitiveArray<T>, T, _>(iter, builder, tz, |dt, tz| {
+                        as_micros_from_local_datetime_tz(trunc_date_to_hour(dt), tz)
                     })
                 }
                 "MINUTE" => {
-                    as_timestamp_tz_with_op::<&PrimitiveArray<T>, T, _>(iter, builder, tz, |dt| {
-                        as_micros_from_unix_epoch_utc(trunc_date_to_minute(dt))
+                    as_timestamp_tz_with_op::<&PrimitiveArray<T>, T, _>(iter, builder, tz, |dt, tz| {
+                        as_micros_from_local_datetime_tz(trunc_date_to_minute(dt), tz)
                     })
                 }
                 "SECOND" => {
-                    as_timestamp_tz_with_op::<&PrimitiveArray<T>, T, _>(iter, builder, tz, |dt| {
-                        as_micros_from_unix_epoch_utc(trunc_date_to_second(dt))
+                    as_timestamp_tz_with_op::<&PrimitiveArray<T>, T, _>(iter, builder, tz, |dt, tz| {
+                        as_micros_from_local_datetime_tz(trunc_date_to_second(dt), tz)
                     })
                 }
                 "MILLISECOND" => {
-                    as_timestamp_tz_with_op::<&PrimitiveArray<T>, T, _>(iter, builder, tz, |dt| {
-                        as_micros_from_unix_epoch_utc(trunc_date_to_ms(dt))
+                    as_timestamp_tz_with_op::<&PrimitiveArray<T>, T, _>(iter, builder, tz, |dt, tz| {
+                        as_micros_from_local_datetime_tz(trunc_date_to_ms(dt), tz)
                     })
                 }
                 "MICROSECOND" => {
-                    as_timestamp_tz_with_op::<&PrimitiveArray<T>, T, _>(iter, builder, tz, |dt| {
-                        as_micros_from_unix_epoch_utc(trunc_date_to_microsec(dt))
+                    as_timestamp_tz_with_op::<&PrimitiveArray<T>, T, _>(iter, builder, tz, |dt, tz| {
+                        as_micros_from_local_datetime_tz(trunc_date_to_microsec(dt), tz)
                     })
                 }
                 _ => Err(SparkError::Internal(format!(
@@ -687,58 +712,58 @@ macro_rules! timestamp_trunc_array_fmt_helper {
             "lengths of values array and format array must be the same"
         );
         match $datatype {
-            DataType::Timestamp(TimeUnit::Microsecond, Some(tz)) => {
-                let tz: Tz = tz.parse()?;
+            DataType::Timestamp(TimeUnit::Microsecond, Some(tz_str)) => {
+                let tz: Tz = tz_str.parse()?;
                 for (index, val) in iter.enumerate() {
                     let op_result = match $formats.value(index).to_uppercase().as_str() {
                         "YEAR" | "YYYY" | "YY" => {
-                            as_timestamp_tz_with_op_single::<T, _>(val, &mut builder, &tz, |dt| {
-                                as_micros_from_unix_epoch_utc(trunc_date_to_year(dt))
+                            as_timestamp_tz_with_op_single::<T, _>(val, &mut builder, &tz, |dt, tz| {
+                                as_micros_from_local_datetime_tz(trunc_date_to_year(dt), tz)
                             })
                         }
                         "QUARTER" => {
-                            as_timestamp_tz_with_op_single::<T, _>(val, &mut builder, &tz, |dt| {
-                                as_micros_from_unix_epoch_utc(trunc_date_to_quarter(dt))
+                            as_timestamp_tz_with_op_single::<T, _>(val, &mut builder, &tz, |dt, tz| {
+                                as_micros_from_local_datetime_tz(trunc_date_to_quarter(dt), tz)
                             })
                         }
                         "MONTH" | "MON" | "MM" => {
-                            as_timestamp_tz_with_op_single::<T, _>(val, &mut builder, &tz, |dt| {
-                                as_micros_from_unix_epoch_utc(trunc_date_to_month(dt))
+                            as_timestamp_tz_with_op_single::<T, _>(val, &mut builder, &tz, |dt, tz| {
+                                as_micros_from_local_datetime_tz(trunc_date_to_month(dt), tz)
                             })
                         }
                         "WEEK" => {
-                            as_timestamp_tz_with_op_single::<T, _>(val, &mut builder, &tz, |dt| {
-                                as_micros_from_unix_epoch_utc(trunc_date_to_week(dt))
+                            as_timestamp_tz_with_op_single::<T, _>(val, &mut builder, &tz, |dt, tz| {
+                                as_micros_from_local_datetime_tz(trunc_date_to_week(dt), tz)
                             })
                         }
                         "DAY" | "DD" => {
-                            as_timestamp_tz_with_op_single::<T, _>(val, &mut builder, &tz, |dt| {
-                                as_micros_from_unix_epoch_utc(trunc_date_to_day(dt))
+                            as_timestamp_tz_with_op_single::<T, _>(val, &mut builder, &tz, |dt, tz| {
+                                as_micros_from_local_datetime_tz(trunc_date_to_day(dt), tz)
                             })
                         }
                         "HOUR" => {
-                            as_timestamp_tz_with_op_single::<T, _>(val, &mut builder, &tz, |dt| {
-                                as_micros_from_unix_epoch_utc(trunc_date_to_hour(dt))
+                            as_timestamp_tz_with_op_single::<T, _>(val, &mut builder, &tz, |dt, tz| {
+                                as_micros_from_local_datetime_tz(trunc_date_to_hour(dt), tz)
                             })
                         }
                         "MINUTE" => {
-                            as_timestamp_tz_with_op_single::<T, _>(val, &mut builder, &tz, |dt| {
-                                as_micros_from_unix_epoch_utc(trunc_date_to_minute(dt))
+                            as_timestamp_tz_with_op_single::<T, _>(val, &mut builder, &tz, |dt, tz| {
+                                as_micros_from_local_datetime_tz(trunc_date_to_minute(dt), tz)
                             })
                         }
                         "SECOND" => {
-                            as_timestamp_tz_with_op_single::<T, _>(val, &mut builder, &tz, |dt| {
-                                as_micros_from_unix_epoch_utc(trunc_date_to_second(dt))
+                            as_timestamp_tz_with_op_single::<T, _>(val, &mut builder, &tz, |dt, tz| {
+                                as_micros_from_local_datetime_tz(trunc_date_to_second(dt), tz)
                             })
                         }
                         "MILLISECOND" => {
-                            as_timestamp_tz_with_op_single::<T, _>(val, &mut builder, &tz, |dt| {
-                                as_micros_from_unix_epoch_utc(trunc_date_to_ms(dt))
+                            as_timestamp_tz_with_op_single::<T, _>(val, &mut builder, &tz, |dt, tz| {
+                                as_micros_from_local_datetime_tz(trunc_date_to_ms(dt), tz)
                             })
                         }
                         "MICROSECOND" => {
-                            as_timestamp_tz_with_op_single::<T, _>(val, &mut builder, &tz, |dt| {
-                                as_micros_from_unix_epoch_utc(trunc_date_to_microsec(dt))
+                            as_timestamp_tz_with_op_single::<T, _>(val, &mut builder, &tz, |dt, tz| {
+                                as_micros_from_local_datetime_tz(trunc_date_to_microsec(dt), tz)
                             })
                         }
                         _ => Err(SparkError::Internal(format!(
@@ -748,7 +773,7 @@ macro_rules! timestamp_trunc_array_fmt_helper {
                     };
                     op_result?
                 }
-                Ok(builder.finish())
+                Ok(builder.finish().with_timezone(tz_str.as_ref()))
             }
             dt => {
                 return_compute_error_with!(
@@ -1148,5 +1173,38 @@ mod tests {
         } else {
             unreachable!()
         }
+    }
+
+    /// Verify that timestamp_trunc produces correct results across DST boundaries.
+    ///
+    /// America/Denver switches between MST (UTC-7) and MDT (UTC-6). A timestamp in November
+    /// (MST) truncated to "quarter" should land on October 1 00:00:00 MDT (UTC-6), not
+    /// October 1 00:00:00 MST (UTC-7). This tests the DST-aware re-application of timezone
+    /// in as_micros_from_local_datetime_tz.
+    #[test]
+    fn test_timestamp_trunc_dst_boundary() {
+        // 2023-11-15 18:30:00 UTC = 2023-11-15 11:30:00 MST (UTC-7, winter time)
+        // Truncated to QUARTER -> 2023-10-01 00:00:00 MDT (UTC-6, since Oct 1 is still MDT)
+        // Expected UTC: 2023-10-01 06:00:00 UTC
+        let ts_utc_micros: i64 = 1700069400 * 1_000_000; // 2023-11-15 18:30:00 UTC
+        let array =
+            TimestampMicrosecondArray::from(vec![ts_utc_micros]).with_timezone("America/Denver");
+
+        let result = timestamp_trunc(&array, "QUARTER".to_string()).unwrap();
+        // 2023-10-01 00:00:00 MDT = 2023-10-01 06:00:00 UTC (MDT is UTC-6)
+        let expected_utc_micros: i64 = 1696140000 * 1_000_000;
+        assert_eq!(
+            result.value(0),
+            expected_utc_micros,
+            "Expected 2023-10-01 06:00:00 UTC (MDT), got wrong offset"
+        );
+        // Output array should carry the timezone annotation
+        assert_eq!(
+            result.data_type(),
+            &arrow::datatypes::DataType::Timestamp(
+                arrow::datatypes::TimeUnit::Microsecond,
+                Some("America/Denver".into())
+            )
+        );
     }
 }

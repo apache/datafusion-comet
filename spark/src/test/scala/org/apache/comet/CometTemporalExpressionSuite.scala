@@ -69,39 +69,10 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
 
     createTimestampTestData.createOrReplaceTempView("tbl")
 
-    // TODO test fails with non-UTC timezone
-    // https://github.com/apache/datafusion-comet/issues/2649
-    withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC") {
-      for (format <- supportedFormats) {
-        checkSparkAnswerAndOperator(s"SELECT c0, date_trunc('$format', c0) from tbl order by c0")
-      }
-      for (format <- unsupportedFormats) {
-        // Comet should fall back to Spark for unsupported or invalid formats
-        checkSparkAnswerAndFallbackReason(
-          s"SELECT c0, date_trunc('$format', c0) from tbl order by c0",
-          s"Format $format is not supported")
-      }
-      // Comet should fall back to Spark if format is not a literal
-      checkSparkAnswerAndFallbackReason(
-        "SELECT c0, date_trunc(fmt, c0) from tbl order by c0, fmt",
-        "Invalid format strings will throw an exception instead of returning NULL")
-    }
-  }
-
-  test("date_trunc (TruncTimestamp) - reading from Parquet") {
-    val supportedFormats = CometTruncTimestamp.supportedFormats
-    val unsupportedFormats = Seq("invalid")
-
-    withTempDir { path =>
-      createTimestampTestData.write.mode(SaveMode.Overwrite).parquet(path.toString)
-      spark.read.parquet(path.toString).createOrReplaceTempView("tbl")
-
-      // TODO test fails with non-UTC timezone
-      // https://github.com/apache/datafusion-comet/issues/2649
-      withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC") {
+    for (timezone <- Seq("UTC", "America/Los_Angeles", "Europe/London")) {
+      withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> timezone) {
         for (format <- supportedFormats) {
-          checkSparkAnswerAndOperator(
-            s"SELECT c0, date_trunc('$format', c0) from tbl order by c0")
+          checkSparkAnswerAndOperator(s"SELECT c0, date_trunc('$format', c0) from tbl order by c0")
         }
         for (format <- unsupportedFormats) {
           // Comet should fall back to Spark for unsupported or invalid formats
@@ -113,6 +84,35 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
         checkSparkAnswerAndFallbackReason(
           "SELECT c0, date_trunc(fmt, c0) from tbl order by c0, fmt",
           "Invalid format strings will throw an exception instead of returning NULL")
+      }
+    }
+  }
+
+  test("date_trunc (TruncTimestamp) - reading from Parquet") {
+    val supportedFormats = CometTruncTimestamp.supportedFormats
+    val unsupportedFormats = Seq("invalid")
+
+    withTempDir { path =>
+      createTimestampTestData.write.mode(SaveMode.Overwrite).parquet(path.toString)
+      spark.read.parquet(path.toString).createOrReplaceTempView("tbl")
+
+      for (timezone <- Seq("UTC", "America/Los_Angeles", "Europe/London")) {
+        withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> timezone) {
+          for (format <- supportedFormats) {
+            checkSparkAnswerAndOperator(
+              s"SELECT c0, date_trunc('$format', c0) from tbl order by c0")
+          }
+          for (format <- unsupportedFormats) {
+            // Comet should fall back to Spark for unsupported or invalid formats
+            checkSparkAnswerAndFallbackReason(
+              s"SELECT c0, date_trunc('$format', c0) from tbl order by c0",
+              s"Format $format is not supported")
+          }
+          // Comet should fall back to Spark if format is not a literal
+          checkSparkAnswerAndFallbackReason(
+            "SELECT c0, date_trunc(fmt, c0) from tbl order by c0, fmt",
+            "Invalid format strings will throw an exception instead of returning NULL")
+        }
       }
     }
   }
