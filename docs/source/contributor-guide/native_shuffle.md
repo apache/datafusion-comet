@@ -81,10 +81,18 @@ Native shuffle (`CometExchange`) is selected when all of the following condition
 └─────────────────────────────────────────────────────────────────────────────┘
                     │                                     │
                     ▼                                     ▼
-┌───────────────────────────────────┐   ┌───────────────────────────────────┐
-│ MultiPartitionShuffleRepartitioner │   │ SinglePartitionShufflePartitioner │
-│ (hash/range partitioning)          │   │ (single partition case)           │
-└───────────────────────────────────┘   └───────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────────────┐
+│                        Partitioner Selection                          │
+│  Controlled by spark.comet.exec.shuffle.partitionerMode               │
+├───────────────────────────┬───────────────────────────────────────────┤
+│  immediate (default)      │  buffered                                 │
+│  ImmediateModePartitioner │  MultiPartitionShuffleRepartitioner       │
+│  (hash/range/round-robin) │  (hash/range/round-robin)                 │
+│  Writes IPC blocks as     │  Buffers all rows in memory               │
+│  batches arrive            │  before writing                           │
+├───────────────────────────┴───────────────────────────────────────────┤
+│  SinglePartitionShufflePartitioner (single partition case)            │
+└───────────────────────────────────────────────────────────────────────┘
                     │
                     ▼
 ┌───────────────────────────────────┐
@@ -113,11 +121,13 @@ Native shuffle (`CometExchange`) is selected when all of the following condition
 
 ### Rust Side
 
-| File                    | Location                             | Description                                                                          |
-| ----------------------- | ------------------------------------ | ------------------------------------------------------------------------------------ |
-| `shuffle_writer.rs`     | `native/core/src/execution/shuffle/` | `ShuffleWriterExec` plan and partitioners. Main shuffle logic.                       |
-| `codec.rs`              | `native/core/src/execution/shuffle/` | `ShuffleBlockWriter` for Arrow IPC encoding with compression. Also handles decoding. |
-| `comet_partitioning.rs` | `native/core/src/execution/shuffle/` | `CometPartitioning` enum defining partition schemes (Hash, Range, Single).           |
+| File                    | Location                           | Description                                                                                                           |
+| ----------------------- | ---------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `shuffle_writer.rs`     | `native/shuffle/src/`              | `ShuffleWriterExec` plan. Selects partitioner based on `immediate_mode` flag.                                         |
+| `immediate_mode.rs`     | `native/shuffle/src/partitioners/` | `ImmediateModePartitioner`. Scatter-writes rows into per-partition Arrow builders and flushes IPC blocks immediately. |
+| `multi_partition.rs`    | `native/shuffle/src/partitioners/` | `MultiPartitionShuffleRepartitioner`. Buffers all rows in memory, then writes partitions.                             |
+| `codec.rs`              | `native/shuffle/src/`              | `ShuffleBlockWriter` for Arrow IPC encoding with compression. Also handles decoding.                                  |
+| `comet_partitioning.rs` | `native/shuffle/src/`              | `CometPartitioning` enum defining partition schemes (Hash, Range, Single).                                            |
 
 ## Data Flow
 
@@ -129,23 +139,32 @@ Native shuffle (`CometExchange`) is selected when all of the following condition
 
 2. **Native execution**: `CometExec.getCometIterator()` executes the plan in Rust.
 
-3. **Partitioning**: `ShuffleWriterExec` receives batches and routes to the appropriate partitioner:
-   - `MultiPartitionShuffleRepartitioner`: For hash/range/round-robin partitioning
-   - `SinglePartitionShufflePartitioner`: For single partition (simpler path)
+3. **Partitioning**: `ShuffleWriterExec` receives batches and routes to the appropriate partitioner
+   based on the `partitionerMode` configuration:
+   - **Immediate mode** (`ImmediateModePartitioner`): For hash/range/round-robin partitioning.
+     As each batch arrives, rows are scattered into per-partition Arrow array builders. When a
+     partition's builder reaches the target batch size, it is flushed as a compressed Arrow IPC
+     block directly to the output stream. This keeps memory usage proportional to the number of
+     partitions times the batch size, rather than proportional to the total input size.
 
-4. **Buffering and spilling**: The partitioner buffers rows per partition. When memory pressure
-   exceeds the threshold, partitions spill to temporary files.
+   - **Buffered mode** (`MultiPartitionShuffleRepartitioner`): For hash/range/round-robin
+     partitioning. Buffers all input `RecordBatch`es in memory, then partitions and writes
+     them in a single pass. When memory pressure exceeds the threshold, partitions spill to
+     temporary files.
 
-5. **Encoding**: `ShuffleBlockWriter` encodes each partition's data as compressed Arrow IPC:
+   - `SinglePartitionShufflePartitioner`: For single partition (simpler path, used regardless
+     of partitioner mode).
+
+4. **Encoding**: `ShuffleBlockWriter` encodes each partition's data as compressed Arrow IPC:
    - Writes compression type header
    - Writes field count header
    - Writes compressed IPC stream
 
-6. **Output files**: Two files are produced:
+5. **Output files**: Two files are produced:
    - **Data file**: Concatenated partition data
    - **Index file**: Array of 8-byte little-endian offsets marking partition boundaries
 
-7. **Commit**: Back in JVM, `CometNativeShuffleWriter` reads the index file to get partition
+6. **Commit**: Back in JVM, `CometNativeShuffleWriter` reads the index file to get partition
    lengths and commits via Spark's `IndexShuffleBlockResolver`.
 
 ### Read Path
@@ -201,10 +220,27 @@ sizes.
 
 ## Memory Management
 
-Native shuffle uses DataFusion's memory management with spilling support:
+Native shuffle uses DataFusion's memory management. The memory characteristics differ
+between the two partitioner modes:
 
-- **Memory pool**: Tracks memory usage across the shuffle operation.
-- **Spill threshold**: When buffered data exceeds the threshold, partitions spill to disk.
+### Immediate Mode
+
+Immediate mode keeps memory usage low by writing data to disk as it arrives:
+
+- **Per-partition builders**: Each partition has a set of Arrow array builders sized to the
+  target batch size. When a builder fills up, it is flushed as a compressed IPC block.
+- **Memory footprint**: Proportional to `num_partitions × batch_size`, independent of total
+  input size.
+- **Spilling**: When memory pressure is detected via DataFusion's `MemoryConsumer` trait, all
+  partition buffers are flushed to disk regardless of how full they are.
+
+### Buffered Mode
+
+Buffered mode holds all input data in memory before writing:
+
+- **Buffered batches**: All incoming `RecordBatch`es are accumulated in a `Vec`.
+- **Spill threshold**: When buffered data exceeds the memory threshold, partitions spill to
+  temporary files on disk.
 - **Per-partition spilling**: Each partition has its own spill file. Multiple spills for a
   partition are concatenated when writing the final output.
 - **Scratch space**: Reusable buffers for partition ID computation to reduce allocations.
@@ -232,14 +268,15 @@ independently compressed, allowing parallel decompression during reads.
 
 ## Configuration
 
-| Config                                            | Default | Description                              |
-| ------------------------------------------------- | ------- | ---------------------------------------- |
-| `spark.comet.exec.shuffle.enabled`                | `true`  | Enable Comet shuffle                     |
-| `spark.comet.exec.shuffle.mode`                   | `auto`  | Shuffle mode: `native`, `jvm`, or `auto` |
-| `spark.comet.exec.shuffle.compression.codec`      | `zstd`  | Compression codec                        |
-| `spark.comet.exec.shuffle.compression.zstd.level` | `1`     | Zstd compression level                   |
-| `spark.comet.shuffle.write.buffer.size`           | `1MB`   | Write buffer size                        |
-| `spark.comet.columnar.shuffle.batch.size`         | `8192`  | Target rows per batch                    |
+| Config                                            | Default     | Description                                 |
+| ------------------------------------------------- | ----------- | ------------------------------------------- |
+| `spark.comet.exec.shuffle.enabled`                | `true`      | Enable Comet shuffle                        |
+| `spark.comet.exec.shuffle.mode`                   | `auto`      | Shuffle mode: `native`, `jvm`, or `auto`    |
+| `spark.comet.exec.shuffle.partitionerMode`        | `immediate` | Partitioner mode: `immediate` or `buffered` |
+| `spark.comet.exec.shuffle.compression.codec`      | `zstd`      | Compression codec                           |
+| `spark.comet.exec.shuffle.compression.zstd.level` | `1`         | Zstd compression level                      |
+| `spark.comet.shuffle.write.buffer.size`           | `1MB`       | Write buffer size                           |
+| `spark.comet.columnar.shuffle.batch.size`         | `8192`      | Target rows per batch                       |
 
 ## Comparison with JVM Shuffle
 
