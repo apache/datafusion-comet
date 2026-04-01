@@ -258,7 +258,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 memory_limit_per_task,
             )?;
             let memory_pool =
-                create_memory_pool(&memory_pool_config, task_memory_manager, task_attempt_id);
+                create_memory_pool(&memory_pool_config, task_memory_manager, task_attempt_id, None);
 
             let memory_pool = if logging_memory_pool {
                 Arc::new(LoggingMemoryPool::new(task_attempt_id as u64, memory_pool))

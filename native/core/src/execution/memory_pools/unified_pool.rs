@@ -23,6 +23,7 @@ use std::{
     },
 };
 
+use super::spill::SpillState;
 use crate::{errors::CometResult, jvm_bridge::JVMClasses};
 use datafusion::{
     common::{resources_datafusion_err, DataFusionError},
@@ -38,12 +39,14 @@ pub struct CometUnifiedMemoryPool {
     task_memory_manager_handle: Arc<GlobalRef>,
     used: AtomicUsize,
     task_attempt_id: i64,
+    spill_state: Arc<SpillState>,
 }
 
 impl Debug for CometUnifiedMemoryPool {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         f.debug_struct("CometUnifiedMemoryPool")
             .field("used", &self.used.load(Relaxed))
+            .field("spill_pressure", &self.spill_state.pressure())
             .finish()
     }
 }
@@ -52,11 +55,13 @@ impl CometUnifiedMemoryPool {
     pub fn new(
         task_memory_manager_handle: Arc<GlobalRef>,
         task_attempt_id: i64,
+        spill_state: Arc<SpillState>,
     ) -> CometUnifiedMemoryPool {
         Self {
             task_memory_manager_handle,
             task_attempt_id,
             used: AtomicUsize::new(0),
+            spill_state,
         }
     }
 
@@ -116,10 +121,21 @@ impl MemoryPool for CometUnifiedMemoryPool {
                 self.task_attempt_id
             );
         }
+        if self.spill_state.pressure() > 0 {
+            self.spill_state.record_freed(size);
+        }
     }
 
     fn try_grow(&self, _: &MemoryReservation, additional: usize) -> Result<(), DataFusionError> {
         if additional > 0 {
+            if self.spill_state.pressure() > 0 {
+                return Err(resources_datafusion_err!(
+                    "Task {} denied {} bytes due to spill pressure. Reserved: {}",
+                    self.task_attempt_id,
+                    additional,
+                    self.reserved()
+                ));
+            }
             let acquired = self.acquire_from_spark(additional)?;
             // If the number of bytes we acquired is less than the requested, return an error,
             // and hopefully will trigger spilling from the caller side.
