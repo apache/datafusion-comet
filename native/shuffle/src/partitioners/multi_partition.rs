@@ -35,7 +35,7 @@ use itertools::Itertools;
 use std::fmt;
 use std::fmt::{Debug, Formatter};
 use std::fs::{File, OpenOptions};
-use std::io::{BufReader, BufWriter, Seek, Write};
+use std::io::{BufWriter, Seek, Write};
 use std::sync::Arc;
 use tokio::time::Instant;
 
@@ -587,7 +587,9 @@ impl ShufflePartitioner for MultiPartitionShuffleRepartitioner {
                 // if we wrote a spill file for this partition then copy the
                 // contents into the shuffle file
                 if let Some(spill_path) = self.partition_writers[i].path() {
-                    let mut spill_file = BufReader::new(File::open(spill_path)?);
+                    // Use raw File handle (not BufReader) so that std::io::copy
+                    // can use copy_file_range/sendfile for zero-copy on Linux.
+                    let mut spill_file = File::open(spill_path)?;
                     let mut write_timer = self.metrics.write_time.timer();
                     std::io::copy(&mut spill_file, &mut output_data)?;
                     write_timer.stop();
