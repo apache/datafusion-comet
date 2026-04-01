@@ -209,14 +209,10 @@ impl SortMergeJoinStream {
                         self.state = JoinState::PollStreamed;
                     } else if self.buffered_pending.is_none() && !self.buffered_exhausted {
                         self.state = JoinState::PollBuffered;
-                    } else if self.streamed_exhausted && self.buffered_exhausted {
-                        self.state = JoinState::DrainUnmatched;
                     } else if self.streamed_exhausted {
                         self.state = JoinState::DrainUnmatched;
-                    } else if self.buffered_exhausted {
-                        // Streamed has data but buffered is done.
-                        self.state = JoinState::Comparing;
                     } else {
+                        // Have streamed data; compare regardless of buffered state.
                         self.state = JoinState::Comparing;
                     }
                 }
@@ -845,12 +841,12 @@ impl SortMergeJoinStream {
     ) -> Result<RecordBatch> {
         if pair_indices.is_empty() {
             // Return an empty batch with the correct schema.
-            let schema = self.spill_manager.schema().clone();
+            let schema = Arc::clone(self.spill_manager.schema());
             return Ok(RecordBatch::new_empty(schema));
         }
 
         // Group indices by batch_idx, then take rows and concatenate.
-        let schema = self.spill_manager.schema().clone();
+        let schema = Arc::clone(self.spill_manager.schema());
         let num_cols = schema.fields().len();
         let mut result_columns: Vec<Vec<ArrayRef>> = vec![Vec::new(); num_cols];
 
