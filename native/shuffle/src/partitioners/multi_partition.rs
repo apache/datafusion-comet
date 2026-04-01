@@ -35,7 +35,7 @@ use itertools::Itertools;
 use std::fmt;
 use std::fmt::{Debug, Formatter};
 use std::fs::{File, OpenOptions};
-use std::io::{BufReader, BufWriter, Seek, Write};
+use std::io::{BufWriter, Seek, Write};
 use std::sync::Arc;
 use tokio::time::Instant;
 
@@ -398,7 +398,6 @@ impl MultiPartitionShuffleRepartitioner {
         partition_row_indices: &[u32],
         partition_starts: &[u32],
     ) -> datafusion::common::Result<()> {
-        let start_time = Instant::now();
         let mut mem_growth: usize = input.get_array_memory_size();
         let buffered_partition_idx = self.buffered_batches.len() as u32;
         self.buffered_batches.push(input);
@@ -427,7 +426,6 @@ impl MultiPartitionShuffleRepartitioner {
             let after_size = indices.allocated_size();
             mem_growth += after_size.saturating_sub(before_size);
         }
-        self.metrics.memcopy_time.add_duration(start_time.elapsed());
 
         if self.reservation.try_grow(mem_growth).is_err() {
             self.spill()?;
@@ -436,14 +434,12 @@ impl MultiPartitionShuffleRepartitioner {
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn shuffle_write_partition(
         partition_iter: &mut PartitionedBatchIterator,
         shuffle_block_writer: &mut ShuffleBlockWriter,
         output_data: &mut BufWriter<File>,
         encode_time: &Time,
         write_time: &Time,
-        coalesce_time: &Time,
         write_buffer_size: usize,
         batch_size: usize,
     ) -> datafusion::common::Result<()> {
@@ -455,9 +451,9 @@ impl MultiPartitionShuffleRepartitioner {
         );
         for batch in partition_iter {
             let batch = batch?;
-            buf_batch_writer.write(&batch, encode_time, write_time, coalesce_time)?;
+            buf_batch_writer.write(&batch, encode_time, write_time)?;
         }
-        buf_batch_writer.flush(encode_time, write_time, coalesce_time)?;
+        buf_batch_writer.flush(encode_time, write_time)?;
         Ok(())
     }
 
@@ -510,8 +506,7 @@ impl MultiPartitionShuffleRepartitioner {
 
             for partition_id in 0..num_output_partitions {
                 let partition_writer = &mut self.partition_writers[partition_id];
-                let mut iter =
-                    partitioned_batches.produce(partition_id, &self.metrics.interleave_time);
+                let mut iter = partitioned_batches.produce(partition_id);
                 spilled_bytes += partition_writer.spill(
                     &mut iter,
                     &self.runtime,
@@ -587,22 +582,22 @@ impl ShufflePartitioner for MultiPartitionShuffleRepartitioner {
                 // if we wrote a spill file for this partition then copy the
                 // contents into the shuffle file
                 if let Some(spill_path) = self.partition_writers[i].path() {
-                    let mut spill_file = BufReader::new(File::open(spill_path)?);
+                    // Use raw File handle (not BufReader) so that std::io::copy
+                    // can use copy_file_range/sendfile for zero-copy on Linux.
+                    let mut spill_file = File::open(spill_path)?;
                     let mut write_timer = self.metrics.write_time.timer();
                     std::io::copy(&mut spill_file, &mut output_data)?;
                     write_timer.stop();
                 }
 
                 // Write in memory batches to output data file
-                let mut partition_iter =
-                    partitioned_batches.produce(i, &self.metrics.interleave_time);
+                let mut partition_iter = partitioned_batches.produce(i);
                 Self::shuffle_write_partition(
                     &mut partition_iter,
                     &mut self.shuffle_block_writer,
                     &mut output_data,
                     &self.metrics.encode_time,
                     &self.metrics.write_time,
-                    &self.metrics.coalesce_time,
                     self.write_buffer_size,
                     self.batch_size,
                 )?;

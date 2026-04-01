@@ -618,7 +618,6 @@ mod test {
         let codec = CompressionCodec::Lz4Frame;
         let encode_time = Time::default();
         let write_time = Time::default();
-        let coalesce_time = Time::default();
 
         // Write with coalescing (batch_size=8192)
         let mut coalesced_output = Vec::new();
@@ -631,13 +630,9 @@ mod test {
                 8192,
             );
             for batch in &small_batches {
-                buf_writer
-                    .write(batch, &encode_time, &write_time, &coalesce_time)
-                    .unwrap();
+                buf_writer.write(batch, &encode_time, &write_time).unwrap();
             }
-            buf_writer
-                .flush(&encode_time, &write_time, &coalesce_time)
-                .unwrap();
+            buf_writer.flush(&encode_time, &write_time).unwrap();
         }
 
         // Write without coalescing (batch_size=1)
@@ -651,13 +646,9 @@ mod test {
                 1,
             );
             for batch in &small_batches {
-                buf_writer
-                    .write(batch, &encode_time, &write_time, &coalesce_time)
-                    .unwrap();
+                buf_writer.write(batch, &encode_time, &write_time).unwrap();
             }
-            buf_writer
-                .flush(&encode_time, &write_time, &coalesce_time)
-                .unwrap();
+            buf_writer.flush(&encode_time, &write_time).unwrap();
         }
 
         // Coalesced output should be smaller due to fewer IPC schema blocks

@@ -26,7 +26,7 @@ of the [Apache DataFusion Comet] subproject.
 
 ## Shuffle Benchmark Tool
 
-A standalone benchmark binary (`shuffle_bench`) is included for profiling shuffle write and read
+A standalone benchmark binary (`shuffle_bench`) is included for profiling shuffle write
 performance outside of Spark. It streams input data directly from Parquet files.
 
 ### Basic usage
@@ -51,12 +51,10 @@ cargo run --release --features shuffle-bench --bin shuffle_bench -- \
 | `--zstd-level`           | `1`                        | Zstd compression level (1–22)                                |
 | `--batch-size`           | `8192`                     | Batch size for reading Parquet data                          |
 | `--memory-limit`         | _(none)_                   | Memory limit in bytes; triggers spilling when exceeded       |
-| `--max-buffered-batches` | `0`                        | Max batches to buffer before spilling (0 = memory-pool-only) |
 | `--write-buffer-size`    | `1048576`                  | Write buffer size in bytes                                   |
 | `--limit`                | `0`                        | Limit rows processed per iteration (0 = no limit)            |
 | `--iterations`           | `1`                        | Number of timed iterations                                   |
 | `--warmup`               | `0`                        | Number of warmup iterations before timing                    |
-| `--read-back`            | `false`                    | Also benchmark reading back the shuffle output               |
 | `--output-dir`           | `/tmp/comet_shuffle_bench` | Directory for temporary shuffle output files                 |
 
 ### Profiling with flamegraph
