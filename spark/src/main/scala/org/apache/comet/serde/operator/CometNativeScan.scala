@@ -146,7 +146,7 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
 
       // Extract object store options from first file (S3 configs apply to all files in scan)
       var firstPartition: Option[PartitionedFile] = None
-      val filePartitions = scan.getFilePartitions()
+      val filePartitions = scan.planner.getFilePartitions()
       firstPartition = filePartitions.flatMap(_.files.headOption).headOption
 
       val partitionSchema = schema2Proto(scan.relation.partitionSchema.fields)
@@ -205,6 +205,6 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
   }
 
   override def createExec(nativeOp: Operator, op: CometScanExec): CometNativeExec = {
-    CometNativeScanExec(nativeOp, op.wrapped, op.session, op)
+    CometNativeScanExec(nativeOp, op.wrapped, op.session, op.planner)
   }
 }
