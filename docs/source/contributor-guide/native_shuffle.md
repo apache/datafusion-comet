@@ -121,13 +121,13 @@ Native shuffle (`CometExchange`) is selected when all of the following condition
 
 ### Rust Side
 
-| File                    | Location                           | Description                                                                                                           |
-| ----------------------- | ---------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| `shuffle_writer.rs`     | `native/shuffle/src/`              | `ShuffleWriterExec` plan. Selects partitioner based on `immediate_mode` flag.                                         |
+| File                    | Location                           | Description                                                                                                                            |
+| ----------------------- | ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `shuffle_writer.rs`     | `native/shuffle/src/`              | `ShuffleWriterExec` plan. Selects partitioner based on `immediate_mode` flag.                                                          |
 | `immediate_mode.rs`     | `native/shuffle/src/partitioners/` | `ImmediateModePartitioner`. Scatter-writes rows into per-partition Arrow builders and flushes IPC blocks to in-memory buffers eagerly. |
-| `multi_partition.rs`    | `native/shuffle/src/partitioners/` | `MultiPartitionShuffleRepartitioner`. Buffers all rows in memory, then writes partitions.                             |
-| `codec.rs`              | `native/shuffle/src/`              | `ShuffleBlockWriter` for Arrow IPC encoding with compression. Also handles decoding.                                  |
-| `comet_partitioning.rs` | `native/shuffle/src/`              | `CometPartitioning` enum defining partition schemes (Hash, Range, Single).                                            |
+| `multi_partition.rs`    | `native/shuffle/src/partitioners/` | `MultiPartitionShuffleRepartitioner`. Buffers all rows in memory, then writes partitions.                                              |
+| `codec.rs`              | `native/shuffle/src/`              | `ShuffleBlockWriter` for Arrow IPC encoding with compression. Also handles decoding.                                                   |
+| `comet_partitioning.rs` | `native/shuffle/src/`              | `CometPartitioning` enum defining partition schemes (Hash, Range, Single).                                                             |
 
 ## Data Flow
 
