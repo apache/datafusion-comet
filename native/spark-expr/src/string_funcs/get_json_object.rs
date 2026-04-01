@@ -23,6 +23,14 @@ use datafusion::logical_expr::ColumnarValue;
 use serde_json::Value;
 use std::sync::Arc;
 
+/// Extracts a string from a ScalarValue, returning Ok(None) for null values.
+fn scalar_to_str(scalar: &ScalarValue, arg_name: &str) -> DataFusionResult<Option<String>> {
+    match scalar {
+        ScalarValue::Utf8(s) | ScalarValue::LargeUtf8(s) => Ok(s.clone()),
+        _ => exec_err!("get_json_object {arg_name} must be a string"),
+    }
+}
+
 /// Spark-compatible `get_json_object` function.
 ///
 /// Extracts a JSON value from a JSON string using a JSONPath expression.
@@ -44,16 +52,15 @@ pub fn spark_get_json_object(args: &[ColumnarValue]) -> DataFusionResult<Columna
     match (&args[0], &args[1]) {
         // Column json, scalar path (most common case)
         (ColumnarValue::Array(json_array), ColumnarValue::Scalar(path_scalar)) => {
-            let path_str = match path_scalar {
-                ScalarValue::Utf8(Some(p)) | ScalarValue::LargeUtf8(Some(p)) => p.as_str(),
-                ScalarValue::Utf8(None) | ScalarValue::LargeUtf8(None) => {
+            let path_str = match scalar_to_str(path_scalar, "path")? {
+                Some(p) => p,
+                None => {
                     let null_array: ArrayRef = Arc::new(StringArray::new_null(json_array.len()));
                     return Ok(ColumnarValue::Array(null_array));
                 }
-                _ => return exec_err!("get_json_object path must be a string"),
             };
 
-            let parsed_path = match parse_json_path(path_str) {
+            let parsed_path = match parse_json_path(&path_str) {
                 Some(p) => p,
                 None => {
                     let null_array: ArrayRef = Arc::new(StringArray::new_null(json_array.len()));
@@ -80,27 +87,21 @@ pub fn spark_get_json_object(args: &[ColumnarValue]) -> DataFusionResult<Columna
         }
         // Scalar json, scalar path
         (ColumnarValue::Scalar(json_scalar), ColumnarValue::Scalar(path_scalar)) => {
-            let json_str = match json_scalar {
-                ScalarValue::Utf8(Some(s)) | ScalarValue::LargeUtf8(Some(s)) => s.as_str(),
-                ScalarValue::Utf8(None) | ScalarValue::LargeUtf8(None) => {
-                    return Ok(ColumnarValue::Scalar(ScalarValue::Utf8(None)));
-                }
-                _ => return exec_err!("get_json_object json must be a string"),
+            let json_str = match scalar_to_str(json_scalar, "json")? {
+                Some(s) => s,
+                None => return Ok(ColumnarValue::Scalar(ScalarValue::Utf8(None))),
             };
-            let path_str = match path_scalar {
-                ScalarValue::Utf8(Some(p)) | ScalarValue::LargeUtf8(Some(p)) => p.as_str(),
-                ScalarValue::Utf8(None) | ScalarValue::LargeUtf8(None) => {
-                    return Ok(ColumnarValue::Scalar(ScalarValue::Utf8(None)));
-                }
-                _ => return exec_err!("get_json_object path must be a string"),
-            };
-
-            let parsed_path = match parse_json_path(path_str) {
+            let path_str = match scalar_to_str(path_scalar, "path")? {
                 Some(p) => p,
                 None => return Ok(ColumnarValue::Scalar(ScalarValue::Utf8(None))),
             };
 
-            let result = evaluate_path(json_str, &parsed_path);
+            let parsed_path = match parse_json_path(&path_str) {
+                Some(p) => p,
+                None => return Ok(ColumnarValue::Scalar(ScalarValue::Utf8(None))),
+            };
+
+            let result = evaluate_path(&json_str, &parsed_path);
             Ok(ColumnarValue::Scalar(ScalarValue::Utf8(result)))
         }
         // Column json, column path
@@ -532,5 +533,58 @@ mod tests {
         let json = r#"{"a":1,"b":2,"c":3}"#;
         let path = parse_json_path("$.*").unwrap();
         assert_eq!(evaluate_path(json, &path), None);
+    }
+
+    #[test]
+    fn test_unicode_field_names() {
+        let json = r#"{"名前":"太郎","年齢":25}"#;
+        let path = parse_json_path("$.名前").unwrap();
+        assert_eq!(evaluate_path(json, &path), Some("太郎".to_string()));
+    }
+
+    #[test]
+    fn test_unicode_values() {
+        let json = r#"{"greeting":"こんにちは世界"}"#;
+        let path = parse_json_path("$.greeting").unwrap();
+        assert_eq!(
+            evaluate_path(json, &path),
+            Some("こんにちは世界".to_string())
+        );
+    }
+
+    #[test]
+    fn test_unicode_emoji() {
+        let json = r#"{"emoji":"🎉🚀","nested":{"flag":"🇺🇸"}}"#;
+        let path = parse_json_path("$.emoji").unwrap();
+        assert_eq!(evaluate_path(json, &path), Some("🎉🚀".to_string()));
+        let path = parse_json_path("$.nested.flag").unwrap();
+        assert_eq!(evaluate_path(json, &path), Some("🇺🇸".to_string()));
+    }
+
+    #[test]
+    fn test_unicode_bracket_notation() {
+        let json = r#"{"键":"值"}"#;
+        let path = parse_json_path("$['键']").unwrap();
+        assert_eq!(evaluate_path(json, &path), Some("值".to_string()));
+    }
+
+    #[test]
+    fn test_unicode_mixed_scripts() {
+        let json = r#"{"data":"café résumé naïve"}"#;
+        let path = parse_json_path("$.data").unwrap();
+        assert_eq!(
+            evaluate_path(json, &path),
+            Some("café résumé naïve".to_string())
+        );
+    }
+
+    #[test]
+    fn test_unicode_wildcard() {
+        let json = r#"[{"名":"Alice"},{"名":"太郎"}]"#;
+        let path = parse_json_path("$[*].名").unwrap();
+        assert_eq!(
+            evaluate_path(json, &path),
+            Some(r#"["Alice","太郎"]"#.to_string())
+        );
     }
 }

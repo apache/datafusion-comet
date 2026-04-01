@@ -155,3 +155,27 @@ SELECT get_json_object('{"price":8.95}', '$.price')
 -- object key ordering preserved in output
 query
 SELECT get_json_object('{"z":1,"a":2}', '$')
+
+-- unicode field names and values
+query
+SELECT get_json_object('{"名前":"太郎","年齢":25}', '$.名前')
+
+-- unicode values
+query
+SELECT get_json_object('{"greeting":"こんにちは世界"}', '$.greeting')
+
+-- emoji in values
+query
+SELECT get_json_object('{"emoji":"🎉🚀"}', '$.emoji')
+
+-- unicode bracket notation
+query
+SELECT get_json_object('{"键":"值"}', '$[''键'']')
+
+-- mixed scripts (Latin with accents)
+query
+SELECT get_json_object('{"data":"café résumé naïve"}', '$.data')
+
+-- unicode in wildcard results
+query
+SELECT get_json_object('[{"名":"Alice"},{"名":"太郎"}]', '$[*].名')
