@@ -65,6 +65,8 @@ enum JoinState {
     OutputReady,
     /// Drain unmatched rows after one side is exhausted.
     DrainUnmatched,
+    /// Drain remaining buffered rows as null-joined (Full/Right outer).
+    DrainBuffered,
     /// No more output.
     Exhausted,
 }
@@ -487,6 +489,83 @@ impl SortMergeJoinStream {
                     // Drain remaining streamed rows as null-joined (for outer/anti).
                     self.drain_remaining()?;
 
+                    if self.output_builder.has_pending() {
+                        let batch = self.flush_output()?;
+                        // For Full/Right outer, we may still need to drain buffered rows.
+                        if matches!(self.join_type, JoinType::Full | JoinType::Right) {
+                            self.state = JoinState::DrainBuffered;
+                        } else {
+                            self.state = JoinState::Exhausted;
+                        }
+                        if batch.num_rows() > 0 {
+                            self.metrics.output_rows.add(batch.num_rows());
+                            self.metrics.output_batches.add(1);
+                            return Poll::Ready(Some(Ok(batch)));
+                        }
+                    }
+                    if matches!(self.join_type, JoinType::Full | JoinType::Right) {
+                        self.state = JoinState::DrainBuffered;
+                    } else {
+                        self.state = JoinState::Exhausted;
+                    }
+                }
+
+                JoinState::DrainBuffered => {
+                    // For Full/Right outer: emit remaining buffered rows as null-joined.
+                    // First, clear the match group so we can reuse it for pending rows.
+                    self.match_group.clear(&mut self.reservation);
+
+                    // Add buffered_pending rows to the match group.
+                    if let Some((batch, arrays)) = self.buffered_pending.take() {
+                        let num_rows = batch.num_rows();
+                        self.match_group.add_batch(
+                            batch,
+                            arrays,
+                            true, // track matched status
+                            &mut self.reservation,
+                            &self.spill_manager,
+                            &self.metrics,
+                        )?;
+                        // All these rows are unmatched.
+                        for row_idx in 0..num_rows {
+                            self.output_builder.add_buffered_null_join(0, row_idx);
+                        }
+                    }
+
+                    // Poll remaining buffered batches.
+                    if !self.buffered_exhausted {
+                        match self.buffered_input.poll_next_unpin(cx) {
+                            Poll::Ready(Some(Ok(batch))) => {
+                                if batch.num_rows() > 0 {
+                                    let num_rows = batch.num_rows();
+                                    let join_arrays =
+                                        evaluate_join_keys(&batch, &self.buffered_join_exprs)?;
+                                    let batch_idx = self.match_group.batches.len();
+                                    self.match_group.add_batch(
+                                        batch,
+                                        join_arrays,
+                                        true,
+                                        &mut self.reservation,
+                                        &self.spill_manager,
+                                        &self.metrics,
+                                    )?;
+                                    for row_idx in 0..num_rows {
+                                        self.output_builder
+                                            .add_buffered_null_join(batch_idx, row_idx);
+                                    }
+                                }
+                                // Stay in DrainBuffered to poll more.
+                                continue;
+                            }
+                            Poll::Ready(Some(Err(e))) => return Poll::Ready(Some(Err(e))),
+                            Poll::Ready(None) => {
+                                self.buffered_exhausted = true;
+                            }
+                            Poll::Pending => return Poll::Pending,
+                        }
+                    }
+
+                    // All buffered rows drained. Flush and finish.
                     if self.output_builder.has_pending() {
                         let batch = self.flush_output()?;
                         self.state = JoinState::Exhausted;

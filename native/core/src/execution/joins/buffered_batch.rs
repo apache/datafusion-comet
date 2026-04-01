@@ -95,15 +95,17 @@ impl BufferedBatch {
             BatchState::Spilled(file) => {
                 let reader =
                     spill_manager.read_spill_as_stream(file.clone(), None)?;
-                let rt = tokio::runtime::Handle::current();
-                let batches = rt.block_on(async {
-                    use futures::StreamExt;
-                    let mut stream = reader;
-                    let mut batches = Vec::new();
-                    while let Some(batch) = stream.next().await {
-                        batches.push(batch?);
-                    }
-                    Ok::<_, DataFusionError>(batches)
+                let batches = tokio::task::block_in_place(|| {
+                    let rt = tokio::runtime::Handle::current();
+                    rt.block_on(async {
+                        use futures::StreamExt;
+                        let mut stream = reader;
+                        let mut batches = Vec::new();
+                        while let Some(batch) = stream.next().await {
+                            batches.push(batch?);
+                        }
+                        Ok::<_, DataFusionError>(batches)
+                    })
                 })?;
                 // A single batch was spilled per file, but concatenate just in case.
                 if batches.len() == 1 {

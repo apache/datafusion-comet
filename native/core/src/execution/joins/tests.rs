@@ -179,3 +179,180 @@ async fn test_inner_join_empty_result() -> Result<()> {
     assert_eq!(total_row_count(&result), 0);
     Ok(())
 }
+
+// --- Outer join tests ---
+
+#[tokio::test]
+async fn test_left_outer_join() -> Result<()> {
+    let left = make_sorted_batches(
+        left_schema(),
+        vec![Some(1), Some(2), Some(3)],
+        vec![Some("a"), Some("b"), Some("c")],
+    );
+    let right = make_sorted_batches(
+        right_schema(),
+        vec![Some(2), Some(4)],
+        vec![Some("x"), Some("y")],
+    );
+
+    let result = execute_join(JoinType::Left, left, right).await?;
+    assert_eq!(total_row_count(&result), 3);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_left_outer_null_keys() -> Result<()> {
+    let left = make_sorted_batches(
+        left_schema(),
+        vec![None, Some(1)],
+        vec![Some("a"), Some("b")],
+    );
+    let right = make_sorted_batches(
+        right_schema(),
+        vec![Some(1), Some(2)],
+        vec![Some("x"), Some("y")],
+    );
+
+    let result = execute_join(JoinType::Left, left, right).await?;
+    assert_eq!(total_row_count(&result), 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_right_outer_join() -> Result<()> {
+    let left = make_sorted_batches(
+        left_schema(),
+        vec![Some(1), Some(3)],
+        vec![Some("a"), Some("b")],
+    );
+    let right = make_sorted_batches(
+        right_schema(),
+        vec![Some(1), Some(2), Some(3)],
+        vec![Some("x"), Some("y"), Some("z")],
+    );
+
+    let result = execute_join(JoinType::Right, left, right).await?;
+    assert_eq!(total_row_count(&result), 3);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_full_outer_join() -> Result<()> {
+    let left = make_sorted_batches(
+        left_schema(),
+        vec![Some(1), Some(2)],
+        vec![Some("a"), Some("b")],
+    );
+    let right = make_sorted_batches(
+        right_schema(),
+        vec![Some(2), Some(3)],
+        vec![Some("x"), Some("y")],
+    );
+
+    let result = execute_join(JoinType::Full, left, right).await?;
+    assert_eq!(total_row_count(&result), 3);
+    Ok(())
+}
+
+// --- Semi/Anti join tests ---
+
+#[tokio::test]
+async fn test_left_semi_join() -> Result<()> {
+    let left = make_sorted_batches(
+        left_schema(),
+        vec![Some(1), Some(2), Some(3)],
+        vec![Some("a"), Some("b"), Some("c")],
+    );
+    let right = make_sorted_batches(
+        right_schema(),
+        vec![Some(2), Some(3), Some(4)],
+        vec![Some("x"), Some("y"), Some("z")],
+    );
+
+    let result = execute_join(JoinType::LeftSemi, left, right).await?;
+    assert_eq!(total_row_count(&result), 2);
+    // Semi join should only output left columns
+    assert_eq!(result[0].num_columns(), 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_left_anti_join() -> Result<()> {
+    let left = make_sorted_batches(
+        left_schema(),
+        vec![Some(1), Some(2), Some(3)],
+        vec![Some("a"), Some("b"), Some("c")],
+    );
+    let right = make_sorted_batches(
+        right_schema(),
+        vec![Some(2), Some(4)],
+        vec![Some("x"), Some("y")],
+    );
+
+    let result = execute_join(JoinType::LeftAnti, left, right).await?;
+    assert_eq!(total_row_count(&result), 2);
+    Ok(())
+}
+
+// --- Spill test ---
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_inner_join_with_spill() -> Result<()> {
+    use datafusion::execution::runtime_env::RuntimeEnvBuilder;
+
+    let l_schema = left_schema();
+    let r_schema = right_schema();
+
+    let left_batches = make_sorted_batches(
+        l_schema.clone(),
+        vec![Some(1), Some(1), Some(1), Some(2), Some(2)],
+        vec![Some("a"), Some("b"), Some("c"), Some("d"), Some("e")],
+    );
+    let right_batches = make_sorted_batches(
+        r_schema.clone(),
+        vec![Some(1), Some(1), Some(1), Some(2)],
+        vec![Some("w"), Some("x"), Some("y"), Some("z")],
+    );
+
+    let left_exec = Arc::new(DataSourceExec::new(Arc::new(
+        MemorySourceConfig::try_new(&[left_batches], l_schema, None)?,
+    )));
+    let right_exec = Arc::new(DataSourceExec::new(Arc::new(
+        MemorySourceConfig::try_new(&[right_batches], r_schema, None)?,
+    )));
+
+    let on = vec![(
+        Arc::new(datafusion::physical_expr::expressions::Column::new("l_key", 0))
+            as Arc<dyn datafusion::physical_expr::PhysicalExpr>,
+        Arc::new(datafusion::physical_expr::expressions::Column::new("r_key", 0))
+            as Arc<dyn datafusion::physical_expr::PhysicalExpr>,
+    )];
+
+    let join = CometSortMergeJoinExec::try_new(
+        left_exec,
+        right_exec,
+        on,
+        None,
+        JoinType::Inner,
+        vec![SortOptions::default()],
+        NullEquality::NullEqualsNothing,
+    )?;
+
+    let config = datafusion::prelude::SessionConfig::new().with_batch_size(2);
+    let runtime = Arc::new(
+        RuntimeEnvBuilder::new()
+            .with_memory_limit(1024, 1.0)
+            .build()?,
+    );
+    let ctx = SessionContext::new_with_config_rt(config, runtime);
+    let task_ctx = ctx.task_ctx();
+    let mut stream = join.execute(0, task_ctx)?;
+
+    let mut results = Vec::new();
+    while let Some(batch) = stream.next().await {
+        results.push(batch?);
+    }
+    // 3*3 for key=1 + 2*1 for key=2 = 11
+    assert_eq!(total_row_count(&results), 11);
+    Ok(())
+}
