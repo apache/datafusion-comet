@@ -96,6 +96,11 @@ pub(super) fn build_filter_candidate_batch(
             let (batch, indices) = match col_idx.side {
                 JoinSide::Left => (streamed_batch, streamed_indices),
                 JoinSide::Right => (buffered_batch, buffered_indices),
+                JoinSide::None => {
+                    return internal_err!(
+                        "unexpected JoinSide::None in join filter column index"
+                    );
+                }
             };
             let column = batch.column(col_idx.index);
             Ok(take(column.as_ref(), indices, None)?)
