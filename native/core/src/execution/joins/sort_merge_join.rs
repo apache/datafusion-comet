@@ -21,19 +21,23 @@ use std::sync::Arc;
 
 use arrow::compute::SortOptions;
 use arrow::datatypes::SchemaRef;
-use datafusion::common::Result;
+use datafusion::common::{NullEquality, Result};
+use datafusion::execution::memory_pool::MemoryConsumer;
+use datafusion::execution::TaskContext;
+use datafusion::logical_expr::JoinType;
 use datafusion::physical_expr::EquivalenceProperties;
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::joins::utils::{build_join_schema, check_join_is_valid, JoinFilter};
 use datafusion::physical_plan::joins::JoinOn;
-use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, MetricsSet};
+use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, MetricsSet, SpillMetrics};
+use datafusion::physical_plan::spill::SpillManager;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
     SendableRecordBatchStream,
 };
-use datafusion::common::NullEquality;
-use datafusion::execution::TaskContext;
-use datafusion::logical_expr::JoinType;
+
+use super::metrics::SortMergeJoinMetrics;
+use super::sort_merge_join_stream::SortMergeJoinStream;
 
 /// A Comet-specific sort merge join operator that replaces DataFusion's
 /// `SortMergeJoinExec` with Spark-compatible semantics.
@@ -142,10 +146,67 @@ impl ExecutionPlan for CometSortMergeJoinExec {
 
     fn execute(
         &self,
-        _partition: usize,
-        _context: Arc<TaskContext>,
+        partition: usize,
+        context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
-        unimplemented!("SortMergeJoinStream not yet implemented")
+        // Determine streamed/buffered assignment based on join type.
+        // RightOuter: right is streamed, left is buffered.
+        // All others: left is streamed, right is buffered.
+        let (streamed_child, buffered_child, streamed_join_exprs, buffered_join_exprs) =
+            match self.join_type {
+                JoinType::Right => (
+                    Arc::clone(&self.right),
+                    Arc::clone(&self.left),
+                    self.join_on.iter().map(|(_, r)| Arc::clone(r)).collect::<Vec<_>>(),
+                    self.join_on.iter().map(|(l, _)| Arc::clone(l)).collect::<Vec<_>>(),
+                ),
+                _ => (
+                    Arc::clone(&self.left),
+                    Arc::clone(&self.right),
+                    self.join_on.iter().map(|(l, _)| Arc::clone(l)).collect::<Vec<_>>(),
+                    self.join_on.iter().map(|(_, r)| Arc::clone(r)).collect::<Vec<_>>(),
+                ),
+            };
+
+        let streamed_schema = streamed_child.schema();
+        let buffered_schema = buffered_child.schema();
+
+        let streamed_input = streamed_child.execute(partition, Arc::clone(&context))?;
+        let buffered_input = buffered_child.execute(partition, Arc::clone(&context))?;
+
+        // Create memory reservation.
+        let reservation = MemoryConsumer::new("CometSortMergeJoin")
+            .with_can_spill(true)
+            .register(context.memory_pool());
+
+        // Create spill manager.
+        let spill_metrics = SpillMetrics::new(&self.metrics, partition);
+        let spill_manager = SpillManager::new(
+            context.runtime_env(),
+            spill_metrics,
+            Arc::clone(&buffered_schema),
+        );
+
+        let metrics = SortMergeJoinMetrics::new(&self.metrics, partition);
+        let target_batch_size = context.session_config().batch_size();
+
+        Ok(Box::pin(SortMergeJoinStream::try_new(
+            Arc::clone(&self.schema),
+            streamed_schema,
+            buffered_schema,
+            self.join_type,
+            self.null_equality,
+            self.join_filter.clone(),
+            self.sort_options.clone(),
+            streamed_input,
+            buffered_input,
+            streamed_join_exprs,
+            buffered_join_exprs,
+            reservation,
+            spill_manager,
+            metrics,
+            target_batch_size,
+        )?))
     }
 
     fn metrics(&self) -> Option<MetricsSet> {
