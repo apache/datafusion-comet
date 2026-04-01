@@ -180,6 +180,10 @@ fn resolve_local_datetime(tz: &Tz, local_datetime: NaiveDateTime) -> DateTime<Tz
         LocalResult::Ambiguous(dt, _) => dt,
         LocalResult::None => {
             // Interpret nonexistent local time by shifting from one hour earlier.
+            // This handles the common case of DST transitions with 1-hour gaps.
+            // NOTE: Some timezones have non-standard DST transitions (e.g., Australia/Lord_Howe
+            // has a 30-minute shift). This function assumes a 1-hour gap and may not correctly
+            // handle those cases.
             let shift = TimeDelta::hours(1);
             let before = tz.from_local_datetime(&(local_datetime - shift)).unwrap();
             before + shift
@@ -359,16 +363,13 @@ mod tests {
 
     #[test]
     fn test_timestamp_ntz_to_timestamp_handles_non_existent_time() {
-        let result = std::panic::catch_unwind(|| {
-            timestamp_ntz_to_timestamp(
-                array_containing("2024-03-31 01:30:00"),
-                "Europe/London",
-                None,
-            )
-        });
+        let output = timestamp_ntz_to_timestamp(
+            array_containing("2024-03-31 01:30:00"),
+            "Europe/London",
+            None,
+        )
+        .unwrap();
 
-        assert!(result.is_ok());
-        let output = result.unwrap().unwrap();
         assert_eq!(
             as_primitive_array::<TimestampMicrosecondType>(&output).value(0),
             micros_for("2024-03-31 01:30:00")
@@ -377,16 +378,13 @@ mod tests {
 
     #[test]
     fn test_timestamp_ntz_to_timestamp_handles_ambiguous_time() {
-        let result = std::panic::catch_unwind(|| {
-            timestamp_ntz_to_timestamp(
-                array_containing("2024-10-27 01:30:00"),
-                "Europe/London",
-                None,
-            )
-        });
+        let output = timestamp_ntz_to_timestamp(
+            array_containing("2024-10-27 01:30:00"),
+            "Europe/London",
+            None,
+        )
+        .unwrap();
 
-        assert!(result.is_ok());
-        let output = result.unwrap().unwrap();
         assert_eq!(
             as_primitive_array::<TimestampMicrosecondType>(&output).value(0),
             micros_for("2024-10-27 00:30:00")
