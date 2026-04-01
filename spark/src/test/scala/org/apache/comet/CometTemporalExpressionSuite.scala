@@ -489,4 +489,22 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
         dummyDF.selectExpr("unix_date(cast(NULL as date))"))
     }
   }
+
+  test("cast TimestampNTZ to Timestamp - DST edge cases") {
+    val data = Seq(
+      Row(java.time.LocalDateTime.parse("2024-03-31T01:30:00")), // Spring forward (Europe/London)
+      Row(java.time.LocalDateTime.parse("2024-10-27T01:30:00")) // Fall back (Europe/London)
+    )
+    val schema = StructType(Seq(StructField("ts_ntz", DataTypes.TimestampNTZType, true)))
+    spark
+      .createDataFrame(spark.sparkContext.parallelize(data), schema)
+      .createOrReplaceTempView("dst_tbl")
+
+    withSQLConf(
+      SQLConf.SESSION_LOCAL_TIMEZONE.key -> "Europe/London",
+      "spark.comet.expression.Cast.allowIncompatible" -> "true") {
+      checkSparkAnswerAndOperator(
+        "SELECT ts_ntz, CAST(ts_ntz AS TIMESTAMP) FROM dst_tbl ORDER BY ts_ntz")
+    }
+  }
 }
