@@ -27,7 +27,7 @@ under the License.
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Profiling Native Code &#8212; Apache DataFusion Comet  documentation</title>
+    <title>Profiling &#8212; Apache DataFusion Comet  documentation</title>
   
   
   
@@ -61,7 +61,7 @@ under the License.
     <script src="../_static/documentation_options.js?v=5929fcd5"></script>
     <script src="../_static/doctools.js?v=9a2dae69"></script>
     <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script>DOCUMENTATION_OPTIONS.pagename = 'contributor-guide/profiling_native_code';</script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'contributor-guide/profiling';</script>
     <script async="true" defer="true" src="https://buttons.github.io/buttons.js"></script>
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
@@ -366,7 +366,7 @@ under the License.
 <li class="toctree-l2"><a class="reference internal" href="adding_a_new_operator.html">Adding a New Operator</a></li>
 <li class="toctree-l2"><a class="reference internal" href="adding_a_new_expression.html">Adding a New Expression</a></li>
 <li class="toctree-l2"><a class="reference internal" href="tracing.html">Tracing</a></li>
-<li class="toctree-l2 current"><a class="current reference internal" href="#">Profiling Native Code</a></li>
+<li class="toctree-l2 current"><a class="current reference internal" href="#">Profiling</a></li>
 <li class="toctree-l2"><a class="reference internal" href="spark-sql-tests.html">Spark SQL Tests</a></li>
 <li class="toctree-l2"><a class="reference internal" href="iceberg-spark-tests.html">Iceberg Spark Tests</a></li>
 <li class="toctree-l2"><a class="reference internal" href="sql-file-tests.html">SQL File Tests</a></li>
@@ -422,7 +422,7 @@ under the License.
     
     <li class="breadcrumb-item"><a href="index.html" class="nav-link">Comet Contributor Guide</a></li>
     
-    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Profiling Native Code</span></li>
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Profiling</span></li>
   </ul>
 </nav>
 </div>
@@ -457,12 +457,243 @@ KIND, either express or implied.  See the License for the
 specific language governing permissions and limitations
 under the License.
 -->
-<section id="profiling-native-code">
-<h1>Profiling Native Code<a class="headerlink" href="#profiling-native-code" title="Link to this heading">#</a></h1>
-<p>We use <code class="docutils literal notranslate"><span class="pre">cargo</span> <span class="pre">bench</span></code> to run benchmarks to measure the performance of individual operators and expressions
-and <a class="reference external" href="https://github.com/flamegraph-rs/flamegraph">cargo-flamegraph</a> for profiling.</p>
+<section id="profiling">
+<h1>Profiling<a class="headerlink" href="#profiling" title="Link to this heading">#</a></h1>
+<p>This guide covers profiling tools and techniques for Comet development. Because Comet
+spans JVM (Spark) and native (Rust) code, choosing the right profiler depends on what
+you are investigating.</p>
+<section id="choosing-a-profiling-tool">
+<h2>Choosing a Profiling Tool<a class="headerlink" href="#choosing-a-profiling-tool" title="Link to this heading">#</a></h2>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Tool</p></th>
+<th class="head"><p>JVM Frames</p></th>
+<th class="head"><p>Native (Rust) Frames</p></th>
+<th class="head"><p>Install Required</p></th>
+<th class="head"><p>Best For</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><a class="reference external" href="https://github.com/async-profiler/async-profiler">async-profiler</a></p></td>
+<td><p>Yes</p></td>
+<td><p>Yes</p></td>
+<td><p>Yes</p></td>
+<td><p>End-to-end Comet profiling with unified JVM + native flame graphs</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference external" href="https://docs.oracle.com/en/java/javase/17/jfapi/">Java Flight Recorder (JFR)</a></p></td>
+<td><p>Yes</p></td>
+<td><p>No</p></td>
+<td><p>No (JDK 11+)</p></td>
+<td><p>GC pressure, allocations, thread contention, I/O — any JVM-level investigation</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference external" href="https://github.com/flamegraph-rs/flamegraph">cargo-flamegraph</a></p></td>
+<td><p>No</p></td>
+<td><p>Yes</p></td>
+<td><p>Yes</p></td>
+<td><p>Isolated Rust micro-benchmarks without a JVM</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><strong>Recommendation:</strong> Use <strong>async-profiler</strong> when profiling Spark queries with Comet enabled —
+it is the only tool that shows both JVM and native frames in a single flame graph.
+Use <strong>JFR</strong> when you need rich JVM event data (GC, locks, I/O) without installing anything.
+Use <strong>cargo-flamegraph</strong> when working on native code in isolation via <code class="docutils literal notranslate"><span class="pre">cargo</span> <span class="pre">bench</span></code>.</p>
+</section>
+<section id="profiling-with-async-profiler">
+<h2>Profiling with async-profiler<a class="headerlink" href="#profiling-with-async-profiler" title="Link to this heading">#</a></h2>
+<p><a class="reference external" href="https://github.com/async-profiler/async-profiler">async-profiler</a> captures JVM and
+native code in the same flame graph by using Linux <code class="docutils literal notranslate"><span class="pre">perf_events</span></code> or macOS <code class="docutils literal notranslate"><span class="pre">dtrace</span></code>.
+This makes it ideal for profiling Comet, where hot paths cross the JNI boundary between
+Spark and Rust.</p>
+<section id="installation">
+<h3>Installation<a class="headerlink" href="#installation" title="Link to this heading">#</a></h3>
+<p>Download a release from the <a class="reference external" href="https://github.com/async-profiler/async-profiler/releases">async-profiler releases page</a>:</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="c1"># Linux x64</span>
+wget<span class="w"> </span>https://github.com/async-profiler/async-profiler/releases/download/v3.0/async-profiler-3.0-linux-x64.tar.gz
+mkdir<span class="w"> </span>-p<span class="w"> </span><span class="nv">$HOME</span>/opt/async-profiler
+tar<span class="w"> </span>xzf<span class="w"> </span>async-profiler-3.0-linux-x64.tar.gz<span class="w"> </span>-C<span class="w"> </span><span class="nv">$HOME</span>/opt/async-profiler<span class="w"> </span>--strip-components<span class="o">=</span><span class="m">1</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">ASYNC_PROFILER_HOME</span><span class="o">=</span><span class="nv">$HOME</span>/opt/async-profiler
+</pre></div>
+</div>
+<p>On macOS, download the appropriate <code class="docutils literal notranslate"><span class="pre">macos</span></code> archive instead.</p>
+</section>
+<section id="attaching-to-a-running-spark-application">
+<h3>Attaching to a running Spark application<a class="headerlink" href="#attaching-to-a-running-spark-application" title="Link to this heading">#</a></h3>
+<p>Use the <code class="docutils literal notranslate"><span class="pre">asprof</span></code> launcher to attach to a running JVM by PID:</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="c1"># Start CPU profiling for 30 seconds, output an HTML flame graph</span>
+<span class="nv">$ASYNC_PROFILER_HOME</span>/bin/asprof<span class="w"> </span>-d<span class="w"> </span><span class="m">30</span><span class="w"> </span>-f<span class="w"> </span>flamegraph.html<span class="w"> </span>&lt;pid&gt;
+
+<span class="c1"># Wall-clock profiling</span>
+<span class="nv">$ASYNC_PROFILER_HOME</span>/bin/asprof<span class="w"> </span>-e<span class="w"> </span>wall<span class="w"> </span>-d<span class="w"> </span><span class="m">30</span><span class="w"> </span>-f<span class="w"> </span>flamegraph.html<span class="w"> </span>&lt;pid&gt;
+
+<span class="c1"># Start profiling (no duration limit), then stop later</span>
+<span class="nv">$ASYNC_PROFILER_HOME</span>/bin/asprof<span class="w"> </span>start<span class="w"> </span>-e<span class="w"> </span>cpu<span class="w"> </span>&lt;pid&gt;
+<span class="c1"># ... run your query ...</span>
+<span class="nv">$ASYNC_PROFILER_HOME</span>/bin/asprof<span class="w"> </span>stop<span class="w"> </span>-f<span class="w"> </span>flamegraph.html<span class="w"> </span>&lt;pid&gt;
+</pre></div>
+</div>
+<p>Find the Spark driver/executor PID with <code class="docutils literal notranslate"><span class="pre">jps</span></code> or <code class="docutils literal notranslate"><span class="pre">pgrep</span> <span class="pre">-f</span> <span class="pre">SparkSubmit</span></code>.</p>
+</section>
+<section id="passing-profiler-flags-via-spark-submit">
+<h3>Passing profiler flags via spark-submit<a class="headerlink" href="#passing-profiler-flags-via-spark-submit" title="Link to this heading">#</a></h3>
+<p>You can also attach async-profiler as a Java agent at JVM startup:</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>spark-submit<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--conf<span class="w"> </span><span class="s2">&quot;spark.driver.extraJavaOptions=-agentpath:</span><span class="nv">$ASYNC_PROFILER_HOME</span><span class="s2">/lib/libasyncProfiler.so=start,event=cpu,file=driver.html,tree&quot;</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--conf<span class="w"> </span><span class="s2">&quot;spark.executor.extraJavaOptions=-agentpath:</span><span class="nv">$ASYNC_PROFILER_HOME</span><span class="s2">/lib/libasyncProfiler.so=start,event=cpu,file=executor.html,tree&quot;</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>...
+</pre></div>
+</div>
+<p>Note: If the executor is distributed then <code class="docutils literal notranslate"><span class="pre">executor.html</span></code> will be written on the remote node.</p>
+</section>
+<section id="choosing-an-event-type">
+<h3>Choosing an event type<a class="headerlink" href="#choosing-an-event-type" title="Link to this heading">#</a></h3>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Event</p></th>
+<th class="head"><p>When to use</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">cpu</span></code></p></td>
+<td><p>Default. Shows where CPU cycles are spent. Use for compute-bound queries.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">wall</span></code></p></td>
+<td><p>Wall-clock time including blocked/waiting threads. Use to find JNI boundary overhead and I/O stalls.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">alloc</span></code></p></td>
+<td><p>Heap allocation profiling. Use to find JVM allocation hotspots around Arrow FFI and columnar conversions.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">lock</span></code></p></td>
+<td><p>Lock contention. Use when threads appear to spend time waiting on synchronized blocks or locks.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<section id="output-formats">
+<h3>Output formats<a class="headerlink" href="#output-formats" title="Link to this heading">#</a></h3>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Format</p></th>
+<th class="head"><p>Flag</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>HTML flame graph</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">-f</span> <span class="pre">out.html</span></code></p></td>
+<td><p>Interactive flame graph (default and most useful).</p></td>
+</tr>
+<tr class="row-odd"><td><p>JFR</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">-f</span> <span class="pre">out.jfr</span></code></p></td>
+<td><p>Viewable in JDK Mission Control or IntelliJ.</p></td>
+</tr>
+<tr class="row-even"><td><p>Collapsed stacks</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">-f</span> <span class="pre">out.collapsed</span></code></p></td>
+<td><p>For use with Brendan Gregg’s FlameGraph scripts.</p></td>
+</tr>
+<tr class="row-odd"><td><p>Text summary</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">-o</span> <span class="pre">text</span></code></p></td>
+<td><p>Flat list of hot methods.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<section id="platform-notes">
+<h3>Platform notes<a class="headerlink" href="#platform-notes" title="Link to this heading">#</a></h3>
+<p><strong>Linux:</strong> Set <code class="docutils literal notranslate"><span class="pre">perf_event_paranoid</span></code> to allow profiling:</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>sudo<span class="w"> </span>sysctl<span class="w"> </span>kernel.perf_event_paranoid<span class="o">=</span><span class="m">1</span><span class="w">   </span><span class="c1"># or 0 / -1 for full access</span>
+sudo<span class="w"> </span>sysctl<span class="w"> </span>kernel.kptr_restrict<span class="o">=</span><span class="m">0</span><span class="w">          </span><span class="c1"># optional: enable kernel symbols</span>
+</pre></div>
+</div>
+<p><strong>macOS:</strong> async-profiler uses <code class="docutils literal notranslate"><span class="pre">dtrace</span></code> on macOS, which requires running as root or
+with SIP (System Integrity Protection) adjustments. Native Rust frames may not be fully
+resolved on macOS; Linux is recommended for the most complete flame graphs.</p>
+</section>
+<section id="integrated-benchmark-profiling">
+<h3>Integrated benchmark profiling<a class="headerlink" href="#integrated-benchmark-profiling" title="Link to this heading">#</a></h3>
+<p>The TPC benchmark scripts in <code class="docutils literal notranslate"><span class="pre">benchmarks/tpc/</span></code> have built-in async-profiler support via
+the <code class="docutils literal notranslate"><span class="pre">--async-profiler</span></code> flag. See <a class="reference external" href="https://github.com/apache/datafusion-comet/blob/main/benchmarks/tpc/README.md">benchmarks/tpc/README.md</a>
+for details.</p>
+</section>
+</section>
+<section id="profiling-with-java-flight-recorder">
+<h2>Profiling with Java Flight Recorder<a class="headerlink" href="#profiling-with-java-flight-recorder" title="Link to this heading">#</a></h2>
+<p><a class="reference external" href="https://docs.oracle.com/en/java/javase/17/jfapi/">Java Flight Recorder (JFR)</a> is built
+into JDK 11+ and collects detailed JVM runtime data with very low overhead. It does not
+see native Rust frames, but is excellent for diagnosing GC pressure, thread contention,
+I/O latency, and JVM-level allocation patterns.</p>
+<section id="adding-jfr-flags-to-spark-submit">
+<h3>Adding JFR flags to spark-submit<a class="headerlink" href="#adding-jfr-flags-to-spark-submit" title="Link to this heading">#</a></h3>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>spark-submit<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--conf<span class="w"> </span><span class="s2">&quot;spark.driver.extraJavaOptions=-XX:StartFlightRecording=duration=120s,filename=driver.jfr&quot;</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--conf<span class="w"> </span><span class="s2">&quot;spark.executor.extraJavaOptions=-XX:StartFlightRecording=duration=120s,filename=executor.jfr&quot;</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>...
+</pre></div>
+</div>
+<p>For continuous recording without a fixed duration:</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>--conf<span class="w"> </span><span class="s2">&quot;spark.driver.extraJavaOptions=-XX:StartFlightRecording=disk=true,maxsize=500m,filename=driver.jfr&quot;</span>
+</pre></div>
+</div>
+<p>You can also start and stop recording dynamically using <code class="docutils literal notranslate"><span class="pre">jcmd</span></code>:</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>jcmd<span class="w"> </span>&lt;pid&gt;<span class="w"> </span>JFR.start<span class="w"> </span><span class="nv">name</span><span class="o">=</span>profile
+<span class="c1"># ... run your query ...</span>
+jcmd<span class="w"> </span>&lt;pid&gt;<span class="w"> </span>JFR.stop<span class="w"> </span><span class="nv">name</span><span class="o">=</span>profile<span class="w"> </span><span class="nv">filename</span><span class="o">=</span>recording.jfr
+</pre></div>
+</div>
+</section>
+<section id="viewing-recordings">
+<h3>Viewing recordings<a class="headerlink" href="#viewing-recordings" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p><strong><a class="reference external" href="https://jdk.java.net/jmc/">JDK Mission Control (JMC)</a></strong> — the most comprehensive viewer.
+Shows flame graphs, GC timeline, thread activity, I/O, and allocation hot spots.</p></li>
+<li><p><strong>IntelliJ IDEA</strong> — open <code class="docutils literal notranslate"><span class="pre">.jfr</span></code> files directly in the built-in profiler
+(Run → Open Profiler Snapshot).</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">jfr</span></code> CLI</strong> — quick summaries from the command line: <code class="docutils literal notranslate"><span class="pre">jfr</span> <span class="pre">summary</span> <span class="pre">driver.jfr</span></code></p></li>
+</ul>
+</section>
+<section id="useful-jfr-events-for-comet-debugging">
+<h3>Useful JFR events for Comet debugging<a class="headerlink" href="#useful-jfr-events-for-comet-debugging" title="Link to this heading">#</a></h3>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Event</p></th>
+<th class="head"><p>What it shows</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">jdk.GCPhasePause</span></code></p></td>
+<td><p>GC pause durations — helps identify memory pressure from Arrow allocations.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">jdk.ObjectAllocationInNewTLAB</span></code> / <code class="docutils literal notranslate"><span class="pre">jdk.ObjectAllocationOutsideTLAB</span></code></p></td>
+<td><p>Allocation hot spots.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">jdk.JavaMonitorWait</span></code> / <code class="docutils literal notranslate"><span class="pre">jdk.ThreadPark</span></code></p></td>
+<td><p>Thread contention and lock waits.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">jdk.FileRead</span></code> / <code class="docutils literal notranslate"><span class="pre">jdk.FileWrite</span></code> / <code class="docutils literal notranslate"><span class="pre">jdk.SocketRead</span></code></p></td>
+<td><p>I/O latency.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">jdk.ExecutionSample</span></code></p></td>
+<td><p>CPU sampling (method profiling, similar to a flame graph).</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<section id="id1">
+<h3>Integrated benchmark profiling<a class="headerlink" href="#id1" title="Link to this heading">#</a></h3>
+<p>The TPC benchmark scripts support <code class="docutils literal notranslate"><span class="pre">--jfr</span></code> for automatic JFR recording during benchmark
+runs. See <a class="reference external" href="https://github.com/apache/datafusion-comet/blob/main/benchmarks/tpc/README.md">benchmarks/tpc/README.md</a> for details.</p>
+</section>
+</section>
+<section id="profiling-native-code-with-cargo-flamegraph">
+<h2>Profiling Native Code with cargo-flamegraph<a class="headerlink" href="#profiling-native-code-with-cargo-flamegraph" title="Link to this heading">#</a></h2>
+<p>For profiling Rust code in isolation — without a JVM — use <code class="docutils literal notranslate"><span class="pre">cargo</span> <span class="pre">bench</span></code> with
+<a class="reference external" href="https://github.com/flamegraph-rs/flamegraph">cargo-flamegraph</a>.</p>
 <section id="running-micro-benchmarks-with-cargo-bench">
-<h2>Running micro benchmarks with cargo bench<a class="headerlink" href="#running-micro-benchmarks-with-cargo-bench" title="Link to this heading">#</a></h2>
+<h3>Running micro benchmarks with cargo bench<a class="headerlink" href="#running-micro-benchmarks-with-cargo-bench" title="Link to this heading">#</a></h3>
 <p>When implementing a new operator or expression, it is good practice to add a new microbenchmark under <code class="docutils literal notranslate"><span class="pre">core/benches</span></code>.</p>
 <p>It is often easiest to copy an existing benchmark and modify it for the new operator or expression. It is also
 necessary to add a new section to the <code class="docutils literal notranslate"><span class="pre">Cargo.toml</span></code> file, such as:</p>
@@ -471,7 +702,7 @@ necessary to add a new section to the <code class="docutils literal notranslate"
 <span class="n">harness</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">false</span>
 </pre></div>
 </div>
-<p>These benchmarks are useful when for comparing performance between releases or between feature branches and the
+<p>These benchmarks are useful for comparing performance between releases or between feature branches and the
 main branch to help prevent regressions in performance when adding new features or fixing bugs.</p>
 <p>Individual benchmarks can be run by name with the following command.</p>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>cargo<span class="w"> </span>bench<span class="w"> </span>shuffle_writer
@@ -489,7 +720,7 @@ main branch to help prevent regressions in performance when adding new features 
 </div>
 </section>
 <section id="profiling-with-cargo-flamegraph">
-<h2>Profiling with cargo-flamegraph<a class="headerlink" href="#profiling-with-cargo-flamegraph" title="Link to this heading">#</a></h2>
+<h3>Profiling with cargo-flamegraph<a class="headerlink" href="#profiling-with-cargo-flamegraph" title="Link to this heading">#</a></h3>
 <p>Install cargo-flamegraph:</p>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>cargo<span class="w"> </span>install<span class="w"> </span>flamegraph
 </pre></div>
@@ -515,6 +746,44 @@ running flamegraph.</p>
 <p>The generated flamegraph can now be opened in a browser that supports svg format.</p>
 <p>Here is the flamegraph for this example:</p>
 <p><img alt="flamegraph" src="../_images/flamegraph.png" /></p>
+</section>
+</section>
+<section id="tips-for-profiling-comet">
+<h2>Tips for Profiling Comet<a class="headerlink" href="#tips-for-profiling-comet" title="Link to this heading">#</a></h2>
+<section id="use-wall-clock-profiling-to-spot-jni-boundary-overhead">
+<h3>Use wall-clock profiling to spot JNI boundary overhead<a class="headerlink" href="#use-wall-clock-profiling-to-spot-jni-boundary-overhead" title="Link to this heading">#</a></h3>
+<p>When profiling Comet with async-profiler, <code class="docutils literal notranslate"><span class="pre">wall</span></code> mode is often more revealing than <code class="docutils literal notranslate"><span class="pre">cpu</span></code>
+because it captures time spent crossing the JNI boundary, waiting for native results,
+and blocked on I/O — none of which show up in CPU-only profiles.</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nv">$ASYNC_PROFILER_HOME</span>/bin/asprof<span class="w"> </span>-e<span class="w"> </span>wall<span class="w"> </span>-d<span class="w"> </span><span class="m">60</span><span class="w"> </span>-f<span class="w"> </span>wall-profile.html<span class="w"> </span>&lt;pid&gt;
+</pre></div>
+</div>
+</section>
+<section id="use-alloc-profiling-around-arrow-ffi">
+<h3>Use alloc profiling around Arrow FFI<a class="headerlink" href="#use-alloc-profiling-around-arrow-ffi" title="Link to this heading">#</a></h3>
+<p>JVM allocation profiling can identify hotspots in the Arrow FFI path where temporary
+objects are created during data transfer between JVM and native code:</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nv">$ASYNC_PROFILER_HOME</span>/bin/asprof<span class="w"> </span>-e<span class="w"> </span>alloc<span class="w"> </span>-d<span class="w"> </span><span class="m">60</span><span class="w"> </span>-f<span class="w"> </span>alloc-profile.html<span class="w"> </span>&lt;pid&gt;
+</pre></div>
+</div>
+<p>Look for allocations in <code class="docutils literal notranslate"><span class="pre">CometExecIterator</span></code>, <code class="docutils literal notranslate"><span class="pre">CometBatchIterator</span></code>, and Arrow vector
+classes.</p>
+</section>
+<section id="isolate-rust-only-performance-issues">
+<h3>Isolate Rust-only performance issues<a class="headerlink" href="#isolate-rust-only-performance-issues" title="Link to this heading">#</a></h3>
+<p>If a flame graph shows the hot path is entirely within native code, switch to
+<code class="docutils literal notranslate"><span class="pre">cargo-flamegraph</span></code> to get better symbol resolution and avoid JVM noise:</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nb">cd</span><span class="w"> </span>native
+cargo<span class="w"> </span>flamegraph<span class="w"> </span>--root<span class="w"> </span>--bench<span class="w"> </span>&lt;benchmark_name&gt;
+</pre></div>
+</div>
+</section>
+<section id="correlating-jvm-and-native-frames">
+<h3>Correlating JVM and native frames<a class="headerlink" href="#correlating-jvm-and-native-frames" title="Link to this heading">#</a></h3>
+<p>In async-profiler flame graphs, native Rust frames appear below JNI entry points like
+<code class="docutils literal notranslate"><span class="pre">Java_org_apache_comet_Native_*</span></code>. Look for these transition points to understand how
+time is split between Spark’s JVM code and Comet’s native execution.</p>
+</section>
 </section>
 </section>
 
