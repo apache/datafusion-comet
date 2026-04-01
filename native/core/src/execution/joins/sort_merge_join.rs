@@ -71,13 +71,14 @@ impl CometSortMergeJoinExec {
 
         check_join_is_valid(&left_schema, &right_schema, &join_on)?;
 
-        let (schema, _column_indices) =
-            build_join_schema(&left_schema, &right_schema, &join_type);
+        let (schema, _column_indices) = build_join_schema(&left_schema, &right_schema, &join_type);
         let schema = Arc::new(schema);
 
         let properties = PlanProperties::new(
             EquivalenceProperties::new(Arc::clone(&schema)),
-            Partitioning::UnknownPartitioning(left.properties().output_partitioning().partition_count()),
+            Partitioning::UnknownPartitioning(
+                left.properties().output_partitioning().partition_count(),
+            ),
             EmissionType::Incremental,
             Boundedness::Bounded,
         );
@@ -157,14 +158,26 @@ impl ExecutionPlan for CometSortMergeJoinExec {
                 JoinType::Right => (
                     Arc::clone(&self.right),
                     Arc::clone(&self.left),
-                    self.join_on.iter().map(|(_, r)| Arc::clone(r)).collect::<Vec<_>>(),
-                    self.join_on.iter().map(|(l, _)| Arc::clone(l)).collect::<Vec<_>>(),
+                    self.join_on
+                        .iter()
+                        .map(|(_, r)| Arc::clone(r))
+                        .collect::<Vec<_>>(),
+                    self.join_on
+                        .iter()
+                        .map(|(l, _)| Arc::clone(l))
+                        .collect::<Vec<_>>(),
                 ),
                 _ => (
                     Arc::clone(&self.left),
                     Arc::clone(&self.right),
-                    self.join_on.iter().map(|(l, _)| Arc::clone(l)).collect::<Vec<_>>(),
-                    self.join_on.iter().map(|(_, r)| Arc::clone(r)).collect::<Vec<_>>(),
+                    self.join_on
+                        .iter()
+                        .map(|(l, _)| Arc::clone(l))
+                        .collect::<Vec<_>>(),
+                    self.join_on
+                        .iter()
+                        .map(|(_, r)| Arc::clone(r))
+                        .collect::<Vec<_>>(),
                 ),
             };
 

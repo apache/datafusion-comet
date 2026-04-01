@@ -54,6 +54,7 @@ pub(super) struct OutputBuilder {
     /// Schema of the output record batch.
     output_schema: SchemaRef,
     /// Schema of the streamed (left) side.
+    #[allow(dead_code)]
     streamed_schema: SchemaRef,
     /// Schema of the buffered (right) side.
     buffered_schema: SchemaRef,
@@ -186,8 +187,7 @@ impl OutputBuilder {
         spill_manager: &SpillManager,
     ) -> Result<RecordBatch> {
         let streamed_columns = self.build_streamed_columns(streamed_batch)?;
-        let buffered_columns =
-            self.build_buffered_columns(match_group, spill_manager)?;
+        let buffered_columns = self.build_buffered_columns(match_group, spill_manager)?;
 
         let mut columns = streamed_columns;
         columns.extend(buffered_columns);
@@ -265,8 +265,7 @@ impl OutputBuilder {
 
         // Part 1: Matched pairs — gather from buffered batches
         if !self.indices.is_empty() {
-            let matched_part =
-                self.take_buffered_matched(col_idx, match_group, spill_manager)?;
+            let matched_part = self.take_buffered_matched(col_idx, match_group, spill_manager)?;
             parts.push(matched_part);
         }
 
@@ -290,8 +289,7 @@ impl OutputBuilder {
             return Ok(parts.into_iter().next().unwrap());
         }
 
-        let part_refs: Vec<&dyn arrow::array::Array> =
-            parts.iter().map(|a| a.as_ref()).collect();
+        let part_refs: Vec<&dyn arrow::array::Array> = parts.iter().map(|a| a.as_ref()).collect();
         Ok(concat(&part_refs)?)
     }
 
@@ -320,8 +318,7 @@ impl OutputBuilder {
             } else {
                 // Flush previous group
                 if let Some(batch_idx) = current_batch_idx {
-                    let batch =
-                        match_group.batches[batch_idx].get_batch(spill_manager)?;
+                    let batch = match_group.batches[batch_idx].get_batch(spill_manager)?;
                     let col = batch.column(col_idx);
                     let row_indices = UInt32Array::from(std::mem::take(&mut current_row_indices));
                     parts.push(take(col.as_ref(), &row_indices, None)?);
@@ -343,8 +340,7 @@ impl OutputBuilder {
             return Ok(parts.into_iter().next().unwrap());
         }
 
-        let part_refs: Vec<&dyn arrow::array::Array> =
-            parts.iter().map(|a| a.as_ref()).collect();
+        let part_refs: Vec<&dyn arrow::array::Array> = parts.iter().map(|a| a.as_ref()).collect();
         Ok(concat(&part_refs)?)
     }
 
@@ -387,8 +383,7 @@ impl OutputBuilder {
             return Ok(parts.into_iter().next().unwrap());
         }
 
-        let part_refs: Vec<&dyn arrow::array::Array> =
-            parts.iter().map(|a| a.as_ref()).collect();
+        let part_refs: Vec<&dyn arrow::array::Array> = parts.iter().map(|a| a.as_ref()).collect();
         Ok(concat(&part_refs)?)
     }
 }

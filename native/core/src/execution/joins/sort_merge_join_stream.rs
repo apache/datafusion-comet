@@ -199,10 +199,7 @@ impl SortMergeJoinStream {
     /// Drive the state machine, returning `Poll::Ready(Some(batch))` when a
     /// batch is available, `Poll::Ready(None)` when done, or `Poll::Pending`
     /// if waiting on input.
-    fn poll_next_inner(
-        &mut self,
-        cx: &mut Context<'_>,
-    ) -> Poll<Option<Result<RecordBatch>>> {
+    fn poll_next_inner(&mut self, cx: &mut Context<'_>) -> Poll<Option<Result<RecordBatch>>> {
         loop {
             match self.state {
                 JoinState::Init => {
@@ -249,37 +246,34 @@ impl SortMergeJoinStream {
                     }
                 }
 
-                JoinState::PollBuffered => {
-                    match self.buffered_input.poll_next_unpin(cx) {
-                        Poll::Ready(Some(Ok(batch))) => {
-                            if batch.num_rows() == 0 {
-                                continue;
-                            }
-                            self.metrics.input_batches.add(1);
-                            self.metrics.input_rows.add(batch.num_rows());
-                            let join_arrays =
-                                evaluate_join_keys(&batch, &self.buffered_join_exprs)?;
-                            self.buffered_pending = Some((batch, join_arrays));
-                            if self.streamed_batch.is_some() {
-                                self.state = JoinState::Comparing;
-                            } else if !self.streamed_exhausted {
-                                self.state = JoinState::PollStreamed;
-                            } else {
-                                self.state = JoinState::DrainUnmatched;
-                            }
+                JoinState::PollBuffered => match self.buffered_input.poll_next_unpin(cx) {
+                    Poll::Ready(Some(Ok(batch))) => {
+                        if batch.num_rows() == 0 {
+                            continue;
                         }
-                        Poll::Ready(Some(Err(e))) => return Poll::Ready(Some(Err(e))),
-                        Poll::Ready(None) => {
-                            self.buffered_exhausted = true;
-                            if self.streamed_batch.is_some() {
-                                self.state = JoinState::Comparing;
-                            } else {
-                                self.state = JoinState::DrainUnmatched;
-                            }
+                        self.metrics.input_batches.add(1);
+                        self.metrics.input_rows.add(batch.num_rows());
+                        let join_arrays = evaluate_join_keys(&batch, &self.buffered_join_exprs)?;
+                        self.buffered_pending = Some((batch, join_arrays));
+                        if self.streamed_batch.is_some() {
+                            self.state = JoinState::Comparing;
+                        } else if !self.streamed_exhausted {
+                            self.state = JoinState::PollStreamed;
+                        } else {
+                            self.state = JoinState::DrainUnmatched;
                         }
-                        Poll::Pending => return Poll::Pending,
                     }
-                }
+                    Poll::Ready(Some(Err(e))) => return Poll::Ready(Some(Err(e))),
+                    Poll::Ready(None) => {
+                        self.buffered_exhausted = true;
+                        if self.streamed_batch.is_some() {
+                            self.state = JoinState::Comparing;
+                        } else {
+                            self.state = JoinState::DrainUnmatched;
+                        }
+                    }
+                    Poll::Pending => return Poll::Pending,
+                },
 
                 JoinState::Comparing => {
                     // We have a streamed row. Compare its key against the
@@ -295,9 +289,7 @@ impl SortMergeJoinStream {
                         .any(|a| a.is_null(streamed_idx));
 
                     // For inner/semi joins, skip null keys entirely.
-                    if streamed_has_null
-                        && self.null_equality == NullEquality::NullEqualsNothing
-                    {
+                    if streamed_has_null && self.null_equality == NullEquality::NullEqualsNothing {
                         match self.join_type {
                             JoinType::Inner | JoinType::LeftSemi | JoinType::RightSemi => {
                                 self.advance_streamed()?;
@@ -309,8 +301,7 @@ impl SortMergeJoinStream {
                             | JoinType::Full
                             | JoinType::LeftAnti
                             | JoinType::RightAnti => {
-                                self.output_builder
-                                    .add_streamed_null_join(streamed_idx);
+                                self.output_builder.add_streamed_null_join(streamed_idx);
                                 self.advance_streamed()?;
                                 if self.output_builder.should_flush() {
                                     self.state = JoinState::OutputReady;
@@ -359,8 +350,7 @@ impl SortMergeJoinStream {
 
                     // Compare streamed key with buffered key.
                     let ordering = {
-                        let streamed_arrays =
-                            self.streamed_join_arrays.as_ref().unwrap();
+                        let streamed_arrays = self.streamed_join_arrays.as_ref().unwrap();
                         let (_buffered_batch, buffered_arrays) =
                             self.buffered_pending.as_ref().unwrap();
                         compare_join_arrays(
@@ -392,10 +382,8 @@ impl SortMergeJoinStream {
                             let (batch, arrays) = self.buffered_pending.take().unwrap();
                             if batch.num_rows() > 1 {
                                 let remaining = batch.slice(1, batch.num_rows() - 1);
-                                let remaining_arrays: Vec<ArrayRef> = arrays
-                                    .iter()
-                                    .map(|a| a.slice(1, a.len() - 1))
-                                    .collect();
+                                let remaining_arrays: Vec<ArrayRef> =
+                                    arrays.iter().map(|a| a.slice(1, a.len() - 1)).collect();
                                 self.buffered_pending = Some((remaining, remaining_arrays));
                                 // Re-compare with the next buffered row.
                                 self.state = JoinState::Comparing;
@@ -579,8 +567,7 @@ impl SortMergeJoinStream {
                 }
 
                 JoinState::Exhausted => {
-                    self.metrics
-                        .update_peak_mem(self.reservation.size());
+                    self.metrics.update_peak_mem(self.reservation.size());
                     return Poll::Ready(None);
                 }
             }
@@ -789,18 +776,10 @@ impl SortMergeJoinStream {
 
             // Build candidate batch for filter evaluation.
             let streamed_batch = self.streamed_batch.as_ref().unwrap();
-            let candidate_batch = self.build_filter_batch(
-                filter,
-                streamed_batch,
-                &pair_indices,
-            )?;
+            let candidate_batch = self.build_filter_batch(filter, streamed_batch, &pair_indices)?;
 
-            let filtered = apply_join_filter(
-                filter,
-                &candidate_batch,
-                &pair_indices,
-                &self.join_type,
-            )?;
+            let filtered =
+                apply_join_filter(filter, &candidate_batch, &pair_indices, &self.join_type)?;
 
             // Apply filtered results.
             for idx in &filtered.passed_indices {
@@ -850,15 +829,10 @@ impl SortMergeJoinStream {
             }
 
             let streamed_batch = self.streamed_batch.as_ref().unwrap();
-            let candidate_batch =
-                self.build_filter_batch(filter, streamed_batch, &pair_indices)?;
+            let candidate_batch = self.build_filter_batch(filter, streamed_batch, &pair_indices)?;
 
-            let filtered = apply_join_filter(
-                filter,
-                &candidate_batch,
-                &pair_indices,
-                &self.join_type,
-            )?;
+            let filtered =
+                apply_join_filter(filter, &candidate_batch, &pair_indices, &self.join_type)?;
 
             // Semi: emit the streamed row if any pair passed.
             if !filtered.passed_indices.is_empty() {
@@ -896,15 +870,10 @@ impl SortMergeJoinStream {
             }
 
             let streamed_batch = self.streamed_batch.as_ref().unwrap();
-            let candidate_batch =
-                self.build_filter_batch(filter, streamed_batch, &pair_indices)?;
+            let candidate_batch = self.build_filter_batch(filter, streamed_batch, &pair_indices)?;
 
-            let filtered = apply_join_filter(
-                filter,
-                &candidate_batch,
-                &pair_indices,
-                &self.join_type,
-            )?;
+            let filtered =
+                apply_join_filter(filter, &candidate_batch, &pair_indices, &self.join_type)?;
 
             // Anti: emit streamed rows that had no passing pair.
             for &si in &filtered.streamed_null_joins {
@@ -949,10 +918,7 @@ impl SortMergeJoinStream {
     }
 
     /// Collect all referenced buffered rows into a single batch.
-    fn collect_buffered_rows(
-        &self,
-        pair_indices: &[JoinIndex],
-    ) -> Result<RecordBatch> {
+    fn collect_buffered_rows(&self, pair_indices: &[JoinIndex]) -> Result<RecordBatch> {
         if pair_indices.is_empty() {
             // Return an empty batch with the correct schema.
             let schema = Arc::clone(self.spill_manager.schema());
@@ -1158,10 +1124,7 @@ fn find_key_boundary(
 impl Stream for SortMergeJoinStream {
     type Item = Result<RecordBatch>;
 
-    fn poll_next(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Option<Self::Item>> {
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let join_time = self.metrics.join_time.clone();
         let timer = join_time.timer();
         let result = self.poll_next_inner(cx);

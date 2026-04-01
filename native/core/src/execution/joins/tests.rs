@@ -68,18 +68,24 @@ async fn execute_join(
     let l_schema = left_batches[0].schema();
     let r_schema = right_batches[0].schema();
 
-    let left = Arc::new(DataSourceExec::new(Arc::new(
-        MemorySourceConfig::try_new(&[left_batches], l_schema, None)?,
-    )));
-    let right = Arc::new(DataSourceExec::new(Arc::new(
-        MemorySourceConfig::try_new(&[right_batches], r_schema, None)?,
-    )));
+    let left = Arc::new(DataSourceExec::new(Arc::new(MemorySourceConfig::try_new(
+        &[left_batches],
+        l_schema,
+        None,
+    )?)));
+    let right = Arc::new(DataSourceExec::new(Arc::new(MemorySourceConfig::try_new(
+        &[right_batches],
+        r_schema,
+        None,
+    )?)));
 
     let on = vec![(
-        Arc::new(datafusion::physical_expr::expressions::Column::new("l_key", 0))
-            as Arc<dyn datafusion::physical_expr::PhysicalExpr>,
-        Arc::new(datafusion::physical_expr::expressions::Column::new("r_key", 0))
-            as Arc<dyn datafusion::physical_expr::PhysicalExpr>,
+        Arc::new(datafusion::physical_expr::expressions::Column::new(
+            "l_key", 0,
+        )) as Arc<dyn datafusion::physical_expr::PhysicalExpr>,
+        Arc::new(datafusion::physical_expr::expressions::Column::new(
+            "r_key", 0,
+        )) as Arc<dyn datafusion::physical_expr::PhysicalExpr>,
     )];
 
     let join = CometSortMergeJoinExec::try_new(
@@ -304,28 +310,34 @@ async fn test_inner_join_with_spill() -> Result<()> {
     let r_schema = right_schema();
 
     let left_batches = make_sorted_batches(
-        l_schema.clone(),
+        Arc::clone(&l_schema),
         vec![Some(1), Some(1), Some(1), Some(2), Some(2)],
         vec![Some("a"), Some("b"), Some("c"), Some("d"), Some("e")],
     );
     let right_batches = make_sorted_batches(
-        r_schema.clone(),
+        Arc::clone(&r_schema),
         vec![Some(1), Some(1), Some(1), Some(2)],
         vec![Some("w"), Some("x"), Some("y"), Some("z")],
     );
 
-    let left_exec = Arc::new(DataSourceExec::new(Arc::new(
-        MemorySourceConfig::try_new(&[left_batches], l_schema, None)?,
-    )));
-    let right_exec = Arc::new(DataSourceExec::new(Arc::new(
-        MemorySourceConfig::try_new(&[right_batches], r_schema, None)?,
-    )));
+    let left_exec = Arc::new(DataSourceExec::new(Arc::new(MemorySourceConfig::try_new(
+        &[left_batches],
+        l_schema,
+        None,
+    )?)));
+    let right_exec = Arc::new(DataSourceExec::new(Arc::new(MemorySourceConfig::try_new(
+        &[right_batches],
+        r_schema,
+        None,
+    )?)));
 
     let on = vec![(
-        Arc::new(datafusion::physical_expr::expressions::Column::new("l_key", 0))
-            as Arc<dyn datafusion::physical_expr::PhysicalExpr>,
-        Arc::new(datafusion::physical_expr::expressions::Column::new("r_key", 0))
-            as Arc<dyn datafusion::physical_expr::PhysicalExpr>,
+        Arc::new(datafusion::physical_expr::expressions::Column::new(
+            "l_key", 0,
+        )) as Arc<dyn datafusion::physical_expr::PhysicalExpr>,
+        Arc::new(datafusion::physical_expr::expressions::Column::new(
+            "r_key", 0,
+        )) as Arc<dyn datafusion::physical_expr::PhysicalExpr>,
     )];
 
     let join = CometSortMergeJoinExec::try_new(

@@ -97,9 +97,7 @@ pub(super) fn build_filter_candidate_batch(
                 JoinSide::Left => (streamed_batch, streamed_indices),
                 JoinSide::Right => (buffered_batch, buffered_indices),
                 JoinSide::None => {
-                    return internal_err!(
-                        "unexpected JoinSide::None in join filter column index"
-                    );
+                    return internal_err!("unexpected JoinSide::None in join filter column index");
                 }
             };
             let column = batch.column(col_idx.index);
@@ -107,10 +105,7 @@ pub(super) fn build_filter_candidate_batch(
         })
         .collect::<Result<Vec<_>>>()?;
 
-    Ok(RecordBatch::try_new(
-        Arc::clone(filter.schema()),
-        columns,
-    )?)
+    Ok(RecordBatch::try_new(Arc::clone(filter.schema()), columns)?)
 }
 
 /// Returns true if the mask value at `i` is true and not null.
@@ -197,7 +192,7 @@ fn apply_semi_filter(mask: &BooleanArray, indices: &[JoinIndex]) -> FilteredOutp
     let mut passed_indices = Vec::new();
     let mut buffered_matched = Vec::new();
 
-    for (_streamed_idx, pairs) in &groups {
+    for pairs in groups.values() {
         if let Some((_, idx)) = pairs.iter().find(|(i, _)| mask_passed(mask, *i)) {
             passed_indices.push(*idx);
             buffered_matched.push((idx.batch_idx, idx.buffered_idx));

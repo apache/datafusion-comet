@@ -21,6 +21,8 @@
 //! share the current join key. When memory is tight, individual batches are
 //! spilled to Arrow IPC files on disk and reloaded on demand.
 
+use std::sync::Arc;
+
 use arrow::array::ArrayRef;
 use arrow::record_batch::RecordBatch;
 use datafusion::common::utils::memory::get_record_batch_memory_size;
@@ -50,6 +52,7 @@ pub(super) struct BufferedBatch {
     /// The batch data, either in memory or spilled to disk.
     state: BatchState,
     /// Pre-evaluated join key column arrays. `None` when the batch has been spilled.
+    #[allow(dead_code)]
     join_arrays: Option<Vec<ArrayRef>>,
     /// Number of rows in this batch (cached so we don't need the batch to know).
     pub num_rows: usize,
@@ -64,11 +67,7 @@ impl BufferedBatch {
     /// Create a new in-memory buffered batch.
     ///
     /// `full_outer` controls whether per-row match tracking is allocated.
-    fn new_in_memory(
-        batch: RecordBatch,
-        join_arrays: Vec<ArrayRef>,
-        full_outer: bool,
-    ) -> Self {
+    fn new_in_memory(batch: RecordBatch, join_arrays: Vec<ArrayRef>, full_outer: bool) -> Self {
         let num_rows = batch.num_rows();
         let mut size_estimate = get_record_batch_memory_size(&batch);
         for arr in &join_arrays {
@@ -93,8 +92,7 @@ impl BufferedBatch {
         match &self.state {
             BatchState::InMemory(batch) => Ok(batch.clone()),
             BatchState::Spilled(file) => {
-                let reader =
-                    spill_manager.read_spill_as_stream(file.clone(), None)?;
+                let reader = spill_manager.read_spill_as_stream(file.clone(), None)?;
                 let batches = tokio::task::block_in_place(|| {
                     let rt = tokio::runtime::Handle::current();
                     rt.block_on(async {
@@ -111,11 +109,8 @@ impl BufferedBatch {
                 if batches.len() == 1 {
                     Ok(batches.into_iter().next().unwrap())
                 } else {
-                    arrow::compute::concat_batches(
-                        &spill_manager.schema().clone(),
-                        &batches,
-                    )
-                    .map_err(|e| DataFusionError::ArrowError(Box::new(e), None))
+                    arrow::compute::concat_batches(&Arc::clone(spill_manager.schema()), &batches)
+                        .map_err(|e| DataFusionError::ArrowError(Box::new(e), None))
                 }
             }
         }
@@ -123,6 +118,7 @@ impl BufferedBatch {
 
     /// Return join key arrays. If in memory, returns the cached arrays directly.
     /// If spilled, deserializes the batch and re-evaluates the join expressions.
+    #[allow(dead_code)]
     pub fn get_join_arrays(
         &self,
         spill_manager: &SpillManager,
@@ -229,11 +225,7 @@ impl BufferedMatchGroup {
     }
 
     /// Get a batch by index. If the batch was spilled, it is read back from disk.
-    pub fn get_batch(
-        &self,
-        batch_idx: usize,
-        spill_manager: &SpillManager,
-    ) -> Result<RecordBatch> {
+    pub fn get_batch(&self, batch_idx: usize, spill_manager: &SpillManager) -> Result<RecordBatch> {
         self.batches[batch_idx].get_batch(spill_manager)
     }
 
