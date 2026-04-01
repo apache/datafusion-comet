@@ -4176,10 +4176,8 @@ mod tests {
 
     #[test]
     fn test_array_repeat() {
+        // Use built-in ArrayRepeat, not SparkArrayRepeat (see jni_api.rs comment)
         let session_ctx = SessionContext::new();
-        session_ctx.register_udf(ScalarUDF::new_from_impl(
-            datafusion_spark::function::array::repeat::SparkArrayRepeat::default(),
-        ));
         let task_ctx = session_ctx.task_ctx();
         let planner = PhysicalPlanner::new(Arc::from(session_ctx), 0);
 
