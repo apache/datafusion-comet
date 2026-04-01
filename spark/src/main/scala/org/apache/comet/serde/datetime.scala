@@ -468,8 +468,8 @@ object CometTruncTimestamp extends CometExpressionSerde[TruncTimestamp] {
     try {
       val rules = ZoneId.of(timezone).getRules
       rules.getTransitionRules.asScala.exists { rule =>
-        val deltaSecs = math.abs(
-          rule.getOffsetAfter.getTotalSeconds - rule.getOffsetBefore.getTotalSeconds)
+        val deltaSecs =
+          math.abs(rule.getOffsetAfter.getTotalSeconds - rule.getOffsetBefore.getTotalSeconds)
         deltaSecs % 3600 != 0
       }
     } catch {

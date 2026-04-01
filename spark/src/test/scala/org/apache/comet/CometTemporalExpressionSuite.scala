@@ -72,7 +72,8 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
     for (timezone <- Seq("UTC", "America/Los_Angeles", "Europe/London")) {
       withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> timezone) {
         for (format <- supportedFormats) {
-          checkSparkAnswerAndOperator(s"SELECT c0, date_trunc('$format', c0) from tbl order by c0")
+          checkSparkAnswerAndOperator(
+            s"SELECT c0, date_trunc('$format', c0) from tbl order by c0")
         }
         for (format <- unsupportedFormats) {
           // Comet should fall back to Spark for unsupported or invalid formats
