@@ -36,6 +36,7 @@ Adding a New Operator <adding_a_new_operator>
 Adding a New Expression <adding_a_new_expression>
 Tracing <tracing>
 Profiling <profiling>
+Memory Management <memory-management>
 Spark SQL Tests <spark-sql-tests.md>
 Iceberg Spark Tests <iceberg-spark-tests.md>
 SQL File Tests <sql-file-tests.md>
