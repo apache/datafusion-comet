@@ -789,11 +789,8 @@ impl SortMergeJoinStream {
             for &si in &filtered.streamed_null_joins {
                 self.output_builder.add_streamed_null_join(si);
             }
-            // Mark matched buffered rows for full outer.
             for &(batch_idx, buffered_idx) in &filtered.buffered_matched {
-                if let Some(ref mut matched) = self.match_group.batches[batch_idx].matched {
-                    matched[buffered_idx] = true;
-                }
+                self.match_group.batches[batch_idx].mark_matched(buffered_idx);
             }
         } else {
             // No filter: all pairs match.
@@ -801,9 +798,7 @@ impl SortMergeJoinStream {
                 for row_idx in 0..buffered_batch.num_rows {
                     self.output_builder
                         .add_match(streamed_idx, batch_idx, row_idx);
-                    if let Some(ref mut matched) = buffered_batch.matched {
-                        matched[row_idx] = true;
-                    }
+                    buffered_batch.mark_matched(row_idx);
                 }
             }
         }
@@ -1049,13 +1044,9 @@ impl SortMergeJoinStream {
         // For full outer: drain unmatched buffered rows.
         if matches!(self.join_type, JoinType::Full) {
             for (batch_idx, buffered_batch) in self.match_group.batches.iter().enumerate() {
-                if let Some(ref matched) = buffered_batch.matched {
-                    for (row_idx, &was_matched) in matched.iter().enumerate() {
-                        if !was_matched {
-                            self.output_builder
-                                .add_buffered_null_join(batch_idx, row_idx);
-                        }
-                    }
+                for row_idx in buffered_batch.unmatched_indices() {
+                    self.output_builder
+                        .add_buffered_null_join(batch_idx, row_idx);
                 }
             }
         }

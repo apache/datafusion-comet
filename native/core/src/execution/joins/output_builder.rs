@@ -36,53 +36,32 @@ use super::buffered_batch::BufferedMatchGroup;
 /// An index pair representing a matched row from the streamed and buffered sides.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct JoinIndex {
-    /// Row index in the current streamed batch.
     pub streamed_idx: usize,
-    /// Index of the buffered batch within the match group.
     pub batch_idx: usize,
-    /// Row index within the buffered batch.
     pub buffered_idx: usize,
 }
 
 /// Accumulates join output indices and materializes them into Arrow record batches.
-///
-/// During the join process, matched pairs and null-joined rows are recorded as
-/// index tuples. When enough indices have been accumulated (reaching the target
-/// batch size), they are materialized into a `RecordBatch` by gathering columns
-/// from the streamed and buffered sides using Arrow's `take` kernel.
 pub(super) struct OutputBuilder {
-    /// Schema of the output record batch.
     output_schema: SchemaRef,
-    /// Schema of the streamed (left) side.
-    #[allow(dead_code)]
-    streamed_schema: SchemaRef,
-    /// Schema of the buffered (right) side.
     buffered_schema: SchemaRef,
-    /// The type of join being performed.
     join_type: JoinType,
-    /// Target number of rows per output batch.
     target_batch_size: usize,
-    /// Matched pairs: (streamed_idx, batch_idx, buffered_idx).
     indices: Vec<JoinIndex>,
-    /// Streamed row indices that need a null buffered counterpart (left outer, left anti).
     streamed_null_joins: Vec<usize>,
-    /// Buffered row indices that need a null streamed counterpart (full outer).
-    /// Each entry is (batch_idx, row_idx).
     buffered_null_joins: Vec<(usize, usize)>,
 }
 
 impl OutputBuilder {
-    /// Create a new `OutputBuilder`.
     pub fn new(
         output_schema: SchemaRef,
-        streamed_schema: SchemaRef,
+        _streamed_schema: SchemaRef,
         buffered_schema: SchemaRef,
         join_type: JoinType,
         target_batch_size: usize,
     ) -> Self {
         Self {
             output_schema,
-            streamed_schema,
             buffered_schema,
             join_type,
             target_batch_size,
@@ -92,7 +71,6 @@ impl OutputBuilder {
         }
     }
 
-    /// Record a matched pair between streamed and buffered rows.
     pub fn add_match(&mut self, streamed_idx: usize, batch_idx: usize, buffered_idx: usize) {
         self.indices.push(JoinIndex {
             streamed_idx,
@@ -101,37 +79,27 @@ impl OutputBuilder {
         });
     }
 
-    /// Record a streamed row that needs a null buffered counterpart
-    /// (used for outer joins and anti joins).
     pub fn add_streamed_null_join(&mut self, streamed_idx: usize) {
         self.streamed_null_joins.push(streamed_idx);
     }
 
-    /// Record a buffered row that needs a null streamed counterpart
-    /// (used for full outer joins).
     pub fn add_buffered_null_join(&mut self, batch_idx: usize, buffered_idx: usize) {
         self.buffered_null_joins.push((batch_idx, buffered_idx));
     }
 
-    /// Return the total number of pending output rows.
     pub fn pending_count(&self) -> usize {
         self.indices.len() + self.streamed_null_joins.len() + self.buffered_null_joins.len()
     }
 
-    /// Returns `true` if the pending row count has reached or exceeded the target batch size.
     pub fn should_flush(&self) -> bool {
         self.pending_count() >= self.target_batch_size
     }
 
-    /// Returns `true` if there are any pending output rows.
     pub fn has_pending(&self) -> bool {
         self.pending_count() > 0
     }
 
     /// Materialize the accumulated indices into a [`RecordBatch`].
-    ///
-    /// For `LeftSemi` and `LeftAnti` joins, only streamed columns are included.
-    /// For all other join types, columns from both sides are concatenated.
     ///
     /// After building, all accumulated indices are cleared.
     pub fn build(
@@ -146,7 +114,6 @@ impl OutputBuilder {
             _ => self.build_full(streamed_batch, match_group, spill_manager),
         };
 
-        // Clear all accumulated indices after building
         self.indices.clear();
         self.streamed_null_joins.clear();
         self.buffered_null_joins.clear();
@@ -154,10 +121,7 @@ impl OutputBuilder {
         result
     }
 
-    /// Build output for LeftSemi/LeftAnti joins (streamed columns only).
     fn build_semi_anti(&self, streamed_batch: &RecordBatch) -> Result<RecordBatch> {
-        // For semi/anti joins, we only output streamed rows from matched pairs
-        // and streamed null joins. No buffered columns.
         let indices: Vec<u32> = self
             .indices
             .iter()
@@ -179,7 +143,6 @@ impl OutputBuilder {
         )?)
     }
 
-    /// Build output for all other join types (both streamed and buffered columns).
     fn build_full(
         &self,
         streamed_batch: &RecordBatch,
@@ -198,14 +161,10 @@ impl OutputBuilder {
         )?)
     }
 
-    /// Build the streamed side columns by gathering rows using the `take` kernel.
-    ///
-    /// The order is: matched pairs, streamed null joins, then None for buffered null joins.
     fn build_streamed_columns(&self, streamed_batch: &RecordBatch) -> Result<Vec<ArrayRef>> {
         let total_rows = self.pending_count();
         let num_buffered_nulls = self.buffered_null_joins.len();
 
-        // Build indices: matched streamed_idx, then streamed_null_join indices, then None
         let indices: Vec<Option<u32>> = self
             .indices
             .iter()
@@ -225,165 +184,119 @@ impl OutputBuilder {
             .collect()
     }
 
-    /// Build the buffered side columns by gathering rows from buffered batches.
-    ///
-    /// For matched pairs: take from buffered batches (loading spilled ones as needed).
-    /// For streamed null joins: null arrays.
-    /// For buffered null joins: take from buffered batches.
+    /// Build all buffered columns at once, loading each batch only once across all columns.
     fn build_buffered_columns(
         &self,
         match_group: &BufferedMatchGroup,
         spill_manager: &SpillManager,
     ) -> Result<Vec<ArrayRef>> {
-        let num_buffered_cols = self.buffered_schema.fields().len();
+        let num_cols = self.buffered_schema.fields().len();
         let num_streamed_nulls = self.streamed_null_joins.len();
 
-        // Build one column at a time
-        (0..num_buffered_cols)
-            .map(|col_idx| {
-                self.build_single_buffered_column(
-                    col_idx,
-                    match_group,
-                    spill_manager,
-                    num_streamed_nulls,
-                )
-            })
-            .collect()
-    }
+        // Pre-compute which batches we need and their grouped row indices.
+        // This avoids loading the same spilled batch N times (once per column).
+        let matched_groups = group_by_batch(&self.indices);
+        let null_join_groups = group_by_batch_tuple(&self.buffered_null_joins);
 
-    /// Build a single buffered column by concatenating parts from matched pairs,
-    /// null arrays for streamed null joins, and parts from buffered null joins.
-    fn build_single_buffered_column(
-        &self,
-        col_idx: usize,
-        match_group: &BufferedMatchGroup,
-        spill_manager: &SpillManager,
-        num_streamed_nulls: usize,
-    ) -> Result<ArrayRef> {
-        let data_type = self.buffered_schema.field(col_idx).data_type();
-        let mut parts: Vec<ArrayRef> = Vec::new();
-
-        // Part 1: Matched pairs — gather from buffered batches
-        if !self.indices.is_empty() {
-            let matched_part = self.take_buffered_matched(col_idx, match_group, spill_manager)?;
-            parts.push(matched_part);
-        }
-
-        // Part 2: Streamed null joins — null arrays for buffered side
-        if num_streamed_nulls > 0 {
-            parts.push(new_null_array(data_type, num_streamed_nulls));
-        }
-
-        // Part 3: Buffered null joins — gather from buffered batches
-        if !self.buffered_null_joins.is_empty() {
-            let null_join_part =
-                self.take_buffered_null_joins(col_idx, match_group, spill_manager)?;
-            parts.push(null_join_part);
-        }
-
-        if parts.is_empty() {
-            return Ok(new_null_array(data_type, 0));
-        }
-
-        if parts.len() == 1 {
-            return Ok(parts.into_iter().next().unwrap());
-        }
-
-        let part_refs: Vec<&dyn arrow::array::Array> = parts.iter().map(|a| a.as_ref()).collect();
-        Ok(concat(&part_refs)?)
-    }
-
-    /// Take values from buffered batches for matched pairs.
-    fn take_buffered_matched(
-        &self,
-        col_idx: usize,
-        match_group: &BufferedMatchGroup,
-        spill_manager: &SpillManager,
-    ) -> Result<ArrayRef> {
-        // Group indices by batch_idx to minimize batch lookups
-        // For simplicity, we build per-index and concatenate, but a more
-        // optimized version would group by batch_idx.
-
-        // Simple approach: gather one at a time using take with single-element indices
-        // A more efficient approach groups by batch_idx, but this is correct and clear.
-        let mut parts: Vec<ArrayRef> = Vec::new();
-
-        // Group consecutive indices by batch_idx for efficiency
-        let mut current_batch_idx: Option<usize> = None;
-        let mut current_row_indices: Vec<u32> = Vec::new();
-
-        for join_idx in &self.indices {
-            if current_batch_idx == Some(join_idx.batch_idx) {
-                current_row_indices.push(join_idx.buffered_idx as u32);
-            } else {
-                // Flush previous group
-                if let Some(batch_idx) = current_batch_idx {
-                    let batch = match_group.batches[batch_idx].get_batch(spill_manager)?;
-                    let col = batch.column(col_idx);
-                    let row_indices = UInt32Array::from(std::mem::take(&mut current_row_indices));
-                    parts.push(take(col.as_ref(), &row_indices, None)?);
-                }
-                current_batch_idx = Some(join_idx.batch_idx);
-                current_row_indices.push(join_idx.buffered_idx as u32);
+        // Load each referenced batch once
+        let mut batch_cache: std::collections::HashMap<usize, RecordBatch> =
+            std::collections::HashMap::new();
+        for &(batch_idx, _) in matched_groups.iter().chain(null_join_groups.iter()) {
+            if let std::collections::hash_map::Entry::Vacant(e) = batch_cache.entry(batch_idx) {
+                e.insert(match_group.batches[batch_idx].get_batch(spill_manager)?);
             }
         }
 
-        // Flush last group
-        if let Some(batch_idx) = current_batch_idx {
-            let batch = match_group.batches[batch_idx].get_batch(spill_manager)?;
-            let col = batch.column(col_idx);
-            let row_indices = UInt32Array::from(current_row_indices);
-            parts.push(take(col.as_ref(), &row_indices, None)?);
+        // Build all columns using the cached batches
+        let mut result: Vec<ArrayRef> = Vec::with_capacity(num_cols);
+        for col_idx in 0..num_cols {
+            let data_type = self.buffered_schema.field(col_idx).data_type();
+            let mut parts: Vec<ArrayRef> = Vec::with_capacity(3);
+
+            // Matched pairs
+            if !matched_groups.is_empty() {
+                parts.push(take_from_groups(col_idx, &matched_groups, &batch_cache)?);
+            }
+
+            // Null arrays for streamed null joins
+            if num_streamed_nulls > 0 {
+                parts.push(new_null_array(data_type, num_streamed_nulls));
+            }
+
+            // Buffered null joins
+            if !null_join_groups.is_empty() {
+                parts.push(take_from_groups(col_idx, &null_join_groups, &batch_cache)?);
+            }
+
+            result.push(concat_parts(parts, data_type)?);
         }
 
-        if parts.len() == 1 {
-            return Ok(parts.into_iter().next().unwrap());
-        }
-
-        let part_refs: Vec<&dyn arrow::array::Array> = parts.iter().map(|a| a.as_ref()).collect();
-        Ok(concat(&part_refs)?)
+        Ok(result)
     }
+}
 
-    /// Take values from buffered batches for buffered null joins (full outer).
-    fn take_buffered_null_joins(
-        &self,
-        col_idx: usize,
-        match_group: &BufferedMatchGroup,
-        spill_manager: &SpillManager,
-    ) -> Result<ArrayRef> {
-        let mut parts: Vec<ArrayRef> = Vec::new();
-
-        // Group consecutive entries by batch_idx
-        let mut current_batch_idx: Option<usize> = None;
-        let mut current_row_indices: Vec<u32> = Vec::new();
-
-        for &(batch_idx, row_idx) in &self.buffered_null_joins {
-            if current_batch_idx == Some(batch_idx) {
-                current_row_indices.push(row_idx as u32);
-            } else {
-                if let Some(bi) = current_batch_idx {
-                    let batch = match_group.batches[bi].get_batch(spill_manager)?;
-                    let col = batch.column(col_idx);
-                    let row_indices = UInt32Array::from(std::mem::take(&mut current_row_indices));
-                    parts.push(take(col.as_ref(), &row_indices, None)?);
-                }
-                current_batch_idx = Some(batch_idx);
-                current_row_indices.push(row_idx as u32);
+/// Group JoinIndex entries by batch_idx into (batch_idx, row_indices) pairs.
+fn group_by_batch(indices: &[JoinIndex]) -> Vec<(usize, Vec<u32>)> {
+    let mut groups: Vec<(usize, Vec<u32>)> = Vec::new();
+    for idx in indices {
+        if let Some(last) = groups.last_mut() {
+            if last.0 == idx.batch_idx {
+                last.1.push(idx.buffered_idx as u32);
+                continue;
             }
         }
-
-        if let Some(bi) = current_batch_idx {
-            let batch = match_group.batches[bi].get_batch(spill_manager)?;
-            let col = batch.column(col_idx);
-            let row_indices = UInt32Array::from(current_row_indices);
-            parts.push(take(col.as_ref(), &row_indices, None)?);
-        }
-
-        if parts.len() == 1 {
-            return Ok(parts.into_iter().next().unwrap());
-        }
-
-        let part_refs: Vec<&dyn arrow::array::Array> = parts.iter().map(|a| a.as_ref()).collect();
-        Ok(concat(&part_refs)?)
+        groups.push((idx.batch_idx, vec![idx.buffered_idx as u32]));
     }
+    groups
+}
+
+/// Group (batch_idx, row_idx) tuples by batch_idx into (batch_idx, row_indices) pairs.
+fn group_by_batch_tuple(indices: &[(usize, usize)]) -> Vec<(usize, Vec<u32>)> {
+    let mut groups: Vec<(usize, Vec<u32>)> = Vec::new();
+    for &(batch_idx, row_idx) in indices {
+        if let Some(last) = groups.last_mut() {
+            if last.0 == batch_idx {
+                last.1.push(row_idx as u32);
+                continue;
+            }
+        }
+        groups.push((batch_idx, vec![row_idx as u32]));
+    }
+    groups
+}
+
+/// Take a single column from pre-loaded batches using grouped indices.
+fn take_from_groups(
+    col_idx: usize,
+    groups: &[(usize, Vec<u32>)],
+    batch_cache: &std::collections::HashMap<usize, RecordBatch>,
+) -> Result<ArrayRef> {
+    let mut parts: Vec<ArrayRef> = Vec::with_capacity(groups.len());
+    for (batch_idx, row_indices) in groups {
+        let batch = &batch_cache[batch_idx];
+        let col = batch.column(col_idx);
+        let index_array = UInt32Array::from(row_indices.clone());
+        parts.push(take(col.as_ref(), &index_array, None)?);
+    }
+    concat_parts(
+        parts,
+        batch_cache
+            .values()
+            .next()
+            .unwrap()
+            .column(col_idx)
+            .data_type(),
+    )
+}
+
+/// Concat array parts, handling empty and single-element cases.
+fn concat_parts(parts: Vec<ArrayRef>, data_type: &arrow::datatypes::DataType) -> Result<ArrayRef> {
+    if parts.is_empty() {
+        return Ok(new_null_array(data_type, 0));
+    }
+    if parts.len() == 1 {
+        return Ok(parts.into_iter().next().expect("checked len == 1"));
+    }
+    let refs: Vec<&dyn arrow::array::Array> = parts.iter().map(|a| a.as_ref()).collect();
+    Ok(concat(&refs)?)
 }

@@ -59,11 +59,27 @@ pub(super) struct BufferedBatch {
     /// Estimated memory footprint in bytes (batch + join arrays).
     pub size_estimate: usize,
     /// For full/right outer joins: tracks which rows have been matched.
-    /// `None` for inner/left joins where unmatched tracking is not needed.
-    pub matched: Option<Vec<bool>>,
+    matched: Option<Vec<bool>>,
 }
 
 impl BufferedBatch {
+    /// Mark a buffered row as matched (for full outer join tracking).
+    pub fn mark_matched(&mut self, row_idx: usize) {
+        if let Some(ref mut matched) = self.matched {
+            matched[row_idx] = true;
+        }
+    }
+
+    /// Iterate over unmatched row indices.
+    pub fn unmatched_indices(&self) -> impl Iterator<Item = usize> + '_ {
+        self.matched.as_ref().into_iter().flat_map(|m| {
+            m.iter()
+                .enumerate()
+                .filter(|(_, &matched)| !matched)
+                .map(|(idx, _)| idx)
+        })
+    }
+
     /// Create a new in-memory buffered batch.
     ///
     /// `full_outer` controls whether per-row match tracking is allocated.
