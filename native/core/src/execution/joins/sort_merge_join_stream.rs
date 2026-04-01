@@ -30,7 +30,7 @@ use std::task::{Context, Poll};
 use arrow::array::{ArrayRef, RecordBatch, UInt32Array};
 use arrow::compute::SortOptions;
 use arrow::datatypes::SchemaRef;
-use arrow::row::{OwnedRow, RowConverter, SortField};
+use arrow::row::{OwnedRow, RowConverter, Rows, SortField};
 use datafusion::common::{NullEquality, Result};
 use datafusion::execution::memory_pool::MemoryReservation;
 use datafusion::logical_expr::JoinType;
@@ -109,6 +109,8 @@ pub(super) struct SortMergeJoinStream {
 
     /// Converts join keys to comparable row format for key-reuse optimization.
     row_converter: RowConverter,
+    /// Row-format conversion of current streamed batch's join keys (computed once per batch).
+    streamed_rows: Option<Rows>,
     /// Cached key of the previous streamed row (for key-reuse detection).
     cached_streamed_key: Option<OwnedRow>,
 
@@ -186,6 +188,7 @@ impl SortMergeJoinStream {
             buffered_exhausted: false,
             match_group: BufferedMatchGroup::new(),
             row_converter,
+            streamed_rows: None,
             cached_streamed_key: None,
             output_builder,
             output_schema,
@@ -227,6 +230,17 @@ impl SortMergeJoinStream {
                             self.metrics.input_rows.add(batch.num_rows());
                             let join_arrays =
                                 evaluate_join_keys(&batch, &self.streamed_join_exprs)?;
+                            // Convert join keys to row format once per batch for key-reuse checks
+                            let rows =
+                                self.row_converter
+                                    .convert_columns(&join_arrays)
+                                    .map_err(|e| {
+                                        datafusion::common::DataFusionError::ArrowError(
+                                            Box::new(e),
+                                            None,
+                                        )
+                                    })?;
+                            self.streamed_rows = Some(rows);
                             self.streamed_batch = Some(batch);
                             self.streamed_join_arrays = Some(join_arrays);
                             self.streamed_idx = 0;
@@ -596,6 +610,7 @@ impl SortMergeJoinStream {
             // Safe to clear — no pending references.
             self.streamed_batch = None;
             self.streamed_join_arrays = None;
+            self.streamed_rows = None;
             self.streamed_idx = 0;
         }
 
@@ -619,17 +634,13 @@ impl SortMergeJoinStream {
     }
 
     /// Try to reuse the existing match group if the current streamed key
-    /// matches the cached key.
-    fn try_reuse_match_group(&mut self) -> Result<bool> {
+    /// matches the cached key. Uses pre-computed row-format keys (once per batch).
+    fn try_reuse_match_group(&self) -> Result<bool> {
         if self.cached_streamed_key.is_none() || self.match_group.is_empty() {
             return Ok(false);
         }
 
-        let streamed_arrays = self.streamed_join_arrays.as_ref().unwrap();
-        let rows = self
-            .row_converter
-            .convert_columns(streamed_arrays)
-            .map_err(|e| datafusion::common::DataFusionError::ArrowError(Box::new(e), None))?;
+        let rows = self.streamed_rows.as_ref().unwrap();
         let current_key = rows.row(self.streamed_idx);
 
         if let Some(ref cached) = self.cached_streamed_key {
@@ -643,11 +654,7 @@ impl SortMergeJoinStream {
 
     /// Cache the current streamed key as an OwnedRow.
     fn cache_streamed_key(&mut self) -> Result<()> {
-        let streamed_arrays = self.streamed_join_arrays.as_ref().unwrap();
-        let rows = self
-            .row_converter
-            .convert_columns(streamed_arrays)
-            .map_err(|e| datafusion::common::DataFusionError::ArrowError(Box::new(e), None))?;
+        let rows = self.streamed_rows.as_ref().unwrap();
         self.cached_streamed_key = Some(rows.row(self.streamed_idx).owned());
         Ok(())
     }
