@@ -100,27 +100,27 @@ See `SpillState` in `native/core/src/execution/memory_pools/spill.rs` and the
 
 ### Per-Operator Status (Default Config)
 
-| Operator | Spillable? | Memory Tracked? | Notes |
-|----------|-----------|----------------|-------|
-| SortExec | Yes (DF internal) | Yes | Spills on try_grow() failure |
-| AggregateExec | Yes (DF internal) | Yes | Spills on try_grow() failure |
-| SortMergeJoinExec | Streams | Yes | Low memory — relies on sorted inputs |
-| Shuffle writer | Yes | Yes | Only operator with `with_can_spill(true)` |
-| ScanExec (FFI batches) | No | **No** | Primary untracked memory source |
-| copy_array / unpack | No | **No** | Doubles batch memory untracked |
-| ShuffleScanExec | No | **No** | Decompression buffers untracked |
-| BoundedWindowAggExec | No | Partial | Entire partitions buffered |
-| BroadcastHashJoin | N/A | No (JVM side) | Build side in JVM heap |
+| Operator               | Spillable?        | Memory Tracked? | Notes                                     |
+| ---------------------- | ----------------- | --------------- | ----------------------------------------- |
+| SortExec               | Yes (DF internal) | Yes             | Spills on try_grow() failure              |
+| AggregateExec          | Yes (DF internal) | Yes             | Spills on try_grow() failure              |
+| SortMergeJoinExec      | Streams           | Yes             | Low memory — relies on sorted inputs      |
+| Shuffle writer         | Yes               | Yes             | Only operator with `with_can_spill(true)` |
+| ScanExec (FFI batches) | No                | **No**          | Primary untracked memory source           |
+| copy_array / unpack    | No                | **No**          | Doubles batch memory untracked            |
+| ShuffleScanExec        | No                | **No**          | Decompression buffers untracked           |
+| BoundedWindowAggExec   | No                | Partial         | Entire partitions buffered                |
+| BroadcastHashJoin      | N/A               | No (JVM side)   | Build side in JVM heap                    |
 
 ## Comparison with Gluten
 
-| Capability | Comet | Gluten |
-|-----------|-------|--------|
-| Spark spill callback | Forwards to native via SpillState pressure | Hierarchical spill cascade via TreeMemoryConsumer |
-| Hash join spill | None (experimental, disabled by default) | Velox spills hash tables to disk |
-| Per-operator tracking | Single NativeMemoryConsumer | Per-operator MemoryTarget children |
-| Retry on OOM | None | Multi-retry with exponential backoff + GC |
-| Memory isolation | Proportional per-task limit | Hard per-task cap option |
+| Capability            | Comet                                      | Gluten                                            |
+| --------------------- | ------------------------------------------ | ------------------------------------------------- |
+| Spark spill callback  | Forwards to native via SpillState pressure | Hierarchical spill cascade via TreeMemoryConsumer |
+| Hash join spill       | None (experimental, disabled by default)   | Velox spills hash tables to disk                  |
+| Per-operator tracking | Single NativeMemoryConsumer                | Per-operator MemoryTarget children                |
+| Retry on OOM          | None                                       | Multi-retry with exponential backoff + GC         |
+| Memory isolation      | Proportional per-task limit                | Hard per-task cap option                          |
 
 ### Gluten's TreeMemoryConsumer Architecture
 
@@ -133,6 +133,7 @@ TreeMemoryConsumer (registered as Spark MemoryConsumer)
 ```
 
 When Spark calls `spill()`, Gluten:
+
 1. Walks children sorted by usage (largest first)
 2. Calls SHRINK phase (reduce internal buffers)
 3. Calls SPILL phase (write to disk)
@@ -149,17 +150,18 @@ everything with up to 9 retries with exponential backoff.
 Measured with `benchmarks/tpc/memory-profile.sh` using `/usr/bin/time -l` on macOS
 (96GB RAM, 28 cores, Spark 3.5.8, no container memory limits).
 
-| Config | Q1 (aggregation) | Q5 (5-way join) | Q9 (6-way join) |
-|--------|-----------------|-----------------|-----------------|
-| Spark 4g offHeap | 2700 MB | 5167 MB | 4580 MB |
-| Comet 4g offHeap | 679 MB | 5534 MB | 5911 MB |
-| Comet 8g offHeap | 665 MB | 5440 MB | 6359 MB |
+| Config           | Q1 (aggregation) | Q5 (5-way join) | Q9 (6-way join) |
+| ---------------- | ---------------- | --------------- | --------------- |
+| Spark 4g offHeap | 2700 MB          | 5167 MB         | 4580 MB         |
+| Comet 4g offHeap | 679 MB           | 5534 MB         | 5911 MB         |
+| Comet 8g offHeap | 665 MB           | 5440 MB         | 6359 MB         |
 
 ### Analysis
 
 **Aggregation (Q1)**: Comet uses 75% less memory than Spark. No memory concern.
 
 **Join-heavy queries (Q5, Q9)**: Comet uses more memory than Spark.
+
 - Q5: ~370 MB over Spark, flat across offHeap sizes (fixed overhead)
 - Q9: 1331 MB over Spark at 4g, grows to 1779 MB at 8g (elastic — expands with pool)
 
@@ -177,12 +179,12 @@ shuffle writer competes for the shared pool, and no task can force another to sp
 Running Q9 with `spark.comet.exec.shuffle.enabled=false` (Spark handles shuffles,
 Comet handles sort/SMJ/aggregate):
 
-| Config | Q9 Peak RSS |
-|--------|-------------|
-| Spark only | 4580 MB |
-| Comet, shuffle disabled | 5035 MB |
-| Comet, full (4g offHeap) | 5911 MB |
-| Comet, full (8g offHeap) | 6359 MB |
+| Config                   | Q9 Peak RSS |
+| ------------------------ | ----------- |
+| Spark only               | 4580 MB     |
+| Comet, shuffle disabled  | 5035 MB     |
+| Comet, full (4g offHeap) | 5911 MB     |
+| Comet, full (8g offHeap) | 6359 MB     |
 
 - **Non-shuffle overhead** (sort + SMJ + agg + scan): +455 MB fixed
 - **Shuffle overhead**: +876 MB at 4g, grows with offHeap size
@@ -212,19 +214,19 @@ Q9 was re-benchmarked:
 
 **local[4] (4 concurrent tasks):**
 
-| Config | Q9 Before | Q9 After | Change |
-|--------|-----------|----------|--------|
-| Comet 4g | 5911 MB | 5896 MB | -15 MB |
-| Comet 8g | 6359 MB | 6060 MB | -299 MB |
-| 4g→8g delta | 448 MB | 164 MB | **-63% elastic growth** |
+| Config      | Q9 Before | Q9 After | Change                  |
+| ----------- | --------- | -------- | ----------------------- |
+| Comet 4g    | 5911 MB   | 5896 MB  | -15 MB                  |
+| Comet 8g    | 6359 MB   | 6060 MB  | -299 MB                 |
+| 4g→8g delta | 448 MB    | 164 MB   | **-63% elastic growth** |
 
 **local[8] (8 concurrent tasks):**
 
-| Config | Q9 RSS |
-|--------|--------|
-| Spark 4g | 8476 MB |
-| Comet 4g | 8525 MB |
-| Comet 8g | 8448 MB |
+| Config      | Q9 RSS                |
+| ----------- | --------------------- |
+| Spark 4g    | 8476 MB               |
+| Comet 4g    | 8525 MB               |
+| Comet 8g    | 8448 MB               |
 | 4g→8g delta | -77 MB (within noise) |
 
 With 8 concurrent tasks, Comet's memory usage is **on par with Spark** (8525 vs 8476 MB)
@@ -235,17 +237,20 @@ greedily expanding when more offHeap is available.
 ## Debugging Steps
 
 ### 1. Enable memory debug logging
+
 ```
 spark.comet.debug.memory.enabled=true
 ```
 
 ### 2. Run memory profiling script
+
 ```bash
 cd benchmarks/tpc
 ./memory-profile.sh --queries "1 5 9 21" --offheap-sizes "4g 8g 16g" --cores 4
 ```
 
 ### 3. Disable operator categories to isolate
+
 ```
 spark.comet.exec.sortMergeJoin.enabled=false
 # or
@@ -253,6 +258,7 @@ spark.comet.exec.shuffle.enabled=false
 ```
 
 ### 4. Check TrackConsumersPool output on OOM
+
 The error message should list top 10 memory consumers by usage.
 
 ---
@@ -323,6 +329,7 @@ See `native/core/src/execution/memory_pools/spill.rs` and
 
 `BoundedWindowAggExec` buffers entire partitions. For large partitions at 1TB,
 this needs either:
+
 - Use DataFusion's spillable window variant if available
 - Fall back to Spark's window operator above a threshold
 
@@ -340,13 +347,16 @@ and Comet's native side just maps them. Tracking must be explicitly added.
 ### Remaining Work
 
 **Phase 1: Track ScanExec batches**
+
 - Add MemoryReservation to ScanExec
 - Track batch sizes on import, release on consumption
 
 **Phase 2: Track remaining gaps**
+
 - copy.rs array copies
 - shuffle_scan.rs decompression buffers
 - Selection vector processing
 
 **Phase 3: Extend spill callback to FairUnified pool**
+
 - Same pattern as GreedyUnified — add SpillState to CometFairMemoryPool

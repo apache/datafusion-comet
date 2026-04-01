@@ -18,9 +18,9 @@
 mod config;
 mod fair_pool;
 pub mod logging_pool;
+pub(crate) mod spill;
 mod task_shared;
 mod unified_pool;
-pub(crate) mod spill;
 
 use datafusion::execution::memory_pool::{
     FairSpillPool, GreedyMemoryPool, MemoryPool, TrackConsumersPool, UnboundedMemoryPool,
