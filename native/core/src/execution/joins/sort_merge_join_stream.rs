@@ -332,6 +332,13 @@ impl SortMergeJoinStream {
                         continue;
                     }
 
+                    // Before clearing the match group, flush any pending output
+                    // that references the current match group's batches.
+                    if self.output_builder.has_pending() {
+                        self.state = JoinState::OutputReady;
+                        continue;
+                    }
+
                     // Clear old match group.
                     self.match_group.clear(&mut self.reservation);
                     self.cached_streamed_key = None;
@@ -376,9 +383,21 @@ impl SortMergeJoinStream {
                             }
                         }
                         Ordering::Greater => {
-                            // Streamed key > buffered key: advance buffered.
-                            self.buffered_pending = None;
-                            if self.buffered_exhausted {
+                            // Streamed key > buffered key: advance past the
+                            // first buffered row.  If the pending batch has
+                            // more rows, slice it; otherwise discard and poll
+                            // the next batch.
+                            let (batch, arrays) = self.buffered_pending.take().unwrap();
+                            if batch.num_rows() > 1 {
+                                let remaining = batch.slice(1, batch.num_rows() - 1);
+                                let remaining_arrays: Vec<ArrayRef> = arrays
+                                    .iter()
+                                    .map(|a| a.slice(1, a.len() - 1))
+                                    .collect();
+                                self.buffered_pending = Some((remaining, remaining_arrays));
+                                // Re-compare with the next buffered row.
+                                self.state = JoinState::Comparing;
+                            } else if self.buffered_exhausted {
                                 self.emit_streamed_unmatched(streamed_idx);
                                 self.advance_streamed()?;
                                 if self.output_builder.should_flush() {
@@ -489,31 +508,47 @@ impl SortMergeJoinStream {
         }
     }
 
-    /// Determine the next state after flushing output.
+    /// Determine the next state after processing a row.
+    ///
+    /// When the current streamed batch is exhausted, any pending output must be
+    /// flushed first (the output builder holds row indices into the batch).
+    /// After the flush the batch is cleared and we move on to poll new data.
     fn determine_next_state(&mut self) {
-        if self.streamed_batch.is_some()
-            && self.streamed_idx < self.streamed_batch.as_ref().unwrap().num_rows()
-        {
-            // More rows in current streamed batch.
-            self.state = JoinState::Comparing;
-        } else if !self.streamed_exhausted {
+        // Check if the current streamed batch is exhausted.
+        if let Some(batch) = &self.streamed_batch {
+            if self.streamed_idx < batch.num_rows() {
+                // More rows in current streamed batch.
+                self.state = JoinState::Comparing;
+                return;
+            }
+            // Batch exhausted. If there are pending output rows that reference
+            // indices in this batch we must flush before clearing.
+            if self.output_builder.has_pending() {
+                self.state = JoinState::OutputReady;
+                return;
+            }
+            // Safe to clear — no pending references.
+            self.streamed_batch = None;
+            self.streamed_join_arrays = None;
+            self.streamed_idx = 0;
+        }
+
+        if !self.streamed_exhausted {
             self.state = JoinState::Init;
         } else {
             self.state = JoinState::DrainUnmatched;
         }
     }
 
-    /// Advance the streamed side to the next row. If the current batch is
-    /// exhausted, clear it so we poll the next one.
+    /// Advance the streamed side to the next row.
+    ///
+    /// Note: we do NOT clear the streamed batch here even when all rows have
+    /// been consumed, because the output builder may still hold index references
+    /// into the batch that need to be materialized during the next flush.
+    /// The batch is cleared lazily in `determine_next_state` when we transition
+    /// to polling a new batch.
     fn advance_streamed(&mut self) -> Result<()> {
         self.streamed_idx += 1;
-        if let Some(batch) = &self.streamed_batch {
-            if self.streamed_idx >= batch.num_rows() {
-                self.streamed_batch = None;
-                self.streamed_join_arrays = None;
-                self.streamed_idx = 0;
-            }
-        }
         Ok(())
     }
 

@@ -23,3 +23,6 @@ mod sort_merge_join;
 mod sort_merge_join_stream;
 
 pub(crate) use sort_merge_join::CometSortMergeJoinExec;
+
+#[cfg(test)]
+mod tests;
