@@ -2538,17 +2538,20 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
 
         // Write Parquet WITHOUT Iceberg (simulates pre-migration data)
         // id is last so its leaf index is after all nested type leaves
-        spark.sql(s"""
+        spark
+          .sql("""
           SELECT
             named_struct('age', id * 10, 'score', id * 1.5) AS info,
             array(id, id + 1) AS tags,
             map('key', id) AS props,
             id
           FROM range(10)
-        """).write.parquet(dataPath)
+        """)
+          .write
+          .parquet(dataPath)
 
         spark.sql("CREATE NAMESPACE IF NOT EXISTS test_cat.db")
-        spark.sql(s"""
+        spark.sql("""
           CREATE TABLE test_cat.db.nested_migrate (
             info STRUCT<age: BIGINT, score: DOUBLE>,
             tags ARRAY<BIGINT>,
@@ -2583,8 +2586,7 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
 
           // Select only flat columns to avoid Spark's Iceberg reader returning
           // null for struct fields in migrated tables (separate Spark bug)
-          checkIcebergNativeScan(
-            "SELECT id FROM test_cat.db.nested_migrate ORDER BY id")
+          checkIcebergNativeScan("SELECT id FROM test_cat.db.nested_migrate ORDER BY id")
 
           // Filter on root column with nested types in migrated table:
           // Parquet files lack Iceberg field IDs, so iceberg-rust falls back to
