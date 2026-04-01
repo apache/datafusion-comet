@@ -35,7 +35,7 @@ performance outside of Spark. It streams input data directly from Parquet files.
 cargo run --release --features shuffle-bench --bin shuffle_bench -- \
   --input /data/tpch-sf100/lineitem/ \
   --partitions 200 \
-  --codec zstd --zstd-level 1 \
+  --codec lz4 \
   --hash-columns 0,3
 ```
 
@@ -47,7 +47,7 @@ cargo run --release --features shuffle-bench --bin shuffle_bench -- \
 | `--partitions`        | `200`                      | Number of output shuffle partitions                    |
 | `--partitioning`      | `hash`                     | Partitioning scheme: `hash`, `single`, `round-robin`   |
 | `--hash-columns`      | `0`                        | Comma-separated column indices to hash on (e.g. `0,3`) |
-| `--codec`             | `zstd`                     | Compression codec: `none`, `lz4`, `zstd`, `snappy`     |
+| `--codec`             | `lz4`                      | Compression codec: `none`, `lz4`, `zstd`, `snappy`     |
 | `--zstd-level`        | `1`                        | Zstd compression level (1–22)                          |
 | `--batch-size`        | `8192`                     | Batch size for reading Parquet data                    |
 | `--memory-limit`      | _(none)_                   | Memory limit in bytes; triggers spilling when exceeded |
@@ -62,5 +62,5 @@ cargo run --release --features shuffle-bench --bin shuffle_bench -- \
 ```sh
 cargo flamegraph --release --features shuffle-bench --bin shuffle_bench -- \
   --input /data/tpch-sf100/lineitem/ \
-  --partitions 200 --codec zstd --zstd-level 1
+  --partitions 200 --codec lz4
 ```

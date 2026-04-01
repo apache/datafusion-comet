@@ -24,7 +24,7 @@
 //! cargo run --release --bin shuffle_bench -- \
 //!   --input /data/tpch-sf100/lineitem/ \
 //!   --partitions 200 \
-//!   --codec zstd --zstd-level 1 \
+//!   --codec lz4 \
 //!   --hash-columns 0,3
 //! ```
 //!
@@ -32,7 +32,7 @@
 //! ```sh
 //! cargo flamegraph --release --bin shuffle_bench -- \
 //!   --input /data/tpch-sf100/lineitem/ \
-//!   --partitions 200 --codec zstd --zstd-level 1
+//!   --partitions 200 --codec lz4
 //! ```
 
 use arrow::datatypes::{DataType, SchemaRef};
@@ -55,7 +55,7 @@ use std::time::Instant;
 #[derive(Parser, Debug)]
 #[command(
     name = "shuffle_bench",
-    about = "Standalone benchmark for Comet shuffle write and read performance"
+    about = "Standalone benchmark for Comet shuffle write performance"
 )]
 struct Args {
     /// Path to input Parquet file or directory of Parquet files
@@ -79,7 +79,7 @@ struct Args {
     hash_columns: String,
 
     /// Compression codec: none, lz4, zstd, snappy
-    #[arg(long, default_value = "zstd")]
+    #[arg(long, default_value = "lz4")]
     codec: String,
 
     /// Zstd compression level (1-22)
