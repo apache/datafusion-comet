@@ -618,7 +618,7 @@ class CometWindowExecSuite extends CometTestBase {
       spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
       val df = sql("""
         SELECT a, b, c,
-          LAG(c) OVER (PARTITION BY a ORDER BY b) as lag_c
+          LAG(c) OVER (PARTITION BY a ORDER BY b, c) as lag_c
         FROM window_test
       """)
       checkSparkAnswerAndOperator(df)
@@ -638,7 +638,7 @@ class CometWindowExecSuite extends CometTestBase {
       spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
       val df = sql("""
         SELECT a, b, c,
-          LAG(c, 2, -1) OVER (PARTITION BY a ORDER BY b) as lag_c_2
+          LAG(c, 2, -1) OVER (PARTITION BY a ORDER BY b, c) as lag_c_2
         FROM window_test
       """)
       checkSparkAnswerAndOperator(df)
