@@ -87,20 +87,16 @@ allocations to Sort/Aggregate while the process is already near OOM from untrack
 This explains the 32GB requirement: you need enough headroom for all untracked memory
 on top of the tracked pool.
 
-### Spark spill() Callback is Also a No-Op
+### Spark spill() Callback
 
-`spark/src/main/java/org/apache/spark/CometTaskMemoryManager.java:99-113`:
+`NativeMemoryConsumer.spill()` now forwards spill requests to the native memory pool
+via JNI. When Spark calls `spill(size)`, it sets a `SpillState.pressure` atomic in the
+native pool. The pool's `try_grow()` checks this and returns `ResourcesExhausted`,
+causing DataFusion's Sort/Aggregate/Shuffle operators to spill internally. Freed bytes
+are tracked via `shrink()` and returned to Spark.
 
-```java
-private class NativeMemoryConsumer extends MemoryConsumer {
-    public long spill(long size, MemoryConsumer trigger) {
-        return 0; // No spilling
-    }
-}
-```
-
-Even if memory were tracked, Spark can't reclaim it. But fixing the spill callback
-alone wouldn't help without fixing the tracking gaps first.
+See `SpillState` in `native/core/src/execution/memory_pools/spill.rs` and the
+`requestSpill` JNI function in `native/core/src/execution/jni_api.rs`.
 
 ### Per-Operator Status (Default Config)
 
@@ -120,8 +116,8 @@ alone wouldn't help without fixing the tracking gaps first.
 
 | Capability | Comet | Gluten |
 |-----------|-------|--------|
-| Spark spill callback | Returns 0 (no-op) | Hierarchical spill cascade via TreeMemoryConsumer |
-| Hash join spill | None | Velox spills hash tables to disk |
+| Spark spill callback | Forwards to native via SpillState pressure | Hierarchical spill cascade via TreeMemoryConsumer |
+| Hash join spill | None (experimental, disabled by default) | Velox spills hash tables to disk |
 | Per-operator tracking | Single NativeMemoryConsumer | Per-operator MemoryTarget children |
 | Retry on OOM | None | Multi-retry with exponential backoff + GC |
 | Memory isolation | Proportional per-task limit | Hard per-task cap option |
@@ -209,17 +205,32 @@ partition instead of raw `RecordBatch` objects. Key differences:
 - **Still greedy**: The new writer still buffers until `try_grow()` fails, but the
   compressed representation means each buffer unit is much smaller.
 
-### Key Insight
+### Spill Callback Results
 
-The untracked memory sources (ScanExec FFI batches, array copies) are likely secondary.
-The primary memory issue is **elastic buffering combined with broken cross-task eviction**:
-1. Shuffle writer greedily fills available pool space
-2. Multiple concurrent tasks each do this
-3. Spark cannot reclaim from any of them (spill returns 0)
-4. In a constrained container, this leads to OOM
+After implementing the spill callback (`SpillState` + `NativeMemoryConsumer.spill()`),
+Q9 was re-benchmarked:
 
-The new shuffle writer (#3845) will help by reducing per-buffer memory, but the
-cross-task eviction problem remains.
+**local[4] (4 concurrent tasks):**
+
+| Config | Q9 Before | Q9 After | Change |
+|--------|-----------|----------|--------|
+| Comet 4g | 5911 MB | 5896 MB | -15 MB |
+| Comet 8g | 6359 MB | 6060 MB | -299 MB |
+| 4g→8g delta | 448 MB | 164 MB | **-63% elastic growth** |
+
+**local[8] (8 concurrent tasks):**
+
+| Config | Q9 RSS |
+|--------|--------|
+| Spark 4g | 8476 MB |
+| Comet 4g | 8525 MB |
+| Comet 8g | 8448 MB |
+| 4g→8g delta | -77 MB (within noise) |
+
+With 8 concurrent tasks, Comet's memory usage is **on par with Spark** (8525 vs 8476 MB)
+and the elastic growth is effectively eliminated. The spill callback enables Spark to
+apply backpressure to Comet's native memory pool, preventing shuffle writers from
+greedily expanding when more offHeap is available.
 
 ## Debugging Steps
 
@@ -295,20 +306,18 @@ reservation through from the calling ScanExec.
 `ShuffleScanExec` should hold a `MemoryReservation` and track decompressed batch
 sizes, similar to the ScanExec fix.
 
-### Priority 4: Implement spill() Callback
+### Priority 4: Implement spill() Callback — DONE
 
-After memory tracking is in place, implement a real `spill()` in
-`NativeMemoryConsumer` using the shrink-the-pool approach:
+Implemented via `SpillState` + JNI `requestSpill`. The shrink-the-pool approach:
 
-1. When Spark calls `spill(size)`, JNI into native to set a `spill_pressure` atomic
-2. Pool's `try_grow()` checks `spill_pressure` and returns `ResourcesExhausted`
-3. Sort/Aggregate operators react by spilling internally
-4. As operators `shrink()` their reservations, decrement `spill_pressure`
-5. Return actual bytes freed to Spark
+1. When Spark calls `spill(size)`, JNI into native to set `SpillState.pressure`
+2. Pool's `try_grow()` checks pressure and returns `ResourcesExhausted`
+3. Sort/Aggregate/Shuffle operators react by spilling internally
+4. As operators call `shrink()`, freed bytes are tracked and reported back
+5. Actual bytes freed returned to Spark
 
-This is secondary because fixing tracking (Priorities 1-3) means the pool will
-naturally deny allocations when physical memory is scarce, triggering DataFusion's
-existing spill without needing Spark coordination.
+See `native/core/src/execution/memory_pools/spill.rs` and
+`spark/src/main/java/org/apache/spark/CometTaskMemoryManager.java`.
 
 ### Priority 5: Window Function Spill
 
@@ -328,24 +337,16 @@ Comet's challenge is the FFI boundary — Arrow arrays arrive from JVM as raw po
 with no allocator integration. The arrays are allocated by the JVM's Arrow library,
 and Comet's native side just maps them. Tracking must be explicitly added.
 
-### Implementation Phases
+### Remaining Work
 
-**Phase 1: Measurement**
-- Enable `spark.comet.debug.memory.enabled=true`
-- Run TPC-DS 1TB, identify which queries OOM first
-- Measure ratio of tracked vs untracked memory
-
-**Phase 2: Track ScanExec batches (highest impact)**
+**Phase 1: Track ScanExec batches**
 - Add MemoryReservation to ScanExec
 - Track batch sizes on import, release on consumption
-- Re-test TPC-DS 1TB — this alone may dramatically reduce memory requirement
 
-**Phase 3: Track remaining gaps**
+**Phase 2: Track remaining gaps**
 - copy.rs array copies
 - shuffle_scan.rs decompression buffers
 - Selection vector processing
 
-**Phase 4: Spill callback (if needed)**
-- Implement shrink-the-pool mechanism in NativeMemoryConsumer
-- Wire through JNI to native pool
-- Allows Spark to proactively reclaim memory from native operators
+**Phase 3: Extend spill callback to FairUnified pool**
+- Same pattern as GreedyUnified — add SpillState to CometFairMemoryPool
