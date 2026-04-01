@@ -26,6 +26,7 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, Row}
 import org.apache.spark.sql.comet.CometWindowExec
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
+import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.expressions.Window
 import org.apache.spark.sql.functions.{count, lead, sum}
 import org.apache.spark.sql.internal.SQLConf
@@ -606,42 +607,46 @@ class CometWindowExecSuite extends CometTestBase {
   }
 
   test("window: LAG with default offset") {
-    withTempDir { dir =>
-      (0 until 30)
-        .map(i => (i % 3, i % 5, i))
-        .toDF("a", "b", "c")
-        .repartition(3)
-        .write
-        .mode("overwrite")
-        .parquet(dir.toString)
+    withSQLConf(CometConf.getOperatorAllowIncompatConfigKey(classOf[WindowExec]) -> "true") {
+      withTempDir { dir =>
+        (0 until 30)
+          .map(i => (i % 3, i % 5, i))
+          .toDF("a", "b", "c")
+          .repartition(3)
+          .write
+          .mode("overwrite")
+          .parquet(dir.toString)
 
-      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
-      val df = sql("""
-        SELECT a, b, c,
-          LAG(c) OVER (PARTITION BY a ORDER BY b, c) as lag_c
-        FROM window_test
-      """)
-      checkSparkAnswerAndOperator(df)
+        spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
+        val df = sql("""
+          SELECT a, b, c,
+            LAG(c) OVER (PARTITION BY a ORDER BY b, c) as lag_c
+          FROM window_test
+        """)
+        checkSparkAnswerAndOperator(df)
+      }
     }
   }
 
   test("window: LAG with offset 2 and default value") {
-    withTempDir { dir =>
-      (0 until 30)
-        .map(i => (i % 3, i % 5, i))
-        .toDF("a", "b", "c")
-        .repartition(3)
-        .write
-        .mode("overwrite")
-        .parquet(dir.toString)
+    withSQLConf(CometConf.getOperatorAllowIncompatConfigKey(classOf[WindowExec]) -> "true") {
+      withTempDir { dir =>
+        (0 until 30)
+          .map(i => (i % 3, i % 5, i))
+          .toDF("a", "b", "c")
+          .repartition(3)
+          .write
+          .mode("overwrite")
+          .parquet(dir.toString)
 
-      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
-      val df = sql("""
-        SELECT a, b, c,
-          LAG(c, 2, -1) OVER (PARTITION BY a ORDER BY b, c) as lag_c_2
-        FROM window_test
-      """)
-      checkSparkAnswerAndOperator(df)
+        spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
+        val df = sql("""
+          SELECT a, b, c,
+            LAG(c, 2, -1) OVER (PARTITION BY a ORDER BY b, c) as lag_c_2
+          FROM window_test
+        """)
+        checkSparkAnswerAndOperator(df)
+      }
     }
   }
 
