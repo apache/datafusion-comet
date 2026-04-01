@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+mod metrics;
 mod sort_merge_join;
 
 pub(crate) use sort_merge_join::CometSortMergeJoinExec;
