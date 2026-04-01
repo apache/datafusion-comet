@@ -852,6 +852,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_partition_output_stream_write_and_read() {
         let batch = make_test_batch(&[1, 2, 3, 4, 5]);
         let schema = batch.schema();
