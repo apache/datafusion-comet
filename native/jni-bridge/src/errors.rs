@@ -171,6 +171,25 @@ pub enum CometError {
     },
 }
 
+impl CometError {
+    /// Convert a `JavaException` into an `Internal` error, dropping the JNI
+    /// `GlobalRef` while the current thread is still attached to the JVM.
+    ///
+    /// Call this on errors returned from JNI helper methods that may execute on
+    /// threads not permanently attached to the JVM (e.g. tokio worker threads
+    /// used by the memory pool). Without this, the `GlobalRef` can outlive the
+    /// `AttachGuard` and be dropped on a detached thread, which triggers a
+    /// warning and an expensive temporary attach/detach cycle.
+    pub fn drop_throwable(self) -> Self {
+        match self {
+            CometError::JavaException { class, msg, .. } => {
+                CometError::Internal(format!("{class}: {msg}"))
+            }
+            other => other,
+        }
+    }
+}
+
 pub fn init() {
     std::panic::set_hook(Box::new(|panic_info| {
         // Log the panic message and location to stderr so it is visible in CI logs

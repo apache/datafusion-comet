@@ -22,7 +22,10 @@ use std::{
 
 use jni::objects::GlobalRef;
 
-use crate::{errors::CometResult, jvm_bridge::JVMClasses};
+use crate::{
+    errors::{CometError, CometResult},
+    jvm_bridge::JVMClasses,
+};
 use datafusion::common::resources_err;
 use datafusion::execution::memory_pool::MemoryConsumer;
 use datafusion::{
@@ -74,6 +77,7 @@ impl CometFairMemoryPool {
             jni_call!(&mut env,
               comet_task_memory_manager(handle).acquire_memory(additional as i64) -> i64)
         }
+        .map_err(CometError::drop_throwable)
     }
 
     fn release(&self, size: usize) -> CometResult<()> {
@@ -82,6 +86,7 @@ impl CometFairMemoryPool {
         unsafe {
             jni_call!(&mut env, comet_task_memory_manager(handle).release_memory(size as i64) -> ())
         }
+        .map_err(CometError::drop_throwable)
     }
 }
 
