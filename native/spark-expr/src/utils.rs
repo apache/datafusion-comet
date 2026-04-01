@@ -325,6 +325,19 @@ pub fn unlikely(b: bool) -> bool {
 mod tests {
     use super::*;
 
+    fn array_containing(local_datetime: &str) -> ArrayRef {
+        let dt = NaiveDateTime::parse_from_str(local_datetime, "%Y-%m-%d %H:%M:%S").unwrap();
+        let ts = dt.and_utc().timestamp_micros();
+        Arc::new(TimestampMicrosecondArray::from(vec![ts]))
+    }
+
+    fn micros_for(datetime: &str) -> i64 {
+        NaiveDateTime::parse_from_str(datetime, "%Y-%m-%d %H:%M:%S")
+            .unwrap()
+            .and_utc()
+            .timestamp_micros()
+    }
+
     #[test]
     fn test_build_bool_state() {
         let mut builder = BooleanBufferBuilder::new(0);
@@ -342,5 +355,41 @@ mod tests {
             build_bool_state(&mut builder, &EmitTo::First(9))
         );
         assert_eq!(last, build_bool_state(&mut builder, &EmitTo::All));
+    }
+
+    #[test]
+    fn test_timestamp_ntz_to_timestamp_handles_non_existent_time() {
+        let result = std::panic::catch_unwind(|| {
+            timestamp_ntz_to_timestamp(
+                array_containing("2024-03-31 01:30:00"),
+                "Europe/London",
+                None,
+            )
+        });
+
+        assert!(result.is_ok());
+        let output = result.unwrap().unwrap();
+        assert_eq!(
+            as_primitive_array::<TimestampMicrosecondType>(&output).value(0),
+            micros_for("2024-03-31 01:30:00")
+        );
+    }
+
+    #[test]
+    fn test_timestamp_ntz_to_timestamp_handles_ambiguous_time() {
+        let result = std::panic::catch_unwind(|| {
+            timestamp_ntz_to_timestamp(
+                array_containing("2024-10-27 01:30:00"),
+                "Europe/London",
+                None,
+            )
+        });
+
+        assert!(result.is_ok());
+        let output = result.unwrap().unwrap();
+        assert_eq!(
+            as_primitive_array::<TimestampMicrosecondType>(&output).value(0),
+            micros_for("2024-10-27 00:30:00")
+        );
     }
 }
