@@ -197,7 +197,7 @@ fn timestamp_ntz_to_timestamp(
                     .ok_or_else(|| datetime_cast_err(value))
                     .map(|local_datetime| {
                         let datetime: DateTime<Tz> =
-                            tz.from_local_datetime(&local_datetime).unwrap();
+                            tz.from_local_datetime(&local_datetime).earliest().unwrap();
                         datetime.timestamp_micros()
                     })
             })?;
@@ -216,7 +216,7 @@ fn timestamp_ntz_to_timestamp(
                     .ok_or_else(|| datetime_cast_err(value))
                     .map(|local_datetime| {
                         let datetime: DateTime<Tz> =
-                            tz.from_local_datetime(&local_datetime).unwrap();
+                            tz.from_local_datetime(&local_datetime).earliest().unwrap();
                         datetime.timestamp_millis()
                     })
             })?;
