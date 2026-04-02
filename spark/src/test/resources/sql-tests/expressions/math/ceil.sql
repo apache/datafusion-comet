@@ -16,7 +16,6 @@
 -- under the License.
 
 -- Config: spark.comet.expression.Ceil.allowIncompatible=true
--- ConfigMatrix: parquet.enable.dictionary=false,true
 
 statement
 CREATE TABLE test_ceil(f float, d double) USING parquet
