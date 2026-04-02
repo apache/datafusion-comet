@@ -63,10 +63,7 @@ impl<W: Write> BufBatchWriter<W> {
         Ok(())
     }
 
-    pub(crate) fn flush(
-        &mut self,
-        encode_time: &Time,
-    ) -> datafusion::common::Result<()> {
+    pub(crate) fn flush(&mut self, encode_time: &Time) -> datafusion::common::Result<()> {
         // Finish any remaining buffered rows in the coalescer
         self.coalescer.finish_buffered_batch()?;
         while let Some(batch) = self.coalescer.next_completed_batch() {
