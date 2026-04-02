@@ -714,6 +714,26 @@ class CometWindowExecSuite extends CometTestBase {
     }
   }
 
+  test("window: LEAD with IGNORE NULLS") {
+    withSQLConf(CometConf.getOperatorAllowIncompatConfigKey(classOf[WindowExec]) -> "true") {
+      withTempDir { dir =>
+        Seq((1, 1, Some(10)), (1, 2, None), (1, 3, Some(30)), (2, 1, None), (2, 2, Some(20)))
+          .toDF("a", "b", "c")
+          .write
+          .mode("overwrite")
+          .parquet(dir.toString)
+
+        spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
+        val df = sql("""
+          SELECT a, b, c,
+            LEAD(c) IGNORE NULLS OVER (PARTITION BY a ORDER BY b) as lead_c
+          FROM window_test
+        """)
+        checkSparkAnswerAndOperator(df)
+      }
+    }
+  }
+
   // TODO: FIRST_VALUE causes encoder error
   // org.apache.spark.SparkUnsupportedOperationException: [ENCODER_NOT_FOUND] Not found an encoder of the type Any
   ignore("window: FIRST_VALUE with default ignore nulls") {
