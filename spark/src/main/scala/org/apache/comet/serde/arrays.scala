@@ -88,7 +88,7 @@ object CometArrayRemove
 
 object CometArrayAppend extends CometExpressionSerde[ArrayAppend] {
 
-  override def getSupportLevel(expr: ArrayAppend): SupportLevel = Incompatible(None)
+  override def getSupportLevel(expr: ArrayAppend): SupportLevel = Compatible()
 
   override def convert(
       expr: ArrayAppend,
@@ -100,10 +100,13 @@ object CometArrayAppend extends CometExpressionSerde[ArrayAppend] {
     val arrayExprProto = exprToProto(expr.children.head, inputs, binding)
     val keyExprProto = exprToProto(expr.children(1), inputs, binding)
 
+    // DataFusion's array_append always returns a list with nullable elements,
+    // so we must promise ArrayType(elementType, containsNull = true) here even if
+    // Spark's expr.dataType has containsNull = false (e.g. for array(1,2,3)).
     val arrayAppendScalarExpr =
       scalarFunctionExprToProtoWithReturnType(
         "array_append",
-        ArrayType(elementType = elementType),
+        ArrayType(elementType, containsNull = true),
         false,
         arrayExprProto,
         keyExprProto)
@@ -244,7 +247,12 @@ object CometArrayMin extends CometExpressionSerde[ArrayMin] {
 
 object CometArraysOverlap extends CometExpressionSerde[ArraysOverlap] {
 
-  override def getSupportLevel(expr: ArraysOverlap): SupportLevel = Incompatible(None)
+  override def getSupportLevel(expr: ArraysOverlap): SupportLevel =
+    Incompatible(
+      Some(
+        "Inconsistent behavior with NULL values" +
+          " (https://github.com/apache/datafusion-comet/issues/3645)" +
+          " (https://github.com/apache/datafusion-comet/issues/2036)"))
 
   override def convert(
       expr: ArraysOverlap,
@@ -443,7 +451,11 @@ object CometArrayInsert extends CometExpressionSerde[ArrayInsert] {
 
 object CometArrayUnion extends CometExpressionSerde[ArrayUnion] {
 
-  override def getSupportLevel(expr: ArrayUnion): SupportLevel = Incompatible(None)
+  override def getSupportLevel(expr: ArrayUnion): SupportLevel =
+    Incompatible(
+      Some(
+        "Correctness issue" +
+          " (https://github.com/apache/datafusion-comet/issues/3644)"))
 
   override def convert(
       expr: ArrayUnion,

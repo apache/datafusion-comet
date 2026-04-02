@@ -25,7 +25,7 @@ use datafusion::execution::memory_pool::{
     FairSpillPool, GreedyMemoryPool, MemoryPool, TrackConsumersPool, UnboundedMemoryPool,
 };
 use fair_pool::CometFairMemoryPool;
-use jni::objects::GlobalRef;
+use jni::objects::{Global, JObject};
 use once_cell::sync::OnceCell;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
@@ -36,7 +36,7 @@ pub(crate) use task_shared::*;
 
 pub(crate) fn create_memory_pool(
     memory_pool_config: &MemoryPoolConfig,
-    comet_task_memory_manager: Arc<GlobalRef>,
+    comet_task_memory_manager: Arc<Global<JObject<'static>>>,
     task_attempt_id: i64,
 ) -> Arc<dyn MemoryPool> {
     const NUM_TRACKED_CONSUMERS: usize = 10;
