@@ -294,6 +294,10 @@ message ShuffleWriter {
   // Size of the write buffer in bytes used when writing shuffle data to disk.
   // Larger values may improve write performance but use more memory.
   int32 write_buffer_size = 8;
+  // Whether to use immediate mode partitioner. When true, partitioned IPC blocks
+  // are written immediately as batches arrive. When false, rows are buffered
+  // before writing (the original behavior).
+  bool immediate_mode = 9;
 }
 
 message ParquetWriter {

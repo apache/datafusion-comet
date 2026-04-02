@@ -19,9 +19,7 @@
 
 package org.apache.spark.sql.comet.execution.shuffle
 
-import java.io.{EOFException, InputStream}
-import java.nio.{ByteBuffer, ByteOrder}
-import java.nio.channels.{Channels, ReadableByteChannel}
+import java.io.InputStream
 
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -43,27 +41,32 @@ case class NativeBatchDecoderIterator(
     extends Iterator[ColumnarBatch] {
 
   private var isClosed = false
-  private val longBuf = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN)
   private var currentBatch: ColumnarBatch = null
-  private var batch = fetchNext()
 
-  import NativeBatchDecoderIterator._
-
-  private val channel: ReadableByteChannel = if (in != null) {
-    Channels.newChannel(in)
+  // Open the native stream reader
+  private val handle: Long = if (in != null) {
+    nativeLib.openShuffleStream(in)
   } else {
-    null
+    0L
   }
 
+  // Get field count from the native reader (it parsed the schema on open)
+  private val numFields: Int = if (handle != 0L) {
+    nativeLib.shuffleStreamNumFields(handle).toInt
+  } else {
+    0
+  }
+
+  private var batch = fetchNext()
+
   def hasNext(): Boolean = {
-    if (channel == null || isClosed) {
+    if (handle == 0L || isClosed) {
       return false
     }
     if (batch.isDefined) {
       return true
     }
 
-    // Release the previous batch.
     if (currentBatch != null) {
       currentBatch.close()
       currentBatch = null
@@ -81,89 +84,24 @@ case class NativeBatchDecoderIterator(
     if (!hasNext) {
       throw new NoSuchElementException
     }
-
     val nextBatch = batch.get
-
     currentBatch = nextBatch
     batch = None
     currentBatch
   }
 
   private def fetchNext(): Option[ColumnarBatch] = {
-    if (channel == null || isClosed) {
+    if (handle == 0L || isClosed) {
       return None
     }
 
-    // read compressed batch size from header
-    try {
-      longBuf.clear()
-      while (longBuf.hasRemaining && channel.read(longBuf) >= 0) {}
-    } catch {
-      case _: EOFException =>
-        close()
-        return None
-    }
-
-    // If we reach the end of the stream, we are done, or if we read partial length
-    // then the stream is corrupted.
-    if (longBuf.hasRemaining) {
-      if (longBuf.position() == 0) {
-        close()
-        return None
-      }
-      throw new EOFException("Data corrupt: unexpected EOF while reading compressed ipc lengths")
-    }
-
-    // get compressed length (including headers)
-    longBuf.flip()
-    val compressedLength = longBuf.getLong
-
-    // read field count from header
-    longBuf.clear()
-    while (longBuf.hasRemaining && channel.read(longBuf) >= 0) {}
-    if (longBuf.hasRemaining) {
-      throw new EOFException("Data corrupt: unexpected EOF while reading field count")
-    }
-    longBuf.flip()
-    val fieldCount = longBuf.getLong.toInt
-
-    // read body
-    val bytesToRead = compressedLength - 8
-    if (bytesToRead > Integer.MAX_VALUE) {
-      // very unlikely that shuffle block will reach 2GB
-      throw new IllegalStateException(
-        s"Native shuffle block size of $bytesToRead exceeds " +
-          s"maximum of ${Integer.MAX_VALUE}. Try reducing shuffle batch size.")
-    }
-    var dataBuf = threadLocalDataBuf.get()
-    if (dataBuf.capacity() < bytesToRead) {
-      // it is unlikely that we would overflow here since it would
-      // require a 1GB compressed shuffle block but we check anyway
-      val newCapacity = (bytesToRead * 2L).min(Integer.MAX_VALUE).toInt
-      dataBuf = ByteBuffer.allocateDirect(newCapacity)
-      threadLocalDataBuf.set(dataBuf)
-    }
-    dataBuf.clear()
-    dataBuf.limit(bytesToRead.toInt)
-    while (dataBuf.hasRemaining && channel.read(dataBuf) >= 0) {}
-    if (dataBuf.hasRemaining) {
-      throw new EOFException("Data corrupt: unexpected EOF while reading compressed batch")
-    }
-
-    // make native call to decode batch
     val startTime = System.nanoTime()
     val batch = nativeUtil.getNextBatch(
-      fieldCount,
+      numFields,
       (arrayAddrs, schemaAddrs) => {
-        nativeLib.decodeShuffleBlock(
-          dataBuf,
-          bytesToRead.toInt,
-          arrayAddrs,
-          schemaAddrs,
-          tracingEnabled)
+        nativeLib.nextShuffleStreamBatch(handle, arrayAddrs, schemaAddrs)
       })
     decodeTime.add(System.nanoTime() - startTime)
-
     batch
   }
 
@@ -174,25 +112,14 @@ case class NativeBatchDecoderIterator(
           currentBatch.close()
           currentBatch = null
         }
-        in.close()
-        resetDataBuf()
+        if (handle != 0L) {
+          nativeLib.closeShuffleStream(handle)
+        }
+        if (in != null) {
+          in.close()
+        }
         isClosed = true
       }
-    }
-  }
-}
-
-object NativeBatchDecoderIterator {
-
-  private val INITIAL_BUFFER_SIZE = 128 * 1024
-
-  private val threadLocalDataBuf: ThreadLocal[ByteBuffer] = ThreadLocal.withInitial(() => {
-    ByteBuffer.allocateDirect(INITIAL_BUFFER_SIZE)
-  })
-
-  private def resetDataBuf(): Unit = {
-    if (threadLocalDataBuf.get().capacity() > INITIAL_BUFFER_SIZE) {
-      threadLocalDataBuf.set(ByteBuffer.allocateDirect(INITIAL_BUFFER_SIZE))
     }
   }
 }

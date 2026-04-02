@@ -61,7 +61,6 @@ use datafusion_spark::function::string::space::SparkSpace;
 use futures::poll;
 use futures::stream::StreamExt;
 use futures::FutureExt;
-use jni::objects::JByteBuffer;
 use jni::sys::{jlongArray, JNI_FALSE};
 use jni::{
     errors::Result as JNIResult,
@@ -83,7 +82,7 @@ use crate::execution::memory_pools::{
     create_memory_pool, handle_task_shared_pool_release, parse_memory_pool_config, MemoryPoolConfig,
 };
 use crate::execution::operators::{ScanExec, ShuffleScanExec};
-use crate::execution::shuffle::{read_ipc_compressed, CompressionCodec};
+use crate::execution::shuffle::{CompressionCodec, ShuffleStreamReader};
 use crate::execution::spark_plan::SparkPlan;
 
 use crate::execution::tracing::{log_memory_usage, trace_begin, trace_end, with_trace};
@@ -809,7 +808,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative
                 let compression_codec = match compression_codec.as_str() {
                     "zstd" => CompressionCodec::Zstd(compression_level),
                     "lz4" => CompressionCodec::Lz4Frame,
-                    "snappy" => CompressionCodec::Snappy,
                     _ => CompressionCodec::Lz4Frame,
                 };
 
@@ -876,27 +874,71 @@ pub extern "system" fn Java_org_apache_comet_Native_sortRowPartitionsNative(
 }
 
 #[no_mangle]
-/// Used by Comet native shuffle reader
+/// Open a shuffle stream reader over a JVM InputStream.
+/// Returns an opaque handle (pointer) to a `ShuffleStreamReader`.
 /// # Safety
 /// This function is inherently unsafe since it deals with raw pointers passed from JNI.
-pub unsafe extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlock(
+pub unsafe extern "system" fn Java_org_apache_comet_Native_openShuffleStream(
     e: JNIEnv,
     _class: JClass,
-    byte_buffer: JByteBuffer,
-    length: jint,
-    array_addrs: JLongArray,
-    schema_addrs: JLongArray,
-    tracing_enabled: jboolean,
+    input_stream: JObject,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| {
-        with_trace("decodeShuffleBlock", tracing_enabled != JNI_FALSE, || {
-            let raw_pointer = env.get_direct_buffer_address(&byte_buffer)?;
-            let length = length as usize;
-            let slice: &[u8] = unsafe { std::slice::from_raw_parts(raw_pointer, length) };
-            let batch = read_ipc_compressed(slice)?;
-            prepare_output(&mut env, array_addrs, schema_addrs, batch, false)
-        })
+        let reader =
+            ShuffleStreamReader::new(&mut env, &input_stream).map_err(CometError::Internal)?;
+        let handle = Box::into_raw(Box::new(reader));
+        Ok(handle as jlong)
     })
+}
+
+#[no_mangle]
+/// Read the next batch from a shuffle stream, exporting via Arrow FFI.
+/// Returns the row count, or -1 if the stream is exhausted.
+/// # Safety
+/// This function is inherently unsafe since it deals with raw pointers passed from JNI.
+pub unsafe extern "system" fn Java_org_apache_comet_Native_nextShuffleStreamBatch(
+    e: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+    array_addrs: JLongArray,
+    schema_addrs: JLongArray,
+) -> jlong {
+    try_unwrap_or_throw(&e, |mut env| {
+        let reader = unsafe { &mut *(handle as *mut ShuffleStreamReader) };
+        match reader.next_batch().map_err(CometError::Internal)? {
+            Some(batch) => prepare_output(&mut env, array_addrs, schema_addrs, batch, false),
+            None => Ok(-1_i64),
+        }
+    })
+}
+
+#[no_mangle]
+/// Get the number of fields in the shuffle stream's schema.
+/// # Safety
+/// This function is inherently unsafe since it deals with raw pointers passed from JNI.
+pub unsafe extern "system" fn Java_org_apache_comet_Native_shuffleStreamNumFields(
+    _e: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+) -> jlong {
+    let reader = unsafe { &*(handle as *mut ShuffleStreamReader) };
+    reader.num_fields() as jlong
+}
+
+#[no_mangle]
+/// Close and drop a shuffle stream reader.
+/// # Safety
+/// This function is inherently unsafe since it deals with raw pointers passed from JNI.
+pub unsafe extern "system" fn Java_org_apache_comet_Native_closeShuffleStream(
+    _e: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+) {
+    if handle != 0 {
+        unsafe {
+            let _ = Box::from_raw(handle as *mut ShuffleStreamReader);
+        }
+    }
 }
 
 #[no_mangle]
