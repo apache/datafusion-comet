@@ -18,9 +18,7 @@
 use crate::{
     errors::CometError,
     execution::{
-        operators::ExecutionError,
-        planner::TEST_EXEC_CONTEXT_ID,
-        shuffle::ShuffleStreamReader,
+        operators::ExecutionError, planner::TEST_EXEC_CONTEXT_ID, shuffle::ShuffleStreamReader,
     },
     jvm_bridge::JVMClasses,
 };
@@ -468,12 +466,9 @@ mod tests {
         // Write as Arrow IPC stream with compression
         let write_options = CompressionCodec::Zstd(1).ipc_write_options().unwrap();
         let mut buf = Vec::new();
-        let mut writer = StreamWriter::try_new_with_options(
-            &mut buf,
-            &dict_batch.schema(),
-            write_options,
-        )
-        .unwrap();
+        let mut writer =
+            StreamWriter::try_new_with_options(&mut buf, &dict_batch.schema(), write_options)
+                .unwrap();
         writer.write(&dict_batch).unwrap();
         writer.finish().unwrap();
 

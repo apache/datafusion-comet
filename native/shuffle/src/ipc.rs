@@ -251,9 +251,7 @@ impl ShuffleStreamReader {
 
                     match StreamReader::try_new(self.jni_stream.reader(), None) {
                         Ok(new_reader) => {
-                            self.reader = Some(unsafe {
-                                new_reader.with_skip_validation(true)
-                            });
+                            self.reader = Some(unsafe { new_reader.with_skip_validation(true) });
                             // Loop back to read from the new reader
                         }
                         Err(_) => {
