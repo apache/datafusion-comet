@@ -204,16 +204,15 @@ impl MultiPartitionShuffleRepartitioner {
         }
 
         // For zero-column schemas (e.g. COUNT queries), assign all rows to partition 0.
+        // The actual index values don't matter — the consumer only uses indices.len()
+        // as the row count for zero-column batches.
         if input.num_columns() == 0 {
             let num_rows = input.num_rows();
             self.metrics.baseline.record_output(num_rows);
             let batch_idx = self.buffered_batches.len() as u32;
             self.buffered_batches.push(input);
             let indices = &mut self.partition_indices[0];
-            indices.reserve(num_rows);
-            for row in 0..num_rows as u32 {
-                indices.push((batch_idx, row));
-            }
+            indices.resize(indices.len() + num_rows, (batch_idx, 0));
             return Ok(());
         }
 
