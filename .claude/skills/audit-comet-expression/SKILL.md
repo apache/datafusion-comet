@@ -317,6 +317,7 @@ After completing the audit (whether or not tests were added), append a row to th
 `docs/source/contributor-guide/expression-audit-log.md`.
 
 The row should include:
+
 - Expression name
 - Spark versions checked (e.g. 3.4.3, 3.5.8, 4.0.1)
 - Today's date
