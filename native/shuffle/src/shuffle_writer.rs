@@ -303,14 +303,13 @@ mod test {
             let write_options = codec.ipc_write_options().unwrap();
             let mut output = Vec::new();
             let encode_time = Time::default();
-            let write_time = Time::default();
 
             {
                 let mut writer =
                     BufBatchWriter::try_new(&mut output, batch.schema(), write_options, 8192)
                         .unwrap();
-                writer.write(&batch, &encode_time, &write_time).unwrap();
-                writer.flush(&encode_time, &write_time).unwrap();
+                writer.write(&batch, &encode_time).unwrap();
+                writer.flush(&encode_time).unwrap();
             }
 
             assert!(!output.is_empty());
@@ -634,7 +633,6 @@ mod test {
         let codec = CompressionCodec::Lz4Frame;
         let write_options = codec.ipc_write_options().unwrap();
         let encode_time = Time::default();
-        let write_time = Time::default();
 
         // Write with coalescing (batch_size=8192)
         let mut coalesced_output = Vec::new();
@@ -647,9 +645,9 @@ mod test {
             )
             .unwrap();
             for batch in &small_batches {
-                buf_writer.write(batch, &encode_time, &write_time).unwrap();
+                buf_writer.write(batch, &encode_time).unwrap();
             }
-            buf_writer.flush(&encode_time, &write_time).unwrap();
+            buf_writer.flush(&encode_time).unwrap();
         }
 
         // Write without coalescing (batch_size=1)
@@ -663,9 +661,9 @@ mod test {
             )
             .unwrap();
             for batch in &small_batches {
-                buf_writer.write(batch, &encode_time, &write_time).unwrap();
+                buf_writer.write(batch, &encode_time).unwrap();
             }
-            buf_writer.flush(&encode_time, &write_time).unwrap();
+            buf_writer.flush(&encode_time).unwrap();
         }
 
         // Verify both roundtrip correctly by reading all batches via StreamReader

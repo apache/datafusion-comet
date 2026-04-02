@@ -31,9 +31,14 @@ pub enum CompressionCodec {
 impl CompressionCodec {
     pub fn ipc_write_options(&self) -> datafusion::error::Result<IpcWriteOptions> {
         let compression = match self {
-            CompressionCodec::None | CompressionCodec::Snappy => None,
+            CompressionCodec::None => None,
             CompressionCodec::Lz4Frame => Some(CompressionType::LZ4_FRAME),
             CompressionCodec::Zstd(_) => Some(CompressionType::ZSTD),
+            CompressionCodec::Snappy => {
+                return Err(datafusion::common::DataFusionError::Execution(
+                    "Snappy is not supported for Arrow IPC compression".to_string(),
+                ));
+            }
         };
         let options = IpcWriteOptions::try_new(8, false, arrow::ipc::MetadataVersion::V5)
             .map_err(|e| datafusion::common::DataFusionError::ArrowError(Box::from(e), None))?;

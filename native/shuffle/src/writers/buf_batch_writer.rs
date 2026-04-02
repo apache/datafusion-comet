@@ -47,7 +47,6 @@ impl<W: Write> BufBatchWriter<W> {
         &mut self,
         batch: &RecordBatch,
         encode_time: &Time,
-        _write_time: &Time,
     ) -> datafusion::common::Result<()> {
         self.coalescer.push_batch(batch.clone())?;
 
@@ -67,7 +66,6 @@ impl<W: Write> BufBatchWriter<W> {
     pub(crate) fn flush(
         &mut self,
         encode_time: &Time,
-        _write_time: &Time,
     ) -> datafusion::common::Result<()> {
         // Finish any remaining buffered rows in the coalescer
         self.coalescer.finish_buffered_batch()?;

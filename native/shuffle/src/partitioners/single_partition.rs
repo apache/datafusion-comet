@@ -77,11 +77,8 @@ impl ShufflePartitioner for SinglePartitionShufflePartitioner {
             self.metrics.data_size.add(batch.get_array_memory_size());
             self.metrics.baseline.record_output(num_rows);
 
-            self.output_data_writer.write(
-                &batch,
-                &self.metrics.encode_time,
-                &self.metrics.write_time,
-            )?;
+            self.output_data_writer
+                .write(&batch, &self.metrics.encode_time)?;
         }
 
         self.metrics.input_batches.add(1);
@@ -95,8 +92,7 @@ impl ShufflePartitioner for SinglePartitionShufflePartitioner {
     fn shuffle_write(&mut self) -> datafusion::common::Result<()> {
         let start_time = Instant::now();
 
-        self.output_data_writer
-            .flush(&self.metrics.encode_time, &self.metrics.write_time)?;
+        self.output_data_writer.flush(&self.metrics.encode_time)?;
 
         // Get data file length via filesystem metadata
         let data_file_length = std::fs::metadata(&self.output_data_path)
