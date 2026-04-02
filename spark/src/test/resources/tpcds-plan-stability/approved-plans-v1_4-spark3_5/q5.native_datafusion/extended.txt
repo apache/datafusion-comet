@@ -1,12 +1,12 @@
 TakeOrderedAndProject
 +- HashAggregate
-   +- CometColumnarToRow
+   +- CometNativeColumnarToRow
       +- CometColumnarExchange
          +- HashAggregate
             +- Expand
                +- Union
                   :- HashAggregate
-                  :  +- CometColumnarToRow
+                  :  +- CometNativeColumnarToRow
                   :     +- CometColumnarExchange
                   :        +- HashAggregate
                   :           +- Project
@@ -20,7 +20,7 @@ TakeOrderedAndProject
                   :                 :     :  :        +-  Scan parquet spark_catalog.default.store_sales [COMET: native_datafusion scan with DPP requires AQE to be enabled. DPP subqueries are not properly prepared in non-AQE mode.]
                   :                 :     :  :              +- SubqueryBroadcast
                   :                 :     :  :                 +- BroadcastExchange
-                  :                 :     :  :                    +- CometColumnarToRow
+                  :                 :     :  :                    +- CometNativeColumnarToRow
                   :                 :     :  :                       +- CometProject
                   :                 :     :  :                          +- CometFilter
                   :                 :     :  :                             +- CometNativeScan parquet spark_catalog.default.date_dim
@@ -30,17 +30,17 @@ TakeOrderedAndProject
                   :                 :     :           +-  Scan parquet spark_catalog.default.store_returns [COMET: native_datafusion scan with DPP requires AQE to be enabled. DPP subqueries are not properly prepared in non-AQE mode.]
                   :                 :     :                 +- ReusedSubquery
                   :                 :     +- BroadcastExchange
-                  :                 :        +- CometColumnarToRow
+                  :                 :        +- CometNativeColumnarToRow
                   :                 :           +- CometProject
                   :                 :              +- CometFilter
                   :                 :                 +- CometNativeScan parquet spark_catalog.default.date_dim
                   :                 +- BroadcastExchange
-                  :                    +- CometColumnarToRow
+                  :                    +- CometNativeColumnarToRow
                   :                       +- CometProject
                   :                          +- CometFilter
                   :                             +- CometNativeScan parquet spark_catalog.default.store
                   :- HashAggregate
-                  :  +- CometColumnarToRow
+                  :  +- CometNativeColumnarToRow
                   :     +- CometColumnarExchange
                   :        +- HashAggregate
                   :           +- Project
@@ -59,17 +59,17 @@ TakeOrderedAndProject
                   :                 :     :           +-  Scan parquet spark_catalog.default.catalog_returns [COMET: native_datafusion scan with DPP requires AQE to be enabled. DPP subqueries are not properly prepared in non-AQE mode.]
                   :                 :     :                 +- ReusedSubquery
                   :                 :     +- BroadcastExchange
-                  :                 :        +- CometColumnarToRow
+                  :                 :        +- CometNativeColumnarToRow
                   :                 :           +- CometProject
                   :                 :              +- CometFilter
                   :                 :                 +- CometNativeScan parquet spark_catalog.default.date_dim
                   :                 +- BroadcastExchange
-                  :                    +- CometColumnarToRow
+                  :                    +- CometNativeColumnarToRow
                   :                       +- CometProject
                   :                          +- CometFilter
                   :                             +- CometNativeScan parquet spark_catalog.default.catalog_page
                   +- HashAggregate
-                     +- CometColumnarToRow
+                     +- CometNativeColumnarToRow
                         +- CometColumnarExchange
                            +- HashAggregate
                               +- Project
@@ -88,17 +88,17 @@ TakeOrderedAndProject
                                     :     :        :  +- ColumnarToRow
                                     :     :        :     +-  Scan parquet spark_catalog.default.web_returns [COMET: native_datafusion scan with DPP requires AQE to be enabled. DPP subqueries are not properly prepared in non-AQE mode.]
                                     :     :        :           +- ReusedSubquery
-                                    :     :        +- CometColumnarToRow
+                                    :     :        +- CometNativeColumnarToRow
                                     :     :           +- CometProject
                                     :     :              +- CometFilter
                                     :     :                 +- CometNativeScan parquet spark_catalog.default.web_sales
                                     :     +- BroadcastExchange
-                                    :        +- CometColumnarToRow
+                                    :        +- CometNativeColumnarToRow
                                     :           +- CometProject
                                     :              +- CometFilter
                                     :                 +- CometNativeScan parquet spark_catalog.default.date_dim
                                     +- BroadcastExchange
-                                       +- CometColumnarToRow
+                                       +- CometNativeColumnarToRow
                                           +- CometProject
                                              +- CometFilter
                                                 +- CometNativeScan parquet spark_catalog.default.web_site

@@ -19,7 +19,6 @@
 
 package org.apache.comet.parquet;
 
-import java.nio.ByteBuffer;
 import java.util.Map;
 
 import org.apache.comet.IcebergApi;
@@ -110,17 +109,6 @@ public final class Native extends NativeBase {
       long handle, int pageValueCount, byte[] pageData, int valueEncoding);
 
   /**
-   * Passes a Parquet data page V1 to the native column reader.
-   *
-   * @param handle the handle to the native Parquet column reader
-   * @param pageValueCount the number of values in this data page
-   * @param buffer the actual page data, represented by a DirectByteBuffer.
-   * @param valueEncoding the encoding used by the values
-   */
-  public static native void setPageBufferV1(
-      long handle, int pageValueCount, ByteBuffer buffer, int valueEncoding);
-
-  /**
    * Passes a Parquet data page V2 to the native column reader.
    *
    * @param handle the handle to the native Parquet column reader
@@ -199,39 +187,6 @@ public final class Native extends NativeBase {
    * @param schemaAddr the memory address to the ArrowSchema struct
    */
   public static native void currentBatch(long handle, long arrayAddr, long schemaAddr);
-
-  /** Set methods to set a constant value for the reader, so it'll return constant vectors */
-  public static native void setNull(long handle);
-
-  public static native void setBoolean(long handle, boolean value);
-
-  public static native void setByte(long handle, byte value);
-
-  public static native void setShort(long handle, short value);
-
-  public static native void setInt(long handle, int value);
-
-  public static native void setLong(long handle, long value);
-
-  public static native void setFloat(long handle, float value);
-
-  public static native void setDouble(long handle, double value);
-
-  public static native void setBinary(long handle, byte[] value);
-
-  /** Set decimal backed by FixedLengthByteArray */
-  public static native void setDecimal(long handle, byte[] value);
-
-  /** Set position of row index vector for Iceberg Metadata Column */
-  @IcebergApi
-  public static native void setPosition(long handle, long value, int size);
-
-  /** Set row index vector for Spark row index metadata column and return vector size */
-  public static native int setIndices(long handle, long offset, int size, long[] indices);
-
-  /** Set deleted info for Iceberg Metadata Column */
-  @IcebergApi
-  public static native void setIsDeleted(long handle, boolean[] isDeleted);
 
   /**
    * Closes the native Parquet column reader and releases all resources associated with it.

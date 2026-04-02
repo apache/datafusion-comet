@@ -62,6 +62,9 @@ cause Comet to fall back to Spark.
 - No support for `input_file_name()`, `input_file_block_start()`, or `input_file_block_length()` SQL functions.
   The `native_datafusion` scan does not use Spark's `FileScanRDD`, so these functions cannot populate their values.
 - No support for `ignoreMissingFiles` or `ignoreCorruptFiles` being set to `true`
+- Duplicate field names in case-insensitive mode (e.g., a Parquet file with both `B` and `b` columns)
+  are detected at read time and raise a `SparkRuntimeException` with error class `_LEGACY_ERROR_TEMP_2093`,
+  matching Spark's behavior.
 
 The `native_iceberg_compat` scan has the following additional limitation that may produce incorrect results
 without falling back to Spark:
