@@ -2180,7 +2180,8 @@ class CometExecSuite extends CometTestBase {
 
       withSQLConf(
         CometConf.COMET_ENABLED.key -> "true",
-        CometConf.COMET_EXEC_ENABLED.key -> "true") {
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_NATIVE_SCAN_IMPL.key -> "native_datafusion") {
         val df = spark.read.parquet(path)
 
         // Trigger two different actions to ensure metrics are not duplicated

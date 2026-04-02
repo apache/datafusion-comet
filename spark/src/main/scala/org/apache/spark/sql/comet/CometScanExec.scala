@@ -85,7 +85,11 @@ case class CometScanExec(
 
   private lazy val driverMetrics: HashMap[String, Long] = HashMap.empty
 
-  @transient private lazy val setDriverMetrics: Unit = {
+  /**
+   * Send the driver-side metrics. Before calling this function, selectedPartitions has been
+   * initialized. See SPARK-26327 for more details.
+   */
+  private def sendDriverMetrics(): Unit = {
     driverMetrics.foreach(e => metrics(e._1).set(e._2))
     val executionId = sparkContext.getLocalProperty(SQLExecution.EXECUTION_ID_KEY)
     SQLMetrics.postDriverMetricUpdates(
@@ -93,12 +97,6 @@ case class CometScanExec(
       executionId,
       metrics.filter(e => driverMetrics.contains(e._1)).values.toSeq)
   }
-
-  /**
-   * Send the driver-side metrics. Before calling this function, selectedPartitions has been
-   * initialized. See SPARK-26327 for more details.
-   */
-  private def sendDriverMetrics(): Unit = setDriverMetrics
 
   private def isDynamicPruningFilter(e: Expression): Boolean =
     e.find(_.isInstanceOf[PlanExpression[_]]).isDefined
