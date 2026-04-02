@@ -1,4 +1,0 @@
-engine,offheap_size,query,peak_rss_mb,wall_time_sec,exit_code
-spark,4g,9,8476,86.21,0
-comet,4g,9,8525,384.09,0
-comet,8g,9,8448,384.01,0
