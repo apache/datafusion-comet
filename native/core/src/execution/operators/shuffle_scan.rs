@@ -351,15 +351,14 @@ impl RecordBatchStream for ShuffleScanStream {
 
 #[cfg(test)]
 mod tests {
-    use crate::execution::shuffle::{CompressionCodec, ShuffleBlockWriter};
+    use crate::execution::shuffle::CompressionCodec;
     use arrow::array::{Int32Array, StringArray};
     use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::ipc::reader::StreamReader;
+    use arrow::ipc::writer::StreamWriter;
     use arrow::record_batch::RecordBatch;
-    use datafusion::physical_plan::metrics::Time;
     use std::io::Cursor;
     use std::sync::Arc;
-
-    use crate::execution::shuffle::ipc::read_ipc_compressed;
 
     #[test]
     #[cfg_attr(miri, ignore)] // Miri cannot call FFI functions (zstd)
@@ -377,18 +376,18 @@ mod tests {
         )
         .unwrap();
 
-        // Write as compressed IPC
-        let writer =
-            ShuffleBlockWriter::try_new(&batch.schema(), CompressionCodec::Zstd(1)).unwrap();
-        let mut buf = Cursor::new(Vec::new());
-        let ipc_time = Time::new();
-        writer.write_batch(&batch, &mut buf, &ipc_time).unwrap();
+        // Write as Arrow IPC stream with compression
+        let write_options = CompressionCodec::Zstd(1).ipc_write_options().unwrap();
+        let mut buf = Vec::new();
+        let mut writer =
+            StreamWriter::try_new_with_options(&mut buf, &batch.schema(), write_options).unwrap();
+        writer.write(&batch).unwrap();
+        writer.finish().unwrap();
 
-        // Read back (skip 16-byte header: 8 compressed_length + 8 field_count)
-        let bytes = buf.into_inner();
-        let body = &bytes[16..];
-
-        let decoded = read_ipc_compressed(body).unwrap();
+        // Read back using standard StreamReader
+        let cursor = Cursor::new(&buf);
+        let mut reader = StreamReader::try_new(cursor, None).unwrap();
+        let decoded = reader.next().unwrap().unwrap();
         assert_eq!(decoded.num_rows(), 3);
         assert_eq!(decoded.num_columns(), 2);
 
@@ -404,9 +403,6 @@ mod tests {
     }
 
     /// Tests that ShuffleScanExec correctly unpacks dictionary-encoded columns.
-    /// Native shuffle may dictionary-encode string/binary columns, but the schema
-    /// declares value types (e.g. Utf8). Without unpacking, RecordBatch creation
-    /// fails with a schema mismatch.
     #[test]
     #[cfg_attr(miri, ignore)]
     fn test_dictionary_encoded_shuffle_block_is_unpacked() {
@@ -416,15 +412,12 @@ mod tests {
         use datafusion::physical_plan::ExecutionPlan;
         use futures::StreamExt;
 
-        // Build a batch with a dictionary-encoded string column (simulating what
-        // the native shuffle writer produces for string columns).
         let mut dict_builder = StringDictionaryBuilder::<Int32Type>::new();
         dict_builder.append_value("hello");
         dict_builder.append_value("world");
-        dict_builder.append_value("hello"); // repeated value, good for dictionary
+        dict_builder.append_value("hello");
         let dict_array = dict_builder.finish();
 
-        // The IPC schema includes the dictionary type
         let dict_schema = Arc::new(Schema::new(vec![
             Field::new("id", DataType::Int32, false),
             Field::new(
@@ -442,19 +435,22 @@ mod tests {
         )
         .unwrap();
 
-        // Write as compressed IPC (preserves dictionary encoding)
-        let writer =
-            ShuffleBlockWriter::try_new(&dict_batch.schema(), CompressionCodec::Zstd(1)).unwrap();
-        let mut buf = Cursor::new(Vec::new());
-        let ipc_time = Time::new();
-        writer
-            .write_batch(&dict_batch, &mut buf, &ipc_time)
-            .unwrap();
-        let bytes = buf.into_inner();
-        let body = &bytes[16..];
+        // Write as Arrow IPC stream with compression
+        let write_options = CompressionCodec::Zstd(1).ipc_write_options().unwrap();
+        let mut buf = Vec::new();
+        let mut writer = StreamWriter::try_new_with_options(
+            &mut buf,
+            &dict_batch.schema(),
+            write_options,
+        )
+        .unwrap();
+        writer.write(&dict_batch).unwrap();
+        writer.finish().unwrap();
 
-        // Confirm that read_ipc_compressed returns dictionary-encoded arrays
-        let decoded = read_ipc_compressed(body).unwrap();
+        // Read back using standard StreamReader
+        let cursor = Cursor::new(&buf);
+        let mut reader = StreamReader::try_new(cursor, None).unwrap();
+        let decoded = reader.next().unwrap().unwrap();
         assert!(
             matches!(decoded.column(1).data_type(), DataType::Dictionary(_, _)),
             "Expected dictionary-encoded column from IPC, got {:?}",

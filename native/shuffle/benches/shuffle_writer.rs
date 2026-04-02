@@ -18,7 +18,7 @@
 use arrow::array::builder::{Date32Builder, Decimal128Builder, Int32Builder};
 use arrow::array::{builder::StringBuilder, Array, Int32Array, RecordBatch};
 use arrow::datatypes::{DataType, Field, Schema};
-use arrow::ipc::writer::{IpcWriteOptions, StreamWriter};
+use arrow::ipc::writer::StreamWriter;
 use arrow::row::{RowConverter, SortField};
 use criterion::{criterion_group, criterion_main, Criterion};
 use datafusion::datasource::memory::MemorySourceConfig;

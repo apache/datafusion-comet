@@ -306,13 +306,9 @@ mod test {
             let write_time = Time::default();
 
             {
-                let mut writer = BufBatchWriter::try_new(
-                    &mut output,
-                    batch.schema(),
-                    write_options,
-                    8192,
-                )
-                .unwrap();
+                let mut writer =
+                    BufBatchWriter::try_new(&mut output, batch.schema(), write_options, 8192)
+                        .unwrap();
                 writer.write(&batch, &encode_time, &write_time).unwrap();
                 writer.flush(&encode_time, &write_time).unwrap();
             }
@@ -687,9 +683,9 @@ mod test {
 
     /// Read all record batches from an Arrow IPC stream, returning total row count.
     fn read_all_ipc_stream_rows(data: &[u8]) -> usize {
-        let mut reader = StreamReader::try_new(data, None).unwrap();
+        let reader = StreamReader::try_new(data, None).unwrap();
         let mut total_rows = 0;
-        while let Some(batch) = reader.next() {
+        for batch in reader {
             total_rows += batch.unwrap().num_rows();
         }
         total_rows
