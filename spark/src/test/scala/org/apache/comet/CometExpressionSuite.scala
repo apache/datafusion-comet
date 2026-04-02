@@ -28,7 +28,7 @@ import org.scalatest.Tag
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
-import org.apache.spark.sql.catalyst.expressions.{Alias, Atan2, Cast, Ceil, Floor, FromUnixTime, Literal, StructsToJson, TruncDate, TruncTimestamp}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Atan2, Cast, FromUnixTime, Literal, StructsToJson, TruncDate, TruncTimestamp}
 import org.apache.spark.sql.catalyst.optimizer.SimplifyExtractValueOps
 import org.apache.spark.sql.comet.CometProjectExec
 import org.apache.spark.sql.execution.{ProjectExec, SparkPlan}
@@ -1462,10 +1462,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("ceil and floor") {
     Seq("true", "false").foreach { dictionary =>
-      withSQLConf(
-        "parquet.enable.dictionary" -> dictionary,
-        CometConf.getExprAllowIncompatConfigKey(classOf[Ceil]) -> "true",
-        CometConf.getExprAllowIncompatConfigKey(classOf[Floor]) -> "true") {
+      withSQLConf("parquet.enable.dictionary" -> dictionary) {
         withParquetTable(
           (-5 until 5).map(i => (i.toDouble + 0.3, i.toDouble + 0.8)),
           "tbl",
@@ -1504,6 +1501,10 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               checkSparkAnswerAndOperator(s"SELECT ceil(cast(${n} as decimal(20, 0))) FROM tbl")
               checkSparkAnswerAndOperator(s"SELECT floor(cast(${n} as decimal(38, 18))) FROM tbl")
               checkSparkAnswerAndOperator(s"SELECT floor(cast(${n} as decimal(20, 0))) FROM tbl")
+            }
+            for (n <- Seq("123.45", "125.00", "-129.99")) {
+              checkSparkAnswerAndOperator(s"SELECT ceil(cast(${n} as decimal(5, 2))) FROM tbl")
+              checkSparkAnswerAndOperator(s"SELECT floor(cast(${n} as decimal(5, 2))) FROM tbl")
             }
           }
         }

@@ -127,7 +127,7 @@ use datafusion_comet_spark_expr::{
     WideDecimalBinaryExpr, WideDecimalOp,
 };
 use itertools::Itertools;
-use jni::objects::GlobalRef;
+use jni::objects::{Global, JObject};
 use num::{BigInt, ToPrimitive};
 use object_store::path::Path;
 use std::cmp::max;
@@ -910,7 +910,7 @@ impl PhysicalPlanner {
     pub(crate) fn create_plan<'a>(
         &'a self,
         spark_plan: &'a Operator,
-        inputs: &mut Vec<Arc<GlobalRef>>,
+        inputs: &mut Vec<Arc<Global<JObject<'static>>>>,
         partition_count: usize,
     ) -> PlanCreationResult {
         // Try to use the modular registry first - this automatically handles any registered operator types
@@ -1817,7 +1817,7 @@ impl PhysicalPlanner {
     #[allow(clippy::too_many_arguments)]
     fn parse_join_parameters(
         &self,
-        inputs: &mut Vec<Arc<GlobalRef>>,
+        inputs: &mut Vec<Arc<Global<JObject<'static>>>>,
         children: &[Operator],
         left_join_keys: &[Expr],
         right_join_keys: &[Expr],

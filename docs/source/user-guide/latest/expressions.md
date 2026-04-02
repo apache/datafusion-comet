@@ -130,14 +130,14 @@ Expressions that are not Spark-compatible will fall back to Spark by default and
 | Atan           | `atan`    | Yes               |                                                                                                                  |
 | Atan2          | `atan2`   | No                | atan2(-0.0, -0.0) produces incompatible result ([#1897](https://github.com/apache/datafusion-comet/issues/1897)) |
 | BRound         | `bround`  | Yes               |                                                                                                                  |
-| Ceil           | `ceil`    | No                | Incorrect results for Decimal type inputs ([#1729](https://github.com/apache/datafusion-comet/issues/1729))      |
+| Ceil           | `ceil`    | Yes               |                                                                                                                  |
 | Cos            | `cos`     | Yes               |                                                                                                                  |
 | Cosh           | `cosh`    | Yes               |                                                                                                                  |
 | Cot            | `cot`     | Yes               |                                                                                                                  |
 | Divide         | `/`       | Yes               |                                                                                                                  |
 | Exp            | `exp`     | Yes               |                                                                                                                  |
 | Expm1          | `expm1`   | Yes               |                                                                                                                  |
-| Floor          | `floor`   | No                | Incorrect results for Decimal type inputs ([#1729](https://github.com/apache/datafusion-comet/issues/1729))      |
+| Floor          | `floor`   | Yes               |                                                                                                                  |
 | Hex            | `hex`     | Yes               |                                                                                                                  |
 | IntegralDivide | `div`     | Yes               |                                                                                                                  |
 | IsNaN          | `isnan`   | Yes               |                                                                                                                  |
@@ -250,7 +250,7 @@ Comet supports using the following aggregate functions within window contexts wi
 | CreateArray    | Yes               |                                                                                                                                                                                           |
 | ElementAt      | Yes               | Input must be an array. Map inputs are not supported.                                                                                                                                     |
 | Flatten        | Yes               |                                                                                                                                                                                           |
-| GetArrayItem   | No                | Known correctness issues with index handling ([#3330](https://github.com/apache/datafusion-comet/issues/3330), [#3332](https://github.com/apache/datafusion-comet/issues/3332))           |
+| GetArrayItem   | Yes               |                                                                                                                                                                                           |
 
 ## Map Expressions
 
