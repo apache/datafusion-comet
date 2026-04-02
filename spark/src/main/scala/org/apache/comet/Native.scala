@@ -104,6 +104,18 @@ class Native extends NativeBase {
   @native def releasePlan(plan: Long): Unit
 
   /**
+   * Request that native operators spill memory. Called from CometTaskMemoryManager.spill().
+   *
+   * @param nativePlanHandle
+   *   the native ExecutionContext pointer
+   * @param size
+   *   bytes requested to free
+   * @return
+   *   actual bytes freed
+   */
+  @native def requestSpill(nativePlanHandle: Long, size: Long): Long
+
+  /**
    * Used by Comet shuffle external sorter to write sorted records to disk.
    *
    * @param addresses

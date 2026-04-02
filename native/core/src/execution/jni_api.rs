@@ -79,8 +79,10 @@ use std::{sync::Arc, task::Poll};
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc;
 
+use crate::execution::memory_pools::spill::SpillState;
 use crate::execution::memory_pools::{
-    create_memory_pool, handle_task_shared_pool_release, parse_memory_pool_config, MemoryPoolConfig,
+    create_memory_pool, handle_task_shared_pool_release, parse_memory_pool_config,
+    MemoryPoolConfig, MemoryPoolType,
 };
 use crate::execution::operators::{ScanExec, ShuffleScanExec};
 use crate::execution::shuffle::{read_ipc_compressed, CompressionCodec};
@@ -177,6 +179,8 @@ struct ExecutionContext {
     pub explain_native: bool,
     /// Memory pool config
     pub memory_pool_config: MemoryPoolConfig,
+    /// Spill state for coordinating spill requests between Spark and native operators
+    pub spill_state: Option<Arc<SpillState>>,
     /// Whether to log memory usage on each call to execute_plan
     pub tracing_enabled: bool,
 }
@@ -257,8 +261,20 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 memory_limit,
                 memory_limit_per_task,
             )?;
-            let memory_pool =
-                create_memory_pool(&memory_pool_config, task_memory_manager, task_attempt_id);
+            let spill_state = if off_heap_mode != JNI_FALSE
+                && matches!(memory_pool_config.pool_type, MemoryPoolType::GreedyUnified)
+            {
+                Some(Arc::new(SpillState::new()))
+            } else {
+                None
+            };
+
+            let memory_pool = create_memory_pool(
+                &memory_pool_config,
+                task_memory_manager,
+                task_attempt_id,
+                spill_state.clone(),
+            );
 
             let memory_pool = if logging_memory_pool {
                 Arc::new(LoggingMemoryPool::new(task_attempt_id as u64, memory_pool))
@@ -326,6 +342,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 debug_native,
                 explain_native,
                 memory_pool_config,
+                spill_state,
                 tracing_enabled,
             });
 
@@ -703,6 +720,30 @@ pub extern "system" fn Java_org_apache_comet_Native_releasePlan(
 
         let _: Box<ExecutionContext> = Box::from_raw(execution_context);
         Ok(())
+    })
+}
+
+/// Called from `CometTaskMemoryManager.spill()` via JNI to request that native
+/// operators free memory. Returns the number of bytes actually freed.
+/// # Safety
+/// This function is inherently unsafe since it deals with raw pointers passed from JNI.
+#[no_mangle]
+pub unsafe extern "system" fn Java_org_apache_comet_Native_requestSpill(
+    e: JNIEnv,
+    _class: JClass,
+    exec_context: jlong,
+    size: jlong,
+) -> jlong {
+    try_unwrap_or_throw(&e, |_env| {
+        let exec_context = get_execution_context(exec_context);
+        if let Some(ref spill_state) = exec_context.spill_state {
+            let timeout = std::time::Duration::from_secs(10);
+            let freed = spill_state.request_spill(size as usize, timeout);
+            Ok(freed as jlong)
+        } else {
+            // No spill state (not using unified pool) — can't spill
+            Ok(0i64)
+        }
     })
 }
 

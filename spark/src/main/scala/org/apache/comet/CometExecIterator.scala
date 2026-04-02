@@ -110,7 +110,7 @@ class CometExecIterator(
 
     val memoryConfig = CometExecIterator.getMemoryConfig(conf)
 
-    nativeLib.createPlan(
+    val handle = nativeLib.createPlan(
       id,
       inputIterators,
       protobufQueryPlan,
@@ -128,6 +128,11 @@ class CometExecIterator(
       taskAttemptId,
       taskCPUs,
       keyUnwrapper)
+
+    // Enable spill callback by giving the memory manager a handle to the native plan
+    cometTaskMemoryManager.setNativePlanHandle(handle)
+
+    handle
   }
 
   private var nextBatch: Option[ColumnarBatch] = None
@@ -236,6 +241,7 @@ class CometExecIterator(
       }
       nativeUtil.close()
       shuffleBlockIterators.values.foreach(_.close())
+      cometTaskMemoryManager.setNativePlanHandle(0)
       nativeLib.releasePlan(plan)
 
       if (tracingEnabled) {

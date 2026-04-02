@@ -29,6 +29,8 @@ import org.apache.spark.memory.MemoryConsumer;
 import org.apache.spark.memory.MemoryMode;
 import org.apache.spark.memory.TaskMemoryManager;
 
+import org.apache.comet.Native;
+
 /**
  * A adapter class that is used by Comet native to acquire & release memory through Spark's unified
  * memory manager. This assumes Spark's off-heap memory mode is enabled.
@@ -46,11 +48,25 @@ public class CometTaskMemoryManager {
   private final NativeMemoryConsumer nativeMemoryConsumer;
   private final AtomicLong used = new AtomicLong();
 
+  /**
+   * The native ExecutionContext handle. Set after native plan creation. Used to route spill()
+   * requests to the native memory pool.
+   */
+  private volatile long nativePlanHandle = 0;
+
   public CometTaskMemoryManager(long id, long taskAttemptId) {
     this.id = id;
     this.taskAttemptId = taskAttemptId;
     this.internal = TaskContext$.MODULE$.get().taskMemoryManager();
     this.nativeMemoryConsumer = new NativeMemoryConsumer();
+  }
+
+  /**
+   * Set the native plan handle after plan creation. This enables the spill() callback to route
+   * requests to the native memory pool.
+   */
+  public void setNativePlanHandle(long handle) {
+    this.nativePlanHandle = handle;
   }
 
   // Called by Comet native through JNI.
@@ -97,9 +113,10 @@ public class CometTaskMemoryManager {
   }
 
   /**
-   * A dummy memory consumer that does nothing when spilling. At the moment, Comet native doesn't
-   * share the same API as Spark and cannot trigger spill when acquire memory. Therefore, when
-   * acquiring memory from native or JVM, spilling can only be triggered from JVM operators.
+   * A memory consumer that routes spill requests to the native memory pool. When Spark's memory
+   * manager needs to reclaim memory (e.g., for another task), it calls spill() which signals the
+   * native pool to apply backpressure. DataFusion operators (Sort, Aggregate, Shuffle) react by
+   * spilling their internal state to disk.
    */
   private class NativeMemoryConsumer extends MemoryConsumer {
     protected NativeMemoryConsumer() {
@@ -108,13 +125,26 @@ public class CometTaskMemoryManager {
 
     @Override
     public long spill(long size, MemoryConsumer trigger) throws IOException {
-      // No spilling
-      return 0;
+      long handle = nativePlanHandle;
+      if (handle == 0) {
+        // Native plan not yet created or already destroyed
+        return 0;
+      }
+      logger.info(
+          "Task {} received spill request for {} bytes, forwarding to native", taskAttemptId, size);
+      try {
+        long freed = new Native().requestSpill(handle, size);
+        logger.info("Task {} native spill freed {} bytes", taskAttemptId, freed);
+        return freed;
+      } catch (Exception e) {
+        logger.warn("Task {} native spill failed: {}", taskAttemptId, e.getMessage());
+        return 0;
+      }
     }
 
     @Override
     public String toString() {
-      return String.format("NativeMemoryConsumer(id=%)", id);
+      return String.format("NativeMemoryConsumer(id=%d, taskAttemptId=%d)", id, taskAttemptId);
     }
   }
 }

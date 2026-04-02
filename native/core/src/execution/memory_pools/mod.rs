@@ -18,6 +18,7 @@
 mod config;
 mod fair_pool;
 pub mod logging_pool;
+pub(crate) mod spill;
 mod task_shared;
 mod unified_pool;
 
@@ -27,6 +28,7 @@ use datafusion::execution::memory_pool::{
 use fair_pool::CometFairMemoryPool;
 use jni::objects::GlobalRef;
 use once_cell::sync::OnceCell;
+use spill::SpillState;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use unified_pool::CometUnifiedMemoryPool;
@@ -38,13 +40,17 @@ pub(crate) fn create_memory_pool(
     memory_pool_config: &MemoryPoolConfig,
     comet_task_memory_manager: Arc<GlobalRef>,
     task_attempt_id: i64,
+    spill_state: Option<Arc<SpillState>>,
 ) -> Arc<dyn MemoryPool> {
     const NUM_TRACKED_CONSUMERS: usize = 10;
     match memory_pool_config.pool_type {
         MemoryPoolType::GreedyUnified => {
-            // Set Comet memory pool for native
-            let memory_pool =
-                CometUnifiedMemoryPool::new(comet_task_memory_manager, task_attempt_id);
+            let spill_state = spill_state.unwrap_or_else(|| Arc::new(SpillState::new()));
+            let memory_pool = CometUnifiedMemoryPool::new(
+                comet_task_memory_manager,
+                task_attempt_id,
+                spill_state,
+            );
             Arc::new(TrackConsumersPool::new(
                 memory_pool,
                 NonZeroUsize::new(NUM_TRACKED_CONSUMERS).unwrap(),

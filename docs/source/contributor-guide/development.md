@@ -74,6 +74,15 @@ memory reservations. This happens on whatever thread the operator is executing o
 are thread-safe (they use stored `GlobalRef`s, not thread-locals), but they do trigger
 `AttachCurrentThread`.
 
+**Spill coordination between Spark and DataFusion.** When Spark's memory manager needs to
+reclaim memory, it calls `NativeMemoryConsumer.spill()` on a Spark thread. This routes through
+JNI to `SpillState::request_spill()`, which sets a pressure value and blocks. On the native
+side, `CometUnifiedMemoryPool::try_grow()` checks `SpillState::pressure()` and returns
+`ResourcesExhausted` when pressure is set, causing DataFusion operators to spill. As operators
+call `shrink()`, freed bytes are recorded in `SpillState` and the waiting Spark thread is
+notified via a `Condvar`. This coordination crosses the JVM/tokio thread boundary — the
+requesting thread is a Spark task thread while the responding threads are tokio workers.
+
 **Scalar subqueries call into the JVM.** `Subquery::evaluate()` calls static methods on
 `CometScalarSubquery` via JNI. These use a static `HashMap`, not thread-locals, so they are
 safe from any thread.
