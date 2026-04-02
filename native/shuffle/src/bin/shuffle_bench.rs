@@ -15,8 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Standalone shuffle benchmark tool for profiling Comet shuffle write
-//! performance outside of Spark. Streams input directly from Parquet files.
+//! Standalone shuffle benchmark tool for profiling Comet shuffle write and read
+//! outside of Spark. Streams input directly from Parquet files.
 //!
 //! # Usage
 //!
@@ -24,15 +24,16 @@
 //! cargo run --release --bin shuffle_bench -- \
 //!   --input /data/tpch-sf100/lineitem/ \
 //!   --partitions 200 \
-//!   --codec lz4 \
-//!   --hash-columns 0,3
+//!   --codec zstd --zstd-level 1 \
+//!   --hash-columns 0,3 \
+//!   --read-back
 //! ```
 //!
 //! Profile with flamegraph:
 //! ```sh
 //! cargo flamegraph --release --bin shuffle_bench -- \
 //!   --input /data/tpch-sf100/lineitem/ \
-//!   --partitions 200 --codec lz4
+//!   --partitions 200 --codec zstd --zstd-level 1
 //! ```
 
 use arrow::datatypes::{DataType, SchemaRef};
@@ -45,6 +46,7 @@ use datafusion::physical_plan::common::collect;
 use datafusion::physical_plan::metrics::{MetricValue, MetricsSet};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::{ParquetReadOptions, SessionContext};
+use arrow::ipc::reader::StreamReader;
 use datafusion_comet_shuffle::{CometPartitioning, CompressionCodec, ShuffleWriterExec};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use std::fs;
@@ -55,7 +57,7 @@ use std::time::Instant;
 #[derive(Parser, Debug)]
 #[command(
     name = "shuffle_bench",
-    about = "Standalone benchmark for Comet shuffle write performance"
+    about = "Standalone benchmark for Comet shuffle write and read performance"
 )]
 struct Args {
     /// Path to input Parquet file or directory of Parquet files
@@ -78,8 +80,8 @@ struct Args {
     #[arg(long, default_value = "0")]
     hash_columns: String,
 
-    /// Compression codec: none, lz4, zstd, snappy
-    #[arg(long, default_value = "lz4")]
+    /// Compression codec: none, lz4, zstd
+    #[arg(long, default_value = "zstd")]
     codec: String,
 
     /// Zstd compression level (1-22)
@@ -89,6 +91,10 @@ struct Args {
     /// Memory limit in bytes (triggers spilling when exceeded)
     #[arg(long)]
     memory_limit: Option<usize>,
+
+    /// Also benchmark reading back the shuffle output
+    #[arg(long, default_value_t = false)]
+    read_back: bool,
 
     /// Number of iterations to run
     #[arg(long, default_value_t = 1)]
@@ -114,6 +120,11 @@ struct Args {
     /// Each task reads the same input and writes to its own output files.
     #[arg(long, default_value_t = 1)]
     concurrent_tasks: usize,
+
+    /// Shuffle mode: 'immediate' writes IPC blocks per batch as they arrive,
+    /// 'buffered' buffers all rows before writing (original behavior).
+    #[arg(long, default_value = "immediate")]
+    mode: String,
 }
 
 fn main() {
@@ -141,6 +152,7 @@ fn main() {
     println!("Partitioning:   {}", args.partitioning);
     println!("Partitions:     {}", args.partitions);
     println!("Codec:          {:?}", codec);
+    println!("Mode:           {}", args.mode);
     println!("Hash columns:   {:?}", hash_col_indices);
     if let Some(mem_limit) = args.memory_limit {
         println!("Memory limit:   {}", format_bytes(mem_limit));
@@ -156,6 +168,7 @@ fn main() {
 
     let total_iters = args.warmup + args.iterations;
     let mut write_times = Vec::with_capacity(args.iterations);
+    let mut read_times = Vec::with_capacity(args.iterations);
     let mut data_file_sizes = Vec::with_capacity(args.iterations);
     let mut last_metrics: Option<MetricsSet> = None;
     let mut last_input_metrics: Option<MetricsSet> = None;
@@ -202,7 +215,22 @@ fn main() {
             print!("  output: {}", format_bytes(data_size as usize));
         }
 
+        if args.read_back && args.concurrent_tasks <= 1 {
+            let read_elapsed = run_shuffle_read(
+                data_file.to_str().unwrap(),
+                index_file.to_str().unwrap(),
+                args.partitions,
+            );
+            if !is_warmup {
+                read_times.push(read_elapsed);
+            }
+            print!("  read: {:.3}s", read_elapsed);
+        }
         println!();
+
+        // Remove output files after each iteration to avoid filling disk
+        let _ = fs::remove_file(&data_file);
+        let _ = fs::remove_file(&index_file);
     }
 
     if args.iterations > 0 {
@@ -232,6 +260,24 @@ fn main() {
             println!(
                 "  output size:      {}",
                 format_bytes(avg_data_size as usize)
+            );
+        }
+
+        if !read_times.is_empty() {
+            let avg_data_size = data_file_sizes.iter().sum::<u64>() / data_file_sizes.len() as u64;
+            let avg_read = read_times.iter().sum::<f64>() / read_times.len() as f64;
+            let read_throughput_bytes = avg_data_size as f64 / avg_read;
+
+            println!("Read:");
+            println!("  avg time:         {:.3}s", avg_read);
+            if read_times.len() > 1 {
+                let min = read_times.iter().cloned().fold(f64::INFINITY, f64::min);
+                let max = read_times.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+                println!("  min/max:          {:.3}s / {:.3}s", min, max);
+            }
+            println!(
+                "  throughput:       {}/s (from compressed)",
+                format_bytes(read_throughput_bytes as usize)
             );
         }
 
@@ -282,6 +328,15 @@ fn print_shuffle_metrics(metrics: &MetricsSet, total_wall_time_secs: f64) {
     }
     if let Some(nanos) = get_metric("write_time") {
         println!("  write time:       {}", fmt_time(nanos));
+    }
+    if let Some(nanos) = get_metric("interleave_time") {
+        println!("  interleave time:  {}", fmt_time(nanos));
+    }
+    if let Some(nanos) = get_metric("coalesce_time") {
+        println!("  coalesce time:    {}", fmt_time(nanos));
+    }
+    if let Some(nanos) = get_metric("memcopy_time") {
+        println!("  memcopy time:     {}", fmt_time(nanos));
     }
 
     if let Some(spill_count) = get_metric("spill_count") {
@@ -413,6 +468,7 @@ fn run_shuffle_write(
             args.limit,
             data_file.to_string(),
             index_file.to_string(),
+            args.mode == "immediate",
         )
         .await
         .unwrap();
@@ -436,6 +492,7 @@ async fn execute_shuffle_write(
     limit: usize,
     data_file: String,
     index_file: String,
+    immediate_mode: bool,
 ) -> datafusion::common::Result<(MetricsSet, MetricsSet)> {
     let config = SessionConfig::new().with_batch_size(batch_size);
     let mut runtime_builder = RuntimeEnvBuilder::new();
@@ -477,6 +534,7 @@ async fn execute_shuffle_write(
         index_file,
         false,
         write_buffer_size,
+        immediate_mode,
     )
     .expect("Failed to create ShuffleWriterExec");
 
@@ -541,6 +599,7 @@ fn run_concurrent_shuffle_writes(
             let memory_limit = args.memory_limit;
             let write_buffer_size = args.write_buffer_size;
             let limit = args.limit;
+            let immediate_mode = args.mode == "immediate";
 
             handles.push(tokio::spawn(async move {
                 execute_shuffle_write(
@@ -553,6 +612,7 @@ fn run_concurrent_shuffle_writes(
                     limit,
                     data_file,
                     index_file,
+                    immediate_mode,
                 )
                 .await
                 .unwrap()
@@ -570,6 +630,52 @@ fn run_concurrent_shuffle_writes(
 
         start.elapsed().as_secs_f64()
     })
+}
+
+fn run_shuffle_read(data_file: &str, index_file: &str, num_partitions: usize) -> f64 {
+    let start = Instant::now();
+
+    let index_bytes = fs::read(index_file).expect("Failed to read index file");
+    let num_offsets = index_bytes.len() / 8;
+    let offsets: Vec<i64> = (0..num_offsets)
+        .map(|i| {
+            let bytes: [u8; 8] = index_bytes[i * 8..(i + 1) * 8].try_into().unwrap();
+            i64::from_le_bytes(bytes)
+        })
+        .collect();
+
+    let data_bytes = fs::read(data_file).expect("Failed to read data file");
+
+    let mut total_rows = 0usize;
+    let mut total_batches = 0usize;
+
+    for p in 0..num_partitions.min(offsets.len().saturating_sub(1)) {
+        let start_offset = offsets[p] as usize;
+        let end_offset = offsets[p + 1] as usize;
+
+        if start_offset >= end_offset {
+            continue;
+        }
+
+        // Each partition's data contains one or more complete IPC streams
+        let partition_data = &data_bytes[start_offset..end_offset];
+        let mut reader =
+            StreamReader::try_new(partition_data, None).expect("Failed to open IPC stream");
+        while let Some(batch_result) = reader.next() {
+            let batch = batch_result.expect("Failed to decode record batch");
+            total_rows += batch.num_rows();
+            total_batches += 1;
+        }
+    }
+
+    let elapsed = start.elapsed().as_secs_f64();
+    eprintln!(
+        "    read back {} rows in {} batches from {} partitions",
+        format_number(total_rows),
+        total_batches,
+        num_partitions
+    );
+    elapsed
 }
 
 fn build_partitioning(
@@ -604,7 +710,6 @@ fn parse_codec(codec: &str, zstd_level: i32) -> CompressionCodec {
         "none" => CompressionCodec::None,
         "lz4" => CompressionCodec::Lz4Frame,
         "zstd" => CompressionCodec::Zstd(zstd_level),
-        "snappy" => CompressionCodec::Snappy,
         other => {
             eprintln!("Unknown codec: {other}. Using zstd.");
             CompressionCodec::Zstd(zstd_level)

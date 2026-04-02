@@ -27,4 +27,4 @@ pub(crate) mod writers;
 pub use comet_partitioning::CometPartitioning;
 pub use ipc::read_ipc_compressed;
 pub use shuffle_writer::ShuffleWriterExec;
-pub use writers::{CompressionCodec, ShuffleBlockWriter};
+pub use writers::CompressionCodec;

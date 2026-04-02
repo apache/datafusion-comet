@@ -47,6 +47,7 @@ lz4_flex = { version = "0.13.0", default-features = false, features = ["frame"] 
 # parquet is only used by the shuffle_bench binary (shuffle-bench feature)
 parquet = { workspace = true, optional = true }
 simd-adler32 = "0.3.9"
+# snap, lz4_flex, zstd are still needed by ipc.rs (old read path) until Task 6
 snap = "1.1"
 tokio = { version = "1", features = ["rt-multi-thread"] }
 zstd = "0.13.3"
