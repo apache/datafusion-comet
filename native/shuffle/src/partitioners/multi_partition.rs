@@ -204,32 +204,16 @@ impl MultiPartitionShuffleRepartitioner {
         }
 
         // For zero-column schemas (e.g. COUNT queries), assign all rows to partition 0.
-        // No hashing or expression evaluation needed — just route through normal buffering.
         if input.num_columns() == 0 {
             let num_rows = input.num_rows();
             self.metrics.baseline.record_output(num_rows);
-            // All rows go to partition 0: partition_starts = [0, num_rows, num_rows, ...]
-            // partition_row_indices = [0, 1, 2, ..., num_rows-1]
-            let mut scratch = std::mem::take(&mut self.scratch);
-            scratch
-                .partition_starts
-                .resize(self.partition_indices.len() + 1, 0);
-            scratch.partition_starts.fill(num_rows as u32);
-            scratch.partition_starts[0] = 0;
-            scratch.partition_row_indices.resize(num_rows, 0);
-            for (i, v) in scratch.partition_row_indices[..num_rows]
-                .iter_mut()
-                .enumerate()
-            {
-                *v = i as u32;
+            let batch_idx = self.buffered_batches.len() as u32;
+            self.buffered_batches.push(input);
+            let indices = &mut self.partition_indices[0];
+            indices.reserve(num_rows);
+            for row in 0..num_rows as u32 {
+                indices.push((batch_idx, row));
             }
-            self.buffer_partitioned_batch_may_spill(
-                input,
-                &scratch.partition_row_indices[..num_rows],
-                &scratch.partition_starts,
-            )
-            .await?;
-            self.scratch = scratch;
             return Ok(());
         }
 
