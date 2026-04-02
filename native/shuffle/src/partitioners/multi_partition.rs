@@ -568,8 +568,8 @@ impl MultiPartitionShuffleRepartitioner {
         let base = total_rows / num_output_partitions;
         let remainder = total_rows % num_output_partitions;
 
-        for i in 0..num_output_partitions {
-            offsets[i] = output_data.stream_position()?;
+        for (i, offset) in offsets[..num_output_partitions].iter_mut().enumerate() {
+            *offset = output_data.stream_position()?;
             let row_count = base + if i < remainder { 1 } else { 0 };
             if row_count > 0 {
                 let options = RecordBatchOptions::new().with_row_count(Some(row_count));
