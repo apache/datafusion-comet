@@ -533,7 +533,7 @@ object CometConf extends ShimCometConf {
           "improve performance for small datasets but uses more memory.")
       .stringConf
       .checkValues(Set("immediate", "buffered"))
-      .createWithDefault("immediate")
+      .createWithDefault("buffered")
 
   val COMET_SHUFFLE_WRITE_BUFFER_SIZE: ConfigEntry[Long] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.writeBufferSize")
