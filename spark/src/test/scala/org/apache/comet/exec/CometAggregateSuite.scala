@@ -24,7 +24,6 @@ import scala.util.Random
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.Cast
-import org.apache.spark.sql.catalyst.expressions.aggregate.Corr
 import org.apache.spark.sql.catalyst.optimizer.EliminateSorts
 import org.apache.spark.sql.comet.CometHashAggregateExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
@@ -1320,9 +1319,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("covariance & correlation") {
-    withSQLConf(
-      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-      CometConf.getExprAllowIncompatConfigKey(classOf[Corr]) -> "true") {
+    withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
       Seq("jvm", "native").foreach { cometShuffleMode =>
         withSQLConf(CometConf.COMET_SHUFFLE_MODE.key -> cometShuffleMode) {
           Seq(true, false).foreach { dictionary =>
@@ -1390,6 +1387,27 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           }
         }
       }
+    }
+  }
+
+  test("corr - nan/null") {
+    withTable("t1") {
+      sql("""create table t1 using parquet as
+          select cast(null as float) f1, CAST('NaN' AS float) f2, cast(null as double) d1, CAST('NaN' AS double) d2
+          from range(1)
+        """)
+
+      checkSparkAnswerAndOperator("""
+          |select
+          | corr(f1, f2) c1,
+          | corr(f1, f1) c2,
+          | corr(f2, f1) c3,
+          | corr(f2, f2) c4,
+          | corr(d1, d2) c5,
+          | corr(d1, d1) c6,
+          | corr(d2, d1) c7,
+          | corr(d2, d2) c8
+          | FROM t1""".stripMargin)
     }
   }
 

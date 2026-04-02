@@ -87,8 +87,6 @@ the [Comet Supported Expressions Guide](expressions.md) for more information on 
 
 ### Aggregate Expressions
 
-- **Corr**: Returns null instead of NaN in some edge cases.
-  [#2646](https://github.com/apache/datafusion-comet/issues/2646)
 - **First, Last**: These functions are not deterministic. When `ignoreNulls` is set, results may not match Spark.
   [#1630](https://github.com/apache/datafusion-comet/issues/1630)
 
