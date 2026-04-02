@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::RecordBatch;
+use arrow::array::{RecordBatch, RecordBatchOptions};
 use arrow::compute::interleave_record_batch;
 use datafusion::common::DataFusionError;
 
@@ -97,15 +97,20 @@ impl Iterator for PartitionedBatchIterator<'_> {
 
         let indices_end = std::cmp::min(self.pos + self.batch_size, self.indices.len());
         let indices = &self.indices[self.pos..indices_end];
-        match interleave_record_batch(&self.record_batches, indices) {
-            Ok(batch) => {
-                self.pos = indices_end;
-                Some(Ok(batch))
-            }
-            Err(e) => Some(Err(DataFusionError::ArrowError(
-                Box::from(e),
-                Some(DataFusionError::get_back_trace()),
-            ))),
-        }
+
+        // interleave_record_batch requires at least one column or an explicit row count.
+        // For zero-column batches (e.g. COUNT queries), create the batch directly.
+        let schema = self.record_batches[0].schema();
+        let result = if schema.fields().is_empty() {
+            let options = RecordBatchOptions::new().with_row_count(Some(indices.len()));
+            RecordBatch::try_new_with_options(schema, vec![], &options)
+        } else {
+            interleave_record_batch(&self.record_batches, indices)
+        };
+
+        self.pos = indices_end;
+        Some(result.map_err(|e| {
+            DataFusionError::ArrowError(Box::from(e), Some(DataFusionError::get_back_trace()))
+        }))
     }
 }

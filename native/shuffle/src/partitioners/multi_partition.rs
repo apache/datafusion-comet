@@ -22,7 +22,7 @@ use crate::partitioners::partitioned_batch_iterator::{
 use crate::partitioners::ShufflePartitioner;
 use crate::writers::{BufBatchWriter, PartitionWriter};
 use crate::{comet_partitioning, CometPartitioning, CompressionCodec, ShuffleBlockWriter};
-use arrow::array::{ArrayRef, RecordBatch, RecordBatchOptions};
+use arrow::array::{ArrayRef, RecordBatch};
 use arrow::datatypes::SchemaRef;
 use datafusion::common::utils::proxy::VecAllocExt;
 use datafusion::common::DataFusionError;
@@ -106,7 +106,6 @@ impl ScratchSpace {
 
 /// A partitioner that uses a hash function to partition data into multiple partitions
 pub(crate) struct MultiPartitionShuffleRepartitioner {
-    schema: SchemaRef,
     output_data_file: String,
     output_index_file: String,
     buffered_batches: Vec<RecordBatch>,
@@ -126,10 +125,6 @@ pub(crate) struct MultiPartitionShuffleRepartitioner {
     tracing_enabled: bool,
     /// Size of the write buffer in bytes
     write_buffer_size: usize,
-    /// Total accumulated row count for zero-column schemas (e.g. COUNT queries).
-    /// When Some, partitioning_batch() skips hashing/expression evaluation and just
-    /// accumulates the total. shuffle_write() distributes rows evenly across partitions.
-    zero_col_total_rows: Option<usize>,
 }
 
 impl MultiPartitionShuffleRepartitioner {
@@ -180,14 +175,7 @@ impl MultiPartitionShuffleRepartitioner {
             .with_can_spill(true)
             .register(&runtime.memory_pool);
 
-        let zero_col_total_rows = if schema.fields().is_empty() {
-            Some(0usize)
-        } else {
-            None
-        };
-
         Ok(Self {
-            schema,
             output_data_file,
             output_index_file,
             buffered_batches: vec![],
@@ -202,7 +190,6 @@ impl MultiPartitionShuffleRepartitioner {
             reservation,
             tracing_enabled,
             write_buffer_size,
-            zero_col_total_rows,
         })
     }
 
@@ -216,12 +203,33 @@ impl MultiPartitionShuffleRepartitioner {
             return Ok(());
         }
 
-        // For zero-column schemas (e.g. COUNT queries), skip all hashing/expression
-        // evaluation and just accumulate total rows. Distribution happens at write time.
-        if let Some(total) = &mut self.zero_col_total_rows {
+        // For zero-column schemas (e.g. COUNT queries), assign all rows to partition 0.
+        // No hashing or expression evaluation needed — just route through normal buffering.
+        if input.num_columns() == 0 {
             let num_rows = input.num_rows();
-            *total += num_rows;
             self.metrics.baseline.record_output(num_rows);
+            // All rows go to partition 0: partition_starts = [0, num_rows, num_rows, ...]
+            // partition_row_indices = [0, 1, 2, ..., num_rows-1]
+            let mut scratch = std::mem::take(&mut self.scratch);
+            scratch
+                .partition_starts
+                .resize(self.partition_indices.len() + 1, 0);
+            scratch.partition_starts.fill(num_rows as u32);
+            scratch.partition_starts[0] = 0;
+            scratch.partition_row_indices.resize(num_rows, 0);
+            for (i, v) in scratch.partition_row_indices[..num_rows]
+                .iter_mut()
+                .enumerate()
+            {
+                *v = i as u32;
+            }
+            self.buffer_partitioned_batch_may_spill(
+                input,
+                &scratch.partition_row_indices[..num_rows],
+                &scratch.partition_starts,
+            )
+            .await?;
+            self.scratch = scratch;
             return Ok(());
         }
 
@@ -545,69 +553,6 @@ impl MultiPartitionShuffleRepartitioner {
         })
     }
 
-    /// Fast path for zero-column schemas: distribute total_rows evenly across partitions
-    /// and emit one RecordBatch per partition carrying the row count.
-    /// Skips interleave, coalesce, and spill entirely.
-    fn shuffle_write_zero_col(
-        &self,
-        total_rows: usize,
-        start_time: Instant,
-    ) -> datafusion::common::Result<()> {
-        let num_output_partitions = self.partition_writers.len();
-        let mut offsets = vec![0u64; num_output_partitions + 1];
-
-        let output_data = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&self.output_data_file)
-            .map_err(|e| DataFusionError::Execution(format!("shuffle write error: {e:?}")))?;
-        let mut output_data = BufWriter::with_capacity(self.write_buffer_size, output_data);
-
-        // Distribute rows evenly: each partition gets total/N, first (total%N) get one extra
-        let base = total_rows / num_output_partitions;
-        let remainder = total_rows % num_output_partitions;
-
-        for (i, offset) in offsets[..num_output_partitions].iter_mut().enumerate() {
-            *offset = output_data.stream_position()?;
-            let row_count = base + if i < remainder { 1 } else { 0 };
-            if row_count > 0 {
-                let options = RecordBatchOptions::new().with_row_count(Some(row_count));
-                let batch =
-                    RecordBatch::try_new_with_options(Arc::clone(&self.schema), vec![], &options)?;
-                self.shuffle_block_writer.write_batch(
-                    &batch,
-                    &mut output_data,
-                    &self.metrics.encode_time,
-                )?;
-            }
-        }
-
-        let mut write_timer = self.metrics.write_time.timer();
-        output_data.flush()?;
-        write_timer.stop();
-
-        offsets[num_output_partitions] = output_data.stream_position()?;
-
-        let mut write_timer = self.metrics.write_time.timer();
-        let mut output_index = BufWriter::new(
-            File::create(&self.output_index_file)
-                .map_err(|e| DataFusionError::Execution(format!("shuffle write error: {e:?}")))?,
-        );
-        for offset in offsets {
-            output_index.write_all(&(offset as i64).to_le_bytes()[..])?;
-        }
-        output_index.flush()?;
-        write_timer.stop();
-
-        self.metrics
-            .baseline
-            .elapsed_compute()
-            .add_duration(start_time.elapsed());
-
-        Ok(())
-    }
-
     #[cfg(test)]
     pub(crate) fn partition_writers(&self) -> &[PartitionWriter] {
         &self.partition_writers
@@ -643,10 +588,6 @@ impl ShufflePartitioner for MultiPartitionShuffleRepartitioner {
     fn shuffle_write(&mut self) -> datafusion::common::Result<()> {
         with_trace("shuffle_write", self.tracing_enabled, || {
             let start_time = Instant::now();
-
-            if let Some(total_rows) = self.zero_col_total_rows.take() {
-                return self.shuffle_write_zero_col(total_rows, start_time);
-            }
 
             let mut partitioned_batches = self.partitioned_batches();
             let num_output_partitions = self.partition_indices.len();

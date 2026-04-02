@@ -489,6 +489,13 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
         CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
         CometConf.COMET_EXEC_SHUFFLE_WITH_ROUND_ROBIN_PARTITIONING_ENABLED.key -> "true") {
         val testDF = spark.read.parquet(dir.toString).repartition(10)
+        // Verify CometShuffleExchangeExec is in the plan
+        assert(
+          find(testDF.queryExecution.executedPlan) {
+            case _: CometShuffleExchangeExec => true
+            case _ => false
+          }.isDefined,
+          "Expected CometShuffleExchangeExec in the plan")
         // Actual validation, no crash
         val count = testDF.count()
         assert(count == 1000)
