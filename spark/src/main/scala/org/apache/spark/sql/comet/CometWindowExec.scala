@@ -21,7 +21,7 @@ package org.apache.spark.sql.comet
 
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeReference, AttributeSet, CurrentRow, Expression, FrameLessOffsetWindowFunction, Lag, NamedExpression, RangeFrame, RowFrame, SortOrder, SpecifiedWindowFrame, UnboundedFollowing, UnboundedPreceding, WindowExpression}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeReference, AttributeSet, CurrentRow, Expression, FrameLessOffsetWindowFunction, Lag, Lead, NamedExpression, RangeFrame, RowFrame, SortOrder, SpecifiedWindowFrame, UnboundedFollowing, UnboundedPreceding, WindowExpression}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Complete, Count, Max, Min, Sum}
 import org.apache.spark.sql.catalyst.plans.physical.Partitioning
 import org.apache.spark.sql.execution.SparkPlan
@@ -72,6 +72,9 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
       return None
     }
 
+    // Offset window functions (LAG, LEAD) support arbitrary partition and order specs, so skip
+    // the validatePartitionAndSortSpecsForWindowFunc check which requires partition columns to
+    // equal order columns. That stricter check is only needed for aggregate window functions.
     val hasOnlyOffsetFunctions = winExprs.nonEmpty &&
       winExprs.forall(e => e.windowFunction.isInstanceOf[FrameLessOffsetWindowFunction])
     if (!hasOnlyOffsetFunctions && op.partitionSpec.nonEmpty && op.orderSpec.nonEmpty &&
@@ -155,6 +158,12 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
           val defaultExpr = exprToProto(lag.default, output)
           val func = scalarFunctionExprToProto("lag", inputExpr, offsetExpr, defaultExpr)
           (None, func, lag.ignoreNulls)
+        case lead: Lead =>
+          val inputExpr = exprToProto(lead.input, output)
+          val offsetExpr = exprToProto(lead.offset, output)
+          val defaultExpr = exprToProto(lead.default, output)
+          val func = scalarFunctionExprToProto("lead", inputExpr, offsetExpr, defaultExpr)
+          (None, func, lead.ignoreNulls)
         case _ =>
           (None, exprToProto(windowExpr.windowFunction, output), false)
       }
