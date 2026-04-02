@@ -41,7 +41,7 @@ import org.apache.spark.sql.execution.datasources.v2.csv.CSVScan
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
-import org.apache.comet.{CometConf, CometExplainInfo, CometNativeException, DataTypeSupport}
+import org.apache.comet.{CometConf, CometNativeException, DataTypeSupport}
 import org.apache.comet.CometConf._
 import org.apache.comet.CometSparkSessionExtensions.{isCometLoaded, withInfo, withInfos}
 import org.apache.comet.DataTypeSupport.isComplexType
@@ -167,16 +167,7 @@ case class CometScanRule(session: SparkSession)
         }
 
         COMET_NATIVE_SCAN_IMPL.get() match {
-          case SCAN_AUTO =>
-            nativeDataFusionScan(plan, session, scanExec, r, hadoopConf)
-              .orElse {
-                // clear explain info tags from the failed nativeDataFusionScan
-                // attempt so they don't leak into the fallback path
-                scanExec.unsetTagValue(CometExplainInfo.EXTENSION_INFO)
-                nativeIcebergCompatScan(session, scanExec, r, hadoopConf)
-              }
-              .getOrElse(scanExec)
-          case SCAN_NATIVE_DATAFUSION =>
+          case SCAN_AUTO | SCAN_NATIVE_DATAFUSION =>
             nativeDataFusionScan(plan, session, scanExec, r, hadoopConf).getOrElse(scanExec)
           case SCAN_NATIVE_ICEBERG_COMPAT =>
             nativeIcebergCompatScan(session, scanExec, r, hadoopConf).getOrElse(scanExec)
@@ -193,6 +184,12 @@ case class CometScanRule(session: SparkSession)
       scanExec: FileSourceScanExec,
       r: HadoopFsRelation,
       hadoopConf: Configuration): Option[SparkPlan] = {
+    if (!COMET_EXEC_ENABLED.get()) {
+      withInfo(
+        scanExec,
+        s"$SCAN_NATIVE_DATAFUSION scan requires ${COMET_EXEC_ENABLED.key} to be enabled")
+      return None
+    }
     if (!CometNativeScan.isSupported(scanExec)) {
       return None
     }
