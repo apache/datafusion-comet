@@ -1345,41 +1345,39 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("various math scalar functions") {
     val data = doubleValues.map(n => (n, n))
-    withSQLConf() {
-      withParquetTable(data, "tbl") {
-        // expressions with single arg
-        for (expr <- Seq(
-            "acos",
-            "asin",
-            "atan",
-            "cos",
-            "cosh",
-            "exp",
-            "ln",
-            "log10",
-            "log2",
-            "sin",
-            "sinh",
-            "sqrt",
-            "tan",
-            "tanh",
-            "cot")) {
-          val (_, cometPlan) =
-            checkSparkAnswerAndOperatorWithTol(sql(s"SELECT $expr(_1), $expr(_2) FROM tbl"))
-          val cometProjectExecs = collect(cometPlan) { case op: CometProjectExec =>
-            op
-          }
-          assert(cometProjectExecs.length == 1, expr)
+    withParquetTable(data, "tbl") {
+      // expressions with single arg
+      for (expr <- Seq(
+          "acos",
+          "asin",
+          "atan",
+          "cos",
+          "cosh",
+          "exp",
+          "ln",
+          "log10",
+          "log2",
+          "sin",
+          "sinh",
+          "sqrt",
+          "tan",
+          "tanh",
+          "cot")) {
+        val (_, cometPlan) =
+          checkSparkAnswerAndOperatorWithTol(sql(s"SELECT $expr(_1), $expr(_2) FROM tbl"))
+        val cometProjectExecs = collect(cometPlan) { case op: CometProjectExec =>
+          op
         }
-        // expressions with two args
-        for (expr <- Seq("pow")) {
-          val (_, cometPlan) =
-            checkSparkAnswerAndOperatorWithTol(sql(s"SELECT $expr(_1, _2) FROM tbl"))
-          val cometProjectExecs = collect(cometPlan) { case op: CometProjectExec =>
-            op
-          }
-          assert(cometProjectExecs.length == 1, expr)
+        assert(cometProjectExecs.length == 1, expr)
+      }
+      // expressions with two args
+      for (expr <- Seq("pow")) {
+        val (_, cometPlan) =
+          checkSparkAnswerAndOperatorWithTol(sql(s"SELECT $expr(_1, _2) FROM tbl"))
+        val cometProjectExecs = collect(cometPlan) { case op: CometProjectExec =>
+          op
         }
+        assert(cometProjectExecs.length == 1, expr)
       }
     }
   }
