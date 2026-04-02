@@ -501,6 +501,16 @@ diff --git a/sql/core/src/test/scala/org/apache/spark/sql/ExplainSuite.scala b/s
 index a6b2955..91acca4 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/ExplainSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/ExplainSuite.scala
+@@ -267,7 +267,8 @@ trait ExplainSuiteHelper extends QueryTest with SharedSparkSession {
+     }
+   }
+ 
+-  test("SPARK-33853: explain codegen - check presence of subquery") {
++  test("SPARK-33853: explain codegen - check presence of subquery",
++      IgnoreComet("Comet replaces WholeStageCodegen subtrees with native operators")) {
+     withSQLConf(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "true") {
+       withTempView("df") {
+         val df1 = spark.range(1, 100)
 @@ -463,7 +463,8 @@ class ExplainSuite extends ExplainSuiteHelper with DisableAdaptiveExecutionSuite
      }
    }
@@ -2483,6 +2493,28 @@ index bf5c51b..4e2f0bd 100644
      import testImplicits._
  
      withTempPath { dir =>
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/ui/SQLAppStatusListenerSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/ui/SQLAppStatusListenerSuite.scala
+index placeholder..placeholder 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/execution/ui/SQLAppStatusListenerSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/ui/SQLAppStatusListenerSuite.scala
+@@ -38,6 +38,7 @@ import org.apache.spark.sql.{DataFrame, SparkSession}
+ import org.apache.spark.sql.catalyst.InternalRow
+ import org.apache.spark.sql.catalyst.expressions.Attribute
+ import org.apache.spark.sql.catalyst.plans.logical.LocalRelation
++import org.apache.spark.sql.IgnoreComet
+ import org.apache.spark.sql.catalyst.types.DataTypeUtils.toAttributes
+ import org.apache.spark.sql.catalyst.util.quietly
+ import org.apache.spark.sql.connector.{CSVDataWriter, CSVDataWriterFactory, RangeInputPartition, SimpleScanBuilder, SimpleWritableDataSource, TestLocalScanTable}
+@@ -701,7 +702,8 @@ abstract class SQLAppStatusListenerSuite extends SharedSparkSession with JsonTest
+     assert(statusStore.execution(2) === None)
+   }
+ 
+-  test("SPARK-29894 test Codegen Stage Id in SparkPlanInfo",
++  test("SPARK-29894 test Codegen Stage Id in SparkPlanInfo",
++    IgnoreComet("Comet replaces WholeStageCodegen with native operators"),
+     DisableAdaptiveExecution("WSCG rule is applied later in AQE")) {
+     // with AQE on, the WholeStageCodegen rule is applied when running QueryStageExec.
+     val df = createTestDataFrame.select(count("*"))
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/debug/DebuggingSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/debug/DebuggingSuite.scala
 index 3a0bd35..b28f06a 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/debug/DebuggingSuite.scala
@@ -2495,7 +2527,27 @@ index 3a0bd35..b28f06a 100644
  import org.apache.spark.sql.catalyst.InternalRow
  import org.apache.spark.sql.catalyst.expressions.Attribute
  import org.apache.spark.sql.catalyst.expressions.codegen.CodegenContext
-@@ -124,7 +125,8 @@ class DebuggingSuite extends DebuggingSuiteBase with DisableAdaptiveExecutionSui
+@@ -46,7 +47,8 @@ abstract class DebuggingSuiteBase extends SharedSparkSession {
+     testData.as[TestData].debug()
+   }
+ 
+-  test("debugCodegen") {
++  test("debugCodegen",
++      IgnoreComet("Comet replaces WholeStageCodegen subtrees with native operators")) {
+     val df = spark.range(10).groupBy(col("id") * 2).count()
+     df.collect()
+     val res = codegenString(df.queryExecution.executedPlan)
+@@ -53,7 +55,8 @@ abstract class DebuggingSuiteBase extends SharedSparkSession {
+     assert(res.contains("Object[]"))
+   }
+ 
+-  test("debugCodegenStringSeq") {
++  test("debugCodegenStringSeq",
++      IgnoreComet("Comet replaces WholeStageCodegen subtrees with native operators")) {
+     val df = spark.range(10).groupBy(col("id") * 2).count()
+     df.collect()
+     val res = codegenStringSeq(df.queryExecution.executedPlan)
+@@ -124,7 +129,8 @@ class DebuggingSuite extends DebuggingSuiteBase with DisableAdaptiveExecutionSui
           | id LongType: {}""".stripMargin))
    }
  
