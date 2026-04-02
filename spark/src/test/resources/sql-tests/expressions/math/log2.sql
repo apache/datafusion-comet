@@ -21,7 +21,7 @@ statement
 CREATE TABLE test_log2(d double) USING parquet
 
 statement
-INSERT INTO test_log2 VALUES (1.0), (2.0), (4.0), (8.0), (0.5), (NULL), (cast('NaN' as double)), (cast('Infinity' as double))
+INSERT INTO test_log2 VALUES (1.0), (2.0), (4.0), (8.0), (0.5), (NULL), (cast('NaN' as double)), (cast('Infinity' as double)), (0.0), (-1.0)
 
 query tolerance=1e-6
 SELECT log2(d) FROM test_log2

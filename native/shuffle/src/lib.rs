@@ -15,14 +15,16 @@
 // specific language governing permissions and limitations
 // under the License.
 
-pub mod codec;
 pub(crate) mod comet_partitioning;
+pub mod ipc;
 pub(crate) mod metrics;
 pub(crate) mod partitioners;
 mod shuffle_writer;
+mod spark_crc32c_hasher;
 pub mod spark_unsafe;
 pub(crate) mod writers;
 
-pub use codec::{read_ipc_compressed, CompressionCodec, ShuffleBlockWriter};
 pub use comet_partitioning::CometPartitioning;
+pub use ipc::read_ipc_compressed;
 pub use shuffle_writer::ShuffleWriterExec;
+pub use writers::{CompressionCodec, ShuffleBlockWriter};

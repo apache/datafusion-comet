@@ -15,25 +15,25 @@
 # specific language governing permissions and limitations
 # under the License.
 
-name: Setup Iceberg Builder
-description: 'Setup Apache Iceberg to run Spark SQL tests'
-inputs:
-  iceberg-version:
-    description: 'The Apache Iceberg version (e.g., 1.8.1) to build'
-    required: true
-runs:
-  using: "composite"
-  steps:
-    - name: Clone Iceberg repo
-      uses: actions/checkout@v6
-      with:
-        repository: apache/iceberg
-        path: apache-iceberg
-        ref: apache-iceberg-${{inputs.iceberg-version}}
-        fetch-depth: 1
+name: Label new issues with requires-triage
 
-    - name: Setup Iceberg for Comet
-      shell: bash
-      run: |
-        cd apache-iceberg
-        git apply ../dev/diffs/iceberg-rust/${{inputs.iceberg-version}}.diff
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  issues: write
+
+jobs:
+  add-triage-label:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              labels: ['requires-triage']
+            })

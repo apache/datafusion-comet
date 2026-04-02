@@ -47,8 +47,8 @@ import org.apache.comet.CometSparkSessionExtensions.{isCometLoaded, withInfo, wi
 import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.iceberg.{CometIcebergNativeScanMetadata, IcebergReflection}
 import org.apache.comet.objectstore.NativeConfig
-import org.apache.comet.parquet.{Native, SupportsComet}
 import org.apache.comet.parquet.CometParquetUtils.{encryptionEnabled, isEncryptionConfigSupported}
+import org.apache.comet.parquet.Native
 import org.apache.comet.serde.operator.{CometIcebergNativeScan, CometNativeScan}
 import org.apache.comet.shims.{CometTypeShim, ShimFileFormat, ShimSubqueryBroadcast}
 
@@ -222,22 +222,6 @@ case class CometScanRule(session: SparkSession)
       withInfo(scanExec, "Native DataFusion scan does not support Parquet field ID matching")
       return None
     }
-    // Case-insensitive mode with duplicate field names produces different errors
-    // in DataFusion vs Spark, so fall back to avoid incompatible error messages
-    if (!session.sessionState.conf.caseSensitiveAnalysis) {
-      val schemas = Seq(scanExec.requiredSchema, r.dataSchema)
-      for (schema <- schemas) {
-        val fieldNames =
-          schema.fieldNames.map(_.toLowerCase(java.util.Locale.ROOT))
-        if (fieldNames.length != fieldNames.distinct.length) {
-          withInfo(
-            scanExec,
-            "Native DataFusion scan does not support " +
-              "duplicate field names in case-insensitive mode")
-          return None
-        }
-      }
-    }
     if (!isSchemaSupported(scanExec, SCAN_NATIVE_DATAFUSION, r)) {
       return None
     }
@@ -303,36 +287,7 @@ case class CometScanRule(session: SparkSession)
           withInfos(scanExec, fallbackReasons.toSet)
         }
 
-      // Iceberg scan - patched version implementing SupportsComet interface
-      case s: SupportsComet if !COMET_ICEBERG_NATIVE_ENABLED.get() =>
-        val fallbackReasons = new ListBuffer[String]()
-
-        if (!s.isCometEnabled) {
-          fallbackReasons += "Comet extension is not enabled for " +
-            s"${scanExec.scan.getClass.getSimpleName}: not enabled on data source side"
-        }
-
-        val schemaSupported =
-          CometBatchScanExec.isSchemaSupported(scanExec.scan.readSchema(), fallbackReasons)
-
-        if (!schemaSupported) {
-          fallbackReasons += "Comet extension is not enabled for " +
-            s"${scanExec.scan.getClass.getSimpleName}: Schema not supported"
-        }
-
-        if (s.isCometEnabled && schemaSupported) {
-          // When reading from Iceberg, we automatically enable type promotion
-          SQLConf.get.setConfString(COMET_SCHEMA_EVOLUTION_ENABLED.key, "true")
-          // When reading from Iceberg, we automatically disable native columnar to row
-          SQLConf.get.setConfString(COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED.key, "false")
-          CometBatchScanExec(
-            scanExec.clone().asInstanceOf[BatchScanExec],
-            runtimeFilters = scanExec.runtimeFilters)
-        } else {
-          withInfos(scanExec, fallbackReasons.toSet)
-        }
-
-      // Iceberg scan - detected by class name (works with unpatched Iceberg)
+      // Iceberg scan - detected by class name
       case _
           if scanExec.scan.getClass.getName ==
             "org.apache.iceberg.spark.source.SparkBatchQueryScan" =>
