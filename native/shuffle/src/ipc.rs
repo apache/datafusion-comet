@@ -208,21 +208,30 @@ pub struct ShuffleStreamReader {
 
 impl ShuffleStreamReader {
     /// Create a new `ShuffleStreamReader` over a JVM InputStream.
+    /// Returns a reader that yields no batches if the stream is empty.
     pub fn new(env: &mut jni::JNIEnv, input_stream: &JObject) -> Result<Self, String> {
         let jni_stream = SharedJniStream::new(
             JniInputStream::new(env, input_stream).map_err(|e| format!("JNI error: {e}"))?,
         );
-        let reader = unsafe {
-            StreamReader::try_new(jni_stream.reader(), None)
-                .map_err(|e| format!("Arrow IPC error: {e}"))?
-                .with_skip_validation(true)
-        };
-        let num_fields = reader.schema().fields().len();
-        Ok(Self {
-            jni_stream,
-            reader: Some(reader),
-            num_fields,
-        })
+        match StreamReader::try_new(jni_stream.reader(), None) {
+            Ok(reader) => {
+                let reader = unsafe { reader.with_skip_validation(true) };
+                let num_fields = reader.schema().fields().len();
+                Ok(Self {
+                    jni_stream,
+                    reader: Some(reader),
+                    num_fields,
+                })
+            }
+            Err(_) => {
+                // Empty stream — no data for this partition
+                Ok(Self {
+                    jni_stream,
+                    reader: None,
+                    num_fields: 0,
+                })
+            }
+        }
     }
 
     /// Read the next batch from the stream. Returns `None` when all
