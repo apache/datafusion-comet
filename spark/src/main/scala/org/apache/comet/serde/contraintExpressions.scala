@@ -33,8 +33,7 @@ object CometKnownFloatingPointNormalized
       case _: NormalizeNaNAndZero => Compatible()
       case _ =>
         Unsupported(
-          Some(
-            "KnownFloatingPointNormalized only supports NormalizeNaNAndZero child expressions"))
+          "KnownFloatingPointNormalized only supports NormalizeNaNAndZero child expressions")
     }
   }
 

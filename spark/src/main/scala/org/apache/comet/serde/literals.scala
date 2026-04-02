@@ -53,7 +53,7 @@ object CometLiteral extends CometExpressionSerde[Literal] with Logging {
             .isInstanceOf[ArrayType])))) {
       Compatible(None)
     } else {
-      Unsupported(Some(s"Unsupported data type ${expr.dataType}"))
+      Unsupported(s"Unsupported data type ${expr.dataType}")
     }
   }
 

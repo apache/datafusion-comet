@@ -43,7 +43,7 @@ object CometCollectLimitExec extends CometSink[CollectLimitExec] {
 
   override def getSupportLevel(op: CollectLimitExec): SupportLevel = {
     if (!isCometShuffleEnabled(op.conf)) {
-      return Unsupported(Some("Comet shuffle is not enabled"))
+      return Unsupported("Comet shuffle is not enabled")
     }
     Compatible()
   }

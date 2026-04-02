@@ -42,24 +42,24 @@ object CometTakeOrderedAndProjectExec extends CometSink[TakeOrderedAndProjectExe
 
   override def getSupportLevel(op: TakeOrderedAndProjectExec): SupportLevel = {
     if (!isCometShuffleEnabled(op.conf)) {
-      return Unsupported(Some("TakeOrderedAndProject requires shuffle to be enabled"))
+      return Unsupported("TakeOrderedAndProject requires shuffle to be enabled")
     }
     op.projectList.foreach { p =>
       val o = exprToProto(p, op.child.output)
       if (o.isEmpty) {
-        return Unsupported(Some(s"unsupported projection: $p"))
+        return Unsupported(s"unsupported projection: $p")
       }
       o
     }
     op.sortOrder.foreach { s =>
       val o = exprToProto(s, op.child.output)
       if (o.isEmpty) {
-        return Unsupported(Some(s"unsupported sort order: $s"))
+        return Unsupported(s"unsupported sort order: $s")
       }
       o
     }
     if (!supportedSortType(op, op.sortOrder)) {
-      return Unsupported(Some("unsupported data type in sort order"))
+      return Unsupported("unsupported data type in sort order")
     }
     Compatible()
   }

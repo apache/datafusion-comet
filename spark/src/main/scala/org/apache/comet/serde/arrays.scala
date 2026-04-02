@@ -622,7 +622,8 @@ object CometArrayFilter extends CometExpressionSerde[ArrayFilter] {
   override def getSupportLevel(expr: ArrayFilter): SupportLevel = {
     expr.function.children.headOption match {
       case Some(_: IsNotNull) => Compatible()
-      case _ => Unsupported()
+      case _ =>
+        Unsupported("Only array_compact (ArrayFilter with IsNotNull) is supported")
     }
   }
 
@@ -639,10 +640,10 @@ object CometSize extends CometExpressionSerde[Size] {
   override def getSupportLevel(expr: Size): SupportLevel = {
     expr.child.dataType match {
       case _: ArrayType => Compatible()
-      case _: MapType => Unsupported(Some("size does not support map inputs"))
+      case _: MapType => Unsupported("size does not support map inputs")
       case other =>
         // this should be unreachable because Spark only supports map and array inputs
-        Unsupported(Some(s"Unsupported child data type: $other"))
+        Unsupported(s"Unsupported child data type: $other")
     }
   }
 
