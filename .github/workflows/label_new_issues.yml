@@ -14,42 +14,26 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-#
 
-name: "CodeQL"
+name: Label new issues with requires-triage
 
 on:
-  push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
-  schedule:
-    - cron: '16 4 * * 1'
+  issues:
+    types: [opened]
 
 permissions:
-  contents: read
+  issues: write
 
 jobs:
-  analyze:
-    name: Analyze Actions
+  add-triage-label:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      security-events: write
-      packages: read
-
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-      with:
-        persist-credentials: false
-
-    - name: Initialize CodeQL
-      uses: github/codeql-action/init@38697555549f1db7851b81482ff19f1fa5c4fedc # v4
-      with:
-        languages: actions
-
-    - name: Perform CodeQL Analysis
-      uses: github/codeql-action/analyze@38697555549f1db7851b81482ff19f1fa5c4fedc # v4
-      with:
-        category: "/language:actions"
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              labels: ['requires-triage']
+            })

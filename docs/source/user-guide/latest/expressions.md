@@ -232,7 +232,7 @@ Comet supports using the following aggregate functions within window contexts wi
 
 | Expression     | Spark-Compatible? | Compatibility Notes                                                                                                                                                                       |
 | -------------- | ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| ArrayAppend    | No                |                                                                                                                                                                                           |
+| ArrayAppend    | Yes               |                                                                                                                                                                                           |
 | ArrayCompact   | No                |                                                                                                                                                                                           |
 | ArrayContains  | No                | Returns null instead of false for empty arrays with literal values ([#3346](https://github.com/apache/datafusion-comet/issues/3346))                                                      |
 | ArrayDistinct  | No                | Behaves differently than spark. Comet first sorts then removes duplicates while Spark preserves the original order.                                                                       |
@@ -250,7 +250,7 @@ Comet supports using the following aggregate functions within window contexts wi
 | CreateArray    | Yes               |                                                                                                                                                                                           |
 | ElementAt      | Yes               | Input must be an array. Map inputs are not supported.                                                                                                                                     |
 | Flatten        | Yes               |                                                                                                                                                                                           |
-| GetArrayItem   | No                | Known correctness issues with index handling ([#3330](https://github.com/apache/datafusion-comet/issues/3330), [#3332](https://github.com/apache/datafusion-comet/issues/3332))           |
+| GetArrayItem   | Yes               |                                                                                                                                                                                           |
 
 ## Map Expressions
 

@@ -50,6 +50,7 @@ impl PartitionedBatchesProducer {
     }
 }
 
+/// Iterates over the shuffled record batches belonging to a single output partition.
 pub(crate) struct PartitionedBatchIterator<'a> {
     record_batches: Vec<&'a RecordBatch>,
     batch_size: usize,
