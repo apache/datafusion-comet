@@ -64,10 +64,6 @@ the [Comet Supported Expressions Guide](expressions.md) for more information on 
   [#3346](https://github.com/apache/datafusion-comet/issues/3346)
 - **ArrayRemove**: Returns null when the element to remove is null, instead of removing null elements from the array.
   [#3173](https://github.com/apache/datafusion-comet/issues/3173)
-- **GetArrayItem**: Known correctness issues with index handling, including off-by-one errors and incorrect results
-  with dynamic (non-literal) index values.
-  [#3330](https://github.com/apache/datafusion-comet/issues/3330),
-  [#3332](https://github.com/apache/datafusion-comet/issues/3332)
 - **ArraysOverlap**: Inconsistent behavior when arrays contain NULL values.
   [#3645](https://github.com/apache/datafusion-comet/issues/3645),
   [#2036](https://github.com/apache/datafusion-comet/issues/2036)
@@ -152,13 +148,6 @@ Cast operations in Comet fall into three levels of support:
 - **U (Unsupported)**: Comet does not provide a native version of this cast expression and the query stage will fall back to
   Spark.
 - **N/A**: Spark does not support this cast.
-
-### Negative Zero
-
-When casting floating-point values to strings, Spark normalizes negative zero (`-0.0`) to `"0.0"`, but Comet
-may produce `"-0.0"`. Since negative zero and positive zero are semantically equivalent (`-0.0 == 0.0` is true
-in IEEE 754), this difference is unlikely to affect real-world results. See
-[#1036](https://github.com/apache/datafusion-comet/issues/1036) for more details.
 
 ### Legacy Mode
 

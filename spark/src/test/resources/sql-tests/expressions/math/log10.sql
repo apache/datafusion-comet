@@ -21,7 +21,7 @@ statement
 CREATE TABLE test_log10(d double) USING parquet
 
 statement
-INSERT INTO test_log10 VALUES (1.0), (10.0), (100.0), (0.1), (NULL), (cast('NaN' as double)), (cast('Infinity' as double))
+INSERT INTO test_log10 VALUES (1.0), (10.0), (100.0), (0.1), (NULL), (cast('NaN' as double)), (cast('Infinity' as double)), (0.0), (-1.0)
 
 query tolerance=1e-6
 SELECT log10(d) FROM test_log10
