@@ -19,11 +19,12 @@ use crate::parquet::cast_column::CometCastColumnExpr;
 use crate::parquet::parquet_support::{spark_parquet_convert, SparkParquetOptions};
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNode};
-use datafusion::common::Result as DataFusionResult;
+use datafusion::common::{DataFusionError, Result as DataFusionResult};
 use datafusion::physical_expr::expressions::Column;
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ColumnarValue;
 use datafusion::scalar::ScalarValue;
+use datafusion_comet_common::SparkError;
 use datafusion_comet_spark_expr::{Cast, SparkCastOptions};
 use datafusion_physical_expr_adapter::{
     replace_columns_with_literals, DefaultPhysicalExprAdapterFactory, PhysicalExprAdapter,
@@ -93,6 +94,23 @@ fn remap_physical_schema_names(
     Arc::new(Schema::new(remapped_fields))
 }
 
+/// Check if a specific column name has duplicate matches in the physical schema
+/// (case-insensitive). Returns the error info if so.
+fn check_column_duplicate(col_name: &str, physical_schema: &SchemaRef) -> Option<(String, String)> {
+    let matches: Vec<&str> = physical_schema
+        .fields()
+        .iter()
+        .filter(|pf| pf.name().eq_ignore_ascii_case(col_name))
+        .map(|pf| pf.name().as_str())
+        .collect();
+    if matches.len() > 1 {
+        // Include brackets to match the format expected by ShimSparkErrorConverter
+        Some((col_name.to_string(), format!("[{}]", matches.join(", "))))
+    } else {
+        None
+    }
+}
+
 impl PhysicalExprAdapterFactory for SparkPhysicalExprAdapterFactory {
     fn create(
         &self,
@@ -109,7 +127,7 @@ impl PhysicalExprAdapterFactory for SparkPhysicalExprAdapterFactory {
         // to the original physical names. This is necessary because downstream code
         // (reassign_expr_columns) looks up columns by name in the actual stream
         // schema, which uses the original physical file column names.
-        let (adapted_physical_schema, logical_to_physical_names) =
+        let (adapted_physical_schema, logical_to_physical_names, original_physical_schema) =
             if !self.parquet_options.case_sensitive {
                 let logical_to_physical: HashMap<String, String> = logical_file_schema
                     .fields()
@@ -134,9 +152,11 @@ impl PhysicalExprAdapterFactory for SparkPhysicalExprAdapterFactory {
                     } else {
                         Some(logical_to_physical)
                     },
+                    // Keep original physical schema for per-column duplicate detection
+                    Some(Arc::clone(&physical_file_schema)),
                 )
             } else {
-                (Arc::clone(&physical_file_schema), None)
+                (Arc::clone(&physical_file_schema), None, None)
             };
 
         let default_factory = DefaultPhysicalExprAdapterFactory;
@@ -152,6 +172,7 @@ impl PhysicalExprAdapterFactory for SparkPhysicalExprAdapterFactory {
             default_values: self.default_values.clone(),
             default_adapter,
             logical_to_physical_names,
+            original_physical_schema,
         })
     }
 }
@@ -181,10 +202,38 @@ struct SparkPhysicalExprAdapter {
     /// physical names so that downstream reassign_expr_columns can find
     /// columns in the actual stream schema.
     logical_to_physical_names: Option<HashMap<String, String>>,
+    /// The original (un-remapped) physical schema, kept for per-column duplicate
+    /// detection in case-insensitive mode. Only set when `!case_sensitive`.
+    original_physical_schema: Option<SchemaRef>,
 }
 
 impl PhysicalExprAdapter for SparkPhysicalExprAdapter {
     fn rewrite(&self, expr: Arc<dyn PhysicalExpr>) -> DataFusionResult<Arc<dyn PhysicalExpr>> {
+        // In case-insensitive mode, check if any Column in this expression references
+        // a field with multiple case-insensitive matches in the physical schema.
+        // Only the columns actually referenced trigger the error (not the whole schema).
+        if let Some(orig_physical) = &self.original_physical_schema {
+            // Walk the expression tree to find Column references
+            let mut duplicate_err: Option<DataFusionError> = None;
+            let _ = Arc::<dyn PhysicalExpr>::clone(&expr).transform(|e| {
+                if let Some(col) = e.as_any().downcast_ref::<Column>() {
+                    if let Some((req, matched)) = check_column_duplicate(col.name(), orig_physical)
+                    {
+                        duplicate_err = Some(DataFusionError::External(Box::new(
+                            SparkError::DuplicateFieldCaseInsensitive {
+                                required_field_name: req,
+                                matched_fields: matched,
+                            },
+                        )));
+                    }
+                }
+                Ok(Transformed::no(e))
+            });
+            if let Some(err) = duplicate_err {
+                return Err(err);
+            }
+        }
+
         // First let the default adapter handle column remapping, missing columns,
         // and simple scalar type casts. Then replace DataFusion's CastColumnExpr
         // with Spark-compatible equivalents.
@@ -530,5 +579,64 @@ mod test {
 
         let mut stream = parquet_exec.execute(0, Arc::new(TaskContext::default()))?;
         stream.next().await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn parquet_duplicate_fields_case_insensitive() {
+        // Parquet file has columns "A", "B", "b" - reading "b" in case-insensitive mode
+        // should fail with duplicate field error matching Spark's _LEGACY_ERROR_TEMP_2093
+        let file_schema = Arc::new(Schema::new(vec![
+            Field::new("A", DataType::Int32, false),
+            Field::new("B", DataType::Int32, false),
+            Field::new("b", DataType::Int32, false),
+        ]));
+
+        let col_a = Arc::new(Int32Array::from(vec![1, 2, 3])) as Arc<dyn arrow::array::Array>;
+        let col_b1 = Arc::new(Int32Array::from(vec![4, 5, 6])) as Arc<dyn arrow::array::Array>;
+        let col_b2 = Arc::new(Int32Array::from(vec![7, 8, 9])) as Arc<dyn arrow::array::Array>;
+        let batch =
+            RecordBatch::try_new(Arc::clone(&file_schema), vec![col_a, col_b1, col_b2]).unwrap();
+
+        let filename = get_temp_filename();
+        let filename = filename.as_path().as_os_str().to_str().unwrap().to_string();
+        let file = File::create(&filename).unwrap();
+        let mut writer = ArrowWriter::try_new(file, Arc::clone(&batch.schema()), None).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+
+        // Read with case-insensitive mode, requesting column "b" which matches both "B" and "b"
+        let required_schema = Arc::new(Schema::new(vec![Field::new("b", DataType::Int32, false)]));
+
+        let mut spark_parquet_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        spark_parquet_options.case_sensitive = false;
+
+        let expr_adapter_factory: Arc<dyn PhysicalExprAdapterFactory> = Arc::new(
+            SparkPhysicalExprAdapterFactory::new(spark_parquet_options, None),
+        );
+
+        let object_store_url = ObjectStoreUrl::local_filesystem();
+        let parquet_source = ParquetSource::new(required_schema);
+        let files = FileGroup::new(vec![
+            PartitionedFile::from_path(filename.to_string()).unwrap()
+        ]);
+        let file_scan_config =
+            FileScanConfigBuilder::new(object_store_url, Arc::new(parquet_source))
+                .with_file_groups(vec![files])
+                .with_expr_adapter(Some(expr_adapter_factory))
+                .build();
+
+        let parquet_exec = DataSourceExec::new(Arc::new(file_scan_config));
+        let mut stream = parquet_exec
+            .execute(0, Arc::new(TaskContext::default()))
+            .unwrap();
+        let result = stream.next().await.unwrap();
+
+        // Should fail with duplicate field error
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("Found duplicate field"),
+            "Expected duplicate field error, got: {err_msg}"
+        );
     }
 }

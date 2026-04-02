@@ -27,6 +27,7 @@ import scala.util.Random
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row, SaveMode}
 import org.apache.spark.sql.catalyst.expressions.Cast
+import org.apache.spark.sql.catalyst.parser.ParseException
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
@@ -498,6 +499,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       -1.0f,
       Short.MinValue.toFloat,
       Short.MaxValue.toFloat,
+      -0.0f,
       0.0f) ++
       Range(0, dataSize).map(_ => r.nextFloat())
     castTest(withNulls(values).toDF("a"), DataTypes.StringType)
@@ -558,6 +560,11 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       Double.NaN,
       Double.PositiveInfinity,
       Double.NegativeInfinity,
+      1.0d,
+      -1.0d,
+      Int.MinValue.toDouble,
+      Int.MaxValue.toDouble,
+      -0.0d,
       0.0d) ++
       Range(0, dataSize).map(_ => r.nextDouble())
     castTest(withNulls(values).toDF("a"), DataTypes.StringType)
@@ -992,8 +999,10 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   ignore("cast StringType to TimestampType") {
-    // TODO: enable once all Spark timestamp formats are supported natively.
-    // Currently missing: time-only formats with colon (e.g. "T12:34", "4:4").
+    // TODO: enable once string→timestamp is marked Compatible in CometCast.canCastFromString.
+    // All Spark timestamp formats are now supported natively (space separator, Z/offset suffix,
+    // T-prefixed and bare H:M time-only, negative years). The fuzz filter below can be removed
+    // when enabling the native path.
     withSQLConf((SQLConf.SESSION_LOCAL_TIMEZONE.key, "UTC")) {
       val values = Seq("2020-01-01T12:34:56.123456", "T2") ++ gen.generateStrings(
         dataSize,
@@ -1045,7 +1054,25 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         "10000-01-01T12",
         "10000-01-01T12:34",
         "10000-01-01T12:34:56",
-        "10000-01-01T12:34:56.123456")
+        "10000-01-01T12:34:56.123456",
+        // Space separator
+        "2020-01-01 12",
+        "2020-01-01 12:34",
+        "2020-01-01 12:34:56",
+        "2020-01-01 12:34:56.123456",
+        // Z and offset suffixes
+        "2020-01-01T12:34:56Z",
+        "2020-01-01T12:34:56+05:30",
+        "2020-01-01T12:34:56-08:00",
+        // T-prefixed time-only with colon
+        "T12:34",
+        "T12:34:56",
+        "T12:34:56.123456",
+        // Bare time-only (hour:minute)
+        "12:34",
+        "12:34:56",
+        // Negative year
+        "-0001-01-01T12:34:56")
       castTimestampTest(values.toDF("a"), DataTypes.TimestampType)
     }
   }
@@ -1261,8 +1288,13 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     // cast to negative scale
     checkSparkAnswerMaybeThrows(
       spark.sql("select a, cast(a as DECIMAL(10,-4)) from t order by a")) match {
+      case (Some(expected: ParseException), Some(actual: ParseException)) =>
+        assert(
+          expected.getMessage.contains("PARSE_SYNTAX_ERROR") && actual.getMessage.contains(
+            "PARSE_SYNTAX_ERROR"))
       case (expected, actual) =>
-        assert(expected.contains("PARSE_SYNTAX_ERROR") === actual.contains("PARSE_SYNTAX_ERROR"))
+        fail(
+          s"Expected Spark and Comet throw ParseException, but got Spark=$expected and Comet=$actual")
     }
   }
 

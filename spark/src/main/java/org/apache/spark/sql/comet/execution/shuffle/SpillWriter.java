@@ -68,7 +68,7 @@ public abstract class SpillWriter {
 
   protected byte[][] dataTypes;
 
-  // 0: CRC32, 1: Adler32. Spark uses Adler32 by default.
+  // 0: CRC32, 1: Adler32, or 2: CRC32C. Spark uses Adler32 by default.
   protected int checksumAlgo = 1;
   protected long checksum = -1;
 
@@ -98,6 +98,8 @@ public abstract class SpillWriter {
       this.checksumAlgo = 0;
     } else if (algo.equals("adler32")) {
       this.checksumAlgo = 1;
+    } else if (algo.equals("crc32c")) {
+      this.checksumAlgo = 2;
     } else {
       throw new UnsupportedOperationException(
           "Unsupported shuffle checksum algorithm: " + checksumAlgo);

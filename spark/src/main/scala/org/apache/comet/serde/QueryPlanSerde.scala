@@ -106,6 +106,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[Log] -> CometLog,
     classOf[Log2] -> CometLog2,
     classOf[Log10] -> CometLog10,
+    classOf[Logarithm] -> CometLogarithm,
     classOf[Multiply] -> CometMultiply,
     classOf[Pow] -> CometScalarFunction("pow"),
     classOf[Rand] -> CometRand,
@@ -518,13 +519,25 @@ object QueryPlanSerde extends Logging with CometExprShim {
     }
 
     // Attach QueryContext and expr_id to the aggregate expression
-    protoAggExprOpt.map { protoAggExpr =>
+    protoAggExprOpt.flatMap { protoAggExpr =>
       val builder = protoAggExpr.toBuilder
       builder.setExprId(nextExprId())
+
+      // Serialize FILTER (WHERE ...) clause if present.
+      // The filter is only meaningful in Partial mode; Final/PartialMerge never set it.
+      if (aggExpr.filter.isDefined && aggExpr.mode == Partial) {
+        val filterProto = exprToProto(aggExpr.filter.get, inputs, binding)
+        if (filterProto.isEmpty) {
+          withInfo(aggExpr, aggExpr.filter.get)
+          return None
+        }
+        builder.setFilter(filterProto.get)
+      }
+
       extractQueryContext(fn).foreach { ctx =>
         builder.setQueryContext(ctx)
       }
-      builder.build()
+      Some(builder.build())
     }
   }
 
