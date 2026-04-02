@@ -46,9 +46,8 @@ use datafusion::physical_plan::common::collect;
 use datafusion::physical_plan::metrics::{MetricValue, MetricsSet};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::{ParquetReadOptions, SessionContext};
-use datafusion_comet_shuffle::{
-    read_ipc_compressed, CometPartitioning, CompressionCodec, ShuffleWriterExec,
-};
+use arrow::ipc::reader::StreamReader;
+use datafusion_comet_shuffle::{CometPartitioning, CompressionCodec, ShuffleWriterExec};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -81,7 +80,7 @@ struct Args {
     #[arg(long, default_value = "0")]
     hash_columns: String,
 
-    /// Compression codec: none, lz4, zstd, snappy
+    /// Compression codec: none, lz4, zstd
     #[arg(long, default_value = "zstd")]
     codec: String,
 
@@ -658,15 +657,14 @@ fn run_shuffle_read(data_file: &str, index_file: &str, num_partitions: usize) ->
             continue;
         }
 
-        let mut offset = start_offset;
-        while offset < end_offset {
-            let ipc_length =
-                u64::from_le_bytes(data_bytes[offset..offset + 8].try_into().unwrap()) as usize;
-            let block_data = &data_bytes[offset + 16..offset + 8 + ipc_length];
-            let batch = read_ipc_compressed(block_data).expect("Failed to decode shuffle block");
+        // Each partition's data contains one or more complete IPC streams
+        let partition_data = &data_bytes[start_offset..end_offset];
+        let mut reader =
+            StreamReader::try_new(partition_data, None).expect("Failed to open IPC stream");
+        while let Some(batch_result) = reader.next() {
+            let batch = batch_result.expect("Failed to decode record batch");
             total_rows += batch.num_rows();
             total_batches += 1;
-            offset += 8 + ipc_length;
         }
     }
 
@@ -712,7 +710,6 @@ fn parse_codec(codec: &str, zstd_level: i32) -> CompressionCodec {
         "none" => CompressionCodec::None,
         "lz4" => CompressionCodec::Lz4Frame,
         "zstd" => CompressionCodec::Zstd(zstd_level),
-        "snappy" => CompressionCodec::Snappy,
         other => {
             eprintln!("Unknown codec: {other}. Using zstd.");
             CompressionCodec::Zstd(zstd_level)

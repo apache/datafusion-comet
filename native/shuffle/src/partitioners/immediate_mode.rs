@@ -33,7 +33,7 @@ use arrow::datatypes::{
     TimestampMillisecondType, TimestampNanosecondType, TimestampSecondType, UInt16Type, UInt32Type,
     UInt64Type, UInt8Type,
 };
-use arrow::ipc::writer::StreamWriter;
+use arrow::ipc::writer::{IpcWriteOptions, StreamWriter};
 use datafusion::common::{DataFusionError, Result};
 use datafusion::execution::memory_pool::{MemoryConsumer, MemoryLimit, MemoryReservation};
 use datafusion::execution::runtime_env::RuntimeEnv;
@@ -281,90 +281,77 @@ impl PartitionBuffer {
     }
 }
 
+/// Per-partition output stream that writes batches into a persistent Arrow IPC
+/// `StreamWriter<Vec<u8>>`. The schema is written once when the writer is lazily
+/// created. Arrow IPC body compression handles LZ4/ZSTD internally via `IpcWriteOptions`.
 pub(crate) struct PartitionOutputStream {
     schema: SchemaRef,
-    codec: CompressionCodec,
-    buffer: Vec<u8>,
+    write_options: IpcWriteOptions,
+    /// Lazily created IPC stream writer over an in-memory buffer
+    writer: Option<StreamWriter<Vec<u8>>>,
+    /// Accumulated spill data (bytes from finished IPC streams that were drained)
+    spilled_bytes: Vec<u8>,
 }
 
 impl PartitionOutputStream {
-    pub(crate) fn try_new(schema: SchemaRef, codec: CompressionCodec) -> Result<Self> {
+    pub(crate) fn try_new(schema: SchemaRef, write_options: IpcWriteOptions) -> Result<Self> {
         Ok(Self {
             schema,
-            codec,
-            buffer: Vec::new(),
+            write_options,
+            writer: None,
+            spilled_bytes: Vec::new(),
         })
     }
 
-    fn write_ipc_block(&mut self, batch: &RecordBatch) -> Result<usize> {
-        let start_pos = self.buffer.len();
-
-        self.buffer.extend_from_slice(&0u64.to_le_bytes());
-        let field_count = self.schema.fields().len();
-        self.buffer
-            .extend_from_slice(&(field_count as u64).to_le_bytes());
-        let codec_tag: &[u8; 4] = match &self.codec {
-            CompressionCodec::Snappy => b"SNAP",
-            CompressionCodec::Lz4Frame => b"LZ4_",
-            CompressionCodec::Zstd(_) => b"ZSTD",
-            CompressionCodec::None => b"NONE",
+    /// Ensure the writer exists (lazy creation), write the batch, and return bytes written.
+    fn write_batch(&mut self, batch: &RecordBatch) -> Result<usize> {
+        let before = self.current_buffer_len();
+        let writer = match &mut self.writer {
+            Some(w) => w,
+            None => {
+                let w = StreamWriter::try_new_with_options(
+                    Vec::new(),
+                    &self.schema,
+                    self.write_options.clone(),
+                )?;
+                self.writer = Some(w);
+                self.writer.as_mut().unwrap()
+            }
         };
-        self.buffer.extend_from_slice(codec_tag);
-
-        match &self.codec {
-            CompressionCodec::None => {
-                let mut w = StreamWriter::try_new(&mut self.buffer, &batch.schema())?;
-                w.write(batch)?;
-                w.finish()?;
-                w.into_inner()?;
-            }
-            CompressionCodec::Lz4Frame => {
-                let mut wtr = lz4_flex::frame::FrameEncoder::new(&mut self.buffer);
-                let mut w = StreamWriter::try_new(&mut wtr, &batch.schema())?;
-                w.write(batch)?;
-                w.finish()?;
-                wtr.finish().map_err(|e| {
-                    DataFusionError::Execution(format!("lz4 compression error: {e}"))
-                })?;
-            }
-            CompressionCodec::Zstd(level) => {
-                let enc = zstd::Encoder::new(&mut self.buffer, *level)?;
-                let mut w = StreamWriter::try_new(enc, &batch.schema())?;
-                w.write(batch)?;
-                w.finish()?;
-                w.into_inner()?.finish()?;
-            }
-            CompressionCodec::Snappy => {
-                let mut wtr = snap::write::FrameEncoder::new(&mut self.buffer);
-                let mut w = StreamWriter::try_new(&mut wtr, &batch.schema())?;
-                w.write(batch)?;
-                w.finish()?;
-                wtr.into_inner().map_err(|e| {
-                    DataFusionError::Execution(format!("snappy compression error: {e}"))
-                })?;
-            }
-        }
-
-        let end_pos = self.buffer.len();
-        let ipc_length = (end_pos - start_pos - 8) as u64;
-        if ipc_length > i32::MAX as u64 {
-            return Err(DataFusionError::Execution(format!(
-                "Shuffle block size {ipc_length} exceeds maximum size of {}",
-                i32::MAX
-            )));
-        }
-        self.buffer[start_pos..start_pos + 8].copy_from_slice(&ipc_length.to_le_bytes());
-
-        Ok(end_pos - start_pos)
+        writer.write(batch)?;
+        let after = self.current_buffer_len();
+        Ok(after.saturating_sub(before))
     }
 
-    fn drain_buffer(&mut self) -> Vec<u8> {
-        std::mem::take(&mut self.buffer)
+    /// Finish the current IPC stream (if any), return all accumulated bytes
+    /// (spilled + current stream), and reset the writer to None.
+    fn drain_buffer(&mut self) -> Result<Vec<u8>> {
+        if let Some(mut writer) = self.writer.take() {
+            writer.finish()?;
+            let buf = writer.into_inner()?;
+            self.spilled_bytes.extend_from_slice(&buf);
+        }
+        Ok(std::mem::take(&mut self.spilled_bytes))
     }
 
-    #[cfg(test)]
-    fn finish(self) -> Result<Vec<u8>> {
-        Ok(self.buffer)
+    /// Finish the current IPC stream and move its bytes into spilled_bytes,
+    /// resetting the writer to None so a new stream can be started later.
+    fn finish_current_stream(&mut self) -> Result<()> {
+        if let Some(mut writer) = self.writer.take() {
+            writer.finish()?;
+            let buf = writer.into_inner()?;
+            self.spilled_bytes.extend_from_slice(&buf);
+        }
+        Ok(())
+    }
+
+    fn current_buffer_len(&self) -> usize {
+        let writer_len = self
+            .writer
+            .as_ref()
+            .map(|w| w.get_ref().len())
+            .unwrap_or(0);
+        self.spilled_bytes.len() + writer_len
     }
 }
 
@@ -410,13 +397,16 @@ impl ImmediateModePartitioner {
         codec: CompressionCodec,
     ) -> Result<Self> {
         let num_output_partitions = partitioning.partition_count();
+        let write_options = codec.ipc_write_options()?;
 
         let partition_buffers = (0..num_output_partitions)
             .map(|_| PartitionBuffer::new(&schema, batch_size))
             .collect();
 
         let streams = (0..num_output_partitions)
-            .map(|_| PartitionOutputStream::try_new(Arc::clone(&schema), codec.clone()))
+            .map(|_| {
+                PartitionOutputStream::try_new(Arc::clone(&schema), write_options.clone())
+            })
             .collect::<Result<Vec<_>>>()?;
 
         let spill_files: Vec<Option<SpillFile>> =
@@ -596,13 +586,13 @@ impl ImmediateModePartitioner {
         Ok((flushed_builder_bytes, ipc_bytes))
     }
 
-    /// Flush a partition's builders to an IPC block in its output stream.
+    /// Flush a partition's builders to the IPC stream in its output stream.
     /// Returns `(flushed_batch_memory, ipc_bytes_written)`.
     fn flush_partition(&mut self, pid: usize) -> Result<(usize, usize)> {
         let output_batch = self.partition_buffers[pid].flush()?;
         let batch_mem = output_batch.get_array_memory_size();
         let mut encode_timer = self.metrics.encode_time.timer();
-        let ipc_bytes = self.streams[pid].write_ipc_block(&output_batch)?;
+        let ipc_bytes = self.streams[pid].write_batch(&output_batch)?;
         encode_timer.stop();
         Ok((batch_mem, ipc_bytes))
     }
@@ -618,9 +608,12 @@ impl ImmediateModePartitioner {
             }
         }
 
-        // Drain IPC buffers to disk
+        // Finish current IPC streams and drain buffers to disk
         for pid in 0..self.streams.len() {
-            let buf = self.streams[pid].drain_buffer();
+            // Finish the current IPC stream so it can be read back later
+            self.streams[pid].finish_current_stream()?;
+
+            let buf = self.streams[pid].drain_buffer()?;
             if buf.is_empty() {
                 continue;
             }
@@ -738,7 +731,7 @@ impl ShufflePartitioner for ImmediateModePartitioner {
                 self.flush_partition(pid)?;
             }
 
-            let buf = self.streams[pid].drain_buffer();
+            let buf = self.streams[pid].drain_buffer()?;
             if !buf.is_empty() {
                 let mut write_timer = self.metrics.write_time.timer();
                 output_data.write_all(&buf)?;
@@ -775,9 +768,9 @@ impl ShufflePartitioner for ImmediateModePartitioner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::read_ipc_compressed;
     use arrow::array::{Int32Array, StringArray};
     use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::ipc::reader::StreamReader;
     use datafusion::execution::memory_pool::GreedyMemoryPool;
     use datafusion::execution::runtime_env::RuntimeEnvBuilder;
     use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
@@ -861,20 +854,18 @@ mod tests {
             CompressionCodec::None,
             CompressionCodec::Lz4Frame,
             CompressionCodec::Zstd(1),
-            CompressionCodec::Snappy,
         ] {
-            let mut stream = PartitionOutputStream::try_new(Arc::clone(&schema), codec).unwrap();
-            stream.write_ipc_block(&batch).unwrap();
+            let write_options = codec.ipc_write_options().unwrap();
+            let mut stream =
+                PartitionOutputStream::try_new(Arc::clone(&schema), write_options).unwrap();
+            stream.write_batch(&batch).unwrap();
 
-            let buf = stream.finish().unwrap();
+            let buf = stream.drain_buffer().unwrap();
             assert!(!buf.is_empty());
 
-            let ipc_length = u64::from_le_bytes(buf[0..8].try_into().unwrap()) as usize;
-            assert!(ipc_length > 0);
-
-            let block_end = 8 + ipc_length;
-            let ipc_data = &buf[16..block_end];
-            let batch2 = read_ipc_compressed(ipc_data).unwrap();
+            // Read back using standard Arrow StreamReader
+            let mut reader = StreamReader::try_new(&buf[..], None).unwrap();
+            let batch2 = reader.next().unwrap().unwrap();
             assert_eq!(batch2.num_rows(), 5);
         }
     }
@@ -1019,7 +1010,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_block_format_compatible_with_read_ipc_compressed() {
+    async fn test_ipc_stream_format_roundtrip() {
         let batch = make_test_batch(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
         let schema = batch.schema();
         let dir = tempfile::tempdir().unwrap();
@@ -1061,14 +1052,12 @@ mod tests {
             if start == end {
                 continue;
             }
-            let mut pos = start;
-            while pos < end {
-                let payload_len =
-                    u64::from_le_bytes(data[pos..pos + 8].try_into().unwrap()) as usize;
-                assert!(payload_len > 0);
-                let block_end = pos + 8 + payload_len;
-                let ipc_data = &data[pos + 16..block_end];
-                let decoded = read_ipc_compressed(ipc_data).unwrap();
+            // Each partition's data is one or more complete IPC streams.
+            // Use StreamReader to decode them.
+            let partition_data = &data[start..end];
+            let mut reader = StreamReader::try_new(partition_data, None).unwrap();
+            while let Some(batch_result) = reader.next() {
+                let decoded = batch_result.unwrap();
                 assert_eq!(decoded.num_columns(), 1);
                 assert!(decoded.num_rows() > 0);
                 let col = decoded
@@ -1080,9 +1069,7 @@ mod tests {
                     assert!((1..=10).contains(&col.value(i)));
                 }
                 total_rows += decoded.num_rows();
-                pos = block_end;
             }
-            assert_eq!(pos, end);
         }
         assert_eq!(total_rows, 10);
     }

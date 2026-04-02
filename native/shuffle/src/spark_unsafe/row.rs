@@ -23,7 +23,7 @@ use crate::spark_unsafe::{
     map::{append_map_elements, get_map_key_value_fields},
 };
 use crate::writers::Checksum;
-use crate::writers::ShuffleBlockWriter;
+use crate::CompressionCodec;
 use arrow::array::{
     builder::{
         ArrayBuilder, BinaryBuilder, BinaryDictionaryBuilder, BooleanBuilder, Date32Builder,
@@ -37,7 +37,6 @@ use arrow::array::{
 use arrow::compute::cast;
 use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 use arrow::error::ArrowError;
-use datafusion::physical_plan::metrics::Time;
 use datafusion_comet_jni_bridge::errors::CometError;
 use jni::sys::{jint, jlong};
 use std::{
@@ -197,7 +196,6 @@ macro_rules! get_field_builder {
 }
 
 // Expose the macro for other modules.
-use crate::CompressionCodec;
 pub(crate) use downcast_builder_ref;
 
 /// Appends field of row to the given struct builder. `dt` is the data type of the field.
@@ -1369,14 +1367,22 @@ pub fn process_sorted_row_partition(
         let batch = make_batch(array_refs?, n)?;
 
         frozen.clear();
-        let mut cursor = Cursor::new(&mut frozen);
 
-        // we do not collect metrics in Native_writeSortedFileNative
-        let ipc_time = Time::default();
-        let block_writer = ShuffleBlockWriter::try_new(batch.schema().as_ref(), codec.clone())?;
-        written += block_writer.write_batch(&batch, &mut cursor, &ipc_time)?;
+        // Write the batch as a complete IPC stream into `frozen`
+        let write_options = codec.ipc_write_options()?;
+        let mut stream_writer = arrow::ipc::writer::StreamWriter::try_new_with_options(
+            &mut frozen,
+            &batch.schema(),
+            write_options,
+        )?;
+        stream_writer.write(&batch)?;
+        stream_writer.finish()?;
+        stream_writer.into_inner()?;
+
+        written += frozen.len();
 
         if let Some(checksum) = &mut current_checksum {
+            let mut cursor = Cursor::new(&mut frozen);
             checksum.update(&mut cursor)?;
         }
 

@@ -15,10 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use super::ShuffleBlockWriter;
 use crate::metrics::ShufflePartitionerMetrics;
 use crate::partitioners::PartitionedBatchIterator;
-use crate::writers::buf_batch_writer::BufBatchWriter;
+use arrow::datatypes::SchemaRef;
+use arrow::ipc::writer::{IpcWriteOptions, StreamWriter};
 use datafusion::common::DataFusionError;
 use datafusion::execution::disk_manager::RefCountedTempFile;
 use datafusion::execution::runtime_env::RuntimeEnv;
@@ -36,17 +36,21 @@ pub(crate) struct PartitionWriter {
     /// will append to this file and the contents will be copied to the shuffle file at
     /// the end of processing.
     spill_file: Option<SpillFile>,
-    /// Writer that performs encoding and compression
-    shuffle_block_writer: ShuffleBlockWriter,
+    /// Schema used for creating IPC stream writers
+    schema: SchemaRef,
+    /// IPC write options (includes compression settings)
+    write_options: IpcWriteOptions,
 }
 
 impl PartitionWriter {
     pub(crate) fn try_new(
-        shuffle_block_writer: ShuffleBlockWriter,
+        schema: SchemaRef,
+        write_options: IpcWriteOptions,
     ) -> datafusion::common::Result<Self> {
         Ok(Self {
             spill_file: None,
-            shuffle_block_writer,
+            schema,
+            write_options,
         })
     }
 
@@ -80,34 +84,45 @@ impl PartitionWriter {
         iter: &mut PartitionedBatchIterator,
         runtime: &RuntimeEnv,
         metrics: &ShufflePartitionerMetrics,
-        write_buffer_size: usize,
-        batch_size: usize,
     ) -> datafusion::common::Result<usize> {
         if let Some(batch) = iter.next() {
             self.ensure_spill_file_created(runtime)?;
 
-            let total_bytes_written = {
-                let mut buf_batch_writer = BufBatchWriter::new(
-                    &mut self.shuffle_block_writer,
-                    &mut self.spill_file.as_mut().unwrap().file,
-                    write_buffer_size,
-                    batch_size,
-                );
-                let mut bytes_written =
-                    buf_batch_writer.write(&batch?, &metrics.encode_time, &metrics.write_time)?;
-                for batch in iter {
-                    let batch = batch?;
-                    bytes_written += buf_batch_writer.write(
-                        &batch,
-                        &metrics.encode_time,
-                        &metrics.write_time,
-                    )?;
-                }
-                buf_batch_writer.flush(&metrics.encode_time, &metrics.write_time)?;
-                bytes_written
-            };
+            let file = &mut self.spill_file.as_mut().unwrap().file;
+            let start_pos = file.metadata().map(|m| m.len()).unwrap_or(0);
 
-            Ok(total_bytes_written)
+            let mut writer = StreamWriter::try_new_with_options(
+                file,
+                &self.schema,
+                self.write_options.clone(),
+            )?;
+
+            let batch = batch?;
+            let mut encode_timer = metrics.encode_time.timer();
+            writer.write(&batch)?;
+            encode_timer.stop();
+
+            for batch in iter {
+                let batch = batch?;
+                let mut encode_timer = metrics.encode_time.timer();
+                writer.write(&batch)?;
+                encode_timer.stop();
+            }
+
+            let mut write_timer = metrics.write_time.timer();
+            writer.finish()?;
+            write_timer.stop();
+
+            let end_pos = self
+                .spill_file
+                .as_ref()
+                .unwrap()
+                .file
+                .metadata()
+                .map(|m| m.len())
+                .unwrap_or(0);
+
+            Ok((end_pos - start_pos) as usize)
         } else {
             Ok(0)
         }

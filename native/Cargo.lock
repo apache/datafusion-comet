@@ -333,6 +333,7 @@ dependencies = [
  "arrow-select",
  "flatbuffers",
  "lz4_flex 0.12.1",
+ "zstd",
 ]
 
 [[package]]

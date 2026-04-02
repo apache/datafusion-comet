@@ -22,5 +22,5 @@ mod spill;
 
 pub(crate) use buf_batch_writer::BufBatchWriter;
 pub(crate) use checksum::Checksum;
-pub use shuffle_block_writer::{CompressionCodec, ShuffleBlockWriter};
+pub use shuffle_block_writer::CompressionCodec;
 pub(crate) use spill::PartitionWriter;
