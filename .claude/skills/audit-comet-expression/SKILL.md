@@ -23,6 +23,7 @@ This audit covers:
 Clone specific Spark version tags (use shallow clones to avoid polluting the workspace). Only clone a version if it is not already present.
 
 ```bash
+set -eu -o pipefail
 for tag in v3.4.3 v3.5.8 v4.0.1; do
   dir="/tmp/spark-${tag}"
   if [ ! -d "$dir" ]; then
@@ -112,7 +113,7 @@ This list will be the reference for the coverage gap analysis in Step 5.
 ```bash
 # Find the serde object
 grep -r "$ARGUMENTS" spark/src/main/scala/org/apache/comet/serde/ --include="*.scala" -l
-grep -r "$ARGUMENTS" spark/src/main/scala/org/apache/comet/ --include="*.scala" -l | grep -v test
+grep -r "$ARGUMENTS" spark/src/main/scala/org/apache/comet/ --include="*.scala" -l
 ```
 
 Read the serde implementation and check:
@@ -138,18 +139,21 @@ grep -r "$ARGUMENTS" native/spark-expr/src/ --include="*.rs" -l
 grep -r "$ARGUMENTS" native/core/src/ --include="*.rs" -l
 ```
 
-If the expression delegates to DataFusion, find it there too:
+If the expression delegates to DataFusion, find it there too. Set `$DATAFUSION_SRC` to a local DataFusion checkout, or fall back to searching the cargo registry:
 
 ```bash
-# Check if there's a DataFusion built-in function with this name
-find native/ -name "Cargo.lock" -exec grep -A2 "datafusion" {} \; | grep "version" | head -5
-grep -r "$ARGUMENTS" ~/.cargo/registry/src/ --include="*.rs" -l 2>/dev/null | head -10
+if [ -n "${DATAFUSION_SRC:-}" ]; then
+  grep -r "$ARGUMENTS" "$DATAFUSION_SRC" --include="*.rs" -l 2>/dev/null | head -10
+else
+  # Fall back to cargo registry (may include unrelated crates)
+  grep -r "$ARGUMENTS" ~/.cargo/registry/src/*/datafusion* --include="*.rs" -l 2>/dev/null | head -10
+fi
 ```
 
 Read the Rust implementation and check:
 
 - Null handling (does it propagate nulls correctly?)
-- Overflow / error handling (returns `Err` vs panics)
+- Overflow and underflow handling (returns `Err` vs panics)
 - Type dispatch (does it handle all types that Spark supports?)
 - ANSI / fail-on-error mode
 
@@ -203,10 +207,12 @@ For each of the following dimensions, note whether it is covered in Comet tests 
 | Literal argument(s)                                     |                |                |                  |      |
 | NULL input                                              |                |                |                  |      |
 | Empty string / empty array / empty map                  |                |                |                  |      |
-| Zero, negative values (numeric)                         |                |                |                  |      |
-| Boundary values (INT_MIN, INT_MAX, Long.MinValue, etc.) |                |                |                  |      |
-| NaN, Infinity, -Infinity (float/double)                 |                |                |                  |      |
-| Multibyte / special UTF-8 characters                    |                |                |                  |      |
+| Array/map with NULL elements                            |                |                |                  |      |
+| Zero, negative zero, negative values (numeric)          |                |                |                  |      |
+| Underflow, overflow                                     |                |                |                  |      |
+| Boundary values (INT_MIN, INT_MAX, Long.MinValue, minimum positive, etc.) | |           |                  |      |
+| NaN, Infinity, -Infinity, subnormal (float/double)      |                |                |                  |      |
+| Multibyte / special UTF-8 (composed vs decomposed, e.g. `é` U+00E9 vs `e` + U+0301, non-Latin scripts) | | | | |
 | ANSI mode (failOnError=true)                            |                |                |                  |      |
 | Non-ANSI mode (failOnError=false)                       |                |                |                  |      |
 | All supported input types                               |                |                |                  |      |
@@ -226,7 +232,7 @@ Also review the Comet implementation (Step 3) against the Spark behavior (Step 1
 
 ## Step 6: Recommendations
 
-Summarize findings as a prioritized list:
+Summarize findings as a prioritized list.
 
 ### High priority
 
@@ -300,7 +306,7 @@ SELECT $ARGUMENTS('value'), $ARGUMENTS(''), $ARGUMENTS(NULL)
 After implementing tests, tell the user how to run them:
 
 ```bash
-./mvnw test -Dsuites="org.apache.comet.CometSqlFileTestSuite $ARGUMENTS" -Dtest=none
+./mvnw test -DwildcardSuites="CometSqlFileTestSuite" -Dsuites="org.apache.comet.CometSqlFileTestSuite $ARGUMENTS" -Dtest=none
 ```
 
 ---
