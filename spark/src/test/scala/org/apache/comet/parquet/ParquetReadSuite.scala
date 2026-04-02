@@ -981,7 +981,7 @@ abstract class ParquetReadSuite extends CometTestBase {
                 Seq(StructField("_1", LongType, false), StructField("_2", DoubleType, false)))
 
             withParquetDataFrame(data, schema = Some(readSchema)) { df =>
-              // Type widening (Int→Long, Float→Double) is allowed when schema evolution
+              // Type widening (Int->Long, Float->Double) is allowed when schema evolution
               // is enabled or on Spark 4.0+ (which has native type widening support).
               if (enableSchemaEvolution ||
                 CometSparkSessionExtensions.isSpark40Plus) {
