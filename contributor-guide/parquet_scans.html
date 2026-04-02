@@ -478,7 +478,8 @@ under the License.
 </div>
 <p>The configuration property
 <code class="docutils literal notranslate"><span class="pre">spark.comet.scan.impl</span></code> is used to select an implementation. The default setting is <code class="docutils literal notranslate"><span class="pre">spark.comet.scan.impl=auto</span></code>, which
-currently always uses the <code class="docutils literal notranslate"><span class="pre">native_iceberg_compat</span></code> implementation. Most users should not need to change this setting.
+attempts to use <code class="docutils literal notranslate"><span class="pre">native_datafusion</span></code> first, and falls back to Spark if the scan cannot be converted
+(e.g., due to unsupported features). Most users should not need to change this setting.
 However, it is possible to force Comet to use a particular implementation for all scan operations by setting
 this configuration property to one of the following implementations. For example: <code class="docutils literal notranslate"><span class="pre">--conf</span> <span class="pre">spark.comet.scan.impl=native_datafusion</span></code>.</p>
 <p>The following features are not supported by either scan implementation, and Comet will fall back to Spark in these scenarios:</p>
@@ -504,7 +505,8 @@ written using the Proleptic Gregorian calendar. This may produce incorrect resul
 October 15, 1582.</p></li>
 </ul>
 <p>The <code class="docutils literal notranslate"><span class="pre">native_datafusion</span></code> scan has some additional limitations, mostly related to Parquet metadata. All of these
-cause Comet to fall back to Spark.</p>
+cause Comet to fall back to Spark (including when using <code class="docutils literal notranslate"><span class="pre">auto</span></code> mode). Note that the <code class="docutils literal notranslate"><span class="pre">native_datafusion</span></code> scan
+requires <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.enabled=true</span></code> because the scan node must be wrapped by <code class="docutils literal notranslate"><span class="pre">CometExecRule</span></code>.</p>
 <ul class="simple">
 <li><p>No support for row indexes</p></li>
 <li><p>No support for reading Parquet field IDs</p></li>
