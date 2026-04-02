@@ -346,11 +346,7 @@ impl PartitionOutputStream {
     }
 
     fn current_buffer_len(&self) -> usize {
-        let writer_len = self
-            .writer
-            .as_ref()
-            .map(|w| w.get_ref().len())
-            .unwrap_or(0);
+        let writer_len = self.writer.as_ref().map(|w| w.get_ref().len()).unwrap_or(0);
         self.spilled_bytes.len() + writer_len
     }
 }
@@ -404,9 +400,7 @@ impl ImmediateModePartitioner {
             .collect();
 
         let streams = (0..num_output_partitions)
-            .map(|_| {
-                PartitionOutputStream::try_new(Arc::clone(&schema), write_options.clone())
-            })
+            .map(|_| PartitionOutputStream::try_new(Arc::clone(&schema), write_options.clone()))
             .collect::<Result<Vec<_>>>()?;
 
         let spill_files: Vec<Option<SpillFile>> =
@@ -1055,8 +1049,8 @@ mod tests {
             // Each partition's data is one or more complete IPC streams.
             // Use StreamReader to decode them.
             let partition_data = &data[start..end];
-            let mut reader = StreamReader::try_new(partition_data, None).unwrap();
-            while let Some(batch_result) = reader.next() {
+            let reader = StreamReader::try_new(partition_data, None).unwrap();
+            for batch_result in reader {
                 let decoded = batch_result.unwrap();
                 assert_eq!(decoded.num_columns(), 1);
                 assert!(decoded.num_rows() > 0);
