@@ -201,23 +201,23 @@ Compare the Spark test coverage (Step 2) against the Comet test coverage (Step 4
 
 For each of the following dimensions, note whether it is covered in Comet tests or missing:
 
-| Dimension                                               | Spark tests it | Comet SQL test | Comet Scala test | Gap? |
-| ------------------------------------------------------- | -------------- | -------------- | ---------------- | ---- |
-| Column reference argument(s)                            |                |                |                  |      |
-| Literal argument(s)                                     |                |                |                  |      |
-| NULL input                                              |                |                |                  |      |
-| Empty string / empty array / empty map                  |                |                |                  |      |
-| Array/map with NULL elements                            |                |                |                  |      |
-| Zero, negative zero, negative values (numeric)          |                |                |                  |      |
-| Underflow, overflow                                     |                |                |                  |      |
-| Boundary values (INT_MIN, INT_MAX, Long.MinValue, minimum positive, etc.) | |           |                  |      |
-| NaN, Infinity, -Infinity, subnormal (float/double)      |                |                |                  |      |
-| Multibyte / special UTF-8 (composed vs decomposed, e.g. `é` U+00E9 vs `e` + U+0301, non-Latin scripts) | | | | |
-| ANSI mode (failOnError=true)                            |                |                |                  |      |
-| Non-ANSI mode (failOnError=false)                       |                |                |                  |      |
-| All supported input types                               |                |                |                  |      |
-| Parquet dictionary encoding (ConfigMatrix)              |                |                |                  |      |
-| Cross-version behavior differences                      |                |                |                  |      |
+| Dimension                                                                                              | Spark tests it | Comet SQL test | Comet Scala test | Gap? |
+| ------------------------------------------------------------------------------------------------------ | -------------- | -------------- | ---------------- | ---- |
+| Column reference argument(s)                                                                           |                |                |                  |      |
+| Literal argument(s)                                                                                    |                |                |                  |      |
+| NULL input                                                                                             |                |                |                  |      |
+| Empty string / empty array / empty map                                                                 |                |                |                  |      |
+| Array/map with NULL elements                                                                           |                |                |                  |      |
+| Zero, negative zero, negative values (numeric)                                                         |                |                |                  |      |
+| Underflow, overflow                                                                                    |                |                |                  |      |
+| Boundary values (INT_MIN, INT_MAX, Long.MinValue, minimum positive, etc.)                              |                |                |                  |      |
+| NaN, Infinity, -Infinity, subnormal (float/double)                                                     |                |                |                  |      |
+| Multibyte / special UTF-8 (composed vs decomposed, e.g. `é` U+00E9 vs `e` + U+0301, non-Latin scripts) |                |                |                  |      |
+| ANSI mode (failOnError=true)                                                                           |                |                |                  |      |
+| Non-ANSI mode (failOnError=false)                                                                      |                |                |                  |      |
+| All supported input types                                                                              |                |                |                  |      |
+| Parquet dictionary encoding (ConfigMatrix)                                                             |                |                |                  |      |
+| Cross-version behavior differences                                                                     |                |                |                  |      |
 
 ### Implementation gaps
 
