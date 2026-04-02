@@ -150,9 +150,7 @@ class CometShuffledBatchRDD(
    * Returns the raw InputStream of concatenated Arrow IPC streams for direct consumption by
    * native code via ShuffleStreamReader.
    */
-  def computeAsRawStream(
-      split: Partition,
-      context: TaskContext): java.io.InputStream = {
+  def computeAsRawStream(split: Partition, context: TaskContext): java.io.InputStream = {
     val reader = createReader(split, context)
     reader.readAsRawStream()
   }

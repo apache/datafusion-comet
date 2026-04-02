@@ -1,0 +1,330 @@
+Registering table customer from /opt/tpch/sf100/customer
+Registering table lineitem from /opt/tpch/sf100/lineitem
+Registering table nation from /opt/tpch/sf100/nation
+Registering table orders from /opt/tpch/sf100/orders
+Registering table part from /opt/tpch/sf100/part
+Registering table partsupp from /opt/tpch/sf100/partsupp
+Registering table region from /opt/tpch/sf100/region
+Registering table supplier from /opt/tpch/sf100/supplier
+
+============================================================
+Starting iteration 1 of 1
+============================================================
+
+Running query 5 from /Users/andy/git/apache/datafusion-comet/benchmarks/tpc/queries/tpch/q5.sql
+Executing: -- CometBench-H query 5 derived from TPC-H query 5 under the terms of the TPC Fair Use Policy.
+-- TP...
+== Physical Plan ==
+AdaptiveSparkPlan (44)
++- Sort (43)
+   +- Exchange (42)
+      +- HashAggregate (41)
+         +- Exchange (40)
+            +- HashAggregate (39)
+               +- Project (38)
+                  +- BroadcastHashJoin Inner BuildRight (37)
+                     :- Project (32)
+                     :  +- BroadcastHashJoin Inner BuildRight (31)
+                     :     :- Project (27)
+                     :     :  +- SortMergeJoin Inner (26)
+                     :     :     :- Sort (21)
+                     :     :     :  +- Exchange (20)
+                     :     :     :     +- Project (19)
+                     :     :     :        +- SortMergeJoin Inner (18)
+                     :     :     :           :- Sort (13)
+                     :     :     :           :  +- Exchange (12)
+                     :     :     :           :     +- Project (11)
+                     :     :     :           :        +- SortMergeJoin Inner (10)
+                     :     :     :           :           :- Sort (4)
+                     :     :     :           :           :  +- Exchange (3)
+                     :     :     :           :           :     +- Filter (2)
+                     :     :     :           :           :        +- Scan parquet  (1)
+                     :     :     :           :           +- Sort (9)
+                     :     :     :           :              +- Exchange (8)
+                     :     :     :           :                 +- Project (7)
+                     :     :     :           :                    +- Filter (6)
+                     :     :     :           :                       +- Scan parquet  (5)
+                     :     :     :           +- Sort (17)
+                     :     :     :              +- Exchange (16)
+                     :     :     :                 +- Filter (15)
+                     :     :     :                    +- Scan parquet  (14)
+                     :     :     +- Sort (25)
+                     :     :        +- Exchange (24)
+                     :     :           +- Filter (23)
+                     :     :              +- Scan parquet  (22)
+                     :     +- BroadcastExchange (30)
+                     :        +- Filter (29)
+                     :           +- Scan parquet  (28)
+                     +- BroadcastExchange (36)
+                        +- Project (35)
+                           +- Filter (34)
+                              +- Scan parquet  (33)
+
+
+(1) Scan parquet 
+Output [2]: [c_custkey#0L, c_nationkey#3L]
+Batched: true
+Location: InMemoryFileIndex [file:/opt/tpch/sf100/customer]
+PushedFilters: [IsNotNull(c_custkey), IsNotNull(c_nationkey)]
+ReadSchema: struct<c_custkey:bigint,c_nationkey:bigint>
+
+(2) Filter
+Input [2]: [c_custkey#0L, c_nationkey#3L]
+Condition : (isnotnull(c_custkey#0L) AND isnotnull(c_nationkey#3L))
+
+(3) Exchange
+Input [2]: [c_custkey#0L, c_nationkey#3L]
+Arguments: hashpartitioning(c_custkey#0L, 200), ENSURE_REQUIREMENTS, [plan_id=159]
+
+(4) Sort
+Input [2]: [c_custkey#0L, c_nationkey#3L]
+Arguments: [c_custkey#0L ASC NULLS FIRST], false, 0
+
+(5) Scan parquet 
+Output [3]: [o_orderkey#56L, o_custkey#57L, o_orderdate#60]
+Batched: true
+Location: InMemoryFileIndex [file:/opt/tpch/sf100/orders]
+PushedFilters: [IsNotNull(o_orderdate), GreaterThanOrEqual(o_orderdate,1994-01-01), LessThan(o_orderdate,1995-01-01), IsNotNull(o_custkey), IsNotNull(o_orderkey)]
+ReadSchema: struct<o_orderkey:bigint,o_custkey:bigint,o_orderdate:date>
+
+(6) Filter
+Input [3]: [o_orderkey#56L, o_custkey#57L, o_orderdate#60]
+Condition : ((((isnotnull(o_orderdate#60) AND (o_orderdate#60 >= 1994-01-01)) AND (o_orderdate#60 < 1995-01-01)) AND isnotnull(o_custkey#57L)) AND isnotnull(o_orderkey#56L))
+
+(7) Project
+Output [2]: [o_orderkey#56L, o_custkey#57L]
+Input [3]: [o_orderkey#56L, o_custkey#57L, o_orderdate#60]
+
+(8) Exchange
+Input [2]: [o_orderkey#56L, o_custkey#57L]
+Arguments: hashpartitioning(o_custkey#57L, 200), ENSURE_REQUIREMENTS, [plan_id=160]
+
+(9) Sort
+Input [2]: [o_orderkey#56L, o_custkey#57L]
+Arguments: [o_custkey#57L ASC NULLS FIRST], false, 0
+
+(10) SortMergeJoin
+Left keys [1]: [c_custkey#0L]
+Right keys [1]: [o_custkey#57L]
+Join type: Inner
+Join condition: None
+
+(11) Project
+Output [2]: [c_nationkey#3L, o_orderkey#56L]
+Input [4]: [c_custkey#0L, c_nationkey#3L, o_orderkey#56L, o_custkey#57L]
+
+(12) Exchange
+Input [2]: [c_nationkey#3L, o_orderkey#56L]
+Arguments: hashpartitioning(o_orderkey#56L, 200), ENSURE_REQUIREMENTS, [plan_id=167]
+
+(13) Sort
+Input [2]: [c_nationkey#3L, o_orderkey#56L]
+Arguments: [o_orderkey#56L ASC NULLS FIRST], false, 0
+
+(14) Scan parquet 
+Output [4]: [l_orderkey#16L, l_suppkey#18L, l_extendedprice#21, l_discount#22]
+Batched: true
+Location: InMemoryFileIndex [file:/opt/tpch/sf100/lineitem]
+PushedFilters: [IsNotNull(l_orderkey), IsNotNull(l_suppkey)]
+ReadSchema: struct<l_orderkey:bigint,l_suppkey:bigint,l_extendedprice:decimal(15,2),l_discount:decimal(15,2)>
+
+(15) Filter
+Input [4]: [l_orderkey#16L, l_suppkey#18L, l_extendedprice#21, l_discount#22]
+Condition : (isnotnull(l_orderkey#16L) AND isnotnull(l_suppkey#18L))
+
+(16) Exchange
+Input [4]: [l_orderkey#16L, l_suppkey#18L, l_extendedprice#21, l_discount#22]
+Arguments: hashpartitioning(l_orderkey#16L, 200), ENSURE_REQUIREMENTS, [plan_id=168]
+
+(17) Sort
+Input [4]: [l_orderkey#16L, l_suppkey#18L, l_extendedprice#21, l_discount#22]
+Arguments: [l_orderkey#16L ASC NULLS FIRST], false, 0
+
+(18) SortMergeJoin
+Left keys [1]: [o_orderkey#56L]
+Right keys [1]: [l_orderkey#16L]
+Join type: Inner
+Join condition: None
+
+(19) Project
+Output [4]: [c_nationkey#3L, l_suppkey#18L, l_extendedprice#21, l_discount#22]
+Input [6]: [c_nationkey#3L, o_orderkey#56L, l_orderkey#16L, l_suppkey#18L, l_extendedprice#21, l_discount#22]
+
+(20) Exchange
+Input [4]: [c_nationkey#3L, l_suppkey#18L, l_extendedprice#21, l_discount#22]
+Arguments: hashpartitioning(l_suppkey#18L, c_nationkey#3L, 200), ENSURE_REQUIREMENTS, [plan_id=175]
+
+(21) Sort
+Input [4]: [c_nationkey#3L, l_suppkey#18L, l_extendedprice#21, l_discount#22]
+Arguments: [l_suppkey#18L ASC NULLS FIRST, c_nationkey#3L ASC NULLS FIRST], false, 0
+
+(22) Scan parquet 
+Output [2]: [s_suppkey#108L, s_nationkey#111L]
+Batched: true
+Location: InMemoryFileIndex [file:/opt/tpch/sf100/supplier]
+PushedFilters: [IsNotNull(s_suppkey), IsNotNull(s_nationkey)]
+ReadSchema: struct<s_suppkey:bigint,s_nationkey:bigint>
+
+(23) Filter
+Input [2]: [s_suppkey#108L, s_nationkey#111L]
+Condition : (isnotnull(s_suppkey#108L) AND isnotnull(s_nationkey#111L))
+
+(24) Exchange
+Input [2]: [s_suppkey#108L, s_nationkey#111L]
+Arguments: hashpartitioning(s_suppkey#108L, s_nationkey#111L, 200), ENSURE_REQUIREMENTS, [plan_id=176]
+
+(25) Sort
+Input [2]: [s_suppkey#108L, s_nationkey#111L]
+Arguments: [s_suppkey#108L ASC NULLS FIRST, s_nationkey#111L ASC NULLS FIRST], false, 0
+
+(26) SortMergeJoin
+Left keys [2]: [l_suppkey#18L, c_nationkey#3L]
+Right keys [2]: [s_suppkey#108L, s_nationkey#111L]
+Join type: Inner
+Join condition: None
+
+(27) Project
+Output [3]: [l_extendedprice#21, l_discount#22, s_nationkey#111L]
+Input [6]: [c_nationkey#3L, l_suppkey#18L, l_extendedprice#21, l_discount#22, s_suppkey#108L, s_nationkey#111L]
+
+(28) Scan parquet 
+Output [3]: [n_nationkey#48L, n_name#49, n_regionkey#50L]
+Batched: true
+Location: InMemoryFileIndex [file:/opt/tpch/sf100/nation]
+PushedFilters: [IsNotNull(n_nationkey), IsNotNull(n_regionkey)]
+ReadSchema: struct<n_nationkey:bigint,n_name:string,n_regionkey:bigint>
+
+(29) Filter
+Input [3]: [n_nationkey#48L, n_name#49, n_regionkey#50L]
+Condition : ((isnotnull(n_nationkey#48L) AND isnotnull(n_regionkey#50L)) AND might_contain(Subquery subquery#128, [id=#134], xxhash64(n_regionkey#50L, 42)))
+
+(30) BroadcastExchange
+Input [3]: [n_nationkey#48L, n_name#49, n_regionkey#50L]
+Arguments: HashedRelationBroadcastMode(List(input[0, bigint, false]),false), [plan_id=182]
+
+(31) BroadcastHashJoin
+Left keys [1]: [s_nationkey#111L]
+Right keys [1]: [n_nationkey#48L]
+Join type: Inner
+Join condition: None
+
+(32) Project
+Output [4]: [l_extendedprice#21, l_discount#22, n_name#49, n_regionkey#50L]
+Input [6]: [l_extendedprice#21, l_discount#22, s_nationkey#111L, n_nationkey#48L, n_name#49, n_regionkey#50L]
+
+(33) Scan parquet 
+Output [2]: [r_regionkey#102L, r_name#103]
+Batched: true
+Location: InMemoryFileIndex [file:/opt/tpch/sf100/region]
+PushedFilters: [IsNotNull(r_name), EqualTo(r_name,AFRICA), IsNotNull(r_regionkey)]
+ReadSchema: struct<r_regionkey:bigint,r_name:string>
+
+(34) Filter
+Input [2]: [r_regionkey#102L, r_name#103]
+Condition : ((isnotnull(r_name#103) AND (r_name#103 = AFRICA)) AND isnotnull(r_regionkey#102L))
+
+(35) Project
+Output [1]: [r_regionkey#102L]
+Input [2]: [r_regionkey#102L, r_name#103]
+
+(36) BroadcastExchange
+Input [1]: [r_regionkey#102L]
+Arguments: HashedRelationBroadcastMode(List(input[0, bigint, true]),false), [plan_id=186]
+
+(37) BroadcastHashJoin
+Left keys [1]: [n_regionkey#50L]
+Right keys [1]: [r_regionkey#102L]
+Join type: Inner
+Join condition: None
+
+(38) Project
+Output [3]: [l_extendedprice#21, l_discount#22, n_name#49]
+Input [5]: [l_extendedprice#21, l_discount#22, n_name#49, n_regionkey#50L, r_regionkey#102L]
+
+(39) HashAggregate
+Input [3]: [l_extendedprice#21, l_discount#22, n_name#49]
+Keys [1]: [n_name#49]
+Functions [1]: [partial_sum((l_extendedprice#21 * (1 - l_discount#22)))]
+Aggregate Attributes [2]: [sum#129, isEmpty#130]
+Results [3]: [n_name#49, sum#131, isEmpty#132]
+
+(40) Exchange
+Input [3]: [n_name#49, sum#131, isEmpty#132]
+Arguments: hashpartitioning(n_name#49, 200), ENSURE_REQUIREMENTS, [plan_id=191]
+
+(41) HashAggregate
+Input [3]: [n_name#49, sum#131, isEmpty#132]
+Keys [1]: [n_name#49]
+Functions [1]: [sum((l_extendedprice#21 * (1 - l_discount#22)))]
+Aggregate Attributes [1]: [sum((l_extendedprice#21 * (1 - l_discount#22)))#123]
+Results [2]: [n_name#49, sum((l_extendedprice#21 * (1 - l_discount#22)))#123 AS revenue#122]
+
+(42) Exchange
+Input [2]: [n_name#49, revenue#122]
+Arguments: rangepartitioning(revenue#122 DESC NULLS LAST, 200), ENSURE_REQUIREMENTS, [plan_id=194]
+
+(43) Sort
+Input [2]: [n_name#49, revenue#122]
+Arguments: [revenue#122 DESC NULLS LAST], true, 0
+
+(44) AdaptiveSparkPlan
+Output [2]: [n_name#49, revenue#122]
+Arguments: isFinalPlan=false
+
+===== Subqueries =====
+
+Subquery:1 Hosting operator id = 29 Hosting Expression = Subquery subquery#128, [id=#134]
+AdaptiveSparkPlan (51)
++- ObjectHashAggregate (50)
+   +- Exchange (49)
+      +- ObjectHashAggregate (48)
+         +- Project (47)
+            +- Filter (46)
+               +- Scan parquet  (45)
+
+
+(45) Scan parquet 
+Output [2]: [r_regionkey#102L, r_name#103]
+Batched: true
+Location: InMemoryFileIndex [file:/opt/tpch/sf100/region]
+PushedFilters: [IsNotNull(r_name), EqualTo(r_name,AFRICA), IsNotNull(r_regionkey)]
+ReadSchema: struct<r_regionkey:bigint,r_name:string>
+
+(46) Filter
+Input [2]: [r_regionkey#102L, r_name#103]
+Condition : ((isnotnull(r_name#103) AND (r_name#103 = AFRICA)) AND isnotnull(r_regionkey#102L))
+
+(47) Project
+Output [1]: [r_regionkey#102L]
+Input [2]: [r_regionkey#102L, r_name#103]
+
+(48) ObjectHashAggregate
+Input [1]: [r_regionkey#102L]
+Keys: []
+Functions [1]: [partial_bloom_filter_agg(xxhash64(r_regionkey#102L, 42), 1000000, 8388608, 0, 0)]
+Aggregate Attributes [1]: [buf#133]
+Results [1]: [buf#134]
+
+(49) Exchange
+Input [1]: [buf#134]
+Arguments: SinglePartition, ENSURE_REQUIREMENTS, [plan_id=132]
+
+(50) ObjectHashAggregate
+Input [1]: [buf#134]
+Keys: []
+Functions [1]: [bloom_filter_agg(xxhash64(r_regionkey#102L, 42), 1000000, 8388608, 0, 0)]
+Aggregate Attributes [1]: [bloom_filter_agg(xxhash64(r_regionkey#102L, 42), 1000000, 8388608, 0, 0)#126]
+Results [1]: [bloom_filter_agg(xxhash64(r_regionkey#102L, 42), 1000000, 8388608, 0, 0)#126 AS bloomFilter#127]
+
+(51) AdaptiveSparkPlan
+Output [1]: [bloomFilter#127]
+Arguments: isFinalPlan=false
+
+
+
+Query 5 returned 5 rows, hash=f1e68aab4aa9d0988709357fc210d775
+Query 5 took 84.19 seconds
+
+Iteration 1 took 84.19 seconds
+
+Writing results to /Users/andy/git/apache/datafusion-comet/benchmarks/tpc/memory-profile-results/spark-offheap4g-q5-tpch-1775044656629.json

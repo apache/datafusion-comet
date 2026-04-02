@@ -1,0 +1,281 @@
+Registering table customer from /opt/tpch/sf100/customer
+Registering table lineitem from /opt/tpch/sf100/lineitem
+Registering table nation from /opt/tpch/sf100/nation
+Registering table orders from /opt/tpch/sf100/orders
+Registering table part from /opt/tpch/sf100/part
+Registering table partsupp from /opt/tpch/sf100/partsupp
+Registering table region from /opt/tpch/sf100/region
+Registering table supplier from /opt/tpch/sf100/supplier
+
+============================================================
+Starting iteration 1 of 1
+============================================================
+
+Running query 9 from /Users/andy/git/apache/datafusion-comet/benchmarks/tpc/queries/tpch/q9.sql
+Executing: -- CometBench-H query 9 derived from TPC-H query 9 under the terms of the TPC Fair Use Policy.
+-- TP...
+== Physical Plan ==
+AdaptiveSparkPlan (46)
++- CometSort (45)
+   +- CometExchange (44)
+      +- CometHashAggregate (43)
+         +- CometExchange (42)
+            +- CometHashAggregate (41)
+               +- CometProject (40)
+                  +- CometBroadcastHashJoin (39)
+                     :- CometProject (35)
+                     :  +- CometSortMergeJoin (34)
+                     :     :- CometSort (29)
+                     :     :  +- CometExchange (28)
+                     :     :     +- CometProject (27)
+                     :     :        +- CometSortMergeJoin (26)
+                     :     :           :- CometSort (21)
+                     :     :           :  +- CometExchange (20)
+                     :     :           :     +- CometProject (19)
+                     :     :           :        +- CometSortMergeJoin (18)
+                     :     :           :           :- CometSort (13)
+                     :     :           :           :  +- CometExchange (12)
+                     :     :           :           :     +- CometProject (11)
+                     :     :           :           :        +- CometSortMergeJoin (10)
+                     :     :           :           :           :- CometSort (5)
+                     :     :           :           :           :  +- CometExchange (4)
+                     :     :           :           :           :     +- CometProject (3)
+                     :     :           :           :           :        +- CometFilter (2)
+                     :     :           :           :           :           +- CometNativeScan parquet  (1)
+                     :     :           :           :           +- CometSort (9)
+                     :     :           :           :              +- CometExchange (8)
+                     :     :           :           :                 +- CometFilter (7)
+                     :     :           :           :                    +- CometNativeScan parquet  (6)
+                     :     :           :           +- CometSort (17)
+                     :     :           :              +- CometExchange (16)
+                     :     :           :                 +- CometFilter (15)
+                     :     :           :                    +- CometNativeScan parquet  (14)
+                     :     :           +- CometSort (25)
+                     :     :              +- CometExchange (24)
+                     :     :                 +- CometFilter (23)
+                     :     :                    +- CometNativeScan parquet  (22)
+                     :     +- CometSort (33)
+                     :        +- CometExchange (32)
+                     :           +- CometFilter (31)
+                     :              +- CometNativeScan parquet  (30)
+                     +- CometBroadcastExchange (38)
+                        +- CometFilter (37)
+                           +- CometNativeScan parquet  (36)
+
+
+(1) CometNativeScan parquet 
+Output [2]: [p_partkey#74L, p_name#75]
+Batched: true
+Location: InMemoryFileIndex [file:/opt/tpch/sf100/part]
+PushedFilters: [IsNotNull(p_name), StringContains(p_name,moccasin), IsNotNull(p_partkey)]
+ReadSchema: struct<p_partkey:bigint,p_name:string>
+
+(2) CometFilter
+Input [2]: [p_partkey#74L, p_name#75]
+Condition : ((isnotnull(p_name#75) AND Contains(p_name#75, moccasin)) AND isnotnull(p_partkey#74L))
+
+(3) CometProject
+Input [2]: [p_partkey#74L, p_name#75]
+Arguments: [p_partkey#74L], [p_partkey#74L]
+
+(4) CometExchange
+Input [1]: [p_partkey#74L]
+Arguments: hashpartitioning(p_partkey#74L, 200), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=376]
+
+(5) CometSort
+Input [1]: [p_partkey#74L]
+Arguments: [p_partkey#74L], [p_partkey#74L ASC NULLS FIRST]
+
+(6) CometNativeScan parquet 
+Output [6]: [l_orderkey#16L, l_partkey#17L, l_suppkey#18L, l_quantity#20, l_extendedprice#21, l_discount#22]
+Batched: true
+Location: InMemoryFileIndex [file:/opt/tpch/sf100/lineitem]
+PushedFilters: [IsNotNull(l_partkey), IsNotNull(l_suppkey), IsNotNull(l_orderkey)]
+ReadSchema: struct<l_orderkey:bigint,l_partkey:bigint,l_suppkey:bigint,l_quantity:decimal(15,2),l_extendedprice:decimal(15,2),l_discount:decimal(15,2)>
+
+(7) CometFilter
+Input [6]: [l_orderkey#16L, l_partkey#17L, l_suppkey#18L, l_quantity#20, l_extendedprice#21, l_discount#22]
+Condition : ((isnotnull(l_partkey#17L) AND isnotnull(l_suppkey#18L)) AND isnotnull(l_orderkey#16L))
+
+(8) CometExchange
+Input [6]: [l_orderkey#16L, l_partkey#17L, l_suppkey#18L, l_quantity#20, l_extendedprice#21, l_discount#22]
+Arguments: hashpartitioning(l_partkey#17L, 200), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=380]
+
+(9) CometSort
+Input [6]: [l_orderkey#16L, l_partkey#17L, l_suppkey#18L, l_quantity#20, l_extendedprice#21, l_discount#22]
+Arguments: [l_orderkey#16L, l_partkey#17L, l_suppkey#18L, l_quantity#20, l_extendedprice#21, l_discount#22], [l_partkey#17L ASC NULLS FIRST]
+
+(10) CometSortMergeJoin
+Left output [1]: [p_partkey#74L]
+Right output [6]: [l_orderkey#16L, l_partkey#17L, l_suppkey#18L, l_quantity#20, l_extendedprice#21, l_discount#22]
+Arguments: [p_partkey#74L], [l_partkey#17L], Inner
+
+(11) CometProject
+Input [7]: [p_partkey#74L, l_orderkey#16L, l_partkey#17L, l_suppkey#18L, l_quantity#20, l_extendedprice#21, l_discount#22]
+Arguments: [l_orderkey#16L, l_partkey#17L, l_suppkey#18L, l_quantity#20, l_extendedprice#21, l_discount#22], [l_orderkey#16L, l_partkey#17L, l_suppkey#18L, l_quantity#20, l_extendedprice#21, l_discount#22]
+
+(12) CometExchange
+Input [6]: [l_orderkey#16L, l_partkey#17L, l_suppkey#18L, l_quantity#20, l_extendedprice#21, l_discount#22]
+Arguments: hashpartitioning(l_suppkey#18L, 200), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=384]
+
+(13) CometSort
+Input [6]: [l_orderkey#16L, l_partkey#17L, l_suppkey#18L, l_quantity#20, l_extendedprice#21, l_discount#22]
+Arguments: [l_orderkey#16L, l_partkey#17L, l_suppkey#18L, l_quantity#20, l_extendedprice#21, l_discount#22], [l_suppkey#18L ASC NULLS FIRST]
+
+(14) CometNativeScan parquet 
+Output [2]: [s_suppkey#108L, s_nationkey#111L]
+Batched: true
+Location: InMemoryFileIndex [file:/opt/tpch/sf100/supplier]
+PushedFilters: [IsNotNull(s_suppkey), IsNotNull(s_nationkey)]
+ReadSchema: struct<s_suppkey:bigint,s_nationkey:bigint>
+
+(15) CometFilter
+Input [2]: [s_suppkey#108L, s_nationkey#111L]
+Condition : (isnotnull(s_suppkey#108L) AND isnotnull(s_nationkey#111L))
+
+(16) CometExchange
+Input [2]: [s_suppkey#108L, s_nationkey#111L]
+Arguments: hashpartitioning(s_suppkey#108L, 200), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=388]
+
+(17) CometSort
+Input [2]: [s_suppkey#108L, s_nationkey#111L]
+Arguments: [s_suppkey#108L, s_nationkey#111L], [s_suppkey#108L ASC NULLS FIRST]
+
+(18) CometSortMergeJoin
+Left output [6]: [l_orderkey#16L, l_partkey#17L, l_suppkey#18L, l_quantity#20, l_extendedprice#21, l_discount#22]
+Right output [2]: [s_suppkey#108L, s_nationkey#111L]
+Arguments: [l_suppkey#18L], [s_suppkey#108L], Inner
+
+(19) CometProject
+Input [8]: [l_orderkey#16L, l_partkey#17L, l_suppkey#18L, l_quantity#20, l_extendedprice#21, l_discount#22, s_suppkey#108L, s_nationkey#111L]
+Arguments: [l_orderkey#16L, l_partkey#17L, l_suppkey#18L, l_quantity#20, l_extendedprice#21, l_discount#22, s_nationkey#111L], [l_orderkey#16L, l_partkey#17L, l_suppkey#18L, l_quantity#20, l_extendedprice#21, l_discount#22, s_nationkey#111L]
+
+(20) CometExchange
+Input [7]: [l_orderkey#16L, l_partkey#17L, l_suppkey#18L, l_quantity#20, l_extendedprice#21, l_discount#22, s_nationkey#111L]
+Arguments: hashpartitioning(l_suppkey#18L, l_partkey#17L, 200), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=392]
+
+(21) CometSort
+Input [7]: [l_orderkey#16L, l_partkey#17L, l_suppkey#18L, l_quantity#20, l_extendedprice#21, l_discount#22, s_nationkey#111L]
+Arguments: [l_orderkey#16L, l_partkey#17L, l_suppkey#18L, l_quantity#20, l_extendedprice#21, l_discount#22, s_nationkey#111L], [l_suppkey#18L ASC NULLS FIRST, l_partkey#17L ASC NULLS FIRST]
+
+(22) CometNativeScan parquet 
+Output [3]: [ps_partkey#92L, ps_suppkey#93L, ps_supplycost#95]
+Batched: true
+Location: InMemoryFileIndex [file:/opt/tpch/sf100/partsupp]
+PushedFilters: [IsNotNull(ps_suppkey), IsNotNull(ps_partkey)]
+ReadSchema: struct<ps_partkey:bigint,ps_suppkey:bigint,ps_supplycost:decimal(15,2)>
+
+(23) CometFilter
+Input [3]: [ps_partkey#92L, ps_suppkey#93L, ps_supplycost#95]
+Condition : (isnotnull(ps_suppkey#93L) AND isnotnull(ps_partkey#92L))
+
+(24) CometExchange
+Input [3]: [ps_partkey#92L, ps_suppkey#93L, ps_supplycost#95]
+Arguments: hashpartitioning(ps_suppkey#93L, ps_partkey#92L, 200), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=396]
+
+(25) CometSort
+Input [3]: [ps_partkey#92L, ps_suppkey#93L, ps_supplycost#95]
+Arguments: [ps_partkey#92L, ps_suppkey#93L, ps_supplycost#95], [ps_suppkey#93L ASC NULLS FIRST, ps_partkey#92L ASC NULLS FIRST]
+
+(26) CometSortMergeJoin
+Left output [7]: [l_orderkey#16L, l_partkey#17L, l_suppkey#18L, l_quantity#20, l_extendedprice#21, l_discount#22, s_nationkey#111L]
+Right output [3]: [ps_partkey#92L, ps_suppkey#93L, ps_supplycost#95]
+Arguments: [l_suppkey#18L, l_partkey#17L], [ps_suppkey#93L, ps_partkey#92L], Inner
+
+(27) CometProject
+Input [10]: [l_orderkey#16L, l_partkey#17L, l_suppkey#18L, l_quantity#20, l_extendedprice#21, l_discount#22, s_nationkey#111L, ps_partkey#92L, ps_suppkey#93L, ps_supplycost#95]
+Arguments: [l_orderkey#16L, l_quantity#20, l_extendedprice#21, l_discount#22, s_nationkey#111L, ps_supplycost#95], [l_orderkey#16L, l_quantity#20, l_extendedprice#21, l_discount#22, s_nationkey#111L, ps_supplycost#95]
+
+(28) CometExchange
+Input [6]: [l_orderkey#16L, l_quantity#20, l_extendedprice#21, l_discount#22, s_nationkey#111L, ps_supplycost#95]
+Arguments: hashpartitioning(l_orderkey#16L, 200), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=400]
+
+(29) CometSort
+Input [6]: [l_orderkey#16L, l_quantity#20, l_extendedprice#21, l_discount#22, s_nationkey#111L, ps_supplycost#95]
+Arguments: [l_orderkey#16L, l_quantity#20, l_extendedprice#21, l_discount#22, s_nationkey#111L, ps_supplycost#95], [l_orderkey#16L ASC NULLS FIRST]
+
+(30) CometNativeScan parquet 
+Output [2]: [o_orderkey#56L, o_orderdate#60]
+Batched: true
+Location: InMemoryFileIndex [file:/opt/tpch/sf100/orders]
+PushedFilters: [IsNotNull(o_orderkey)]
+ReadSchema: struct<o_orderkey:bigint,o_orderdate:date>
+
+(31) CometFilter
+Input [2]: [o_orderkey#56L, o_orderdate#60]
+Condition : isnotnull(o_orderkey#56L)
+
+(32) CometExchange
+Input [2]: [o_orderkey#56L, o_orderdate#60]
+Arguments: hashpartitioning(o_orderkey#56L, 200), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=404]
+
+(33) CometSort
+Input [2]: [o_orderkey#56L, o_orderdate#60]
+Arguments: [o_orderkey#56L, o_orderdate#60], [o_orderkey#56L ASC NULLS FIRST]
+
+(34) CometSortMergeJoin
+Left output [6]: [l_orderkey#16L, l_quantity#20, l_extendedprice#21, l_discount#22, s_nationkey#111L, ps_supplycost#95]
+Right output [2]: [o_orderkey#56L, o_orderdate#60]
+Arguments: [l_orderkey#16L], [o_orderkey#56L], Inner
+
+(35) CometProject
+Input [8]: [l_orderkey#16L, l_quantity#20, l_extendedprice#21, l_discount#22, s_nationkey#111L, ps_supplycost#95, o_orderkey#56L, o_orderdate#60]
+Arguments: [l_quantity#20, l_extendedprice#21, l_discount#22, s_nationkey#111L, ps_supplycost#95, o_orderdate#60], [l_quantity#20, l_extendedprice#21, l_discount#22, s_nationkey#111L, ps_supplycost#95, o_orderdate#60]
+
+(36) CometNativeScan parquet 
+Output [2]: [n_nationkey#48L, n_name#49]
+Batched: true
+Location: InMemoryFileIndex [file:/opt/tpch/sf100/nation]
+PushedFilters: [IsNotNull(n_nationkey)]
+ReadSchema: struct<n_nationkey:bigint,n_name:string>
+
+(37) CometFilter
+Input [2]: [n_nationkey#48L, n_name#49]
+Condition : isnotnull(n_nationkey#48L)
+
+(38) CometBroadcastExchange
+Input [2]: [n_nationkey#48L, n_name#49]
+Arguments: [n_nationkey#48L, n_name#49]
+
+(39) CometBroadcastHashJoin
+Left output [6]: [l_quantity#20, l_extendedprice#21, l_discount#22, s_nationkey#111L, ps_supplycost#95, o_orderdate#60]
+Right output [2]: [n_nationkey#48L, n_name#49]
+Arguments: [s_nationkey#111L], [n_nationkey#48L], Inner, BuildRight
+
+(40) CometProject
+Input [8]: [l_quantity#20, l_extendedprice#21, l_discount#22, s_nationkey#111L, ps_supplycost#95, o_orderdate#60, n_nationkey#48L, n_name#49]
+Arguments: [nation#122, o_year#123, amount#124], [n_name#49 AS nation#122, year(o_orderdate#60) AS o_year#123, ((l_extendedprice#21 * (1 - l_discount#22)) - (ps_supplycost#95 * l_quantity#20)) AS amount#124]
+
+(41) CometHashAggregate
+Input [3]: [nation#122, o_year#123, amount#124]
+Keys [2]: [nation#122, o_year#123]
+Functions [1]: [partial_sum(amount#124)]
+
+(42) CometExchange
+Input [4]: [nation#122, o_year#123, sum#132, isEmpty#133]
+Arguments: hashpartitioning(nation#122, o_year#123, 200), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=413]
+
+(43) CometHashAggregate
+Input [4]: [nation#122, o_year#123, sum#132, isEmpty#133]
+Keys [2]: [nation#122, o_year#123]
+Functions [1]: [sum(amount#124)]
+
+(44) CometExchange
+Input [3]: [nation#122, o_year#123, sum_profit#125]
+Arguments: rangepartitioning(nation#122 ASC NULLS FIRST, o_year#123 DESC NULLS LAST, 200), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=415]
+
+(45) CometSort
+Input [3]: [nation#122, o_year#123, sum_profit#125]
+Arguments: [nation#122, o_year#123, sum_profit#125], [nation#122 ASC NULLS FIRST, o_year#123 DESC NULLS LAST]
+
+(46) AdaptiveSparkPlan
+Output [3]: [nation#122, o_year#123, sum_profit#125]
+Arguments: isFinalPlan=false
+
+
+Query 9 returned 175 rows, hash=fff4ba3023e74505f304fa3243cbeeb6
+Query 9 took 375.36 seconds
+
+Iteration 1 took 375.36 seconds
+
+Writing results to /Users/andy/git/apache/datafusion-comet/benchmarks/tpc/memory-profile-results/comet-offheap4g-q9-tpch-1775054750948.json

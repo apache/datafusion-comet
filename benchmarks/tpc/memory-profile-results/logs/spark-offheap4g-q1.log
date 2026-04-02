@@ -1,0 +1,80 @@
+Registering table customer from /opt/tpch/sf100/customer
+Registering table lineitem from /opt/tpch/sf100/lineitem
+Registering table nation from /opt/tpch/sf100/nation
+Registering table orders from /opt/tpch/sf100/orders
+Registering table part from /opt/tpch/sf100/part
+Registering table partsupp from /opt/tpch/sf100/partsupp
+Registering table region from /opt/tpch/sf100/region
+Registering table supplier from /opt/tpch/sf100/supplier
+
+============================================================
+Starting iteration 1 of 1
+============================================================
+
+Running query 1 from /Users/andy/git/apache/datafusion-comet/benchmarks/tpc/queries/tpch/q1.sql
+Executing: -- CometBench-H query 1 derived from TPC-H query 1 under the terms of the TPC Fair Use Policy.
+-- TP...
+== Physical Plan ==
+AdaptiveSparkPlan (9)
++- Sort (8)
+   +- Exchange (7)
+      +- HashAggregate (6)
+         +- Exchange (5)
+            +- HashAggregate (4)
+               +- Project (3)
+                  +- Filter (2)
+                     +- Scan parquet  (1)
+
+
+(1) Scan parquet 
+Output [7]: [l_quantity#20, l_extendedprice#21, l_discount#22, l_tax#23, l_returnflag#24, l_linestatus#25, l_shipdate#26]
+Batched: true
+Location: InMemoryFileIndex [file:/opt/tpch/sf100/lineitem]
+PushedFilters: [IsNotNull(l_shipdate), LessThanOrEqual(l_shipdate,1998-09-24)]
+ReadSchema: struct<l_quantity:decimal(15,2),l_extendedprice:decimal(15,2),l_discount:decimal(15,2),l_tax:decimal(15,2),l_returnflag:string,l_linestatus:string,l_shipdate:date>
+
+(2) Filter
+Input [7]: [l_quantity#20, l_extendedprice#21, l_discount#22, l_tax#23, l_returnflag#24, l_linestatus#25, l_shipdate#26]
+Condition : (isnotnull(l_shipdate#26) AND (l_shipdate#26 <= 1998-09-24))
+
+(3) Project
+Output [6]: [l_quantity#20, l_extendedprice#21, l_discount#22, l_tax#23, l_returnflag#24, l_linestatus#25]
+Input [7]: [l_quantity#20, l_extendedprice#21, l_discount#22, l_tax#23, l_returnflag#24, l_linestatus#25, l_shipdate#26]
+
+(4) HashAggregate
+Input [6]: [l_quantity#20, l_extendedprice#21, l_discount#22, l_tax#23, l_returnflag#24, l_linestatus#25]
+Keys [2]: [l_returnflag#24, l_linestatus#25]
+Functions [8]: [partial_sum(l_quantity#20), partial_sum(l_extendedprice#21), partial_sum((l_extendedprice#21 * (1 - l_discount#22))), partial_sum(((l_extendedprice#21 * (1 - l_discount#22)) * (1 + l_tax#23))), partial_avg(l_quantity#20), partial_avg(l_extendedprice#21), partial_avg(l_discount#22), partial_count(1)]
+Aggregate Attributes [15]: [sum#148, isEmpty#149, sum#150, isEmpty#151, sum#152, isEmpty#153, sum#154, isEmpty#155, sum#156, count#157L, sum#158, count#159L, sum#160, count#161L, count#162L]
+Results [17]: [l_returnflag#24, l_linestatus#25, sum#163, isEmpty#164, sum#165, isEmpty#166, sum#167, isEmpty#168, sum#169, isEmpty#170, sum#171, count#172L, sum#173, count#174L, sum#175, count#176L, count#177L]
+
+(5) Exchange
+Input [17]: [l_returnflag#24, l_linestatus#25, sum#163, isEmpty#164, sum#165, isEmpty#166, sum#167, isEmpty#168, sum#169, isEmpty#170, sum#171, count#172L, sum#173, count#174L, sum#175, count#176L, count#177L]
+Arguments: hashpartitioning(l_returnflag#24, l_linestatus#25, 200), ENSURE_REQUIREMENTS, [plan_id=43]
+
+(6) HashAggregate
+Input [17]: [l_returnflag#24, l_linestatus#25, sum#163, isEmpty#164, sum#165, isEmpty#166, sum#167, isEmpty#168, sum#169, isEmpty#170, sum#171, count#172L, sum#173, count#174L, sum#175, count#176L, count#177L]
+Keys [2]: [l_returnflag#24, l_linestatus#25]
+Functions [8]: [sum(l_quantity#20), sum(l_extendedprice#21), sum((l_extendedprice#21 * (1 - l_discount#22))), sum(((l_extendedprice#21 * (1 - l_discount#22)) * (1 + l_tax#23))), avg(l_quantity#20), avg(l_extendedprice#21), avg(l_discount#22), count(1)]
+Aggregate Attributes [8]: [sum(l_quantity#20)#131, sum(l_extendedprice#21)#132, sum((l_extendedprice#21 * (1 - l_discount#22)))#136, sum(((l_extendedprice#21 * (1 - l_discount#22)) * (1 + l_tax#23)))#137, avg(l_quantity#20)#133, avg(l_extendedprice#21)#134, avg(l_discount#22)#135, count(1)#130L]
+Results [10]: [l_returnflag#24, l_linestatus#25, sum(l_quantity#20)#131 AS sum_qty#122, sum(l_extendedprice#21)#132 AS sum_base_price#123, sum((l_extendedprice#21 * (1 - l_discount#22)))#136 AS sum_disc_price#124, sum(((l_extendedprice#21 * (1 - l_discount#22)) * (1 + l_tax#23)))#137 AS sum_charge#125, avg(l_quantity#20)#133 AS avg_qty#126, avg(l_extendedprice#21)#134 AS avg_price#127, avg(l_discount#22)#135 AS avg_disc#128, count(1)#130L AS count_order#129L]
+
+(7) Exchange
+Input [10]: [l_returnflag#24, l_linestatus#25, sum_qty#122, sum_base_price#123, sum_disc_price#124, sum_charge#125, avg_qty#126, avg_price#127, avg_disc#128, count_order#129L]
+Arguments: rangepartitioning(l_returnflag#24 ASC NULLS FIRST, l_linestatus#25 ASC NULLS FIRST, 200), ENSURE_REQUIREMENTS, [plan_id=46]
+
+(8) Sort
+Input [10]: [l_returnflag#24, l_linestatus#25, sum_qty#122, sum_base_price#123, sum_disc_price#124, sum_charge#125, avg_qty#126, avg_price#127, avg_disc#128, count_order#129L]
+Arguments: [l_returnflag#24 ASC NULLS FIRST, l_linestatus#25 ASC NULLS FIRST], true, 0
+
+(9) AdaptiveSparkPlan
+Output [10]: [l_returnflag#24, l_linestatus#25, sum_qty#122, sum_base_price#123, sum_disc_price#124, sum_charge#125, avg_qty#126, avg_price#127, avg_disc#128, count_order#129L]
+Arguments: isFinalPlan=false
+
+
+Query 1 returned 4 rows, hash=6839cc802df6220ed2efdaaaa48373a6
+Query 1 took 86.17 seconds
+
+Iteration 1 took 86.17 seconds
+
+Writing results to /Users/andy/git/apache/datafusion-comet/benchmarks/tpc/memory-profile-results/spark-offheap4g-q1-tpch-1775044569301.json
