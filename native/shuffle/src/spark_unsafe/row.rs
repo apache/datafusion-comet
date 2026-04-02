@@ -1311,8 +1311,6 @@ pub fn process_sorted_row_partition(
 ) -> Result<(i64, Option<u32>), CometError> {
     // The current row number we are reading
     let mut current_row = 0;
-    // Total number of bytes written
-    let mut written = 0;
     // The current checksum value. This is updated incrementally in the following loop.
     let mut current_checksum = if checksum_enabled {
         Some(Checksum::try_new(checksum_algo, initial_checksum)?)
@@ -1335,8 +1333,13 @@ pub fn process_sorted_row_partition(
         .append(true)
         .open(&output_path)?;
 
-    // Reusable buffer for serialized batch data
+    // Buffer that accumulates all IPC bytes across the single stream
     let mut frozen: Vec<u8> = Vec::new();
+
+    // Build a schema from the first batch's datatypes so we can create the StreamWriter
+    // up front. We need a placeholder schema; we'll create it from the first batch.
+    let mut stream_writer: Option<arrow::ipc::writer::StreamWriter<&mut Vec<u8>>> = None;
+    let write_options = codec.ipc_write_options()?;
 
     while current_row < row_num {
         let n = std::cmp::min(batch_size, row_num - current_row);
@@ -1366,29 +1369,32 @@ pub fn process_sorted_row_partition(
             .collect();
         let batch = make_batch(array_refs?, n)?;
 
-        frozen.clear();
-
-        // Write the batch as a complete IPC stream into `frozen`
-        let write_options = codec.ipc_write_options()?;
-        let mut stream_writer = arrow::ipc::writer::StreamWriter::try_new_with_options(
-            &mut frozen,
-            &batch.schema(),
-            write_options,
-        )?;
-        stream_writer.write(&batch)?;
-        stream_writer.finish()?;
-        stream_writer.into_inner()?;
-
-        written += frozen.len();
-
-        if let Some(checksum) = &mut current_checksum {
-            let mut cursor = Cursor::new(&mut frozen);
-            checksum.update(&mut cursor)?;
+        // Create the StreamWriter on the first batch (we need the schema)
+        if stream_writer.is_none() {
+            stream_writer = Some(arrow::ipc::writer::StreamWriter::try_new_with_options(
+                &mut frozen,
+                &batch.schema(),
+                write_options.clone(),
+            )?);
         }
 
-        output_data.write_all(&frozen)?;
+        stream_writer.as_mut().unwrap().write(&batch)?;
         current_row += n;
     }
+
+    // Finish the IPC stream and flush remaining bytes
+    if let Some(mut writer) = stream_writer {
+        writer.finish()?;
+    }
+
+    let written = frozen.len();
+
+    if let Some(checksum) = &mut current_checksum {
+        let mut cursor = Cursor::new(&mut frozen);
+        checksum.update(&mut cursor)?;
+    }
+
+    output_data.write_all(&frozen)?;
 
     Ok((written as i64, current_checksum.map(|c| c.finalize())))
 }

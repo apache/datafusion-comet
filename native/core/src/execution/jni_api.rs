@@ -808,7 +808,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative
                 let compression_codec = match compression_codec.as_str() {
                     "zstd" => CompressionCodec::Zstd(compression_level),
                     "lz4" => CompressionCodec::Lz4Frame,
-                    "snappy" => CompressionCodec::Snappy,
                     _ => CompressionCodec::Lz4Frame,
                 };
 

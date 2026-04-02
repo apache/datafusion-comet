@@ -25,6 +25,6 @@ pub mod spark_unsafe;
 pub(crate) mod writers;
 
 pub use comet_partitioning::CometPartitioning;
-pub use ipc::{read_ipc_compressed, JniInputStream, ShuffleStreamReader};
+pub use ipc::{JniInputStream, ShuffleStreamReader};
 pub use shuffle_writer::ShuffleWriterExec;
 pub use writers::CompressionCodec;

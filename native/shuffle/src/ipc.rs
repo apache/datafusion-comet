@@ -17,8 +17,6 @@
 
 use arrow::array::RecordBatch;
 use arrow::ipc::reader::StreamReader;
-use datafusion::common::DataFusionError;
-use datafusion::error::Result;
 use jni::objects::{GlobalRef, JObject, JValue};
 use jni::JavaVM;
 use std::io::Read;
@@ -271,39 +269,5 @@ impl ShuffleStreamReader {
     /// Return the number of fields in the stream's schema.
     pub fn num_fields(&self) -> usize {
         self.num_fields
-    }
-}
-
-/// Read a single RecordBatch from a compressed IPC block.
-/// The first 4 bytes indicate the compression codec, followed by the IPC stream data.
-/// This is the legacy read path used by `ShuffleScanExec`.
-pub fn read_ipc_compressed(bytes: &[u8]) -> Result<RecordBatch> {
-    match &bytes[0..4] {
-        b"SNAP" => {
-            let decoder = snap::read::FrameDecoder::new(&bytes[4..]);
-            let mut reader =
-                unsafe { StreamReader::try_new(decoder, None)?.with_skip_validation(true) };
-            reader.next().unwrap().map_err(|e| e.into())
-        }
-        b"LZ4_" => {
-            let decoder = lz4_flex::frame::FrameDecoder::new(&bytes[4..]);
-            let mut reader =
-                unsafe { StreamReader::try_new(decoder, None)?.with_skip_validation(true) };
-            reader.next().unwrap().map_err(|e| e.into())
-        }
-        b"ZSTD" => {
-            let decoder = zstd::Decoder::new(&bytes[4..])?;
-            let mut reader =
-                unsafe { StreamReader::try_new(decoder, None)?.with_skip_validation(true) };
-            reader.next().unwrap().map_err(|e| e.into())
-        }
-        b"NONE" => {
-            let mut reader =
-                unsafe { StreamReader::try_new(&bytes[4..], None)?.with_skip_validation(true) };
-            reader.next().unwrap().map_err(|e| e.into())
-        }
-        other => Err(DataFusionError::Execution(format!(
-            "Failed to decode batch: invalid compression codec: {other:?}"
-        ))),
     }
 }
