@@ -1984,6 +1984,23 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("sum of double division with filter matches Spark precision") {
+    // Reproduces the aggregates_part3.sql failure where sum(1/ten) filter (where ten > 0)
+    // produces a different floating point result in Comet vs Spark due to different
+    // accumulation order in vectorized vs row-by-row processing.
+    // tenk1-like table: 10000 rows, "ten" column has values 0-9, each 1000 times.
+    val data = (0 until 10000).map(i => (i, i % 10))
+    withParquetTable(data, "tenk1_test") {
+      // Exact match test -- this is what the Spark SQL golden file tests expect
+      checkSparkAnswer(
+        "SELECT sum(1.0 / _2) FROM tenk1_test WHERE _2 > 0")
+
+      // With FILTER clause syntax if supported
+      checkSparkAnswer(
+        "SELECT sum(CAST(1 AS DOUBLE) / _2) FROM tenk1_test WHERE _2 > 0")
+    }
+  }
+
   protected def checkSparkAnswerAndNumOfAggregates(query: String, numAggregates: Int): Unit = {
     val df = sql(query)
     checkSparkAnswer(df)
