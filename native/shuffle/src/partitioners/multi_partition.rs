@@ -509,11 +509,7 @@ impl MultiPartitionShuffleRepartitioner {
             for partition_id in 0..num_output_partitions {
                 let partition_writer = &mut self.partition_writers[partition_id];
                 let mut iter = partitioned_batches.produce(partition_id);
-                spilled_bytes += partition_writer.spill(
-                    &mut iter,
-                    &self.runtime,
-                    &self.metrics,
-                )?;
+                spilled_bytes += partition_writer.spill(&mut iter, &self.runtime, &self.metrics)?;
             }
 
             self.reservation.free();

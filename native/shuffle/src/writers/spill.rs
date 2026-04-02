@@ -91,11 +91,8 @@ impl PartitionWriter {
             let file = &mut self.spill_file.as_mut().unwrap().file;
             let start_pos = file.metadata().map(|m| m.len()).unwrap_or(0);
 
-            let mut writer = StreamWriter::try_new_with_options(
-                file,
-                &self.schema,
-                self.write_options.clone(),
-            )?;
+            let mut writer =
+                StreamWriter::try_new_with_options(file, &self.schema, self.write_options.clone())?;
 
             let batch = batch?;
             let mut encode_timer = metrics.encode_time.timer();
