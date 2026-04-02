@@ -122,6 +122,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_decodeShuffleStream(
 }
 ```
 
+The `StreamReader` must be created with validation disabled (`with_skip_validation(true)`) since we control both the write and read sides and validation adds unnecessary overhead.
+
 This function is called repeatedly by the JVM iterator until it returns 0 (stream exhausted). The `StreamReader` must persist across calls — either by storing it in a native handle that the JVM holds, or by restructuring the JVM iterator to make a single JNI call that iterates all batches.
 
 **Recommended approach:** Use a native handle pattern:
