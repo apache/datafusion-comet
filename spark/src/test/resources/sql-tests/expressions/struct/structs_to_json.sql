@@ -29,3 +29,9 @@ SELECT to_json(named_struct('a', a, 'b', b)) FROM test_to_json
 -- literal arguments
 query spark_answer_only
 SELECT to_json(named_struct('a', 1, 'b', 'hello'))
+
+query expect_fallback(StructsToJson with options is not supported)
+SELECT to_json(named_struct('a', 1, 'b', 'hello'), map('timestampFormat', 'dd/MM/yyyy'))
+
+query expect_fallback(Struct type: StructType(StructField(a,ArrayType(IntegerType,false),false)) contains unsupported types)
+SELECT to_json(named_struct('a', array(1)))

@@ -107,11 +107,11 @@ object CometStructsToJson extends CometExpressionSerde[StructsToJson] {
 
   override def getSupportLevel(expr: StructsToJson): SupportLevel = {
     if (expr.options.nonEmpty) {
-      Unsupported(Some("StructsToJson with options is not supported"))
+      return Unsupported(Some("StructsToJson with options is not supported"))
     }
     val dataType = expr.child.dataType
     if (!isSupportedType(dataType)) {
-      Unsupported(Some(s"Struct type: $dataType contains unsupported types"))
+      return Unsupported(Some(s"Struct type: $dataType contains unsupported types"))
     }
     Compatible()
   }
