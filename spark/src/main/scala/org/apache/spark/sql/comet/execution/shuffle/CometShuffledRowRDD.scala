@@ -27,8 +27,6 @@ import org.apache.spark.sql.execution.metric.{SQLMetric, SQLShuffleReadMetricsRe
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
-import org.apache.comet.CometShuffleBlockIterator
-
 /**
  * Different from [[org.apache.spark.sql.execution.ShuffledRowRDD]], this RDD is specialized for
  * reading shuffled data through [[CometBlockStoreShuffleReader]]. The shuffled data is read in an
@@ -149,14 +147,14 @@ class CometShuffledBatchRDD(
   }
 
   /**
-   * Creates a CometShuffleBlockIterator that provides raw compressed shuffle blocks for direct
-   * consumption by native code, bypassing Arrow FFI.
+   * Returns the raw InputStream of concatenated Arrow IPC streams for direct consumption by
+   * native code via ShuffleStreamReader.
    */
-  def computeAsShuffleBlockIterator(
+  def computeAsRawStream(
       split: Partition,
-      context: TaskContext): CometShuffleBlockIterator = {
+      context: TaskContext): java.io.InputStream = {
     val reader = createReader(split, context)
-    new CometShuffleBlockIterator(reader.readAsRawStream())
+    reader.readAsRawStream()
   }
 
   override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {

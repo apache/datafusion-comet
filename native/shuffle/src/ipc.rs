@@ -140,37 +140,128 @@ impl Read for JniInputStream {
     }
 }
 
-/// Manages a `StreamReader<JniInputStream>` for reading Arrow IPC streams
-/// from a JVM InputStream.
+/// A wrapper around `JniInputStream` that allows `StreamReader` to borrow
+/// it while still being able to create new `StreamReader` instances for
+/// concatenated IPC streams.
+///
+/// Uses a raw pointer to the `JniInputStream` stored in a `Box` so that
+/// the `StreamReader` can take a `Read` impl without taking ownership.
+struct SharedJniStream {
+    inner: *mut JniInputStream,
+}
+
+impl SharedJniStream {
+    fn new(stream: JniInputStream) -> Self {
+        Self {
+            inner: Box::into_raw(Box::new(stream)),
+        }
+    }
+
+    /// Create a Read adapter that delegates to the inner stream.
+    fn reader(&self) -> StreamReadAdapter {
+        StreamReadAdapter { inner: self.inner }
+    }
+}
+
+impl Drop for SharedJniStream {
+    fn drop(&mut self) {
+        unsafe { drop(Box::from_raw(self.inner)) };
+    }
+}
+
+// SAFETY: SharedJniStream owns the JniInputStream exclusively via a raw pointer.
+// It is only accessed from a single thread at a time (the JNI thread that calls
+// get_next_batch). The raw pointer is used to allow multiple sequential StreamReader
+// instances to borrow the same underlying stream.
+unsafe impl Send for SharedJniStream {}
+unsafe impl Sync for SharedJniStream {}
+
+// SAFETY: StreamReadAdapter borrows from the same raw pointer as SharedJniStream.
+// Same single-threaded access guarantees apply.
+unsafe impl Send for StreamReadAdapter {}
+unsafe impl Sync for StreamReadAdapter {}
+
+/// A Read adapter that delegates to a raw pointer to JniInputStream.
+/// Multiple StreamReader instances can be created from this adapter
+/// (sequentially, not concurrently).
+struct StreamReadAdapter {
+    inner: *mut JniInputStream,
+}
+
+impl Read for StreamReadAdapter {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        unsafe { (*self.inner).read(buf) }
+    }
+}
+
+/// Manages reading potentially concatenated Arrow IPC streams from a JVM
+/// InputStream. A single partition's data may contain multiple IPC streams
+/// (e.g., from spills), so when one stream reaches EOS we attempt to open
+/// the next one from the same underlying InputStream.
 pub struct ShuffleStreamReader {
-    reader: StreamReader<JniInputStream>,
+    /// Shared ownership of the JniInputStream.
+    jni_stream: SharedJniStream,
+    /// Current Arrow IPC stream reader. `None` when all streams are exhausted.
+    reader: Option<StreamReader<StreamReadAdapter>>,
+    num_fields: usize,
 }
 
 impl ShuffleStreamReader {
     /// Create a new `ShuffleStreamReader` over a JVM InputStream.
     pub fn new(env: &mut jni::JNIEnv, input_stream: &JObject) -> Result<Self, String> {
-        let jni_stream =
-            JniInputStream::new(env, input_stream).map_err(|e| format!("JNI error: {e}"))?;
+        let jni_stream = SharedJniStream::new(
+            JniInputStream::new(env, input_stream).map_err(|e| format!("JNI error: {e}"))?,
+        );
         let reader = unsafe {
-            StreamReader::try_new(jni_stream, None)
+            StreamReader::try_new(jni_stream.reader(), None)
                 .map_err(|e| format!("Arrow IPC error: {e}"))?
                 .with_skip_validation(true)
         };
-        Ok(Self { reader })
+        let num_fields = reader.schema().fields().len();
+        Ok(Self {
+            jni_stream,
+            reader: Some(reader),
+            num_fields,
+        })
     }
 
-    /// Read the next batch from the stream. Returns `None` when exhausted.
+    /// Read the next batch from the stream. Returns `None` when all
+    /// concatenated IPC streams are exhausted.
     pub fn next_batch(&mut self) -> Result<Option<RecordBatch>, String> {
-        match self.reader.next() {
-            Some(Ok(batch)) => Ok(Some(batch)),
-            Some(Err(e)) => Err(format!("Arrow IPC read error: {e}")),
-            None => Ok(None),
+        loop {
+            let reader = match &mut self.reader {
+                Some(r) => r,
+                None => return Ok(None),
+            };
+
+            match reader.next() {
+                Some(Ok(batch)) => return Ok(Some(batch)),
+                Some(Err(e)) => return Err(format!("Arrow IPC read error: {e}")),
+                None => {
+                    // Current IPC stream exhausted. Drop the old reader and try
+                    // to open the next concatenated stream.
+                    self.reader = None;
+
+                    match StreamReader::try_new(self.jni_stream.reader(), None) {
+                        Ok(new_reader) => {
+                            self.reader = Some(unsafe {
+                                new_reader.with_skip_validation(true)
+                            });
+                            // Loop back to read from the new reader
+                        }
+                        Err(_) => {
+                            // No more streams — the InputStream is exhausted
+                            return Ok(None);
+                        }
+                    }
+                }
+            }
         }
     }
 
     /// Return the number of fields in the stream's schema.
     pub fn num_fields(&self) -> usize {
-        self.reader.schema().fields().len()
+        self.num_fields
     }
 }
 

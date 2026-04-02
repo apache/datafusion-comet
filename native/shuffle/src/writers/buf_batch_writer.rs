@@ -81,5 +81,4 @@ impl<W: Write> BufBatchWriter<W> {
         self.writer.finish()?;
         Ok(())
     }
-
 }

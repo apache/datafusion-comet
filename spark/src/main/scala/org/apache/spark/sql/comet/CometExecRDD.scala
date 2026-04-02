@@ -111,11 +111,11 @@ private[spark] class CometExecRDD(
       serializedPlan
     }
 
-    // Create shuffle block iterators for inputs that are CometShuffledBatchRDD
-    val shuffleBlockIters = shuffleScanIndices.flatMap { idx =>
+    // Create raw InputStreams for inputs that are CometShuffledBatchRDD
+    val shuffleStreams = shuffleScanIndices.flatMap { idx =>
       inputRDDs(idx) match {
         case rdd: CometShuffledBatchRDD =>
-          Some(idx -> rdd.computeAsShuffleBlockIterator(partition.inputPartitions(idx), context))
+          Some(idx -> rdd.computeAsRawStream(partition.inputPartitions(idx), context))
         case _ => None
       }
     }.toMap
@@ -130,7 +130,7 @@ private[spark] class CometExecRDD(
       partition.index,
       broadcastedHadoopConfForEncryption,
       encryptedFilePaths,
-      shuffleBlockIters)
+      shuffleStreams)
 
     // Register ScalarSubqueries so native code can look them up
     subqueries.foreach(sub => CometScalarSubquery.setSubquery(it.id, sub))

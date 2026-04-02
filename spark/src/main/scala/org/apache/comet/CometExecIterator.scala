@@ -68,7 +68,7 @@ class CometExecIterator(
     partitionIndex: Int,
     broadcastedHadoopConfForEncryption: Option[Broadcast[SerializableConfiguration]] = None,
     encryptedFilePaths: Seq[String] = Seq.empty,
-    shuffleBlockIterators: Map[Int, CometShuffleBlockIterator] = Map.empty)
+    shuffleInputStreams: Map[Int, java.io.InputStream] = Map.empty)
     extends Iterator[ColumnarBatch]
     with Logging {
 
@@ -79,11 +79,11 @@ class CometExecIterator(
   private val taskAttemptId = TaskContext.get().taskAttemptId
   private val taskCPUs = TaskContext.get().cpus()
   private val cometTaskMemoryManager = new CometTaskMemoryManager(id, taskAttemptId)
-  // Build a mixed array of iterators: CometShuffleBlockIterator for shuffle
-  // scan indices, CometBatchIterator for regular scan indices.
+  // Build a mixed array of iterators: InputStream for shuffle scan indices,
+  // CometBatchIterator for regular scan indices.
   private val inputIterators: Array[Object] = inputs.zipWithIndex.map {
-    case (_, idx) if shuffleBlockIterators.contains(idx) =>
-      shuffleBlockIterators(idx).asInstanceOf[Object]
+    case (_, idx) if shuffleInputStreams.contains(idx) =>
+      shuffleInputStreams(idx).asInstanceOf[Object]
     case (iterator, _) =>
       new CometBatchIterator(iterator, nativeUtil).asInstanceOf[Object]
   }.toArray
@@ -235,7 +235,7 @@ class CometExecIterator(
         currentBatch = null
       }
       nativeUtil.close()
-      shuffleBlockIterators.values.foreach(_.close())
+      shuffleInputStreams.values.foreach(_.close())
       nativeLib.releasePlan(plan)
 
       if (tracingEnabled) {

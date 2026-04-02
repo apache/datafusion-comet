@@ -37,6 +37,7 @@
 //! ```
 
 use arrow::datatypes::{DataType, SchemaRef};
+use arrow::ipc::reader::StreamReader;
 use clap::Parser;
 use datafusion::execution::config::SessionConfig;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
@@ -46,7 +47,6 @@ use datafusion::physical_plan::common::collect;
 use datafusion::physical_plan::metrics::{MetricValue, MetricsSet};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::{ParquetReadOptions, SessionContext};
-use arrow::ipc::reader::StreamReader;
 use datafusion_comet_shuffle::{CometPartitioning, CompressionCodec, ShuffleWriterExec};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use std::fs;
