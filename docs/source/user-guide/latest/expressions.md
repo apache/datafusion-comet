@@ -250,7 +250,7 @@ Comet supports using the following aggregate functions within window contexts wi
 | CreateArray    | Yes               |                                                                                                                                                                                           |
 | ElementAt      | Yes               | Input must be an array. Map inputs are not supported.                                                                                                                                     |
 | Flatten        | Yes               |                                                                                                                                                                                           |
-| GetArrayItem   | No                | Known correctness issues with index handling ([#3330](https://github.com/apache/datafusion-comet/issues/3330), [#3332](https://github.com/apache/datafusion-comet/issues/3332))           |
+| GetArrayItem   | Yes               |                                                                                                                                                                                           |
 
 ## Map Expressions
 
