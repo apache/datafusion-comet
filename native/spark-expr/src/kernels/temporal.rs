@@ -618,7 +618,7 @@ where
     F: Fn(NaiveDateTime) -> Option<NaiveDateTime>,
 {
     match value {
-        Some(micros) => match micros_to_naive(micros).and_then(|dt| op(dt)) {
+        Some(micros) => match micros_to_naive(micros).and_then(op) {
             Some(truncated) => builder.append_value(naive_to_micros(truncated)),
             None => {
                 return Err(SparkError::Internal(

@@ -553,6 +553,9 @@ abstract class CometNativeExec extends CometExec {
           throw new CometRuntimeException(s"No input for CometNativeExec:\n $this")
         }
 
+        // Detect ShuffleScan indices for direct read in CometExecRDD
+        val shuffleScanIndices = findShuffleScanIndices(serializedPlanCopy)
+
         // Unified RDD creation - CometExecRDD handles all cases
         val subqueries = collectSubqueries(this)
         CometExecRDD(
@@ -566,7 +569,8 @@ abstract class CometNativeExec extends CometExec {
           nativeMetrics,
           subqueries,
           broadcastedHadoopConfForEncryption,
-          encryptedFilePaths)
+          encryptedFilePaths,
+          shuffleScanIndices)
     }
   }
 
@@ -604,6 +608,28 @@ abstract class CometNativeExec extends CometExec {
       case _ =>
       // no op
     }
+  }
+
+  /**
+   * Walk the serialized protobuf plan depth-first to find which input indices correspond to
+   * ShuffleScan vs Scan leaf nodes. Each Scan or ShuffleScan leaf consumes one input in order.
+   */
+  private def findShuffleScanIndices(planBytes: Array[Byte]): Set[Int] = {
+    val plan = OperatorOuterClass.Operator.parseFrom(planBytes)
+    var scanIndex = 0
+    val indices = mutable.Set.empty[Int]
+    def walk(op: OperatorOuterClass.Operator): Unit = {
+      if (op.hasShuffleScan) {
+        indices += scanIndex
+        scanIndex += 1
+      } else if (op.hasScan) {
+        scanIndex += 1
+      } else {
+        op.getChildrenList.asScala.foreach(walk)
+      }
+    }
+    walk(plan)
+    indices.toSet
   }
 
   /**
@@ -1333,12 +1359,6 @@ trait CometBaseAggregate {
 
     if (groupingExpressions.isEmpty && aggregateExpressions.isEmpty) {
       withInfo(aggregate, "No group by or aggregation")
-      return None
-    }
-
-    // Aggregate expressions with filter are not supported yet.
-    if (aggregateExpressions.exists(_.filter.isDefined)) {
-      withInfo(aggregate, "Aggregate expression with filter is not supported")
       return None
     }
 
