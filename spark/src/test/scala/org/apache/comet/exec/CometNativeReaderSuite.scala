@@ -19,10 +19,19 @@
 
 package org.apache.comet.exec
 
+import scala.jdk.CollectionConverters._
+
 import org.scalactic.source.Position
 import org.scalatest.Tag
 
-import org.apache.spark.sql.CometTestBase
+import org.apache.hadoop.conf.Configuration
+import org.apache.hadoop.fs.Path
+import org.apache.parquet.hadoop.ParquetWriter
+import org.apache.parquet.hadoop.api.WriteSupport
+import org.apache.parquet.hadoop.api.WriteSupport.WriteContext
+import org.apache.parquet.io.api.RecordConsumer
+import org.apache.parquet.schema.MessageTypeParser
+import org.apache.spark.sql.{CometTestBase, Row}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.{array, col}
 import org.apache.spark.sql.internal.SQLConf
@@ -633,4 +642,71 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
         |""".stripMargin,
       "select friends.middle from tbl where friends.first[0] = 'Susan'")
   }
+
+  // SPARK-39393: bare "repeated int32" (protobuf-style, no wrapping list group)
+  // should be readable without crashing on missing def levels.
+  test("native reader - read bare repeated primitive field") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "protobuf-parquet").toString
+      val schema =
+        """message protobuf_style {
+          |  repeated int32 f;
+          |}
+        """.stripMargin
+
+      writeDirect(
+        path,
+        schema,
+        { rc =>
+          rc.startMessage()
+          rc.startField("f", 0)
+          rc.addInteger(1)
+          rc.addInteger(2)
+          rc.endField("f", 0)
+          rc.endMessage()
+        })
+
+      // Read without filter
+      checkAnswer(spark.read.parquet(dir.getCanonicalPath), Seq(Row(Seq(1, 2))))
+
+      // Read with isnotnull filter — the filter should not be pushed down into
+      // the Parquet reader for repeated primitive fields (SPARK-39393), but the
+      // query should still return correct results by evaluating the filter after
+      // reading.
+      checkAnswer(
+        spark.read.parquet(dir.getCanonicalPath).filter("isnotnull(f)"),
+        Seq(Row(Seq(1, 2))))
+    }
+  }
+
+  /** Write a Parquet file using a raw RecordConsumer for full schema control. */
+  private def writeDirect(
+      path: String,
+      schema: String,
+      recordWriters: (RecordConsumer => Unit)*): Unit = {
+    val messageType = MessageTypeParser.parseMessageType(schema)
+    val writeSupport = new DirectWriteSupport(messageType)
+    class Builder extends ParquetWriter.Builder[RecordConsumer => Unit, Builder](new Path(path)) {
+      override def getWriteSupport(conf: Configuration): WriteSupport[RecordConsumer => Unit] =
+        writeSupport
+      override def self(): Builder = this
+    }
+    val writer = new Builder().build()
+    try recordWriters.foreach(writer.write)
+    finally writer.close()
+  }
+}
+
+private class DirectWriteSupport(schema: org.apache.parquet.schema.MessageType)
+    extends WriteSupport[RecordConsumer => Unit] {
+  private var recordConsumer: RecordConsumer = _
+
+  override def init(configuration: Configuration): WriteContext =
+    new WriteContext(schema, java.util.Collections.emptyMap())
+
+  override def write(recordWriter: RecordConsumer => Unit): Unit =
+    recordWriter(recordConsumer)
+
+  override def prepareForWrite(rc: RecordConsumer): Unit =
+    this.recordConsumer = rc
 }

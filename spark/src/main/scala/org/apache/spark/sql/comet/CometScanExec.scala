@@ -159,10 +159,23 @@ case class CometScanExec(
    */
   lazy val supportedDataFilters: Seq[Expression] = {
     if (scanImpl == CometConf.SCAN_NATIVE_DATAFUSION) {
-      dataFilters.filterNot(isDynamicPruningFilter)
+      dataFilters
+        .filterNot(isDynamicPruningFilter)
+        .filterNot(isNullCheckOnArrayColumn)
     } else {
       dataFilters
     }
+  }
+
+  /**
+   * DataFusion's list predicate pushdown pushes IsNotNull/IsNull on List columns into the Parquet
+   * reader as a RowFilter. This crashes on protobuf-style bare repeated primitive fields
+   * (SPARK-39393). Filter these out so the predicate is evaluated after reading instead.
+   */
+  private def isNullCheckOnArrayColumn(expr: Expression): Boolean = expr match {
+    case IsNotNull(child) => child.dataType.isInstanceOf[ArrayType]
+    case IsNull(child) => child.dataType.isInstanceOf[ArrayType]
+    case _ => false
   }
 
   @transient
