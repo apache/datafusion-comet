@@ -19,8 +19,6 @@
 
 package org.apache.comet.exec
 
-import scala.jdk.CollectionConverters._
-
 import org.scalactic.source.Position
 import org.scalatest.Tag
 
@@ -645,6 +643,12 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
 
   // SPARK-39393: bare "repeated int32" (protobuf-style, no wrapping list group)
   // should be readable without crashing on missing def levels.
+  // SPARK-39393: Parquet does not support predicate pushdown on repeated columns.
+  // A bare "repeated int32 f" (protobuf-style, no wrapping LIST group) must not
+  // have IsNotNull pushed into the Parquet reader. Comet filters these out in
+  // CometScanExec.supportedDataFilters so the predicate is evaluated after
+  // reading. Without that, DataFusion's list predicate pushdown would push
+  // IsNotNull as a RowFilter, triggering an arrow-rs ListArrayReader crash.
   test("native reader - read bare repeated primitive field") {
     withTempDir { dir =>
       val path = new Path(dir.toURI.toString, "protobuf-parquet").toString
