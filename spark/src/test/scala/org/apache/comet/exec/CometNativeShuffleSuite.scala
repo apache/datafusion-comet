@@ -496,7 +496,6 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
         assert(count == 1000)
         // Ensure test df evaluated by Comet
         checkSparkAnswerAndOperator(testDF)
-        println(testDF.queryExecution.executedPlan)
       }
     }
   }
