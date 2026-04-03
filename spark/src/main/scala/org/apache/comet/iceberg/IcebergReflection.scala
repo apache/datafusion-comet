@@ -236,7 +236,7 @@ object IcebergReflection extends Logging {
             }
             .orElse {
               logError(
-                s"Iceberg reflection failure: Failed to get format version: " +
+                "Iceberg reflection failure: Failed to get format version: " +
                   "current() method not found in operations class hierarchy")
               None
             }
@@ -336,7 +336,7 @@ object IcebergReflection extends Logging {
 
       findMethodInHierarchy(operations.getClass, "current").map(_.invoke(operations)).orElse {
         logError(
-          s"Iceberg reflection failure: Failed to get table metadata: " +
+          "Iceberg reflection failure: Failed to get table metadata: " +
             "current() method not found in operations class hierarchy")
         None
       }
