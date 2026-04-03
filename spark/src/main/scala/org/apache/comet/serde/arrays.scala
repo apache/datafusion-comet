@@ -246,14 +246,6 @@ object CometArrayMin extends CometExpressionSerde[ArrayMin] {
 }
 
 object CometArraysOverlap extends CometExpressionSerde[ArraysOverlap] {
-
-  override def getSupportLevel(expr: ArraysOverlap): SupportLevel =
-    Incompatible(
-      Some(
-        "Inconsistent behavior with NULL values" +
-          " (https://github.com/apache/datafusion-comet/issues/3645)" +
-          " (https://github.com/apache/datafusion-comet/issues/2036)"))
-
   override def convert(
       expr: ArraysOverlap,
       inputs: Seq[Attribute],
