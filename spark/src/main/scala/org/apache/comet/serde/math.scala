@@ -30,6 +30,7 @@ object CometAtan2 extends CometExpressionSerde[Atan2] {
       expr: Atan2,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
+    // Spark adds +0.0 to inputs in order to convert -0.0 to +0.0
     val left = Add(expr.left, Literal.default(expr.left.dataType))
     val right = Add(expr.right, Literal.default(expr.right.dataType))
     val leftExpr = exprToProtoInternal(left, inputs, binding)
