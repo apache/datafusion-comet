@@ -41,6 +41,7 @@ use datafusion::{
 };
 use datafusion_comet_common::tracing::with_trace_async;
 use futures::{StreamExt, TryFutureExt, TryStreamExt};
+use log::info;
 use std::{
     any::Any,
     fmt,
@@ -216,6 +217,17 @@ async fn external_shuffle(
         let schema = input.schema();
 
         let mut repartitioner: Box<dyn ShufflePartitioner> = match &partitioning {
+            _ if schema.fields().is_empty() => {
+                info!("found empty schema, overriding with EmptySchemaShufflePartitioner");
+                Box::new(EmptySchemaShufflePartitioner::try_new(
+                    output_data_file,
+                    output_index_file,
+                    Arc::clone(&schema),
+                    partitioning.partition_count(),
+                    metrics,
+                    codec,
+                )?)
+            }
             any if any.partition_count() == 1 => {
                 Box::new(SinglePartitionShufflePartitioner::try_new(
                     output_data_file,
@@ -227,14 +239,6 @@ async fn external_shuffle(
                     write_buffer_size,
                 )?)
             }
-            _ if schema.fields().is_empty() => Box::new(EmptySchemaShufflePartitioner::try_new(
-                output_data_file,
-                output_index_file,
-                Arc::clone(&schema),
-                partitioning.partition_count(),
-                metrics,
-                codec,
-            )?),
             _ => Box::new(MultiPartitionShuffleRepartitioner::try_new(
                 partition,
                 output_data_file,
