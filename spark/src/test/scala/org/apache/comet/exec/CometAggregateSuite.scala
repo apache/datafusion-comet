@@ -1391,8 +1391,8 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("corr - nan/null") {
-    withTable("t1") {
-      sql("""create table t1 using parquet as
+    withTable("t") {
+      sql("""create table t using parquet as
           select cast(null as float) f1, CAST('NaN' AS float) f2, cast(null as double) d1, CAST('NaN' AS double) d2
           from range(1)
         """)
@@ -1407,7 +1407,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           | corr(d1, d1) c6,
           | corr(d2, d1) c7,
           | corr(d2, d2) c8
-          | FROM t1""".stripMargin)
+          | FROM t""".stripMargin)
     }
   }
 
