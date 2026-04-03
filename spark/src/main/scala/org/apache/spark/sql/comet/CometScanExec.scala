@@ -51,7 +51,7 @@ import org.apache.comet.parquet.CometParquetFileFormat
  *
  * This is a hybrid scan where the native plan will contain a `ScanExec` that reads batches of
  * data from the JVM via JNI. The ultimate source of data may be a JVM implementation such as
- * Spark readers, or could be the `native_comet` or `native_iceberg_compat` native scans.
+ * Spark readers, or could be the `native_iceberg_compat` native scan.
  *
  * Note that scanImpl can only be `native_datafusion` after CometScanRule runs and before
  * CometExecRule runs. It will never be set to `native_datafusion` at execution time
@@ -90,7 +90,7 @@ case class CometScanExec(
    * initialized. See SPARK-26327 for more details.
    */
   private def sendDriverMetrics(): Unit = {
-    driverMetrics.foreach(e => metrics(e._1).add(e._2))
+    driverMetrics.foreach(e => metrics(e._1).set(e._2))
     val executionId = sparkContext.getLocalProperty(SQLExecution.EXECUTION_ID_KEY)
     SQLMetrics.postDriverMetricUpdates(
       sparkContext,

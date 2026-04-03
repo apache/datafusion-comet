@@ -30,7 +30,7 @@ import org.apache.spark.SparkEnv
 import org.apache.spark.sql.{CometTestBase, DataFrame, Dataset, Row}
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
-import org.apache.spark.sql.functions.col
+import org.apache.spark.sql.functions.{col, count, sum}
 
 import org.apache.comet.CometConf
 
@@ -61,24 +61,18 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
   }
 
   test("native shuffle: different data type") {
-    // https://github.com/apache/datafusion-comet/issues/1538
-    assume(CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_DATAFUSION)
-    Seq(true, false).foreach { execEnabled =>
-      Seq(true, false).foreach { dictionaryEnabled =>
-        withTempDir { dir =>
-          val path = new Path(dir.toURI.toString, "test.parquet")
-          makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 1000)
-          var allTypes: Seq[Int] = (1 to 20)
-          allTypes.map(i => s"_$i").foreach { c =>
-            withSQLConf(
-              CometConf.COMET_EXEC_ENABLED.key -> execEnabled.toString,
-              "parquet.enable.dictionary" -> dictionaryEnabled.toString) {
-              readParquetFile(path.toString) { df =>
-                val shuffled = df
-                  .select($"_1")
-                  .repartition(10, col(c))
-                checkShuffleAnswer(shuffled, 1, checkNativeOperators = execEnabled)
-              }
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 1000)
+        var allTypes: Seq[Int] = (1 to 20)
+        allTypes.map(i => s"_$i").foreach { c =>
+          withSQLConf("parquet.enable.dictionary" -> dictionaryEnabled.toString) {
+            readParquetFile(path.toString) { df =>
+              val shuffled = df
+                .select($"_1")
+                .repartition(10, col(c))
+              checkShuffleAnswer(shuffled, 1, checkNativeOperators = true)
             }
           }
         }
@@ -434,6 +428,43 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
         // Just collect and verify - simpler test
         val result = shuffled.collect()
         assert(result.length == 50, s"Expected 50 rows after filter, got ${result.length}")
+      }
+    }
+  }
+
+  test("shuffle direct read produces same results as FFI path") {
+    Seq(true, false).foreach { directRead =>
+      withSQLConf(CometConf.COMET_SHUFFLE_DIRECT_READ_ENABLED.key -> directRead.toString) {
+        val df = spark
+          .range(1000)
+          .selectExpr("id", "id % 10 as key", "cast(id as string) as value")
+          .repartition(4, col("key"))
+          .groupBy("key")
+          .agg(sum("id").as("total"), count("value").as("cnt"))
+          .orderBy("key")
+        checkSparkAnswer(df)
+      }
+    }
+  }
+
+  test("shuffle direct read with multiple shuffles in plan") {
+    Seq(true, false).foreach { directRead =>
+      withSQLConf(CometConf.COMET_SHUFFLE_DIRECT_READ_ENABLED.key -> directRead.toString) {
+        // Join two shuffled datasets to produce a plan with multiple shuffle reads
+        val left = spark
+          .range(100)
+          .selectExpr("id as l_id", "id % 10 as key")
+          .repartition(4, col("key"))
+        val right = spark
+          .range(100)
+          .selectExpr("id as r_id", "id % 10 as key")
+          .repartition(4, col("key"))
+        val df = left
+          .join(right, "key")
+          .groupBy("key")
+          .agg(count("l_id").as("cnt"))
+          .orderBy("key")
+        checkSparkAnswer(df)
       }
     }
   }

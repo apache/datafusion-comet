@@ -58,6 +58,45 @@ Expressions that are not 100% Spark-compatible will fall back to Spark by defaul
 `spark.comet.expression.EXPRNAME.allowIncompatible=true`, where `EXPRNAME` is the Spark expression class name. See
 the [Comet Supported Expressions Guide](expressions.md) for more information on this configuration setting.
 
+### Array Expressions
+
+- **ArrayContains**: Returns null instead of false for empty arrays with literal values.
+  [#3346](https://github.com/apache/datafusion-comet/issues/3346)
+- **ArrayRemove**: Returns null when the element to remove is null, instead of removing null elements from the array.
+  [#3173](https://github.com/apache/datafusion-comet/issues/3173)
+- **ArraysOverlap**: Inconsistent behavior when arrays contain NULL values.
+  [#3645](https://github.com/apache/datafusion-comet/issues/3645),
+  [#2036](https://github.com/apache/datafusion-comet/issues/2036)
+- **ArrayUnion**: Sorts input arrays before performing the union, while Spark preserves the order of the first array
+  and appends unique elements from the second.
+  [#3644](https://github.com/apache/datafusion-comet/issues/3644)
+
+### Date/Time Expressions
+
+- **Hour, Minute, Second**: Incorrectly apply timezone conversion to TimestampNTZ inputs. TimestampNTZ stores local
+  time without timezone, so no conversion should be applied. These expressions work correctly with Timestamp inputs.
+  [#3180](https://github.com/apache/datafusion-comet/issues/3180)
+- **TruncTimestamp (date_trunc)**: Produces incorrect results when used with non-UTC timezones. Compatible when
+  timezone is UTC.
+  [#2649](https://github.com/apache/datafusion-comet/issues/2649)
+
+### Math Expressions
+
+- **Tan**: `tan(-0.0)` produces `0.0` instead of `-0.0`.
+  [#1897](https://github.com/apache/datafusion-comet/issues/1897)
+
+### Aggregate Expressions
+
+- **Corr**: Returns null instead of NaN in some edge cases.
+  [#2646](https://github.com/apache/datafusion-comet/issues/2646)
+- **First, Last**: These functions are not deterministic. When `ignoreNulls` is set, results may not match Spark.
+  [#1630](https://github.com/apache/datafusion-comet/issues/1630)
+
+### Struct Expressions
+
+- **StructsToJson (to_json)**: Does not support `+Infinity` and `-Infinity` for numeric types (float, double).
+  [#3016](https://github.com/apache/datafusion-comet/issues/3016)
+
 ## Regular Expressions
 
 Comet uses the Rust regexp crate for evaluating regular expressions, and this has different behavior from Java's
