@@ -15,7 +15,6 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Config: spark.comet.expression.ArraysOverlap.allowIncompatible=true
 -- ConfigMatrix: parquet.enable.dictionary=false,true
 
 statement
