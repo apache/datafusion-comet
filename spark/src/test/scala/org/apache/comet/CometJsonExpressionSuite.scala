@@ -81,10 +81,8 @@ class CometJsonExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
         "SELECT to_json(named_struct('a', a, 'b', b), map('timestampFormat', 'dd/MM/yyyy')) FROM t",
         "StructsToJson with options is not supported")
       checkSparkAnswerAndFallbackReason(
-        "SELECT to_json(named_struct('a', a, 'b', array(b))) FROM t",
-        "Struct type: StructType(StructField(a,IntegerType,true)," +
-          "StructField(b,ArrayType(StringType,true),false)) " +
-          "contains unsupported types")
+        "SELECT to_json(named_struct('b', array(b))) FROM t",
+        "Struct type: StructType(StructField(b,ArrayType(StringType,true),false)) contains unsupported types")
     }
   }
 
