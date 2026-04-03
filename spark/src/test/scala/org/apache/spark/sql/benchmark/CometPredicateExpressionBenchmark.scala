@@ -19,10 +19,6 @@
 
 package org.apache.spark.sql.benchmark
 
-import org.apache.spark.benchmark.Benchmark
-
-import org.apache.comet.CometConf
-
 /**
  * Benchmark to measure Comet execution performance. To run this benchmark:
  * `SPARK_GENERATE_BENCHMARK_FILES=1 make
@@ -32,8 +28,6 @@ import org.apache.comet.CometConf
 object CometPredicateExpressionBenchmark extends CometBenchmarkBase {
 
   def inExprBenchmark(values: Int): Unit = {
-    val benchmark = new Benchmark("in Expr", values, output = output)
-
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
         prepareTable(
@@ -41,27 +35,10 @@ object CometPredicateExpressionBenchmark extends CometBenchmarkBase {
           spark.sql(
             "select CASE WHEN value < 0 THEN 'negative'" +
               s" WHEN value = 0 THEN 'zero' ELSE 'positive' END c1 from $tbl"))
+
         val query = "select * from parquetV1Table where c1 in ('positive', 'zero')"
 
-        benchmark.addCase("SQL Parquet - Spark") { _ =>
-          spark.sql(query).noop()
-        }
-
-        benchmark.addCase("SQL Parquet - Comet (Scan)") { _ =>
-          withSQLConf(CometConf.COMET_ENABLED.key -> "true") {
-            spark.sql(query).noop()
-          }
-        }
-
-        benchmark.addCase("SQL Parquet - Comet (Scan, Exec)") { _ =>
-          withSQLConf(
-            CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ENABLED.key -> "true") {
-            spark.sql(query).noop()
-          }
-        }
-
-        benchmark.run()
+        runExpressionBenchmark("in Expr", values, query)
       }
     }
   }

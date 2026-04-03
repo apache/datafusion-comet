@@ -21,7 +21,8 @@ package org.apache.comet.serde
 
 import scala.annotation.tailrec
 
-import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayFilter, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayRemove, ArrayRepeat, ArraysOverlap, ArrayUnion, Attribute, CreateArray, ElementAt, Expression, Flatten, GetArrayItem, IsNotNull, Literal, Reverse}
+import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayFilter, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayRemove, ArrayRepeat, ArraysOverlap, ArrayUnion, Attribute, CreateArray, ElementAt, Expression, Flatten, GetArrayItem, IsNotNull, Literal, Reverse, Size}
+import org.apache.spark.sql.catalyst.util.GenericArrayData
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
@@ -33,6 +34,12 @@ object CometArrayRemove
     extends CometExpressionSerde[ArrayRemove]
     with CometExprShim
     with ArraysBase {
+
+  override def getSupportLevel(expr: ArrayRemove): SupportLevel =
+    Incompatible(
+      Some(
+        "Returns null when element is null instead of removing null elements" +
+          " (https://github.com/apache/datafusion-comet/issues/3173)"))
 
   override def convert(
       expr: ArrayRemove,
@@ -81,7 +88,7 @@ object CometArrayRemove
 
 object CometArrayAppend extends CometExpressionSerde[ArrayAppend] {
 
-  override def getSupportLevel(expr: ArrayAppend): SupportLevel = Incompatible(None)
+  override def getSupportLevel(expr: ArrayAppend): SupportLevel = Compatible()
 
   override def convert(
       expr: ArrayAppend,
@@ -93,8 +100,16 @@ object CometArrayAppend extends CometExpressionSerde[ArrayAppend] {
     val arrayExprProto = exprToProto(expr.children.head, inputs, binding)
     val keyExprProto = exprToProto(expr.children(1), inputs, binding)
 
+    // DataFusion's array_append always returns a list with nullable elements,
+    // so we must promise ArrayType(elementType, containsNull = true) here even if
+    // Spark's expr.dataType has containsNull = false (e.g. for array(1,2,3)).
     val arrayAppendScalarExpr =
-      scalarFunctionExprToProto("array_append", arrayExprProto, keyExprProto)
+      scalarFunctionExprToProtoWithReturnType(
+        "array_append",
+        ArrayType(elementType, containsNull = true),
+        false,
+        arrayExprProto,
+        keyExprProto)
 
     val isNotNullExpr = createUnaryExpr(
       expr,
@@ -125,6 +140,13 @@ object CometArrayAppend extends CometExpressionSerde[ArrayAppend] {
 }
 
 object CometArrayContains extends CometExpressionSerde[ArrayContains] {
+
+  override def getSupportLevel(expr: ArrayContains): SupportLevel =
+    Incompatible(
+      Some(
+        "Returns null instead of false for empty arrays with literal values" +
+          " (https://github.com/apache/datafusion-comet/issues/3346)"))
+
   override def convert(
       expr: ArrayContains,
       inputs: Seq[Attribute],
@@ -134,7 +156,34 @@ object CometArrayContains extends CometExpressionSerde[ArrayContains] {
 
     val arrayContainsScalarExpr =
       scalarFunctionExprToProto("array_has", arrayExprProto, keyExprProto)
-    optExprWithInfo(arrayContainsScalarExpr, expr, expr.children: _*)
+
+    // Handle NULL array input - return NULL if array is NULL (matching Spark's behavior)
+    val isNotNullExpr = createUnaryExpr(
+      expr,
+      expr.children.head,
+      inputs,
+      binding,
+      (builder, unaryExpr) => builder.setIsNotNull(unaryExpr))
+
+    val nullLiteralProto = exprToProto(Literal(null, BooleanType), Seq.empty)
+
+    if (arrayContainsScalarExpr.isDefined && isNotNullExpr.isDefined &&
+      nullLiteralProto.isDefined) {
+      val caseWhenExpr = ExprOuterClass.CaseWhen
+        .newBuilder()
+        .addWhen(isNotNullExpr.get)
+        .addThen(arrayContainsScalarExpr.get)
+        .setElseExpr(nullLiteralProto.get)
+        .build()
+      Some(
+        ExprOuterClass.Expr
+          .newBuilder()
+          .setCaseWhen(caseWhenExpr)
+          .build())
+    } else {
+      withInfo(expr, expr.children: _*)
+      None
+    }
   }
 }
 
@@ -198,7 +247,12 @@ object CometArrayMin extends CometExpressionSerde[ArrayMin] {
 
 object CometArraysOverlap extends CometExpressionSerde[ArraysOverlap] {
 
-  override def getSupportLevel(expr: ArraysOverlap): SupportLevel = Incompatible(None)
+  override def getSupportLevel(expr: ArraysOverlap): SupportLevel =
+    Incompatible(
+      Some(
+        "Inconsistent behavior with NULL values" +
+          " (https://github.com/apache/datafusion-comet/issues/3645)" +
+          " (https://github.com/apache/datafusion-comet/issues/2036)"))
 
   override def convert(
       expr: ArraysOverlap,
@@ -219,18 +273,41 @@ object CometArraysOverlap extends CometExpressionSerde[ArraysOverlap] {
 
 object CometArrayRepeat extends CometExpressionSerde[ArrayRepeat] {
 
-  override def getSupportLevel(expr: ArrayRepeat): SupportLevel = Incompatible(None)
-
   override def convert(
       expr: ArrayRepeat,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val leftArrayExprProto = exprToProto(expr.children.head, inputs, binding)
-    val rightArrayExprProto = exprToProto(expr.children(1), inputs, binding)
+    val elementProto = exprToProto(expr.left, inputs, binding)
+    val countProto = exprToProto(expr.right, inputs, binding)
+    val returnType = ArrayType(elementType = expr.left.dataType)
+    for {
+      countIsNotNullExpr <- countIsNotNullExpr(expr, inputs, binding)
+      arrayRepeatExprProto <- scalarFunctionExprToProto("array_repeat", elementProto, countProto)
+      nullLiteralExprProto <- exprToProtoInternal(Literal(null, returnType), inputs, binding)
+    } yield {
+      val caseWhenProto = ExprOuterClass.CaseWhen
+        .newBuilder()
+        .addWhen(countIsNotNullExpr)
+        .addThen(arrayRepeatExprProto)
+        .setElseExpr(nullLiteralExprProto)
+        .build()
+      ExprOuterClass.Expr
+        .newBuilder()
+        .setCaseWhen(caseWhenProto)
+        .build()
+    }
+  }
 
-    val arraysRepeatScalarExpr =
-      scalarFunctionExprToProto("array_repeat", leftArrayExprProto, rightArrayExprProto)
-    optExprWithInfo(arraysRepeatScalarExpr, expr, expr.children: _*)
+  private def countIsNotNullExpr(
+      expr: ArrayRepeat,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    createUnaryExpr(
+      expr,
+      expr.right,
+      inputs,
+      binding,
+      (builder, countExpr) => builder.setIsNotNull(countExpr))
   }
 }
 
@@ -374,7 +451,11 @@ object CometArrayInsert extends CometExpressionSerde[ArrayInsert] {
 
 object CometArrayUnion extends CometExpressionSerde[ArrayUnion] {
 
-  override def getSupportLevel(expr: ArrayUnion): SupportLevel = Incompatible(None)
+  override def getSupportLevel(expr: ArrayUnion): SupportLevel =
+    Incompatible(
+      Some(
+        "Correctness issue" +
+          " (https://github.com/apache/datafusion-comet/issues/3644)"))
 
   override def convert(
       expr: ArrayUnion,
@@ -395,6 +476,15 @@ object CometCreateArray extends CometExpressionSerde[CreateArray] {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val children = expr.children
+
+    // Handle empty array: return literal directly to avoid DataFusion coerce_types bug
+    // when make_array is called with 0 arguments (issue #3338)
+    if (children.isEmpty) {
+      val emptyArrayLiteral =
+        Literal.create(new GenericArrayData(Array.empty[Any]), expr.dataType)
+      return exprToProtoInternal(emptyArrayLiteral, inputs, binding)
+    }
+
     val childExprs = children.map(exprToProtoInternal(_, inputs, binding))
 
     if (childExprs.forall(_.isDefined)) {
@@ -407,6 +497,7 @@ object CometCreateArray extends CometExpressionSerde[CreateArray] {
 }
 
 object CometGetArrayItem extends CometExpressionSerde[GetArrayItem] {
+
   override def convert(
       expr: GetArrayItem,
       inputs: Seq[Attribute],
@@ -541,6 +632,60 @@ object CometArrayFilter extends CometExpressionSerde[ArrayFilter] {
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     CometArrayCompact.convert(expr, inputs, binding)
   }
+}
+
+object CometSize extends CometExpressionSerde[Size] {
+
+  override def getSupportLevel(expr: Size): SupportLevel = {
+    expr.child.dataType match {
+      case _: ArrayType => Compatible()
+      case _: MapType => Unsupported(Some("size does not support map inputs"))
+      case other =>
+        // this should be unreachable because Spark only supports map and array inputs
+        Unsupported(Some(s"Unsupported child data type: $other"))
+    }
+  }
+
+  override def convert(
+      expr: Size,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val arrayExprProto = exprToProto(expr.child, inputs, binding)
+    for {
+      isNotNullExprProto <- createIsNotNullExprProto(expr, inputs, binding)
+      sizeScalarExprProto <- scalarFunctionExprToProto("size", arrayExprProto)
+      emptyLiteralExprProto <- createLiteralExprProto(SQLConf.get.legacySizeOfNull)
+    } yield {
+      val caseWhenExpr = ExprOuterClass.CaseWhen
+        .newBuilder()
+        .addWhen(isNotNullExprProto)
+        .addThen(sizeScalarExprProto)
+        .setElseExpr(emptyLiteralExprProto)
+        .build()
+      ExprOuterClass.Expr
+        .newBuilder()
+        .setCaseWhen(caseWhenExpr)
+        .build()
+    }
+  }
+
+  private def createIsNotNullExprProto(
+      expr: Size,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    createUnaryExpr(
+      expr,
+      expr.child,
+      inputs,
+      binding,
+      (builder, unaryExpr) => builder.setIsNotNull(unaryExpr))
+  }
+
+  private def createLiteralExprProto(legacySizeOfNull: Boolean): Option[ExprOuterClass.Expr] = {
+    val value = if (legacySizeOfNull) -1 else null
+    exprToProto(Literal(value, IntegerType), Seq.empty)
+  }
+
 }
 
 trait ArraysBase {

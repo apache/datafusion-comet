@@ -30,6 +30,7 @@ import org.apache.spark.sql.internal.SQLConf;
 import org.apache.spark.sql.types.*;
 
 import org.apache.comet.CometConf;
+import org.apache.comet.IcebergApi;
 
 import static org.apache.comet.parquet.Utils.descriptorToParquetColumnSpec;
 
@@ -38,9 +39,9 @@ public class TypeUtil {
   /**
    * Converts the input Spark 'field' into a Parquet column descriptor.
    *
-   * @deprecated since 0.10.0, will be removed in 0.11.0.
    * @see <a href="https://github.com/apache/datafusion-comet/issues/2079">Comet Issue #2079</a>
    */
+  @IcebergApi
   public static ColumnDescriptor convertToParquet(StructField field) {
     Type.Repetition repetition;
     int maxDefinitionLevel;
@@ -56,9 +57,8 @@ public class TypeUtil {
     DataType type = field.dataType();
 
     Types.PrimitiveBuilder<PrimitiveType> builder = null;
-    // Only partition column can be `NullType`, which also uses `ConstantColumnReader`. Here we
-    // piggy-back onto Parquet boolean type for constant vector of null values, we don't really
-    // care what Parquet type it is.
+    // Only partition column can be `NullType`. Here we piggy-back onto Parquet boolean type
+    // for constant vector of null values, we don't really care what Parquet type it is.
     if (type == DataTypes.BooleanType || type == DataTypes.NullType) {
       builder = Types.primitive(PrimitiveType.PrimitiveTypeName.BOOLEAN, repetition);
     } else if (type == DataTypes.IntegerType || type instanceof YearMonthIntervalType) {

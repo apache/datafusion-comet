@@ -19,8 +19,6 @@
 
 package org.apache.spark.sql.comet
 
-import java.io.ByteArrayOutputStream
-
 import scala.jdk.CollectionConverters._
 
 import org.apache.hadoop.fs.Path
@@ -33,6 +31,8 @@ import org.apache.spark.sql.execution.{SparkPlan, UnaryExecNode}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.Utils
+
+import com.google.protobuf.CodedOutputStream
 
 import org.apache.comet.CometExecIterator
 import org.apache.comet.serde.OperatorOuterClass.Operator
@@ -75,10 +75,12 @@ case class CometNativeWriteExec(
     sparkContext.collectionAccumulator[FileCommitProtocol.TaskCommitMessage]("taskCommitMessages")
 
   override def serializedPlanOpt: SerializedPlan = {
-    val outputStream = new ByteArrayOutputStream()
-    nativeOp.writeTo(outputStream)
-    outputStream.close()
-    SerializedPlan(Some(outputStream.toByteArray))
+    val size = nativeOp.getSerializedSize
+    val bytes = new Array[Byte](size)
+    val codedOutput = CodedOutputStream.newInstance(bytes)
+    nativeOp.writeTo(codedOutput)
+    codedOutput.checkNoSpaceLeft()
+    SerializedPlan(Some(bytes))
   }
 
   override def withNewChildInternal(newChild: SparkPlan): SparkPlan =
@@ -196,10 +198,11 @@ case class CometNativeWriteExec(
 
       val nativeMetrics = CometMetricNode.fromCometPlan(this)
 
-      val outputStream = new ByteArrayOutputStream()
-      modifiedNativeOp.writeTo(outputStream)
-      outputStream.close()
-      val planBytes = outputStream.toByteArray
+      val size = modifiedNativeOp.getSerializedSize
+      val planBytes = new Array[Byte](size)
+      val codedOutput = CodedOutputStream.newInstance(planBytes)
+      modifiedNativeOp.writeTo(codedOutput)
+      codedOutput.checkNoSpaceLeft()
 
       val execIterator = new CometExecIterator(
         CometExec.newIterId,

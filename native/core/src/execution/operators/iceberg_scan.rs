@@ -18,17 +18,18 @@
 //! Native Iceberg table scan operator using iceberg-rust
 
 use std::any::Any;
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::fmt;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
-use arrow::array::RecordBatch;
+use arrow::array::{ArrayRef, RecordBatch, RecordBatchOptions};
 use arrow::datatypes::SchemaRef;
 use datafusion::common::{DataFusionError, Result as DFResult};
 use datafusion::execution::{RecordBatchStream, SendableRecordBatchStream, TaskContext};
-use datafusion::physical_expr::EquivalenceProperties;
+use datafusion::physical_expr::expressions::Column;
+use datafusion::physical_expr::{EquivalenceProperties, PhysicalExpr};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::metrics::{
     BaselineMetrics, Count, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet,
@@ -36,16 +37,16 @@ use datafusion::physical_plan::metrics::{
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
 };
-use futures::future::BoxFuture;
-use futures::{ready, FutureExt, Stream, StreamExt, TryStreamExt};
-use iceberg::io::FileIO;
+use futures::{Stream, StreamExt, TryStreamExt};
+use iceberg::io::{FileIO, FileIOBuilder, StorageFactory};
+use iceberg_storage_opendal::OpenDalStorageFactory;
 
 use crate::execution::operators::ExecutionError;
 use crate::parquet::parquet_support::SparkParquetOptions;
-use crate::parquet::schema_adapter::SparkSchemaAdapterFactory;
-use datafusion::datasource::schema_adapter::SchemaAdapterFactory;
+use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
 use datafusion_comet_spark_expr::EvalMode;
-use datafusion_datasource::file_stream::FileStreamMetrics;
+use datafusion_physical_expr_adapter::{PhysicalExprAdapter, PhysicalExprAdapterFactory};
+use iceberg::scan::FileScanTask;
 
 /// Iceberg table scan operator that uses iceberg-rust to read Iceberg tables.
 ///
@@ -60,8 +61,10 @@ pub struct IcebergScanExec {
     plan_properties: PlanProperties,
     /// Catalog-specific configuration for FileIO
     catalog_properties: HashMap<String, String>,
-    /// Pre-planned file scan tasks, grouped by partition
-    file_task_groups: Vec<Vec<iceberg::scan::FileScanTask>>,
+    /// Pre-planned file scan tasks
+    tasks: Vec<FileScanTask>,
+    /// Number of data files to read concurrently
+    data_file_concurrency_limit: usize,
     /// Metrics
     metrics: ExecutionPlanMetricsSet,
 }
@@ -71,11 +74,11 @@ impl IcebergScanExec {
         metadata_location: String,
         schema: SchemaRef,
         catalog_properties: HashMap<String, String>,
-        file_task_groups: Vec<Vec<iceberg::scan::FileScanTask>>,
+        tasks: Vec<FileScanTask>,
+        data_file_concurrency_limit: usize,
     ) -> Result<Self, ExecutionError> {
         let output_schema = schema;
-        let num_partitions = file_task_groups.len();
-        let plan_properties = Self::compute_properties(Arc::clone(&output_schema), num_partitions);
+        let plan_properties = Self::compute_properties(Arc::clone(&output_schema), 1);
 
         let metrics = ExecutionPlanMetricsSet::new();
 
@@ -84,7 +87,8 @@ impl IcebergScanExec {
             output_schema,
             plan_properties,
             catalog_properties,
-            file_task_groups,
+            tasks,
+            data_file_concurrency_limit,
             metrics,
         })
     }
@@ -129,19 +133,10 @@ impl ExecutionPlan for IcebergScanExec {
 
     fn execute(
         &self,
-        partition: usize,
+        _partition: usize,
         context: Arc<TaskContext>,
     ) -> DFResult<SendableRecordBatchStream> {
-        if partition < self.file_task_groups.len() {
-            let tasks = &self.file_task_groups[partition];
-            self.execute_with_tasks(tasks.clone(), partition, context)
-        } else {
-            Err(DataFusionError::Execution(format!(
-                "IcebergScanExec: Partition index {} out of range (only {} task groups available)",
-                partition,
-                self.file_task_groups.len()
-            )))
-        }
+        self.execute_with_tasks(self.tasks.clone(), context)
     }
 
     fn metrics(&self) -> Option<MetricsSet> {
@@ -154,47 +149,81 @@ impl IcebergScanExec {
     /// deletes via iceberg-rust's ArrowReader.
     fn execute_with_tasks(
         &self,
-        tasks: Vec<iceberg::scan::FileScanTask>,
-        partition: usize,
+        tasks: Vec<FileScanTask>,
         context: Arc<TaskContext>,
     ) -> DFResult<SendableRecordBatchStream> {
         let output_schema = Arc::clone(&self.output_schema);
         let file_io = Self::load_file_io(&self.catalog_properties, &self.metadata_location)?;
         let batch_size = context.session_config().batch_size();
 
-        let metrics = IcebergScanMetrics::new(&self.metrics, partition);
+        let metrics = IcebergScanMetrics::new(&self.metrics);
+        let num_tasks = tasks.len();
+        metrics.num_splits.add(num_tasks);
 
-        // Create parallel file stream that overlaps opening next file with reading current file
-        let file_stream = IcebergFileStream::new(
-            tasks,
-            file_io,
-            batch_size,
-            Arc::clone(&output_schema),
-            metrics,
-        )?;
+        let task_stream = futures::stream::iter(tasks.into_iter().map(Ok)).boxed();
 
-        // Note: BatchSplitStream adds overhead. Since we're already setting batch_size in
-        // iceberg-rust's ArrowReaderBuilder, it should produce correctly sized batches.
-        // Only use BatchSplitStream as a safety net if needed.
-        // For now, return the file_stream directly to reduce stream nesting overhead.
+        let reader = iceberg::arrow::ArrowReaderBuilder::new(file_io)
+            .with_batch_size(batch_size)
+            .with_data_file_concurrency_limit(self.data_file_concurrency_limit)
+            .with_row_selection_enabled(true)
+            .with_metadata_size_hint(512 * 1024) // Same as DataFusion's default
+            .build();
 
-        Ok(Box::pin(file_stream))
+        // Pass all tasks to iceberg-rust at once to utilize its flatten_unordered
+        // parallelization, avoiding overhead of single-task streams
+        let stream = reader.read(task_stream).map_err(|e| {
+            DataFusionError::Execution(format!("Failed to read Iceberg tasks: {}", e))
+        })?;
+
+        let spark_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        let adapter_factory = SparkPhysicalExprAdapterFactory::new(spark_options, None);
+
+        let adapted_stream =
+            stream.map_err(|e| DataFusionError::Execution(format!("Iceberg scan error: {}", e)));
+
+        let wrapped_stream = IcebergStreamWrapper {
+            inner: adapted_stream,
+            schema: output_schema,
+            adapter_factory,
+            cached: None,
+            baseline_metrics: metrics.baseline,
+        };
+
+        Ok(Box::pin(wrapped_stream))
+    }
+
+    fn storage_factory_for(path: &str) -> Result<Arc<dyn StorageFactory>, DataFusionError> {
+        let scheme = if path.contains("://") {
+            path.split("://").next().unwrap_or("file")
+        } else {
+            "file"
+        };
+        match scheme {
+            "file" => Ok(Arc::new(OpenDalStorageFactory::Fs)),
+            "s3" | "s3a" => Ok(Arc::new(OpenDalStorageFactory::S3 {
+                configured_scheme: scheme.to_string(),
+                customized_credential_load: None,
+            })),
+            "gs" => Ok(Arc::new(OpenDalStorageFactory::Gcs)),
+            "oss" => Ok(Arc::new(OpenDalStorageFactory::Oss)),
+            _ => Err(DataFusionError::Execution(format!(
+                "Unsupported storage scheme: {scheme}"
+            ))),
+        }
     }
 
     fn load_file_io(
         catalog_properties: &HashMap<String, String>,
         metadata_location: &str,
     ) -> Result<FileIO, DataFusionError> {
-        let mut file_io_builder = FileIO::from_path(metadata_location)
-            .map_err(|e| DataFusionError::Execution(format!("Failed to create FileIO: {}", e)))?;
+        let factory = Self::storage_factory_for(metadata_location)?;
+        let mut file_io_builder = FileIOBuilder::new(factory);
 
         for (key, value) in catalog_properties {
             file_io_builder = file_io_builder.with_prop(key, value);
         }
 
-        file_io_builder
-            .build()
-            .map_err(|e| DataFusionError::Execution(format!("Failed to build FileIO: {}", e)))
+        Ok(file_io_builder.build())
     }
 }
 
@@ -202,247 +231,38 @@ impl IcebergScanExec {
 struct IcebergScanMetrics {
     /// Baseline metrics (output rows, elapsed compute time)
     baseline: BaselineMetrics,
-    /// File stream metrics (time opening, time scanning, etc.)
-    file_stream: FileStreamMetrics,
     /// Count of file splits (FileScanTasks) processed
     num_splits: Count,
 }
 
 impl IcebergScanMetrics {
-    fn new(metrics: &ExecutionPlanMetricsSet, partition: usize) -> Self {
+    fn new(metrics: &ExecutionPlanMetricsSet) -> Self {
         Self {
-            baseline: BaselineMetrics::new(metrics, partition),
-            file_stream: FileStreamMetrics::new(metrics, partition),
-            num_splits: MetricBuilder::new(metrics).counter("num_splits", partition),
+            baseline: BaselineMetrics::new(metrics, 0),
+            num_splits: MetricBuilder::new(metrics).counter("num_splits", 0),
         }
     }
 }
 
-/// State machine for IcebergFileStream
-enum FileStreamState {
-    /// Idle state - need to start opening next file
-    Idle,
-    /// Opening a file
-    Opening {
-        future: BoxFuture<'static, DFResult<SendableRecordBatchStream>>,
-    },
-    /// Reading from current file while potentially opening next file
-    Reading {
-        current: SendableRecordBatchStream,
-        next: Option<BoxFuture<'static, DFResult<SendableRecordBatchStream>>>,
-    },
-    /// Error state
-    Error,
-}
-
-/// Stream that reads Iceberg files with parallel opening optimization.
-/// Opens the next file while reading the current file to overlap IO with compute.
-///
-/// Inspired by DataFusion's [`FileStream`] pattern for overlapping file opening with reading.
-///
-/// [`FileStream`]: https://github.com/apache/datafusion/blob/main/datafusion/datasource/src/file_stream.rs
-struct IcebergFileStream {
-    schema: SchemaRef,
-    file_io: FileIO,
-    batch_size: usize,
-    tasks: VecDeque<iceberg::scan::FileScanTask>,
-    state: FileStreamState,
-    metrics: IcebergScanMetrics,
-}
-
-impl IcebergFileStream {
-    fn new(
-        tasks: Vec<iceberg::scan::FileScanTask>,
-        file_io: FileIO,
-        batch_size: usize,
-        schema: SchemaRef,
-        metrics: IcebergScanMetrics,
-    ) -> DFResult<Self> {
-        Ok(Self {
-            schema,
-            file_io,
-            batch_size,
-            tasks: tasks.into_iter().collect(),
-            state: FileStreamState::Idle,
-            metrics,
-        })
-    }
-
-    fn start_next_file(
-        &mut self,
-    ) -> Option<BoxFuture<'static, DFResult<SendableRecordBatchStream>>> {
-        let task = self.tasks.pop_front()?;
-
-        self.metrics.num_splits.add(1);
-
-        let file_io = self.file_io.clone();
-        let batch_size = self.batch_size;
-        let schema = Arc::clone(&self.schema);
-
-        Some(Box::pin(async move {
-            let task_stream = futures::stream::iter(vec![Ok(task)]).boxed();
-
-            let reader = iceberg::arrow::ArrowReaderBuilder::new(file_io)
-                .with_batch_size(batch_size)
-                .with_row_selection_enabled(true)
-                .build();
-
-            let stream = reader.read(task_stream).map_err(|e| {
-                DataFusionError::Execution(format!("Failed to read Iceberg task: {}", e))
-            })?;
-
-            let target_schema = Arc::clone(&schema);
-
-            // Schema adaptation handles differences in Arrow field names and metadata
-            // between the file schema and expected output schema
-            let mapped_stream = stream
-                .map_err(|e| DataFusionError::Execution(format!("Iceberg scan error: {}", e)))
-                .and_then(move |batch| {
-                    let spark_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
-                    let adapter_factory = SparkSchemaAdapterFactory::new(spark_options, None);
-                    let file_schema = batch.schema();
-                    let adapter = adapter_factory
-                        .create(Arc::clone(&target_schema), Arc::clone(&file_schema));
-
-                    let result = match adapter.map_schema(file_schema.as_ref()) {
-                        Ok((schema_mapper, _projection)) => {
-                            schema_mapper.map_batch(batch).map_err(|e| {
-                                DataFusionError::Execution(format!("Batch mapping failed: {}", e))
-                            })
-                        }
-                        Err(e) => Err(DataFusionError::Execution(format!(
-                            "Schema mapping failed: {}",
-                            e
-                        ))),
-                    };
-                    futures::future::ready(result)
-                });
-
-            Ok(Box::pin(IcebergStreamWrapper {
-                inner: mapped_stream,
-                schema,
-            }) as SendableRecordBatchStream)
-        }))
-    }
-
-    fn poll_inner(&mut self, cx: &mut Context<'_>) -> Poll<Option<DFResult<RecordBatch>>> {
-        loop {
-            match &mut self.state {
-                FileStreamState::Idle => {
-                    self.metrics.file_stream.time_opening.start();
-                    match self.start_next_file() {
-                        Some(future) => {
-                            self.state = FileStreamState::Opening { future };
-                        }
-                        None => return Poll::Ready(None),
-                    }
-                }
-                FileStreamState::Opening { future } => match ready!(future.poll_unpin(cx)) {
-                    Ok(stream) => {
-                        self.metrics.file_stream.time_opening.stop();
-                        self.metrics.file_stream.time_scanning_until_data.start();
-                        self.metrics.file_stream.time_scanning_total.start();
-                        let next = self.start_next_file();
-                        self.state = FileStreamState::Reading {
-                            current: stream,
-                            next,
-                        };
-                    }
-                    Err(e) => {
-                        self.state = FileStreamState::Error;
-                        return Poll::Ready(Some(Err(e)));
-                    }
-                },
-                FileStreamState::Reading { current, next } => {
-                    // Poll next file opening future to drive it forward (background IO)
-                    if let Some(next_future) = next {
-                        if let Poll::Ready(result) = next_future.poll_unpin(cx) {
-                            match result {
-                                Ok(stream) => {
-                                    *next = Some(Box::pin(futures::future::ready(Ok(stream))));
-                                }
-                                Err(e) => {
-                                    self.state = FileStreamState::Error;
-                                    return Poll::Ready(Some(Err(e)));
-                                }
-                            }
-                        }
-                    }
-
-                    match ready!(self
-                        .metrics
-                        .baseline
-                        .record_poll(current.poll_next_unpin(cx)))
-                    {
-                        Some(result) => {
-                            // Stop time_scanning_until_data on first batch (idempotent)
-                            self.metrics.file_stream.time_scanning_until_data.stop();
-                            self.metrics.file_stream.time_scanning_total.stop();
-                            // Restart time_scanning_total for next batch
-                            self.metrics.file_stream.time_scanning_total.start();
-                            return Poll::Ready(Some(result));
-                        }
-                        None => {
-                            self.metrics.file_stream.time_scanning_until_data.stop();
-                            self.metrics.file_stream.time_scanning_total.stop();
-                            match next.take() {
-                                Some(mut next_future) => match next_future.poll_unpin(cx) {
-                                    Poll::Ready(Ok(stream)) => {
-                                        self.metrics.file_stream.time_scanning_until_data.start();
-                                        self.metrics.file_stream.time_scanning_total.start();
-                                        let next_next = self.start_next_file();
-                                        self.state = FileStreamState::Reading {
-                                            current: stream,
-                                            next: next_next,
-                                        };
-                                    }
-                                    Poll::Ready(Err(e)) => {
-                                        self.state = FileStreamState::Error;
-                                        return Poll::Ready(Some(Err(e)));
-                                    }
-                                    Poll::Pending => {
-                                        self.state = FileStreamState::Opening {
-                                            future: next_future,
-                                        };
-                                    }
-                                },
-                                None => {
-                                    return Poll::Ready(None);
-                                }
-                            }
-                        }
-                    }
-                }
-                FileStreamState::Error => {
-                    return Poll::Ready(None);
-                }
-            }
-        }
-    }
-}
-
-impl Stream for IcebergFileStream {
-    type Item = DFResult<arrow::array::RecordBatch>;
-
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        self.metrics.file_stream.time_processing.start();
-        let result = self.poll_inner(cx);
-        self.metrics.file_stream.time_processing.stop();
-        result
-    }
-}
-
-impl RecordBatchStream for IcebergFileStream {
-    fn schema(&self) -> SchemaRef {
-        Arc::clone(&self.schema)
-    }
-}
-
-/// Wrapper around iceberg-rust's stream that avoids strict schema checks.
-/// Returns the expected output schema to prevent rejection of batches with metadata differences.
+/// Wrapper around iceberg-rust's stream that performs schema adaptation.
+/// Handles batches from multiple files that may have different Arrow schemas
+/// (metadata, field IDs, etc.).
 struct IcebergStreamWrapper<S> {
     inner: S,
     schema: SchemaRef,
+    /// Factory for creating adapters when file schema changes
+    adapter_factory: SparkPhysicalExprAdapterFactory,
+    /// Cached adapter and projection expressions for the current file schema,
+    /// reused across batches with the same schema
+    cached: Option<CachedProjection>,
+    /// Metrics for output tracking
+    baseline_metrics: BaselineMetrics,
+}
+
+/// Cached projection state: file schema, adapter, and pre-built projection expressions.
+struct CachedProjection {
+    file_schema: SchemaRef,
+    projection_exprs: Vec<Arc<dyn PhysicalExpr>>,
 }
 
 impl<S> Stream for IcebergStreamWrapper<S>
@@ -452,7 +272,49 @@ where
     type Item = DFResult<RecordBatch>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        self.inner.poll_next_unpin(cx)
+        let poll_result = self.inner.poll_next_unpin(cx);
+
+        let result = match poll_result {
+            Poll::Ready(Some(Ok(batch))) => {
+                let file_schema = batch.schema();
+
+                // Reuse cached projection expressions if file schema hasn't changed.
+                // Batches from the same file share the same Arc<Schema> pointer,
+                // so pointer equality is sufficient here.
+                let projection_exprs = match &self.cached {
+                    Some(cached) if Arc::ptr_eq(&cached.file_schema, &file_schema) => {
+                        &cached.projection_exprs
+                    }
+                    _ => {
+                        let adapter = self
+                            .adapter_factory
+                            .create(Arc::clone(&self.schema), Arc::clone(&file_schema));
+                        let exprs =
+                            build_projection_expressions(&self.schema, &adapter).map_err(|e| {
+                                DataFusionError::Execution(format!(
+                                    "Failed to build projection expressions: {}",
+                                    e
+                                ))
+                            })?;
+                        self.cached = Some(CachedProjection {
+                            file_schema,
+                            projection_exprs: exprs,
+                        });
+                        &self.cached.as_ref().unwrap().projection_exprs
+                    }
+                };
+
+                let result = adapt_batch_with_expressions(batch, &self.schema, projection_exprs)
+                    .map_err(|e| {
+                        DataFusionError::Execution(format!("Batch adaptation failed: {}", e))
+                    });
+
+                Poll::Ready(Some(result))
+            }
+            other => other,
+        };
+
+        self.baseline_metrics.record_poll(result)
     }
 }
 
@@ -467,11 +329,65 @@ where
 
 impl DisplayAs for IcebergScanExec {
     fn fmt_as(&self, _t: DisplayFormatType, f: &mut fmt::Formatter) -> fmt::Result {
-        let num_tasks: usize = self.file_task_groups.iter().map(|g| g.len()).sum();
         write!(
             f,
             "IcebergScanExec: metadata_location={}, num_tasks={}",
-            self.metadata_location, num_tasks
+            self.metadata_location,
+            self.tasks.len()
         )
     }
+}
+
+/// Build projection expressions that adapt batches from a file schema to the target schema.
+///
+/// The returned expressions can be cached and reused across multiple batches
+/// that share the same file schema, avoiding repeated expression construction.
+fn build_projection_expressions(
+    target_schema: &SchemaRef,
+    adapter: &Arc<dyn PhysicalExprAdapter>,
+) -> DFResult<Vec<Arc<dyn PhysicalExpr>>> {
+    target_schema
+        .fields()
+        .iter()
+        .enumerate()
+        .map(|(i, _field)| {
+            let col_expr: Arc<dyn PhysicalExpr> = Arc::new(Column::new_with_schema(
+                target_schema.field(i).name(),
+                target_schema.as_ref(),
+            )?);
+            adapter.rewrite(col_expr)
+        })
+        .collect::<DFResult<Vec<_>>>()
+}
+
+/// Adapt a batch to match the target schema using pre-built projection expressions.
+///
+/// The caller provides pre-built `projection_exprs` (from [`build_projection_expressions`])
+/// which can be cached and reused across multiple batches with the same file schema.
+fn adapt_batch_with_expressions(
+    batch: RecordBatch,
+    target_schema: &SchemaRef,
+    projection_exprs: &[Arc<dyn PhysicalExpr>],
+) -> DFResult<RecordBatch> {
+    // If schemas match, no adaptation needed
+    if Arc::ptr_eq(&batch.schema(), target_schema) {
+        return Ok(batch);
+    }
+
+    // Zero-column projection (e.g. SELECT count(*)) — preserve row count
+    if projection_exprs.is_empty() {
+        return Ok(RecordBatch::try_new_with_options(
+            Arc::clone(target_schema),
+            vec![],
+            &RecordBatchOptions::new().with_row_count(Some(batch.num_rows())),
+        )?);
+    }
+
+    // Evaluate expressions against batch
+    let columns: Vec<ArrayRef> = projection_exprs
+        .iter()
+        .map(|expr| expr.evaluate(&batch)?.into_array(batch.num_rows()))
+        .collect::<DFResult<Vec<_>>>()?;
+
+    RecordBatch::try_new(Arc::clone(target_schema), columns).map_err(|e| e.into())
 }
