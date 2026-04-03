@@ -504,12 +504,12 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
 
         // Extract partition column names from JNI string array
         let partition_col_names = {
-            let len = env.get_array_length(&partition_column_names)? as usize;
+            let len = partition_column_names.len(env)?;
             let mut names = Vec::with_capacity(len);
             for i in 0..len {
-                let jstr =
-                    JString::from(env.get_object_array_element(&partition_column_names, i as i32)?);
-                let name: String = env.get_string(&jstr)?.into();
+                let obj = partition_column_names.get_element(env, i)?;
+                let jstr = JString::from_raw(env, obj.into_raw());
+                let name: String = jstr.try_to_string(env)?;
                 names.push(name);
             }
             names

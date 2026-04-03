@@ -2921,17 +2921,7 @@ diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/
 index 4474ec1fd42..97910c4fc3a 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
-@@ -1062,7 +1062,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
-     }
-   }
-
--  test("SPARK-35640: read binary as timestamp should throw schema incompatible error") {
-+  test("SPARK-35640: read binary as timestamp should throw schema incompatible error",
-+      IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3720")) {
-     val data = (1 to 4).map(i => Tuple1(i.toString))
-     val readSchema = StructType(Seq(StructField("_1", DataTypes.TimestampType)))
-
-@@ -1344,7 +1345,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
+@@ -1344,7 +1344,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
      }
    }
  
@@ -3156,7 +3146,7 @@ index 0acb21f3e6f..42cbe451e30 100644
  
  import org.apache.spark.SparkException
 -import org.apache.spark.sql.{AnalysisException, Row}
-+import org.apache.spark.sql.{AnalysisException, IgnoreComet, IgnoreCometNativeDataFusion, Row}
++import org.apache.spark.sql.{AnalysisException, IgnoreComet, Row}
  import org.apache.spark.sql.catalyst.expressions.Cast.toSQLType
  import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException
  import org.apache.spark.sql.functions.desc
@@ -3170,17 +3160,7 @@ index 0acb21f3e6f..42cbe451e30 100644
      withTempPath { dir =>
        val e = testSchemaMismatch(dir.getCanonicalPath, vectorizedReaderEnabled = false)
        val expectedMessage = "Encountered error while reading file"
-@@ -1049,7 +1050,8 @@ class ParquetSchemaSuite extends ParquetSchemaTest {
-     }
-   }
-
--  test("schema mismatch failure error message for parquet vectorized reader") {
-+  test("schema mismatch failure error message for parquet vectorized reader",
-+      IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3720")) {
-     withTempPath { dir =>
-       val e = testSchemaMismatch(dir.getCanonicalPath, vectorizedReaderEnabled = true)
-       assert(e.getCause.isInstanceOf[SchemaColumnConvertNotSupportedException])
-@@ -1094,7 +1098,10 @@ class ParquetSchemaSuite extends ParquetSchemaTest {
+@@ -1094,7 +1094,10 @@ class ParquetSchemaSuite extends ParquetSchemaTest {
          val e = intercept[SparkException] {
            spark.read.schema(df2.schema).parquet(s"$path/parquet").collect()
          }

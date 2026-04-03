@@ -2179,9 +2179,7 @@ diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/
      }
    }
 
--  test("SPARK-36182: can't read TimestampLTZ as TimestampNTZ") {
-+  test("SPARK-36182: can't read TimestampLTZ as TimestampNTZ",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3720")) {
+   test("SPARK-36182: can't read TimestampLTZ as TimestampNTZ") {
      val data = (1 to 1000).map { i =>
        val ts = new java.sql.Timestamp(i)
        Row(ts)
@@ -2325,9 +2323,7 @@ index 3f47c5e506f..bc1ee1ec0ba 100644
      }
    }
 
--  test("schema mismatch failure error message for parquet vectorized reader") {
-+  test("schema mismatch failure error message for parquet vectorized reader",
-+      IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3720")) {
+   test("schema mismatch failure error message for parquet vectorized reader") {
      withTempPath { dir =>
        val e = testSchemaMismatch(dir.getCanonicalPath, vectorizedReaderEnabled = true)
        assert(e.getCause.isInstanceOf[SparkException])

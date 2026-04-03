@@ -230,7 +230,10 @@ struct SparkPhysicalExprAdapter {
     /// physical names so that downstream reassign_expr_columns can find
     /// columns in the actual stream schema.
     logical_to_physical_names: Option<HashMap<String, String>>,
-    schema_validation_error: Option<String>,
+    /// Schema validation error detected during adapter creation. Stored as a SparkError
+    /// so it can be propagated via DataFusionError::External → CometQueryExecutionException
+    /// → SparkErrorConverter, matching Spark's SchemaColumnConvertNotSupportedException.
+    schema_validation_error: Option<SparkError>,
     /// The original (un-remapped) physical schema, kept for per-column duplicate
     /// detection in case-insensitive mode. Only set when `!case_sensitive`.
     original_physical_schema: Option<SchemaRef>,
@@ -240,8 +243,8 @@ impl PhysicalExprAdapter for SparkPhysicalExprAdapter {
     fn rewrite(&self, expr: Arc<dyn PhysicalExpr>) -> DataFusionResult<Arc<dyn PhysicalExpr>> {
         // Check for schema incompatibility (e.g., reading binary as timestamp, int as long).
         // This validation was performed during adapter creation; surface the error now.
-        if let Some(err_msg) = &self.schema_validation_error {
-            return Err(DataFusionError::Execution(err_msg.clone()));
+        if let Some(spark_err) = &self.schema_validation_error {
+            return Err(DataFusionError::External(Box::new(spark_err.clone())));
         }
 
         // In case-insensitive mode, check if any Column in this expression references
@@ -523,13 +526,13 @@ impl SparkPhysicalExprAdapter {
 /// Partition columns are skipped because their values come from directory paths, not from the
 /// Parquet file. A data column in the file may share a name with a partition column but have a
 /// completely different type (e.g., Int32 data column vs String partition column).
-fn validate_spark_schema_compatibility(
+pub fn validate_spark_schema_compatibility(
     logical_schema: &SchemaRef,
     physical_schema: &SchemaRef,
     case_sensitive: bool,
     partition_column_names: &[String],
     allow_type_widening: bool,
-) -> Option<String> {
+) -> Option<SparkError> {
     for logical_field in logical_schema.fields() {
         // Skip partition columns — their values come from the directory path, not the file
         let is_partition_col = if case_sensitive {
@@ -563,12 +566,11 @@ fn validate_spark_schema_compatibility(
             if physical_type != logical_type
                 && !is_spark_compatible_read(physical_type, logical_type, allow_type_widening)
             {
-                return Some(format!(
-                    "Column: [{}], Expected: {}, Found: {}",
-                    logical_field.name(),
-                    spark_type_name(logical_type),
-                    arrow_to_parquet_type_name(physical_type),
-                ));
+                return Some(SparkError::SchemaColumnConvertError {
+                    column: logical_field.name().clone(),
+                    expected_type: spark_type_name(logical_type),
+                    physical_type: arrow_to_parquet_type_name(physical_type),
+                });
             }
         }
     }
@@ -638,12 +640,23 @@ fn is_spark_compatible_read(
         (Binary | LargeBinary | Utf8 | LargeUtf8, Binary | LargeBinary | Utf8 | LargeUtf8) => true,
         (FixedSizeBinary(_), Binary | LargeBinary | Utf8 | LargeUtf8) => true,
 
-        // Decimal conversions:
+        // Parquet stores decimals using primitive physical types:
+        //   precision ≤ 9  → INT32,  precision ≤ 18 → INT64,
+        //   precision > 18 → FIXED_LEN_BYTE_ARRAY or BINARY.
+        // DataFusion may report the raw physical type instead of the annotated
+        // Decimal128. We allow these as potentially valid and let the actual
+        // read/cast handle any errors for truly incompatible data.
+        (
+            Int8 | Int16 | Int32 | Int64 | FixedSizeBinary(_) | Binary | LargeBinary,
+            Decimal128(_, _),
+        ) => true,
+
+        // Decimal → Decimal conversions:
         // Spark 3.x: physical precision <= logical, scales must match.
-        // Spark 4.0+: decimal widening allowed (precision and scale can only increase).
+        // Spark 4.0+: all Decimal↔Decimal conversions allowed (type widening).
         (Decimal128(p1, s1), Decimal128(p2, s2)) => {
             if allow_type_widening {
-                p1 <= p2 && s1 <= s2
+                true
             } else {
                 p1 <= p2 && s1 == s2
             }
@@ -811,6 +824,68 @@ mod test {
         // Spark 4.0+: LTZ→NTZ is allowed
         let result = roundtrip_with_options(&batch, required_schema, true).await?;
         assert_eq!(result.num_rows(), 3);
+        Ok(())
+    }
+
+    // SPARK-35640: reading binary data as timestamp should throw schema incompatible error
+    #[tokio::test]
+    async fn parquet_binary_as_timestamp() -> Result<(), DataFusionError> {
+        let file_schema = Arc::new(Schema::new(vec![Field::new("_1", DataType::Utf8, true)]));
+        let values = Arc::new(arrow::array::StringArray::from(vec!["a", "b", "c"]))
+            as Arc<dyn arrow::array::Array>;
+        let batch = RecordBatch::try_new(Arc::clone(&file_schema), vec![values])?;
+        let required_schema = Arc::new(Schema::new(vec![Field::new(
+            "_1",
+            DataType::Timestamp(arrow::datatypes::TimeUnit::Microsecond, Some("UTC".into())),
+            true,
+        )]));
+
+        let result = roundtrip(&batch, required_schema).await;
+        assert!(
+            result.is_err(),
+            "Binary→Timestamp should fail with schema mismatch"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("Column: [_1]"),
+            "Expected schema mismatch error, got: {err_msg}"
+        );
+        Ok(())
+    }
+
+    // SPARK-45604: reading timestamp_ntz as array<timestamp_ntz> should fail
+    #[tokio::test]
+    async fn parquet_timestamp_ntz_as_array_timestamp_ntz() -> Result<(), DataFusionError> {
+        use arrow::datatypes::TimeUnit;
+        let file_schema = Arc::new(Schema::new(vec![Field::new(
+            "_1",
+            DataType::Timestamp(TimeUnit::Microsecond, None),
+            true,
+        )]));
+        let values = Arc::new(arrow::array::TimestampMicrosecondArray::from(vec![
+            1_000_000, 2_000_000, 3_000_000,
+        ])) as Arc<dyn arrow::array::Array>;
+        let batch = RecordBatch::try_new(Arc::clone(&file_schema), vec![values])?;
+        let required_schema = Arc::new(Schema::new(vec![Field::new(
+            "_1",
+            DataType::List(Arc::new(Field::new(
+                "element",
+                DataType::Timestamp(TimeUnit::Microsecond, None),
+                true,
+            ))),
+            true,
+        )]));
+
+        let result = roundtrip(&batch, required_schema).await;
+        assert!(
+            result.is_err(),
+            "TimestampNTZ→Array<TimestampNTZ> should fail with schema mismatch"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("Column: [_1]"),
+            "Expected schema mismatch error, got: {err_msg}"
+        );
         Ok(())
     }
 

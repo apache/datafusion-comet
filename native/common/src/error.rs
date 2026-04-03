@@ -187,6 +187,16 @@ pub enum SparkError {
         matched_fields: String,
     },
 
+    /// Schema column convert error — Parquet physical type is incompatible with the
+    /// expected Spark logical type. Thrown as SparkException wrapping
+    /// SchemaColumnConvertNotSupportedException on the JVM side.
+    #[error("Parquet column cannot be converted in file. Column: [{column}], Expected: {expected_type}, Found: {physical_type}")]
+    SchemaColumnConvertError {
+        column: String,
+        expected_type: String,
+        physical_type: String,
+    },
+
     #[error("ArrowError: {0}.")]
     Arrow(Arc<ArrowError>),
 
@@ -260,6 +270,7 @@ impl SparkError {
             SparkError::ScalarSubqueryTooManyRows => "ScalarSubqueryTooManyRows",
             SparkError::FileNotFound { .. } => "FileNotFound",
             SparkError::DuplicateFieldCaseInsensitive { .. } => "DuplicateFieldCaseInsensitive",
+            SparkError::SchemaColumnConvertError { .. } => "SchemaColumnConvertError",
             SparkError::Arrow(_) => "Arrow",
             SparkError::Internal(_) => "Internal",
         }
@@ -470,6 +481,17 @@ impl SparkError {
                     "matchedOrcFields": matched_fields,
                 })
             }
+            SparkError::SchemaColumnConvertError {
+                column,
+                expected_type,
+                physical_type,
+            } => {
+                serde_json::json!({
+                    "column": column,
+                    "expectedType": expected_type,
+                    "physicalType": physical_type,
+                })
+            }
             SparkError::Arrow(e) => {
                 serde_json::json!({
                     "message": e.to_string(),
@@ -544,6 +566,10 @@ impl SparkError {
             SparkError::DuplicateFieldCaseInsensitive { .. } => {
                 "org/apache/spark/SparkRuntimeException"
             }
+
+            // SchemaColumnConvertError - converted to SparkException wrapping
+            // SchemaColumnConvertNotSupportedException by the shim
+            SparkError::SchemaColumnConvertError { .. } => "org/apache/spark/SparkException",
 
             // Generic errors
             SparkError::Arrow(_) | SparkError::Internal(_) => "org/apache/spark/SparkException",
@@ -623,6 +649,9 @@ impl SparkError {
 
             // Duplicate field in case-insensitive mode
             SparkError::DuplicateFieldCaseInsensitive { .. } => Some("_LEGACY_ERROR_TEMP_2093"),
+
+            // Schema column convert error (no standard error class; handled specially by shim)
+            SparkError::SchemaColumnConvertError { .. } => None,
 
             // Generic errors (no error class)
             SparkError::Arrow(_) | SparkError::Internal(_) => None,

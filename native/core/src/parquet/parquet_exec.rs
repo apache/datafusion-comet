@@ -19,7 +19,9 @@ use crate::execution::operators::ExecutionError;
 use crate::parquet::encryption_support::{CometEncryptionConfig, ENCRYPTION_FACTORY_ID};
 use crate::parquet::parquet_read_cached_factory::CachingParquetReaderFactory;
 use crate::parquet::parquet_support::SparkParquetOptions;
-use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
+use crate::parquet::schema_adapter::{
+    validate_spark_schema_compatibility, SparkPhysicalExprAdapterFactory,
+};
 use arrow::datatypes::{Field, SchemaRef};
 use datafusion::config::TableParquetOptions;
 use datafusion::datasource::listing::PartitionedFile;
@@ -35,6 +37,7 @@ use datafusion::physical_expr_adapter::PhysicalExprAdapterFactory;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::prelude::SessionContext;
 use datafusion::scalar::ScalarValue;
+use datafusion_comet_common::SparkErrorWithContext;
 use datafusion_comet_spark_expr::EvalMode;
 use datafusion_datasource::TableSchema;
 use std::collections::HashMap;
@@ -162,6 +165,30 @@ pub(crate) fn init_datasource_exec(
             .map(|f| f.name().clone())
             .collect()
     };
+
+    // Validate data_schema vs required_schema upfront.
+    // DataFusion's Parquet reader may silently coerce incompatible types instead of
+    // erroring, so we check here before the exec is built. The data_schema from Spark
+    // reflects the actual file types (e.g., String), and required_schema reflects what
+    // the query expects (e.g., Timestamp). Incompatible pairs like String→Timestamp
+    // must be rejected to match Spark's behavior.
+    if let Some(data_schema) = &data_schema {
+        if let Some(spark_err) = validate_spark_schema_compatibility(
+            &required_schema,
+            data_schema,
+            case_sensitive,
+            &partition_column_names,
+            allow_type_widening,
+        ) {
+            // Wrap as DataFusionError::External so the error propagates through
+            // CometQueryExecutionException → SparkErrorConverter, which converts it
+            // to SparkException wrapping SchemaColumnConvertNotSupportedException.
+            let df_err = datafusion::common::DataFusionError::External(Box::new(
+                SparkErrorWithContext::new(spark_err),
+            ));
+            return Err(df_err.into());
+        }
+    }
 
     // Use caching reader factory to avoid redundant footer reads across partitions
     let store = session_ctx.runtime_env().object_store(&object_store_url)?;

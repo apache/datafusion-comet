@@ -26,6 +26,7 @@ import scala.util.matching.Regex
 import org.apache.spark.{QueryContext, SparkDateTimeException, SparkException}
 import org.apache.spark.sql.catalyst.trees.SQLQueryContext
 import org.apache.spark.sql.errors.QueryExecutionErrors
+import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
 
@@ -291,6 +292,18 @@ trait ShimSparkErrorConverter {
           QueryExecutionErrors.foundDuplicateFieldInCaseInsensitiveModeError(
             params("requiredFieldName").toString,
             params("matchedOrcFields").toString))
+
+      case "SchemaColumnConvertError" =>
+        val column = params("column").toString
+        val expectedType = params("expectedType").toString
+        val physicalType = params("physicalType").toString
+        val scnse =
+          new SchemaColumnConvertNotSupportedException(column, physicalType, expectedType)
+        Some(
+          new SparkException(
+            "Parquet column cannot be converted in file. " +
+              s"Column: [$column], Expected: $expectedType, Found: $physicalType",
+            scnse))
 
       case "FileNotFound" =>
         val msg = params("message").toString
