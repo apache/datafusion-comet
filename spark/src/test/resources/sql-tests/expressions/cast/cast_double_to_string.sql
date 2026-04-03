@@ -18,14 +18,27 @@
 -- ConfigMatrix: parquet.enable.dictionary=false,true
 
 statement
-CREATE TABLE test_ceil(f float, d double, dec DECIMAL(5, 2)) USING parquet
+CREATE TABLE test_double_to_string(d double, id int) USING parquet
 
 statement
-INSERT INTO test_ceil VALUES (1.1, 1.1, 1.10), (-1.1, -1.1, -1.10), (0.0, 0.0, 0.00), (1.0, 1.0, 1.00), (NULL, NULL, NULL), (cast('NaN' as float), cast('NaN' as double), NULL), (cast('Infinity' as float), cast('Infinity' as double), NULL)
+INSERT INTO test_double_to_string VALUES
+  (-0.0, 1),
+  (0.0, 2),
+  (1.5, 3),
+  (-1.5, 4),
+  (cast('NaN' as double), 5),
+  (cast('Infinity' as double), 6),
+  (cast('-Infinity' as double), 7),
+  (NULL, 8),
+  (1.0E20, 9),
+  (1.0E-20, 10),
+  (-1.0E20, 11),
+  (0.001, 12),
+  (123456789.0, 13),
+  (1.23456789E10, 14)
 
 query
-SELECT ceil(f), ceil(d), ceil(dec) FROM test_ceil
+SELECT cast(d as string), id FROM test_double_to_string ORDER BY id
 
--- literal arguments
 query
-SELECT ceil(1.1), ceil(-1.1), ceil(0.0), ceil(NULL), ceil(cast(1.10 as DECIMAL(5, 2))), ceil(cast(-1.10 as DECIMAL(5, 2)))
+SELECT cast(-0.0 as string), cast(0.0 as string)
