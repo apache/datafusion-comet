@@ -103,7 +103,6 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("native_datafusion scan reports task-level input metrics matching Spark") {
     val totalRows = 10000
     withTempPath { dir =>
-      val rng = new scala.util.Random(42)
       spark
         .createDataFrame((0 until totalRows).map(i => (i, s"elem_$i")))
         .repartition(5)
