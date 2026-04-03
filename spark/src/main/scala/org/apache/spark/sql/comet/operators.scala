@@ -25,6 +25,7 @@ import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
 import scala.jdk.CollectionConverters._
 
+import org.apache.spark.{Partition, TaskContext}
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
@@ -558,7 +559,7 @@ abstract class CometNativeExec extends CometExec {
 
         // Unified RDD creation - CometExecRDD handles all cases
         val subqueries = collectSubqueries(this)
-        CometExecRDD(
+        new CometExecRDD(
           sparkContext,
           inputs.toSeq,
           commonByKey,
@@ -570,7 +571,32 @@ abstract class CometNativeExec extends CometExec {
           subqueries,
           broadcastedHadoopConfForEncryption,
           encryptedFilePaths,
-          shuffleScanIndices)
+          shuffleScanIndices) {
+          override def compute(
+              split: Partition,
+              context: TaskContext): Iterator[ColumnarBatch] = {
+            val res = super.compute(split, context)
+
+            // Report scan input metrics only when the native plan contains a scan.
+            if (sparkPlans.exists(_.isInstanceOf[CometNativeScanExec])) {
+              Option(context).foreach { ctx =>
+                ctx.addTaskCompletionListener[Unit] { _ =>
+                  val leaf = nativeMetrics.leafNode
+                  leaf.metrics.get("bytes_scanned").foreach { bs =>
+                    ctx.taskMetrics().inputMetrics.setBytesRead(bs.value)
+                    val outputRows =
+                      leaf.metrics.get("output_rows").map(_.value).getOrElse(0L)
+                    val prunedRows =
+                      leaf.metrics.get("pushdown_rows_pruned").map(_.value).getOrElse(0L)
+                    ctx.taskMetrics().inputMetrics.setRecordsRead(outputRows + prunedRows)
+                  }
+                }
+              }
+            }
+
+            res
+          }
+        }
     }
   }
 

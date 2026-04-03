@@ -105,7 +105,7 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     withTempPath { dir =>
       val rng = new scala.util.Random(42)
       spark
-        .createDataFrame((0 until totalRows).map(_ => (rng.nextInt(), rng.nextLong())))
+        .createDataFrame((0 until totalRows).map(i => (i, s"elem_$i")))
         .repartition(5)
         .write
         .parquet(dir.getAbsolutePath)
