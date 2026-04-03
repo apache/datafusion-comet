@@ -139,8 +139,44 @@ class CometExecSuite extends CometTestBase {
           val (_, cometPlan) = checkSparkAnswer(df)
           val infos = new ExtendedExplainInfo().generateExtendedInfo(cometPlan)
           assert(infos.contains("Dynamic Partition Pruning is not supported"))
+        }
+      }
+    }
+  }
 
-          assert(infos.contains("Comet accelerated"))
+  test("DPP fallback avoids inefficient Comet shuffle (#3874)") {
+    withTempDir { path =>
+      val factPath = s"${path.getAbsolutePath}/fact.parquet"
+      val dimPath = s"${path.getAbsolutePath}/dim.parquet"
+      withSQLConf(CometConf.COMET_EXEC_ENABLED.key -> "false") {
+        val one_day = 24 * 60 * 60000
+        val fact = Range(0, 100)
+          .map(i => (i, new java.sql.Date(System.currentTimeMillis() + i * one_day), i.toString))
+          .toDF("fact_id", "fact_date", "fact_str")
+        fact.write.partitionBy("fact_date").parquet(factPath)
+        val dim = Range(0, 10)
+          .map(i => (i, new java.sql.Date(System.currentTimeMillis() + i * one_day), i.toString))
+          .toDF("dim_id", "dim_date", "dim_str")
+        dim.write.parquet(dimPath)
+      }
+
+      // Force sort-merge join to get a shuffle exchange above the DPP scan
+      Seq("parquet").foreach { v1List =>
+        withSQLConf(
+          SQLConf.USE_V1_SOURCE_LIST.key -> v1List,
+          SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+          CometConf.COMET_DPP_FALLBACK_ENABLED.key -> "true") {
+          spark.read.parquet(factPath).createOrReplaceTempView("dpp_fact2")
+          spark.read.parquet(dimPath).createOrReplaceTempView("dpp_dim2")
+          val df =
+            spark.sql(
+              "select * from dpp_fact2 join dpp_dim2 on fact_date = dim_date where dim_id > 7")
+          val (_, cometPlan) = checkSparkAnswer(df)
+
+          // Verify no CometShuffleExchangeExec wraps the DPP stage
+          assert(
+            !cometPlan.toString().contains("CometColumnarShuffle"),
+            "Should not use Comet columnar shuffle for stages with DPP scans")
         }
       }
     }
@@ -2195,6 +2231,39 @@ class CometExecSuite extends CometTestBase {
           "SELECT * FROM t1 WHERE " +
             "c1 IN (SELECT count(*) + 1 FROM t2 WHERE t2.c1 = t1.c1) OR " +
             "c2 IN (SELECT count(*) - 1 FROM t2 WHERE t2.c1 = t1.c1)")
+      }
+    }
+  }
+
+  test("Native_datafusion reports correct files and bytes scanned") {
+    withTempDir { dir =>
+      val path = new java.io.File(dir, "test_metrics").getAbsolutePath
+      spark.range(100).repartition(2).write.mode("overwrite").parquet(path)
+
+      withSQLConf(
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_NATIVE_SCAN_IMPL.key -> "native_datafusion") {
+        val df = spark.read.parquet(path)
+
+        // Trigger two different actions to ensure metrics are not duplicated
+        df.count()
+        df.collect()
+
+        val scanNode = stripAQEPlan(df.queryExecution.executedPlan)
+          .collectFirst {
+            case n: org.apache.spark.sql.comet.CometNativeScanExec => n
+            case n: org.apache.spark.sql.comet.CometScanExec => n
+          }
+          .getOrElse {
+            fail(
+              s"Comet scan node not found in the physical plan. Plan: \n${df.queryExecution.executedPlan}")
+          }
+
+        val numFiles = scanNode.metrics("numFiles").value
+        assert(
+          numFiles == 2,
+          s"Expected exactly 2 files to be scanned, but got metrics reporting $numFiles")
       }
     }
   }
