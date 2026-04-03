@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import scala.annotation.tailrec
 
-import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayFilter, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayRemove, ArrayRepeat, ArraysOverlap, ArrayUnion, Attribute, CreateArray, ElementAt, Expression, Flatten, GetArrayItem, If, IsNotNull, IsNull, Literal, Reverse, Size}
+import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayFilter, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayRemove, ArrayRepeat, ArraysOverlap, ArrayUnion, Attribute, CreateArray, ElementAt, Expression, Flatten, GetArrayItem, IsNotNull, Literal, Reverse, Size}
 import org.apache.spark.sql.catalyst.util.GenericArrayData
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
@@ -250,11 +250,8 @@ object CometArraysOverlap extends CometExpressionSerde[ArraysOverlap] {
       expr: ArraysOverlap,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val left = If(IsNull(expr.left), Literal.create(Array(null), expr.left.dataType), expr.left)
-    val right =
-      If(IsNull(expr.right), Literal.create(Array(null), expr.right.dataType), expr.right)
-    val leftArrayExprProto = exprToProto(left, inputs, binding)
-    val rightArrayExprProto = exprToProto(right, inputs, binding)
+    val leftArrayExprProto = exprToProto(expr.left, inputs, binding)
+    val rightArrayExprProto = exprToProto(expr.right, inputs, binding)
 
     val arraysOverlapScalarExpr = scalarFunctionExprToProtoWithReturnType(
       "array_has_any",
@@ -262,7 +259,40 @@ object CometArraysOverlap extends CometExpressionSerde[ArraysOverlap] {
       false,
       leftArrayExprProto,
       rightArrayExprProto)
-    optExprWithInfo(arraysOverlapScalarExpr, expr, expr.children: _*)
+
+    val leftIsNull = createUnaryExpr(
+      expr,
+      expr.left,
+      inputs,
+      binding,
+      (builder, unaryExpr) => builder.setIsNull(unaryExpr))
+    val rightIsNull = createUnaryExpr(
+      expr,
+      expr.right,
+      inputs,
+      binding,
+      (builder, unaryExpr) => builder.setIsNull(unaryExpr))
+
+    val nullLiteralProto = exprToProto(Literal(null, BooleanType), inputs)
+
+    if (arraysOverlapScalarExpr.isDefined && leftIsNull.isDefined && rightIsNull.isDefined && nullLiteralProto.isDefined) {
+      val caseWhenExpr = ExprOuterClass.CaseWhen
+        .newBuilder()
+        .addWhen(leftIsNull.get)
+        .addThen(nullLiteralProto.get)
+        .addWhen(rightIsNull.get)
+        .addThen(nullLiteralProto.get)
+        .setElseExpr(arraysOverlapScalarExpr.get)
+        .build()
+      Some(
+        ExprOuterClass.Expr
+          .newBuilder()
+          .setCaseWhen(caseWhenExpr)
+          .build())
+    } else {
+      withInfo(expr, expr.children: _*)
+      None
+    }
   }
 }
 
