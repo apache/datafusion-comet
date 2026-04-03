@@ -213,6 +213,7 @@ jobs:
               org.apache.comet.CometJsonExpressionSuite
               org.apache.comet.CometCsvExpressionSuite
               org.apache.comet.CometDateTimeUtilsSuite
+              org.apache.comet.SparkErrorConverterSuite
               org.apache.comet.expressions.conditional.CometIfSuite
               org.apache.comet.expressions.conditional.CometCoalesceSuite
               org.apache.comet.expressions.conditional.CometCaseWhenSuite

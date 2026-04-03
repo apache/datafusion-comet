@@ -127,7 +127,7 @@ use datafusion_comet_spark_expr::{
     WideDecimalBinaryExpr, WideDecimalOp,
 };
 use itertools::Itertools;
-use jni::objects::GlobalRef;
+use jni::objects::{Global, JObject};
 use num::{BigInt, ToPrimitive};
 use object_store::path::Path;
 use std::cmp::max;
@@ -910,7 +910,7 @@ impl PhysicalPlanner {
     pub(crate) fn create_plan<'a>(
         &'a self,
         spark_plan: &'a Operator,
-        inputs: &mut Vec<Arc<GlobalRef>>,
+        inputs: &mut Vec<Arc<Global<JObject<'static>>>>,
         partition_count: usize,
     ) -> PlanCreationResult {
         // Try to use the modular registry first - this automatically handles any registered operator types
@@ -973,14 +973,28 @@ impl PhysicalPlanner {
                     .map(|expr| self.create_agg_expr(expr, Arc::clone(&schema)))
                     .collect();
 
-                let num_agg = agg.agg_exprs.len();
                 let aggr_expr = agg_exprs?.into_iter().map(Arc::new).collect();
+
+                // Build per-aggregate filter expressions from the FILTER (WHERE ...) clause.
+                // Filters are only present in Partial mode; Final/PartialMerge always get None.
+                let filter_exprs: Result<Vec<Option<Arc<dyn PhysicalExpr>>>, ExecutionError> = agg
+                    .agg_exprs
+                    .iter()
+                    .map(|expr| {
+                        if let Some(f) = expr.filter.as_ref() {
+                            self.create_expr(f, Arc::clone(&schema)).map(Some)
+                        } else {
+                            Ok(None)
+                        }
+                    })
+                    .collect();
+
                 let aggregate: Arc<dyn ExecutionPlan> = Arc::new(
                     datafusion::physical_plan::aggregates::AggregateExec::try_new(
                         mode,
                         group_by,
                         aggr_expr,
-                        vec![None; num_agg], // no filter expressions
+                        filter_exprs?,
                         Arc::clone(&child.native_plan),
                         Arc::clone(&schema),
                     )?,
@@ -1803,7 +1817,7 @@ impl PhysicalPlanner {
     #[allow(clippy::too_many_arguments)]
     fn parse_join_parameters(
         &self,
-        inputs: &mut Vec<Arc<GlobalRef>>,
+        inputs: &mut Vec<Arc<Global<JObject<'static>>>>,
         children: &[Operator],
         left_join_keys: &[Expr],
         right_join_keys: &[Expr],

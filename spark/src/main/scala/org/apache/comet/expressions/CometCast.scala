@@ -149,6 +149,7 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
         isSupported(dt.elementType, dt1.elementType, timeZoneId, evalMode)
       case (dt: DataType, _) if dt.typeName == "timestamp_ntz" =>
         // https://github.com/apache/datafusion-comet/issues/378
+        // https://github.com/apache/datafusion-comet/issues/3179
         toType match {
           case DataTypes.TimestampType | DataTypes.DateType | DataTypes.StringType =>
             Incompatible()
