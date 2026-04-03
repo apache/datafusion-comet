@@ -21,6 +21,7 @@ package org.apache.spark.sql.comet
 
 import scala.reflect.ClassTag
 
+import org.apache.spark.SparkException
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst._
@@ -38,6 +39,7 @@ import org.apache.spark.util.collection._
 
 import com.google.common.base.Objects
 
+import org.apache.comet.CometSparkSessionExtensions
 import org.apache.comet.parquet.{CometParquetFileFormat, CometParquetUtils}
 import org.apache.comet.serde.OperatorOuterClass.Operator
 
@@ -164,7 +166,109 @@ case class CometNativeScanExec(
   def commonData: Array[Byte] = serializedPartitionData._1
   def perPartitionData: Array[Array[Byte]] = serializedPartitionData._2
 
+  /**
+   * Validate schema compatibility between the required (read) schema and the data (file) schema.
+   * This catches incompatibilities that would cause silent data corruption or missing errors in
+   * the native DataFusion path, matching Spark's vectorized reader behavior which throws
+   * SchemaColumnConvertNotSupportedException for type mismatches.
+   *
+   * This is a Spark DataType-level check. Per-file checks against actual Parquet metadata happen
+   * in the native adapter (SparkPhysicalExprAdapterFactory).
+   */
+  private def validateSchemaCompatibility(): Unit = {
+    val dataSchema = relation.dataSchema
+    val caseSensitive = relation.sparkSession.sessionState.conf.caseSensitiveAnalysis
+    val allowTypeWidening = CometSparkSessionExtensions.isSpark40Plus ||
+      org.apache.comet.CometConf.COMET_SCHEMA_EVOLUTION_ENABLED
+        .get(relation.sparkSession.sessionState.conf)
+    val partitionColumnNames = relation.partitionSchema.fieldNames.toSet
+
+    requiredSchema.fields.foreach { requiredField =>
+      // Skip partition columns — their values come from directory paths
+      val isPartitionCol = if (caseSensitive) {
+        partitionColumnNames.contains(requiredField.name)
+      } else {
+        partitionColumnNames.exists(_.equalsIgnoreCase(requiredField.name))
+      }
+      if (!isPartitionCol) {
+        val dataFieldOpt = if (caseSensitive) {
+          dataSchema.fields.find(_.name == requiredField.name)
+        } else {
+          dataSchema.fields.find(_.name.equalsIgnoreCase(requiredField.name))
+        }
+        dataFieldOpt.foreach { dataField =>
+          if (dataField.dataType != requiredField.dataType) {
+            if (!isSparkCompatibleRead(
+                dataField.dataType, requiredField.dataType, allowTypeWidening)) {
+              val scnse = new SchemaColumnConvertNotSupportedException(
+                requiredField.name,
+                dataField.dataType.catalogString,
+                requiredField.dataType.catalogString)
+              throw new SparkException(
+                "Parquet column cannot be converted in file. " +
+                  s"Column: [${requiredField.name}], " +
+                  s"Expected: ${requiredField.dataType.catalogString}, " +
+                  s"Found: ${dataField.dataType.catalogString}",
+                scnse)
+            }
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * Check whether reading a column with `physicalType` as `logicalType` is compatible in Spark.
+   * This mirrors the Rust-side is_spark_compatible_read() logic using Spark DataTypes.
+   */
+  private def isSparkCompatibleRead(
+      physicalType: DataType,
+      logicalType: DataType,
+      allowTypeWidening: Boolean): Boolean = {
+    (physicalType, logicalType) match {
+      case _ if physicalType == logicalType => true
+      case (_, NullType) => true
+
+      // Integer family: same-width always allowed, widening with type widening
+      case (ByteType | ShortType | IntegerType, ByteType | ShortType | IntegerType) => true
+      case (ByteType | ShortType | IntegerType, LongType) => allowTypeWidening
+      case (IntegerType | ByteType | ShortType, DateType) => true
+
+      // Unsigned int → signed (handled by Spark's schema converter)
+      case (FloatType, DoubleType) => true
+      case (ByteType | ShortType | IntegerType, DoubleType) => allowTypeWidening
+
+      // Date → TimestampNTZ (Spark 4.0+ only)
+      case (DateType, TimestampNTZType) => allowTypeWidening
+
+      // Timestamp conversions
+      case (TimestampType, TimestampNTZType) => allowTypeWidening
+      case (TimestampNTZType, TimestampType) => true
+
+      // String/Binary interop
+      case (StringType | BinaryType, StringType | BinaryType) => true
+
+      // Decimal → Decimal: precision/scale rules
+      case (DecimalType.Fixed(p1, s1), DecimalType.Fixed(p2, s2)) =>
+        if (allowTypeWidening) {
+          val scaleIncrease = s2 - s1
+          val precisionIncrease = p2 - p1
+          scaleIncrease >= 0 && precisionIncrease >= scaleIncrease
+        } else {
+          p1 <= p2 && s1 == s2
+        }
+
+      // Nested types: compatible if same kind (inner-type adaptation done by DataFusion)
+      case (_: StructType, _: StructType) => true
+      case (_: ArrayType, _: ArrayType) => true
+      case (_: MapType, _: MapType) => true
+
+      case _ => false
+    }
+  }
+
   override def doExecuteColumnar(): RDD[ColumnarBatch] = {
+    validateSchemaCompatibility()
     val nativeMetrics = CometMetricNode.fromCometPlan(this)
     val serializedPlan = CometExec.serializeNativePlan(nativeOp)
 
