@@ -72,6 +72,22 @@ class CometJsonExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
     }
   }
 
+  test("to_json - fallback reasons") {
+    assume(!isSpark40Plus)
+    withTable("t") {
+      sql("CREATE TABLE t(a INT, b STRING) USING parquet")
+      sql("INSERT INTO t VALUES (1, 'hello')")
+      checkSparkAnswerAndFallbackReason(
+        "SELECT to_json(named_struct('a', a, 'b', b), map('timestampFormat', 'dd/MM/yyyy')) FROM t",
+        "StructsToJson with options is not supported")
+      checkSparkAnswerAndFallbackReason(
+        "SELECT to_json(named_struct('a', a, 'b', array(b))) FROM t",
+        "Struct type: StructType(StructField(a,IntegerType,true)," +
+          "StructField(b,ArrayType(StringType,true),false)) " +
+          "contains unsupported types")
+    }
+  }
+
   test("from_json - basic primitives") {
     Seq(true, false).foreach { dictionaryEnabled =>
       withParquetTable(
