@@ -1154,7 +1154,7 @@ fn parse_timestamp_to_micros<T: TimeZone>(
         // Validate month and day manually for extreme years.
         let m = timestamp_info.month;
         let d = timestamp_info.day;
-        if m < 1 || m > 12 {
+        if !(1..=12).contains(&m) {
             return Ok(None);
         }
         let max_day = match m {
