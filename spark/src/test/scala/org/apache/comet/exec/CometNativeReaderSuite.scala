@@ -19,6 +19,7 @@
 
 package org.apache.comet.exec
 
+import org.apache.hadoop.fs.Path
 import org.scalactic.source.Position
 import org.scalatest.Tag
 
@@ -601,5 +602,58 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
           |select 1 a
           |""".stripMargin,
       "select array(array(1, 2, null), array(), array(10), null, array(null)) from tbl")
+  }
+
+  test("native reader - nested schema pruning with array of struct and filter") {
+    // Regression test found during DataFusion 53 upgrade (PR #3629).
+    // Spark's SchemaPruningSuite tests (e.g. "select a single complex field array
+    // and in clause", "select explode of nested field of array of struct",
+    // "SPARK-34638: nested column prune on generator output") were failing with:
+    //   native panic: called `Result::unwrap()` on an `Err` value:
+    //   Internal("Unexpected data type in GetArrayStructFields: Int32")
+    // The root cause was wrap_all_type_mismatches in Comet's schema adapter
+    // looking up the logical field by column index instead of by name. When
+    // filter expressions are created against the pruned required_schema (where
+    // "friends" is at index 0), the fallback would index into the full
+    // logical_file_schema and get "id: Int32" instead of "friends: List<...>".
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "test").toUri.toString
+
+      // Create a table with multiple columns so that nested schema pruning
+      // can prune away unneeded columns. The friends column is an array of
+      // structs with first/middle/last, but the query only needs first and middle.
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        spark.sql(
+          """
+            |select
+            |  0 as id,
+            |  named_struct('first', 'Jane', 'middle', 'X.', 'last', 'Doe') as name,
+            |  '123 Main Street' as address,
+            |  1 as pets,
+            |  array(
+            |    named_struct('first', 'Susan', 'middle', 'Z.', 'last', 'Smith')
+            |  ) as friends
+            |union all
+            |select
+            |  1 as id,
+            |  named_struct('first', 'John', 'middle', 'Y.', 'last', 'Doe') as name,
+            |  '321 Wall Street' as address,
+            |  3 as pets,
+            |  array(
+            |    named_struct('first', 'Alice', 'middle', 'A.', 'last', 'Jones')
+            |  ) as friends
+            |""".stripMargin).repartition(1).write.parquet(path)
+      }
+
+      val schema = spark.read.parquet(path).schema
+
+      readParquetFile(path, Some(schema)) { df =>
+        df.createOrReplaceTempView("tbl")
+      }
+
+      val query = "select friends.middle from tbl where friends.first[0] = 'Susan'"
+      val df = sql(query)
+      checkSparkAnswer(df)
+    }
   }
 }

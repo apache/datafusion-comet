@@ -296,12 +296,26 @@ impl SparkPhysicalExprAdapter {
     ) -> DataFusionResult<Arc<dyn PhysicalExpr>> {
         expr.transform(|e| {
             if let Some(column) = e.as_any().downcast_ref::<Column>() {
-                let col_idx = column.index();
                 let col_name = column.name();
 
-                let logical_field = self.logical_file_schema.fields().get(col_idx);
-                // Look up physical field by name instead of index for correctness
-                // when logical and physical schemas have different column orderings
+                // Resolve fields by name because this is the fallback path
+                // that runs on the original expression when the default
+                // adapter fails. The original expression was built against
+                // the required (pruned) schema, so column indices refer to
+                // that schema — not the logical or physical file schemas.
+                // DataFusion's DefaultPhysicalExprAdapter::resolve_physical_column
+                // also resolves by name for the same reason.
+                let logical_field = if self.parquet_options.case_sensitive {
+                    self.logical_file_schema
+                        .fields()
+                        .iter()
+                        .find(|f| f.name() == col_name)
+                } else {
+                    self.logical_file_schema
+                        .fields()
+                        .iter()
+                        .find(|f| f.name().eq_ignore_ascii_case(col_name))
+                };
                 let physical_field = if self.parquet_options.case_sensitive {
                     self.physical_file_schema
                         .fields()
@@ -314,12 +328,31 @@ impl SparkPhysicalExprAdapter {
                         .find(|f| f.name().eq_ignore_ascii_case(col_name))
                 };
 
-                if let (Some(logical_field), Some(physical_field)) = (logical_field, physical_field)
+                // Remap the column index to the physical file schema so
+                // downstream evaluation reads the correct column from the
+                // parquet batch.
+                let physical_index = if self.parquet_options.case_sensitive {
+                    self.physical_file_schema.index_of(col_name).ok()
+                } else {
+                    self.physical_file_schema
+                        .fields()
+                        .iter()
+                        .position(|f| f.name().eq_ignore_ascii_case(col_name))
+                };
+
+                if let (Some(logical_field), Some(physical_field), Some(phys_idx)) =
+                    (logical_field, physical_field, physical_index)
                 {
+                    let remapped: Arc<dyn PhysicalExpr> = if column.index() != phys_idx {
+                        Arc::new(Column::new(col_name, phys_idx))
+                    } else {
+                        Arc::clone(&e)
+                    };
+
                     if logical_field.data_type() != physical_field.data_type() {
                         let cast_expr: Arc<dyn PhysicalExpr> = Arc::new(
                             CometCastColumnExpr::new(
-                                Arc::clone(&e),
+                                remapped,
                                 Arc::clone(physical_field),
                                 Arc::clone(logical_field),
                                 None,
@@ -327,6 +360,8 @@ impl SparkPhysicalExprAdapter {
                             .with_parquet_options(self.parquet_options.clone()),
                         );
                         return Ok(Transformed::yes(cast_expr));
+                    } else if column.index() != phys_idx {
+                        return Ok(Transformed::yes(remapped));
                     }
                 }
             }
