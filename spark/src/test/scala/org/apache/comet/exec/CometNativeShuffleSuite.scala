@@ -61,24 +61,18 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
   }
 
   test("native shuffle: different data type") {
-    // https://github.com/apache/datafusion-comet/issues/1538
-    assume(CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_DATAFUSION)
-    Seq(true, false).foreach { execEnabled =>
-      Seq(true, false).foreach { dictionaryEnabled =>
-        withTempDir { dir =>
-          val path = new Path(dir.toURI.toString, "test.parquet")
-          makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 1000)
-          var allTypes: Seq[Int] = (1 to 20)
-          allTypes.map(i => s"_$i").foreach { c =>
-            withSQLConf(
-              CometConf.COMET_EXEC_ENABLED.key -> execEnabled.toString,
-              "parquet.enable.dictionary" -> dictionaryEnabled.toString) {
-              readParquetFile(path.toString) { df =>
-                val shuffled = df
-                  .select($"_1")
-                  .repartition(10, col(c))
-                checkShuffleAnswer(shuffled, 1, checkNativeOperators = execEnabled)
-              }
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 1000)
+        var allTypes: Seq[Int] = (1 to 20)
+        allTypes.map(i => s"_$i").foreach { c =>
+          withSQLConf("parquet.enable.dictionary" -> dictionaryEnabled.toString) {
+            readParquetFile(path.toString) { df =>
+              val shuffled = df
+                .select($"_1")
+                .repartition(10, col(c))
+              checkShuffleAnswer(shuffled, 1, checkNativeOperators = true)
             }
           }
         }
