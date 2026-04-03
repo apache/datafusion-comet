@@ -128,7 +128,7 @@ Expressions that are not Spark-compatible will fall back to Spark by default and
 | Add            | `+`       | Yes               |                                   |
 | Asin           | `asin`    | Yes               |                                   |
 | Atan           | `atan`    | Yes               |                                   |
-| Atan2          | `atan2`   | No                |                                   |
+| Atan2          | `atan2`   | Yes               |                                   |
 | BRound         | `bround`  | Yes               |                                   |
 | Ceil           | `ceil`    | Yes               |                                   |
 | Cos            | `cos`     | Yes               |                                   |
