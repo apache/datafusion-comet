@@ -640,23 +640,33 @@ fn is_spark_compatible_read(
         (Binary | LargeBinary | Utf8 | LargeUtf8, Binary | LargeBinary | Utf8 | LargeUtf8) => true,
         (FixedSizeBinary(_), Binary | LargeBinary | Utf8 | LargeUtf8) => true,
 
-        // Parquet stores decimals using primitive physical types:
-        //   precision ≤ 9  → INT32,  precision ≤ 18 → INT64,
-        //   precision > 18 → FIXED_LEN_BYTE_ARRAY or BINARY.
-        // DataFusion may report the raw physical type instead of the annotated
-        // Decimal128. We allow these as potentially valid and let the actual
-        // read/cast handle any errors for truly incompatible data.
-        (
-            Int8 | Int16 | Int32 | Int64 | FixedSizeBinary(_) | Binary | LargeBinary,
-            Decimal128(_, _),
-        ) => true,
+        // Non-decimal-annotated Parquet primitives read as Decimal:
+        // When a Parquet column has no DECIMAL annotation, DataFusion reports the raw
+        // physical type (Int32/Int64/Binary). Reading these as Decimal is only valid if
+        // the Decimal has enough integer digits to represent all possible values of the
+        // physical type. Matches Spark's ParquetVectorUpdaterFactory.isDecimalTypeMatched
+        // for non-annotated types:
+        //   INT32: integerPrecision (= precision - scale) >= 10
+        //   INT64: integerPrecision >= 20
+        // FixedSizeBinary/Binary always rejected (no decimal annotation means not decimal).
+        (Int8 | Int16 | Int32, Decimal128(p, s)) if allow_type_widening => {
+            let integer_precision = *p as i16 - *s as i16;
+            integer_precision >= 10
+        }
+        (Int64, Decimal128(p, s)) if allow_type_widening => {
+            let integer_precision = *p as i16 - *s as i16;
+            integer_precision >= 20
+        }
 
         // Decimal → Decimal conversions:
         // Spark 3.x: physical precision <= logical, scales must match.
-        // Spark 4.0+: all Decimal↔Decimal conversions allowed (type widening).
+        // Spark 4.0+: scale can increase as long as precision increases by at least as much
+        //   (scaleIncrease >= 0 && precisionIncrease >= scaleIncrease).
         (Decimal128(p1, s1), Decimal128(p2, s2)) => {
             if allow_type_widening {
-                true
+                let scale_increase = *s2 as i16 - *s1 as i16;
+                let precision_increase = *p2 as i16 - *p1 as i16;
+                scale_increase >= 0 && precision_increase >= scale_increase
             } else {
                 p1 <= p2 && s1 == s2
             }
@@ -938,6 +948,25 @@ mod test {
             false
         ));
 
+        // Non-annotated Int → Decimal (Spark 4.0+): requires enough integer precision
+        // Int32 can hold up to 10 digits, so integerPrecision must be >= 10
+        assert!(!is_spark_compatible_read(
+            &DataType::Int32,
+            &DataType::Decimal128(3, 2), // integerPrecision=1 < 10
+            true
+        ));
+        assert!(is_spark_compatible_read(
+            &DataType::Int32,
+            &DataType::Decimal128(11, 1), // integerPrecision=10 >= 10
+            true
+        ));
+        // Not allowed on Spark 3.x
+        assert!(!is_spark_compatible_read(
+            &DataType::Int32,
+            &DataType::Decimal128(11, 1),
+            false
+        ));
+
         // === Always incompatible ===
         assert!(!is_spark_compatible_read(
             &DataType::Utf8,
@@ -986,27 +1015,40 @@ mod test {
             true
         ));
 
-        // Decimal narrowing (SPARK-34212)
+        // Decimal narrowing (SPARK-34212): precision decrease is never allowed
         assert!(!is_spark_compatible_read(
             &DataType::Decimal128(18, 2),
             &DataType::Decimal128(10, 2),
             false
         ));
-        assert!(is_spark_compatible_read(
+        assert!(!is_spark_compatible_read(
             &DataType::Decimal128(18, 2),
             &DataType::Decimal128(10, 2),
             true
         ));
 
-        // Decimal scale change
+        // Decimal scale change without enough precision increase is rejected
         assert!(!is_spark_compatible_read(
             &DataType::Decimal128(10, 2),
             &DataType::Decimal128(10, 3),
             false
         ));
-        assert!(is_spark_compatible_read(
+        assert!(!is_spark_compatible_read(
             &DataType::Decimal128(10, 2),
             &DataType::Decimal128(10, 3),
+            true
+        ));
+
+        // Decimal widening: scale increase with sufficient precision increase is allowed
+        assert!(is_spark_compatible_read(
+            &DataType::Decimal128(10, 2),
+            &DataType::Decimal128(11, 3),
+            true
+        ));
+        // Same scale, larger precision is allowed
+        assert!(is_spark_compatible_read(
+            &DataType::Decimal128(10, 2),
+            &DataType::Decimal128(18, 2),
             true
         ));
 
