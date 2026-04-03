@@ -187,7 +187,7 @@ case class CometScanExec(
    * null (an empty repeated field means zero elements, not null), and DataFusion's optimizer
    * would eliminate the filter if it went through the normal planning path.
    *
-   * Filtering these out is safe — the predicate is still evaluated after reading, so correctness
+   * Filtering these out is safe -- the predicate is still evaluated after reading, so correctness
    * is preserved.
    */
   private def isNullCheckOnArrayColumn(expr: Expression): Boolean = expr match {
