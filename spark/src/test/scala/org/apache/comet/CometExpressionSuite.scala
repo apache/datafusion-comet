@@ -28,7 +28,7 @@ import org.scalatest.Tag
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
-import org.apache.spark.sql.catalyst.expressions.{Alias, Atan2, Cast, FromUnixTime, Literal, StructsToJson, TruncDate, TruncTimestamp}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, FromUnixTime, Literal, StructsToJson, TruncDate, TruncTimestamp}
 import org.apache.spark.sql.catalyst.optimizer.SimplifyExtractValueOps
 import org.apache.spark.sql.comet.CometProjectExec
 import org.apache.spark.sql.execution.{ProjectExec, SparkPlan}
@@ -1344,8 +1344,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     Double.NegativeInfinity)
 
   test("various math scalar functions") {
-    val data = doubleValues.map(n => (n, n))
-    withParquetTable(data, "tbl") {
+    withParquetTable(doubleValues.map(n => (n, n)), "tbl") {
       // expressions with single arg
       for (expr <- Seq(
           "acos",
@@ -1370,33 +1369,16 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         }
         assert(cometProjectExecs.length == 1, expr)
       }
+    }
+    withParquetTable(doubleValues.flatMap(m => doubleValues.map(n => (m, n))), "tbl") {
       // expressions with two args
-      for (expr <- Seq("pow")) {
+      for (expr <- Seq("atan2", "pow")) {
         val (_, cometPlan) =
           checkSparkAnswerAndOperatorWithTol(sql(s"SELECT $expr(_1, _2) FROM tbl"))
         val cometProjectExecs = collect(cometPlan) { case op: CometProjectExec =>
           op
         }
         assert(cometProjectExecs.length == 1, expr)
-      }
-    }
-  }
-
-  test("atan2 math scalar functions") {
-    // TODO we should eventually include negative zero but there are known issues still
-    // https://github.com/apache/datafusion-comet/issues/1897
-    val data = doubleValues.filter(n => java.lang.Double.compare(n, -0.0d) == 1).map(n => (n, n))
-    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[Atan2]) -> "true") {
-      withParquetTable(data, "tbl") {
-        // expressions with two args
-        for (expr <- Seq("atan2")) {
-          val (_, cometPlan) =
-            checkSparkAnswerAndOperatorWithTol(sql(s"SELECT $expr(_1, _2) FROM tbl"))
-          val cometProjectExecs = collect(cometPlan) { case op: CometProjectExec =>
-            op
-          }
-          assert(cometProjectExecs.length == 1, expr)
-        }
       }
     }
   }

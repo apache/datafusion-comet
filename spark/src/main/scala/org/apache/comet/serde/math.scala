@@ -19,25 +19,21 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Abs, Atan2, Attribute, Ceil, CheckOverflow, Expression, Floor, Hex, If, LessThanOrEqual, Literal, Log, Log10, Log2, Logarithm, Unhex}
+import org.apache.spark.sql.catalyst.expressions.{Abs, Add, Atan2, Attribute, Ceil, CheckOverflow, Expression, Floor, Hex, If, LessThanOrEqual, Literal, Log, Log10, Log2, Logarithm, Unhex}
 import org.apache.spark.sql.types.{DecimalType, DoubleType, NumericType}
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType, serializeDataType}
 
 object CometAtan2 extends CometExpressionSerde[Atan2] {
-  override def getSupportLevel(expr: Atan2): SupportLevel =
-    Incompatible(
-      Some(
-        "atan2(-0.0, -0.0) produces incompatible result" +
-          " (https://github.com/apache/datafusion-comet/issues/1897)"))
-
   override def convert(
       expr: Atan2,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val leftExpr = exprToProtoInternal(expr.left, inputs, binding)
-    val rightExpr = exprToProtoInternal(expr.right, inputs, binding)
+    val left = Add(expr.left, Literal.default(expr.left.dataType))
+    val right = Add(expr.right, Literal.default(expr.right.dataType))
+    val leftExpr = exprToProtoInternal(left, inputs, binding)
+    val rightExpr = exprToProtoInternal(right, inputs, binding)
     val optExpr = scalarFunctionExprToProto("atan2", leftExpr, rightExpr)
     optExprWithInfo(optExpr, expr, expr.left, expr.right)
   }
