@@ -15,18 +15,17 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Config: spark.comet.expression.Floor.allowIncompatible=true
 -- ConfigMatrix: parquet.enable.dictionary=false,true
 
 statement
-CREATE TABLE test_floor(f float, d double) USING parquet
+CREATE TABLE test_floor(f float, d double, dec DECIMAL(5, 2)) USING parquet
 
 statement
-INSERT INTO test_floor VALUES (1.9, 1.9), (-1.1, -1.1), (0.0, 0.0), (1.0, 1.0), (NULL, NULL), (cast('NaN' as float), cast('NaN' as double)), (cast('Infinity' as float), cast('Infinity' as double))
+INSERT INTO test_floor VALUES (1.9, 1.9, 1.90), (-1.1, -1.1, -1.10), (0.0, 0.0, 0.00), (1.0, 1.0, 1.00), (NULL, NULL, NULL), (cast('NaN' as float), cast('NaN' as double), NULL), (cast('Infinity' as float), cast('Infinity' as double), NULL)
 
 query
-SELECT floor(f), floor(d) FROM test_floor
+SELECT floor(f), floor(d), floor(dec) FROM test_floor
 
 -- literal arguments
 query
-SELECT floor(1.9), floor(-1.1), floor(0.0), floor(NULL)
+SELECT floor(1.9), floor(-1.1), floor(0.0), floor(NULL), floor(cast(1.90 as DECIMAL(5, 2))), floor(cast(-1.10 as DECIMAL(5, 2)))
