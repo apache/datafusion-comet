@@ -624,8 +624,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  // TODO re-enable once https://github.com/apache/datafusion-comet/issues/1646 is implemented
-  ignore("single group-by column + aggregate column, multiple batches, no null") {
+  test("single group-by column + aggregate column, multiple batches, no null") {
     val numValues = 10000
 
     Seq(1, 100, 10000).foreach { numGroups =>
@@ -651,8 +650,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  // TODO re-enable once https://github.com/apache/datafusion-comet/issues/1646 is implemented
-  ignore("multiple group-by columns + single aggregate column (first/last), with nulls") {
+  test("multiple group-by columns + single aggregate column (first/last), with nulls") {
     val numValues = 10000
 
     Seq(1, 100, numValues).foreach { numGroups =>
@@ -727,8 +725,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  // TODO re-enable once https://github.com/apache/datafusion-comet/issues/1646 is implemented
-  ignore("multiple group-by columns + multiple aggregate column (first/last), with nulls") {
+  test("multiple group-by columns + multiple aggregate column (first/last), with nulls") {
     val numValues = 10000
 
     Seq(1, 100, numValues).foreach { numGroups =>
@@ -790,8 +787,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  // TODO re-enable once https://github.com/apache/datafusion-comet/issues/1646 is implemented
-  ignore("all types first/last, with nulls") {
+  test("all types first/last, with nulls") {
     val numValues = 2048
 
     Seq(1, 100, numValues).foreach { numGroups =>
@@ -1168,8 +1164,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  // TODO re-enable once https://github.com/apache/datafusion-comet/issues/1646 is implemented
-  ignore("first/last") {
+  test("first/last") {
     withSQLConf(
       SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "true",
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
