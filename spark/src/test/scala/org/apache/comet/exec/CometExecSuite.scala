@@ -2210,9 +2210,11 @@ class CometExecSuite extends CometTestBase {
   }
 
   test("Native_datafusion reports correct files and bytes scanned") {
+    val inputFiles = 2
+
     withTempDir { dir =>
       val path = new java.io.File(dir, "test_metrics").getAbsolutePath
-      spark.range(100).repartition(2).write.mode("overwrite").parquet(path)
+      spark.range(100).repartition(inputFiles).write.mode("overwrite").parquet(path)
 
       withSQLConf(
         CometConf.COMET_ENABLED.key -> "true",
@@ -2236,8 +2238,8 @@ class CometExecSuite extends CometTestBase {
 
         val numFiles = scanNode.metrics("numFiles").value
         assert(
-          numFiles == 2,
-          s"Expected exactly 2 files to be scanned, but got metrics reporting $numFiles")
+          numFiles == inputFiles,
+          s"Expected exactly $inputFiles files to be scanned, but got metrics reporting $numFiles")
       }
     }
   }
