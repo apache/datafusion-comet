@@ -28,7 +28,7 @@ import scala.jdk.CollectionConverters._
 import org.apache.spark.CometListenerBusUtils
 import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
 import org.apache.spark.sql.CometTestBase
-import org.apache.spark.sql.comet.CometIcebergNativeScanExec
+import org.apache.spark.sql.comet.{CometFilterExec, CometIcebergNativeScanExec}
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{StringType, TimestampType}
@@ -71,6 +71,23 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
     assert(
       icebergScans.length == 1,
       s"Expected exactly 1 CometIcebergNativeScanExec but found ${icebergScans.length}. Plan:\n$cometPlan")
+  }
+
+  /**
+   * Verifies query correctness, exactly one CometIcebergNativeScanExec, and at least one
+   * CometFilterExec in the plan. Used for non-identity transform residual tests where
+   * iceberg-rust skips row-group filtering and CometFilter applies the predicate post-scan.
+   */
+  private def checkIcebergNativeScanWithFilter(query: String): Unit = {
+    val (_, cometPlan) = checkSparkAnswer(query)
+    val icebergScans = collectIcebergNativeScans(cometPlan)
+    assert(
+      icebergScans.length == 1,
+      s"Expected exactly 1 CometIcebergNativeScanExec but found ${icebergScans.length}. Plan:\n$cometPlan")
+    val filters = collect(cometPlan) { case f: CometFilterExec => f }
+    assert(
+      filters.nonEmpty,
+      s"Expected CometFilterExec for post-scan filtering but found none. Plan:\n$cometPlan")
   }
 
   test("create and query simple Iceberg table with Hadoop catalog") {
@@ -2549,7 +2566,7 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
         // This filter creates a residual with truncate transform
         // The partition can narrow down to 'alpha' prefix, but exact match
         // requires post-scan filtering
-        checkIcebergNativeScan(
+        checkIcebergNativeScanWithFilter(
           "SELECT * FROM test_cat.db.truncate_residual_test WHERE name = 'alpha_2' ORDER BY id")
 
         // Verify correct results
@@ -2596,7 +2613,7 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
         // This filter creates a residual with bucket transform
         // The partition pruning uses bucket hash, but exact id match
         // requires post-scan filtering
-        checkIcebergNativeScan(
+        checkIcebergNativeScanWithFilter(
           "SELECT * FROM test_cat.db.bucket_residual_test WHERE id = 42 ORDER BY id")
 
         // Verify correct results
@@ -2646,7 +2663,7 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
         // This filter creates a residual with year transform
         // Partition pruning narrows to 2023, but exact date match
         // requires post-scan filtering
-        checkIcebergNativeScan(
+        checkIcebergNativeScanWithFilter(
           "SELECT * FROM test_cat.db.year_residual_test WHERE event_date = DATE '2023-06-20'")
 
         // Verify correct results
@@ -2701,7 +2718,7 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
         // This filter creates a residual with month transform
         // Partition pruning narrows to June 2023, but exact date match
         // requires post-scan filtering
-        checkIcebergNativeScan(
+        checkIcebergNativeScanWithFilter(
           "SELECT * FROM test_cat.db.month_residual_test WHERE event_date = DATE '2023-06-15'")
 
         // Verify correct results
@@ -2756,7 +2773,7 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
         // This filter creates a residual with day transform
         // Partition pruning narrows to June 15, but exact timestamp match
         // requires post-scan filtering
-        checkIcebergNativeScan(
+        checkIcebergNativeScanWithFilter(
           "SELECT * FROM test_cat.db.day_residual_test WHERE event_time = TIMESTAMP '2023-06-15 14:30:00'")
 
         // Verify correct results
@@ -2810,7 +2827,7 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
         // This filter creates a residual with hour transform
         // Partition pruning narrows to hour 14 (2pm), but exact timestamp
         // with seconds requires post-scan filtering
-        checkIcebergNativeScan(
+        checkIcebergNativeScanWithFilter(
           "SELECT * FROM test_cat.db.hour_residual_test WHERE event_time = TIMESTAMP '2023-06-15 14:30:45'")
 
         // Verify correct results
