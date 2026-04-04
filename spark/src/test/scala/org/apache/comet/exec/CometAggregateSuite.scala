@@ -1278,6 +1278,34 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("bitwise aggregates allow Spark partial and Comet final") {
+    withSQLConf(
+      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
+      CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE.key -> "false",
+      CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> "true",
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+      val table = "bitwise_mixed"
+      withTable(table) {
+        sql(
+          s"create table $table(col1 long, col2 int, col3 short, col4 byte, grp int) using parquet")
+        sql(
+          s"insert into $table values" +
+            "(4, 1, 1, 3, 0), (4, 1, 1, 3, 0), (3, 3, 1, 4, 1)," +
+            " (2, 4, 2, 5, 1), (1, 3, 2, 6, 0)")
+
+        // Partial aggregate stays in Spark, final aggregate runs in Comet.
+        checkSparkAnswerAndNumOfAggregates(
+          "SELECT grp, BIT_AND(col1), BIT_OR(col1), BIT_XOR(col1)," +
+            " BIT_AND(col2), BIT_OR(col2), BIT_XOR(col2)," +
+            " BIT_AND(col3), BIT_OR(col3), BIT_XOR(col3)," +
+            " BIT_AND(col4), BIT_OR(col4), BIT_XOR(col4)" +
+            s" FROM $table GROUP BY grp",
+          1)
+      }
+    }
+  }
+
   def setupAndTestAggregates(
       table: String,
       data: Seq[(Any, Any, Any)],
@@ -1939,6 +1967,23 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           assert(avgRes.schema.fields(1).nullable == true)
         }
       }
+    }
+  }
+
+  test("sum of double division with filter matches Spark precision") {
+    // Reproduces the aggregates_part3.sql failure where sum(1/ten) filter (where ten > 0)
+    // produces a different floating point result in Comet vs Spark due to different
+    // accumulation order in vectorized vs row-by-row processing.
+    // tenk1-like table: 10000 rows, "ten" column has values 0-9, each 1000 times.
+    val data = (0 until 10000).map(i => (i, i % 10))
+    withParquetTable(data, "tenk1_test") {
+      // Exact match test -- this is what the Spark SQL golden file tests expect
+      checkSparkAnswer(
+        "SELECT sum(1.0 / _2) FROM tenk1_test WHERE _2 > 0")
+
+      // With FILTER clause syntax if supported
+      checkSparkAnswer(
+        "SELECT sum(CAST(1 AS DOUBLE) / _2) FROM tenk1_test WHERE _2 > 0")
     }
   }
 

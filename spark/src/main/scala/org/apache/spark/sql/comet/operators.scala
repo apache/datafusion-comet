@@ -42,7 +42,7 @@ import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, TimestampNTZType}
+import org.apache.spark.sql.types.{ArrayType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, StructType, TimestampNTZType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.SerializableConfiguration
 import org.apache.spark.util.io.ChunkedByteBuffer
@@ -55,7 +55,7 @@ import org.apache.comet.CometSparkSessionExtensions.{isCometShuffleEnabled, with
 import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.serde.{CometOperatorSerde, Compatible, Incompatible, OperatorOuterClass, SupportLevel, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, Operator}
-import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, supportedSortType}
+import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, aggSupportsMixedExecution, exprToProto, supportedSortType}
 import org.apache.comet.serde.operator.CometSink
 
 /**
@@ -1343,11 +1343,14 @@ trait CometBaseAggregate {
     val modes = aggregate.aggregateExpressions.map(_.mode).distinct
     // In distinct aggregates there can be a combination of modes
     val multiMode = modes.size > 1
-    // For a final mode HashAggregate, we only need to transform the HashAggregate
-    // if there is Comet partial aggregation.
+    // For a final mode HashAggregate, check if there is Comet partial aggregation.
+    // If not, we can still proceed if all aggregates support mixed execution
+    // (Spark partial / Comet final). See https://github.com/apache/datafusion-comet/issues/2894
     val sparkFinalMode = modes.contains(Final) && findCometPartialAgg(aggregate.child).isEmpty
+    val allSupportMixedExecution = aggregate.aggregateExpressions.forall(expr =>
+      aggSupportsMixedExecution(expr.aggregateFunction))
 
-    if (multiMode || sparkFinalMode) {
+    if (multiMode || (sparkFinalMode && !allSupportMixedExecution)) {
       return None
     }
 
@@ -1362,11 +1365,15 @@ trait CometBaseAggregate {
       return None
     }
 
-    if (groupingExpressions.exists(expr =>
-        expr.dataType match {
-          case _: MapType => true
-          case _ => false
-        })) {
+    def containsMapType(dt: DataType): Boolean = dt match {
+      case _: MapType => true
+      case a: ArrayType => containsMapType(a.elementType)
+      case s: StructType => s.fields.exists(f => containsMapType(f.dataType))
+      case _ => false
+    }
+    val mapTypeGroupings =
+      groupingExpressions.filter(expr => containsMapType(expr.dataType))
+    if (mapTypeGroupings.nonEmpty) {
       withInfo(aggregate, "Grouping on map types is not supported")
       return None
     }

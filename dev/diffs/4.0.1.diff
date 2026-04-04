@@ -1,5 +1,5 @@
 diff --git a/core/src/test/scala/org/apache/spark/storage/FallbackStorageSuite.scala b/core/src/test/scala/org/apache/spark/storage/FallbackStorageSuite.scala
-index 6c51bd4ff2e..e72ec1d26e2 100644
+index 6c51bd4f..e72ec1d2 100644
 --- a/core/src/test/scala/org/apache/spark/storage/FallbackStorageSuite.scala
 +++ b/core/src/test/scala/org/apache/spark/storage/FallbackStorageSuite.scala
 @@ -231,6 +231,11 @@ class FallbackStorageSuite extends SparkFunSuite with LocalSparkContext {
@@ -39,7 +39,7 @@ index 6c51bd4ff2e..e72ec1d26e2 100644
        withSpark(sc) { sc =>
          TestUtils.waitUntilExecutorsUp(sc, 2, 60000)
 diff --git a/pom.xml b/pom.xml
-index 22922143fc3..97332f7e6ac 100644
+index 22922143..97332f7e 100644
 --- a/pom.xml
 +++ b/pom.xml
 @@ -148,6 +148,8 @@
@@ -78,7 +78,7 @@ index 22922143fc3..97332f7e6ac 100644
        <dependency>
          <groupId>org.apache.datasketches</groupId>
 diff --git a/sql/core/pom.xml b/sql/core/pom.xml
-index dcf6223a98b..0458a5bb640 100644
+index dcf6223a..0458a5bb 100644
 --- a/sql/core/pom.xml
 +++ b/sql/core/pom.xml
 @@ -90,6 +90,10 @@
@@ -93,7 +93,7 @@ index dcf6223a98b..0458a5bb640 100644
      <!--
        This spark-tags test-dep is needed even though it isn't used in this module, otherwise testing-cmds that exclude
 diff --git a/sql/core/src/main/scala/org/apache/spark/sql/classic/SparkSession.scala b/sql/core/src/main/scala/org/apache/spark/sql/classic/SparkSession.scala
-index 0015d7ff99e..dcbf0325904 100644
+index 0015d7ff..dcbf0325 100644
 --- a/sql/core/src/main/scala/org/apache/spark/sql/classic/SparkSession.scala
 +++ b/sql/core/src/main/scala/org/apache/spark/sql/classic/SparkSession.scala
 @@ -1042,6 +1042,23 @@ object SparkSession extends SparkSessionCompanion with Logging {
@@ -131,7 +131,7 @@ index 0015d7ff99e..dcbf0325904 100644
          val extensionConfClass = Utils.classForName(extensionConfClassName)
          val extensionConf = extensionConfClass.getConstructor().newInstance()
 diff --git a/sql/core/src/main/scala/org/apache/spark/sql/execution/SparkPlanInfo.scala b/sql/core/src/main/scala/org/apache/spark/sql/execution/SparkPlanInfo.scala
-index 4410fe50912..43bcce2a038 100644
+index 4410fe50..43bcce2a 100644
 --- a/sql/core/src/main/scala/org/apache/spark/sql/execution/SparkPlanInfo.scala
 +++ b/sql/core/src/main/scala/org/apache/spark/sql/execution/SparkPlanInfo.scala
 @@ -19,6 +19,7 @@ package org.apache.spark.sql.execution
@@ -151,7 +151,7 @@ index 4410fe50912..43bcce2a038 100644
      }
      val childrenInfo = children.flatMap {
 diff --git a/sql/core/src/test/resources/sql-tests/analyzer-results/listagg-collations.sql.out b/sql/core/src/test/resources/sql-tests/analyzer-results/listagg-collations.sql.out
-index 7aca17dcb25..8afeb3b4a2f 100644
+index 7aca17dc..8afeb3b4 100644
 --- a/sql/core/src/test/resources/sql-tests/analyzer-results/listagg-collations.sql.out
 +++ b/sql/core/src/test/resources/sql-tests/analyzer-results/listagg-collations.sql.out
 @@ -64,15 +64,6 @@ WithCTE
@@ -171,7 +171,7 @@ index 7aca17dcb25..8afeb3b4a2f 100644
  WITH t(c1) AS (SELECT replace(listagg(DISTINCT col1 COLLATE unicode_rtrim) COLLATE utf8_binary, ' ', '') FROM (VALUES ('xbc  '), ('xbc '), ('a'), ('xbc'))) SELECT len(c1), regexp_count(c1, 'a'), regexp_count(c1, 'xbc') FROM t
  -- !query analysis
 diff --git a/sql/core/src/test/resources/sql-tests/inputs/collations.sql b/sql/core/src/test/resources/sql-tests/inputs/collations.sql
-index 17815ed5dde..baad440b1ce 100644
+index 17815ed5..baad440b 100644
 --- a/sql/core/src/test/resources/sql-tests/inputs/collations.sql
 +++ b/sql/core/src/test/resources/sql-tests/inputs/collations.sql
 @@ -1,3 +1,6 @@
@@ -182,7 +182,7 @@ index 17815ed5dde..baad440b1ce 100644
  
  -- Create a test table with data
 diff --git a/sql/core/src/test/resources/sql-tests/inputs/decimalArithmeticOperations.sql b/sql/core/src/test/resources/sql-tests/inputs/decimalArithmeticOperations.sql
-index 13bbd9d81b7..541cdfb1e04 100644
+index 13bbd9d8..541cdfb1 100644
 --- a/sql/core/src/test/resources/sql-tests/inputs/decimalArithmeticOperations.sql
 +++ b/sql/core/src/test/resources/sql-tests/inputs/decimalArithmeticOperations.sql
 @@ -15,6 +15,12 @@
@@ -199,7 +199,7 @@ index 13bbd9d81b7..541cdfb1e04 100644
  
  -- division, remainder and pmod by 0 return NULL
 diff --git a/sql/core/src/test/resources/sql-tests/inputs/explain-aqe.sql b/sql/core/src/test/resources/sql-tests/inputs/explain-aqe.sql
-index 7aef901da4f..f3d6e18926d 100644
+index 7aef901d..f3d6e189 100644
 --- a/sql/core/src/test/resources/sql-tests/inputs/explain-aqe.sql
 +++ b/sql/core/src/test/resources/sql-tests/inputs/explain-aqe.sql
 @@ -2,3 +2,4 @@
@@ -208,7 +208,7 @@ index 7aef901da4f..f3d6e18926d 100644
  --SET spark.sql.maxMetadataStringLength = 500
 +--SET spark.comet.enabled = false
 diff --git a/sql/core/src/test/resources/sql-tests/inputs/explain-cbo.sql b/sql/core/src/test/resources/sql-tests/inputs/explain-cbo.sql
-index eeb2180f7a5..afd1b5ec289 100644
+index eeb2180f..afd1b5ec 100644
 --- a/sql/core/src/test/resources/sql-tests/inputs/explain-cbo.sql
 +++ b/sql/core/src/test/resources/sql-tests/inputs/explain-cbo.sql
 @@ -1,5 +1,6 @@
@@ -219,7 +219,7 @@ index eeb2180f7a5..afd1b5ec289 100644
  CREATE TABLE explain_temp1(a INT, b INT) USING PARQUET;
  CREATE TABLE explain_temp2(c INT, d INT) USING PARQUET;
 diff --git a/sql/core/src/test/resources/sql-tests/inputs/explain.sql b/sql/core/src/test/resources/sql-tests/inputs/explain.sql
-index 698ca009b4f..57d774a3617 100644
+index 698ca009..57d774a3 100644
 --- a/sql/core/src/test/resources/sql-tests/inputs/explain.sql
 +++ b/sql/core/src/test/resources/sql-tests/inputs/explain.sql
 @@ -1,6 +1,7 @@
@@ -231,7 +231,7 @@ index 698ca009b4f..57d774a3617 100644
  -- Test tables
  CREATE table  explain_temp1 (key int, val int) USING PARQUET;
 diff --git a/sql/core/src/test/resources/sql-tests/inputs/listagg-collations.sql b/sql/core/src/test/resources/sql-tests/inputs/listagg-collations.sql
-index aa3d02dc2fb..c4f878d9908 100644
+index aa3d02dc..c4f878d9 100644
 --- a/sql/core/src/test/resources/sql-tests/inputs/listagg-collations.sql
 +++ b/sql/core/src/test/resources/sql-tests/inputs/listagg-collations.sql
 @@ -5,7 +5,9 @@ WITH t(c1) AS (SELECT listagg(col1) WITHIN GROUP (ORDER BY col1) FROM (VALUES ('
@@ -249,19 +249,15 @@ diff --git a/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/aggregates_
 index 41fd4de2a09..162d5a817b6 100644
 --- a/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/aggregates_part3.sql
 +++ b/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/aggregates_part3.sql
-@@ -6,6 +6,10 @@
+@@ -5,6 +5,9 @@
+ -- AGGREGATES [Part 3]
  -- https://github.com/postgres/postgres/blob/REL_12_BETA2/src/test/regress/sql/aggregates.sql#L352-L605
  
  -- Test aggregate operator with codegen on and off.
-+
-+-- Floating-point precision difference between DataFusion and JVM for FILTER aggregates
-+--SET spark.comet.enabled = false
-+
  --CONFIG_DIM1 spark.sql.codegen.wholeStage=true
  --CONFIG_DIM1 spark.sql.codegen.wholeStage=false,spark.sql.codegen.factoryMode=CODEGEN_ONLY
- --CONFIG_DIM1 spark.sql.codegen.wholeStage=false,spark.sql.codegen.factoryMode=NO_CODEGEN
 diff --git a/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/int4.sql b/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/int4.sql
-index 3a409eea348..26e9aaf215c 100644
+index 3a409eea..26e9aaf2 100644
 --- a/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/int4.sql
 +++ b/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/int4.sql
 @@ -6,6 +6,9 @@
@@ -275,7 +271,7 @@ index 3a409eea348..26e9aaf215c 100644
  
  -- [SPARK-28023] Trim the string when cast string type to other types
 diff --git a/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/int8.sql b/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/int8.sql
-index fac23b4a26f..98b12ae5ccc 100644
+index fac23b4a..98b12ae5 100644
 --- a/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/int8.sql
 +++ b/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/int8.sql
 @@ -6,6 +6,10 @@
@@ -290,7 +286,7 @@ index fac23b4a26f..98b12ae5ccc 100644
  
  -- PostgreSQL implicitly casts string literals to data with integral types, but
 diff --git a/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/select_having.sql b/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/select_having.sql
-index 0efe0877e9b..f9df0400c99 100644
+index 0efe0877..f9df0400 100644
 --- a/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/select_having.sql
 +++ b/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/select_having.sql
 @@ -6,6 +6,9 @@
@@ -303,8 +299,20 @@ index 0efe0877e9b..f9df0400c99 100644
  -- load test data
  CREATE TABLE test_having (a int, b int, c string, d string) USING parquet;
  INSERT INTO test_having VALUES (0, 1, 'XXXX', 'A');
+diff --git a/sql/core/src/test/resources/sql-tests/inputs/subquery/in-subquery/in-count-bug.sql b/sql/core/src/test/resources/sql-tests/inputs/subquery/in-subquery/in-count-bug.sql
+index placeholder..placeholder 100644
+--- a/sql/core/src/test/resources/sql-tests/inputs/subquery/in-subquery/in-count-bug.sql
++++ b/sql/core/src/test/resources/sql-tests/inputs/subquery/in-subquery/in-count-bug.sql
+@@ -1,4 +1,7 @@
+ --ONLY_IF spark
++-- Disable Comet exec due to incorrect results with correlated IN subquery
++-- combined with OR and count(*) (count-bug decorrelation)
++--SET spark.comet.exec.enabled = false
+ create temporary view t1(c1, c2) as values (0, 1), (1, 2);
+ create temporary view t2(c1, c2) as values (0, 2), (0, 3);
+ create temporary view t3(c1, c2) as values (0, 3), (1, 4), (2, 5);
 diff --git a/sql/core/src/test/resources/sql-tests/inputs/subquery/in-subquery/in-limit.sql b/sql/core/src/test/resources/sql-tests/inputs/subquery/in-subquery/in-limit.sql
-index 7c816d8a416..b1551a2b296 100644
+index 7c816d8a..b1551a2b 100644
 --- a/sql/core/src/test/resources/sql-tests/inputs/subquery/in-subquery/in-limit.sql
 +++ b/sql/core/src/test/resources/sql-tests/inputs/subquery/in-subquery/in-limit.sql
 @@ -1,6 +1,23 @@
@@ -340,7 +348,7 @@ index 7c816d8a416..b1551a2b296 100644
  -- LIMIT on both parent and subquery sides
  SELECT *
 diff --git a/sql/core/src/test/resources/sql-tests/inputs/view-schema-binding-config.sql b/sql/core/src/test/resources/sql-tests/inputs/view-schema-binding-config.sql
-index e803254ea64..74db78aee38 100644
+index e803254e..74db78ae 100644
 --- a/sql/core/src/test/resources/sql-tests/inputs/view-schema-binding-config.sql
 +++ b/sql/core/src/test/resources/sql-tests/inputs/view-schema-binding-config.sql
 @@ -1,6 +1,9 @@
@@ -354,7 +362,7 @@ index e803254ea64..74db78aee38 100644
  SET spark.sql.legacy.viewSchemaBindingMode;
  
 diff --git a/sql/core/src/test/resources/sql-tests/inputs/view-schema-compensation.sql b/sql/core/src/test/resources/sql-tests/inputs/view-schema-compensation.sql
-index 21a3ce1e122..f4762ab98f0 100644
+index 21a3ce1e..f4762ab9 100644
 --- a/sql/core/src/test/resources/sql-tests/inputs/view-schema-compensation.sql
 +++ b/sql/core/src/test/resources/sql-tests/inputs/view-schema-compensation.sql
 @@ -1,5 +1,9 @@
@@ -368,7 +376,7 @@ index 21a3ce1e122..f4762ab98f0 100644
  
  -- In COMPENSATION views get invalidated if the type can't cast
 diff --git a/sql/core/src/test/resources/sql-tests/results/listagg-collations.sql.out b/sql/core/src/test/resources/sql-tests/results/listagg-collations.sql.out
-index 1f8c5822e7d..b7de4e28813 100644
+index 1f8c5822..b7de4e28 100644
 --- a/sql/core/src/test/resources/sql-tests/results/listagg-collations.sql.out
 +++ b/sql/core/src/test/resources/sql-tests/results/listagg-collations.sql.out
 @@ -40,14 +40,6 @@ struct<len(c1):int,regexp_count(c1, a):int,regexp_count(c1, b):int>
@@ -387,7 +395,7 @@ index 1f8c5822e7d..b7de4e28813 100644
  WITH t(c1) AS (SELECT replace(listagg(DISTINCT col1 COLLATE unicode_rtrim) COLLATE utf8_binary, ' ', '') FROM (VALUES ('xbc  '), ('xbc '), ('a'), ('xbc'))) SELECT len(c1), regexp_count(c1, 'a'), regexp_count(c1, 'xbc') FROM t
  -- !query schema
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/CachedTableSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/CachedTableSuite.scala
-index 0f42502f1d9..e9ff802141f 100644
+index 0f42502f..e9ff8021 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/CachedTableSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/CachedTableSuite.scala
 @@ -39,7 +39,7 @@ import org.apache.spark.sql.catalyst.util.DateTimeConstants
@@ -432,7 +440,7 @@ index 0f42502f1d9..e9ff802141f 100644
  
        withTempView("t0", "t1", "t2") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala
-index 9db406ff12f..245e4caa319 100644
+index 9db406ff..245e4caa 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala
 @@ -30,7 +30,7 @@ import org.apache.spark.sql.errors.DataTypeErrors.toSQLId
@@ -454,7 +462,7 @@ index 9db406ff12f..245e4caa319 100644
        assert(exchangePlans.length == 1)
      }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameJoinSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameJoinSuite.scala
-index ed182322aec..1ae6afa686a 100644
+index ed182322..1ae6afa6 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameJoinSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameJoinSuite.scala
 @@ -435,7 +435,9 @@ class DataFrameJoinSuite extends QueryTest
@@ -469,7 +477,7 @@ index ed182322aec..1ae6afa686a 100644
            spark.range(100).write.saveAsTable(s"$dbName.$table2Name")
  
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameSuite.scala
-index 5b88eeefeca..d4f07bc182a 100644
+index 5b88eeef..d4f07bc1 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameSuite.scala
 @@ -36,11 +36,12 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference,
@@ -529,7 +537,7 @@ index 5b88eeefeca..d4f07bc182a 100644
      assert(exchanges.size == 2)
    }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameWindowFunctionsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameWindowFunctionsSuite.scala
-index 01e72daead4..0a8d1e8b9b9 100644
+index 01e72dae..0a8d1e8b 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameWindowFunctionsSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameWindowFunctionsSuite.scala
 @@ -24,8 +24,9 @@ import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Expression
@@ -567,7 +575,7 @@ index 01e72daead4..0a8d1e8b9b9 100644
            }
          case _ => false
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DatasetSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DatasetSuite.scala
-index 81713c777bc..b5f92ed9742 100644
+index 81713c77..b5f92ed9 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DatasetSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/DatasetSuite.scala
 @@ -46,7 +46,7 @@ import org.apache.spark.sql.catalyst.trees.DataFrameQueryContext
@@ -589,7 +597,7 @@ index 81713c777bc..b5f92ed9742 100644
      assert(exchanges.size == 2)
    }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala
-index 2c24cc7d570..12096ea361e 100644
+index 2c24cc7d..12096ea3 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala
 @@ -22,6 +22,7 @@ import org.scalatest.GivenWhenThen
@@ -698,9 +706,19 @@ index 2c24cc7d570..12096ea361e 100644
              }
            assert(scanOption.isDefined)
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/ExplainSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/ExplainSuite.scala
-index 9c90e0105a4..fadf2f0f698 100644
+index 9c90e010..fadf2f0f 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/ExplainSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/ExplainSuite.scala
+@@ -267,7 +267,8 @@ trait ExplainSuiteHelper extends QueryTest with SharedSparkSession {
+     }
+   }
+ 
+-  test("SPARK-33853: explain codegen - check presence of subquery") {
++  test("SPARK-33853: explain codegen - check presence of subquery",
++      IgnoreComet("Comet replaces WholeStageCodegen subtrees with native operators")) {
+     withSQLConf(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "true") {
+       withTempView("df") {
+         val df1 = spark.range(1, 100)
 @@ -470,7 +470,8 @@ class ExplainSuite extends ExplainSuiteHelper with DisableAdaptiveExecutionSuite
      }
    }
@@ -886,7 +904,7 @@ index 00000000000..5691536c114
 +  }
 +}
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/InjectRuntimeFilterSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/InjectRuntimeFilterSuite.scala
-index 7d7185ae6c1..442a5bddeb8 100644
+index 7d7185ae..442a5bdd 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/InjectRuntimeFilterSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/InjectRuntimeFilterSuite.scala
 @@ -442,7 +442,8 @@ class InjectRuntimeFilterSuite extends QueryTest with SQLTestUtils with SharedSp
@@ -910,7 +928,7 @@ index 7d7185ae6c1..442a5bddeb8 100644
        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "2000") {
        assertRewroteWithBloomFilter("select * from bf5part join bf2 on " +
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/JoinHintSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/JoinHintSuite.scala
-index 53e47f428c3..a55d8f0c161 100644
+index 53e47f42..a55d8f0c 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/JoinHintSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/JoinHintSuite.scala
 @@ -23,6 +23,7 @@ import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide
@@ -938,7 +956,7 @@ index 53e47f428c3..a55d8f0c161 100644
      assert(shuffleMergeJoins.size == 1)
    }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/JoinSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/JoinSuite.scala
-index aaac0ebc9aa..fbef0774d46 100644
+index aaac0ebc..fbef0774 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/JoinSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/JoinSuite.scala
 @@ -29,7 +29,8 @@ import org.apache.spark.sql.catalyst.analysis.UnresolvedRelation
@@ -1180,7 +1198,7 @@ index aaac0ebc9aa..fbef0774d46 100644
      withSQLConf(
        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "1") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/PlanStabilitySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/PlanStabilitySuite.scala
-index ad424b3a7cc..4ece0117a34 100644
+index ad424b3a..4ece0117 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/PlanStabilitySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/PlanStabilitySuite.scala
 @@ -69,7 +69,7 @@ import org.apache.spark.tags.ExtendedSQLTest
@@ -1193,7 +1211,7 @@ index ad424b3a7cc..4ece0117a34 100644
    protected val baseResourcePath = {
      // use the same way as `SQLQueryTestSuite` to get the resource path
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
-index f294ff81021..8a3b818ee94 100644
+index f294ff81..8a3b818e 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
 @@ -1524,7 +1524,8 @@ class SQLQuerySuite extends QueryTest with SharedSparkSession with AdaptiveSpark
@@ -1249,8 +1267,19 @@ index f294ff81021..8a3b818ee94 100644
      withSQLConf(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
        SQLConf.ANSI_ENABLED.key -> "true") {
        withTable("t") {
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SQLQueryTestSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SQLQueryTestSuite.scala
+--- a/sql/core/src/test/scala/org/apache/spark/sql/SQLQueryTestSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/SQLQueryTestSuite.scala
+@@ -165,5 +165,6 @@ class SQLQueryTestSuite extends QueryTest with SharedSparkSession with SQLHelper
+   /** List of test cases to ignore, in lower cases. */
+   protected def ignoreList: Set[String] = Set(
+-    "ignored.sql" // Do NOT remove this one. It is here to test the ignore functionality.
++    "ignored.sql", // Do NOT remove this one. It is here to test the ignore functionality.
++    "charvarchar.sql" // INDETERMINATE_COLLATION error with Comet enabled
+   ) ++ otherIgnoreList
+   /** List of test cases that require TPCDS table schemas to be loaded. */
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala
-index c1c041509c3..7d463e4b85e 100644
+index c1c04150..7d463e4b 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala
 @@ -235,6 +235,8 @@ class SparkSessionExtensionSuite extends SparkFunSuite with SQLHelper with Adapt
@@ -1281,7 +1310,7 @@ index c1c041509c3..7d463e4b85e 100644
          extensions.injectColumnar(session =>
            MyColumnarRule(PreRuleReplaceAddWithBrokenVersion(), MyPostRule())) }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionJobTaggingAndCancellationSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionJobTaggingAndCancellationSuite.scala
-index 5ba69c8f9d9..ac1256afe88 100644
+index 5ba69c8f..ac1256af 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionJobTaggingAndCancellationSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionJobTaggingAndCancellationSuite.scala
 @@ -82,6 +82,10 @@ class SparkSessionJobTaggingAndCancellationSuite
@@ -1296,7 +1325,7 @@ index 5ba69c8f9d9..ac1256afe88 100644
      val session = classic.SparkSession.builder().sparkContext(sc).getOrCreate()
      import session.implicits._
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/StringFunctionsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/StringFunctionsSuite.scala
-index 0df7f806272..92390bd819f 100644
+index 0df7f806..92390bd8 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/StringFunctionsSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/StringFunctionsSuite.scala
 @@ -17,6 +17,8 @@
@@ -1363,7 +1392,7 @@ index 0df7f806272..92390bd819f 100644
  
    test("non-matching optional group") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
-index 2e33f6505ab..d0f84e8c44d 100644
+index 2e33f650..d0f84e8c 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
 @@ -23,12 +23,14 @@ import org.apache.spark.SparkRuntimeException
@@ -1456,7 +1485,7 @@ index 2e33f6505ab..d0f84e8c44d 100644
  
      withTable("t1", "t2") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/VariantShreddingSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/VariantShreddingSuite.scala
-index fee375db10a..8c2c24e2c5f 100644
+index fee375db..8c2c24e2 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/VariantShreddingSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/VariantShreddingSuite.scala
 @@ -33,7 +33,9 @@ import org.apache.spark.sql.types._
@@ -1471,7 +1500,7 @@ index fee375db10a..8c2c24e2c5f 100644
      val v = VariantBuilder.parseJson(s, false)
      new VariantVal(v.getValue, v.getMetadata)
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/collation/CollationSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/collation/CollationSuite.scala
-index 11e9547dfc5..637411056ae 100644
+index 11e9547d..63741105 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/collation/CollationSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/collation/CollationSuite.scala
 @@ -24,6 +24,7 @@ import org.apache.spark.sql.{AnalysisException, Row}
@@ -1530,7 +1559,7 @@ index 11e9547dfc5..637411056ae 100644
              }
            }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/connector/DataSourceV2Suite.scala b/sql/core/src/test/scala/org/apache/spark/sql/connector/DataSourceV2Suite.scala
-index 3eeed2e4175..9f21d547c1c 100644
+index 3eeed2e4..9f21d547 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/connector/DataSourceV2Suite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/connector/DataSourceV2Suite.scala
 @@ -26,6 +26,7 @@ import test.org.apache.spark.sql.connector._
@@ -1593,7 +1622,7 @@ index 3eeed2e4175..9f21d547c1c 100644
                }
              }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/connector/FileDataSourceV2FallBackSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/connector/FileDataSourceV2FallBackSuite.scala
-index 2a0ab21ddb0..6030e7c2b9b 100644
+index 2a0ab21d..6030e7c2 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/connector/FileDataSourceV2FallBackSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/connector/FileDataSourceV2FallBackSuite.scala
 @@ -21,6 +21,7 @@ import scala.collection.mutable.ArrayBuffer
@@ -1618,7 +1647,7 @@ index 2a0ab21ddb0..6030e7c2b9b 100644
          } finally {
            spark.listenerManager.unregister(listener)
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/connector/KeyGroupedPartitioningSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/connector/KeyGroupedPartitioningSuite.scala
-index c73e8e16fbb..399f1442ad5 100644
+index c73e8e16..399f1442 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/connector/KeyGroupedPartitioningSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/connector/KeyGroupedPartitioningSuite.scala
 @@ -24,6 +24,8 @@ import org.apache.spark.sql.{DataFrame, Row}
@@ -1665,7 +1694,7 @@ index c73e8e16fbb..399f1442ad5 100644
    }
  
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/connector/WriteDistributionAndOrderingSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/connector/WriteDistributionAndOrderingSuite.scala
-index f62e092138a..c0404bfe85e 100644
+index f62e0921..c0404bfe 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/connector/WriteDistributionAndOrderingSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/connector/WriteDistributionAndOrderingSuite.scala
 @@ -21,7 +21,7 @@ package org.apache.spark.sql.connector
@@ -1688,7 +1717,7 @@ index f62e092138a..c0404bfe85e 100644
  
    before {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/errors/QueryExecutionErrorsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/errors/QueryExecutionErrorsSuite.scala
-index 04d33ecd3d5..450df347297 100644
+index 04d33ecd..450df347 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/errors/QueryExecutionErrorsSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/errors/QueryExecutionErrorsSuite.scala
 @@ -31,7 +31,7 @@ import org.mockito.Mockito.{mock, spy, when}
@@ -1711,7 +1740,7 @@ index 04d33ecd3d5..450df347297 100644
      // Fail to read ancient datetime values.
      withSQLConf(SQLConf.PARQUET_REBASE_MODE_IN_READ.key -> EXCEPTION.toString) {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/DataSourceScanExecRedactionSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/DataSourceScanExecRedactionSuite.scala
-index 418ca3430bb..eb8267192f8 100644
+index 418ca343..eb826719 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/DataSourceScanExecRedactionSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/DataSourceScanExecRedactionSuite.scala
 @@ -23,7 +23,7 @@ import scala.util.Random
@@ -1733,7 +1762,7 @@ index 418ca3430bb..eb8267192f8 100644
        withTempPath { path =>
          val dir = path.getCanonicalPath
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/InsertSortForLimitAndOffsetSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/InsertSortForLimitAndOffsetSuite.scala
-index d1b11a74cf3..75e4600863a 100644
+index d1b11a74..75e46008 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/InsertSortForLimitAndOffsetSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/InsertSortForLimitAndOffsetSuite.scala
 @@ -19,6 +19,7 @@ package org.apache.spark.sql.execution
@@ -1774,7 +1803,7 @@ index d1b11a74cf3..75e4600863a 100644
      }.isDefined
    }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/LogicalPlanTagInSparkPlanSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/LogicalPlanTagInSparkPlanSuite.scala
-index 743ec41dbe7..9f30d6c8e04 100644
+index 743ec41d..9f30d6c8 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/LogicalPlanTagInSparkPlanSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/LogicalPlanTagInSparkPlanSuite.scala
 @@ -53,6 +53,10 @@ class LogicalPlanTagInSparkPlanSuite extends TPCDSQuerySuite with DisableAdaptiv
@@ -1789,7 +1818,7 @@ index 743ec41dbe7..9f30d6c8e04 100644
      case _ => false
    }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/PlannerSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/PlannerSuite.scala
-index 1400ee25f43..5b016c3f9c5 100644
+index 1400ee25..5b016c3f 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/PlannerSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/PlannerSuite.scala
 @@ -19,7 +19,7 @@ package org.apache.spark.sql.execution
@@ -1813,7 +1842,7 @@ index 1400ee25f43..5b016c3f9c5 100644
  
    setupTestData()
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/QueryExecutionSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/QueryExecutionSuite.scala
-index 47d5ff67b84..8dc8f65d4b1 100644
+index 47d5ff67..8dc8f65d 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/QueryExecutionSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/QueryExecutionSuite.scala
 @@ -20,7 +20,7 @@ import scala.collection.mutable
@@ -1835,7 +1864,7 @@ index 47d5ff67b84..8dc8f65d4b1 100644
      withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/RemoveRedundantProjectsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/RemoveRedundantProjectsSuite.scala
-index b5bac8079c4..9420dbdb936 100644
+index b5bac807..9420dbdb 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/RemoveRedundantProjectsSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/RemoveRedundantProjectsSuite.scala
 @@ -17,7 +17,10 @@
@@ -1909,7 +1938,7 @@ index b5bac8079c4..9420dbdb936 100644
  
        // Check the original plan's output and the new plan's output are the same.
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/RemoveRedundantSortsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/RemoveRedundantSortsSuite.scala
-index 005e764cc30..92ec088efab 100644
+index 005e764c..92ec088e 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/RemoveRedundantSortsSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/RemoveRedundantSortsSuite.scala
 @@ -19,6 +19,7 @@ package org.apache.spark.sql.execution
@@ -1930,7 +1959,7 @@ index 005e764cc30..92ec088efab 100644
  
    private def checkSorts(query: String, enabledCount: Int, disabledCount: Int): Unit = {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/ReplaceHashWithSortAggSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/ReplaceHashWithSortAggSuite.scala
-index 47679ed7865..9ffbaecb98e 100644
+index 47679ed7..9ffbaecb 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/ReplaceHashWithSortAggSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/ReplaceHashWithSortAggSuite.scala
 @@ -18,6 +18,7 @@
@@ -1951,7 +1980,7 @@ index 47679ed7865..9ffbaecb98e 100644
      assert(collectWithSubqueries(plan) { case s: SortAggregateExec => s }.length == sortAggCount)
    }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/SQLViewSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/SQLViewSuite.scala
-index 77a988f340e..1acc534064e 100644
+index 77a988f3..1acc5340 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/SQLViewSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/SQLViewSuite.scala
 @@ -1061,7 +1061,8 @@ abstract class SQLViewSuite extends QueryTest with SQLTestUtils {
@@ -1965,7 +1994,7 @@ index 77a988f340e..1acc534064e 100644
        Seq(2, 3, 1).toDF("c1").write.format("parquet").saveAsTable("t")
        withView("v1") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/SparkPlanSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/SparkPlanSuite.scala
-index aed11badb71..1a365b5aacf 100644
+index aed11bad..1a365b5a 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/SparkPlanSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/SparkPlanSuite.scala
 @@ -23,6 +23,7 @@ import org.apache.spark.sql.QueryTest
@@ -1990,7 +2019,7 @@ index aed11badb71..1a365b5aacf 100644
            spark.range(1).foreach { _ =>
              columnarToRowExec.canonicalized
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/WholeStageCodegenSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/WholeStageCodegenSuite.scala
-index a3cfdc5a240..3793b6191bf 100644
+index a3cfdc5a..3793b619 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/WholeStageCodegenSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/WholeStageCodegenSuite.scala
 @@ -19,9 +19,10 @@ package org.apache.spark.sql.execution
@@ -2234,7 +2263,7 @@ index a3cfdc5a240..3793b6191bf 100644
        })
        checkAnswer(distinctWithId, Seq(Row(1, 0), Row(1, 0)))
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
-index 272be70f9fe..06957694002 100644
+index 272be70f..cdbf1623 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
 @@ -28,12 +28,14 @@ import org.apache.spark.SparkException
@@ -2242,7 +2271,7 @@ index 272be70f9fe..06957694002 100644
  import org.apache.spark.scheduler.{SparkListener, SparkListenerEvent, SparkListenerJobStart}
  import org.apache.spark.shuffle.sort.SortShuffleManager
 -import org.apache.spark.sql.{DataFrame, Dataset, QueryTest, Row, SparkSession}
-+import org.apache.spark.sql.{DataFrame, Dataset, IgnoreComet, QueryTest, Row, SparkSession}
++import org.apache.spark.sql.{DataFrame, Dataset, IgnoreComet, IgnoreCometNativeDataFusion, QueryTest, Row, SparkSession}
  import org.apache.spark.sql.catalyst.InternalRow
  import org.apache.spark.sql.catalyst.expressions.Attribute
  import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight}
@@ -2505,7 +2534,37 @@ index 272be70f9fe..06957694002 100644
      withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true") {
        val (_, adaptivePlan) = runAdaptiveAndVerifyResult(
          "SELECT key FROM testData GROUP BY key")
-@@ -1721,7 +1750,7 @@ class AdaptiveQueryExecSuite
+@@ -1647,7 +1676,8 @@ class AdaptiveQueryExecSuite
+     }
+   }
+ 
+-  test("SPARK-35585: Support propagate empty relation through project/filter") {
++  test("SPARK-35585: Support propagate empty relation through project/filter",
++    IgnoreCometNativeDataFusion("CometHashAggregate prevents AQE empty relation propagation")) {
+     withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+       val (plan1, adaptivePlan1) = runAdaptiveAndVerifyResult(
+@@ -1663,7 +1693,8 @@ class AdaptiveQueryExecSuite
+     }
+   }
+ 
+-  test("SPARK-35442: Support propagate empty relation through aggregate") {
++  test("SPARK-35442: Support propagate empty relation through aggregate",
++    IgnoreCometNativeDataFusion("CometHashAggregate prevents AQE empty relation propagation")) {
+     withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true") {
+       val (plan1, adaptivePlan1) = runAdaptiveAndVerifyResult(
+         "SELECT key, count(*) FROM testData WHERE value = 'no_match' GROUP BY key")
+@@ -1682,7 +1713,8 @@ class AdaptiveQueryExecSuite
+     }
+   }
+ 
+-  test("SPARK-35442: Support propagate empty relation through union") {
++  test("SPARK-35442: Support propagate empty relation through union",
++    IgnoreCometNativeDataFusion("CometHashAggregate prevents AQE empty relation propagation")) {
+     def checkNumUnion(plan: SparkPlan, numUnion: Int): Unit = {
+       assert(
+         collect(plan) {
+@@ -1721,7 +1753,7 @@ class AdaptiveQueryExecSuite
          val (_, adaptivePlan) = runAdaptiveAndVerifyResult(
            "SELECT id FROM v1 GROUP BY id DISTRIBUTE BY id")
          assert(collect(adaptivePlan) {
@@ -2514,7 +2573,7 @@ index 272be70f9fe..06957694002 100644
          }.length == 1)
        }
      }
-@@ -1801,7 +1830,8 @@ class AdaptiveQueryExecSuite
+@@ -1801,7 +1833,8 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -2524,7 +2583,7 @@ index 272be70f9fe..06957694002 100644
      def hasRepartitionShuffle(plan: SparkPlan): Boolean = {
        find(plan) {
          case s: ShuffleExchangeLike =>
-@@ -1986,6 +2016,9 @@ class AdaptiveQueryExecSuite
+@@ -1986,6 +2019,9 @@ class AdaptiveQueryExecSuite
      def checkNoCoalescePartitions(ds: Dataset[Row], origin: ShuffleOrigin): Unit = {
        assert(collect(ds.queryExecution.executedPlan) {
          case s: ShuffleExchangeExec if s.shuffleOrigin == origin && s.numPartitions == 2 => s
@@ -2534,7 +2593,7 @@ index 272be70f9fe..06957694002 100644
        }.size == 1)
        ds.collect()
        val plan = ds.queryExecution.executedPlan
-@@ -1994,6 +2027,9 @@ class AdaptiveQueryExecSuite
+@@ -1994,6 +2030,9 @@ class AdaptiveQueryExecSuite
        }.isEmpty)
        assert(collect(plan) {
          case s: ShuffleExchangeExec if s.shuffleOrigin == origin && s.numPartitions == 2 => s
@@ -2544,7 +2603,17 @@ index 272be70f9fe..06957694002 100644
        }.size == 1)
        checkAnswer(ds, testData)
      }
-@@ -2150,7 +2186,8 @@ class AdaptiveQueryExecSuite
+@@ -2014,7 +2053,8 @@ class AdaptiveQueryExecSuite
+     }
+   }
+ 
+-  test("SPARK-34980: Support coalesce partition through union") {
++  test("SPARK-34980: Support coalesce partition through union",
++    IgnoreCometNativeDataFusion("CometHashAggregate prevents AQE partition coalescing")) {
+     def checkResultPartition(
+         df: Dataset[Row],
+         numUnion: Int,
+@@ -2150,7 +2190,8 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -2554,7 +2623,7 @@ index 272be70f9fe..06957694002 100644
      withTempView("t1", "t2") {
        def checkJoinStrategy(shouldShuffleHashJoin: Boolean): Unit = {
          Seq("100", "100000").foreach { size =>
-@@ -2236,7 +2273,8 @@ class AdaptiveQueryExecSuite
+@@ -2236,7 +2277,8 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -2564,7 +2633,7 @@ index 272be70f9fe..06957694002 100644
      withTempView("v") {
        withSQLConf(
          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
-@@ -2335,7 +2373,7 @@ class AdaptiveQueryExecSuite
+@@ -2335,7 +2377,7 @@ class AdaptiveQueryExecSuite
                runAdaptiveAndVerifyResult(s"SELECT $repartition key1 FROM skewData1 " +
                  s"JOIN skewData2 ON key1 = key2 GROUP BY key1")
              val shuffles1 = collect(adaptive1) {
@@ -2573,7 +2642,7 @@ index 272be70f9fe..06957694002 100644
              }
              assert(shuffles1.size == 3)
              // shuffles1.head is the top-level shuffle under the Aggregate operator
-@@ -2348,7 +2386,7 @@ class AdaptiveQueryExecSuite
+@@ -2348,7 +2390,7 @@ class AdaptiveQueryExecSuite
                runAdaptiveAndVerifyResult(s"SELECT $repartition key1 FROM skewData1 " +
                  s"JOIN skewData2 ON key1 = key2")
              val shuffles2 = collect(adaptive2) {
@@ -2582,7 +2651,7 @@ index 272be70f9fe..06957694002 100644
              }
              if (hasRequiredDistribution) {
                assert(shuffles2.size == 3)
-@@ -2382,7 +2420,8 @@ class AdaptiveQueryExecSuite
+@@ -2382,7 +2424,8 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -2592,7 +2661,7 @@ index 272be70f9fe..06957694002 100644
      CostEvaluator.instantiate(
        classOf[SimpleShuffleSortCostEvaluator].getCanonicalName, spark.sparkContext.getConf)
      intercept[IllegalArgumentException] {
-@@ -2513,7 +2552,8 @@ class AdaptiveQueryExecSuite
+@@ -2513,7 +2556,8 @@ class AdaptiveQueryExecSuite
    }
  
    test("SPARK-48037: Fix SortShuffleWriter lacks shuffle write related metrics " +
@@ -2602,7 +2671,7 @@ index 272be70f9fe..06957694002 100644
      withTable("t3") {
        withSQLConf(
          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
-@@ -2548,6 +2588,7 @@ class AdaptiveQueryExecSuite
+@@ -2548,6 +2592,7 @@ class AdaptiveQueryExecSuite
            val (_, adaptive) = runAdaptiveAndVerifyResult(query)
            assert(adaptive.collect {
              case sort: SortExec => sort
@@ -2610,7 +2679,7 @@ index 272be70f9fe..06957694002 100644
            }.size == 1)
            val read = collect(adaptive) {
              case read: AQEShuffleReadExec => read
-@@ -2565,7 +2606,8 @@ class AdaptiveQueryExecSuite
+@@ -2565,7 +2610,8 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -2620,7 +2689,7 @@ index 272be70f9fe..06957694002 100644
      withTempView("v") {
        withSQLConf(
          SQLConf.ADAPTIVE_OPTIMIZE_SKEWS_IN_REBALANCE_PARTITIONS_ENABLED.key -> "true",
-@@ -2677,7 +2719,7 @@ class AdaptiveQueryExecSuite
+@@ -2677,7 +2723,7 @@ class AdaptiveQueryExecSuite
            runAdaptiveAndVerifyResult("SELECT key1 FROM skewData1 JOIN skewData2 ON key1 = key2 " +
              "JOIN skewData3 ON value2 = value3")
          val shuffles1 = collect(adaptive1) {
@@ -2629,7 +2698,7 @@ index 272be70f9fe..06957694002 100644
          }
          assert(shuffles1.size == 4)
          val smj1 = findTopLevelSortMergeJoin(adaptive1)
-@@ -2688,7 +2730,7 @@ class AdaptiveQueryExecSuite
+@@ -2688,7 +2734,7 @@ class AdaptiveQueryExecSuite
            runAdaptiveAndVerifyResult("SELECT key1 FROM skewData1 JOIN skewData2 ON key1 = key2 " +
              "JOIN skewData3 ON value1 = value3")
          val shuffles2 = collect(adaptive2) {
@@ -2638,7 +2707,7 @@ index 272be70f9fe..06957694002 100644
          }
          assert(shuffles2.size == 4)
          val smj2 = findTopLevelSortMergeJoin(adaptive2)
-@@ -2946,6 +2988,7 @@ class AdaptiveQueryExecSuite
+@@ -2946,6 +2992,7 @@ class AdaptiveQueryExecSuite
          }.size == (if (firstAccess) 1 else 0))
          assert(collect(initialExecutedPlan) {
            case s: SortExec => s
@@ -2646,7 +2715,7 @@ index 272be70f9fe..06957694002 100644
          }.size == (if (firstAccess) 2 else 0))
          assert(collect(initialExecutedPlan) {
            case i: InMemoryTableScanLike => i
-@@ -2958,6 +3001,7 @@ class AdaptiveQueryExecSuite
+@@ -2958,6 +3005,7 @@ class AdaptiveQueryExecSuite
          }.isEmpty)
          assert(collect(finalExecutedPlan) {
            case s: SortExec => s
@@ -2655,7 +2724,7 @@ index 272be70f9fe..06957694002 100644
          assert(collect(initialExecutedPlan) {
            case i: InMemoryTableScanLike => i
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/SchemaPruningSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/SchemaPruningSuite.scala
-index 0a0b23d1e60..dcc9c141315 100644
+index 0a0b23d1..dcc9c141 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/SchemaPruningSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/SchemaPruningSuite.scala
 @@ -28,6 +28,7 @@ import org.apache.spark.sql.catalyst.expressions.Concat
@@ -2676,7 +2745,7 @@ index 0a0b23d1e60..dcc9c141315 100644
      assert(fileSourceScanSchemata.size === expectedSchemaCatalogStrings.size,
        s"Found ${fileSourceScanSchemata.size} file sources in dataframe, " +
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/V1WriteCommandSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/V1WriteCommandSuite.scala
-index 80d771428d9..9327dca6c21 100644
+index 80d77142..9327dca6 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/V1WriteCommandSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/V1WriteCommandSuite.scala
 @@ -17,9 +17,10 @@
@@ -2718,7 +2787,7 @@ index 80d771428d9..9327dca6c21 100644
        withTable("t") {
          sql(
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/binaryfile/BinaryFileFormatSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/binaryfile/BinaryFileFormatSuite.scala
-index 62f2f2cb10a..feef4bb2928 100644
+index 62f2f2cb..feef4bb2 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/binaryfile/BinaryFileFormatSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/binaryfile/BinaryFileFormatSuite.scala
 @@ -28,7 +28,7 @@ import org.apache.hadoop.fs.{FileStatus, FileSystem, GlobFilter, Path}
@@ -2742,7 +2811,7 @@ index 62f2f2cb10a..feef4bb2928 100644
  
    private var testDir: String = _
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetEncodingSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetEncodingSuite.scala
-index cd6f41b4ef4..4b6a17344bc 100644
+index cd6f41b4..4b6a1734 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetEncodingSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetEncodingSuite.scala
 @@ -28,7 +28,7 @@ import org.apache.parquet.hadoop.ParquetOutputFormat
@@ -2918,7 +2987,7 @@ index 6080a5e8e4b..ea058d57b4b 100644
          case _ => assert(false, "Can not match ParquetTable in the query.")
        }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
-index 4474ec1fd42..05fa0257c82 100644
+index 4474ec1f..05fa0257 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
 @@ -39,6 +39,7 @@ import org.apache.parquet.schema.{MessageType, MessageTypeParser}
@@ -2950,7 +3019,7 @@ index 4474ec1fd42..05fa0257c82 100644
        checkAnswer(
          // "fruit" column in this file is encoded using DELTA_LENGTH_BYTE_ARRAY.
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
-index bba71f1c48d..0b52574e0f3 100644
+index bba71f1c..0b52574e 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
 @@ -27,6 +27,7 @@ import org.apache.parquet.hadoop.ParquetOutputFormat
@@ -3035,7 +3104,7 @@ index bba71f1c48d..0b52574e0f3 100644
        Seq(0).toDF("a").write.parquet(path.toString)
        withAllParquetReaders {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRebaseDatetimeSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRebaseDatetimeSuite.scala
-index 30503af0fab..1491f4bc2d5 100644
+index 30503af0..1491f4bc 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRebaseDatetimeSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRebaseDatetimeSuite.scala
 @@ -21,7 +21,7 @@ import java.nio.file.{Files, Paths, StandardCopyOption}
@@ -3141,7 +3210,7 @@ index 08fd8a9ecb5..d25a2f75773 100644
          withTempPath{ path =>
            val df = spark.range(0, 10, 1, 1).toDF("id")
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaPruningSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaPruningSuite.scala
-index 5c0b7def039..151184bc98c 100644
+index 5c0b7def..151184bc 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaPruningSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaPruningSuite.scala
 @@ -20,6 +20,7 @@ package org.apache.spark.sql.execution.datasources.parquet
@@ -3161,7 +3230,7 @@ index 5c0b7def039..151184bc98c 100644
      assert(fileSourceScanSchemata.size === expectedSchemaCatalogStrings.size,
        s"Found ${fileSourceScanSchemata.size} file sources in dataframe, " +
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaSuite.scala
-index 0acb21f3e6f..1f9c3fd13fc 100644
+index 0acb21f3..1f9c3fd1 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaSuite.scala
 @@ -27,7 +27,7 @@ import org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName
@@ -3204,7 +3273,7 @@ index 0acb21f3e6f..1f9c3fd13fc 100644
  
      withTempPath { dir =>
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetTypeWideningSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetTypeWideningSuite.scala
-index 09ed6955a51..6f9174c9545 100644
+index 09ed6955..6f9174c9 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetTypeWideningSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetTypeWideningSuite.scala
 @@ -24,7 +24,7 @@ import org.apache.parquet.format.converter.ParquetMetadataConverter
@@ -3306,7 +3375,7 @@ index 09ed6955a51..6f9174c9545 100644
      checkAllParquetReaders(
        values = Seq("1.23", "10.34"),
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetVariantShreddingSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetVariantShreddingSuite.scala
-index 458b5dfc0f4..d209f3c85bc 100644
+index 458b5dfc..d209f3c8 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetVariantShreddingSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetVariantShreddingSuite.scala
 @@ -26,7 +26,7 @@ import org.apache.parquet.hadoop.util.HadoopInputFile
@@ -3329,8 +3398,31 @@ index 458b5dfc0f4..d209f3c85bc 100644
  
    private def testWithTempDir(name: String)(block: File => Unit): Unit = test(name) {
      withTempDir { dir =>
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/ui/SQLAppStatusListenerSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/ui/SQLAppStatusListenerSuite.scala
+index placeholder..placeholder 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/execution/ui/SQLAppStatusListenerSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/ui/SQLAppStatusListenerSuite.scala
+@@ -38,6 +38,7 @@ import org.apache.spark.sql.{DataFrame, SparkSession}
+ import org.apache.spark.sql.catalyst.InternalRow
+ import org.apache.spark.sql.catalyst.expressions.Attribute
+ import org.apache.spark.sql.catalyst.plans.logical.LocalRelation
++import org.apache.spark.sql.IgnoreComet
+ import org.apache.spark.sql.catalyst.types.DataTypeUtils.toAttributes
+ import org.apache.spark.sql.catalyst.util.quietly
+ import org.apache.spark.sql.connector.{CSVDataWriter, CSVDataWriterFactory, RangeInputPartition, SimpleScanBuilder, SimpleWritableDataSource, TestLocalScanTable}
+@@ -701,7 +702,8 @@ abstract class SQLAppStatusListenerSuite extends SharedSparkSession with JsonTest
+     assert(statusStore.execution(2) === None)
+   }
+ 
+-  test("SPARK-29894 test Codegen Stage Id in SparkPlanInfo",
++  test("SPARK-29894 test Codegen Stage Id in SparkPlanInfo",
++    IgnoreComet("Comet replaces WholeStageCodegen with native operators"),
+     DisableAdaptiveExecution("WSCG rule is applied later in AQE")) {
+     // with AQE on, the WholeStageCodegen rule is applied when running QueryStageExec.
+     val df = createTestDataFrame.select(count("*"))
+
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/debug/DebuggingSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/debug/DebuggingSuite.scala
-index b8f3ea3c6f3..bbd44221288 100644
+index b8f3ea3c..bbd44221 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/debug/DebuggingSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/debug/DebuggingSuite.scala
 @@ -20,6 +20,7 @@ package org.apache.spark.sql.execution.debug
@@ -3341,7 +3433,31 @@ index b8f3ea3c6f3..bbd44221288 100644
  import org.apache.spark.sql.catalyst.InternalRow
  import org.apache.spark.sql.catalyst.expressions.Attribute
  import org.apache.spark.sql.catalyst.expressions.codegen.CodegenContext
-@@ -125,7 +126,8 @@ class DebuggingSuite extends DebuggingSuiteBase with DisableAdaptiveExecutionSui
+@@ -25,6 +26,38 @@ import org.apache.spark.sql.catalyst.expressions.codegen.CodegenContext
+ import org.apache.spark.sql.catalyst.optimizer.ConvertToLocalRelation
+ import org.apache.spark.sql.test.SharedSparkSession
+ 
++@@ -46,7 +47,8 @@ abstract class DebuggingSuiteBase extends SharedSparkSession {
++     testData.as[TestData].debug()
++   }
++ 
++-  test("debugCodegen") {
+++  test("debugCodegen",
+++      IgnoreComet("Comet replaces WholeStageCodegen subtrees with native operators")) {
++     val df = spark.range(10).groupBy(col("id") * 2).count()
++     df.collect()
++     val res = codegenString(df.queryExecution.executedPlan)
++@@ -53,7 +55,8 @@ abstract class DebuggingSuiteBase extends SharedSparkSession {
++     assert(res.contains("Object[]"))
++   }
++ 
++-  test("debugCodegenStringSeq") {
+++  test("debugCodegenStringSeq",
+++      IgnoreComet("Comet replaces WholeStageCodegen subtrees with native operators")) {
++     val df = spark.range(10).groupBy(col("id") * 2).count()
++     df.collect()
++     val res = codegenStringSeq(df.queryExecution.executedPlan)
+ @@ -125,7 +130,8 @@ class DebuggingSuite extends DebuggingSuiteBase with DisableAdaptiveExecutionSui
           | id LongType: {}""".stripMargin))
    }
  
@@ -3352,7 +3468,7 @@ index b8f3ea3c6f3..bbd44221288 100644
        val workDirPath = workDir.getAbsolutePath
        val input = spark.range(5).toDF("id")
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/metric/SQLMetricsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/metric/SQLMetricsSuite.scala
-index 0dd90925d3c..7d53ec845ef 100644
+index 0dd90925..7d53ec84 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/metric/SQLMetricsSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/metric/SQLMetricsSuite.scala
 @@ -46,8 +46,10 @@ import org.apache.spark.sql.util.QueryExecutionListener
@@ -3378,7 +3494,7 @@ index 0dd90925d3c..7d53ec845ef 100644
        spark.range(10).selectExpr("id", "id % 3 as p")
          .write.partitionBy("p").saveAsTable("testDataForScan")
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/python/ExtractPythonUDFsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/python/ExtractPythonUDFsSuite.scala
-index 0ab8691801d..b18a5bea944 100644
+index 0ab86918..b18a5bea 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/python/ExtractPythonUDFsSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/python/ExtractPythonUDFsSuite.scala
 @@ -18,6 +18,7 @@
@@ -3436,7 +3552,7 @@ index 0ab8691801d..b18a5bea944 100644
            assert(scanNodes.length == 1)
            // $"a" is not null and $"a" > 1
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/streaming/AsyncProgressTrackingMicroBatchExecutionSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/streaming/AsyncProgressTrackingMicroBatchExecutionSuite.scala
-index 7838e62013d..8fa09652921 100644
+index 7838e620..8fa09652 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/streaming/AsyncProgressTrackingMicroBatchExecutionSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/streaming/AsyncProgressTrackingMicroBatchExecutionSuite.scala
 @@ -37,8 +37,10 @@ import org.apache.spark.sql.streaming.{StreamingQuery, StreamingQueryException,
@@ -3452,7 +3568,7 @@ index 7838e62013d..8fa09652921 100644
    import testImplicits._
  
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala
-index c4b09c4b289..75c3437788e 100644
+index c4b09c4b..75c34377 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala
 @@ -26,10 +26,11 @@ import org.apache.spark.sql.catalyst.expressions
@@ -3609,7 +3725,7 @@ index c4b09c4b289..75c3437788e 100644
                  assert(scans.isEmpty)
                }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/sources/CreateTableAsSelectSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/sources/CreateTableAsSelectSuite.scala
-index 95c2fcbd7b5..e2d4a20c5d9 100644
+index 95c2fcbd..e2d4a20c 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/sources/CreateTableAsSelectSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/sources/CreateTableAsSelectSuite.scala
 @@ -20,6 +20,7 @@ package org.apache.spark.sql.sources
@@ -3633,7 +3749,7 @@ index 95c2fcbd7b5..e2d4a20c5d9 100644
  
    protected override lazy val sql = spark.sql _
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/sources/DisableUnnecessaryBucketedScanSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/sources/DisableUnnecessaryBucketedScanSuite.scala
-index c5c56f081d8..6cc51f93b4f 100644
+index c5c56f08..6cc51f93 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/sources/DisableUnnecessaryBucketedScanSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/sources/DisableUnnecessaryBucketedScanSuite.scala
 @@ -18,6 +18,7 @@
@@ -3658,7 +3774,7 @@ index c5c56f081d8..6cc51f93b4f 100644
      }
  
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/streaming/FileStreamSinkSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/streaming/FileStreamSinkSuite.scala
-index 9742a004545..4e0417d730a 100644
+index 9742a004..4e0417d7 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/streaming/FileStreamSinkSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/streaming/FileStreamSinkSuite.scala
 @@ -34,6 +34,7 @@ import org.apache.spark.paths.SparkPath
@@ -3679,7 +3795,7 @@ index 9742a004545..4e0417d730a 100644
          fail(s"No FileScan in query\n${df.queryExecution}")
        }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamSuite.scala
-index b0967d5ffdf..3d567f913de 100644
+index b0967d5f..3d567f91 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamSuite.scala
 @@ -40,6 +40,7 @@ import org.apache.spark.sql.catalyst.types.DataTypeUtils.toAttributes
@@ -3715,7 +3831,7 @@ index b0967d5ffdf..3d567f913de 100644
        }
      }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamingAggregationDistributionSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamingAggregationDistributionSuite.scala
-index b4c4ec7acbf..20579284856 100644
+index b4c4ec7a..20579284 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamingAggregationDistributionSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamingAggregationDistributionSuite.scala
 @@ -23,6 +23,7 @@ import org.apache.commons.io.FileUtils
@@ -3743,7 +3859,7 @@ index b4c4ec7acbf..20579284856 100644
  
          val aggregateExecsWithoutPartialAgg = allAggregateExecs.filter {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamingJoinSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamingJoinSuite.scala
-index d3c44dcead3..8096bce4436 100644
+index d3c44dce..8096bce4 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamingJoinSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamingJoinSuite.scala
 @@ -33,7 +33,7 @@ import org.apache.spark.sql.{DataFrame, Row, SparkSession}
@@ -3793,7 +3909,7 @@ index d3c44dcead3..8096bce4436 100644
    }
  
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamingQuerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamingQuerySuite.scala
-index e33d4f1f6ab..ce0a21d1e9d 100644
+index e33d4f1f..ce0a21d1 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamingQuerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamingQuerySuite.scala
 @@ -44,7 +44,7 @@ import org.apache.spark.sql.catalyst.types.DataTypeUtils.toAttributes
@@ -3815,7 +3931,7 @@ index e33d4f1f6ab..ce0a21d1e9d 100644
  
          assert(shuffleOpt.nonEmpty, "No shuffle exchange found in the query plan")
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/streaming/test/DataStreamTableAPISuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/streaming/test/DataStreamTableAPISuite.scala
-index 86c4e49f6f6..2e639e5f38d 100644
+index 86c4e49f..2e639e5f 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/streaming/test/DataStreamTableAPISuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/streaming/test/DataStreamTableAPISuite.scala
 @@ -22,7 +22,7 @@ import java.util
@@ -3838,7 +3954,7 @@ index 86c4e49f6f6..2e639e5f38d 100644
      val tblTargetName = "tbl_target"
      val tblSourceQualified = s"default.$tblSourceName"
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala b/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
-index f0f3f94b811..f77b54dcef9 100644
+index f0f3f94b..f77b54dc 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
 @@ -27,13 +27,14 @@ import scala.jdk.CollectionConverters._
@@ -3935,7 +4051,7 @@ index f0f3f94b811..f77b54dcef9 100644
  
      spark.internalCreateDataFrame(withoutFilters.execute(), schema)
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala b/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
-index 245219c1756..a611836f086 100644
+index 245219c1..a611836f 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
 @@ -75,6 +75,27 @@ trait SharedSparkSessionBase
@@ -3967,7 +4083,7 @@ index 245219c1756..a611836f086 100644
        StaticSQLConf.WAREHOUSE_PATH,
        conf.get(StaticSQLConf.WAREHOUSE_PATH) + "/" + getClass.getCanonicalName)
 diff --git a/sql/core/src/test/scala/org/apache/spark/status/api/v1/sql/SqlResourceWithActualMetricsSuite.scala b/sql/core/src/test/scala/org/apache/spark/status/api/v1/sql/SqlResourceWithActualMetricsSuite.scala
-index 982d57fb287..6017f36c440 100644
+index 982d57fb..6017f36c 100644
 --- a/sql/core/src/test/scala/org/apache/spark/status/api/v1/sql/SqlResourceWithActualMetricsSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/status/api/v1/sql/SqlResourceWithActualMetricsSuite.scala
 @@ -46,7 +46,7 @@ class SqlResourceWithActualMetricsSuite
@@ -3980,7 +4096,7 @@ index 982d57fb287..6017f36c440 100644
    implicit val formats: DefaultFormats = new DefaultFormats {
      override def dateFormatter = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss")
 diff --git a/sql/hive/src/test/scala/org/apache/spark/sql/hive/DynamicPartitionPruningHiveScanSuite.scala b/sql/hive/src/test/scala/org/apache/spark/sql/hive/DynamicPartitionPruningHiveScanSuite.scala
-index 52abd248f3a..7a199931a08 100644
+index 52abd248..7a199931 100644
 --- a/sql/hive/src/test/scala/org/apache/spark/sql/hive/DynamicPartitionPruningHiveScanSuite.scala
 +++ b/sql/hive/src/test/scala/org/apache/spark/sql/hive/DynamicPartitionPruningHiveScanSuite.scala
 @@ -19,6 +19,7 @@ package org.apache.spark.sql.hive
@@ -4002,7 +4118,7 @@ index 52abd248f3a..7a199931a08 100644
          case d: DynamicPruningExpression => d.child
        }
 diff --git a/sql/hive/src/test/scala/org/apache/spark/sql/hive/HiveUDFDynamicLoadSuite.scala b/sql/hive/src/test/scala/org/apache/spark/sql/hive/HiveUDFDynamicLoadSuite.scala
-index 4b27082e188..6710c90c789 100644
+index 4b27082e..6710c90c 100644
 --- a/sql/hive/src/test/scala/org/apache/spark/sql/hive/HiveUDFDynamicLoadSuite.scala
 +++ b/sql/hive/src/test/scala/org/apache/spark/sql/hive/HiveUDFDynamicLoadSuite.scala
 @@ -147,7 +147,9 @@ class HiveUDFDynamicLoadSuite extends QueryTest with SQLTestUtils with TestHiveS
@@ -4017,7 +4133,7 @@ index 4b27082e188..6710c90c789 100644
  
      test("Spark should be able to run Hive UDF using jar regardless of " +
 diff --git a/sql/hive/src/test/scala/org/apache/spark/sql/hive/InsertSuite.scala b/sql/hive/src/test/scala/org/apache/spark/sql/hive/InsertSuite.scala
-index cc7bb193731..06555d48da7 100644
+index cc7bb193..06555d48 100644
 --- a/sql/hive/src/test/scala/org/apache/spark/sql/hive/InsertSuite.scala
 +++ b/sql/hive/src/test/scala/org/apache/spark/sql/hive/InsertSuite.scala
 @@ -818,7 +818,8 @@ class InsertSuite extends QueryTest with TestHiveSingleton with BeforeAndAfter
@@ -4031,7 +4147,7 @@ index cc7bb193731..06555d48da7 100644
        withTempDir { dir =>
          val file = new File(dir, "test.hex")
 diff --git a/sql/hive/src/test/scala/org/apache/spark/sql/hive/PartitionedTablePerfStatsSuite.scala b/sql/hive/src/test/scala/org/apache/spark/sql/hive/PartitionedTablePerfStatsSuite.scala
-index b67370f6eb9..746b3974b29 100644
+index b67370f6..746b3974 100644
 --- a/sql/hive/src/test/scala/org/apache/spark/sql/hive/PartitionedTablePerfStatsSuite.scala
 +++ b/sql/hive/src/test/scala/org/apache/spark/sql/hive/PartitionedTablePerfStatsSuite.scala
 @@ -23,14 +23,15 @@ import java.util.concurrent.{Executors, TimeUnit}
@@ -4053,7 +4169,7 @@ index b67370f6eb9..746b3974b29 100644
    override def beforeEach(): Unit = {
      super.beforeEach()
 diff --git a/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala b/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala
-index a394d0b7393..a4bc3d3fd8e 100644
+index a394d0b7..a4bc3d3f 100644
 --- a/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala
 +++ b/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala
 @@ -53,24 +53,41 @@ object TestHive

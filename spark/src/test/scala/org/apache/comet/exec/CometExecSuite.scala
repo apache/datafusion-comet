@@ -2209,6 +2209,32 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("correlated IN subquery with count and OR") {
+    // Reproduces the "count bug" where count(*) in a correlated subquery
+    // should return 0 (not null) when no rows match the correlation predicate.
+    // This specifically tests the OR case where two IN subqueries are combined,
+    // which triggers a different decorrelation plan structure.
+    withSQLConf(
+      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
+      withTempView("t1", "t2") {
+        sql("CREATE TEMPORARY VIEW t1(c1, c2) AS VALUES (0, 1), (1, 2)")
+        sql("CREATE TEMPORARY VIEW t2(c1, c2) AS VALUES (0, 2), (0, 3)")
+
+        // Single IN subquery with count(*) -- baseline
+        checkSparkAnswer(
+          "SELECT * FROM t1 WHERE c1 IN " +
+            "(SELECT count(*) + 1 FROM t2 WHERE t2.c1 = t1.c1)")
+
+        // Two IN subqueries combined with OR -- the failing case
+        checkSparkAnswer(
+          "SELECT * FROM t1 WHERE " +
+            "c1 IN (SELECT count(*) + 1 FROM t2 WHERE t2.c1 = t1.c1) OR " +
+            "c2 IN (SELECT count(*) - 1 FROM t2 WHERE t2.c1 = t1.c1)")
+      }
+    }
+  }
+
   test("Native_datafusion reports correct files and bytes scanned") {
     val inputFiles = 2
 
