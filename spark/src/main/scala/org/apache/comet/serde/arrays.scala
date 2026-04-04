@@ -246,20 +246,12 @@ object CometArrayMin extends CometExpressionSerde[ArrayMin] {
 }
 
 object CometArraysOverlap extends CometExpressionSerde[ArraysOverlap] {
-
-  override def getSupportLevel(expr: ArraysOverlap): SupportLevel =
-    Incompatible(
-      Some(
-        "Inconsistent behavior with NULL values" +
-          " (https://github.com/apache/datafusion-comet/issues/3645)" +
-          " (https://github.com/apache/datafusion-comet/issues/2036)"))
-
   override def convert(
       expr: ArraysOverlap,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val leftArrayExprProto = exprToProto(expr.children.head, inputs, binding)
-    val rightArrayExprProto = exprToProto(expr.children(1), inputs, binding)
+    val leftArrayExprProto = exprToProto(expr.left, inputs, binding)
+    val rightArrayExprProto = exprToProto(expr.right, inputs, binding)
 
     val arraysOverlapScalarExpr = scalarFunctionExprToProtoWithReturnType(
       "array_has_any",
@@ -267,7 +259,41 @@ object CometArraysOverlap extends CometExpressionSerde[ArraysOverlap] {
       false,
       leftArrayExprProto,
       rightArrayExprProto)
-    optExprWithInfo(arraysOverlapScalarExpr, expr, expr.children: _*)
+
+    val leftIsNull = createUnaryExpr(
+      expr,
+      expr.left,
+      inputs,
+      binding,
+      (builder, unaryExpr) => builder.setIsNull(unaryExpr))
+    val rightIsNull = createUnaryExpr(
+      expr,
+      expr.right,
+      inputs,
+      binding,
+      (builder, unaryExpr) => builder.setIsNull(unaryExpr))
+
+    val nullLiteralProto = exprToProto(Literal(null, BooleanType), inputs)
+
+    if (arraysOverlapScalarExpr.isDefined && leftIsNull.isDefined &&
+      rightIsNull.isDefined && nullLiteralProto.isDefined) {
+      val caseWhenExpr = ExprOuterClass.CaseWhen
+        .newBuilder()
+        .addWhen(leftIsNull.get)
+        .addThen(nullLiteralProto.get)
+        .addWhen(rightIsNull.get)
+        .addThen(nullLiteralProto.get)
+        .setElseExpr(arraysOverlapScalarExpr.get)
+        .build()
+      Some(
+        ExprOuterClass.Expr
+          .newBuilder()
+          .setCaseWhen(caseWhenExpr)
+          .build())
+    } else {
+      withInfo(expr, expr.children: _*)
+      None
+    }
   }
 }
 

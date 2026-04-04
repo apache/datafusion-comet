@@ -23,7 +23,7 @@ import scala.util.Random
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.CometTestBase
-import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayDistinct, ArrayExcept, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayRepeat, ArraysOverlap, ArrayUnion}
+import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayDistinct, ArrayExcept, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayRepeat, ArrayUnion}
 import org.apache.spark.sql.catalyst.expressions.{ArrayContains, ArrayRemove}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions._
@@ -545,23 +545,43 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   }
 
   test("arrays_overlap") {
-    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[ArraysOverlap]) -> "true") {
-      Seq(true, false).foreach { dictionaryEnabled =>
-        withTempDir { dir =>
-          withTempView("t1") {
-            val path = new Path(dir.toURI.toString, "test.parquet")
-            makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled, 10000)
-            spark.read.parquet(path.toString).createOrReplaceTempView("t1")
-            checkSparkAnswerAndOperator(sql(
-              "SELECT arrays_overlap(array(_2, _3, _4), array(_3, _4)) from t1 where _2 is not null"))
-            checkSparkAnswerAndOperator(sql(
-              "SELECT arrays_overlap(array('a', null, cast(_1 as string)), array('b', cast(_1 as string), cast(_2 as string))) from t1 where _1 is not null"))
-            checkSparkAnswerAndOperator(sql(
-              "SELECT arrays_overlap(array('a', null), array('b', null)) from t1 where _1 is not null"))
-            checkSparkAnswerAndOperator(spark.sql(
-              "SELECT arrays_overlap((CASE WHEN _2 =_3 THEN array(_6, _7) END), array(_6, _7)) FROM t1"));
-          }
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withTempDir { dir =>
+        withTempView("t1") {
+          val path = new Path(dir.toURI.toString, "test.parquet")
+          makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled, 10000)
+          spark.read.parquet(path.toString).createOrReplaceTempView("t1")
+          checkSparkAnswerAndOperator(sql(
+            "SELECT arrays_overlap(array(_2, _3, _4), array(_3, _4)) from t1 where _2 is not null"))
+          checkSparkAnswerAndOperator(sql(
+            "SELECT arrays_overlap(array('a', null, cast(_1 as string)), array('b', cast(_1 as string), cast(_2 as string))) from t1 where _1 is not null"))
+          checkSparkAnswerAndOperator(sql(
+            "SELECT arrays_overlap(array('a', null), array('b', null)) from t1 where _1 is not null"))
+          checkSparkAnswerAndOperator(spark.sql(
+            "SELECT arrays_overlap((CASE WHEN _2 =_3 THEN array(_6, _7) END), array(_6, _7)) FROM t1"));
         }
+      }
+    }
+  }
+
+  test("arrays_overlap - null handling behavior verification") {
+    withTable("t") {
+      sql("create table t using parquet as select CAST(NULL as array<int>) a1 from range(1)")
+      val data = Seq(
+        "array(1, 2, 3)",
+        "array(3, 4, 5)",
+        "array(1, 2)",
+        "array(3, 4)",
+        "array(1, null, 3)",
+        "array(4, 5)",
+        "array(1, 4)",
+        "array(1, null)",
+        "array(2, null)",
+        "array()",
+        "array(null)",
+        "a1")
+      for (y <- data; x <- data) {
+        checkSparkAnswerAndOperator(sql(s"SELECT arrays_overlap($y, $x) from t"))
       }
     }
   }
