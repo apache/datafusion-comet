@@ -21,11 +21,12 @@ package org.apache.comet.serde
 
 import scala.annotation.tailrec
 
-import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayFilter, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayRemove, ArrayRepeat, ArraysOverlap, ArrayUnion, Attribute, CreateArray, ElementAt, Expression, Flatten, GetArrayItem, IsNotNull, Literal, Reverse, Size}
+import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayFilter, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayRemove, ArrayRepeat, ArraysOverlap, ArrayUnion, Attribute, CreateArray, ElementAt, Expression, Flatten, GetArrayItem, IsNotNull, Literal, Reverse, Size, SortArray}
 import org.apache.spark.sql.catalyst.util.GenericArrayData
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
+import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.QueryPlanSerde._
 import org.apache.comet.shims.CometExprShim
@@ -200,6 +201,85 @@ object CometArrayDistinct extends CometExpressionSerde[ArrayDistinct] {
     val arrayDistinctScalarExpr =
       scalarFunctionExprToProto("array_distinct", arrayExprProto)
     optExprWithInfo(arrayDistinctScalarExpr, expr)
+  }
+}
+
+object CometSortArray extends CometExpressionSerde[SortArray] {
+  private def containsFloatingPoint(dt: DataType): Boolean = {
+    dt match {
+      case FloatType | DoubleType => true
+      case ArrayType(elementType, _) => containsFloatingPoint(elementType)
+      case StructType(fields) => fields.exists(f => containsFloatingPoint(f.dataType))
+      case MapType(keyType, valueType, _) =>
+        containsFloatingPoint(keyType) || containsFloatingPoint(valueType)
+      case _ => false
+    }
+  }
+
+  private def canRank(dt: DataType, nestedInArray: Boolean = false): Boolean = {
+    dt match {
+      case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
+          _: DoubleType | _: DecimalType =>
+        true
+      case _: DateType | _: TimestampType | _: TimestampNTZType =>
+        true
+      // DataFusion's array_sort compares nested arrays through Arrow's rank kernel.
+      // That kernel does not support Struct or Null child values,
+      // so array<array<struct<...>>> and array<array<null>> would fail at runtime.
+      case _: NullType if !nestedInArray =>
+        true
+      case _: BooleanType | _: BinaryType | _: StringType =>
+        true
+      case ArrayType(elementType, _) =>
+        canRank(elementType, nestedInArray = true)
+      case StructType(fields) if !nestedInArray =>
+        fields.forall(f => canRank(f.dataType))
+      case _ =>
+        false
+    }
+  }
+
+  override def getSupportLevel(expr: SortArray): SupportLevel = {
+    val elementType = expr.base.dataType.asInstanceOf[ArrayType].elementType
+
+    if (!canRank(elementType)) {
+      Unsupported(Some(s"Sort on array element type $elementType is not supported"))
+    } else if (CometConf.COMET_EXEC_STRICT_FLOATING_POINT.get() &&
+      containsFloatingPoint(elementType)) {
+      Incompatible(
+        Some(
+          "Sorting on floating-point is not 100% compatible with Spark, and Comet is running " +
+            s"with ${CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key}=true. " +
+            s"${CometConf.COMPAT_GUIDE}"))
+    } else {
+      Compatible()
+    }
+  }
+
+  override def convert(
+      expr: SortArray,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val arrayExprProto = exprToProtoInternal(expr.base, inputs, binding)
+    val (sortDirectionExprProto, nullOrderingExprProto) = expr.ascendingOrder match {
+      case Literal(value: Boolean, BooleanType) =>
+        val direction = if (value) "ASC" else "DESC"
+        val nullOrdering = if (value) "NULLS FIRST" else "NULLS LAST"
+        (
+          exprToProtoInternal(Literal(direction), inputs, binding),
+          exprToProtoInternal(Literal(nullOrdering), inputs, binding))
+      case other =>
+        withInfo(expr, s"ascendingOrder must be a boolean literal: $other")
+        (None, None)
+    }
+
+    val sortArrayScalarExpr =
+      scalarFunctionExprToProto(
+        "array_sort",
+        arrayExprProto,
+        sortDirectionExprProto,
+        nullOrderingExprProto)
+    optExprWithInfo(sortArrayScalarExpr, expr, expr.children: _*)
   }
 }
 
