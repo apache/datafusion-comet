@@ -531,12 +531,33 @@ case class CometScanRule(session: SparkSession)
             false
           }
 
-        // TODO: A safety guard for non-identity transforms (truncate, bucket, year, etc.)
-        // with delete files should be re-implemented using PartitionSpec inspection.
-        // The previous residual-based detection was ineffective because Iceberg residuals
-        // use NamedReference terms without transform metadata. Correctness is currently
-        // maintained by Iceberg/Spark's MOR delete processing and CometFilter post-scan
-        // filtering. See: https://github.com/apache/datafusion-comet/issues/XXXX
+        // Safety guard: non-identity transforms with delete files must fall back.
+        // Non-identity transforms (truncate, bucket, year, etc.) produce residual
+        // expressions that require post-scan filtering. When delete files are also
+        // present, the native scan cannot correctly apply both the residual filter
+        // and delete file processing together, so we fall back to Spark.
+        // Detection uses PartitionSpec (table-level) rather than residual expressions,
+        // since Iceberg residuals use NamedReference terms without transform metadata.
+        val transformFunctionsSupported =
+          IcebergReflection.getPartitionSpec(metadata.table) match {
+            case Some(partitionSpec) =>
+              IcebergReflection.findNonIdentityTransform(partitionSpec) match {
+                case Some(transformType) =>
+                  if (!taskValidation.deleteFiles.isEmpty) {
+                    fallbackReasons +=
+                      s"Iceberg transform '$transformType' with delete files present. " +
+                        "Falling back to ensure correct delete operation."
+                    false
+                  } else {
+                    logInfo(
+                      s"Iceberg partition uses transform '$transformType' - " +
+                        "post-scan filtering will apply via CometFilter.")
+                    true
+                  }
+                case None => true
+              }
+            case None => true // Cannot inspect spec, allow through
+          }
 
         // Check for unsupported struct types in delete files
         val deleteFileTypesSupported = {
@@ -619,7 +640,7 @@ case class CometScanRule(session: SparkSession)
 
         if (schemaSupported && fileIOCompatible && formatVersionSupported &&
           taskValidation.allParquet && allSupportedFilesystems && partitionTypesSupported &&
-          complexTypePredicatesSupported &&
+          complexTypePredicatesSupported && transformFunctionsSupported &&
           deleteFileTypesSupported && dppSubqueriesSupported) {
           CometBatchScanExec(
             scanExec.clone().asInstanceOf[BatchScanExec],
@@ -801,12 +822,6 @@ object CometScanRule extends Logging {
       } catch {
         case _: java.net.URISyntaxException => // ignore
       }
-
-      // TODO: Non-identity transform detection via residual inspection was removed
-      // because Iceberg residuals use NamedReference terms (not BoundTransform),
-      // so the transform() method is never available. To properly detect non-identity
-      // transforms, inspect the table's PartitionSpec instead of residual expressions.
-      // See: https://github.com/apache/datafusion-comet/issues/XXXX
 
       // Collect delete files and check their schemes
       if (fileScanTaskClass.isInstance(task)) {
