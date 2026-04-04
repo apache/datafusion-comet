@@ -21,7 +21,7 @@ under the License.
 
 To track progress on performance, we regularly run benchmarks derived from TPC-H and TPC-DS.
 
-The benchmarking scripts are contained at [https://github.com/apache/datafusion-comet/tree/main/dev/benchmarks](https://github.com/apache/datafusion-comet/tree/main/dev/benchmarks).
+The benchmarking scripts are contained [here](https://github.com/apache/datafusion-comet/tree/main/benchmarks/tpc).
 
 Data generation scripts are available in the [DataFusion Benchmarks](https://github.com/apache/datafusion-benchmarks) GitHub repository.
 
@@ -40,10 +40,7 @@ The operating system used was Ubuntu 22.04.5 LTS.
 
 Available benchmarking guides:
 
-- [Benchmarking on macOS](benchmarking_macos.md) 
-- [Benchmarking on AWS EC2](benchmarking_aws_ec2) 
+- [Benchmarking on macOS](benchmarking_macos.md)
+- [Benchmarking on AWS EC2](benchmarking_aws_ec2)
 
-We also have many micro benchmarks that can be run from an IDE located [here](https://github.com/apache/datafusion-comet/tree/main/spark/src/test/scala/org/apache/spark/sql/benchmark). 
-
-
-
+We also have many micro benchmarks that can be run from an IDE located [here](https://github.com/apache/datafusion-comet/tree/main/spark/src/test/scala/org/apache/spark/sql/benchmark).

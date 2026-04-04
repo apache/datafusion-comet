@@ -25,7 +25,7 @@ Before you start, have a look through [these slides](https://docs.google.com/pre
 
 ## Finding an Expression to Add
 
-You may have a specific expression in mind that you'd like to add, but if not, you can review the [expression coverage document](https://github.com/apache/datafusion-comet/blob/f08fcadd5fbdb5b04293d33e654f6c16f81b70c4/doc/spark_builtin_expr_coverage.txt) to see which expressions are not yet supported.
+You may have a specific expression in mind that you'd like to add, but if not, you can review the [expression coverage document](https://github.com/apache/datafusion-comet/blob/main/docs/spark_expressions_support.md) to see which expressions are not yet supported.
 
 ## Implementing the Expression
 
@@ -72,9 +72,9 @@ object CometUnhex extends CometExpressionSerde[Unhex] {
 
 The `CometExpressionSerde` trait provides three methods you can override:
 
-* `convert(expr: T, inputs: Seq[Attribute], binding: Boolean): Option[Expr]` - **Required**. Converts the Spark expression to protobuf. Return `None` if the expression cannot be converted.
-* `getSupportLevel(expr: T): SupportLevel` - Optional. Returns the level of support for the expression. See "Using getSupportLevel" section below for details.
-* `getExprConfigName(expr: T): String` - Optional. Returns a short name for configuration keys. Defaults to the Spark class name.
+- `convert(expr: T, inputs: Seq[Attribute], binding: Boolean): Option[Expr]` - **Required**. Converts the Spark expression to protobuf. Return `None` if the expression cannot be converted.
+- `getSupportLevel(expr: T): SupportLevel` - Optional. Returns the level of support for the expression. See "Using getSupportLevel" section below for details.
+- `getExprConfigName(expr: T): String` - Optional. Returns a short name for configuration keys. Defaults to the Spark class name.
 
 For simple scalar functions that map directly to a DataFusion function, you can use the built-in `CometScalarFunction` implementation:
 
@@ -97,9 +97,9 @@ The `exprToProtoInternal` method will automatically use this mapping to find and
 
 A few things to note:
 
-* The `convert` method is recursively called on child expressions using `exprToProtoInternal`, so you'll need to make sure that the child expressions are also converted to protobuf.
-* `scalarFunctionExprToProtoWithReturnType` is for scalar functions that need to return type information. Your expression may use a different method depending on the type of expression.
-* Use helper methods like `createBinaryExpr` and `createUnaryExpr` from `QueryPlanSerde` for common expression patterns.
+- The `convert` method is recursively called on child expressions using `exprToProtoInternal`, so you'll need to make sure that the child expressions are also converted to protobuf.
+- `scalarFunctionExprToProtoWithReturnType` is for scalar functions that need to return type information. Your expression may use a different method depending on the type of expression.
+- Use helper methods like `createBinaryExpr` and `createUnaryExpr` from `QueryPlanSerde` for common expression patterns.
 
 #### Using getSupportLevel
 
@@ -111,9 +111,9 @@ The `getSupportLevel` method allows you to control whether an expression should 
 
 The method returns one of three `SupportLevel` values:
 
-* **`Compatible(notes: Option[String] = None)`** - Comet supports this expression with full compatibility with Spark, or may have known differences in specific edge cases that are unlikely to be an issue for most users. This is the default if you don't override `getSupportLevel`.
-* **`Incompatible(notes: Option[String] = None)`** - Comet supports this expression but results can be different from Spark. The expression will only be used if `spark.comet.expr.allowIncompatible=true` or the expression-specific config `spark.comet.expr.<exprName>.allowIncompatible=true` is set.
-* **`Unsupported(notes: Option[String] = None)`** - Comet does not support this expression under the current conditions. The expression will not be used and Spark will fall back to its native execution.
+- **`Compatible(notes: Option[String] = None)`** - Comet supports this expression with full compatibility with Spark, or may have known differences in specific edge cases that are unlikely to be an issue for most users. This is the default if you don't override `getSupportLevel`.
+- **`Incompatible(notes: Option[String] = None)`** - Comet supports this expression but results can be different from Spark. The expression will only be used if `spark.comet.expr.allowIncompatible=true` or the expression-specific config `spark.comet.expr.<exprName>.allowIncompatible=true` is set.
+- **`Unsupported(notes: Option[String] = None)`** - Comet does not support this expression under the current conditions. The expression will not be used and Spark will fall back to its native execution.
 
 All three support levels accept an optional `notes` parameter to provide additional context about the support level.
 
@@ -210,9 +210,59 @@ Any notes provided will be logged to help with debugging and understanding why a
 
 #### Adding Spark-side Tests for the New Expression
 
-It is important to verify that the new expression is correctly recognized by the native execution engine and matches the expected spark behavior. To do this, you can add a set of test cases in the `CometExpressionSuite`, and use the `checkSparkAnswerAndOperator` method to compare the results of the new expression with the expected Spark results and that Comet's native execution engine is able to execute the expression.
+It is important to verify that the new expression is correctly recognized by the native execution engine and matches the expected Spark behavior. The preferred way to add test coverage is to write a SQL test file using the SQL file test framework. This approach is simpler than writing Scala test code and makes it easy to cover many input combinations and edge cases.
 
-For example, this is the test case for the `unhex` expression:
+##### Writing a SQL test file
+
+Create a `.sql` file under the appropriate subdirectory in `spark/src/test/resources/sql-tests/expressions/` (e.g., `string/`, `math/`, `array/`). The file should create a table with test data, then run queries that exercise the expression. Here is an example for the `unhex` expression:
+
+```sql
+-- ConfigMatrix: parquet.enable.dictionary=false,true
+
+statement
+CREATE TABLE test_unhex(col string) USING parquet
+
+statement
+INSERT INTO test_unhex VALUES
+  ('537061726B2053514C'),
+  ('737472696E67'),
+  ('\0'),
+  (''),
+  ('###'),
+  ('G123'),
+  ('hello'),
+  ('A1B'),
+  ('0A1B'),
+  (NULL)
+
+-- column argument
+query
+SELECT unhex(col) FROM test_unhex
+
+-- literal arguments
+query
+SELECT unhex('48656C6C6F'), unhex(''), unhex(NULL)
+```
+
+Each `query` block automatically runs the SQL through both Spark and Comet and compares results, and also verifies that Comet executes the expression natively (not falling back to Spark).
+
+Run the test with:
+
+```shell
+./mvnw test -Dsuites="org.apache.comet.CometSqlFileTestSuite unhex" -Dtest=none
+```
+
+For full documentation on the test file format — including directives like `ConfigMatrix`, query modes like `spark_answer_only` and `tolerance`, handling known bugs with `ignore(...)`, and tips for writing thorough tests — see the [SQL File Tests](sql-file-tests.md) guide.
+
+##### Tips
+
+- **Cover both column references and literals.** Comet often uses different code paths for each. The SQL file test suite automatically disables constant folding, so all-literal queries are evaluated natively.
+- **Include edge cases** such as `NULL`, empty strings, boundary values, `NaN`, and multibyte UTF-8 characters.
+- **Keep one file per expression** to make failures easy to locate.
+
+##### Scala tests (alternative)
+
+For cases that require programmatic setup or custom assertions beyond what SQL files support, you can also add Scala test cases in `CometExpressionSuite` using the `checkSparkAnswerAndOperator` method:
 
 ```scala
 test("unhex") {
@@ -232,6 +282,17 @@ test("unhex") {
       |('0A1B')""".stripMargin)
 
     checkSparkAnswerAndOperator(s"SELECT unhex(col) FROM $table")
+  }
+}
+```
+
+When writing Scala tests with literal values (e.g., `SELECT my_func('literal')`), Spark's constant folding optimizer may evaluate the expression at planning time, bypassing Comet. To prevent this, disable constant folding:
+
+```scala
+test("my_func with literals") {
+  withSQLConf(SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+      "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+    checkSparkAnswerAndOperator("SELECT my_func('literal_value')")
   }
 }
 ```
@@ -271,7 +332,8 @@ How this works is somewhat dependent on the type of expression you're adding. Ex
 If you're adding a new expression that requires custom protobuf serialization, you may need to:
 
 1. Add a new message to the protobuf definition in `native/proto/src/proto/expr.proto`
-2. Update the Rust deserialization code to handle the new protobuf message type
+2. Add a native expression handler in `expression_registry.rs` to deserialize the new protobuf message type and
+   create a native expression
 
 For most expressions, you can skip this step if you're using the existing scalar function infrastructure.
 
@@ -291,6 +353,7 @@ match fun_name {
 ```
 
 The `make_comet_scalar_udf!` macro has several variants depending on whether your function needs:
+
 - A data type parameter: `make_comet_scalar_udf!("ceil", spark_ceil, data_type)`
 - No data type parameter: `make_comet_scalar_udf!("unhex", func, without data_type)`
 - An eval mode: `make_comet_scalar_udf!("decimal_div", spark_decimal_div, data_type, eval_mode)`
@@ -356,7 +419,7 @@ Your `CometExpressionSerde` implementation can also access shim methods by mixin
 
 ## Resources
 
-* [Variance PR](https://github.com/apache/datafusion-comet/pull/297)
-  * Aggregation function
-* [Unhex PR](https://github.com/apache/datafusion-comet/pull/342)
-  * Basic scalar function with shims for different Spark versions
+- [Variance PR](https://github.com/apache/datafusion-comet/pull/297)
+  - Aggregation function
+- [Unhex PR](https://github.com/apache/datafusion-comet/pull/342)
+  - Basic scalar function with shims for different Spark versions

@@ -25,11 +25,35 @@ import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.catalyst.plans.physical.{Partitioning, SinglePartition}
 import org.apache.spark.sql.comet.execution.shuffle.{CometShuffledBatchRDD, CometShuffleExchangeExec}
-import org.apache.spark.sql.execution.{ColumnarToRowExec, SparkPlan, UnaryExecNode, UnsafeRowSerializer}
+import org.apache.spark.sql.execution.{CollectLimitExec, ColumnarToRowExec, SparkPlan, UnaryExecNode, UnsafeRowSerializer}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics, SQLShuffleReadMetricsReporter, SQLShuffleWriteMetricsReporter}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import com.google.common.base.Objects
+
+import org.apache.comet.{CometConf, ConfigEntry}
+import org.apache.comet.CometSparkSessionExtensions.isCometShuffleEnabled
+import org.apache.comet.serde.{Compatible, OperatorOuterClass, SupportLevel, Unsupported}
+import org.apache.comet.serde.operator.CometSink
+
+object CometCollectLimitExec extends CometSink[CollectLimitExec] {
+
+  override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
+    CometConf.COMET_EXEC_COLLECT_LIMIT_ENABLED)
+
+  override def getSupportLevel(op: CollectLimitExec): SupportLevel = {
+    if (!isCometShuffleEnabled(op.conf)) {
+      return Unsupported(Some("Comet shuffle is not enabled"))
+    }
+    Compatible()
+  }
+
+  override def createExec(
+      nativeOp: OperatorOuterClass.Operator,
+      op: CollectLimitExec): CometNativeExec = {
+    CometSinkPlaceHolder(nativeOp, op, CometCollectLimitExec(op, op.limit, op.offset, op.child))
+  }
+}
 
 /**
  * Comet physical plan node for Spark `CollectLimitExec`.

@@ -23,8 +23,12 @@ import scala.util.Random
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayDistinct, ArrayExcept, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayRepeat, ArraysOverlap, ArrayUnion}
+import org.apache.spark.sql.catalyst.expressions.{ArrayContains, ArrayRemove}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions._
+import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.types.ArrayType
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
 import org.apache.comet.DataTypeSupport.isComplexType
@@ -34,50 +38,57 @@ import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOpti
 class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("array_remove - integer") {
-    Seq(true, false).foreach { dictionaryEnabled =>
-      withTempView("t1") {
-        withTempDir { dir =>
-          val path = new Path(dir.toURI.toString, "test.parquet")
-          makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled, 10000)
-          spark.read.parquet(path.toString).createOrReplaceTempView("t1")
-          checkSparkAnswerAndOperator(
-            sql("SELECT array_remove(array(_2, _3,_4), _2) from t1 where _2 is null"))
-          checkSparkAnswerAndOperator(
-            sql("SELECT array_remove(array(_2, _3,_4), _3) from t1 where _3 is not null"))
-          checkSparkAnswerAndOperator(sql(
-            "SELECT array_remove(case when _2 = _3 THEN array(_2, _3,_4) ELSE null END, _3) from t1"))
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[ArrayRemove]) -> "true") {
+      Seq(true, false).foreach { dictionaryEnabled =>
+        withTempView("t1") {
+          withTempDir { dir =>
+            val path = new Path(dir.toURI.toString, "test.parquet")
+            makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled, 10000)
+            spark.read.parquet(path.toString).createOrReplaceTempView("t1")
+            checkSparkAnswerAndOperator(
+              sql("SELECT array_remove(array(_2, _3,_4), _2) from t1 where _2 is null"))
+            checkSparkAnswerAndOperator(
+              sql("SELECT array_remove(array(_2, _3,_4), _3) from t1 where _3 is not null"))
+            checkSparkAnswerAndOperator(sql(
+              "SELECT array_remove(case when _2 = _3 THEN array(_2, _3,_4) ELSE null END, _3) from t1"))
+          }
         }
       }
     }
   }
 
   test("array_remove - test all types (native Parquet reader)") {
-    withTempDir { dir =>
-      withTempView("t1") {
-        val path = new Path(dir.toURI.toString, "test.parquet")
-        val filename = path.toString
-        val random = new Random(42)
-        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-          ParquetGenerator.makeParquetFile(
-            random,
-            spark,
-            filename,
-            100,
-            SchemaGenOptions(generateArray = false, generateStruct = false, generateMap = false),
-            DataGenOptions(allowNull = true, generateNegativeZero = true))
-        }
-        val table = spark.read.parquet(filename)
-        table.createOrReplaceTempView("t1")
-        // test with array of each column
-        val fieldNames =
-          table.schema.fields
-            .filter(field => CometArrayRemove.isTypeSupported(field.dataType))
-            .map(_.name)
-        for (fieldName <- fieldNames) {
-          sql(s"SELECT array($fieldName, $fieldName) as a, $fieldName as b FROM t1")
-            .createOrReplaceTempView("t2")
-          val df = sql("SELECT array_remove(a, b) FROM t2")
-          checkSparkAnswerAndOperator(df)
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[ArrayRemove]) -> "true") {
+      withTempDir { dir =>
+        withTempView("t1") {
+          val path = new Path(dir.toURI.toString, "test.parquet")
+          val filename = path.toString
+          val random = new Random(42)
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            ParquetGenerator.makeParquetFile(
+              random,
+              spark,
+              filename,
+              100,
+              SchemaGenOptions(
+                generateArray = false,
+                generateStruct = false,
+                generateMap = false),
+              DataGenOptions(allowNull = true, generateNegativeZero = true))
+          }
+          val table = spark.read.parquet(filename)
+          table.createOrReplaceTempView("t1")
+          // test with array of each column
+          val fieldNames =
+            table.schema.fields
+              .filter(field => CometArrayRemove.isTypeSupported(field.dataType))
+              .map(_.name)
+          for (fieldName <- fieldNames) {
+            sql(s"SELECT array($fieldName, $fieldName) as a, $fieldName as b FROM t1")
+              .createOrReplaceTempView("t2")
+            val df = sql("SELECT array_remove(a, b) FROM t2")
+            checkSparkAnswerAndOperator(df)
+          }
         }
       }
     }
@@ -126,7 +137,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
         sql("SELECT array(struct(_1, _2)) as a, struct(_1, _2) as b FROM t1")
           .createOrReplaceTempView("t2")
         val expectedFallbackReason =
-          "data type not supported: ArrayType(StructType(StructField(_1,BooleanType,true),StructField(_2,ByteType,true)),false)"
+          "is not fully compatible with Spark"
         checkSparkAnswerAndFallbackReason(
           sql("SELECT array_remove(a, b) FROM t2"),
           expectedFallbackReason)
@@ -135,7 +146,12 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   }
 
   test("array_append") {
-    withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
+    val incompatKey = if (isSpark40Plus) {
+      classOf[ArrayInsert]
+    } else {
+      classOf[ArrayAppend]
+    }
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey(incompatKey) -> "true") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>
           withTempView("t1") {
@@ -164,7 +180,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
 
   test("array_prepend") {
     assume(isSpark35Plus) // in Spark 3.5 array_prepend is implemented via array_insert
-    withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[ArrayInsert]) -> "true") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>
           withTempView("t1") {
@@ -193,7 +209,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   }
 
   test("ArrayInsert") {
-    withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[ArrayInsert]) -> "true") {
       Seq(true, false).foreach(dictionaryEnabled =>
         withTempDir { dir =>
           val path = new Path(dir.toURI.toString, "test.parquet")
@@ -204,11 +220,13 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
             .withColumn("arrInsertResult", expr("array_insert(arr, 1, 1)"))
             .withColumn("arrInsertNegativeIndexResult", expr("array_insert(arr, -1, 1)"))
             .withColumn("arrPosGreaterThanSize", expr("array_insert(arr, 8, 1)"))
+            .withColumn("arrPosIsNull", expr("array_insert(arr, cast(null as int), 1)"))
             .withColumn("arrNegPosGreaterThanSize", expr("array_insert(arr, -8, 1)"))
             .withColumn("arrInsertNone", expr("array_insert(arr, 1, null)"))
           checkSparkAnswerAndOperator(df.select("arrInsertResult"))
           checkSparkAnswerAndOperator(df.select("arrInsertNegativeIndexResult"))
           checkSparkAnswerAndOperator(df.select("arrPosGreaterThanSize"))
+          checkSparkAnswerAndOperator(df.select("arrPosIsNull"))
           checkSparkAnswerAndOperator(df.select("arrNegPosGreaterThanSize"))
           checkSparkAnswerAndOperator(df.select("arrInsertNone"))
         })
@@ -218,7 +236,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   test("ArrayInsertUnsupportedArgs") {
     // This test checks that the else branch in ArrayInsert
     // mapping to the comet is valid and fallback to spark is working fine.
-    withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[ArrayInsert]) -> "true") {
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
         makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = false, 10000)
@@ -227,60 +245,67 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
           .withColumn("arr", array(col("_4"), lit(null), col("_4")))
           .withColumn("idx", udf((_: Int) => 1).apply(col("_4")))
           .withColumn("arrUnsupportedArgs", expr("array_insert(arr, idx, 1)"))
-        checkSparkAnswer(df.select("arrUnsupportedArgs"))
+        checkSparkAnswerAndFallbackReasons(
+          df.select("arrUnsupportedArgs"),
+          Set("scalaudf is not supported", "unsupported arguments for ArrayInsert"))
       }
     }
   }
 
   test("array_contains - int values") {
-    withTempDir { dir =>
-      withTempView("t1") {
-        val path = new Path(dir.toURI.toString, "test.parquet")
-        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = false, n = 10000)
-        spark.read.parquet(path.toString).createOrReplaceTempView("t1");
-        checkSparkAnswerAndOperator(
-          spark.sql("SELECT array_contains(array(_2, _3, _4), _2) FROM t1"))
-        checkSparkAnswerAndOperator(
-          spark.sql("SELECT array_contains((CASE WHEN _2 =_3 THEN array(_4) END), _4) FROM t1"));
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[ArrayContains]) -> "true") {
+      withTempDir { dir =>
+        withTempView("t1") {
+          val path = new Path(dir.toURI.toString, "test.parquet")
+          makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = false, n = 10000)
+          spark.read.parquet(path.toString).createOrReplaceTempView("t1");
+          checkSparkAnswerAndOperator(
+            spark.sql("SELECT array_contains(array(_2, _3, _4), _2) FROM t1"))
+          checkSparkAnswerAndOperator(
+            spark.sql(
+              "SELECT array_contains((CASE WHEN _2 =_3 THEN array(_4) END), _4) FROM t1"));
+        }
       }
     }
   }
 
   test("array_contains - test all types (native Parquet reader)") {
-    withTempDir { dir =>
-      withTempView("t1", "t2", "t3") {
-        val path = new Path(dir.toURI.toString, "test.parquet")
-        val filename = path.toString
-        val random = new Random(42)
-        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-          ParquetGenerator.makeParquetFile(
-            random,
-            spark,
-            filename,
-            100,
-            SchemaGenOptions(generateArray = true, generateStruct = true, generateMap = false),
-            DataGenOptions(allowNull = true, generateNegativeZero = true))
-        }
-        val table = spark.read.parquet(filename)
-        table.createOrReplaceTempView("t1")
-        val complexTypeFields =
-          table.schema.fields.filter(field => isComplexType(field.dataType))
-        val primitiveTypeFields =
-          table.schema.fields.filterNot(field => isComplexType(field.dataType))
-        for (field <- primitiveTypeFields) {
-          val fieldName = field.name
-          val typeName = field.dataType.typeName
-          sql(s"SELECT array($fieldName, $fieldName) as a, $fieldName as b FROM t1")
-            .createOrReplaceTempView("t2")
-          checkSparkAnswerAndOperator(sql("SELECT array_contains(a, b) FROM t2"))
-          checkSparkAnswerAndOperator(
-            sql(s"SELECT array_contains(a, cast(null as $typeName)) FROM t2"))
-        }
-        for (field <- complexTypeFields) {
-          val fieldName = field.name
-          sql(s"SELECT array($fieldName, $fieldName) as a, $fieldName as b FROM t1")
-            .createOrReplaceTempView("t3")
-          checkSparkAnswer(sql("SELECT array_contains(a, b) FROM t3"))
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[ArrayContains]) -> "true") {
+      withTempDir { dir =>
+        withTempView("t1", "t2", "t3") {
+          val path = new Path(dir.toURI.toString, "test.parquet")
+          val filename = path.toString
+          val random = new Random(42)
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            ParquetGenerator.makeParquetFile(
+              random,
+              spark,
+              filename,
+              100,
+              SchemaGenOptions(generateArray = true, generateStruct = true, generateMap = false),
+              DataGenOptions(allowNull = true, generateNegativeZero = true))
+          }
+          val table = spark.read.parquet(filename)
+          table.createOrReplaceTempView("t1")
+          val complexTypeFields =
+            table.schema.fields.filter(field => isComplexType(field.dataType))
+          val primitiveTypeFields =
+            table.schema.fields.filterNot(field => isComplexType(field.dataType))
+          for (field <- primitiveTypeFields) {
+            val fieldName = field.name
+            val typeName = field.dataType.typeName
+            sql(s"SELECT array($fieldName, $fieldName) as a, $fieldName as b FROM t1")
+              .createOrReplaceTempView("t2")
+            checkSparkAnswerAndOperator(sql("SELECT array_contains(a, b) FROM t2"))
+            checkSparkAnswerAndOperator(
+              sql(s"SELECT array_contains(a, cast(null as $typeName)) FROM t2"))
+          }
+          for (field <- complexTypeFields) {
+            val fieldName = field.name
+            sql(s"SELECT array($fieldName, $fieldName) as a, $fieldName as b FROM t1")
+              .createOrReplaceTempView("t3")
+            checkSparkAnswer(sql("SELECT array_contains(a, b) FROM t3"))
+          }
         }
       }
     }
@@ -309,6 +334,38 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
             s"SELECT array_contains(cast(null as array<$typeName>), cast(null as $typeName)) FROM t2"))
         }
         checkSparkAnswerAndOperator(sql("SELECT array_contains(array(), 1) FROM t2"))
+      }
+    }
+  }
+
+  test("array_contains - NULL array returns NULL") {
+    // Test that array_contains returns NULL when the array argument is NULL
+    // This matches Spark's SQL three-valued logic behavior
+    withTempDir { dir =>
+      withTempView("t1") {
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = false, n = 100)
+        spark.read.parquet(path.toString).createOrReplaceTempView("t1")
+
+        // Test NULL array with non-null value
+        checkSparkAnswerAndOperator(
+          sql("SELECT array_contains(cast(null as array<int>), 1) FROM t1"))
+        checkSparkAnswerAndOperator(
+          sql("SELECT array_contains(cast(null as array<string>), 'test') FROM t1"))
+        checkSparkAnswerAndOperator(
+          sql("SELECT array_contains(cast(null as array<double>), 1.5) FROM t1"))
+
+        // Test NULL array with NULL value
+        checkSparkAnswerAndOperator(
+          sql("SELECT array_contains(cast(null as array<int>), cast(null as int)) FROM t1"))
+
+        // Test NULL array with column value
+        checkSparkAnswerAndOperator(
+          sql("SELECT array_contains(cast(null as array<int>), _2) FROM t1"))
+
+        // Test non-null array with values (to ensure fix doesn't break normal operation)
+        checkSparkAnswerAndOperator(sql("SELECT array_contains(array(1, 2, 3), 2) FROM t1"))
+        checkSparkAnswerAndOperator(sql("SELECT array_contains(array(1, 2, 3), 5) FROM t1"))
       }
     }
   }
@@ -346,7 +403,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   }
 
   test("array_distinct") {
-    withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[ArrayDistinct]) -> "true") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>
           withTempView("t1") {
@@ -375,7 +432,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   }
 
   test("array_union") {
-    withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[ArrayUnion]) -> "true") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>
           withTempView("t1") {
@@ -446,7 +503,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   }
 
   test("array_intersect") {
-    withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[ArrayIntersect]) -> "true") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>
           withTempView("t1") {
@@ -466,7 +523,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   }
 
   test("array_join") {
-    withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[ArrayJoin]) -> "true") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>
           withTempView("t1") {
@@ -488,7 +545,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   }
 
   test("arrays_overlap") {
-    withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[ArraysOverlap]) -> "true") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>
           withTempView("t1") {
@@ -512,31 +569,26 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   test("array_compact") {
     // TODO fix for Spark 4.0.0
     assume(!isSpark40Plus)
-    withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
-      Seq(true, false).foreach { dictionaryEnabled =>
-        withTempDir { dir =>
-          withTempView("t1") {
-            val path = new Path(dir.toURI.toString, "test.parquet")
-            makeParquetFileAllPrimitiveTypes(
-              path,
-              dictionaryEnabled = dictionaryEnabled,
-              n = 10000)
-            spark.read.parquet(path.toString).createOrReplaceTempView("t1")
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withTempDir { dir =>
+        withTempView("t1") {
+          val path = new Path(dir.toURI.toString, "test.parquet")
+          makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, n = 10000)
+          spark.read.parquet(path.toString).createOrReplaceTempView("t1")
 
-            checkSparkAnswerAndOperator(
-              sql("SELECT array_compact(array(_2)) FROM t1 WHERE _2 IS NULL"))
-            checkSparkAnswerAndOperator(
-              sql("SELECT array_compact(array(_2)) FROM t1 WHERE _2 IS NOT NULL"))
-            checkSparkAnswerAndOperator(
-              sql("SELECT array_compact(array(_2, _3, null)) FROM t1 WHERE _2 IS NOT NULL"))
-          }
+          checkSparkAnswerAndOperator(
+            sql("SELECT array_compact(array(_2)) FROM t1 WHERE _2 IS NULL"))
+          checkSparkAnswerAndOperator(
+            sql("SELECT array_compact(array(_2)) FROM t1 WHERE _2 IS NOT NULL"))
+          checkSparkAnswerAndOperator(
+            sql("SELECT array_compact(array(_2, _3, null)) FROM t1 WHERE _2 IS NOT NULL"))
         }
       }
     }
   }
 
   test("array_except - basic test (only integer values)") {
-    withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[ArrayExcept]) -> "true") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>
           withTempView("t1") {
@@ -571,7 +623,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
           SchemaGenOptions(generateArray = false, generateStruct = false, generateMap = false),
           DataGenOptions(allowNull = true, generateNegativeZero = true))
       }
-      withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
+      withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[ArrayExcept]) -> "true") {
         withTempView("t1", "t2") {
           val table = spark.read.parquet(filename)
           table.createOrReplaceTempView("t1")
@@ -609,8 +661,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
       withSQLConf(
         CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
         CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true",
-        CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true",
-        CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
+        CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true") {
         withTempView("t1", "t2") {
           val table = spark.read.parquet(filename)
           table.createOrReplaceTempView("t1")
@@ -631,7 +682,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
 
   test("array_repeat") {
     withSQLConf(
-      CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true",
+      CometConf.getExprAllowIncompatConfigKey(classOf[ArrayRepeat]) -> "true",
       CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "true") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>
@@ -722,9 +773,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   }
 
   test("array literals") {
-    withSQLConf(
-      CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true",
-      CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "true") {
+    withSQLConf(CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "true") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>
           withTempView("t1") {
@@ -776,13 +825,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
 
   // https://github.com/apache/datafusion-comet/issues/2612
   test("array_reverse - fallback for binary array") {
-    val fallbackReason =
-      if (CometConf.COMET_NATIVE_SCAN_IMPL.key == CometConf.SCAN_NATIVE_COMET || sys.env
-          .getOrElse("COMET_PARQUET_SCAN_IMPL", "") == CometConf.SCAN_NATIVE_COMET) {
-        "Unsupported schema"
-      } else {
-        CometArrayReverse.unsupportedReason
-      }
+    val fallbackReason = CometArrayReverse.unsupportedReason
     withTable("t1") {
       sql("""create table t1 using parquet as
           select cast(null as array<binary>) c1, cast(array() as array<binary>) c2
@@ -800,6 +843,178 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
       checkSparkAnswerAndFallbackReason(
         "select reverse(array(array(c1), array(c2))) AS x FROM t1",
         fallbackReason)
+    }
+  }
+
+  test("array_reverse 2") {
+    // This test validates data correctness for array<binary> columns with nullable elements.
+    // See https://github.com/apache/datafusion-comet/issues/2612
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "test.parquet")
+      val filename = path.toString
+      val random = new Random(42)
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        val schemaOptions =
+          SchemaGenOptions(generateArray = true, generateStruct = false, generateMap = false)
+        val dataOptions = DataGenOptions(allowNull = true, generateNegativeZero = false)
+        ParquetGenerator.makeParquetFile(random, spark, filename, 100, schemaOptions, dataOptions)
+      }
+      withTempView("t1") {
+        val table = spark.read.parquet(filename)
+        table.createOrReplaceTempView("t1")
+        for (field <- table.schema.fields.filter(_.dataType.isInstanceOf[ArrayType])) {
+          val sql = s"SELECT ${field.name}, reverse(${field.name}) FROM t1 ORDER BY ${field.name}"
+          checkSparkAnswer(sql)
+        }
+      }
+    }
+  }
+
+  test("size with array input") {
+    withTempDir { dir =>
+      withTempView("t1") {
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = true, 100)
+        spark.read.parquet(path.toString).createOrReplaceTempView("t1")
+
+        // Test size function with arrays built from columns (ensures native execution)
+        checkSparkAnswerAndOperator(
+          sql("SELECT size(array(_2, _3, _4)) from t1 where _2 is not null order by _2, _3, _4"))
+        checkSparkAnswerAndOperator(
+          sql("SELECT size(array(_1)) from t1 where _1 is not null order by _1"))
+        checkSparkAnswerAndOperator(
+          sql("SELECT size(array(_2, _3)) from t1 where _2 is null order by _2, _3"))
+
+        // Test with conditional arrays (forces runtime evaluation)
+        checkSparkAnswerAndOperator(sql(
+          "SELECT size(case when _2 > 0 then array(_2, _3, _4) else array(_2) end) from t1 order by _2, _3, _4"))
+        checkSparkAnswerAndOperator(sql(
+          "SELECT size(case when _1 then array(_8, _9) else array(_8, _9, _10) end) from t1 order by _1, _8, _9, _10"))
+
+        // Test empty arrays using conditional logic to avoid constant folding
+        checkSparkAnswerAndOperator(sql(
+          "SELECT size(case when _2 < 0 then array(_2, _3) else array() end) from t1 order by _2, _3"))
+
+        // Test null arrays using conditional logic
+        checkSparkAnswerAndOperator(sql(
+          "SELECT size(case when _2 is null then cast(null as array<int>) else array(_2) end) from t1 order by _2"))
+
+        // Test with different data types using column references
+        checkSparkAnswerAndOperator(
+          sql("SELECT size(array(_8, _9, _10)) from t1 where _8 is not null order by _8, _9, _10")
+        ) // string arrays
+        checkSparkAnswerAndOperator(
+          sql(
+            "SELECT size(array(_2, _3, _4, _5, _6)) from t1 where _2 is not null order by _2, _3, _4, _5, _6"
+          )
+        ) // int arrays
+      }
+    }
+  }
+
+  test("size - respect to legacySizeOfNull") {
+    val table = "t1"
+    withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_ICEBERG_COMPAT) {
+      withTable(table) {
+        sql(s"create table $table(col array<string>) using parquet")
+        sql(s"insert into $table values(null)")
+        withSQLConf(SQLConf.LEGACY_SIZE_OF_NULL.key -> "false") {
+          checkSparkAnswerAndOperator(sql(s"select size(col) from $table"))
+        }
+        withSQLConf(
+          SQLConf.LEGACY_SIZE_OF_NULL.key -> "true",
+          SQLConf.ANSI_ENABLED.key -> "false") {
+          checkSparkAnswerAndOperator(sql(s"select size(col) from $table"))
+        }
+      }
+    }
+  }
+
+  // https://github.com/apache/datafusion-comet/issues/3375
+  test("(ansi) array access out of bounds - GetArrayItem") {
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "true",
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_ENABLED.key -> "true") {
+      withTable("test_array_get_item") {
+        sql("CREATE TABLE test_array_get_item(arr ARRAY<INT>) USING parquet")
+        sql("INSERT INTO test_array_get_item VALUES (array(1, 2, 3))")
+        // Try to access array with out-of-bounds index
+        val exception = intercept[Exception] {
+          sql("select arr[5] from test_array_get_item").collect()
+        }
+        val errorMessage = exception.getMessage
+        // Verify error message contains the expected error code
+        assert(
+          errorMessage.contains("INVALID_ARRAY_INDEX"),
+          s"Error message should contain array index error: $errorMessage")
+
+        assert(errorMessage.contains("The index 5 is out of bounds. The array has 3 elements." +
+          " Use the SQL function `get()` to tolerate accessing element at invalid index and return NULL instead."))
+
+        assert(
+          errorMessage.contains("select arr[5] from test_array_get_item"),
+          s"Error message should contain SQL query text but got: $errorMessage")
+      }
+    }
+  }
+
+  // https://github.com/apache/datafusion-comet/issues/3375
+  test("(ansi) array access out of bounds - element_at with invalid index") {
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "true",
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_ENABLED.key -> "true") {
+      withTable("test_element_at_invalid") {
+        sql("CREATE TABLE test_element_at_invalid(arr ARRAY<INT>) USING parquet")
+        sql("INSERT INTO test_element_at_invalid VALUES (array(1, 2, 3))")
+        // Try to access array with out-of-bounds index using element_at
+        val exception = intercept[Exception] {
+          sql("select element_at(arr, 10) from test_element_at_invalid").collect()
+        }
+        val errorMessage = exception.getMessage
+        // Verify error message contains the expected error code
+        assert(
+          errorMessage.contains("INVALID_ARRAY_INDEX_IN_ELEMENT_AT"),
+          s"Error message should contain array index error: $errorMessage")
+
+        assert(errorMessage.contains("The index 10 is out of bounds. The array has 3 elements." +
+          " Use `try_element_at` to tolerate accessing element at invalid index and return NULL instead"))
+
+        assert(
+          errorMessage.contains("select element_at(arr, 10) from test_element_at_invalid"),
+          s"Error message should contain SQL query text but got: $errorMessage")
+      }
+    }
+  }
+
+  // https://github.com/apache/datafusion-comet/issues/3375
+  test("(ansi) array access with zero index - element_at") {
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "true",
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_ENABLED.key -> "true") {
+      withTable("test_element_at_zero") {
+        sql("CREATE TABLE test_element_at_zero(arr ARRAY<INT>) USING parquet")
+        sql("INSERT INTO test_element_at_zero VALUES (array(1, 2, 3))")
+        // Try to access array with zero index (invalid in Spark)
+        val exception = intercept[Exception] {
+          sql("select element_at(arr, 0) from test_element_at_zero").collect()
+        }
+        val errorMessage = exception.getMessage
+        // Verify error message contains the expected error code
+        assert(
+          errorMessage.contains("INVALID_INDEX_OF_ZERO"),
+          s"Error message should contain zero index error: $errorMessage")
+
+        assert(
+          errorMessage.contains("The index 0 is invalid. An index shall be either < 0 or > 0" +
+            " (the first element has index 1)"))
+
+        assert(
+          errorMessage.contains("select element_at(arr, 0) from test_element_at_zero"),
+          s"Error message should contain SQL query text but got: $errorMessage")
+      }
     }
   }
 }

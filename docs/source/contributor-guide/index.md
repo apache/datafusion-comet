@@ -26,14 +26,21 @@ under the License.
 Getting Started <contributing>
 Comet Plugin Overview <plugin_overview>
 Arrow FFI <ffi>
+JVM Shuffle <jvm_shuffle>
+Native Shuffle <native_shuffle>
 Parquet Scans <parquet_scans>
 Development Guide <development>
 Debugging Guide <debugging>
 Benchmarking Guide <benchmarking>
+Adding a New Operator <adding_a_new_operator>
 Adding a New Expression <adding_a_new_expression>
 Tracing <tracing>
-Profiling Native Code <profiling_native_code>
+Profiling <profiling>
 Spark SQL Tests <spark-sql-tests.md>
+Iceberg Spark Tests <iceberg-spark-tests.md>
+SQL File Tests <sql-file-tests.md>
+Bug Triage <bug_triage>
 Roadmap <roadmap.md>
+Release Process <release_process>
 Github and Issue Tracker <https://github.com/apache/datafusion-comet>
 ```

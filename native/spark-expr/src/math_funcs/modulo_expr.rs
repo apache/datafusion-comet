@@ -93,17 +93,27 @@ pub fn create_modulo_expr(
                 left,
                 DataType::Decimal256(p1, s1),
                 SparkCastOptions::new_without_timezone(EvalMode::Legacy, false),
+                None,
+                None,
             ));
             let right_256 = Arc::new(Cast::new(
                 right_non_ansi_safe,
                 DataType::Decimal256(p2, s2),
                 SparkCastOptions::new_without_timezone(EvalMode::Legacy, false),
+                None,
+                None,
             ));
 
+            // The UDF's return type must match what Arrow's rem function will actually return.
+            // Since we're operating on Decimal256 inputs, rem will return Decimal256.
+            let decimal256_return_type = match &data_type {
+                DataType::Decimal128(p, s) => DataType::Decimal256(*p, *s),
+                other => other.clone(),
+            };
             let modulo_scalar_func = create_modulo_scalar_function(
                 left_256,
                 right_256,
-                &data_type,
+                &decimal256_return_type,
                 registry,
                 fail_on_error,
             )?;
@@ -112,6 +122,8 @@ pub fn create_modulo_expr(
                 modulo_scalar_func,
                 data_type,
                 SparkCastOptions::new_without_timezone(EvalMode::Legacy, false),
+                None,
+                None,
             )))
         }
         _ => create_modulo_scalar_function(

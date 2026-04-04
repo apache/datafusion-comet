@@ -31,7 +31,7 @@ default behavior.
 
 ## Comet SQL Plugin
 
-The entry point to Comet is the org.apache.spark.CometPlugin class, which is registered in Spark using the following 
+The entry point to Comet is the org.apache.spark.CometPlugin class, which is registered in Spark using the following
 configuration:
 
 ```
@@ -106,7 +106,7 @@ executing, the resulting Arrow batches are imported into the JVM using Arrow FFI
 
 ## Shuffle
 
-Comet integrates with Spark's shuffle mechanism, optimizing both shuffle writes and reads. Comet's shuffle manager 
+Comet integrates with Spark's shuffle mechanism, optimizing both shuffle writes and reads. Comet's shuffle manager
 must be registered with Spark using the following configuration:
 
 ```
@@ -119,7 +119,7 @@ For shuffle writes, a `ShuffleMapTask` runs in the executors. This task contains
 broadcast to all of the executors. It then passes the input RDD to `ShuffleWriteProcessor.write()` which
 requests a `ShuffleWriter` from the shuffle manager, and this is where it gets a Comet shuffle writer.
 
-`ShuffleWriteProcessor` then invokes the dependency RDD and fetches rows/batches and passes them to Comet's 
+`ShuffleWriteProcessor` then invokes the dependency RDD and fetches rows/batches and passes them to Comet's
 shuffle writer, which writes batches to disk in Arrow IPC format.
 
 As a result, we cannot avoid having one native plan to produce the shuffle input and another native plan for
@@ -127,6 +127,6 @@ writing the batches to the shuffle file.
 
 ### Shuffle Reads
 
-For shuffle reads a `ShuffledRDD` requests a `ShuffleReader` from the shuffle manager. Comet provides a 
-`CometBlockStoreShuffleReader` which is implemented in JVM and fetches blocks from Spark and then creates an 
+For shuffle reads a `ShuffledRDD` requests a `ShuffleReader` from the shuffle manager. Comet provides a
+`CometBlockStoreShuffleReader` which is implemented in JVM and fetches blocks from Spark and then creates an
 `ArrowReaderIterator` to process the blocks using Arrow's `StreamReader` for decoding IPC batches.

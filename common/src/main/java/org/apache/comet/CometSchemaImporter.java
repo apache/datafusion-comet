@@ -23,7 +23,9 @@ import org.apache.arrow.c.*;
 import org.apache.arrow.memory.BufferAllocator;
 
 /** This is a simple wrapper around SchemaImporter to make it accessible from Java Arrow. */
+@IcebergApi
 public class CometSchemaImporter extends AbstractCometSchemaImporter {
+  @IcebergApi
   public CometSchemaImporter(BufferAllocator allocator) {
     super(allocator);
   }

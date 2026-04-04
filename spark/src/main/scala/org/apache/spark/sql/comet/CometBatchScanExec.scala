@@ -36,8 +36,12 @@ import org.apache.spark.sql.vectorized._
 import com.google.common.base.Objects
 
 import org.apache.comet.{DataTypeSupport, MetricsSupport}
+import org.apache.comet.iceberg.CometIcebergNativeScanMetadata
 
-case class CometBatchScanExec(wrapped: BatchScanExec, runtimeFilters: Seq[Expression])
+case class CometBatchScanExec(
+    wrapped: BatchScanExec,
+    runtimeFilters: Seq[Expression],
+    @transient nativeIcebergScanMetadata: Option[CometIcebergNativeScanMetadata] = None)
     extends DataSourceV2ScanExecBase
     with CometPlan {
   def ordering: Option[Seq[SortOrder]] = wrapped.ordering
@@ -95,7 +99,7 @@ case class CometBatchScanExec(wrapped: BatchScanExec, runtimeFilters: Seq[Expres
   override def equals(other: Any): Boolean = other match {
     case other: CometBatchScanExec =>
       // `wrapped` in `this` and `other` could reference to the same `BatchScanExec` object,
-      // therefore we need to also check `runtimeFilters` equality here.
+      // check `runtimeFilters` equality too.
       this.wrappedScan == other.wrappedScan && this.runtimeFilters == other.runtimeFilters
     case _ =>
       false
@@ -110,7 +114,8 @@ case class CometBatchScanExec(wrapped: BatchScanExec, runtimeFilters: Seq[Expres
       wrapped = wrappedScan.doCanonicalize(),
       runtimeFilters = QueryPlan.normalizePredicates(
         runtimeFilters.filterNot(_ == DynamicPruningExpression(Literal.TrueLiteral)),
-        output))
+        output),
+      nativeIcebergScanMetadata = None)
   }
 
   override def nodeName: String = {

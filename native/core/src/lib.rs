@@ -26,9 +26,12 @@
 #![deny(clippy::clone_on_ref_ptr)]
 extern crate core;
 
+#[macro_use]
+extern crate datafusion_comet_jni_bridge;
+
 use jni::{
     objects::{JClass, JString},
-    JNIEnv, JavaVM,
+    EnvUnowned,
 };
 use log::info;
 use log4rs::{
@@ -37,37 +40,54 @@ use log4rs::{
     encode::pattern::PatternEncoder,
     Config,
 };
-use once_cell::sync::OnceCell;
 
-#[cfg(all(not(target_env = "msvc"), feature = "jemalloc"))]
+#[cfg(all(
+    not(target_env = "msvc"),
+    feature = "jemalloc",
+    not(feature = "mimalloc")
+))]
 use tikv_jemallocator::Jemalloc;
 
-#[cfg(feature = "mimalloc")]
+#[cfg(all(
+    feature = "mimalloc",
+    not(all(not(target_env = "msvc"), feature = "jemalloc"))
+))]
 use mimalloc::MiMalloc;
+
+// Re-export from jvm-bridge crate for internal use
+pub use datafusion_comet_jni_bridge::errors;
+pub use datafusion_comet_jni_bridge::JAVA_VM;
+
+/// Re-export jvm-bridge items under the `jvm_bridge` name for convenience.
+pub mod jvm_bridge {
+    pub use datafusion_comet_jni_bridge::*;
+}
 
 use errors::{try_unwrap_or_throw, CometError, CometResult};
 
 #[macro_use]
-mod errors;
-#[macro_use]
 pub mod common;
 pub mod execution;
-mod jvm_bridge;
 pub mod parquet;
 
-#[cfg(all(not(target_env = "msvc"), feature = "jemalloc"))]
+#[cfg(all(
+    not(target_env = "msvc"),
+    feature = "jemalloc",
+    not(feature = "mimalloc")
+))]
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
 
-#[cfg(feature = "mimalloc")]
+#[cfg(all(
+    feature = "mimalloc",
+    not(all(not(target_env = "msvc"), feature = "jemalloc"))
+))]
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
-static JAVA_VM: OnceCell<JavaVM> = OnceCell::new();
-
 #[no_mangle]
 pub extern "system" fn Java_org_apache_comet_NativeBase_init(
-    e: JNIEnv,
+    e: EnvUnowned,
     _: JClass,
     log_conf_path: JString,
     log_level: JString,
@@ -75,14 +95,14 @@ pub extern "system" fn Java_org_apache_comet_NativeBase_init(
     // Initialize the error handling to capture panic backtraces
     errors::init();
 
-    try_unwrap_or_throw(&e, |mut env| {
-        let path: String = env.get_string(&log_conf_path)?.into();
+    try_unwrap_or_throw(&e, |env| {
+        let path: String = log_conf_path.try_to_string(env)?;
 
         // empty path means there is no custom log4rs config file provided, so fallback to use
         // the default configuration
         let log_config = if path.is_empty() {
-            let log_level: String = match env.get_string(&log_level) {
-                Ok(level) => level.into(),
+            let log_level: String = match log_level.try_to_string(env) {
+                Ok(level) => level,
                 Err(_) => "info".parse().unwrap(),
             };
             default_logger_config(&log_level)
@@ -116,12 +136,12 @@ const LOG_PATTERN: &str = "{d(%y/%m/%d %H:%M:%S)} {l} {f}: {m}{n}";
 /// * `0` (false) if the feature is disabled or unknown
 #[no_mangle]
 pub extern "system" fn Java_org_apache_comet_NativeBase_isFeatureEnabled(
-    env: JNIEnv,
+    env: EnvUnowned,
     _: JClass,
     feature_name: JString,
 ) -> jni::sys::jboolean {
-    try_unwrap_or_throw(&env, |mut env| {
-        let feature: String = env.get_string(&feature_name)?.into();
+    try_unwrap_or_throw(&env, |env| {
+        let feature: String = feature_name.try_to_string(env)?;
 
         let enabled = match feature.as_str() {
             "jemalloc" => cfg!(feature = "jemalloc"),
@@ -130,7 +150,7 @@ pub extern "system" fn Java_org_apache_comet_NativeBase_isFeatureEnabled(
             _ => false, // Unknown features return false
         };
 
-        Ok(enabled as u8)
+        Ok(enabled)
     })
 }
 

@@ -19,16 +19,16 @@
 
 package org.apache.comet.serde
 
+import java.util.concurrent.atomic.AtomicLong
+
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.aggregate._
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
-import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
-import org.apache.spark.sql.comet._
-import org.apache.spark.sql.execution
-import org.apache.spark.sql.execution._
+import org.apache.spark.sql.comet.DecimalPrecision
+import org.apache.spark.sql.execution.{ScalarSubquery, SparkPlan}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
@@ -39,7 +39,6 @@ import org.apache.comet.serde.ExprOuterClass.{AggExpr, Expr, ScalarFunc}
 import org.apache.comet.serde.Types.{DataType => ProtoDataType}
 import org.apache.comet.serde.Types.DataType._
 import org.apache.comet.serde.literals.CometLiteral
-import org.apache.comet.serde.operator._
 import org.apache.comet.shims.CometExprShim
 
 /**
@@ -66,7 +65,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[CreateArray] -> CometCreateArray,
     classOf[ElementAt] -> CometElementAt,
     classOf[Flatten] -> CometFlatten,
-    classOf[GetArrayItem] -> CometGetArrayItem)
+    classOf[GetArrayItem] -> CometGetArrayItem,
+    classOf[Size] -> CometSize)
 
   private val conditionalExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
     Map(classOf[CaseWhen] -> CometCaseWhen, classOf[If] -> CometIf)
@@ -94,6 +94,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[Atan2] -> CometAtan2,
     classOf[Ceil] -> CometCeil,
     classOf[Cos] -> CometScalarFunction("cos"),
+    classOf[Cosh] -> CometScalarFunction("cosh"),
     classOf[Divide] -> CometDivide,
     classOf[Exp] -> CometScalarFunction("exp"),
     classOf[Expm1] -> CometScalarFunction("expm1"),
@@ -104,6 +105,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[Log] -> CometLog,
     classOf[Log2] -> CometLog2,
     classOf[Log10] -> CometLog10,
+    classOf[Logarithm] -> CometLogarithm,
     classOf[Multiply] -> CometMultiply,
     classOf[Pow] -> CometScalarFunction("pow"),
     classOf[Rand] -> CometRand,
@@ -112,9 +114,11 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[Round] -> CometRound,
     classOf[Signum] -> CometScalarFunction("signum"),
     classOf[Sin] -> CometScalarFunction("sin"),
+    classOf[Sinh] -> CometScalarFunction("sinh"),
     classOf[Sqrt] -> CometScalarFunction("sqrt"),
     classOf[Subtract] -> CometSubtract,
-    classOf[Tan] -> CometScalarFunction("tan"),
+    classOf[Tan] -> CometTan,
+    classOf[Tanh] -> CometScalarFunction("tanh"),
     classOf[Cot] -> CometScalarFunction("cot"),
     classOf[UnaryMinus] -> CometUnaryMinus,
     classOf[Unhex] -> CometUnhex,
@@ -125,15 +129,20 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[MapKeys] -> CometMapKeys,
     classOf[MapEntries] -> CometMapEntries,
     classOf[MapValues] -> CometMapValues,
-    classOf[MapFromArrays] -> CometMapFromArrays)
+    classOf[MapFromArrays] -> CometMapFromArrays,
+    classOf[MapContainsKey] -> CometMapContainsKey,
+    classOf[MapFromEntries] -> CometMapFromEntries)
 
   private val structExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     classOf[CreateNamedStruct] -> CometCreateNamedStruct,
     classOf[GetArrayStructFields] -> CometGetArrayStructFields,
     classOf[GetStructField] -> CometGetStructField,
-    classOf[StructsToJson] -> CometStructsToJson)
+    classOf[JsonToStructs] -> CometJsonToStructs,
+    classOf[StructsToJson] -> CometStructsToJson,
+    classOf[StructsToCsv] -> CometStructsToCsv)
 
   private val hashExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
+    classOf[Crc32] -> CometScalarFunction("crc32"),
     classOf[Md5] -> CometScalarFunction("md5"),
     classOf[Murmur3Hash] -> CometMurmur3Hash,
     classOf[Sha2] -> CometSha2,
@@ -144,7 +153,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[Ascii] -> CometScalarFunction("ascii"),
     classOf[BitLength] -> CometScalarFunction("bit_length"),
     classOf[Chr] -> CometScalarFunction("char"),
-    classOf[ConcatWs] -> CometScalarFunction("concat_ws"),
+    classOf[ConcatWs] -> CometConcatWs,
     classOf[Concat] -> CometConcat,
     classOf[Contains] -> CometScalarFunction("contains"),
     classOf[EndsWith] -> CometScalarFunction("ends_with"),
@@ -154,7 +163,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[Lower] -> CometLower,
     classOf[OctetLength] -> CometScalarFunction("octet_length"),
     classOf[RegExpReplace] -> CometRegExpReplace,
-    classOf[Reverse] -> CometScalarFunction("reverse"),
+    classOf[Reverse] -> CometReverse,
     classOf[RLike] -> CometRLike,
     classOf[StartsWith] -> CometScalarFunction("starts_with"),
     classOf[StringInstr] -> CometScalarFunction("instr"),
@@ -162,12 +171,15 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[StringReplace] -> CometScalarFunction("replace"),
     classOf[StringRPad] -> CometStringRPad,
     classOf[StringLPad] -> CometStringLPad,
-    classOf[StringSpace] -> CometScalarFunction("string_space"),
+    classOf[StringSpace] -> CometScalarFunction("space"),
+    classOf[StringSplit] -> CometStringSplit,
     classOf[StringTranslate] -> CometScalarFunction("translate"),
     classOf[StringTrim] -> CometScalarFunction("trim"),
     classOf[StringTrimBoth] -> CometScalarFunction("btrim"),
     classOf[StringTrimLeft] -> CometScalarFunction("ltrim"),
     classOf[StringTrimRight] -> CometScalarFunction("rtrim"),
+    classOf[Left] -> CometLeft,
+    classOf[Right] -> CometRight,
     classOf[Substring] -> CometSubstring,
     classOf[Upper] -> CometUpper)
 
@@ -183,13 +195,21 @@ object QueryPlanSerde extends Logging with CometExprShim {
 
   private val temporalExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     classOf[DateAdd] -> CometDateAdd,
+    classOf[DateDiff] -> CometDateDiff,
+    classOf[DateFormatClass] -> CometDateFormat,
+    classOf[Days] -> CometDays,
     classOf[DateSub] -> CometDateSub,
+    classOf[UnixDate] -> CometUnixDate,
     classOf[FromUnixTime] -> CometFromUnixTime,
+    classOf[LastDay] -> CometLastDay,
     classOf[Hour] -> CometHour,
+    classOf[MakeDate] -> CometMakeDate,
     classOf[Minute] -> CometMinute,
+    classOf[NextDay] -> CometNextDay,
     classOf[Second] -> CometSecond,
     classOf[TruncDate] -> CometTruncDate,
     classOf[TruncTimestamp] -> CometTruncTimestamp,
+    classOf[UnixTimestamp] -> CometUnixTimestamp,
     classOf[Year] -> CometYear,
     classOf[Month] -> CometMonth,
     classOf[DayOfMonth] -> CometDayOfMonth,
@@ -204,21 +224,20 @@ object QueryPlanSerde extends Logging with CometExprShim {
 
   private val miscExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     // TODO PromotePrecision
-    // TODO KnownFloatingPointNormalized
-    // TODO ScalarSubquery
-    // TODO UnscaledValue
-    // TODO MakeDecimal
-    // TODO BloomFilterMightContain
-    // TODO RegExpReplace
     classOf[Alias] -> CometAlias,
     classOf[AttributeReference] -> CometAttributeReference,
+    classOf[BloomFilterMightContain] -> CometBloomFilterMightContain,
     classOf[CheckOverflow] -> CometCheckOverflow,
     classOf[Coalesce] -> CometCoalesce,
+    classOf[KnownFloatingPointNormalized] -> CometKnownFloatingPointNormalized,
     classOf[Literal] -> CometLiteral,
+    classOf[MakeDecimal] -> CometMakeDecimal,
     classOf[MonotonicallyIncreasingID] -> CometMonotonicallyIncreasingId,
+    classOf[ScalarSubquery] -> CometScalarSubquery,
     classOf[SparkPartitionID] -> CometSparkPartitionId,
     classOf[SortOrder] -> CometSortOrder,
-    classOf[StaticInvoke] -> CometStaticInvoke)
+    classOf[StaticInvoke] -> CometStaticInvoke,
+    classOf[UnscaledValue] -> CometUnscaledValue)
 
   /**
    * Mapping of Spark expression class to Comet expression handler.
@@ -251,6 +270,68 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[Sum] -> CometSum,
     classOf[VariancePop] -> CometVariancePop,
     classOf[VarianceSamp] -> CometVarianceSamp)
+
+  //  A unique id for each expression. ~used to look up QueryContext during error creation.
+  private val exprIdCounter = new AtomicLong(0)
+
+  private def nextExprId(): Long = exprIdCounter.incrementAndGet()
+
+  /**
+   * Extract SQL context information (query text, line/position, object name) from the
+   * expression's origin.
+   *
+   * @param expr
+   *   The Spark expression to extract context from
+   * @return
+   *   Some(QueryContext) if origin is present, None otherwise
+   */
+  private def extractQueryContext(expr: Expression): Option[ExprOuterClass.QueryContext] = {
+    val contexts = expr.origin.getQueryContext
+    if (contexts != null && contexts.length > 0) {
+      try {
+        val ctx = contexts(0)
+        // Check if this is a SQLQueryContext with additional fields
+        ctx match {
+          case sqlCtx: org.apache.spark.sql.catalyst.trees.SQLQueryContext =>
+            val builder = ExprOuterClass.QueryContext
+              .newBuilder()
+              .setSqlText(sqlCtx.sqlText.getOrElse(""))
+              .setStartIndex(sqlCtx.originStartIndex.getOrElse(ctx.startIndex))
+              .setStopIndex(sqlCtx.originStopIndex.getOrElse(ctx.stopIndex))
+              .setLine(sqlCtx.line.getOrElse(0))
+              .setStartPosition(sqlCtx.startPosition.getOrElse(0))
+
+            // Add optional fields if present
+            sqlCtx.originObjectType.foreach(builder.setObjectType)
+            sqlCtx.originObjectName.foreach(builder.setObjectName)
+
+            Some(builder.build())
+          case _ =>
+            // Fallback: use only QueryContext interface methods
+            val builder = ExprOuterClass.QueryContext
+              .newBuilder()
+              .setSqlText(ctx.fragment())
+              .setStartIndex(ctx.startIndex())
+              .setStopIndex(ctx.stopIndex())
+              .setLine(0)
+              .setStartPosition(0)
+
+            if (ctx.objectType() != null && !ctx.objectType().isEmpty) {
+              builder.setObjectType(ctx.objectType())
+            }
+            if (ctx.objectName() != null && !ctx.objectName().isEmpty) {
+              builder.setObjectName(ctx.objectName())
+            }
+
+            Some(builder.build())
+        }
+      } catch {
+        case _: Exception => None
+      }
+    } else {
+      None
+    }
+  }
 
   def supportedDataType(dt: DataType, allowComplex: Boolean = false): Boolean = dt match {
     case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
@@ -368,178 +449,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
     Some(dataType)
   }
 
-  def windowExprToProto(
-      windowExpr: WindowExpression,
-      output: Seq[Attribute],
-      conf: SQLConf): Option[OperatorOuterClass.WindowExpr] = {
-
-    val aggregateExpressions: Array[AggregateExpression] = windowExpr.flatMap { expr =>
-      expr match {
-        case agg: AggregateExpression =>
-          agg.aggregateFunction match {
-            case _: Count =>
-              Some(agg)
-            case min: Min =>
-              if (AggSerde.minMaxDataTypeSupported(min.dataType)) {
-                Some(agg)
-              } else {
-                withInfo(windowExpr, s"datatype ${min.dataType} is not supported", expr)
-                None
-              }
-            case max: Max =>
-              if (AggSerde.minMaxDataTypeSupported(max.dataType)) {
-                Some(agg)
-              } else {
-                withInfo(windowExpr, s"datatype ${max.dataType} is not supported", expr)
-                None
-              }
-            case s: Sum =>
-              if (AggSerde.sumDataTypeSupported(s.dataType) && !s.dataType
-                  .isInstanceOf[DecimalType]) {
-                Some(agg)
-              } else {
-                withInfo(windowExpr, s"datatype ${s.dataType} is not supported", expr)
-                None
-              }
-            case _ =>
-              withInfo(
-                windowExpr,
-                s"aggregate ${agg.aggregateFunction}" +
-                  " is not supported for window function",
-                expr)
-              None
-          }
-        case _ =>
-          None
-      }
-    }.toArray
-
-    val (aggExpr, builtinFunc) = if (aggregateExpressions.nonEmpty) {
-      val modes = aggregateExpressions.map(_.mode).distinct
-      assert(modes.size == 1 && modes.head == Complete)
-      (aggExprToProto(aggregateExpressions.head, output, true, conf), None)
-    } else {
-      (None, exprToProto(windowExpr.windowFunction, output))
-    }
-
-    if (aggExpr.isEmpty && builtinFunc.isEmpty) {
-      return None
-    }
-
-    val f = windowExpr.windowSpec.frameSpecification
-
-    val (frameType, lowerBound, upperBound) = f match {
-      case SpecifiedWindowFrame(frameType, lBound, uBound) =>
-        val frameProto = frameType match {
-          case RowFrame => OperatorOuterClass.WindowFrameType.Rows
-          case RangeFrame => OperatorOuterClass.WindowFrameType.Range
-        }
-
-        val lBoundProto = lBound match {
-          case UnboundedPreceding =>
-            OperatorOuterClass.LowerWindowFrameBound
-              .newBuilder()
-              .setUnboundedPreceding(OperatorOuterClass.UnboundedPreceding.newBuilder().build())
-              .build()
-          case CurrentRow =>
-            OperatorOuterClass.LowerWindowFrameBound
-              .newBuilder()
-              .setCurrentRow(OperatorOuterClass.CurrentRow.newBuilder().build())
-              .build()
-          case e if frameType == RowFrame =>
-            val offset = e.eval() match {
-              case i: Integer => i.toLong
-              case l: Long => l
-              case _ => return None
-            }
-            OperatorOuterClass.LowerWindowFrameBound
-              .newBuilder()
-              .setPreceding(
-                OperatorOuterClass.Preceding
-                  .newBuilder()
-                  .setOffset(offset)
-                  .build())
-              .build()
-          case _ =>
-            // TODO add support for numeric and temporal RANGE BETWEEN expressions
-            // see https://github.com/apache/datafusion-comet/issues/1246
-            return None
-        }
-
-        val uBoundProto = uBound match {
-          case UnboundedFollowing =>
-            OperatorOuterClass.UpperWindowFrameBound
-              .newBuilder()
-              .setUnboundedFollowing(OperatorOuterClass.UnboundedFollowing.newBuilder().build())
-              .build()
-          case CurrentRow =>
-            OperatorOuterClass.UpperWindowFrameBound
-              .newBuilder()
-              .setCurrentRow(OperatorOuterClass.CurrentRow.newBuilder().build())
-              .build()
-          case e if frameType == RowFrame =>
-            val offset = e.eval() match {
-              case i: Integer => i.toLong
-              case l: Long => l
-              case _ => return None
-            }
-            OperatorOuterClass.UpperWindowFrameBound
-              .newBuilder()
-              .setFollowing(
-                OperatorOuterClass.Following
-                  .newBuilder()
-                  .setOffset(offset)
-                  .build())
-              .build()
-          case _ =>
-            // TODO add support for numeric and temporal RANGE BETWEEN expressions
-            // see https://github.com/apache/datafusion-comet/issues/1246
-            return None
-        }
-
-        (frameProto, lBoundProto, uBoundProto)
-      case _ =>
-        (
-          OperatorOuterClass.WindowFrameType.Rows,
-          OperatorOuterClass.LowerWindowFrameBound
-            .newBuilder()
-            .setUnboundedPreceding(OperatorOuterClass.UnboundedPreceding.newBuilder().build())
-            .build(),
-          OperatorOuterClass.UpperWindowFrameBound
-            .newBuilder()
-            .setUnboundedFollowing(OperatorOuterClass.UnboundedFollowing.newBuilder().build())
-            .build())
-    }
-
-    val frame = OperatorOuterClass.WindowFrame
-      .newBuilder()
-      .setFrameType(frameType)
-      .setLowerBound(lowerBound)
-      .setUpperBound(upperBound)
-      .build()
-
-    val spec =
-      OperatorOuterClass.WindowSpecDefinition.newBuilder().setFrameSpecification(frame).build()
-
-    if (builtinFunc.isDefined) {
-      Some(
-        OperatorOuterClass.WindowExpr
-          .newBuilder()
-          .setBuiltInWindowFunction(builtinFunc.get)
-          .setSpec(spec)
-          .build())
-    } else if (aggExpr.isDefined) {
-      Some(
-        OperatorOuterClass.WindowExpr
-          .newBuilder()
-          .setAggFunc(aggExpr.get)
-          .setSpec(spec)
-          .build())
-    } else {
-      None
-    }
-  }
-
   def aggExprToProto(
       aggExpr: AggregateExpression,
       inputs: Seq[Attribute],
@@ -560,7 +469,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
 
     val fn = aggExpr.aggregateFunction
     val cometExpr = aggrSerdeMap.get(fn.getClass)
-    cometExpr match {
+    val protoAggExprOpt = cometExpr match {
       case Some(handler) =>
         val aggHandler = handler.asInstanceOf[CometAggregateExpressionSerde[AggregateFunction]]
         val exprConfName = aggHandler.getExprConfigName(fn)
@@ -571,13 +480,63 @@ object QueryPlanSerde extends Logging with CometExprShim {
               s"${CometConf.getExprEnabledConfigKey(exprConfName)}=true to enable it.")
           return None
         }
-        aggHandler.convert(aggExpr, fn, inputs, binding, conf)
+        aggHandler.getSupportLevel(fn) match {
+          case Unsupported(notes) =>
+            withInfo(fn, notes.getOrElse(""))
+            None
+          case Incompatible(notes) =>
+            val exprAllowIncompat = CometConf.isExprAllowIncompat(exprConfName)
+            if (exprAllowIncompat) {
+              if (notes.isDefined) {
+                logWarning(
+                  s"Comet supports $fn when " +
+                    s"${CometConf.getExprAllowIncompatConfigKey(exprConfName)}=true " +
+                    s"but has notes: ${notes.get}")
+              }
+              aggHandler.convert(aggExpr, fn, inputs, binding, conf)
+            } else {
+              val optionalNotes = notes.map(str => s" ($str)").getOrElse("")
+              withInfo(
+                fn,
+                s"$fn is not fully compatible with Spark$optionalNotes. To enable it anyway, " +
+                  s"set ${CometConf.getExprAllowIncompatConfigKey(exprConfName)}=true. " +
+                  s"${CometConf.COMPAT_GUIDE}.")
+              None
+            }
+          case Compatible(notes) =>
+            if (notes.isDefined) {
+              logWarning(s"Comet supports $fn but has notes: ${notes.get}")
+            }
+            aggHandler.convert(aggExpr, fn, inputs, binding, conf)
+        }
       case _ =>
         withInfo(
           aggExpr,
           s"unsupported Spark aggregate function: ${fn.prettyName}",
           fn.children: _*)
         None
+    }
+
+    // Attach QueryContext and expr_id to the aggregate expression
+    protoAggExprOpt.flatMap { protoAggExpr =>
+      val builder = protoAggExpr.toBuilder
+      builder.setExprId(nextExprId())
+
+      // Serialize FILTER (WHERE ...) clause if present.
+      // The filter is only meaningful in Partial mode; Final/PartialMerge never set it.
+      if (aggExpr.filter.isDefined && aggExpr.mode == Partial) {
+        val filterProto = exprToProto(aggExpr.filter.get, inputs, binding)
+        if (filterProto.isEmpty) {
+          withInfo(aggExpr, aggExpr.filter.get)
+          return None
+        }
+        builder.setFilter(filterProto.get)
+      }
+
+      extractQueryContext(fn).foreach { ctx =>
+        builder.setQueryContext(ctx)
+      }
+      Some(builder.build())
     }
   }
 
@@ -654,10 +613,11 @@ object QueryPlanSerde extends Logging with CometExprShim {
           None
         case Incompatible(notes) =>
           val exprAllowIncompat = CometConf.isExprAllowIncompat(exprConfName)
-          if (exprAllowIncompat || CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.get()) {
+          if (exprAllowIncompat) {
             if (notes.isDefined) {
               logWarning(
-                s"Comet supports $expr when ${CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key}=true " +
+                s"Comet supports $expr when " +
+                  s"${CometConf.getExprAllowIncompatConfigKey(exprConfName)}=true " +
                   s"but has notes: ${notes.get}")
             }
             handler.convert(expr, inputs, binding)
@@ -666,9 +626,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
             withInfo(
               expr,
               s"$expr is not fully compatible with Spark$optionalNotes. To enable it anyway, " +
-                s"set ${CometConf.getExprAllowIncompatConfigKey(exprConfName)}=true, or set " +
-                s"${CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key}=true to enable all " +
-                s"incompatible expressions. ${CometConf.COMPAT_GUIDE}.")
+                s"set ${CometConf.getExprAllowIncompatConfigKey(exprConfName)}=true. " +
+                s"${CometConf.COMPAT_GUIDE}.")
             None
           }
         case Compatible(notes) =>
@@ -679,90 +638,32 @@ object QueryPlanSerde extends Logging with CometExprShim {
       }
     }
 
-    versionSpecificExprToProtoInternal(expr, inputs, binding).orElse(expr match {
+    versionSpecificExprToProtoInternal(expr, inputs, binding)
+      .orElse(expr match {
 
-      case UnaryExpression(child) if expr.prettyName == "promote_precision" =>
-        // `UnaryExpression` includes `PromotePrecision` for Spark 3.3
-        // `PromotePrecision` is just a wrapper, don't need to serialize it.
-        exprToProtoInternal(child, inputs, binding)
+        case UnaryExpression(child) if expr.prettyName == "promote_precision" =>
+          // `UnaryExpression` includes `PromotePrecision` for Spark 3.3
+          // `PromotePrecision` is just a wrapper, don't need to serialize it.
+          exprToProtoInternal(child, inputs, binding)
 
-      case KnownFloatingPointNormalized(NormalizeNaNAndZero(expr)) =>
-        val dataType = serializeDataType(expr.dataType)
-        if (dataType.isEmpty) {
-          withInfo(expr, s"Unsupported datatype ${expr.dataType}")
-          return None
-        }
-        val ex = exprToProtoInternal(expr, inputs, binding)
-        ex.map { child =>
-          val builder = ExprOuterClass.NormalizeNaNAndZero
-            .newBuilder()
-            .setChild(child)
-            .setDatatype(dataType.get)
-          ExprOuterClass.Expr.newBuilder().setNormalizeNanAndZero(builder).build()
-        }
-
-      case s @ execution.ScalarSubquery(_, _) =>
-        if (supportedDataType(s.dataType)) {
-          val dataType = serializeDataType(s.dataType)
-          if (dataType.isEmpty) {
-            withInfo(s, s"Scalar subquery returns unsupported datatype ${s.dataType}")
-            return None
+        case expr =>
+          QueryPlanSerde.exprSerdeMap.get(expr.getClass) match {
+            case Some(handler) =>
+              convert(expr, handler.asInstanceOf[CometExpressionSerde[Expression]])
+            case _ =>
+              withInfo(expr, s"${expr.prettyName} is not supported", expr.children: _*)
+              None
           }
-
-          val builder = ExprOuterClass.Subquery
-            .newBuilder()
-            .setId(s.exprId.id)
-            .setDatatype(dataType.get)
-          Some(ExprOuterClass.Expr.newBuilder().setSubquery(builder).build())
-        } else {
-          withInfo(s, s"Unsupported data type: ${s.dataType}")
-          None
+      })
+      .map { protoExpr =>
+        // Attach QueryContext and expr_id to the expression
+        val builder = protoExpr.toBuilder
+        builder.setExprId(nextExprId())
+        extractQueryContext(expr).foreach { ctx =>
+          builder.setQueryContext(ctx)
         }
-
-      case UnscaledValue(child) =>
-        val childExpr = exprToProtoInternal(child, inputs, binding)
-        val optExpr =
-          scalarFunctionExprToProtoWithReturnType("unscaled_value", LongType, false, childExpr)
-        optExprWithInfo(optExpr, expr, child)
-
-      case MakeDecimal(child, precision, scale, true) =>
-        val childExpr = exprToProtoInternal(child, inputs, binding)
-        val optExpr = scalarFunctionExprToProtoWithReturnType(
-          "make_decimal",
-          DecimalType(precision, scale),
-          false,
-          childExpr)
-        optExprWithInfo(optExpr, expr, child)
-
-      case b @ BloomFilterMightContain(_, _) =>
-        val bloomFilter = b.left
-        val value = b.right
-        val bloomFilterExpr = exprToProtoInternal(bloomFilter, inputs, binding)
-        val valueExpr = exprToProtoInternal(value, inputs, binding)
-        if (bloomFilterExpr.isDefined && valueExpr.isDefined) {
-          val builder = ExprOuterClass.BloomFilterMightContain.newBuilder()
-          builder.setBloomFilter(bloomFilterExpr.get)
-          builder.setValue(valueExpr.get)
-          Some(
-            ExprOuterClass.Expr
-              .newBuilder()
-              .setBloomFilterMightContain(builder)
-              .build())
-        } else {
-          withInfo(expr, bloomFilter, value)
-          None
-        }
-      case r @ Reverse(child) if child.dataType.isInstanceOf[ArrayType] =>
-        convert(r, CometArrayReverse)
-      case expr =>
-        QueryPlanSerde.exprSerdeMap.get(expr.getClass) match {
-          case Some(handler) =>
-            convert(expr, handler.asInstanceOf[CometExpressionSerde[Expression]])
-          case _ =>
-            withInfo(expr, s"${expr.prettyName} is not supported", expr.children: _*)
-            None
-        }
-    })
+        builder.build()
+      }
   }
 
   /**

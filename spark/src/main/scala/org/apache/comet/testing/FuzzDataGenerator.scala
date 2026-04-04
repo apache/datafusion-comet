@@ -88,6 +88,70 @@ object FuzzDataGenerator {
     StructType(fields.toSeq)
   }
 
+  def generateNestedSchema(
+      r: Random,
+      numCols: Int,
+      minDepth: Int,
+      maxDepth: Int,
+      options: SchemaGenOptions): StructType = {
+    assert(numCols > 0)
+    assert(minDepth >= 0)
+    assert(maxDepth >= 0)
+    assert(minDepth <= maxDepth)
+    assert(
+      options.generateArray || options.generateStruct || options.generateMap,
+      "cannot generate nested schema if options do not include generating complex types")
+
+    var counter = 0
+
+    def generateFieldName() = {
+      val name = s"c_$counter"
+      counter += 1
+      name
+    }
+
+    def generateArray(depth: Int, name: String) = {
+      val element = genField(r, depth + 1)
+      StructField(name, DataTypes.createArrayType(element.dataType, true))
+    }
+
+    def generateStruct(depth: Int, name: String) = {
+      val fields =
+        Range(1, 2 + r.nextInt(10)).map(_ => genField(r, depth + 1)).toArray
+      StructField(name, DataTypes.createStructType(fields))
+    }
+
+    def generateMap(depth: Int, name: String) = {
+      val keyField = genField(r, depth + 1)
+      val valueField = genField(r, depth + 1)
+      StructField(name, DataTypes.createMapType(keyField.dataType, valueField.dataType))
+    }
+
+    def generatePrimitive(name: String) = {
+      StructField(name, randomChoice(options.primitiveTypes, r))
+    }
+
+    def genField(r: Random, depth: Int): StructField = {
+      val name = generateFieldName()
+      val generators = new ListBuffer[() => StructField]()
+      if (options.generateArray && depth < maxDepth) {
+        generators += (() => generateArray(depth + 1, name))
+      }
+      if (options.generateStruct && depth < maxDepth) {
+        generators += (() => generateStruct(depth + 1, name))
+      }
+      if (options.generateMap && depth < maxDepth) {
+        generators += (() => generateMap(depth + 1, name))
+      }
+      if (depth >= minDepth) {
+        generators += (() => generatePrimitive(name))
+      }
+      randomChoice(generators.toSeq, r)()
+    }
+
+    StructType(Range(0, numCols).map(_ => genField(r, 0)))
+  }
+
   def generateDataFrame(
       r: Random,
       spark: SparkSession,
@@ -165,8 +229,8 @@ object FuzzDataGenerator {
         Range(0, numRows).map(_ => {
           r.nextInt(20) match {
             case 0 if options.allowNull => null
-            case 1 => Float.NegativeInfinity
-            case 2 => Float.PositiveInfinity
+            case 1 if options.generateInfinity => Float.NegativeInfinity
+            case 2 if options.generateInfinity => Float.PositiveInfinity
             case 3 => Float.MinValue
             case 4 => Float.MaxValue
             case 5 => 0.0f
@@ -179,8 +243,8 @@ object FuzzDataGenerator {
         Range(0, numRows).map(_ => {
           r.nextInt(20) match {
             case 0 if options.allowNull => null
-            case 1 => Double.NegativeInfinity
-            case 2 => Double.PositiveInfinity
+            case 1 if options.generateInfinity => Double.NegativeInfinity
+            case 2 if options.generateInfinity => Double.PositiveInfinity
             case 3 => Double.MinValue
             case 4 => Double.MaxValue
             case 5 => 0.0
@@ -265,4 +329,5 @@ case class DataGenOptions(
     generateNaN: Boolean = true,
     baseDate: Long = FuzzDataGenerator.defaultBaseDate,
     customStrings: Seq[String] = Seq.empty,
-    maxStringLength: Int = 8)
+    maxStringLength: Int = 8,
+    generateInfinity: Boolean = true)

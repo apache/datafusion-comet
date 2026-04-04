@@ -18,7 +18,7 @@
 use crate::utils::array_with_timezone;
 use arrow::datatypes::{DataType, Schema, TimeUnit::Microsecond};
 use arrow::record_batch::RecordBatch;
-use datafusion::common::{DataFusionError, ScalarValue::Utf8};
+use datafusion::common::{DataFusionError, ScalarValue, ScalarValue::Utf8};
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::physical_expr::PhysicalExpr;
 use std::hash::Hash;
@@ -89,8 +89,8 @@ impl PhysicalExpr for TimestampTruncExpr {
         self
     }
 
-    fn fmt_sql(&self, _: &mut Formatter<'_>) -> std::fmt::Result {
-        unimplemented!()
+    fn fmt_sql(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        Display::fmt(self, f)
     }
 
     fn data_type(&self, input_schema: &Schema) -> datafusion::common::Result<DataType> {
@@ -130,10 +130,20 @@ impl PhysicalExpr for TimestampTruncExpr {
                 let result = timestamp_trunc_array_fmt_dyn(&ts, &formats)?;
                 Ok(ColumnarValue::Array(result))
             }
+            (ColumnarValue::Scalar(ts_scalar), ColumnarValue::Scalar(Utf8(Some(format)))) => {
+                let ts_arr = ts_scalar.to_array()?;
+                let ts = array_with_timezone(
+                    ts_arr,
+                    tz.clone(),
+                    Some(&DataType::Timestamp(Microsecond, Some(tz.into()))),
+                )?;
+                let result = timestamp_trunc_dyn(&ts, format)?;
+                let scalar = ScalarValue::try_from_array(&result, 0)?;
+                Ok(ColumnarValue::Scalar(scalar))
+            }
             _ => Err(DataFusionError::Execution(
                 "Invalid input to function TimestampTrunc. \
-                    Expected (PrimitiveArray<TimestampMicrosecondType>, Scalar, String) or \
-                    (PrimitiveArray<TimestampMicrosecondType>, StringArray, String)"
+                    Expected (Timestamp, Utf8)"
                     .to_string(),
             )),
         }

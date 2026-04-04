@@ -31,7 +31,9 @@ import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import com.google.common.base.Objects
 
-import org.apache.comet.CometConf
+import org.apache.comet.{CometConf, ConfigEntry}
+import org.apache.comet.serde.OperatorOuterClass.Operator
+import org.apache.comet.serde.operator.CometSink
 
 case class CometLocalTableScanExec(
     originalPlan: LocalTableScanExec,
@@ -101,7 +103,17 @@ case class CometLocalTableScanExec(
   override def hashCode(): Int = Objects.hashCode(originalPlan, originalPlan.schema, output)
 }
 
-object CometLocalTableScanExec {
+object CometLocalTableScanExec extends CometSink[LocalTableScanExec] {
+
+  // uses CometArrowConverters, which re-uses arrays
+  override def isFfiSafe: Boolean = false
+
+  override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
+    CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED)
+
+  override def createExec(nativeOp: Operator, op: LocalTableScanExec): CometNativeExec = {
+    CometScanWrapper(nativeOp, CometLocalTableScanExec(op, op.rows, op.output))
+  }
 
   private def createMetricsIterator(
       it: Iterator[ColumnarBatch],

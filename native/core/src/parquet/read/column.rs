@@ -19,8 +19,8 @@ use std::{marker::PhantomData, sync::Arc};
 
 use arrow::{
     array::ArrayData,
-    buffer::{Buffer, MutableBuffer},
-    datatypes::{ArrowNativeType, DataType as ArrowDataType, TimeUnit},
+    buffer::Buffer,
+    datatypes::{DataType as ArrowDataType, TimeUnit},
 };
 
 use parquet::{
@@ -28,9 +28,7 @@ use parquet::{
     schema::types::{ColumnDescPtr, ColumnDescriptor},
 };
 
-use crate::parquet::{
-    data_type::*, read::DECIMAL_BYTE_WIDTH, util::jni::TypePromotionInfo, ParquetMutableVector,
-};
+use crate::parquet::{data_type::*, util::jni::TypePromotionInfo, ParquetMutableVector};
 
 use super::{
     levels::LevelDecoder,
@@ -38,7 +36,7 @@ use super::{
     ReadOptions,
 };
 
-use crate::common::{bit, bit::log2};
+use crate::common::bit::log2;
 use crate::execution::operators::ExecutionError;
 
 /// Maximum number of decimal digits an i32 can represent
@@ -124,7 +122,7 @@ impl ColumnReader {
         match desc.physical_type() {
             PhysicalType::BOOLEAN => typed_reader!(BoolColumnReader, Boolean),
             PhysicalType::INT32 => {
-                if let Some(ref logical_type) = desc.logical_type() {
+                if let Some(ref logical_type) = desc.logical_type_ref() {
                     match logical_type {
                         lt @ LogicalType::Integer {
                             bit_width,
@@ -282,7 +280,7 @@ impl ColumnReader {
                 }
             }
             PhysicalType::INT64 => {
-                if let Some(ref logical_type) = desc.logical_type() {
+                if let Some(ref logical_type) = desc.logical_type_ref() {
                     match logical_type {
                         lt @ LogicalType::Integer {
                             bit_width,
@@ -331,19 +329,19 @@ impl ColumnReader {
                                 None
                             };
                             match unit {
-                                ParquetTimeUnit::MILLIS(_) => {
+                                ParquetTimeUnit::MILLIS => {
                                     typed_reader!(
                                         Int64TimestampMillisColumnReader,
                                         ArrowDataType::Timestamp(time_unit, time_zone)
                                     )
                                 }
-                                ParquetTimeUnit::MICROS(_) => {
+                                ParquetTimeUnit::MICROS => {
                                     typed_reader!(
                                         Int64TimestampMicrosColumnReader,
                                         ArrowDataType::Timestamp(time_unit, time_zone)
                                     )
                                 }
-                                ParquetTimeUnit::NANOS(_) => {
+                                ParquetTimeUnit::NANOS => {
                                     typed_reader!(
                                         Int64TimestampNanosColumnReader,
                                         ArrowDataType::Int64
@@ -390,7 +388,7 @@ impl ColumnReader {
 
             PhysicalType::DOUBLE => typed_reader!(DoubleColumnReader, Float64),
             PhysicalType::BYTE_ARRAY => {
-                if let Some(logical_type) = desc.logical_type() {
+                if let Some(logical_type) = desc.logical_type_ref() {
                     match logical_type {
                         LogicalType::String => typed_reader!(StringColumnReader, Utf8),
                         // https://github.com/apache/parquet-format/blob/master/LogicalTypes.md
@@ -403,13 +401,13 @@ impl ColumnReader {
                 }
             }
             PhysicalType::FIXED_LEN_BYTE_ARRAY => {
-                if let Some(logical_type) = desc.logical_type() {
+                if let Some(logical_type) = desc.logical_type_ref() {
                     match logical_type {
                         LogicalType::Decimal {
                             precision,
                             scale: _,
                         } => {
-                            if !use_decimal_128 && precision <= DECIMAL_MAX_INT_DIGITS {
+                            if !use_decimal_128 && precision <= &DECIMAL_MAX_INT_DIGITS {
                                 typed_reader!(FLBADecimal32ColumnReader, Int32)
                             } else if !use_decimal_128
                                 && promotion_info.precision <= DECIMAL_MAX_LONG_DIGITS
@@ -576,41 +574,6 @@ impl ColumnReader {
     }
 
     #[inline]
-    pub fn set_null(&mut self) {
-        make_func_mut!(self, set_null)
-    }
-
-    #[inline]
-    pub fn set_boolean(&mut self, value: bool) {
-        make_func_mut!(self, set_boolean, value)
-    }
-
-    #[inline]
-    pub fn set_fixed<U: ArrowNativeType + AsBytes>(&mut self, value: U) {
-        make_func_mut!(self, set_fixed, value)
-    }
-
-    #[inline]
-    pub fn set_binary(&mut self, value: MutableBuffer) {
-        make_func_mut!(self, set_binary, value)
-    }
-
-    #[inline]
-    pub fn set_decimal_flba(&mut self, value: MutableBuffer) {
-        make_func_mut!(self, set_decimal_flba, value)
-    }
-
-    #[inline]
-    pub fn set_position(&mut self, value: i64, size: usize) {
-        make_func_mut!(self, set_position, value, size)
-    }
-
-    #[inline]
-    pub fn set_is_deleted(&mut self, value: MutableBuffer) {
-        make_func_mut!(self, set_is_deleted, value)
-    }
-
-    #[inline]
     pub fn reset_batch(&mut self) {
         make_func_mut!(self, reset_batch)
     }
@@ -647,9 +610,6 @@ pub struct TypedColumnReader<T: DataType> {
     capacity: usize,
     /// Number of bits used to represent one value in Parquet.
     bit_width: usize,
-    /// Whether this is a constant column reader (always return constant vector).
-    is_const: bool,
-
     // Options for reading Parquet
     read_options: ReadOptions,
 
@@ -676,7 +636,6 @@ impl<T: DataType> TypedColumnReader<T> {
             vector,
             capacity,
             bit_width,
-            is_const: false,
             read_options,
             _phantom: PhantomData,
         }
@@ -855,128 +814,6 @@ impl<T: DataType> TypedColumnReader<T> {
 
         let value_decoder = self.get_decoder(value_data, encoding);
         self.value_decoder = Some(value_decoder);
-    }
-
-    /// Sets all values in the vector of this column reader to be null.
-    pub fn set_null(&mut self) {
-        self.check_const("set_null");
-        self.vector.put_nulls(self.capacity);
-    }
-
-    /// Sets all values in the vector of this column reader to be `value`.
-    pub fn set_boolean(&mut self, value: bool) {
-        self.check_const("set_boolean");
-        if value {
-            let dst = self.vector.value_buffer.as_slice_mut();
-            bit::set_bits(dst, 0, self.capacity);
-        }
-        self.vector.num_values += self.capacity;
-    }
-
-    /// Sets all values in the vector of this column reader to be `value`.
-    pub fn set_fixed<U: ArrowNativeType + AsBytes>(&mut self, value: U) {
-        self.check_const("set_fixed");
-        let type_size = std::mem::size_of::<U>();
-
-        let mut offset = 0;
-        for _ in 0..self.capacity {
-            bit::memcpy_value(&value, type_size, &mut self.vector.value_buffer[offset..]);
-            offset += type_size;
-        }
-        self.vector.num_values += self.capacity;
-    }
-
-    /// Sets all values in the vector of this column reader to be binary represented by `buffer`.
-    pub fn set_binary(&mut self, buffer: MutableBuffer) {
-        self.check_const("set_binary");
-
-        // TODO: consider using dictionary here
-
-        let len = buffer.len();
-        let total_len = len * self.capacity;
-        let offset_buf = self.vector.value_buffer.as_slice_mut();
-        let child_vector = &mut self.vector.children[0];
-        let value_buf = &mut child_vector.value_buffer;
-
-        value_buf.resize(total_len);
-
-        let mut value_buf_offset = 0;
-        let mut offset_buf_offset = 4;
-        for _ in 0..self.capacity {
-            bit::memcpy(&buffer, &mut value_buf.as_slice_mut()[value_buf_offset..]);
-            value_buf_offset += len;
-
-            bit::memcpy_value(
-                &(value_buf_offset as i32),
-                4,
-                &mut offset_buf[offset_buf_offset..],
-            );
-            offset_buf_offset += 4;
-        }
-        self.vector.num_values += self.capacity;
-    }
-
-    /// Sets all values in the vector of this column reader to be decimal represented by `buffer`.
-    pub fn set_decimal_flba(&mut self, buffer: MutableBuffer) {
-        self.check_const("set_decimal_flba");
-
-        // TODO: consider using dictionary here
-
-        let len = buffer.len();
-        let mut bytes: [u8; DECIMAL_BYTE_WIDTH] = [0; DECIMAL_BYTE_WIDTH];
-
-        for i in 0..len {
-            bytes[len - i - 1] = buffer[i];
-        }
-        if bytes[len - 1] & 0x80 == 0x80 {
-            bytes[len..DECIMAL_BYTE_WIDTH].fill(0xff);
-        }
-
-        let mut offset = 0;
-        for _ in 0..self.capacity {
-            bit::memcpy(&bytes, &mut self.vector.value_buffer[offset..]);
-            offset += DECIMAL_BYTE_WIDTH;
-        }
-        self.vector.num_values += self.capacity;
-    }
-
-    /// Sets position values of this column reader to the vector starting from `value`.
-    pub fn set_position(&mut self, value: i64, size: usize) {
-        let i64_size = std::mem::size_of::<i64>();
-
-        let mut offset = self.vector.num_values * i64_size;
-        for i in value..(value + size as i64) {
-            // TODO: is it better to convert self.value_buffer to &mut [i64] and for-loop update?
-            bit::memcpy_value(&i, i64_size, &mut self.vector.value_buffer[offset..]);
-            offset += i64_size;
-        }
-        self.vector.num_values += size;
-    }
-
-    /// Sets the values in the vector of this column reader to be a boolean array represented
-    /// by `buffer`.
-    pub fn set_is_deleted(&mut self, buffer: MutableBuffer) {
-        let len = buffer.len();
-        let dst = self.vector.value_buffer.as_slice_mut();
-        for i in 0..len {
-            if buffer[i] == 1 {
-                bit::set_bit(dst, i);
-            } else if buffer[i] == 0 {
-                bit::unset_bit(dst, i);
-            }
-        }
-        self.vector.num_values += len;
-    }
-
-    /// Check a few pre-conditions for setting constants, as well as setting
-    /// that `is_const` to true for the particular column reader.
-    fn check_const(&mut self, method_name: &str) {
-        assert!(
-            self.value_decoder.is_none(),
-            "{method_name} cannot be called after set_page_v1/set_page_v2!"
-        );
-        assert!(!self.is_const, "can only set constant once!");
-        self.is_const = true;
     }
 
     fn check_dictionary(&mut self, encoding: &Encoding) {

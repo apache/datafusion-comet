@@ -61,6 +61,7 @@ object CometTPCDSMicroBenchmark extends CometTPCQueryBenchmarkBase {
     "agg_low_cardinality",
     "agg_sum_decimals_no_grouping",
     "agg_sum_integers_no_grouping",
+    "agg_sum_integers_with_grouping",
     "agg_stddev",
     "case_when_column_or_null",
     "case_when_scalar",
@@ -75,6 +76,7 @@ object CometTPCDSMicroBenchmark extends CometTPCQueryBenchmarkBase {
     "join_left_outer",
     "join_semi",
     "rlike",
+    "explode",
     "to_json")
 
   override def runQueries(
@@ -112,7 +114,7 @@ object CometTPCDSMicroBenchmark extends CometTPCQueryBenchmarkBase {
         withSQLConf(
           CometConf.COMET_ENABLED.key -> "true",
           CometConf.COMET_EXEC_ENABLED.key -> "true",
-          CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.key -> "true",
+          CometConf.getExprAllowIncompatConfigKey("regexp") -> "true",
           // enabling COMET_EXPLAIN_NATIVE_ENABLED may add overhead but is useful for debugging
           CometConf.COMET_EXPLAIN_NATIVE_ENABLED.key -> "false") {
           cometSpark.sql(queryString).noop()

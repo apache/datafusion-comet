@@ -37,7 +37,7 @@ import org.apache.parquet.hadoop.example.{ExampleParquetWriter, GroupWriteSuppor
 import org.apache.parquet.schema.{MessageType, MessageTypeParser}
 import org.apache.spark._
 import org.apache.spark.internal.config.{MEMORY_OFFHEAP_ENABLED, MEMORY_OFFHEAP_SIZE, SHUFFLE_MANAGER}
-import org.apache.spark.sql.comet._
+import org.apache.spark.sql.comet.CometPlanChecker
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
@@ -58,7 +58,8 @@ abstract class CometTestBase
     with BeforeAndAfterEach
     with AdaptiveSparkPlanHelper
     with ShimCometSparkSessionExtensions
-    with ShimCometTestBase {
+    with ShimCometTestBase
+    with CometPlanChecker {
   import testImplicits._
 
   protected val shuffleManager: String =
@@ -82,13 +83,21 @@ abstract class CometTestBase
     conf.set(CometConf.COMET_RESPECT_PARQUET_FILTER_PUSHDOWN.key, "true")
     conf.set(CometConf.COMET_SPARK_TO_ARROW_ENABLED.key, "true")
     conf.set(CometConf.COMET_NATIVE_SCAN_ENABLED.key, "true")
-    conf.set(CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key, "true")
+    conf.set(CometConf.COMET_PARQUET_UNSIGNED_SMALL_INT_CHECK.key, "false")
     conf.set(CometConf.COMET_ONHEAP_MEMORY_OVERHEAD.key, "2g")
     conf.set(CometConf.COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED.key, "true")
     // SortOrder is incompatible for mixed zero and negative zero floating point values, but
     // this is an edge case, and we expect most users to allow sorts on floating point, so we
     // enable this for the tests
     conf.set(CometConf.getExprAllowIncompatConfigKey("SortOrder"), "true")
+    // For spark 4.0 tests, we need limit the thread threshold to avoid OOM, see:
+    //  https://github.com/apache/datafusion-comet/issues/2965
+    conf.set(
+      "spark.sql.shuffleExchange.maxThreadThreshold",
+      sys.env.getOrElse("SPARK_TEST_SQL_SHUFFLE_EXCHANGE_MAX_THREAD_THRESHOLD", "1024"))
+    conf.set(
+      "spark.sql.resultQueryStage.maxThreadThreshold",
+      sys.env.getOrElse("SPARK_TEST_SQL_RESULT_QUERY_STAGE_MAX_THREAD_THRESHOLD", "1024"))
     conf
   }
 
@@ -116,7 +125,6 @@ abstract class CometTestBase
       sparkPlan = dfSpark.queryExecution.executedPlan
     }
     val dfComet = datasetOfRows(spark, df.logicalPlan)
-
     if (withTol.isDefined) {
       checkAnswerWithTolerance(dfComet, expected, withTol.get)
     } else {
@@ -180,6 +188,17 @@ abstract class CometTestBase
       df: => DataFrame,
       absTol: Double): (SparkPlan, SparkPlan) = {
     internalCheckSparkAnswer(df, assertCometNative = false, withTol = Some(absTol))
+  }
+
+  /**
+   * Check that the query returns the correct results when Comet is enabled and that Comet
+   * replaced all possible operators. Use the provided `absTol` when comparing floating-point
+   * results.
+   */
+  protected def checkSparkAnswerAndOperatorWithTolerance(
+      query: String,
+      absTol: Double = 1e-6): (SparkPlan, SparkPlan) = {
+    checkSparkAnswerAndOperatorWithTol(sql(query), absTol)
   }
 
   /**
@@ -385,25 +404,30 @@ abstract class CometTestBase
             s"plan: ${new ExtendedExplainInfo().generateExtendedInfo(plan)}")
       case _ =>
     }
+
+    checkPlanNotMissingInput(plan)
   }
 
-  protected def findFirstNonCometOperator(
-      plan: SparkPlan,
-      excludedClasses: Class[_]*): Option[SparkPlan] = {
-    val wrapped = wrapCometSparkToColumnar(plan)
-    wrapped.foreach {
-      case _: CometNativeScanExec | _: CometScanExec | _: CometBatchScanExec =>
-      case _: CometSinkPlaceHolder | _: CometScanWrapper =>
-      case _: CometColumnarToRowExec =>
-      case _: CometSparkToColumnarExec =>
-      case _: CometExec | _: CometShuffleExchangeExec =>
-      case _: CometBroadcastExchangeExec =>
-      case _: WholeStageCodegenExec | _: ColumnarToRowExec | _: InputAdapter =>
-      case op if !excludedClasses.exists(c => c.isAssignableFrom(op.getClass)) =>
-        return Some(op)
-      case _ =>
+  // checks the plan node has no missing inputs
+  // such nodes represented in plan with exclamation mark !
+  // example: !CometWindowExec
+  protected def checkPlanNotMissingInput(plan: SparkPlan): Unit = {
+    def hasMissingInput(node: SparkPlan): Boolean = {
+      node.missingInput.nonEmpty && node.children.nonEmpty
     }
-    None
+
+    val isCometNode = plan.nodeName.startsWith("Comet")
+
+    if (isCometNode && hasMissingInput(plan)) {
+      assert(
+        false,
+        s"Plan node `${plan.nodeName}` has invalid missingInput: ${plan.missingInput}")
+    }
+
+    // Otherwise recursively check children
+    plan.children.foreach { child =>
+      checkPlanNotMissingInput(child)
+    }
   }
 
   private def checkPlanContains(plan: SparkPlan, includePlans: Class[_]*): Unit = {
@@ -414,14 +438,6 @@ abstract class CometTestBase
           s"Expected plan to contain ${planClass.getSimpleName}, but not.\n" +
             s"plan: $plan")
       }
-    }
-  }
-
-  /** Wraps the CometRowToColumn as ScanWrapper, so the child operators will not be checked */
-  private def wrapCometSparkToColumnar(plan: SparkPlan): SparkPlan = {
-    plan.transformDown {
-      // don't care the native operators
-      case p: CometSparkToColumnarExec => CometScanWrapper(null, p)
     }
   }
 
@@ -585,7 +601,7 @@ abstract class CometTestBase
   }
 
   def getPrimitiveTypesParquetSchema: String = {
-    if (usingDataSourceExecWithIncompatTypes(conf)) {
+    if (hasUnsignedSmallIntSafetyCheck(conf)) {
       // Comet complex type reader has different behavior for uint_8, uint_16 types.
       // The issue stems from undefined behavior in the parquet spec and is tracked
       // here: https://github.com/apache/parquet-java/issues/3142
@@ -669,7 +685,7 @@ abstract class CometTestBase
 
     val idGenerator = new AtomicInteger(0)
 
-    val rand = scala.util.Random
+    val rand = new scala.util.Random(42)
     val data = (begin until end).map { i =>
       if (nullEnabled && rand.nextBoolean()) {
         None
@@ -763,7 +779,7 @@ abstract class CometTestBase
       rowGroupSize = rowGroupSize)
     val div = if (dictionaryEnabled) 10 else n // maps value to a small range for dict to kick in
 
-    val rand = scala.util.Random
+    val rand = new scala.util.Random(42)
     val expected = (0 until n).map { i =>
       if (rand.nextBoolean()) {
         None
@@ -817,7 +833,7 @@ abstract class CometTestBase
       rowGroupSize = rowGroupSize)
     val div = if (dictionaryEnabled) 10 else n // maps value to a small range for dict to kick in
 
-    val rand = scala.util.Random
+    val rand = new scala.util.Random(42)
     val expected = (0 until n).map { i =>
       if (rand.nextBoolean()) {
         None
@@ -1108,7 +1124,7 @@ abstract class CometTestBase
    *         |""".stripMargin,
    *       "select arr from tbl",
    *       sqlConf = Seq(
-   *         CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "false",
+   *         CometConf.COMET_SCAN_UNSIGNED_SMALL_INT_SAFETY_CHECK.key -> "true",
    *         "spark.comet.explainFallback.enabled" -> "false"
    *       ),
    *       debugCometDF = df => {
@@ -1215,7 +1231,7 @@ abstract class CometTestBase
     val schema = MessageTypeParser.parseMessageType(schemaStr)
     val writer = createParquetWriter(schema, path, dictionaryEnabled = true)
 
-    val rand = scala.util.Random
+    val rand = new scala.util.Random(42)
     val expected = (0 until total).map { i =>
       // use a single value for the first page, to make sure dictionary encoding kicks in
       if (rand.nextBoolean()) None
@@ -1262,14 +1278,56 @@ abstract class CometTestBase
     writer.close()
   }
 
-  def usingDataSourceExec: Boolean = usingDataSourceExec(SQLConf.get)
+  def hasUnsignedSmallIntSafetyCheck(conf: SQLConf): Boolean = {
+    CometConf.COMET_PARQUET_UNSIGNED_SMALL_INT_CHECK.get(conf)
+  }
 
-  def usingDataSourceExec(conf: SQLConf): Boolean =
-    Seq(CometConf.SCAN_NATIVE_ICEBERG_COMPAT, CometConf.SCAN_NATIVE_DATAFUSION).contains(
-      CometConf.COMET_NATIVE_SCAN_IMPL.get(conf))
+  /**
+   * Compares Spark and Comet results using foreach() and exceptAll() to avoid collect()
+   */
+  protected def assertDataFrameEqualsWithExceptions(
+      df: => DataFrame,
+      assertCometNative: Boolean = true): (Option[Throwable], Option[Throwable]) = {
 
-  def usingDataSourceExecWithIncompatTypes(conf: SQLConf): Boolean = {
-    usingDataSourceExec(conf) &&
-    !CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get(conf)
+    var expected: Try[Unit] = null
+    withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+      expected = Try(datasetOfRows(spark, df.logicalPlan).foreach(_ => ()))
+    }
+    val actual = Try(datasetOfRows(spark, df.logicalPlan).foreach(_ => ()))
+
+    (expected, actual) match {
+      case (Success(_), Success(_)) =>
+        // compare results and confirm that they match
+        var dfSpark: DataFrame = null
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          dfSpark = datasetOfRows(spark, df.logicalPlan)
+        }
+        val dfComet = datasetOfRows(spark, df.logicalPlan)
+
+        // Compare schemas
+        assert(
+          dfSpark.schema == dfComet.schema,
+          s"Schema mismatch:\nSpark: ${dfSpark.schema}\nComet: ${dfComet.schema}")
+
+        val sparkMinusComet = dfSpark.exceptAll(dfComet)
+        val cometMinusSpark = dfComet.exceptAll(dfSpark)
+        val diffCount1 = sparkMinusComet.count()
+        val diffCount2 = cometMinusSpark.count()
+
+        if (diffCount1 > 0 || diffCount2 > 0) {
+          fail(
+            "Results do not match. " +
+              s"Rows in Spark but not Comet: $diffCount1. " +
+              s"Rows in Comet but not Spark: $diffCount2.")
+        }
+
+        if (assertCometNative) {
+          checkCometOperators(stripAQEPlan(dfComet.queryExecution.executedPlan))
+        }
+
+        (None, None)
+      case _ =>
+        (expected.failed.toOption, actual.failed.toOption)
+    }
   }
 }

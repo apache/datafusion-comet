@@ -35,10 +35,13 @@ use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::physical_plan::ColumnarValue;
 use datafusion_comet_spark_expr::EvalMode;
+use log::debug;
 use object_store::path::Path;
 use object_store::{parse_url, ObjectStore};
 use std::collections::HashMap;
+use std::sync::OnceLock;
 use std::time::Duration;
+use std::{collections::hash_map::DefaultHasher, hash::Hasher, sync::RwLock};
 use std::{fmt::Debug, hash::Hash, sync::Arc};
 use url::Url;
 
@@ -358,7 +361,7 @@ fn value_field(entries_field: &FieldRef) -> Option<FieldRef> {
     }
 }
 
-fn is_hdfs_scheme(url: &Url, object_store_configs: &HashMap<String, String>) -> bool {
+pub fn is_hdfs_scheme(url: &Url, object_store_configs: &HashMap<String, String>) -> bool {
     const COMET_LIBHDFS_SCHEMES_KEY: &str = "fs.comet.libhdfs.schemes";
     let scheme = url.scheme();
     if let Some(libhdfs_schemes) = object_store_configs.get(COMET_LIBHDFS_SCHEMES_KEY) {
@@ -369,9 +372,11 @@ fn is_hdfs_scheme(url: &Url, object_store_configs: &HashMap<String, String>) -> 
     }
 }
 
-// Mirrors object_store::parse::parse_url for the hdfs object store
-#[cfg(feature = "hdfs")]
-fn parse_hdfs_url(url: &Url) -> Result<(Box<dyn ObjectStore>, Path), object_store::Error> {
+// Creates an HDFS object store from a URL using the native HDFS implementation
+#[cfg(all(feature = "hdfs", not(feature = "hdfs-opendal")))]
+fn create_hdfs_object_store(
+    url: &Url,
+) -> Result<(Box<dyn ObjectStore>, Path), object_store::Error> {
     match datafusion_comet_objectstore_hdfs::object_store::hdfs::HadoopFileSystem::new(url.as_ref())
     {
         Some(object_store) => {
@@ -385,17 +390,26 @@ fn parse_hdfs_url(url: &Url) -> Result<(Box<dyn ObjectStore>, Path), object_stor
     }
 }
 
+// Creates an OpenDAL HDFS Operator from a URL with optional configuration
 #[cfg(feature = "hdfs-opendal")]
-fn parse_hdfs_url(url: &Url) -> Result<(Box<dyn ObjectStore>, Path), object_store::Error> {
+pub(crate) fn create_hdfs_operator(url: &Url) -> Result<opendal::Operator, object_store::Error> {
     let name_node = get_name_node_uri(url)?;
     let builder = opendal::services::Hdfs::default().name_node(&name_node);
 
-    let op = opendal::Operator::new(builder)
+    opendal::Operator::new(builder)
         .map_err(|error| object_store::Error::Generic {
             store: "hdfs-opendal",
             source: error.into(),
-        })?
-        .finish();
+        })
+        .map(|op| op.finish())
+}
+
+// Creates an HDFS object store from a URL using OpenDAL
+#[cfg(feature = "hdfs-opendal")]
+pub(crate) fn create_hdfs_object_store(
+    url: &Url,
+) -> Result<(Box<dyn ObjectStore>, Path), object_store::Error> {
+    let op = create_hdfs_operator(url)?;
     let store = object_store_opendal::OpendalStore::new(op);
     let path = Path::parse(url.path())?;
     Ok((Box::new(store), path))
@@ -422,12 +436,65 @@ fn get_name_node_uri(url: &Url) -> Result<String, object_store::Error> {
     }
 }
 
+// Stub implementation when HDFS support is not enabled
 #[cfg(all(not(feature = "hdfs"), not(feature = "hdfs-opendal")))]
-fn parse_hdfs_url(_url: &Url) -> Result<(Box<dyn ObjectStore>, Path), object_store::Error> {
+fn create_hdfs_object_store(
+    _url: &Url,
+) -> Result<(Box<dyn ObjectStore>, Path), object_store::Error> {
     Err(object_store::Error::Generic {
         store: "HadoopFileSystem",
         source: "Hdfs support is not enabled in this build".into(),
     })
+}
+
+type ObjectStoreCache = RwLock<HashMap<(String, u64), Arc<dyn ObjectStore>>>;
+
+/// Process-wide cache of object stores, keyed by `(scheme://host:port, config_hash)`.
+///
+/// ## Why static / process lifetime?
+///
+/// Comet's JNI architecture calls `initRecordBatchReader` once per Parquet file, and each
+/// call constructs a fresh `RuntimeEnv`.  There is therefore no executor-scoped Rust object
+/// with a lifetime longer than a single file read that could own this cache.  The executor
+/// process itself is the natural scope for HTTP connection-pool reuse, so process lifetime
+/// (i.e. `static`) is the appropriate choice here.  In the standard Spark-on-Kubernetes
+/// deployment model each executor process is dedicated to a single Spark application, so
+/// process lifetime and application lifetime are equivalent; the cache is reclaimed when
+/// the executor pod terminates.
+///
+/// ## Unbounded size
+///
+/// Cache entries are indexed by `(scheme://host:port, hash-of-configs)`.  A typical Spark
+/// job accesses a small, fixed set of buckets with a stable configuration, so the number of
+/// distinct keys is O(buckets × credential-configs) and remains small throughout the job.
+/// Entries are cheap relative to the cost of creating a new object store (new HTTP
+/// connection pool + DNS resolution), and there is no meaningful benefit from eviction, so
+/// no eviction policy is applied.
+///
+/// ## Credential invalidation
+///
+/// Object stores that use dynamic credentials (IMDS, WebIdentity, ECS role, STS assume-role)
+/// delegate credential refresh to a `CometCredentialProvider` that fetches fresh credentials
+/// on every request, so credential rotation is transparent and requires no cache
+/// invalidation.  Object stores whose credentials are embedded in the Hadoop configuration
+/// (e.g. `fs.s3a.access.key` / `fs.s3a.secret.key`) produce a different `config_hash` when
+/// those values change, which causes a new store to be created and inserted under the new
+/// key; the old entry is harmlessly superseded.
+fn object_store_cache() -> &'static ObjectStoreCache {
+    static CACHE: OnceLock<ObjectStoreCache> = OnceLock::new();
+    CACHE.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+/// Compute a hash of the object store configuration for cache keying.
+fn hash_object_store_configs(configs: &HashMap<String, String>) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    let mut keys: Vec<&String> = configs.keys().collect();
+    keys.sort();
+    for key in keys {
+        key.hash(&mut hasher);
+        configs[key].hash(&mut hasher);
+    }
+    hasher.finish()
 }
 
 /// Parses the url, registers the object store with configurations, and returns a tuple of the object store url
@@ -453,40 +520,103 @@ pub(crate) fn prepare_object_store_with_configs(
         &url[url::Position::BeforeHost..url::Position::AfterPort],
     );
 
-    let (object_store, object_store_path): (Box<dyn ObjectStore>, Path) = if is_hdfs_scheme {
-        parse_hdfs_url(&url)
-    } else if scheme == "s3" {
-        objectstore::s3::create_store(&url, object_store_configs, Duration::from_secs(300))
-    } else {
-        parse_url(&url)
-    }
-    .map_err(|e| ExecutionError::GeneralError(e.to_string()))?;
+    let config_hash = hash_object_store_configs(object_store_configs);
+    let cache_key = (url_key.clone(), config_hash);
+
+    // Check the cache first to reuse existing object store instances.
+    // This enables HTTP connection pooling and avoids redundant DNS lookups.
+    let cached = {
+        let cache = object_store_cache()
+            .read()
+            .map_err(|e| ExecutionError::GeneralError(format!("Object store cache error: {e}")))?;
+        cache.get(&cache_key).cloned()
+    };
+
+    let (object_store, object_store_path): (Arc<dyn ObjectStore>, Path) =
+        if let Some(store) = cached {
+            debug!("Reusing cached object store for {url_key}");
+            let path = Path::from_url_path(url.path())
+                .map_err(|e| ExecutionError::GeneralError(e.to_string()))?;
+            (store, path)
+        } else {
+            debug!("Creating new object store for {url_key}");
+            let (store, path): (Box<dyn ObjectStore>, Path) = if is_hdfs_scheme {
+                create_hdfs_object_store(&url)
+            } else if scheme == "s3" {
+                objectstore::s3::create_store(&url, object_store_configs, Duration::from_secs(300))
+            } else {
+                parse_url(&url)
+            }
+            .map_err(|e| ExecutionError::GeneralError(e.to_string()))?;
+
+            let store: Arc<dyn ObjectStore> = Arc::from(store);
+            // Insert into cache
+            if let Ok(mut cache) = object_store_cache().write() {
+                cache.insert(cache_key, Arc::clone(&store));
+            }
+            (store, path)
+        };
 
     let object_store_url = ObjectStoreUrl::parse(url_key.clone())?;
-    runtime_env.register_object_store(&url, Arc::from(object_store));
+    runtime_env.register_object_store(&url, object_store);
     Ok((object_store_url, object_store_path))
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::execution::operators::ExecutionError;
-    use crate::parquet::parquet_support::prepare_object_store_with_configs;
+    #[cfg(any(
+        all(not(feature = "hdfs"), not(feature = "hdfs-opendal")),
+        feature = "hdfs"
+    ))]
     use datafusion::execution::object_store::ObjectStoreUrl;
+    #[cfg(any(
+        all(not(feature = "hdfs"), not(feature = "hdfs-opendal")),
+        feature = "hdfs"
+    ))]
     use datafusion::execution::runtime_env::RuntimeEnv;
+    #[cfg(any(
+        all(not(feature = "hdfs"), not(feature = "hdfs-opendal")),
+        feature = "hdfs"
+    ))]
     use object_store::path::Path;
-    use std::collections::HashMap;
+    #[cfg(any(
+        all(not(feature = "hdfs"), not(feature = "hdfs-opendal")),
+        feature = "hdfs"
+    ))]
     use std::sync::Arc;
+    #[cfg(any(
+        all(not(feature = "hdfs"), not(feature = "hdfs-opendal")),
+        feature = "hdfs"
+    ))]
     use url::Url;
 
+    #[cfg(all(not(feature = "hdfs"), not(feature = "hdfs-opendal")))]
+    use crate::execution::operators::ExecutionError;
+    #[cfg(all(not(feature = "hdfs"), not(feature = "hdfs-opendal")))]
+    use std::collections::HashMap;
+
     /// Parses the url, registers the object store, and returns a tuple of the object store url and object store path
+    #[cfg(all(not(feature = "hdfs"), not(feature = "hdfs-opendal")))]
     pub(crate) fn prepare_object_store(
         runtime_env: Arc<RuntimeEnv>,
         url: String,
     ) -> Result<(ObjectStoreUrl, Path), ExecutionError> {
+        use crate::parquet::parquet_support::prepare_object_store_with_configs;
         prepare_object_store_with_configs(runtime_env, url, &HashMap::new())
     }
 
-    #[cfg(not(feature = "hdfs"))]
+    /// Parses the url, registers the object store, and returns a tuple of the object store url and object store path
+    #[cfg(feature = "hdfs")]
+    pub(crate) fn prepare_object_store(
+        runtime_env: Arc<RuntimeEnv>,
+        url: String,
+    ) -> Result<(ObjectStoreUrl, Path), crate::execution::operators::ExecutionError> {
+        use crate::parquet::parquet_support::prepare_object_store_with_configs;
+        use std::collections::HashMap;
+        prepare_object_store_with_configs(runtime_env, url, &HashMap::new())
+    }
+
+    #[cfg(all(not(feature = "hdfs"), not(feature = "hdfs-opendal")))]
     #[test]
     fn test_prepare_object_store() {
         use crate::execution::operators::ExecutionError;

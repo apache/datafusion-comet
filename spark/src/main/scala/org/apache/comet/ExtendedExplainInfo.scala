@@ -23,7 +23,7 @@ import scala.collection.mutable
 
 import org.apache.spark.sql.ExtendedExplainGenerator
 import org.apache.spark.sql.catalyst.trees.{TreeNode, TreeNodeTag}
-import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometPlan, CometSparkToColumnarExec}
+import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometNativeColumnarToRowExec, CometPlan, CometSparkToColumnarExec}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, InputAdapter, RowToColumnarExec, SparkPlan, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, QueryStageExec}
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
@@ -104,7 +104,7 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
           _: WholeStageCodegenExec | _: ReusedExchangeExec | _: AQEShuffleReadExec =>
       // ignore
       case _: RowToColumnarExec | _: ColumnarToRowExec | _: CometColumnarToRowExec |
-          _: CometSparkToColumnarExec =>
+          _: CometNativeColumnarToRowExec | _: CometSparkToColumnarExec =>
         planStats.transitions += 1
       case _: CometPlan =>
         planStats.cometOperators += 1
@@ -189,6 +189,25 @@ class CometCoverageStats {
     s"Comet accelerated $cometOperators out of $eligible " +
       s"eligible operators (${converted.toInt}%). " +
       s"Final plan contains $transitions transitions between Spark and Comet."
+  }
+}
+
+object CometCoverageStats {
+
+  /**
+   * Compute coverage stats for a plan without generating explain string.
+   */
+  def forPlan(plan: SparkPlan): CometCoverageStats = {
+    val stats = new CometCoverageStats()
+    val explainInfo = new ExtendedExplainInfo()
+    explainInfo.generateTreeString(
+      CometExplainInfo.getActualPlan(plan),
+      0,
+      Seq(),
+      0,
+      new StringBuilder(),
+      stats)
+    stats
   }
 }
 

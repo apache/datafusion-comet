@@ -22,10 +22,29 @@ package org.apache.spark.sql.comet
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.catalyst.plans.physical.{Partitioning, SinglePartition, UnknownPartitioning}
-import org.apache.spark.sql.execution.{SparkPlan, UnaryExecNode}
+import org.apache.spark.sql.execution.{CoalesceExec, SparkPlan, UnaryExecNode}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import com.google.common.base.Objects
+
+import org.apache.comet.{CometConf, ConfigEntry}
+import org.apache.comet.serde.OperatorOuterClass
+import org.apache.comet.serde.operator.CometSink
+
+object CometCoalesceExec extends CometSink[CoalesceExec] {
+
+  override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
+    CometConf.COMET_EXEC_COALESCE_ENABLED)
+
+  override def createExec(
+      nativeOp: OperatorOuterClass.Operator,
+      op: CoalesceExec): CometNativeExec = {
+    CometSinkPlaceHolder(
+      nativeOp,
+      op,
+      CometCoalesceExec(op, op.output, op.numPartitions, op.child))
+  }
+}
 
 /**
  * This is basically a copy of Spark's CoalesceExec, but supports columnar processing to make it

@@ -123,6 +123,7 @@ public class CometPlainVector extends CometDecodedVector {
 
   @Override
   public UTF8String getUTF8String(int rowId) {
+    if (isNullAt(rowId)) return null;
     if (!isBaseFixedWidthVector) {
       BaseVariableWidthVector varWidthVector = (BaseVariableWidthVector) valueVector;
       long offsetBufferAddress = varWidthVector.getOffsetBuffer().memoryAddress();
@@ -147,6 +148,7 @@ public class CometPlainVector extends CometDecodedVector {
 
   @Override
   public byte[] getBinary(int rowId) {
+    if (isNullAt(rowId)) return null;
     int offset;
     int length;
     if (valueVector instanceof BaseVariableWidthVector) {

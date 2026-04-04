@@ -10,7 +10,7 @@ Closes #.
 
 <!--
  Why are you proposing this change? If this is already explained clearly in the issue then this section is not needed.
- Explaining clearly why changes are proposed helps reviewers understand your changes and offer better suggestions for fixes.  
+ Explaining clearly why changes are proposed helps reviewers understand your changes and offer better suggestions for fixes.
 -->
 
 ## What changes are included in this PR?

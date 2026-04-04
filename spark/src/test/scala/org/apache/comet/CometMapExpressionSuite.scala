@@ -25,13 +25,14 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.types.BinaryType
 
+import org.apache.comet.serde.CometMapFromEntries
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
 
 class CometMapExpressionSuite extends CometTestBase {
 
   test("read map[int, int] from parquet") {
-    assume(usingDataSourceExec(conf))
 
     withTempPath { dir =>
       // create input file with Comet disabled
@@ -63,7 +64,6 @@ class CometMapExpressionSuite extends CometTestBase {
 
   // repro for https://github.com/apache/datafusion-comet/issues/1754
   test("read map[struct, struct] from parquet") {
-    assume(usingDataSourceExec(conf))
 
     withTempPath { dir =>
       // create input file with Comet disabled
@@ -122,6 +122,117 @@ class CometMapExpressionSuite extends CometTestBase {
       spark.read.parquet(filename).createOrReplaceTempView("t1")
       val df = spark.sql("SELECT map_from_arrays(array(c12), array(c3)) FROM t1")
       checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("fallback for size with map input") {
+    withTempDir { dir =>
+      withTempView("t1") {
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = true, 100)
+        spark.read.parquet(path.toString).createOrReplaceTempView("t1")
+
+        // Use column references in maps to avoid constant folding
+        checkSparkAnswerAndFallbackReason(
+          sql("SELECT size(case when _2 < 0 then map(_8, _9) else map() end) from t1"),
+          "size does not support map inputs")
+      }
+    }
+  }
+
+  // fails with "map is not supported"
+  ignore("size with map input") {
+    withTempDir { dir =>
+      withTempView("t1") {
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = true, 100)
+        spark.read.parquet(path.toString).createOrReplaceTempView("t1")
+
+        // Use column references in maps to avoid constant folding
+        checkSparkAnswerAndOperator(
+          sql("SELECT size(map(_8, _9, _10, _11)) from t1 where _8 is not null"))
+        checkSparkAnswerAndOperator(
+          sql("SELECT size(case when _2 < 0 then map(_8, _9) else map() end) from t1"))
+      }
+    }
+  }
+
+  test("map_from_entries - convert from Parquet") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "test.parquet")
+      val filename = path.toString
+      val random = new Random(42)
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        val schemaGenOptions =
+          SchemaGenOptions(
+            generateArray = false,
+            generateStruct = false,
+            primitiveTypes = SchemaGenOptions.defaultPrimitiveTypes.filterNot(_ == BinaryType))
+        val dataGenOptions = DataGenOptions(allowNull = false, generateNegativeZero = false)
+        ParquetGenerator.makeParquetFile(
+          random,
+          spark,
+          filename,
+          100,
+          schemaGenOptions,
+          dataGenOptions)
+      }
+      withSQLConf(
+        CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
+        CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true",
+        CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true") {
+        val df = spark.read.parquet(filename)
+        df.createOrReplaceTempView("t1")
+        for (field <- df.schema.fieldNames) {
+          checkSparkAnswerAndOperator(
+            spark.sql(
+              s"SELECT map_from_entries(array(struct($field as a, $field as b))) FROM t1"))
+        }
+      }
+    }
+  }
+
+  test("map_from_entries - native Parquet reader") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "test.parquet")
+      val filename = path.toString
+      val random = new Random(42)
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        val schemaGenOptions =
+          SchemaGenOptions(
+            generateArray = false,
+            generateStruct = false,
+            primitiveTypes = SchemaGenOptions.defaultPrimitiveTypes.filterNot(_ == BinaryType))
+        val dataGenOptions = DataGenOptions(allowNull = false, generateNegativeZero = false)
+        ParquetGenerator.makeParquetFile(
+          random,
+          spark,
+          filename,
+          100,
+          schemaGenOptions,
+          dataGenOptions)
+      }
+      val df = spark.read.parquet(filename)
+      df.createOrReplaceTempView("t1")
+      for (field <- df.schema.fieldNames) {
+        checkSparkAnswerAndOperator(
+          spark.sql(s"SELECT map_from_entries(array(struct($field as a, $field as b))) FROM t1"))
+      }
+    }
+  }
+
+  test("map_from_entries - fallback for binary type") {
+    def fallbackReason(reason: String) = reason
+    val table = "t2"
+    withTable(table) {
+      sql(
+        s"create table $table using parquet as select cast(array() as array<binary>) as c1 from range(10)")
+      checkSparkAnswerAndFallbackReason(
+        sql(s"select map_from_entries(array(struct(c1, 0))) from $table"),
+        fallbackReason(CometMapFromEntries.keyUnsupportedReason))
+      checkSparkAnswerAndFallbackReason(
+        sql(s"select map_from_entries(array(struct(0, c1))) from $table"),
+        fallbackReason(CometMapFromEntries.valueUnsupportedReason))
     }
   }
 

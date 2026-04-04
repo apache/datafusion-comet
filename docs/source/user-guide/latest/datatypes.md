@@ -19,8 +19,8 @@
 
 # Supported Spark Data Types
 
-Comet supports the following Spark data types. Refer to the [Comet Compatibility Guide] for information about data 
-type support in scans and other operators. 
+Comet supports the following Spark data types. Refer to the [Comet Compatibility Guide] for information about data
+type support in scans and other operators.
 
 [Comet Compatibility Guide]: compatibility.md
 

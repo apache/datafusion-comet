@@ -19,15 +19,16 @@ under the License.
 
 # Apache DataFusion Comet: HDFS integration
 
-This crate contains the HDFS cluster integration 
+This crate contains the HDFS cluster integration
 and is intended to be used as part of the Apache DataFusion Comet project
 
 The HDFS access powered by [fs-hdfs](https://github.com/datafusion-contrib/fs-hdfs).
-The crate provides `object_store` implementation leveraged by Rust FFI APIs for the `libhdfs` which can be compiled 
+The crate provides `object_store` implementation leveraged by Rust FFI APIs for the `libhdfs` which can be compiled
 by a set of C files provided by the [official Hadoop Community](https://github.com/apache/hadoop).
 
 # Supported HDFS versions
 
-Currently supported Apache Hadoop clients are: 
-- 2.* 
-- 3.*
+Currently supported Apache Hadoop clients are:
+
+- 2.\*
+- 3.\*

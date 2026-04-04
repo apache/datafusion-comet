@@ -25,6 +25,6 @@ jobs:
   check-missing-suites:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - name: Check Missing Suites
         run: python3 dev/ci/check-suites.py

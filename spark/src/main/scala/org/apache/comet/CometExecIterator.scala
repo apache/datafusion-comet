@@ -19,10 +19,7 @@
 
 package org.apache.comet
 
-import java.io.FileNotFoundException
 import java.lang.management.ManagementFactory
-
-import scala.util.matching.Regex
 
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark._
@@ -30,11 +27,13 @@ import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.internal.Logging
 import org.apache.spark.network.util.ByteUnit
 import org.apache.spark.sql.comet.CometMetricNode
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.vectorized._
 import org.apache.spark.util.SerializableConfiguration
 
 import org.apache.comet.CometConf._
 import org.apache.comet.Tracing.withTrace
+import org.apache.comet.exceptions.CometQueryExecutionException
 import org.apache.comet.parquet.CometFileKeyUnwrapper
 import org.apache.comet.serde.Config.ConfigMap
 import org.apache.comet.vector.NativeUtil
@@ -68,7 +67,8 @@ class CometExecIterator(
     numParts: Int,
     partitionIndex: Int,
     broadcastedHadoopConfForEncryption: Option[Broadcast[SerializableConfiguration]] = None,
-    encryptedFilePaths: Seq[String] = Seq.empty)
+    encryptedFilePaths: Seq[String] = Seq.empty,
+    shuffleBlockIterators: Map[Int, CometShuffleBlockIterator] = Map.empty)
     extends Iterator[ColumnarBatch]
     with Logging {
 
@@ -77,9 +77,15 @@ class CometExecIterator(
   private val nativeLib = new Native()
   private val nativeUtil = new NativeUtil()
   private val taskAttemptId = TaskContext.get().taskAttemptId
+  private val taskCPUs = TaskContext.get().cpus()
   private val cometTaskMemoryManager = new CometTaskMemoryManager(id, taskAttemptId)
-  private val cometBatchIterators = inputs.map { iterator =>
-    new CometBatchIterator(iterator, nativeUtil)
+  // Build a mixed array of iterators: CometShuffleBlockIterator for shuffle
+  // scan indices, CometBatchIterator for regular scan indices.
+  private val inputIterators: Array[Object] = inputs.zipWithIndex.map {
+    case (_, idx) if shuffleBlockIterators.contains(idx) =>
+      shuffleBlockIterators(idx).asInstanceOf[Object]
+    case (iterator, _) =>
+      new CometBatchIterator(iterator, nativeUtil).asInstanceOf[Object]
   }.toArray
 
   private val plan = {
@@ -87,11 +93,7 @@ class CometExecIterator(
     val localDiskDirs = SparkEnv.get.blockManager.getLocalDiskDirs
 
     // serialize Comet related Spark configs in protobuf format
-    val builder = ConfigMap.newBuilder()
-    conf.getAll.filter(_._1.startsWith(CometConf.COMET_PREFIX)).foreach { case (k, v) =>
-      builder.putEntries(k, v)
-    }
-    val protobufSparkConfigs = builder.build().toByteArray
+    val protobufSparkConfigs = CometExecIterator.serializeCometSQLConfs()
 
     // Create keyUnwrapper if encryption is enabled
     val keyUnwrapper = if (encryptedFilePaths.nonEmpty) {
@@ -110,7 +112,7 @@ class CometExecIterator(
 
     nativeLib.createPlan(
       id,
-      cometBatchIterators,
+      inputIterators,
       protobufQueryPlan,
       protobufSparkConfigs,
       numParts,
@@ -124,6 +126,7 @@ class CometExecIterator(
       memoryConfig.memoryLimit,
       memoryConfig.memoryLimitPerTask,
       taskAttemptId,
+      taskCPUs,
       keyUnwrapper)
   }
 
@@ -152,25 +155,20 @@ class CometExecIterator(
             })
         })
     } catch {
+      // Handle CometQueryExecutionException with JSON payload first
+      case e: CometQueryExecutionException =>
+        logError(s"Native execution for task $taskAttemptId failed", e)
+        throw SparkErrorConverter.convertToSparkException(e)
+
       case e: CometNativeException =>
         // it is generally considered bad practice to log and then rethrow an
         // exception, but it really helps debugging to be able to see which task
         // threw the exception, so we log the exception with taskAttemptId here
         logError(s"Native execution for task $taskAttemptId failed", e)
 
-        val fileNotFoundPattern: Regex =
-          ("""^External: Object at location (.+?) not found: No such file or directory """ +
-            """\(os error \d+\)$""").r
-        val parquetError: Regex =
+        val parquetError: scala.util.matching.Regex =
           """^Parquet error: (?:.*)$""".r
         e.getMessage match {
-          case fileNotFoundPattern(filePath) =>
-            // See org.apache.spark.sql.errors.QueryExecutionErrors.readCurrentFileNotFoundError
-            throw new SparkException(
-              errorClass = "_LEGACY_ERROR_TEMP_2055",
-              messageParameters = Map("message" -> e.getMessage),
-              cause = new FileNotFoundException(filePath)
-            ) // Can't use SparkFileNotFoundException because it's private.
           case parquetError() =>
             // See org.apache.spark.sql.errors.QueryExecutionErrors.failedToReadDataError
             // See org.apache.parquet.hadoop.ParquetFileReader for error message.
@@ -237,6 +235,7 @@ class CometExecIterator(
         currentBatch = null
       }
       nativeUtil.close()
+      shuffleBlockIterators.values.foreach(_.close())
       nativeLib.releasePlan(plan)
 
       if (tracingEnabled) {
@@ -264,6 +263,28 @@ class CometExecIterator(
 }
 
 object CometExecIterator extends Logging {
+
+  private def cometSqlConfs: Map[String, String] =
+    SQLConf.get.getAllConfs.filter(_._1.startsWith(CometConf.COMET_PREFIX))
+
+  def serializeCometSQLConfs(): Array[Byte] = {
+    val builder = ConfigMap.newBuilder()
+    cometSqlConfs.foreach { case (k, v) =>
+      if (k.startsWith(s"${CometConf.COMET_PREFIX}.datafusion.")) {
+        if (CometConf.COMET_RESPECT_DATAFUSION_CONFIGS.get(SQLConf.get)) {
+          builder.putEntries(k, v)
+        }
+      } else {
+        builder.putEntries(k, v)
+      }
+    }
+    // Inject the resolved executor cores so the native side can use it
+    // for tokio runtime thread count
+    val executorCores = numDriverOrExecutorCores(SparkEnv.get.conf)
+    builder.putEntries("spark.executor.cores", executorCores.toString)
+
+    builder.build().toByteArray
+  }
 
   def getMemoryConfig(conf: SparkConf): MemoryConfig = {
     val numCores = numDriverOrExecutorCores(conf)

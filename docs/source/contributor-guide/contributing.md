@@ -32,6 +32,8 @@ Here are some areas where you can help:
 
 We maintain a list of good first issues in GitHub [here](https://github.com/apache/datafusion-comet/issues?q=is%3Aopen+is%3Aissue+label%3A%22good+first+issue%22). We also have a [roadmap](roadmap.md).
 
+To assign yourself an issue, comment `take` on the issue. To unassign yourself, comment `untake`.
+
 ## Reporting issues
 
 We use [GitHub issues](https://github.com/apache/datafusion-comet/issues) for bug reports and feature requests.

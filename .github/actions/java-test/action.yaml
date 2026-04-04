@@ -32,9 +32,13 @@ inputs:
   scan_impl:
     description: 'The default Parquet scan implementation'
     required: false
-    default: 'native_comet'
+    default: 'auto'
   upload-test-reports:
     description: 'Whether to upload test results including coverage to GitHub'
+    required: false
+    default: 'false'
+  skip-native-build:
+    description: 'Skip native build (when using pre-built artifact)'
     required: false
     default: 'false'
 
@@ -42,6 +46,7 @@ runs:
   using: "composite"
   steps:
     - name: Run Cargo release build
+      if: ${{ inputs.skip-native-build != 'true' }}
       shell: bash
       # it is important that we run the Scala tests against a release build rather than a debug build
       # to make sure that no tests are relying on overflow checks that are present only in debug builds
@@ -50,7 +55,11 @@ runs:
         cargo build --release
 
     - name: Cache Maven dependencies
-      uses: actions/cache@v4
+      # TODO: remove next line after working again
+      #  temporarily work around https://github.com/actions/runner-images/issues/13341
+      #  by disabling caching for macOS
+      if: ${{ runner.os != 'macOS' }}
+      uses: actions/cache@v5
       with:
         path: |
           ~/.m2/repository
@@ -58,11 +67,6 @@ runs:
         key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}
         restore-keys: |
           ${{ runner.os }}-java-maven-
-
-    - name: Run Maven compile
-      shell: bash
-      run: |
-        ./mvnw -B compile test-compile scalafix:scalafix -Dscalafix.mode=CHECK -Psemanticdb ${{ inputs.maven_opts }}
 
     - name: Run all tests
       shell: bash
@@ -72,7 +76,7 @@ runs:
         SPARK_LOCAL_HOSTNAME: "localhost"
         SPARK_LOCAL_IP: "127.0.0.1"
       run: |
-        MAVEN_OPTS="-Xmx4G -Xms2G -XX:+UnlockDiagnosticVMOptions -XX:+ShowMessageBoxOnError -XX:+HeapDumpOnOutOfMemoryError -XX:ErrorFile=./hs_err_pid%p.log" SPARK_HOME=`pwd` ./mvnw -B -Prelease clean install ${{ inputs.maven_opts }}
+        MAVEN_OPTS="-Xmx4G -Xms2G -XX:+UnlockDiagnosticVMOptions -XX:+ShowMessageBoxOnError -XX:+HeapDumpOnOutOfMemoryError -XX:ErrorFile=./hs_err_pid%p.log" SPARK_HOME=`pwd` ./mvnw -B -Prelease install ${{ inputs.maven_opts }}
     - name: Run specified tests
       shell: bash
       if: ${{ inputs.suites != '' }}
@@ -83,10 +87,10 @@ runs:
       run: |
         MAVEN_SUITES="$(echo "${{ inputs.suites }}" | paste -sd, -)"
         echo "Running with MAVEN_SUITES=$MAVEN_SUITES"
-        MAVEN_OPTS="-Xmx4G -Xms2G -DwildcardSuites=$MAVEN_SUITES -XX:+UnlockDiagnosticVMOptions -XX:+ShowMessageBoxOnError -XX:+HeapDumpOnOutOfMemoryError -XX:ErrorFile=./hs_err_pid%p.log" SPARK_HOME=`pwd` ./mvnw -B -Prelease clean install ${{ inputs.maven_opts }}
+        MAVEN_OPTS="-Xmx4G -Xms2G -DwildcardSuites=$MAVEN_SUITES -XX:+UnlockDiagnosticVMOptions -XX:+ShowMessageBoxOnError -XX:+HeapDumpOnOutOfMemoryError -XX:ErrorFile=./hs_err_pid%p.log" SPARK_HOME=`pwd` ./mvnw -B -Prelease install ${{ inputs.maven_opts }}
     - name: Upload crash logs
       if: failure()
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v6
       with:
         name: crash-logs-${{ inputs.artifact_name }}
         path: "**/hs_err_pid*.log"
@@ -100,19 +104,15 @@ runs:
         find . -name 'unit-tests.log'
     - name: Upload unit-tests.log
       if: failure()
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v6
       with:
         name: unit-tests-${{ inputs.artifact_name }}
         path: "**/target/unit-tests.log"
     - name: Upload test results
       if: ${{ inputs.upload-test-reports == 'true' }}
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v6
       with:
          name: java-test-reports-${{ inputs.artifact_name }}
          path: "**/target/surefire-reports/*.txt"
          retention-days: 7 # 1 week for test reports
          overwrite: true
-
-    - name: Upload coverage results
-      if: ${{ inputs.upload-test-reports == 'true' }}
-      uses: codecov/codecov-action@v5

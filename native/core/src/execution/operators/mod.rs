@@ -17,42 +17,21 @@
 
 //! Operators
 
-use std::fmt::Debug;
-
-use jni::objects::GlobalRef;
+pub use crate::errors::ExecutionError;
 
 pub use copy::*;
+pub use iceberg_scan::*;
 pub use scan::*;
 
 mod copy;
 mod expand;
 pub use expand::ExpandExec;
+mod iceberg_scan;
+mod parquet_writer;
+pub use parquet_writer::ParquetWriterExec;
+mod csv_scan;
+pub mod projection;
 mod scan;
-
-/// Error returned during executing operators.
-#[derive(thiserror::Error, Debug)]
-pub enum ExecutionError {
-    /// Simple error
-    #[allow(dead_code)]
-    #[error("General execution error with reason: {0}.")]
-    GeneralError(String),
-
-    /// Error when deserializing an operator.
-    #[error("Fail to deserialize to native operator with reason: {0}.")]
-    DeserializeError(String),
-
-    /// Error when processing Arrow array.
-    #[error("Fail to process Arrow array with reason: {0}.")]
-    ArrowError(String),
-
-    /// DataFusion error
-    #[error("Error from DataFusion: {0}.")]
-    DataFusionError(String),
-
-    #[error("{class}: {msg}")]
-    JavaException {
-        class: String,
-        msg: String,
-        throwable: GlobalRef,
-    },
-}
+mod shuffle_scan;
+pub use csv_scan::init_csv_datasource_exec;
+pub use shuffle_scan::ShuffleScanExec;
