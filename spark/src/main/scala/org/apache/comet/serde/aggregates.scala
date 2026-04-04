@@ -22,9 +22,10 @@ package org.apache.comet.serde
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.catalyst.expressions.Attribute
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, Corr, Count, Covariance, CovPopulation, CovSample, First, Last, Max, Min, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
+import org.apache.spark.sql.catalyst.expressions.Literal
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, Corr, Count, Covariance, CovPopulation, CovSample, First, Last, Max, Min, Percentile, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ByteType, DataTypes, DecimalType, IntegerType, LongType, ShortType, StringType}
+import org.apache.spark.sql.types.{ArrayType, ByteType, DataTypes, DecimalType, IntegerType, LongType, NumericType, ShortType, StringType}
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
@@ -666,6 +667,59 @@ object CometBloomFilterAggregate extends CometAggregateExpressionSerde[BloomFilt
         bloomFilter.child,
         bloomFilter.estimatedNumItemsExpression,
         bloomFilter.numBitsExpression)
+      None
+    }
+  }
+}
+
+object CometPercentile extends CometAggregateExpressionSerde[Percentile] {
+  override def convert(
+      aggExpr: AggregateExpression,
+      expr: Percentile,
+      inputs: Seq[Attribute],
+      binding: Boolean,
+      conf: SQLConf): Option[ExprOuterClass.AggExpr] = {
+
+    // Only support when frequency is Literal(1L) - i.e., percentile_cont behavior
+    expr.frequencyExpression match {
+      case Literal(1L, LongType) =>
+      case _ =>
+        withInfo(aggExpr, "weighted percentile not supported")
+        return None
+    }
+
+    // Only support scalar percentile, not array of percentiles
+    if (expr.percentageExpression.dataType.isInstanceOf[ArrayType]) {
+      withInfo(aggExpr, "array of percentiles not supported")
+      return None
+    }
+
+    // Support numeric types (includes DecimalType)
+    expr.child.dataType match {
+      case _: NumericType =>
+      case _ =>
+        withInfo(aggExpr, s"unsupported input type: ${expr.child.dataType}")
+        return None
+    }
+
+    val childExpr = exprToProto(expr.child, inputs, binding)
+    val percentileExpr = exprToProto(expr.percentageExpression, inputs, binding)
+    val dataType = serializeDataType(expr.dataType)
+
+    if (childExpr.isDefined && percentileExpr.isDefined && dataType.isDefined) {
+      val builder = ExprOuterClass.PercentileCont.newBuilder()
+      builder.setChild(childExpr.get)
+      builder.setPercentile(percentileExpr.get)
+      builder.setDatatype(dataType.get)
+      builder.setReverse(expr.reverse)
+
+      Some(
+        ExprOuterClass.AggExpr
+          .newBuilder()
+          .setPercentileCont(builder)
+          .build())
+    } else {
+      withInfo(aggExpr, expr.child, expr.percentageExpression)
       None
     }
   }

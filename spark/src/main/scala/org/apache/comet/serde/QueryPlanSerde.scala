@@ -265,6 +265,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[Last] -> CometLast,
     classOf[Max] -> CometMax,
     classOf[Min] -> CometMin,
+    classOf[Percentile] -> CometPercentile,
     classOf[StddevPop] -> CometStddevPop,
     classOf[StddevSamp] -> CometStddevSamp,
     classOf[Sum] -> CometSum,
@@ -372,6 +373,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
       case _: ArrayType => 14
       case _: MapType => 15
       case _: StructType => 16
+      case _: YearMonthIntervalType => 17
+      case _: DayTimeIntervalType => 18
       case dt =>
         logWarning(s"Cannot serialize Spark data type: $dt")
         return None
