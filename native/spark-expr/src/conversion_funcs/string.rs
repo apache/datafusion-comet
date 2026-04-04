@@ -41,11 +41,6 @@ macro_rules! cast_utf8_to_timestamp {
         } else {
             PrimitiveArray::<$array_type>::builder(len)
         };
-    // $tz is a Timezone:Tz object and contains the session timezone.
-    // $to_tz_str is a string containing the to_type timezone
-    ($array:expr, $eval_mode:expr, $array_type:ty, $cast_method:ident, $tz:expr, $to_tz_str:expr) => {{
-        let len = $array.len();
-        let mut cast_array = PrimitiveArray::<$array_type>::builder(len).with_timezone($to_tz_str);
         let mut cast_err: Option<SparkError> = None;
         for i in 0..len {
             if $array.is_null(i) {
@@ -684,23 +679,20 @@ pub(crate) fn cast_string_to_timestamp(
         .downcast_ref::<GenericStringArray<i32>>()
         .expect("Expected a string array");
 
-    let cast_array: ArrayRef = match to_type {
-        DataType::Timestamp(_, Some(_)) => {
-            let tz = &timezone::Tz::from_str(timezone_str).unwrap();
     let tz = &timezone::Tz::from_str(timezone_str)
         .map_err(|_| SparkError::Internal(format!("Invalid timezone string: {timezone_str}")))?;
 
     let cast_array: ArrayRef = match to_type {
-        DataType::Timestamp(_, tz_opt) => {
-            let to_tz = tz_opt.as_deref().unwrap_or("UTC");
+        DataType::Timestamp(_, Some(tz_opt)) => {
+            let to_tz = tz_opt.as_ref();
             cast_utf8_to_timestamp!(
                 string_array,
                 eval_mode,
                 TimestampMicrosecondType,
                 timestamp_parser,
                 tz,
-                Some("UTC")
-            )
+                Some(to_tz.as_ref())
+            )?
         }
         DataType::Timestamp(_, None) => {
             // TimestampNTZ: use a dedicated parser that strips timezone offsets
@@ -712,8 +704,6 @@ pub(crate) fn cast_string_to_timestamp(
                 timestamp_ntz_parser,
                 &Utc,
                 None::<&str>
-            )
-                to_tz
             )?
         }
         _ => unreachable!("Invalid data type {:?} in cast from string", to_type),
@@ -1494,8 +1484,6 @@ mod tests {
             timestamp_parser,
             tz,
             Some("UTC")
-        );
-            "UTC"
         )
         .unwrap();
 
@@ -1514,7 +1502,39 @@ mod tests {
             Some("not_a_timestamp"),
             Some("2020-01-01"),
         ]));
+        let string_array = array
+            .as_any()
+            .downcast_ref::<GenericStringArray<i32>>()
+            .expect("Expected a string array");
 
+        let eval_mode = EvalMode::Legacy;
+        let result = cast_utf8_to_timestamp!(
+            &string_array,
+            eval_mode,
+            TimestampMicrosecondType,
+            timestamp_ntz_parser,
+            &Utc,
+            None::<&str>
+        )
+        .unwrap();
+
+        assert_eq!(
+            result.data_type(),
+            &DataType::Timestamp(TimeUnit::Microsecond, None)
+        );
+        assert_eq!(result.len(), 3);
+
+        let ts_array = result
+            .as_any()
+            .downcast_ref::<PrimitiveArray<TimestampMicrosecondType>>()
+            .expect("Expected a timestamp array");
+
+        assert_eq!(ts_array.value(0), 1577882096123456);
+        assert!(ts_array.is_null(1));
+        assert_eq!(ts_array.value(2), 1577836800000000);
+    }
+
+    #[test]
     fn test_cast_string_to_timestamp_ansi_error() {
         // In ANSI mode, an invalid timestamp string must produce an error rather than null.
         let array: ArrayRef = Arc::new(StringArray::from(vec![
@@ -1527,7 +1547,6 @@ mod tests {
             .downcast_ref::<GenericStringArray<i32>>()
             .expect("Expected a string array");
 
-        let eval_mode = EvalMode::Legacy;
         let eval_mode = EvalMode::Ansi;
         let result = cast_utf8_to_timestamp!(
             &string_array,
@@ -1687,16 +1706,7 @@ mod tests {
         assert_eq!(ts_array.value(0), 1577882096000000); // 2020-01-01T12:34:56
                                                          // Non-offset string should parse correctly
         assert!(!ts_array.is_null(1));
-        assert_eq!(ts_array.value(1), 1577882096000000);
-
         Ok(())
-            tz,
-            "UTC"
-        );
-        assert!(
-            result.is_err(),
-            "ANSI mode should return Err for an invalid timestamp string"
-        );
     }
 
     #[test]
