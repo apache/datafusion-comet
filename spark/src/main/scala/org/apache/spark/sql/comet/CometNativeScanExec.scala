@@ -148,6 +148,18 @@ case class CometNativeScanExec(
     // Get file partitions from CometScanExec (handles bucketing, etc.)
     val filePartitions = scan.getFilePartitions()
 
+    // Validate per-file schema compatibility before native execution.
+    // This must run here (not in doExecuteColumnar) because when CometNativeScanExec
+    // is wrapped by a parent CometNativeExec, the parent's doExecuteColumnar() runs
+    // the entire plan in native code and CometNativeScanExec.doExecuteColumnar() is
+    // never called. This lazy val IS always evaluated via commonData/perPartitionData.
+    CometScanUtils.validatePerFileSchemaCompatibility(
+      relation.sparkSession.sessionState.newHadoopConfWithOptions(relation.options),
+      requiredSchema,
+      relation.partitionSchema.fieldNames.toSet,
+      relation.sparkSession.sessionState.conf.caseSensitiveAnalysis,
+      filePartitions)
+
     // Serialize each partition's files
     import org.apache.comet.serde.operator.partition2Proto
     val perPartitionBytes = filePartitions.map { filePartition =>
@@ -199,7 +211,9 @@ case class CometNativeScanExec(
         dataFieldOpt.foreach { dataField =>
           if (dataField.dataType != requiredField.dataType) {
             if (!isSparkCompatibleRead(
-                dataField.dataType, requiredField.dataType, allowTypeWidening)) {
+                dataField.dataType,
+                requiredField.dataType,
+                allowTypeWidening)) {
               val scnse = new SchemaColumnConvertNotSupportedException(
                 requiredField.name,
                 dataField.dataType.catalogString,
@@ -234,11 +248,11 @@ case class CometNativeScanExec(
       case (ByteType | ShortType | IntegerType, LongType) => allowTypeWidening
       case (IntegerType | ByteType | ShortType, DateType) => true
 
-      // Unsigned int → signed (handled by Spark's schema converter)
+      // Unsigned int -> signed (handled by Spark's schema converter)
       case (FloatType, DoubleType) => true
       case (ByteType | ShortType | IntegerType, DoubleType) => allowTypeWidening
 
-      // Date → TimestampNTZ (Spark 4.0+ only)
+      // Date -> TimestampNTZ (Spark 4.0+ only)
       case (DateType, TimestampNTZType) => allowTypeWidening
 
       // Timestamp conversions
@@ -248,7 +262,7 @@ case class CometNativeScanExec(
       // String/Binary interop
       case (StringType | BinaryType, StringType | BinaryType) => true
 
-      // Decimal → Decimal: precision/scale rules
+      // Decimal -> Decimal: precision/scale rules
       case (DecimalType.Fixed(p1, s1), DecimalType.Fixed(p2, s2)) =>
         if (allowTypeWidening) {
           val scaleIncrease = s2 - s1

@@ -3153,7 +3153,7 @@ index 0acb21f3e6f..42cbe451e30 100644
 @@ -1037,7 +1037,8 @@ class ParquetSchemaSuite extends ParquetSchemaTest {
      e
    }
- 
+
 -  test("schema mismatch failure error message for parquet reader") {
 +  test("schema mismatch failure error message for parquet reader",
 +      IgnoreComet("Comet doesn't work with vectorizedReaderEnabled = false")) {
