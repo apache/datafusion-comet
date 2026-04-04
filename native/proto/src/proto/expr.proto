@@ -88,6 +88,7 @@ message Expr {
     UnixTimestamp unix_timestamp = 65;
     FromJson from_json = 66;
     ToCsv to_csv = 67;
+    HoursTransform hours_transform = 68;
   }
 
   // Optional QueryContext for error reporting (contains SQL text and position)
@@ -349,6 +350,11 @@ message ToPrettyString {
 }
 
 message Hour {
+  Expr child = 1;
+  string timezone = 2;
+}
+
+message HoursTransform {
   Expr child = 1;
   string timezone = 2;
 }
