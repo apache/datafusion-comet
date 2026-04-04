@@ -15,29 +15,14 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! PoC of vectorization execution through JNI to Rust.
-pub mod columnar_to_row;
-pub mod expressions;
-pub mod jni_api;
-pub(crate) mod metrics;
-pub(crate) mod joins;
-pub mod operators;
-pub(crate) mod planner;
-pub mod serde;
-pub use datafusion_comet_shuffle as shuffle;
-pub(crate) mod sort;
-pub(crate) mod spark_plan;
-pub use datafusion_comet_spark_expr::timezone;
-mod memory_pools;
-pub(crate) mod spark_config;
-pub(crate) mod tracing;
-pub(crate) mod utils;
+mod buffered_batch;
+mod filter;
+mod metrics;
+mod output_builder;
+mod sort_merge_join;
+mod sort_merge_join_stream;
+
+pub(crate) use sort_merge_join::CometSortMergeJoinExec;
 
 #[cfg(test)]
-mod tests {
-    #[test]
-    fn it_works() {
-        let result = 2 + 2;
-        assert_eq!(result, 4);
-    }
-}
+mod tests;

@@ -280,6 +280,15 @@ object CometConf extends ShimCometConf {
     createExecEnabledConfig("hashJoin", defaultValue = true)
   val COMET_EXEC_SORT_MERGE_JOIN_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("sortMergeJoin", defaultValue = true)
+  val COMET_EXEC_SMJ_USE_NATIVE: ConfigEntry[Boolean] =
+    conf("spark.comet.exec.sortMergeJoin.useNative")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "When true, use Comet's native sort merge join implementation. " +
+          "When false, use DataFusion's SortMergeJoinExec. " +
+          "This is useful for benchmarking the two implementations.")
+      .booleanConf
+      .createWithDefault(true)
   val COMET_EXEC_AGGREGATE_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("aggregate", defaultValue = true)
   val COMET_EXEC_COLLECT_LIMIT_ENABLED: ConfigEntry[Boolean] =
