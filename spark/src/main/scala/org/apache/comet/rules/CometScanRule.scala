@@ -547,42 +547,12 @@ case class CometScanRule(session: SparkSession)
             false
           }
 
-        // Check for transform functions in residual expressions
-        // Non-identity transforms (truncate, bucket, year, month, day, hour) in residuals
-        // are now supported - they skip row-group filtering and are handled
-        // post-scan by CometFilter.
-        // This is less optimal than row-group filtering but still allows native execution.
-        val transformFunctionsSupported =
-          try {
-            IcebergReflection.findNonIdentityTransformInResiduals(metadata.tasks) match {
-              case Some(transformType) =>
-                val deleteFiles = IcebergReflection.getDeleteFiles(metadata.tasks)
-
-                if (!deleteFiles.isEmpty) {
-                  // Delete operations with non-identity transforms must fall back to Spark.
-                  // convertIcebergExpression() cannot convert BoundTerm with transforms,
-                  // causing residuals to be dropped. This breaks delete operations which
-                  // rely on residuals to identify correct rows.
-                  // Future: Convert transforms to Spark expressions (bucket→pmod, year→Year, etc)
-                  fallbackReasons +=
-                    s"Iceberg transform '$transformType' with delete files present. " +
-                      "Falling back to ensure correct delete operation."
-                  false
-                } else {
-                  // Read-only: Safe to continue natively with post-scan filtering
-                  logInfo(
-                    s"Iceberg residual contains transform '$transformType' - " +
-                      "post-scan filtering will apply.")
-                  true
-                }
-              case None =>
-                true
-            }
-          } catch {
-            case e: Exception =>
-              fallbackReasons += s"Could not check for transform functions: ${e.getMessage}"
-              false
-          }
+        // TODO: A safety guard for non-identity transforms (truncate, bucket, year, etc.)
+        // with delete files should be re-implemented using PartitionSpec inspection.
+        // The previous residual-based detection was ineffective because Iceberg residuals
+        // use NamedReference terms without transform metadata. Correctness is currently
+        // maintained by Iceberg/Spark's MOR delete processing and CometFilter post-scan
+        // filtering. See: https://github.com/apache/datafusion-comet/issues/XXXX
 
         // Check for unsupported struct types in delete files
         val deleteFileTypesSupported = {
@@ -665,7 +635,7 @@ case class CometScanRule(session: SparkSession)
 
         if (schemaSupported && fileIOCompatible && formatVersionSupported &&
           taskValidation.allParquet && allSupportedFilesystems && partitionTypesSupported &&
-          complexTypePredicatesSupported && transformFunctionsSupported &&
+          complexTypePredicatesSupported &&
           deleteFileTypesSupported && dppSubqueriesSupported) {
           CometBatchScanExec(
             scanExec.clone().asInstanceOf[BatchScanExec],
@@ -843,23 +813,19 @@ object CometScanRule extends Logging {
     val contentScanTaskClass = Class.forName(IcebergReflection.ClassNames.CONTENT_SCAN_TASK)
     val contentFileClass = Class.forName(IcebergReflection.ClassNames.CONTENT_FILE)
     val fileScanTaskClass = Class.forName(IcebergReflection.ClassNames.FILE_SCAN_TASK)
-    val unboundPredicateClass = Class.forName(IcebergReflection.ClassNames.UNBOUND_PREDICATE)
     // scalastyle:on classforname
 
     // Cache all method lookups outside the loop
     val fileMethod = contentScanTaskClass.getMethod("file")
     val formatMethod = contentFileClass.getMethod("format")
     val pathMethod = contentFileClass.getMethod("path")
-    val residualMethod = contentScanTaskClass.getMethod("residual")
     val deletesMethod = fileScanTaskClass.getMethod("deletes")
-    val termMethod = unboundPredicateClass.getMethod("term")
 
     val supportedSchemes =
       Set("file", "s3", "s3a", "gs", "gcs", "oss", "abfss", "abfs", "wasbs", "wasb")
 
     var allParquet = true
     val unsupportedSchemes = mutable.Set[String]()
-    var nonIdentityTransform: Option[String] = None
     val deleteFiles = new java.util.ArrayList[Any]()
 
     tasks.asScala.foreach { task =>
@@ -883,28 +849,11 @@ object CometScanRule extends Logging {
         case _: java.net.URISyntaxException => // ignore
       }
 
-      // Residual transform check (short-circuit if already found unsupported)
-      if (nonIdentityTransform.isEmpty && fileScanTaskClass.isInstance(task)) {
-        try {
-          val residual = residualMethod.invoke(task)
-          if (unboundPredicateClass.isInstance(residual)) {
-            val term = termMethod.invoke(residual)
-            try {
-              val transformMethod = term.getClass.getMethod("transform")
-              transformMethod.setAccessible(true)
-              val transform = transformMethod.invoke(term)
-              val transformStr = transform.toString
-              if (transformStr != IcebergReflection.Transforms.IDENTITY) {
-                nonIdentityTransform = Some(transformStr)
-              }
-            } catch {
-              case _: NoSuchMethodException => // No transform = simple reference, OK
-            }
-          }
-        } catch {
-          case _: Exception => // Skip tasks where we can't get residual
-        }
-      }
+      // TODO: Non-identity transform detection via residual inspection was removed
+      // because Iceberg residuals use NamedReference terms (not BoundTransform),
+      // so the transform() method is never available. To properly detect non-identity
+      // transforms, inspect the table's PartitionSpec instead of residual expressions.
+      // See: https://github.com/apache/datafusion-comet/issues/XXXX
 
       // Collect delete files and check their schemes
       if (fileScanTaskClass.isInstance(task)) {
@@ -932,11 +881,7 @@ object CometScanRule extends Logging {
       }
     }
 
-    IcebergTaskValidationResult(
-      allParquet,
-      unsupportedSchemes.toSet,
-      nonIdentityTransform,
-      deleteFiles)
+    IcebergTaskValidationResult(allParquet, unsupportedSchemes.toSet, deleteFiles)
   }
 }
 
@@ -946,5 +891,4 @@ object CometScanRule extends Logging {
 case class IcebergTaskValidationResult(
     allParquet: Boolean,
     unsupportedSchemes: Set[String],
-    nonIdentityTransform: Option[String],
     deleteFiles: java.util.List[_])
