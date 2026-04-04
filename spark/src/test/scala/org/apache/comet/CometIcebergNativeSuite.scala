@@ -3093,12 +3093,13 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
   // Additional integration tests for non-identity transform residuals
   // =========================================================================
 
-  // Test A: Non-identity transform with delete files - verify correctness.
-  // When delete files and non-identity transforms coexist, query results must
-  // be correct regardless of whether the native scan or Spark handles it.
+  // Test A: Non-identity transform with delete files must fall back to Spark.
+  // When the table has a non-identity partition transform (truncate) AND MOR delete
+  // files are present, the native Iceberg scan must fall back to Spark to ensure
+  // correct delete processing. Detection uses PartitionSpec inspection.
   // Uses truncate(3, name) so the query and deleted row share the same partition
   // (truncate(3, 'alpha') = truncate(3, 'alpine') = 'alp').
-  test("non-identity transform residual - correct results with delete files present") {
+  test("non-identity transform residual - falls back with delete files present") {
     assume(icebergAvailable, "Iceberg not available in classpath")
 
     withTempIcebergDir { warehouseDir =>
@@ -3177,7 +3178,7 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
             cancel("SparkTableUtil not available")
         }
         spark.sql("""
-          CREATE TABLE test_cat.db.truncate_delete_test (
+          CREATE TABLE test_cat.db.truncate_delete_fallback (
             id INT,
             name STRING,
             value DOUBLE
@@ -3191,19 +3192,26 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
         """)
 
         spark.sql("""
-          INSERT INTO test_cat.db.truncate_delete_test VALUES
+          INSERT INTO test_cat.db.truncate_delete_fallback VALUES
           (1, 'alpha', 10.0), (2, 'alpine', 20.0), (3, 'bravo', 30.0),
           (4, 'bridge', 40.0), (5, 'charlie', 50.0), (6, 'cherry', 60.0)
         """)
 
         // Delete 'alpine' which shares truncate(3)='alp' partition with 'alpha'.
-        spark.sql("DELETE FROM test_cat.db.truncate_delete_test WHERE name = 'alpine'")
+        spark.sql("DELETE FROM test_cat.db.truncate_delete_fallback WHERE name = 'alpine'")
 
-        // Query for 'alpha' creates a residual on the truncate transform.
-        // The deleted row 'alpine' must not appear, and 'alpha' must be returned.
+        // Query with filter. Because the table has truncate transform AND delete files,
+        // native scan must fall back to Spark.
         val query =
-          "SELECT * FROM test_cat.db.truncate_delete_test WHERE name = 'alpha' ORDER BY id"
+          "SELECT * FROM test_cat.db.truncate_delete_fallback WHERE name = 'alpha' ORDER BY id"
         val (_, cometPlan) = checkSparkAnswer(query)
+
+        // Assert fallback: no CometIcebergNativeScanExec in plan
+        val icebergScans = collectIcebergNativeScans(cometPlan)
+        assert(
+          icebergScans.isEmpty,
+          "Expected fallback to Spark (no CometIcebergNativeScanExec) when " +
+            s"non-identity transform has delete files. Plan:\n$cometPlan")
 
         // Verify correct results: only 'alpha' returned, 'alpine' is deleted
         val result = spark.sql(query).collect()
@@ -3212,17 +3220,15 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
         assert(result(0).getString(1) == "alpha")
 
         // Verify 'alpine' is truly gone from broader query
-        val allAlpResult = spark
-          .sql("SELECT * FROM test_cat.db.truncate_delete_test ORDER BY id")
+        val allResult = spark
+          .sql("SELECT * FROM test_cat.db.truncate_delete_fallback ORDER BY id")
           .collect()
+        assert(allResult.length == 5, s"Expected 5 rows after delete, got ${allResult.length}")
         assert(
-          allAlpResult.length == 5,
-          s"Expected 5 rows after delete, got ${allAlpResult.length}")
-        assert(
-          !allAlpResult.exists(_.getString(1) == "alpine"),
+          !allResult.exists(_.getString(1) == "alpine"),
           "Deleted row 'alpine' should not appear in results")
 
-        spark.sql("DROP TABLE test_cat.db.truncate_delete_test")
+        spark.sql("DROP TABLE test_cat.db.truncate_delete_fallback")
       }
     }
   }
