@@ -123,6 +123,9 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         find(cometPlan)(_.isInstanceOf[CometNativeScanExec]).isDefined,
         s"Expected CometNativeScanExec in plan:\n${cometPlan.treeString}")
 
+      assert(sparkRecords > 0, s"Spark outputRecords should be > 0, got $sparkRecords")
+      assert(cometRecords > 0, s"Comet outputRecords should be > 0, got $cometRecords")
+
       assert(
         cometRecords == sparkRecords,
         s"recordsRead mismatch: comet=$cometRecords, sparkRecords=$sparkRecords")
