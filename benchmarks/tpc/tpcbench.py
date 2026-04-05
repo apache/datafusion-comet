@@ -56,6 +56,31 @@ def result_hash(rows):
     return h.hexdigest()
 
 
+def strip_leading_comments(sql: str) -> str:
+    lines = sql.lstrip().splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i].lstrip()
+        if not line or line.startswith("--"):
+            i += 1
+            continue
+        if line.startswith("/*"):
+            # Skip block comments at the start of the statement.
+            while i < len(lines):
+                if "*/" in lines[i]:
+                    i += 1
+                    break
+                i += 1
+            continue
+        break
+    return "\n".join(lines[i:]).lstrip()
+
+
+def is_select_statement(sql: str) -> bool:
+    sql_lower = strip_leading_comments(sql).lower()
+    return sql_lower.startswith("select") or sql_lower.startswith("with")
+
+
 def main(
     benchmark: str,
     data_path: str,
@@ -68,6 +93,7 @@ def main(
     query_num: int = None,
     write_path: str = None,
     options: Dict[str, str] = None,
+    plan_dir: str = None,
 ):
     if options is None:
         options = {}
@@ -164,6 +190,20 @@ def main(
                         df = spark.sql(sql)
                         df.explain("formatted")
 
+                        # Save physical plan before execution
+                        if plan_dir is not None and is_select_statement(sql):
+                            os.makedirs(plan_dir, exist_ok=True)
+                            plan_path = os.path.join(plan_dir, f"{name}-q{query}.plan.txt")
+                            try:
+                                plan_str = df._jdf.queryExecution().explainString(
+                                    spark._jvm.org.apache.spark.sql.execution
+                                    .ExplainMode.fromString("formatted"))
+                                with open(plan_path, "w") as pf:
+                                    pf.write(plan_str)
+                                print(f"Plan saved to {plan_path}")
+                            except Exception as e:
+                                print(f"Warning: could not save plan: {e}")
+
                         if write_path is not None:
                             if len(df.columns) > 0:
                                 output_path = f"{write_path}/q{query}"
@@ -175,6 +215,7 @@ def main(
                             row_count = len(rows)
                             row_hash = result_hash(rows)
                             print(f"Query {query} returned {row_count} rows, hash={row_hash}")
+
 
                 end_time = time.time()
                 elapsed = end_time - start_time
@@ -249,6 +290,10 @@ if __name__ == "__main__":
         help="Prefix for result file"
     )
     parser.add_argument(
+        "--plan-dir",
+        help="Optional directory to write formatted plans per query"
+    )
+    parser.add_argument(
         "--query", type=int,
         help="Specific query number (1-based). If omitted, run all."
     )
@@ -270,4 +315,5 @@ if __name__ == "__main__":
         args.query,
         args.write,
         args.options,
+        args.plan_dir,
     )
