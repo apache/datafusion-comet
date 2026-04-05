@@ -118,6 +118,7 @@ Expressions that are not Spark-compatible will fall back to Spark by default and
 | DayOfYear      | `dayofyear`                  | Yes               |                                                                                                                                  |
 | WeekOfYear     | `weekofyear`                 | Yes               |                                                                                                                                  |
 | Quarter        | `quarter`                    | Yes               |                                                                                                                                  |
+| PreciseTimestampConversion | `window_time`  | Yes               | Only supports conversions between TimestampType and LongType                                                                      |
 
 ## Math Expressions
 
