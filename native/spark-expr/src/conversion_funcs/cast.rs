@@ -131,6 +131,9 @@ pub struct SparkCastOptions {
     pub timezone: String,
     /// Allow casts that are supported but not guaranteed to be 100% compatible
     pub allow_incompat: bool,
+    /// True when running against Spark 4.0+. Enables version-specific cast behaviour
+    /// such as the handling of leading whitespace before T-prefixed time-only strings.
+    pub is_spark4_plus: bool,
     /// Support casting unsigned ints to signed ints (used by Parquet SchemaAdapter)
     pub allow_cast_unsigned_ints: bool,
     /// We also use the cast logic for adapting Parquet schemas, so this flag is used
@@ -148,6 +151,7 @@ impl SparkCastOptions {
             eval_mode,
             timezone: timezone.to_string(),
             allow_incompat,
+            is_spark4_plus: false,
             allow_cast_unsigned_ints: false,
             is_adapting_schema: false,
             null_string: "null".to_string(),
@@ -160,6 +164,7 @@ impl SparkCastOptions {
             eval_mode,
             timezone: "".to_string(),
             allow_incompat,
+            is_spark4_plus: false,
             allow_cast_unsigned_ints: false,
             is_adapting_schema: false,
             null_string: "null".to_string(),
@@ -296,9 +301,13 @@ pub(crate) fn cast_array(
     let cast_result = match (&from_type, to_type) {
         (Utf8, Boolean) => spark_cast_utf8_to_boolean::<i32>(&array, eval_mode),
         (LargeUtf8, Boolean) => spark_cast_utf8_to_boolean::<i64>(&array, eval_mode),
-        (Utf8, Timestamp(_, _)) => {
-            cast_string_to_timestamp(&array, to_type, eval_mode, &cast_options.timezone)
-        }
+        (Utf8, Timestamp(_, _)) => cast_string_to_timestamp(
+            &array,
+            to_type,
+            eval_mode,
+            &cast_options.timezone,
+            cast_options.is_spark4_plus,
+        ),
         (Utf8, Date32) => cast_string_to_date(&array, to_type, eval_mode),
         (Date32, Int32) => {
             // Date32 is stored as days since epoch (i32), so this is a simple reinterpret cast
