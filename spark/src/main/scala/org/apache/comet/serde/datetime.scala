@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import java.util.Locale
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, DateAdd, DateDiff, DateFormatClass, DateSub, DayOfMonth, DayOfWeek, DayOfYear, Days, GetDateField, Hour, LastDay, Literal, MakeDate, Minute, Month, NextDay, Quarter, Second, TruncDate, TruncTimestamp, UnixDate, UnixTimestamp, WeekDay, WeekOfYear, Year}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, DateAdd, DateDiff, DateFormatClass, DateSub, DayOfMonth, DayOfWeek, DayOfYear, Days, Expression, GetDateField, Hour, LastDay, Literal, MakeDate, Minute, Month, NextDay, Quarter, Second, TruncDate, TruncTimestamp, UnixDate, UnixTimestamp, WeekDay, WeekOfYear, Year}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DateType, IntegerType, StringType, TimestampType}
 import org.apache.spark.unsafe.types.UTF8String
@@ -585,6 +585,39 @@ object CometDateFormat extends CometExpressionSerde[DateFormatClass] {
       case None =>
         withInfo(expr, expr.left, expr.right)
         None
+    }
+  }
+}
+
+trait CommonDateTimeExprs {
+
+  def secondsOfTimeToProto(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    val childOpt = expr.children.headOption.orElse {
+      withInfo(expr, "SecondsOfTime has no child expression")
+      None
+    }
+
+    childOpt.flatMap { child =>
+      exprToProtoInternal(child, inputs, binding)
+        .map { childExpr =>
+          val builder = ExprOuterClass.Second.newBuilder()
+          builder.setChild(childExpr)
+
+          // SecondsOfTime does not carry a timeZoneId; assume UTC.
+          builder.setTimezone("UTC")
+
+          ExprOuterClass.Expr
+            .newBuilder()
+            .setSecond(builder)
+            .build()
+        }
+        .orElse {
+          withInfo(expr, child)
+          None
+        }
     }
   }
 }
