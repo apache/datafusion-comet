@@ -119,6 +119,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[Subtract] -> CometSubtract,
     classOf[Tan] -> CometTan,
     classOf[Tanh] -> CometScalarFunction("tanh"),
+    classOf[ToDegrees] -> CometScalarFunction("degrees"),
+    classOf[ToRadians] -> CometScalarFunction("radians"),
     classOf[Cot] -> CometScalarFunction("cot"),
     classOf[UnaryMinus] -> CometUnaryMinus,
     classOf[Unhex] -> CometUnhex,
