@@ -116,6 +116,22 @@ to test with both for your specific workloads.
 
 To configure Comet to convert `SortMergeJoin` to `ShuffledHashJoin`, set `spark.comet.exec.replaceSortMergeJoin=true`.
 
+## Coverage Threshold
+
+When Comet can only accelerate a small fraction of the operators in a query, the overhead from transitions between
+Spark and Comet execution may outweigh the benefit of native execution. The `spark.comet.exec.coverageThreshold`
+configuration allows you to set a minimum coverage percentage. If the fraction of operators that Comet can convert
+falls below this threshold, Comet will fall back to the original Spark plan for the entire query.
+
+For example, to require that at least 50% of eligible operators are converted before using Comet:
+
+```
+spark.comet.exec.coverageThreshold=0.5
+```
+
+The default value is `0.0`, which disables the check and preserves the existing behavior of always using Comet when
+possible. When the threshold is triggered, a warning is logged with the coverage statistics.
+
 ## Shuffle
 
 Comet provides accelerated shuffle implementations that can be used to improve the performance of your queries.
