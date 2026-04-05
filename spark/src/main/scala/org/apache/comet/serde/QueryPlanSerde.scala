@@ -482,7 +482,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
         }
         aggHandler.getSupportLevel(fn) match {
           case Unsupported(notes) =>
-            withInfo(fn, notes.getOrElse(""))
+            withInfo(fn, notes)
             None
           case Incompatible(notes) =>
             val exprAllowIncompat = CometConf.isExprAllowIncompat(exprConfName)
@@ -609,7 +609,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
       }
       handler.getSupportLevel(expr) match {
         case Unsupported(notes) =>
-          withInfo(expr, notes.getOrElse(""))
+          withInfo(expr, notes)
           None
         case Incompatible(notes) =>
           val exprAllowIncompat = CometConf.isExprAllowIncompat(exprConfName)

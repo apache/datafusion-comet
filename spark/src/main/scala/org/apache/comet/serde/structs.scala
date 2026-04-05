@@ -248,8 +248,7 @@ object CometStructsToCsv extends CometExpressionSerde[StructsToCsv] {
     val containsComplexType = dataTypes.exists(DataTypeSupport.isComplexType)
     if (containsComplexType) {
       return Unsupported(
-        Some(
-          s"The schema ${expr.inputSchema} is not supported because it includes a complex type"))
+        s"The schema ${expr.inputSchema} is not supported because it includes a complex type")
     }
     val containsIncompatibleDataTypes = dataTypes.exists(incompatibleDataTypes.contains)
     if (containsIncompatibleDataTypes) {

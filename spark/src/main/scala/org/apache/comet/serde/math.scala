@@ -167,7 +167,7 @@ object CometAbs extends CometExpressionSerde[Abs] with MathExprBase {
         Compatible()
       case _ =>
         // Spark supports NumericType, DayTimeIntervalType, and YearMonthIntervalType
-        Unsupported(Some("Only integral, floating-point, and decimal types are supported"))
+        Unsupported("Only integral, floating-point, and decimal types are supported")
     }
   }
 
@@ -220,7 +220,7 @@ object CometCheckOverflow extends CometExpressionSerde[CheckOverflow] {
     if (expr.dataType.isInstanceOf[DecimalType]) {
       Compatible()
     } else {
-      Unsupported(Some("dataType must be DecimalType"))
+      Unsupported("dataType must be DecimalType")
     }
   }
 

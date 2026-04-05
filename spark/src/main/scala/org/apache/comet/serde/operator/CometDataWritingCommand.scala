@@ -60,28 +60,28 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
           case _: ParquetFileFormat =>
             if (!cmd.outputPath.toString.startsWith("file:") && !cmd.outputPath.toString
                 .startsWith("hdfs:")) {
-              return Unsupported(Some("Supported output filesystems: local, HDFS"))
+              return Unsupported("Supported output filesystems: local, HDFS")
             }
 
             if (cmd.bucketSpec.isDefined) {
-              return Unsupported(Some("Bucketed writes are not supported"))
+              return Unsupported("Bucketed writes are not supported")
             }
 
             if (cmd.partitionColumns.nonEmpty || cmd.staticPartitions.nonEmpty) {
-              return Unsupported(Some("Partitioned writes are not supported"))
+              return Unsupported("Partitioned writes are not supported")
             }
 
             val codec = parseCompressionCodec(cmd)
             if (!supportedCompressionCodes.contains(codec)) {
-              return Unsupported(Some(s"Unsupported compression codec: $codec"))
+              return Unsupported(s"Unsupported compression codec: $codec")
             }
 
             Incompatible(Some("Parquet write support is highly experimental"))
           case _ =>
-            Unsupported(Some("Only Parquet writes are supported"))
+            Unsupported("Only Parquet writes are supported")
         }
       case other =>
-        Unsupported(Some(s"Unsupported write command: ${other.getClass}"))
+        Unsupported(s"Unsupported write command: ${other.getClass}")
     }
   }
 

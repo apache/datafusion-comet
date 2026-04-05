@@ -520,7 +520,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
     if (handler.enabledConfig.forall(_.get(op.conf))) {
       handler.getSupportLevel(op) match {
         case Unsupported(notes) =>
-          withInfo(op, notes.getOrElse(""))
+          withInfo(op, notes)
           false
         case Incompatible(notes) =>
           val allowIncompat = CometConf.isOperatorAllowIncompat(opName)
