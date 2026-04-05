@@ -1989,6 +1989,8 @@ dependencies = [
  "rand 0.10.0",
  "regex",
  "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
  "tokio",
  "twox-hash",
 ]
