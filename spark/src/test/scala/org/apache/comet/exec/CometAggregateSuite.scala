@@ -1968,4 +1968,41 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     sparkPlan.collect { case s: CometHashAggregateExec => s }.size
   }
 
+  test("bloom_filter_agg with Spark partial and Comet final aggregate") {
+    import org.apache.spark.sql.catalyst.FunctionIdentifier
+    import org.apache.spark.sql.catalyst.expressions.{Expression, ExpressionInfo}
+    import org.apache.spark.sql.catalyst.expressions.aggregate.BloomFilterAggregate
+
+    val funcId = new FunctionIdentifier("bloom_filter_agg")
+    spark.sessionState.functionRegistry.registerFunction(
+      funcId,
+      new ExpressionInfo(classOf[BloomFilterAggregate].getName, "bloom_filter_agg"),
+      (children: Seq[Expression]) =>
+        children.size match {
+          case 1 => new BloomFilterAggregate(children.head)
+          case 2 => new BloomFilterAggregate(children.head, children(1))
+          case 3 => new BloomFilterAggregate(children.head, children(1), children(2))
+        })
+
+    try {
+      withParquetTable((0 until 100).map(i => (i.toLong, i.toLong % 5)), "bloom_tbl") {
+        // Disable Comet partial aggregate so Spark does partial. BloomFilterAggregate
+        // is allowed to run as Comet final even with Spark partial, since the Rust
+        // merge_filter now handles both Spark's serialization format (12-byte header +
+        // big-endian bits) and Comet's raw native-endian bits format.
+        withSQLConf(CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE.key -> "false") {
+          val df = sql("SELECT bloom_filter_agg(cast(_1 as long)) FROM bloom_tbl")
+          // Verify we have the mixed execution: Spark partial + Comet final
+          val plan = stripAQEPlan(df.queryExecution.executedPlan)
+          assert(
+            plan.collect { case a: CometHashAggregateExec => a }.nonEmpty,
+            "Expected at least one CometHashAggregateExec in the plan")
+          checkSparkAnswer(df)
+        }
+      }
+    } finally {
+      spark.sessionState.functionRegistry.dropFunction(funcId)
+    }
+  }
+
 }
