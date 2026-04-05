@@ -91,6 +91,9 @@ trait CometExprShim extends CommonStringExprs {
 //        val optExpr = scalarFunctionExprToProto("width_bucket", childExprs: _*)
 //        optExprWithInfo(optExpr, wb, wb.children: _*)
 
+      case _ if expr.getClass.getSimpleName == "HoursOfTime" =>
+        hoursOfTimeToProto(expr, inputs, binding)
+
       case _ => None
     }
   }
