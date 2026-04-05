@@ -24,6 +24,7 @@ import org.apache.spark.sql.catalyst.expressions._
 import org.apache.comet.expressions.CometEvalMode
 import org.apache.comet.serde.CommonStringExprs
 import org.apache.comet.serde.ExprOuterClass.{BinaryOutputStyle, Expr}
+import org.apache.comet.serde.QueryPlanSerde
 
 /**
  * `CometExprShim` acts as a shim for parsing expressions from different Spark versions.
@@ -42,6 +43,9 @@ trait CometExprShim extends CommonStringExprs {
       case s: StringDecode =>
         // Right child is the encoding expression.
         stringDecode(expr, s.charset, s.bin, inputs, binding)
+
+      case _ if expr.getClass.getSimpleName == "MinutesOfTime" =>
+        minutesOfTimeToProto(expr, inputs, binding)
 
       case _ => None
     }
