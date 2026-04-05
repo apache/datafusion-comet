@@ -35,12 +35,6 @@ object CometArrayRemove
     with CometExprShim
     with ArraysBase {
 
-  override def getSupportLevel(expr: ArrayRemove): SupportLevel =
-    Incompatible(
-      Some(
-        "Returns null when element is null instead of removing null elements" +
-          " (https://github.com/apache/datafusion-comet/issues/3173)"))
-
   override def convert(
       expr: ArrayRemove,
       inputs: Seq[Attribute],
@@ -55,34 +49,7 @@ object CometArrayRemove
     val arrayExprProto = exprToProto(expr.left, inputs, binding)
     val keyExprProto = exprToProto(expr.right, inputs, binding)
 
-    val arrayRemoveScalarExpr =
-      scalarFunctionExprToProto("array_remove_all", arrayExprProto, keyExprProto)
-
-    val isNotNullExpr = createUnaryExpr(
-      expr,
-      expr.right,
-      inputs,
-      binding,
-      (builder, unaryExpr) => builder.setIsNotNull(unaryExpr))
-
-    val nullLiteralProto = exprToProto(Literal(null, expr.right.dataType), Seq.empty)
-
-    if (arrayRemoveScalarExpr.isDefined && isNotNullExpr.isDefined && nullLiteralProto.isDefined) {
-      val caseWhenExpr = ExprOuterClass.CaseWhen
-        .newBuilder()
-        .addWhen(isNotNullExpr.get)
-        .addThen(arrayRemoveScalarExpr.get)
-        .setElseExpr(nullLiteralProto.get)
-        .build()
-      Some(
-        ExprOuterClass.Expr
-          .newBuilder()
-          .setCaseWhen(caseWhenExpr)
-          .build())
-    } else {
-      withInfo(expr, expr.children: _*)
-      None
-    }
+    scalarFunctionExprToProto("array_remove_all", arrayExprProto, keyExprProto)
   }
 }
 
