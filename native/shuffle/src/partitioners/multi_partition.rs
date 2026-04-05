@@ -203,6 +203,19 @@ impl MultiPartitionShuffleRepartitioner {
             return Ok(());
         }
 
+        // For zero-column schemas (e.g. COUNT queries), assign all rows to partition 0.
+        // The actual index values don't matter — the consumer only uses indices.len()
+        // as the row count for zero-column batches.
+        if input.num_columns() == 0 {
+            let num_rows = input.num_rows();
+            self.metrics.baseline.record_output(num_rows);
+            let batch_idx = self.buffered_batches.len() as u32;
+            self.buffered_batches.push(input);
+            let indices = &mut self.partition_indices[0];
+            indices.resize(indices.len() + num_rows, (batch_idx, 0));
+            return Ok(());
+        }
+
         if input.num_rows() > self.batch_size {
             return Err(DataFusionError::Internal(
                 "Input batch size exceeds configured batch size. Call `insert_batch` instead."
