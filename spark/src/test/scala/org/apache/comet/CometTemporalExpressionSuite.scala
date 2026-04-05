@@ -260,6 +260,27 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
     }
   }
 
+  test("datediff works with dictionary-encoded timestamp columns") {
+    withTempDir { path =>
+      withSQLConf(
+        CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET,
+        "spark.sql.parquet.enableDictionary" -> "true") {
+        val df = spark
+          .createDataFrame(
+            Seq(
+              ("a", java.sql.Timestamp.valueOf("2024-01-02 10:00:00")),
+              ("b", java.sql.Timestamp.valueOf("2024-01-03 11:00:00"))))
+          .toDF("id", "ts")
+
+        df.write.mode(SaveMode.Overwrite).parquet(path.toString)
+        spark.read.parquet(path.toString).createOrReplaceTempView("ts_tbl")
+
+        checkSparkAnswerAndOperator(
+          "SELECT id, datediff(DATE('2024-01-10'), ts) AS diff FROM ts_tbl ORDER BY id")
+      }
+    }
+  }
+
   test("date_format with timestamp column") {
     // Filter out formats with embedded quotes that need special handling
     val supportedFormats = CometDateFormat.supportedFormats.keys.toSeq
