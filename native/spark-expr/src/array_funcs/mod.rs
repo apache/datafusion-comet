@@ -19,6 +19,7 @@ mod array_insert;
 mod get_array_struct_fields;
 mod list_extract;
 mod size;
+mod array_distinct;
 
 pub use array_insert::ArrayInsert;
 pub use get_array_struct_fields::GetArrayStructFields;
