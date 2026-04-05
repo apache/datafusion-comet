@@ -186,6 +186,10 @@ pub fn create_comet_physical_fun_with_eval_mode(
             let func = Arc::new(crate::string_funcs::spark_split);
             make_comet_scalar_udf!("split", func, without data_type)
         }
+        "get_json_object" => {
+            let func = Arc::new(crate::string_funcs::spark_get_json_object);
+            make_comet_scalar_udf!("get_json_object", func, without data_type)
+        }
         _ => registry.udf(fun_name).map_err(|e| {
             DataFusionError::Execution(format!(
                 "Function {fun_name} not found in the registry: {e}",
