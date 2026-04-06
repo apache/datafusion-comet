@@ -20,7 +20,7 @@ use crate::partitioners::partitioned_batch_iterator::{
     PartitionedBatchIterator, PartitionedBatchesProducer,
 };
 use crate::partitioners::ShufflePartitioner;
-use crate::writers::{BufBatchWriter, PartitionWriter};
+use crate::writers::{BufBatchWriter, PartitionSpillRange, PartitionWriter, SpillInfo};
 use crate::{comet_partitioning, CometPartitioning, CompressionCodec, ShuffleBlockWriter};
 use arrow::array::{ArrayRef, RecordBatch};
 use arrow::datatypes::SchemaRef;
@@ -125,6 +125,9 @@ pub(crate) struct MultiPartitionShuffleRepartitioner {
     tracing_enabled: bool,
     /// Size of the write buffer in bytes
     write_buffer_size: usize,
+    /// Combined spill files. Each entry is a single file containing data from
+    /// multiple partitions, created during one spill event.
+    spill_infos: Vec<SpillInfo>,
 }
 
 impl MultiPartitionShuffleRepartitioner {
@@ -190,6 +193,7 @@ impl MultiPartitionShuffleRepartitioner {
             reservation,
             tracing_enabled,
             write_buffer_size,
+            spill_infos: vec![],
         })
     }
 
@@ -502,19 +506,52 @@ impl MultiPartitionShuffleRepartitioner {
         with_trace("shuffle_spill", self.tracing_enabled, || {
             let num_output_partitions = self.partition_writers.len();
             let mut partitioned_batches = self.partitioned_batches();
-            let mut spilled_bytes = 0;
+            let mut spilled_bytes: usize = 0;
+
+            // Create a single temporary file for this spill event
+            let temp_file = self
+                .runtime
+                .disk_manager
+                .create_tmp_file("shuffle writer spill")?;
+            let mut spill_file = OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(temp_file.path())
+                .map_err(|e| {
+                    DataFusionError::Execution(format!("Error occurred while spilling {e}"))
+                })?;
+
+            let mut partition_ranges = Vec::with_capacity(num_output_partitions);
 
             for partition_id in 0..num_output_partitions {
                 let partition_writer = &mut self.partition_writers[partition_id];
                 let mut iter = partitioned_batches.produce(partition_id);
-                spilled_bytes += partition_writer.spill(
+
+                let offset = spill_file.stream_position()?;
+                let bytes_written = partition_writer.write_to(
                     &mut iter,
-                    &self.runtime,
+                    &mut spill_file,
                     &self.metrics,
                     self.write_buffer_size,
                     self.batch_size,
                 )?;
+
+                if bytes_written > 0 {
+                    partition_ranges.push(Some(PartitionSpillRange {
+                        offset,
+                        length: bytes_written as u64,
+                    }));
+                    spilled_bytes += bytes_written;
+                } else {
+                    partition_ranges.push(None);
+                }
             }
+
+            spill_file.flush()?;
+
+            self.spill_infos
+                .push(SpillInfo::new(temp_file, partition_ranges));
 
             self.reservation.free();
             self.metrics.spill_count.add(1);
@@ -524,8 +561,8 @@ impl MultiPartitionShuffleRepartitioner {
     }
 
     #[cfg(test)]
-    pub(crate) fn partition_writers(&self) -> &[PartitionWriter] {
-        &self.partition_writers
+    pub(crate) fn spill_count_files(&self) -> usize {
+        self.spill_infos.len()
     }
 }
 
@@ -579,14 +616,12 @@ impl ShufflePartitioner for MultiPartitionShuffleRepartitioner {
             for i in 0..num_output_partitions {
                 offsets[i] = output_data.stream_position()?;
 
-                // if we wrote a spill file for this partition then copy the
-                // contents into the shuffle file
-                if let Some(spill_path) = self.partition_writers[i].path() {
-                    // Use raw File handle (not BufReader) so that std::io::copy
-                    // can use copy_file_range/sendfile for zero-copy on Linux.
-                    let mut spill_file = File::open(spill_path)?;
+                // Copy spilled data for this partition from each spill file.
+                // Each SpillInfo is a single file containing data from all partitions
+                // ordered by partition ID, with byte ranges tracked per partition.
+                for spill_info in &self.spill_infos {
                     let mut write_timer = self.metrics.write_time.timer();
-                    std::io::copy(&mut spill_file, &mut output_data)?;
+                    spill_info.copy_partition_to(i, &mut output_data)?;
                     write_timer.stop();
                 }
 
