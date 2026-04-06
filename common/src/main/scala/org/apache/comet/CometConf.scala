@@ -635,13 +635,6 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
-  val COMET_PARQUET_ENABLE_DIRECT_BUFFER: ConfigEntry[Boolean] =
-    conf("spark.comet.parquet.enable.directBuffer")
-      .category(CATEGORY_PARQUET)
-      .doc("Whether to use Java direct byte buffer when reading Parquet.")
-      .booleanConf
-      .createWithDefault(false)
-
   val COMET_ONHEAP_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.onHeap.enabled")
       .category(CATEGORY_TESTING)
@@ -804,6 +797,20 @@ object CometConf extends ShimCometConf {
         " metrics will be updated upon task completion.")
       .longConf
       .createWithDefault(3000L)
+
+  val COMET_METRICS_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.metrics.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Whether to enable Comet metrics reporting through Spark's external monitoring system. " +
+          "When enabled, Comet exposes metrics such as native operators, Spark operators, " +
+          "queries planned, transitions, and acceleration ratio. These metrics can be " +
+          "visualized through tools like Grafana when a metrics sink (e.g., Prometheus) is " +
+          "configured. Disabled by default because Spark plan traversal adds overhead and " +
+          "metrics require a sink to be useful. " +
+          "This config must be set before the SparkSession is created to take effect.")
+      .booleanConf
+      .createWithDefault(false)
 
   val COMET_LIBHDFS_SCHEMES_KEY = "fs.comet.libhdfs.schemes"
 

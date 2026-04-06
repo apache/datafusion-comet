@@ -28,7 +28,8 @@ Comet currently has two distinct implementations of the Parquet scan operator.
 
 The configuration property
 `spark.comet.scan.impl` is used to select an implementation. The default setting is `spark.comet.scan.impl=auto`, which
-currently always uses the `native_iceberg_compat` implementation. Most users should not need to change this setting.
+attempts to use `native_datafusion` first, and falls back to Spark if the scan cannot be converted
+(e.g., due to unsupported features). Most users should not need to change this setting.
 However, it is possible to force Comet to use a particular implementation for all scan operations by setting
 this configuration property to one of the following implementations. For example: `--conf spark.comet.scan.impl=native_datafusion`.
 
@@ -55,17 +56,16 @@ The following shared limitation may produce incorrect results without falling ba
   October 15, 1582.
 
 The `native_datafusion` scan has some additional limitations, mostly related to Parquet metadata. All of these
-cause Comet to fall back to Spark.
+cause Comet to fall back to Spark (including when using `auto` mode). Note that the `native_datafusion` scan
+requires `spark.comet.exec.enabled=true` because the scan node must be wrapped by `CometExecRule`.
 
 - No support for row indexes
 - No support for reading Parquet field IDs
 - No support for `input_file_name()`, `input_file_block_start()`, or `input_file_block_length()` SQL functions.
   The `native_datafusion` scan does not use Spark's `FileScanRDD`, so these functions cannot populate their values.
 - No support for `ignoreMissingFiles` or `ignoreCorruptFiles` being set to `true`
-- No support for duplicate field names in case-insensitive mode. When the required or data schema contains
-  field names that differ only by case (e.g., `B` and `b`), Comet falls back to Spark. Duplicates
-  in the physical Parquet file that are not reflected in the table schema cannot be detected at plan time;
-  in that case DataFusion will throw a `SparkRuntimeException` with error class `_LEGACY_ERROR_TEMP_2093`,
+- Duplicate field names in case-insensitive mode (e.g., a Parquet file with both `B` and `b` columns)
+  are detected at read time and raise a `SparkRuntimeException` with error class `_LEGACY_ERROR_TEMP_2093`,
   matching Spark's behavior.
 
 The `native_iceberg_compat` scan has the following additional limitation that may produce incorrect results

@@ -121,48 +121,48 @@ Expressions that are not Spark-compatible will fall back to Spark by default and
 
 ## Math Expressions
 
-| Expression     | SQL       | Spark-Compatible? | Compatibility Notes                                                                                         |
-| -------------- | --------- | ----------------- | ----------------------------------------------------------------------------------------------------------- |
-| Abs            | `abs`     | Yes               |                                                                                                             |
-| Acos           | `acos`    | Yes               |                                                                                                             |
-| Add            | `+`       | Yes               |                                                                                                             |
-| Asin           | `asin`    | Yes               |                                                                                                             |
-| Atan           | `atan`    | Yes               |                                                                                                             |
-| Atan2          | `atan2`   | Yes               |                                                                                                             |
-| BRound         | `bround`  | Yes               |                                                                                                             |
-| Ceil           | `ceil`    | No                | Incorrect results for Decimal type inputs ([#1729](https://github.com/apache/datafusion-comet/issues/1729)) |
-| Cos            | `cos`     | Yes               |                                                                                                             |
-| Cosh           | `cosh`    | Yes               |                                                                                                             |
-| Cot            | `cot`     | Yes               |                                                                                                             |
-| Divide         | `/`       | Yes               |                                                                                                             |
-| Exp            | `exp`     | Yes               |                                                                                                             |
-| Expm1          | `expm1`   | Yes               |                                                                                                             |
-| Floor          | `floor`   | No                | Incorrect results for Decimal type inputs ([#1729](https://github.com/apache/datafusion-comet/issues/1729)) |
-| Hex            | `hex`     | Yes               |                                                                                                             |
-| IntegralDivide | `div`     | Yes               |                                                                                                             |
-| IsNaN          | `isnan`   | Yes               |                                                                                                             |
-| Log            | `log`     | Yes               |                                                                                                             |
-| Log2           | `log2`    | Yes               |                                                                                                             |
-| Log10          | `log10`   | Yes               |                                                                                                             |
-| Multiply       | `*`       | Yes               |                                                                                                             |
-| Pow            | `power`   | Yes               |                                                                                                             |
-| Rand           | `rand`    | Yes               |                                                                                                             |
-| Randn          | `randn`   | Yes               |                                                                                                             |
-| Remainder      | `%`       | Yes               |                                                                                                             |
-| Round          | `round`   | Yes               |                                                                                                             |
-| Signum         | `signum`  | Yes               |                                                                                                             |
-| Sin            | `sin`     | Yes               |                                                                                                             |
-| Sinh           | `sinh`    | Yes               |                                                                                                             |
-| Sqrt           | `sqrt`    | Yes               |                                                                                                             |
-| Subtract       | `-`       | Yes               |                                                                                                             |
-| Tan            | `tan`     | No                | tan(-0.0) produces incorrect result ([#1897](https://github.com/apache/datafusion-comet/issues/1897))       |
-| Tanh           | `tanh`    | Yes               |                                                                                                             |
-| TryAdd         | `try_add` | Yes               | Only integer inputs are supported                                                                           |
-| TryDivide      | `try_div` | Yes               | Only integer inputs are supported                                                                           |
-| TryMultiply    | `try_mul` | Yes               | Only integer inputs are supported                                                                           |
-| TrySubtract    | `try_sub` | Yes               | Only integer inputs are supported                                                                           |
-| UnaryMinus     | `-`       | Yes               |                                                                                                             |
-| Unhex          | `unhex`   | Yes               |                                                                                                             |
+| Expression     | SQL       | Spark-Compatible? | Compatibility Notes                                                                                   |
+| -------------- | --------- | ----------------- | ----------------------------------------------------------------------------------------------------- |
+| Abs            | `abs`     | Yes               |                                                                                                       |
+| Acos           | `acos`    | Yes               |                                                                                                       |
+| Add            | `+`       | Yes               |                                                                                                       |
+| Asin           | `asin`    | Yes               |                                                                                                       |
+| Atan           | `atan`    | Yes               |                                                                                                       |
+| Atan2          | `atan2`   | Yes               |                                                                                                       |
+| BRound         | `bround`  | Yes               |                                                                                                       |
+| Ceil           | `ceil`    | Yes               |                                                                                                       |
+| Cos            | `cos`     | Yes               |                                                                                                       |
+| Cosh           | `cosh`    | Yes               |                                                                                                       |
+| Cot            | `cot`     | Yes               |                                                                                                       |
+| Divide         | `/`       | Yes               |                                                                                                       |
+| Exp            | `exp`     | Yes               |                                                                                                       |
+| Expm1          | `expm1`   | Yes               |                                                                                                       |
+| Floor          | `floor`   | Yes               |                                                                                                       |
+| Hex            | `hex`     | Yes               |                                                                                                       |
+| IntegralDivide | `div`     | Yes               |                                                                                                       |
+| IsNaN          | `isnan`   | Yes               |                                                                                                       |
+| Log            | `log`     | Yes               |                                                                                                       |
+| Log2           | `log2`    | Yes               |                                                                                                       |
+| Log10          | `log10`   | Yes               |                                                                                                       |
+| Multiply       | `*`       | Yes               |                                                                                                       |
+| Pow            | `power`   | Yes               |                                                                                                       |
+| Rand           | `rand`    | Yes               |                                                                                                       |
+| Randn          | `randn`   | Yes               |                                                                                                       |
+| Remainder      | `%`       | Yes               |                                                                                                       |
+| Round          | `round`   | Yes               |                                                                                                       |
+| Signum         | `signum`  | Yes               |                                                                                                       |
+| Sin            | `sin`     | Yes               |                                                                                                       |
+| Sinh           | `sinh`    | Yes               |                                                                                                       |
+| Sqrt           | `sqrt`    | Yes               |                                                                                                       |
+| Subtract       | `-`       | Yes               |                                                                                                       |
+| Tan            | `tan`     | No                | tan(-0.0) produces incorrect result ([#1897](https://github.com/apache/datafusion-comet/issues/1897)) |
+| Tanh           | `tanh`    | Yes               |                                                                                                       |
+| TryAdd         | `try_add` | Yes               | Only integer inputs are supported                                                                     |
+| TryDivide      | `try_div` | Yes               | Only integer inputs are supported                                                                     |
+| TryMultiply    | `try_mul` | Yes               | Only integer inputs are supported                                                                     |
+| TrySubtract    | `try_sub` | Yes               | Only integer inputs are supported                                                                     |
+| UnaryMinus     | `-`       | Yes               |                                                                                                       |
+| Unhex          | `unhex`   | Yes               |                                                                                                       |
 
 ## Hashing Functions
 
@@ -232,7 +232,7 @@ Comet supports using the following aggregate functions within window contexts wi
 
 | Expression     | Spark-Compatible? | Compatibility Notes                                                                                                                                                                       |
 | -------------- | ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| ArrayAppend    | No                |                                                                                                                                                                                           |
+| ArrayAppend    | Yes               |                                                                                                                                                                                           |
 | ArrayCompact   | No                |                                                                                                                                                                                           |
 | ArrayContains  | No                | Returns null instead of false for empty arrays with literal values ([#3346](https://github.com/apache/datafusion-comet/issues/3346))                                                      |
 | ArrayDistinct  | No                | Behaves differently than spark. Comet first sorts then removes duplicates while Spark preserves the original order.                                                                       |
@@ -250,7 +250,7 @@ Comet supports using the following aggregate functions within window contexts wi
 | CreateArray    | Yes               |                                                                                                                                                                                           |
 | ElementAt      | Yes               | Input must be an array. Map inputs are not supported.                                                                                                                                     |
 | Flatten        | Yes               |                                                                                                                                                                                           |
-| GetArrayItem   | No                | Known correctness issues with index handling ([#3330](https://github.com/apache/datafusion-comet/issues/3330), [#3332](https://github.com/apache/datafusion-comet/issues/3332))           |
+| GetArrayItem   | Yes               |                                                                                                                                                                                           |
 
 ## Map Expressions
 
