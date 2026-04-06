@@ -193,19 +193,6 @@ index 41fd4de2a09..44cd244d3b0 100644
  -- Test aggregate operator with codegen on and off.
  --CONFIG_DIM1 spark.sql.codegen.wholeStage=true
  --CONFIG_DIM1 spark.sql.codegen.wholeStage=false,spark.sql.codegen.factoryMode=CODEGEN_ONLY
-diff --git a/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/int4.sql b/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/int4.sql
-index 3a409eea348..38fed024c98 100644
---- a/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/int4.sql
-+++ b/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/int4.sql
-@@ -69,6 +69,8 @@ SELECT '' AS one, i.* FROM INT4_TBL i WHERE (i.f1 % smallint('2')) = smallint('1
- -- any evens
- SELECT '' AS three, i.* FROM INT4_TBL i WHERE (i.f1 % int('2')) = smallint('0');
- 
-+-- https://github.com/apache/datafusion-comet/issues/2215
-+--SET spark.comet.exec.enabled=false
- -- [SPARK-28024] Incorrect value when out of range
- SELECT '' AS five, i.f1, i.f1 * smallint('2') AS x FROM INT4_TBL i;
- 
 diff --git a/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/int8.sql b/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/int8.sql
 index fac23b4a26f..2b73732c33f 100644
 --- a/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/int8.sql
@@ -438,20 +425,6 @@ index f33432ddb6f..7d758d2481f 100644
        case _ => Nil
      }
    }
-@@ -755,7 +759,8 @@ abstract class DynamicPartitionPruningSuiteBase
-     }
-   }
- 
--  test("partition pruning in broadcast hash joins") {
-+  test("partition pruning in broadcast hash joins",
-+    IgnoreComet("TODO: Support SubqueryBroadcastExec in Comet: #1737")) {
-     Given("disable broadcast pruning and disable subquery duplication")
-     withSQLConf(
-       SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true",
-@@ -1027,7 +1032,8 @@ abstract class DynamicPartitionPruningSuiteBase
-     }
-   }
- 
 -  test("avoid reordering broadcast join keys to match input hash partitioning") {
 +  test("avoid reordering broadcast join keys to match input hash partitioning",
 +    IgnoreComet("TODO: https://github.com/apache/datafusion-comet/issues/1839")) {
@@ -956,48 +929,6 @@ index 525d97e4998..843f0472c23 100644
      AccumulatorSuite.verifyPeakExecutionMemorySet(sparkContext, "external sort") {
        sql("SELECT * FROM testData2 ORDER BY a ASC, b ASC").collect()
      }
-@@ -4429,7 +4430,8 @@ class SQLQuerySuite extends QueryTest with SharedSparkSession with AdaptiveSpark
-   }
- 
-   test("SPARK-39166: Query context of binary arithmetic should be serialized to executors" +
--    " when WSCG is off") {
-+    " when WSCG is off",
-+    IgnoreComet("https://github.com/apache/datafusion-comet/issues/2215")) {
-     withSQLConf(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
-       SQLConf.ANSI_ENABLED.key -> "true") {
-       withTable("t") {
-@@ -4450,7 +4452,8 @@ class SQLQuerySuite extends QueryTest with SharedSparkSession with AdaptiveSpark
-   }
- 
-   test("SPARK-39175: Query context of Cast should be serialized to executors" +
--    " when WSCG is off") {
-+    " when WSCG is off",
-+    IgnoreComet("https://github.com/apache/datafusion-comet/issues/2215")) {
-     withSQLConf(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
-       SQLConf.ANSI_ENABLED.key -> "true") {
-       withTable("t") {
-@@ -4467,14 +4470,19 @@ class SQLQuerySuite extends QueryTest with SharedSparkSession with AdaptiveSpark
-           val msg = intercept[SparkException] {
-             sql(query).collect()
-           }.getMessage
--          assert(msg.contains(query))
-+          if (!isCometEnabled) {
-+            // Comet's error message does not include the original SQL query
-+            // https://github.com/apache/datafusion-comet/issues/2215
-+            assert(msg.contains(query))
-+          }
-         }
-       }
-     }
-   }
- 
-   test("SPARK-39190,SPARK-39208,SPARK-39210: Query context of decimal overflow error should " +
--    "be serialized to executors when WSCG is off") {
-+    "be serialized to executors when WSCG is off",
-+    IgnoreComet("https://github.com/apache/datafusion-comet/issues/2215")) {
-     withSQLConf(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
-       SQLConf.ANSI_ENABLED.key -> "true") {
-       withTable("t") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala
 index 48ad10992c5..51d1ee65422 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala
