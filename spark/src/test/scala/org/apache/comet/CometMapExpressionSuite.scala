@@ -237,8 +237,6 @@ class CometMapExpressionSuite extends CometTestBase {
     }
   }
 
-
-
   test("map_sort with integer keys") {
     assume(isSpark40Plus, "map_sort was added in Spark 4.0")
     withTempDir { dir =>
@@ -457,14 +455,13 @@ class CometMapExpressionSuite extends CometTestBase {
         withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
           val df = spark
             .range(5)
-            .select(
-              map(
-                lit(java.sql.Date.valueOf("2024-03-15")),
-                lit("march"),
-                lit(java.sql.Date.valueOf("2024-01-10")),
-                lit("jan"),
-                lit(java.sql.Date.valueOf("2024-02-20")),
-                lit("feb")).alias("m"))
+            .select(map(
+              lit(java.sql.Date.valueOf("2024-03-15")),
+              lit("march"),
+              lit(java.sql.Date.valueOf("2024-01-10")),
+              lit("jan"),
+              lit(java.sql.Date.valueOf("2024-02-20")),
+              lit("feb")).alias("m"))
           df.write.parquet(path.toString)
         }
         spark.read.parquet(path.toString).createOrReplaceTempView("t1")
@@ -481,14 +478,13 @@ class CometMapExpressionSuite extends CometTestBase {
         withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
           val df = spark
             .range(5)
-            .select(
-              map(
-                lit(java.sql.Timestamp.valueOf("2024-03-15 10:30:00")),
-                lit("third"),
-                lit(java.sql.Timestamp.valueOf("2024-01-10 08:00:00")),
-                lit("first"),
-                lit(java.sql.Timestamp.valueOf("2024-02-20 14:15:00")),
-                lit("second")).alias("m"))
+            .select(map(
+              lit(java.sql.Timestamp.valueOf("2024-03-15 10:30:00")),
+              lit("third"),
+              lit(java.sql.Timestamp.valueOf("2024-01-10 08:00:00")),
+              lit("first"),
+              lit(java.sql.Timestamp.valueOf("2024-02-20 14:15:00")),
+              lit("second")).alias("m"))
           df.write.parquet(path.toString)
         }
         spark.read.parquet(path.toString).createOrReplaceTempView("t1")

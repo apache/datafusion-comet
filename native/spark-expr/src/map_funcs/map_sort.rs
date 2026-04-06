@@ -113,8 +113,7 @@ fn sort_map_array(array: &ArrayRef) -> Result<ArrayRef, DataFusionError> {
             arrow::array::new_empty_array(values.data_type()),
         )
     } else {
-        let keys_refs: Vec<&dyn Array> =
-            sorted_keys_arrays.iter().map(|a| a.as_ref()).collect();
+        let keys_refs: Vec<&dyn Array> = sorted_keys_arrays.iter().map(|a| a.as_ref()).collect();
         let values_refs: Vec<&dyn Array> =
             sorted_values_arrays.iter().map(|a| a.as_ref()).collect();
         (
@@ -141,8 +140,8 @@ fn sort_map_array(array: &ArrayRef) -> Result<ArrayRef, DataFusionError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{Int32Array, StringArray, StructArray};
     use arrow::array::NullBufferBuilder;
+    use arrow::array::{Int32Array, StringArray, StructArray};
     use arrow::buffer::OffsetBuffer;
     use arrow::datatypes::{Field, Fields};
     use datafusion::logical_expr::ColumnarValue;
@@ -193,14 +192,22 @@ mod tests {
     fn get_sorted_keys(result: &ArrayRef) -> Vec<i32> {
         let map = result.as_any().downcast_ref::<MapArray>().unwrap();
         let entries = map.entries();
-        let keys = entries.column(0).as_any().downcast_ref::<Int32Array>().unwrap();
+        let keys = entries
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
         keys.values().to_vec()
     }
 
     fn get_sorted_values(result: &ArrayRef) -> Vec<String> {
         let map = result.as_any().downcast_ref::<MapArray>().unwrap();
         let entries = map.entries();
-        let vals = entries.column(1).as_any().downcast_ref::<StringArray>().unwrap();
+        let vals = entries
+            .column(1)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
         (0..vals.len()).map(|i| vals.value(i).to_string()).collect()
     }
 
@@ -222,12 +229,7 @@ mod tests {
     #[test]
     fn test_sort_multiple_rows() {
         // Row 0: {3->c, 1->a}, Row 1: {5->e, 4->d}
-        let array = make_map_array(
-            &[3, 1, 5, 4],
-            &["c", "a", "e", "d"],
-            &[0, 2, 4],
-            None,
-        );
+        let array = make_map_array(&[3, 1, 5, 4], &["c", "a", "e", "d"], &[0, 2, 4], None);
         let args = vec![ColumnarValue::Array(array)];
         let result = spark_map_sort(&args).unwrap();
 
@@ -243,12 +245,7 @@ mod tests {
     #[test]
     fn test_sort_with_empty_map() {
         // Row 0: {2->b, 1->a}, Row 1: empty, Row 2: {3->c}
-        let array = make_map_array(
-            &[2, 1, 3],
-            &["b", "a", "c"],
-            &[0, 2, 2, 3],
-            None,
-        );
+        let array = make_map_array(&[2, 1, 3], &["b", "a", "c"], &[0, 2, 2, 3], None);
         let args = vec![ColumnarValue::Array(array)];
         let result = spark_map_sort(&args).unwrap();
 
@@ -268,12 +265,7 @@ mod tests {
     #[test]
     fn test_sort_with_null_map() {
         // Row 0: {2->b, 1->a}, Row 1: null
-        let array = make_map_array(
-            &[2, 1],
-            &["b", "a"],
-            &[0, 2, 2],
-            Some(vec![true, false]),
-        );
+        let array = make_map_array(&[2, 1], &["b", "a"], &[0, 2, 2], Some(vec![true, false]));
         let args = vec![ColumnarValue::Array(array)];
         let result = spark_map_sort(&args).unwrap();
 
