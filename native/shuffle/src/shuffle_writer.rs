@@ -374,25 +374,20 @@ mod test {
 
         repartitioner.insert_batch(batch.clone()).await.unwrap();
 
-        {
-            let partition_writers = repartitioner.partition_writers();
-            assert_eq!(partition_writers.len(), 2);
-
-            assert!(!partition_writers[0].has_spill_file());
-            assert!(!partition_writers[1].has_spill_file());
-        }
+        // before spill, no spill files should exist
+        assert_eq!(repartitioner.spill_count_files(), 0);
 
         repartitioner.spill().unwrap();
 
-        // after spill, there should be spill files
-        {
-            let partition_writers = repartitioner.partition_writers();
-            assert!(partition_writers[0].has_spill_file());
-            assert!(partition_writers[1].has_spill_file());
-        }
+        // after spill, exactly one combined spill file should exist (not one per partition)
+        assert_eq!(repartitioner.spill_count_files(), 1);
 
         // insert another batch after spilling
         repartitioner.insert_batch(batch.clone()).await.unwrap();
+
+        // spill again -- should create a second combined spill file
+        repartitioner.spill().unwrap();
+        assert_eq!(repartitioner.spill_count_files(), 2);
     }
 
     fn create_runtime(memory_limit: usize) -> Arc<RuntimeEnv> {
@@ -701,8 +696,6 @@ mod test {
         total_rows
     }
 
-    #[test]
-    #[cfg_attr(miri, ignore)]
     fn test_empty_schema_shuffle_writer() {
         use std::fs;
         use std::io::Read;
@@ -855,5 +848,259 @@ mod test {
             let offset = i64::from_le_bytes(index_data[i * 8..(i + 1) * 8].try_into().unwrap());
             assert_eq!(offset, 0, "All offsets should be 0 with zero rows");
         }
+    }
+}
+
+    /// Verify that spilling an empty repartitioner produces no spill files.
+    #[tokio::test]
+    async fn spill_empty_buffers_produces_no_file() {
+        let batch = create_batch(100);
+        let memory_limit = 512 * 1024;
+        let num_partitions = 4;
+        let runtime_env = create_runtime(memory_limit);
+        let metrics_set = ExecutionPlanMetricsSet::new();
+        let mut repartitioner = MultiPartitionShuffleRepartitioner::try_new(
+            0,
+            "/tmp/spill_empty_data.out".to_string(),
+            "/tmp/spill_empty_index.out".to_string(),
+            batch.schema(),
+            CometPartitioning::Hash(vec![Arc::new(Column::new("a", 0))], num_partitions),
+            ShufflePartitionerMetrics::new(&metrics_set, 0),
+            runtime_env,
+            1024,
+            CompressionCodec::Lz4Frame,
+            false,
+            1024 * 1024,
+        )
+        .unwrap();
+
+        // Spill with no data inserted -- should be a no-op
+        repartitioner.spill().unwrap();
+        assert_eq!(repartitioner.spill_count_files(), 0);
+    }
+
+    /// Verify that spilling with many partitions (some empty) still creates
+    /// exactly one spill file per spill event, and that shuffle_write succeeds.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_spill_with_sparse_partitions() {
+        // 100 rows across 50 partitions -- many partitions will be empty
+        shuffle_write_test(100, 5, 50, Some(10 * 1024));
+    }
+
+    /// Verify that the output of a spill-based shuffle contains the same total
+    /// row count and valid partition structure as a non-spill shuffle.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_spill_output_matches_non_spill() {
+        use std::fs;
+
+        let batch_size = 1000;
+        let num_batches = 10;
+        let num_partitions = 8;
+        let total_rows = batch_size * num_batches;
+
+        let batch = create_batch(batch_size);
+        let batches = (0..num_batches).map(|_| batch.clone()).collect::<Vec<_>>();
+
+        let parse_offsets = |index_data: &[u8]| -> Vec<i64> {
+            index_data
+                .chunks(8)
+                .map(|chunk| i64::from_le_bytes(chunk.try_into().unwrap()))
+                .collect()
+        };
+
+        let count_rows_in_partition = |data: &[u8], start: i64, end: i64| -> usize {
+            if start == end {
+                return 0;
+            }
+            read_all_ipc_blocks(&data[start as usize..end as usize])
+        };
+
+        // Run 1: no spilling (large memory limit)
+        {
+            let partitions = std::slice::from_ref(&batches);
+            let exec = ShuffleWriterExec::try_new(
+                Arc::new(DataSourceExec::new(Arc::new(
+                    MemorySourceConfig::try_new(partitions, batch.schema(), None).unwrap(),
+                ))),
+                CometPartitioning::Hash(vec![Arc::new(Column::new("a", 0))], num_partitions),
+                CompressionCodec::Zstd(1),
+                "/tmp/no_spill_data.out".to_string(),
+                "/tmp/no_spill_index.out".to_string(),
+                false,
+                1024 * 1024,
+            )
+            .unwrap();
+
+            let config = SessionConfig::new();
+            let runtime_env = Arc::new(
+                RuntimeEnvBuilder::new()
+                    .with_memory_limit(100 * 1024 * 1024, 1.0)
+                    .build()
+                    .unwrap(),
+            );
+            let ctx = SessionContext::new_with_config_rt(config, runtime_env);
+            let task_ctx = ctx.task_ctx();
+            let stream = exec.execute(0, task_ctx).unwrap();
+            let rt = Runtime::new().unwrap();
+            rt.block_on(collect(stream)).unwrap();
+        }
+
+        // Run 2: with spilling (memory limit forces spilling during insert_batch)
+        {
+            let partitions = std::slice::from_ref(&batches);
+            let exec = ShuffleWriterExec::try_new(
+                Arc::new(DataSourceExec::new(Arc::new(
+                    MemorySourceConfig::try_new(partitions, batch.schema(), None).unwrap(),
+                ))),
+                CometPartitioning::Hash(vec![Arc::new(Column::new("a", 0))], num_partitions),
+                CompressionCodec::Zstd(1),
+                "/tmp/spill_data.out".to_string(),
+                "/tmp/spill_index.out".to_string(),
+                false,
+                1024 * 1024,
+            )
+            .unwrap();
+
+            let config = SessionConfig::new();
+            let runtime_env = Arc::new(
+                RuntimeEnvBuilder::new()
+                    .with_memory_limit(512 * 1024, 1.0)
+                    .build()
+                    .unwrap(),
+            );
+            let ctx = SessionContext::new_with_config_rt(config, runtime_env);
+            let task_ctx = ctx.task_ctx();
+            let stream = exec.execute(0, task_ctx).unwrap();
+            let rt = Runtime::new().unwrap();
+            rt.block_on(collect(stream)).unwrap();
+        }
+
+        let no_spill_index = fs::read("/tmp/no_spill_index.out").unwrap();
+        let spill_index = fs::read("/tmp/spill_index.out").unwrap();
+
+        assert_eq!(
+            no_spill_index.len(),
+            spill_index.len(),
+            "Index files should have the same number of entries"
+        );
+
+        let no_spill_offsets = parse_offsets(&no_spill_index);
+        let spill_offsets = parse_offsets(&spill_index);
+
+        let no_spill_data = fs::read("/tmp/no_spill_data.out").unwrap();
+        let spill_data = fs::read("/tmp/spill_data.out").unwrap();
+
+        // Verify row counts per partition match between spill and non-spill runs
+        let mut no_spill_total_rows = 0;
+        let mut spill_total_rows = 0;
+        for i in 0..num_partitions {
+            let ns_rows = count_rows_in_partition(
+                &no_spill_data,
+                no_spill_offsets[i],
+                no_spill_offsets[i + 1],
+            );
+            let s_rows =
+                count_rows_in_partition(&spill_data, spill_offsets[i], spill_offsets[i + 1]);
+            assert_eq!(
+                ns_rows, s_rows,
+                "Partition {i} row count mismatch: no_spill={ns_rows}, spill={s_rows}"
+            );
+            no_spill_total_rows += ns_rows;
+            spill_total_rows += s_rows;
+        }
+
+        assert_eq!(
+            no_spill_total_rows, total_rows,
+            "Non-spill total row count mismatch"
+        );
+        assert_eq!(
+            spill_total_rows, total_rows,
+            "Spill total row count mismatch"
+        );
+
+        // Cleanup
+        let _ = fs::remove_file("/tmp/no_spill_data.out");
+        let _ = fs::remove_file("/tmp/no_spill_index.out");
+        let _ = fs::remove_file("/tmp/spill_data.out");
+        let _ = fs::remove_file("/tmp/spill_index.out");
+    }
+
+    /// Verify multiple spill events with subsequent insert_batch calls
+    /// produce correct output.
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)]
+    async fn test_multiple_spills_then_write() {
+        let batch = create_batch(500);
+        let memory_limit = 512 * 1024;
+        let num_partitions = 4;
+        let runtime_env = create_runtime(memory_limit);
+        let metrics_set = ExecutionPlanMetricsSet::new();
+        let mut repartitioner = MultiPartitionShuffleRepartitioner::try_new(
+            0,
+            "/tmp/multi_spill_data.out".to_string(),
+            "/tmp/multi_spill_index.out".to_string(),
+            batch.schema(),
+            CometPartitioning::Hash(vec![Arc::new(Column::new("a", 0))], num_partitions),
+            ShufflePartitionerMetrics::new(&metrics_set, 0),
+            runtime_env,
+            1024,
+            CompressionCodec::Lz4Frame,
+            false,
+            1024 * 1024,
+        )
+        .unwrap();
+
+        // Insert -> spill -> insert -> spill -> insert (3 inserts, 2 spills)
+        repartitioner.insert_batch(batch.clone()).await.unwrap();
+        repartitioner.spill().unwrap();
+        assert_eq!(repartitioner.spill_count_files(), 1);
+
+        repartitioner.insert_batch(batch.clone()).await.unwrap();
+        repartitioner.spill().unwrap();
+        assert_eq!(repartitioner.spill_count_files(), 2);
+
+        repartitioner.insert_batch(batch.clone()).await.unwrap();
+        // Final shuffle_write merges 2 spill files + in-memory data
+        repartitioner.shuffle_write().unwrap();
+
+        // Verify output files exist and are non-empty
+        let data = std::fs::read("/tmp/multi_spill_data.out").unwrap();
+        assert!(!data.is_empty(), "Output data file should be non-empty");
+
+        let index = std::fs::read("/tmp/multi_spill_index.out").unwrap();
+        // Index should have (num_partitions + 1) * 8 bytes
+        assert_eq!(
+            index.len(),
+            (num_partitions + 1) * 8,
+            "Index file should have correct number of offset entries"
+        );
+
+        // Parse offsets and verify they are monotonically non-decreasing
+        let offsets: Vec<i64> = index
+            .chunks(8)
+            .map(|chunk| i64::from_le_bytes(chunk.try_into().unwrap()))
+            .collect();
+        assert_eq!(offsets[0], 0, "First offset should be 0");
+        for i in 1..offsets.len() {
+            assert!(
+                offsets[i] >= offsets[i - 1],
+                "Offsets must be monotonically non-decreasing: offset[{}]={} < offset[{}]={}",
+                i,
+                offsets[i],
+                i - 1,
+                offsets[i - 1]
+            );
+        }
+        assert_eq!(
+            *offsets.last().unwrap() as usize,
+            data.len(),
+            "Last offset should equal data file size"
+        );
+
+        // Cleanup
+        let _ = std::fs::remove_file("/tmp/multi_spill_data.out");
+        let _ = std::fs::remove_file("/tmp/multi_spill_index.out");
     }
 }
