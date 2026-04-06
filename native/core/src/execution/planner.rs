@@ -2452,7 +2452,7 @@ impl PhysicalPlanner {
             sort_phy_exprs,
             window_frame.into(),
             input_schema,
-            false, // TODO: Ignore nulls
+            spark_expr.ignore_nulls,
             false, // TODO: Spark does not support DISTINCT ... OVER
             None,
         )
@@ -2506,6 +2506,12 @@ impl PhysicalPlanner {
             .udaf(name)
             .map(WindowFunctionDefinition::AggregateUDF)
             .ok()
+            .or_else(|| {
+                registry
+                    .udwf(name)
+                    .map(WindowFunctionDefinition::WindowUDF)
+                    .ok()
+            })
     }
 
     /// Create a DataFusion physical partitioning from Spark physical partitioning
