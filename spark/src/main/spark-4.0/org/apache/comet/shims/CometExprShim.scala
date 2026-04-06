@@ -20,7 +20,7 @@
 package org.apache.comet.shims
 
 import org.apache.spark.sql.catalyst.expressions._
-import org.apache.spark.sql.catalyst.expressions.objects.{RowOrdering, StaticInvoke}
+import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.types.StringTypeWithCollation
 import org.apache.spark.sql.types.{BinaryType, BooleanType, DataTypes, MapType, StringType}
