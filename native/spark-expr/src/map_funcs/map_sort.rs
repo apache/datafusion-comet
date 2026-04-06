@@ -22,7 +22,8 @@ use datafusion::common::{exec_err, DataFusionError, ScalarValue};
 use datafusion::logical_expr::ColumnarValue;
 use std::sync::Arc;
 
-/// Sorts map entries by key in ascending order, matching Spark's MapSort semantics.
+/// Sorts map entries by key in ascending order, matching Spark's `MapSort` semantics.
+/// Takes a single map argument and returns a new map with entries sorted by key.
 pub fn spark_map_sort(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
     if args.len() != 1 {
         return exec_err!("map_sort function takes exactly one argument");
@@ -135,4 +136,248 @@ fn sort_map_array(array: &ArrayRef) -> Result<ArrayRef, DataFusionError> {
         map_array.nulls().cloned(),
         ordered,
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::array::{Int32Array, StringArray, StructArray};
+    use arrow::array::NullBufferBuilder;
+    use arrow::buffer::OffsetBuffer;
+    use arrow::datatypes::{Field, Fields};
+    use datafusion::logical_expr::ColumnarValue;
+
+    fn make_map_array(
+        key_values: &[i32],
+        str_values: &[&str],
+        offsets: &[i32],
+        nulls: Option<Vec<bool>>,
+    ) -> ArrayRef {
+        let keys = Arc::new(Int32Array::from(key_values.to_vec())) as ArrayRef;
+        let values = Arc::new(StringArray::from(
+            str_values.iter().map(|s| Some(*s)).collect::<Vec<_>>(),
+        )) as ArrayRef;
+
+        let key_field = Arc::new(Field::new("key", DataType::Int32, false));
+        let value_field = Arc::new(Field::new("value", DataType::Utf8, true));
+
+        let entries = StructArray::new(
+            Fields::from(vec![Arc::clone(&key_field), Arc::clone(&value_field)]),
+            vec![keys, values],
+            None,
+        );
+
+        let entries_field = Arc::new(Field::new(
+            "entries",
+            DataType::Struct(entries.fields().clone()),
+            false,
+        ));
+
+        let null_buffer = nulls.map(|n| {
+            let mut builder = NullBufferBuilder::new(n.len());
+            for v in n {
+                builder.append(v);
+            }
+            builder.finish().unwrap()
+        });
+
+        Arc::new(MapArray::new(
+            entries_field,
+            OffsetBuffer::new(offsets.to_vec().into()),
+            entries,
+            null_buffer,
+            false,
+        ))
+    }
+
+    fn get_sorted_keys(result: &ArrayRef) -> Vec<i32> {
+        let map = result.as_any().downcast_ref::<MapArray>().unwrap();
+        let entries = map.entries();
+        let keys = entries.column(0).as_any().downcast_ref::<Int32Array>().unwrap();
+        keys.values().to_vec()
+    }
+
+    fn get_sorted_values(result: &ArrayRef) -> Vec<String> {
+        let map = result.as_any().downcast_ref::<MapArray>().unwrap();
+        let entries = map.entries();
+        let vals = entries.column(1).as_any().downcast_ref::<StringArray>().unwrap();
+        (0..vals.len()).map(|i| vals.value(i).to_string()).collect()
+    }
+
+    #[test]
+    fn test_sort_integer_keys() {
+        let array = make_map_array(&[3, 1, 2], &["c", "a", "b"], &[0, 3], None);
+        let args = vec![ColumnarValue::Array(array)];
+        let result = spark_map_sort(&args).unwrap();
+
+        match result {
+            ColumnarValue::Array(ref arr) => {
+                assert_eq!(get_sorted_keys(arr), vec![1, 2, 3]);
+                assert_eq!(get_sorted_values(arr), vec!["a", "b", "c"]);
+            }
+            _ => panic!("Expected array result"),
+        }
+    }
+
+    #[test]
+    fn test_sort_multiple_rows() {
+        // Row 0: {3->c, 1->a}, Row 1: {5->e, 4->d}
+        let array = make_map_array(
+            &[3, 1, 5, 4],
+            &["c", "a", "e", "d"],
+            &[0, 2, 4],
+            None,
+        );
+        let args = vec![ColumnarValue::Array(array)];
+        let result = spark_map_sort(&args).unwrap();
+
+        match result {
+            ColumnarValue::Array(ref arr) => {
+                assert_eq!(get_sorted_keys(arr), vec![1, 3, 4, 5]);
+                assert_eq!(get_sorted_values(arr), vec!["a", "c", "d", "e"]);
+            }
+            _ => panic!("Expected array result"),
+        }
+    }
+
+    #[test]
+    fn test_sort_with_empty_map() {
+        // Row 0: {2->b, 1->a}, Row 1: empty, Row 2: {3->c}
+        let array = make_map_array(
+            &[2, 1, 3],
+            &["b", "a", "c"],
+            &[0, 2, 2, 3],
+            None,
+        );
+        let args = vec![ColumnarValue::Array(array)];
+        let result = spark_map_sort(&args).unwrap();
+
+        match result {
+            ColumnarValue::Array(ref arr) => {
+                let map = arr.as_any().downcast_ref::<MapArray>().unwrap();
+                assert_eq!(map.len(), 3);
+                assert_eq!(get_sorted_keys(arr), vec![1, 2, 3]);
+                // Verify offsets: row 0 has 2 entries, row 1 has 0, row 2 has 1
+                let offsets = map.offsets();
+                assert_eq!(offsets.as_ref(), &[0, 2, 2, 3]);
+            }
+            _ => panic!("Expected array result"),
+        }
+    }
+
+    #[test]
+    fn test_sort_with_null_map() {
+        // Row 0: {2->b, 1->a}, Row 1: null
+        let array = make_map_array(
+            &[2, 1],
+            &["b", "a"],
+            &[0, 2, 2],
+            Some(vec![true, false]),
+        );
+        let args = vec![ColumnarValue::Array(array)];
+        let result = spark_map_sort(&args).unwrap();
+
+        match result {
+            ColumnarValue::Array(ref arr) => {
+                let map = arr.as_any().downcast_ref::<MapArray>().unwrap();
+                assert_eq!(map.len(), 2);
+                assert!(!map.is_null(0));
+                assert!(map.is_null(1));
+                assert_eq!(get_sorted_keys(arr), vec![1, 2]);
+            }
+            _ => panic!("Expected array result"),
+        }
+    }
+
+    #[test]
+    fn test_sort_single_entry_map() {
+        let array = make_map_array(&[42], &["answer"], &[0, 1], None);
+        let args = vec![ColumnarValue::Array(array)];
+        let result = spark_map_sort(&args).unwrap();
+
+        match result {
+            ColumnarValue::Array(ref arr) => {
+                assert_eq!(get_sorted_keys(arr), vec![42]);
+                assert_eq!(get_sorted_values(arr), vec!["answer"]);
+            }
+            _ => panic!("Expected array result"),
+        }
+    }
+
+    #[test]
+    fn test_sort_all_empty_maps() {
+        // Two empty maps
+        let array = make_map_array(&[], &[], &[0, 0, 0], None);
+        let args = vec![ColumnarValue::Array(array)];
+        let result = spark_map_sort(&args).unwrap();
+
+        match result {
+            ColumnarValue::Array(ref arr) => {
+                let map = arr.as_any().downcast_ref::<MapArray>().unwrap();
+                assert_eq!(map.len(), 2);
+                let offsets = map.offsets();
+                assert_eq!(offsets.as_ref(), &[0, 0, 0]);
+            }
+            _ => panic!("Expected array result"),
+        }
+    }
+
+    #[test]
+    fn test_sort_preserves_field_names() {
+        // Use custom field names to verify preservation
+        let keys = Arc::new(Int32Array::from(vec![2, 1])) as ArrayRef;
+        let values = Arc::new(StringArray::from(vec!["b", "a"])) as ArrayRef;
+        let key_field = Arc::new(Field::new("my_key", DataType::Int32, false));
+        let value_field = Arc::new(Field::new("my_value", DataType::Utf8, true));
+        let entries = StructArray::new(
+            Fields::from(vec![Arc::clone(&key_field), Arc::clone(&value_field)]),
+            vec![keys, values],
+            None,
+        );
+        let entries_field = Arc::new(Field::new(
+            "my_entries",
+            DataType::Struct(entries.fields().clone()),
+            false,
+        ));
+        let map = MapArray::new(
+            entries_field,
+            OffsetBuffer::new(vec![0, 2].into()),
+            entries,
+            None,
+            false,
+        );
+        let array: ArrayRef = Arc::new(map);
+        let args = vec![ColumnarValue::Array(array)];
+        let result = spark_map_sort(&args).unwrap();
+
+        match result {
+            ColumnarValue::Array(ref arr) => {
+                let map = arr.as_any().downcast_ref::<MapArray>().unwrap();
+                let (kf, vf) = map.entries_fields();
+                assert_eq!(kf.name(), "my_key");
+                assert_eq!(vf.name(), "my_value");
+            }
+            _ => panic!("Expected array result"),
+        }
+    }
+
+    #[test]
+    fn test_sort_null_scalar() {
+        let args = vec![ColumnarValue::Scalar(ScalarValue::Null)];
+        let result = spark_map_sort(&args).unwrap();
+        match result {
+            ColumnarValue::Scalar(ScalarValue::Null) => {}
+            _ => panic!("Expected null scalar result"),
+        }
+    }
+
+    #[test]
+    fn test_wrong_arg_count() {
+        let array = make_map_array(&[1], &["a"], &[0, 1], None);
+        let args = vec![
+            ColumnarValue::Array(array.clone()),
+            ColumnarValue::Array(array),
+        ];
+        assert!(spark_map_sort(&args).is_err());
+    }
 }
