@@ -107,7 +107,12 @@ object CometScanUtils {
 
               case _ =>
                 if (parquetField.isPrimitive) {
-                  // Primitive -> Primitive: use TypeUtil.checkParquetType (Spark's full logic)
+                  // Primitive -> Primitive: use TypeUtil.checkParquetType which mirrors
+                  // Spark's ParquetVectorUpdaterFactory logic.
+                  // TypeUtil may not cover all Spark types (e.g., intervals, collated
+                  // strings). Only rethrow for types TypeUtil explicitly knows about
+                  // (basic primitives, decimals, timestamps). For unknown types, let
+                  // the execution path handle errors with proper context.
                   try {
                     val descriptor =
                       fileSchema.getColumnDescription(Array(parquetField.getName))
@@ -115,13 +120,16 @@ object CometScanUtils {
                       TypeUtil.checkParquetType(descriptor, field.dataType)
                     }
                   } catch {
-                    case scnse: SchemaColumnConvertNotSupportedException =>
+                    case scnse: SchemaColumnConvertNotSupportedException
+                        if isTypeUtilKnownType(field.dataType) =>
                       throw ShimParquetSchemaError.parquetColumnMismatchError(
                         filePath,
                         fieldName,
                         field.dataType.catalogString,
                         scnse.getPhysicalType,
                         scnse)
+                    case _: SchemaColumnConvertNotSupportedException =>
+                    // TypeUtil doesn't know this type - skip, let execution handle it
                   }
                 } else {
                   // File has complex type, read schema expects primitive -> mismatch
@@ -132,6 +140,20 @@ object CometScanUtils {
         }
       }
     }
+  }
+
+  /**
+   * Returns true if TypeUtil.checkParquetType covers this Spark type. For types it doesn't know
+   * (intervals, collated strings, etc.), we skip rethrow and let the execution path handle
+   * errors.
+   */
+  private def isTypeUtilKnownType(dt: DataType): Boolean = dt match {
+    case BooleanType | ByteType | ShortType | IntegerType | LongType => true
+    case FloatType | DoubleType => true
+    case StringType | BinaryType => true
+    case DateType | TimestampType => true
+    case _: DecimalType => true
+    case _ => false
   }
 
   private def throwSchemaMismatch(
