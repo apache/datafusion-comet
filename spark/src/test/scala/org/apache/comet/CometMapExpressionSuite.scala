@@ -408,4 +408,93 @@ class CometMapExpressionSuite extends CometTestBase {
     }
   }
 
+  test("map_sort with boolean keys") {
+    assume(isSpark40Plus, "map_sort was added in Spark 4.0")
+    withTempDir { dir =>
+      withTempView("t1") {
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          val df = spark
+            .range(5)
+            .select(map(lit(true), lit("yes"), lit(false), lit("no")).alias("m"))
+          df.write.parquet(path.toString)
+        }
+        spark.read.parquet(path.toString).createOrReplaceTempView("t1")
+        checkSparkAnswerAndOperator(sql("SELECT map_sort(m) FROM t1"))
+      }
+    }
+  }
+
+  test("map_sort with decimal keys") {
+    assume(isSpark40Plus, "map_sort was added in Spark 4.0")
+    withTempDir { dir =>
+      withTempView("t1") {
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          val df = spark
+            .range(5)
+            .select(
+              map(
+                lit(BigDecimal("3.14")),
+                lit("pi"),
+                lit(BigDecimal("1.41")),
+                lit("sqrt2"),
+                lit(BigDecimal("2.72")),
+                lit("e")).alias("m"))
+          df.write.parquet(path.toString)
+        }
+        spark.read.parquet(path.toString).createOrReplaceTempView("t1")
+        checkSparkAnswerAndOperator(sql("SELECT map_sort(m) FROM t1"))
+      }
+    }
+  }
+
+  test("map_sort with date keys") {
+    assume(isSpark40Plus, "map_sort was added in Spark 4.0")
+    withTempDir { dir =>
+      withTempView("t1") {
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          val df = spark
+            .range(5)
+            .select(
+              map(
+                lit(java.sql.Date.valueOf("2024-03-15")),
+                lit("march"),
+                lit(java.sql.Date.valueOf("2024-01-10")),
+                lit("jan"),
+                lit(java.sql.Date.valueOf("2024-02-20")),
+                lit("feb")).alias("m"))
+          df.write.parquet(path.toString)
+        }
+        spark.read.parquet(path.toString).createOrReplaceTempView("t1")
+        checkSparkAnswerAndOperator(sql("SELECT map_sort(m) FROM t1"))
+      }
+    }
+  }
+
+  test("map_sort with timestamp keys") {
+    assume(isSpark40Plus, "map_sort was added in Spark 4.0")
+    withTempDir { dir =>
+      withTempView("t1") {
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          val df = spark
+            .range(5)
+            .select(
+              map(
+                lit(java.sql.Timestamp.valueOf("2024-03-15 10:30:00")),
+                lit("third"),
+                lit(java.sql.Timestamp.valueOf("2024-01-10 08:00:00")),
+                lit("first"),
+                lit(java.sql.Timestamp.valueOf("2024-02-20 14:15:00")),
+                lit("second")).alias("m"))
+          df.write.parquet(path.toString)
+        }
+        spark.read.parquet(path.toString).createOrReplaceTempView("t1")
+        checkSparkAnswerAndOperator(sql("SELECT map_sort(m) FROM t1"))
+      }
+    }
+  }
+
 }
