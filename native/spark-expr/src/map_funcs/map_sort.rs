@@ -15,13 +15,14 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::{Array, ArrayRef, MapArray};
+use arrow::array::{Array, ArrayRef, MapArray, StructArray};
 use arrow::compute::{lexsort_to_indices, take, SortColumn, SortOptions};
-use arrow::datatypes::{DataType, Field};
+use arrow::datatypes::DataType;
 use datafusion::common::{exec_err, DataFusionError, ScalarValue};
 use datafusion::logical_expr::ColumnarValue;
 use std::sync::Arc;
 
+/// Sorts map entries by key in ascending order, matching Spark's MapSort semantics.
 pub fn spark_map_sort(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
     if args.len() != 1 {
         return exec_err!("map_sort function takes exactly one argument");
@@ -29,38 +30,37 @@ pub fn spark_map_sort(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusio
 
     match &args[0] {
         ColumnarValue::Array(array) => {
-            let result = spark_map_sort_array(array)?;
+            let result = sort_map_array(array)?;
             Ok(ColumnarValue::Array(result))
         }
-        ColumnarValue::Scalar(scalar) => {
-            let result = spark_map_sort_scalar(scalar)?;
-            Ok(ColumnarValue::Scalar(result))
+        ColumnarValue::Scalar(ScalarValue::Null) => Ok(ColumnarValue::Scalar(ScalarValue::Null)),
+        ColumnarValue::Scalar(other) => {
+            exec_err!("map_sort expects a map type, got: {:?}", other)
         }
     }
 }
 
-fn spark_map_sort_array(array: &ArrayRef) -> Result<ArrayRef, DataFusionError> {
+fn sort_map_array(array: &ArrayRef) -> Result<ArrayRef, DataFusionError> {
     let map_array = array
         .as_any()
         .downcast_ref::<MapArray>()
         .ok_or_else(|| DataFusionError::Internal("Expected MapArray".to_string()))?;
 
+    // Extract the entries field from the input data type to preserve field names and metadata
+    let (entries_field, ordered) = match map_array.data_type() {
+        DataType::Map(field, ordered) => (Arc::clone(field), *ordered),
+        other => {
+            return exec_err!("Expected Map data type, got: {:?}", other);
+        }
+    };
+
     let entries = map_array.entries();
-    let struct_array = entries
-        .as_any()
-        .downcast_ref::<arrow::array::StructArray>()
-        .ok_or_else(|| DataFusionError::Internal("Expected StructArray for entries".to_string()))?;
-
-    if struct_array.num_columns() != 2 {
-        return exec_err!("Map entries must have exactly 2 columns (keys and values)");
-    }
-
-    let keys = struct_array.column(0);
-    let values = struct_array.column(1);
+    let keys = entries.column(0);
+    let values = entries.column(1);
     let offsets = map_array.offsets();
 
-    let mut sorted_keys_arrays = Vec::new();
-    let mut sorted_values_arrays = Vec::new();
+    let mut sorted_keys_arrays: Vec<ArrayRef> = Vec::new();
+    let mut sorted_values_arrays: Vec<ArrayRef> = Vec::new();
     let mut new_offsets = Vec::with_capacity(map_array.len() + 1);
     new_offsets.push(0i32);
 
@@ -69,8 +69,8 @@ fn spark_map_sort_array(array: &ArrayRef) -> Result<ArrayRef, DataFusionError> {
         let end = offsets[row_idx + 1] as usize;
         let len = end - start;
 
-        if len == 0 {
-            new_offsets.push(new_offsets[row_idx]);
+        if len == 0 || map_array.is_null(row_idx) {
+            new_offsets.push(*new_offsets.last().unwrap());
             continue;
         }
 
@@ -80,7 +80,7 @@ fn spark_map_sort_array(array: &ArrayRef) -> Result<ArrayRef, DataFusionError> {
         if len == 1 {
             sorted_keys_arrays.push(row_keys);
             sorted_values_arrays.push(row_values);
-            new_offsets.push(new_offsets[row_idx] + len as i32);
+            new_offsets.push(*new_offsets.last().unwrap() + len as i32);
             continue;
         }
 
@@ -98,88 +98,41 @@ fn spark_map_sort_array(array: &ArrayRef) -> Result<ArrayRef, DataFusionError> {
 
         sorted_keys_arrays.push(sorted_keys);
         sorted_values_arrays.push(sorted_values);
-        new_offsets.push(new_offsets[row_idx] + len as i32);
+        new_offsets.push(*new_offsets.last().unwrap() + len as i32);
     }
 
-    if sorted_keys_arrays.is_empty() {
-        let key_field = Arc::new(Field::new(
-            "key",
-            keys.data_type().clone(),
-            keys.is_nullable(),
-        ));
-        let value_field = Arc::new(Field::new(
-            "value",
-            values.data_type().clone(),
-            values.is_nullable(),
-        ));
-        let entries_field = Arc::new(Field::new(
-            "entries",
-            DataType::Struct(vec![Arc::clone(&key_field), Arc::clone(&value_field)].into()),
-            false,
-        ));
+    // Reconstruct using the original entries field to preserve field names and metadata
+    let (key_field, value_field) = map_array.entries_fields();
+    let key_field = Arc::new(key_field.clone());
+    let value_field = Arc::new(value_field.clone());
 
-        let empty_keys = arrow::array::new_empty_array(keys.data_type());
-        let empty_values = arrow::array::new_empty_array(values.data_type());
-        let empty_entries = arrow::array::StructArray::new(
-            vec![key_field, value_field].into(),
-            vec![empty_keys, empty_values],
-            None,
-        );
+    let (sorted_keys_col, sorted_values_col) = if sorted_keys_arrays.is_empty() {
+        (
+            arrow::array::new_empty_array(keys.data_type()),
+            arrow::array::new_empty_array(values.data_type()),
+        )
+    } else {
+        let keys_refs: Vec<&dyn Array> =
+            sorted_keys_arrays.iter().map(|a| a.as_ref()).collect();
+        let values_refs: Vec<&dyn Array> =
+            sorted_values_arrays.iter().map(|a| a.as_ref()).collect();
+        (
+            arrow::compute::concat(&keys_refs)?,
+            arrow::compute::concat(&values_refs)?,
+        )
+    };
 
-        return Ok(Arc::new(MapArray::new(
-            entries_field,
-            arrow::buffer::OffsetBuffer::new(vec![0i32; map_array.len() + 1].into()),
-            empty_entries,
-            map_array.nulls().cloned(),
-            false,
-        )));
-    }
-
-    let sorted_keys_refs: Vec<&dyn Array> = sorted_keys_arrays.iter().map(|a| a.as_ref()).collect();
-    let sorted_values_refs: Vec<&dyn Array> =
-        sorted_values_arrays.iter().map(|a| a.as_ref()).collect();
-
-    let concatenated_keys = arrow::compute::concat(&sorted_keys_refs)?;
-    let concatenated_values = arrow::compute::concat(&sorted_values_refs)?;
-
-    let key_field = Arc::new(Field::new(
-        "key",
-        keys.data_type().clone(),
-        keys.is_nullable(),
-    ));
-    let value_field = Arc::new(Field::new(
-        "value",
-        values.data_type().clone(),
-        values.is_nullable(),
-    ));
-
-    let sorted_entries = arrow::array::StructArray::new(
-        vec![Arc::clone(&key_field), Arc::clone(&value_field)].into(),
-        vec![concatenated_keys, concatenated_values],
+    let sorted_entries = StructArray::new(
+        vec![key_field, value_field].into(),
+        vec![sorted_keys_col, sorted_values_col],
         None,
     );
-
-    let entries_field = Arc::new(Field::new(
-        "entries",
-        DataType::Struct(vec![key_field, value_field].into()),
-        false,
-    ));
 
     Ok(Arc::new(MapArray::new(
         entries_field,
         arrow::buffer::OffsetBuffer::new(new_offsets.into()),
         sorted_entries,
         map_array.nulls().cloned(),
-        false,
+        ordered,
     )))
-}
-
-fn spark_map_sort_scalar(scalar: &ScalarValue) -> Result<ScalarValue, DataFusionError> {
-    match scalar {
-        ScalarValue::Null => Ok(ScalarValue::Null),
-        _ => exec_err!(
-            "map_sort scalar function only supports map types, got: {:?}",
-            scalar
-        ),
-    }
 }
