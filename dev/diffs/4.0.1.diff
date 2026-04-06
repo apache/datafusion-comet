@@ -247,10 +247,10 @@ index 3a409eea348..26e9aaf215c 100644
  
  -- [SPARK-28023] Trim the string when cast string type to other types
 diff --git a/sql/core/src/test/resources/sql-tests/inputs/subquery/in-subquery/in-limit.sql b/sql/core/src/test/resources/sql-tests/inputs/subquery/in-subquery/in-limit.sql
-index 7c816d8a416..b1551a2b296 100644
+index 7c816d8a416..b0b3b4fb3ba 100644
 --- a/sql/core/src/test/resources/sql-tests/inputs/subquery/in-subquery/in-limit.sql
 +++ b/sql/core/src/test/resources/sql-tests/inputs/subquery/in-subquery/in-limit.sql
-@@ -61,6 +78,7 @@ WHERE  t1a IN (SELECT t2a
+@@ -61,6 +61,7 @@ WHERE  t1a IN (SELECT t2a
                 WHERE  t1d = t2d)
  LIMIT  2;
  
@@ -480,7 +480,7 @@ index 81713c777bc..b5f92ed9742 100644
      assert(exchanges.size == 2)
    }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala
-index 2c24cc7d570..12096ea361e 100644
+index 2c24cc7d570..b8dbf907a15 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala
 @@ -22,6 +22,7 @@ import org.scalatest.GivenWhenThen
@@ -501,7 +501,7 @@ index 2c24cc7d570..12096ea361e 100644
        case _ => Nil
      }
    }
-@@ -1027,7 +1032,8 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -1027,7 +1031,8 @@ abstract class DynamicPartitionPruningSuiteBase
      }
    }
  
@@ -511,7 +511,7 @@ index 2c24cc7d570..12096ea361e 100644
      withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "false",
        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
        withTable("large", "dimTwo", "dimThree") {
-@@ -1215,7 +1222,8 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -1215,7 +1220,8 @@ abstract class DynamicPartitionPruningSuiteBase
    }
  
    test("SPARK-32509: Unused Dynamic Pruning filter shouldn't affect " +
@@ -521,7 +521,7 @@ index 2c24cc7d570..12096ea361e 100644
      withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
        withSQLConf(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
          val df = sql(
-@@ -1424,7 +1433,8 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -1424,7 +1430,8 @@ abstract class DynamicPartitionPruningSuiteBase
      }
    }
  
@@ -531,7 +531,7 @@ index 2c24cc7d570..12096ea361e 100644
      withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
        val df = sql(
          """ WITH v as (
-@@ -1699,7 +1710,8 @@ abstract class DynamicPartitionPruningV1Suite extends DynamicPartitionPruningDat
+@@ -1699,7 +1706,8 @@ abstract class DynamicPartitionPruningV1Suite extends DynamicPartitionPruningDat
     * Check the static scan metrics with and without DPP
     */
    test("static scan metrics",
@@ -541,7 +541,7 @@ index 2c24cc7d570..12096ea361e 100644
      withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true",
        SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "false",
        SQLConf.EXCHANGE_REUSE_ENABLED.key -> "false") {
-@@ -1730,6 +1742,8 @@ abstract class DynamicPartitionPruningV1Suite extends DynamicPartitionPruningDat
+@@ -1730,6 +1738,8 @@ abstract class DynamicPartitionPruningV1Suite extends DynamicPartitionPruningDat
                case s: BatchScanExec =>
                  // we use f1 col for v2 tables due to schema pruning
                  s.output.exists(_.exists(_.argString(maxFields = 100).contains("f1")))
@@ -576,10 +576,10 @@ index 9c90e0105a4..fadf2f0f698 100644
  
    test("SPARK-35884: Explain Formatted") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/FileBasedDataSourceSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/FileBasedDataSourceSuite.scala
-index 9c529d14221..2c3ee31723f 100644
+index 9c529d14221..1313a2c0889 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/FileBasedDataSourceSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/FileBasedDataSourceSuite.scala
-@@ -668,18 +674,25 @@ class FileBasedDataSourceSuite extends QueryTest
+@@ -668,18 +668,25 @@ class FileBasedDataSourceSuite extends QueryTest
              checkAnswer(sql(s"select A from $tableName"), data.select("A"))
  
              // RuntimeException is triggered at executor side, which is then wrapped as
@@ -612,7 +612,7 @@ index 9c529d14221..2c3ee31723f 100644
                condition = "_LEGACY_ERROR_TEMP_2093",
                parameters = Map("requiredFieldName" -> "b", "matchedOrcFields" -> "[b, B]")
              )
-@@ -967,6 +980,7 @@ class FileBasedDataSourceSuite extends QueryTest
+@@ -967,6 +974,7 @@ class FileBasedDataSourceSuite extends QueryTest
              assert(bJoinExec.isEmpty)
              val smJoinExec = collect(joinedDF.queryExecution.executedPlan) {
                case smJoin: SortMergeJoinExec => smJoin
@@ -620,7 +620,7 @@ index 9c529d14221..2c3ee31723f 100644
              }
              assert(smJoinExec.nonEmpty)
            }
-@@ -1027,6 +1041,7 @@ class FileBasedDataSourceSuite extends QueryTest
+@@ -1027,6 +1035,7 @@ class FileBasedDataSourceSuite extends QueryTest
  
            val fileScan = df.queryExecution.executedPlan collectFirst {
              case BatchScanExec(_, f: FileScan, _, _, _, _) => f
@@ -628,7 +628,7 @@ index 9c529d14221..2c3ee31723f 100644
            }
            assert(fileScan.nonEmpty)
            assert(fileScan.get.partitionFilters.nonEmpty)
-@@ -1068,6 +1083,7 @@ class FileBasedDataSourceSuite extends QueryTest
+@@ -1068,6 +1077,7 @@ class FileBasedDataSourceSuite extends QueryTest
  
            val fileScan = df.queryExecution.executedPlan collectFirst {
              case BatchScanExec(_, f: FileScan, _, _, _, _) => f
@@ -636,7 +636,7 @@ index 9c529d14221..2c3ee31723f 100644
            }
            assert(fileScan.nonEmpty)
            assert(fileScan.get.partitionFilters.isEmpty)
-@@ -1252,6 +1269,9 @@ class FileBasedDataSourceSuite extends QueryTest
+@@ -1252,6 +1262,9 @@ class FileBasedDataSourceSuite extends QueryTest
            val filters = df.queryExecution.executedPlan.collect {
              case f: FileSourceScanLike => f.dataFilters
              case b: BatchScanExec => b.scan.asInstanceOf[FileScan].dataFilters
@@ -1005,7 +1005,7 @@ index ad424b3a7cc..4ece0117a34 100644
    protected val baseResourcePath = {
      // use the same way as `SQLQueryTestSuite` to get the resource path
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
-index f294ff81021..8a3b818ee94 100644
+index f294ff81021..7775027bcee 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
 @@ -1524,7 +1524,8 @@ class SQLQuerySuite extends QueryTest with SharedSparkSession with AdaptiveSpark
@@ -1132,7 +1132,7 @@ index 0df7f806272..92390bd819f 100644
  
    test("non-matching optional group") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
-index 2e33f6505ab..d0f84e8c44d 100644
+index 2e33f6505ab..56101dccca8 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
 @@ -23,12 +23,14 @@ import org.apache.spark.SparkRuntimeException
@@ -1164,7 +1164,7 @@ index 2e33f6505ab..d0f84e8c44d 100644
          case _ => false
        })
      }
-@@ -2094,7 +2103,7 @@ class SubquerySuite extends QueryTest
+@@ -2094,7 +2102,7 @@ class SubquerySuite extends QueryTest
  
        df.collect()
        val exchanges = collect(df.queryExecution.executedPlan) {
@@ -1173,27 +1173,18 @@ index 2e33f6505ab..d0f84e8c44d 100644
        }
        assert(exchanges.size === 1)
      }
-@@ -2674,22 +2683,31 @@ class SubquerySuite extends QueryTest
-     }
-   }
- 
-   test("SPARK-43402: FileSourceScanExec supports push down data filter with scalar subquery") {
-     def checkFileSourceScan(query: String, answer: Seq[Row]): Unit = {
-       val df = sql(query)
+@@ -2680,12 +2688,20 @@ class SubquerySuite extends QueryTest
        checkAnswer(df, answer)
--      val fileSourceScanExec = collect(df.queryExecution.executedPlan) {
--        case f: FileSourceScanExec => f
-+      val dataSourceScanExec = collect(df.queryExecution.executedPlan) {
-+        case f: FileSourceScanLike => f
+       val fileSourceScanExec = collect(df.queryExecution.executedPlan) {
+         case f: FileSourceScanExec => f
 +        case c: CometScanExec => c
        }
        sparkContext.listenerBus.waitUntilEmpty()
--      assert(fileSourceScanExec.size === 1)
+       assert(fileSourceScanExec.size === 1)
 -      val scalarSubquery = fileSourceScanExec.head.dataFilters.flatMap(_.collect {
 -        case s: ScalarSubquery => s
 -      })
-+      assert(dataSourceScanExec.size === 1)
-+      val scalarSubquery = dataSourceScanExec.head match {
++      val scalarSubquery = fileSourceScanExec.head match {
 +        case f: FileSourceScanLike =>
 +          f.dataFilters.flatMap(_.collect {
 +            case s: ScalarSubquery => s
@@ -1205,13 +1196,7 @@ index 2e33f6505ab..d0f84e8c44d 100644
 +      }
        assert(scalarSubquery.length === 1)
        assert(scalarSubquery.head.plan.isInstanceOf[ReusedSubqueryExec])
--      assert(fileSourceScanExec.head.metrics("numFiles").value === 1)
--      assert(fileSourceScanExec.head.metrics("numOutputRows").value === answer.size)
-+      assert(dataSourceScanExec.head.metrics("numFiles").value === 1)
-+      assert(dataSourceScanExec.head.metrics("numOutputRows").value === answer.size)
-     }
- 
-     withTable("t1", "t2") {
+       assert(fileSourceScanExec.head.metrics("numFiles").value === 1)
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/VariantShreddingSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/VariantShreddingSuite.scala
 index fee375db10a..8c2c24e2c5f 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/VariantShreddingSuite.scala
@@ -2690,7 +2675,7 @@ index 4474ec1fd42..05fa0257c82 100644
        checkAnswer(
          // "fruit" column in this file is encoded using DELTA_LENGTH_BYTE_ARRAY.
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
-index bba71f1c48d..0b52574e0f3 100644
+index bba71f1c48d..35247c13ad9 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
 @@ -27,6 +27,7 @@ import org.apache.parquet.hadoop.ParquetOutputFormat
@@ -2711,7 +2696,7 @@ index bba71f1c48d..0b52574e0f3 100644
      val providedSchema = StructType(Seq(StructField("time", TimestampNTZType, false)))
  
      Seq("INT96", "TIMESTAMP_MICROS", "TIMESTAMP_MILLIS").foreach { tsType =>
-@@ -996,7 +999,11 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
+@@ -996,7 +998,11 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
          Seq(Some("A"), Some("A"), None).toDF().repartition(1)
            .write.parquet(path.getAbsolutePath)
          val df = spark.read.parquet(path.getAbsolutePath)
@@ -2724,7 +2709,7 @@ index bba71f1c48d..0b52574e0f3 100644
        }
      }
    }
-@@ -1042,7 +1049,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
+@@ -1042,7 +1048,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
      testMigration(fromTsType = "TIMESTAMP_MICROS", toTsType = "INT96")
    }
  
@@ -2734,7 +2719,7 @@ index bba71f1c48d..0b52574e0f3 100644
      def readParquet(schema: String, path: File): DataFrame = {
        spark.read.schema(schema).parquet(path.toString)
      }
-@@ -1060,7 +1068,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
+@@ -1060,7 +1067,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
          checkAnswer(readParquet(schema2, path), df)
        }
  
@@ -2744,7 +2729,7 @@ index bba71f1c48d..0b52574e0f3 100644
          val schema1 = "a DECIMAL(3, 2), b DECIMAL(18, 3), c DECIMAL(37, 3)"
          checkAnswer(readParquet(schema1, path), df)
          val schema2 = "a DECIMAL(3, 0), b DECIMAL(18, 1), c DECIMAL(37, 1)"
-@@ -1084,7 +1093,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
+@@ -1084,7 +1092,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
        val df = sql(s"SELECT 1 a, 123456 b, ${Int.MaxValue.toLong * 10} c, CAST('1.2' AS BINARY) d")
        df.write.parquet(path.toString)
  
@@ -2754,7 +2739,7 @@ index bba71f1c48d..0b52574e0f3 100644
          checkAnswer(readParquet("a DECIMAL(3, 2)", path), sql("SELECT 1.00"))
          checkAnswer(readParquet("a DECIMAL(11, 2)", path), sql("SELECT 1.00"))
          checkAnswer(readParquet("b DECIMAL(3, 2)", path), Row(null))
-@@ -1131,7 +1141,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
+@@ -1131,7 +1140,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
      }
    }
  
@@ -2790,7 +2775,7 @@ index 30503af0fab..1491f4bc2d5 100644
  
    import testImplicits._
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRowIndexSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRowIndexSuite.scala
-index 08fd8a9ecb5..d25a2f75773 100644
+index 08fd8a9ecb5..27aee839b8c 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRowIndexSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRowIndexSuite.scala
 @@ -20,6 +20,7 @@ import java.io.File
@@ -2809,30 +2794,7 @@ index 08fd8a9ecb5..d25a2f75773 100644
  import org.apache.spark.sql.execution.FileSourceScanExec
  import org.apache.spark.sql.execution.datasources.FileFormat
  import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
-@@ -172,8 +174,29 @@ class ParquetRowIndexSuite extends QueryTest with SharedSparkSession {
-     testRowIndexGeneration("row index generation", conf)
-   }
- 
-+  private def shouldSkip(conf: RowIndexTestConf): Boolean = {
-+    Set(
-+      RowIndexTestConf(useFilter = true, useSmallPages = true, useSmallRowGroups = true,
-+        useSmallSplits = true),
-+      RowIndexTestConf(useFilter = true, useSmallPages = true, useSmallRowGroups = true),
-+      RowIndexTestConf(useFilter = true, useSmallRowGroups = true, useSmallSplits = true),
-+      RowIndexTestConf(useFilter = true, useSmallRowGroups = true),
-+      RowIndexTestConf(useVectorizedReader = false, useFilter = true, useSmallPages = true,
-+        useSmallRowGroups = true, useSmallSplits = true),
-+      RowIndexTestConf(useVectorizedReader = false, useFilter = true, useSmallPages = true,
-+        useSmallRowGroups = true),
-+      RowIndexTestConf(useVectorizedReader = false, useFilter = true, useSmallRowGroups = true,
-+        useSmallSplits = true),
-+      RowIndexTestConf(useVectorizedReader = false, useFilter = true, useSmallRowGroups = true)
-+    ).contains(conf)
-+  }
-+
-   private def testRowIndexGeneration(label: String, conf: RowIndexTestConf): Unit = {
-     test (s"$label - ${conf.desc}") {
-@@ -245,6 +268,17 @@ class ParquetRowIndexSuite extends QueryTest with SharedSparkSession {
+@@ -245,6 +247,17 @@ class ParquetRowIndexSuite extends QueryTest with SharedSparkSession {
              case f: FileSourceScanExec =>
                numPartitions += f.inputRDD.partitions.length
                numOutputRows += f.metrics("numOutputRows").value
@@ -2850,7 +2812,7 @@ index 08fd8a9ecb5..d25a2f75773 100644
              case _ =>
            }
            assert(numPartitions > 0)
-@@ -303,6 +337,12 @@ class ParquetRowIndexSuite extends QueryTest with SharedSparkSession {
+@@ -303,6 +316,12 @@ class ParquetRowIndexSuite extends QueryTest with SharedSparkSession {
      val conf = RowIndexTestConf(useDataSourceV2 = useDataSourceV2)
  
      test(s"invalid row index column type - ${conf.desc}") {
@@ -2927,7 +2889,7 @@ index 0acb21f3e6f..1f9c3fd13fc 100644
  
      withTempPath { dir =>
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetTypeWideningSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetTypeWideningSuite.scala
-index 09ed6955a51..6f9174c9545 100644
+index 09ed6955a51..bdb63a92d70 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetTypeWideningSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetTypeWideningSuite.scala
 @@ -24,7 +24,7 @@ import org.apache.parquet.format.converter.ParquetMetadataConverter
