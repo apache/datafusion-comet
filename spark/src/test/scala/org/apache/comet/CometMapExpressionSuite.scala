@@ -27,6 +27,7 @@ import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.BinaryType
 
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.serde.CometMapFromEntries
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
 
@@ -239,6 +240,7 @@ class CometMapExpressionSuite extends CometTestBase {
 
 
   test("map_sort with integer keys") {
+    assume(isSpark40Plus, "map_sort was added in Spark 4.0")
     withTempDir { dir =>
       withTempView("t1") {
         val path = new Path(dir.toURI.toString, "test.parquet")
@@ -255,6 +257,7 @@ class CometMapExpressionSuite extends CometTestBase {
   }
 
   test("map_sort with string keys") {
+    assume(isSpark40Plus, "map_sort was added in Spark 4.0")
     withTempDir { dir =>
       withTempView("t1") {
         val path = new Path(dir.toURI.toString, "test.parquet")
@@ -271,6 +274,7 @@ class CometMapExpressionSuite extends CometTestBase {
   }
 
   test("map_sort with double keys") {
+    assume(isSpark40Plus, "map_sort was added in Spark 4.0")
     withTempDir { dir =>
       withTempView("t1") {
         val path = new Path(dir.toURI.toString, "test.parquet")
@@ -287,6 +291,7 @@ class CometMapExpressionSuite extends CometTestBase {
   }
 
   test("map_sort with null and empty maps") {
+    assume(isSpark40Plus, "map_sort was added in Spark 4.0")
     withTempDir { dir =>
       withTempView("t1") {
         val path = new Path(dir.toURI.toString, "test.parquet")
@@ -308,6 +313,7 @@ class CometMapExpressionSuite extends CometTestBase {
   }
 
   test("map_sort with struct keys") {
+    assume(isSpark40Plus, "map_sort was added in Spark 4.0")
     withTempDir { dir =>
       withTempView("t1") {
         val path = new Path(dir.toURI.toString, "test.parquet")
@@ -331,6 +337,7 @@ class CometMapExpressionSuite extends CometTestBase {
   }
 
   test("map_sort with array keys") {
+    assume(isSpark40Plus, "map_sort was added in Spark 4.0")
     withTempDir { dir =>
       withTempView("t1") {
         val path = new Path(dir.toURI.toString, "test.parquet")
@@ -354,6 +361,7 @@ class CometMapExpressionSuite extends CometTestBase {
   }
 
   test("map_sort with complex values") {
+    assume(isSpark40Plus, "map_sort was added in Spark 4.0")
     withTempDir { dir =>
       withTempView("t1") {
         val path = new Path(dir.toURI.toString, "test.parquet")
@@ -377,6 +385,7 @@ class CometMapExpressionSuite extends CometTestBase {
   }
 
   test("map_sort fallback for non-orderable keys") {
+    assume(isSpark40Plus, "map_sort was added in Spark 4.0")
     withTempDir { dir =>
       withTempView("t1") {
         val path = new Path(dir.toURI.toString, "test.parquet")
