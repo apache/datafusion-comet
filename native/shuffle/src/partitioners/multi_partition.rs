@@ -529,20 +529,22 @@ impl MultiPartitionShuffleRepartitioner {
                 let mut iter = partitioned_batches.produce(partition_id);
 
                 let offset = spill_file.stream_position()?;
-                let bytes_written = partition_writer.write_to(
+                partition_writer.write_to(
                     &mut iter,
                     &mut spill_file,
                     &self.metrics,
                     self.write_buffer_size,
                     self.batch_size,
                 )?;
+                let end_offset = spill_file.stream_position()?;
+                let actual_bytes = (end_offset - offset) as usize;
 
-                if bytes_written > 0 {
+                if actual_bytes > 0 {
                     partition_ranges.push(Some(PartitionSpillRange {
                         offset,
-                        length: bytes_written as u64,
+                        length: actual_bytes as u64,
                     }));
-                    spilled_bytes += bytes_written;
+                    spilled_bytes += actual_bytes;
                 } else {
                     partition_ranges.push(None);
                 }
@@ -612,16 +614,24 @@ impl ShufflePartitioner for MultiPartitionShuffleRepartitioner {
 
             let mut output_data = BufWriter::new(output_data);
 
+            // Pre-open all spill files once to avoid repeated File::open() calls.
+            // With N partitions and S spill files, this reduces open() calls from
+            // N*S to S.
+            let mut spill_handles: Vec<_> = self
+                .spill_infos
+                .iter()
+                .map(|info| info.open_for_read())
+                .collect::<datafusion::common::Result<Vec<_>>>()?;
+
             #[allow(clippy::needless_range_loop)]
             for i in 0..num_output_partitions {
                 offsets[i] = output_data.stream_position()?;
 
-                // Copy spilled data for this partition from each spill file.
-                // Each SpillInfo is a single file containing data from all partitions
-                // ordered by partition ID, with byte ranges tracked per partition.
-                for spill_info in &self.spill_infos {
+                // Copy spilled data for this partition from each spill file
+                // using pre-opened file handles.
+                for (spill_info, handle) in self.spill_infos.iter().zip(spill_handles.iter_mut()) {
                     let mut write_timer = self.metrics.write_time.timer();
-                    spill_info.copy_partition_to(i, &mut output_data)?;
+                    spill_info.copy_partition_with_handle(i, handle, &mut output_data)?;
                     write_timer.stop();
                 }
 
