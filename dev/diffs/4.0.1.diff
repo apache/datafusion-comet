@@ -576,10 +576,18 @@ index 9c90e0105a4..fadf2f0f698 100644
  
    test("SPARK-35884: Explain Formatted") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/FileBasedDataSourceSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/FileBasedDataSourceSuite.scala
-index 9c529d14221..1313a2c0889 100644
+index 9c529d14221..ea97b902190 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/FileBasedDataSourceSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/FileBasedDataSourceSuite.scala
-@@ -668,18 +668,25 @@ class FileBasedDataSourceSuite extends QueryTest
+@@ -33,6 +33,7 @@ import org.apache.spark.sql.catalyst.expressions.{AttributeReference, GreaterTha
+ import org.apache.spark.sql.catalyst.expressions.IntegralLiteralTestUtils.{negativeInt, positiveInt}
+ import org.apache.spark.sql.catalyst.plans.logical.Filter
+ import org.apache.spark.sql.catalyst.types.DataTypeUtils
++import org.apache.spark.sql.comet.{CometBatchScanExec, CometNativeScanExec, CometScanExec, CometSortMergeJoinExec}
+ import org.apache.spark.sql.execution.{FileSourceScanLike, SimpleMode}
+ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+ import org.apache.spark.sql.execution.datasources.FilePartition
+@@ -668,18 +669,25 @@ class FileBasedDataSourceSuite extends QueryTest
              checkAnswer(sql(s"select A from $tableName"), data.select("A"))
  
              // RuntimeException is triggered at executor side, which is then wrapped as
@@ -612,7 +620,7 @@ index 9c529d14221..1313a2c0889 100644
                condition = "_LEGACY_ERROR_TEMP_2093",
                parameters = Map("requiredFieldName" -> "b", "matchedOrcFields" -> "[b, B]")
              )
-@@ -967,6 +974,7 @@ class FileBasedDataSourceSuite extends QueryTest
+@@ -967,6 +975,7 @@ class FileBasedDataSourceSuite extends QueryTest
              assert(bJoinExec.isEmpty)
              val smJoinExec = collect(joinedDF.queryExecution.executedPlan) {
                case smJoin: SortMergeJoinExec => smJoin
@@ -620,7 +628,7 @@ index 9c529d14221..1313a2c0889 100644
              }
              assert(smJoinExec.nonEmpty)
            }
-@@ -1027,6 +1035,7 @@ class FileBasedDataSourceSuite extends QueryTest
+@@ -1027,6 +1036,7 @@ class FileBasedDataSourceSuite extends QueryTest
  
            val fileScan = df.queryExecution.executedPlan collectFirst {
              case BatchScanExec(_, f: FileScan, _, _, _, _) => f
@@ -628,7 +636,7 @@ index 9c529d14221..1313a2c0889 100644
            }
            assert(fileScan.nonEmpty)
            assert(fileScan.get.partitionFilters.nonEmpty)
-@@ -1068,6 +1077,7 @@ class FileBasedDataSourceSuite extends QueryTest
+@@ -1068,6 +1078,7 @@ class FileBasedDataSourceSuite extends QueryTest
  
            val fileScan = df.queryExecution.executedPlan collectFirst {
              case BatchScanExec(_, f: FileScan, _, _, _, _) => f
@@ -636,7 +644,7 @@ index 9c529d14221..1313a2c0889 100644
            }
            assert(fileScan.nonEmpty)
            assert(fileScan.get.partitionFilters.isEmpty)
-@@ -1252,6 +1262,9 @@ class FileBasedDataSourceSuite extends QueryTest
+@@ -1252,6 +1263,9 @@ class FileBasedDataSourceSuite extends QueryTest
            val filters = df.queryExecution.executedPlan.collect {
              case f: FileSourceScanLike => f.dataFilters
              case b: BatchScanExec => b.scan.asInstanceOf[FileScan].dataFilters
@@ -1132,10 +1140,10 @@ index 0df7f806272..92390bd819f 100644
  
    test("non-matching optional group") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
-index 2e33f6505ab..56101dccca8 100644
+index 2e33f6505ab..40fa84693e2 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
-@@ -23,12 +23,14 @@ import org.apache.spark.SparkRuntimeException
+@@ -23,10 +23,11 @@ import org.apache.spark.SparkRuntimeException
  import org.apache.spark.sql.catalyst.expressions.SubqueryExpression
  import org.apache.spark.sql.catalyst.plans.{LeftAnti, LeftSemi}
  import org.apache.spark.sql.catalyst.plans.logical.{Aggregate, Filter, Join, LogicalPlan, Project, Sort, Union}
@@ -1147,11 +1155,8 @@ index 2e33f6505ab..56101dccca8 100644
 +import org.apache.spark.sql.execution.exchange.ShuffleExchangeLike
  import org.apache.spark.sql.execution.joins.{BaseJoinExec, BroadcastHashJoinExec, BroadcastNestedLoopJoinExec}
  import org.apache.spark.sql.internal.SQLConf
-+import org.apache.spark.sql.IgnoreCometNativeDataFusion
  import org.apache.spark.sql.test.SharedSparkSession
- 
- class SubquerySuite extends QueryTest
-@@ -1529,6 +1531,12 @@ class SubquerySuite extends QueryTest
+@@ -1529,6 +1530,12 @@ class SubquerySuite extends QueryTest
              fs.inputRDDs().forall(
                _.asInstanceOf[FileScanRDD].filePartitions.forall(
                  _.files.forall(_.urlEncodedPath.contains("p=0"))))
@@ -1164,7 +1169,7 @@ index 2e33f6505ab..56101dccca8 100644
          case _ => false
        })
      }
-@@ -2094,7 +2102,7 @@ class SubquerySuite extends QueryTest
+@@ -2094,7 +2101,7 @@ class SubquerySuite extends QueryTest
  
        df.collect()
        val exchanges = collect(df.queryExecution.executedPlan) {
@@ -1173,7 +1178,7 @@ index 2e33f6505ab..56101dccca8 100644
        }
        assert(exchanges.size === 1)
      }
-@@ -2680,12 +2688,20 @@ class SubquerySuite extends QueryTest
+@@ -2680,12 +2687,20 @@ class SubquerySuite extends QueryTest
        checkAnswer(df, answer)
        val fileSourceScanExec = collect(df.queryExecution.executedPlan) {
          case f: FileSourceScanExec => f
@@ -2889,18 +2894,9 @@ index 0acb21f3e6f..1f9c3fd13fc 100644
  
      withTempPath { dir =>
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetTypeWideningSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetTypeWideningSuite.scala
-index 09ed6955a51..bdb63a92d70 100644
+index 09ed6955a51..74d3f13c620 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetTypeWideningSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetTypeWideningSuite.scala
-@@ -24,7 +24,7 @@ import org.apache.parquet.format.converter.ParquetMetadataConverter
- import org.apache.parquet.hadoop.{ParquetFileReader, ParquetOutputFormat}
- 
- import org.apache.spark.SparkException
--import org.apache.spark.sql.{DataFrame, QueryTest, Row}
-+import org.apache.spark.sql.{DataFrame, IgnoreCometNativeDataFusion, QueryTest, Row}
- import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
- import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException
- import org.apache.spark.sql.functions.col
 @@ -65,7 +65,9 @@ class ParquetTypeWideningSuite
      withClue(
        s"with dictionary encoding '$dictionaryEnabled' with timestamp rebase mode " +
