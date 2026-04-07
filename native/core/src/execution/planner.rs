@@ -82,10 +82,11 @@ use datafusion::common::{
     JoinType as DFJoinType, NullEquality, ScalarValue,
 };
 use datafusion::datasource::listing::PartitionedFile;
+use datafusion::logical_expr::type_coercion::functions::fields_with_udf;
 use datafusion::logical_expr::type_coercion::other::get_coerce_type_for_case_expression;
 use datafusion::logical_expr::{
-    AggregateUDF, ReturnFieldArgs, ScalarUDF, WindowFrame, WindowFrameBound, WindowFrameUnits,
-    WindowFunctionDefinition,
+    AggregateUDF, ReturnFieldArgs, ScalarUDF, TypeSignature, WindowFrame, WindowFrameBound,
+    WindowFrameUnits, WindowFunctionDefinition,
 };
 use datafusion::physical_expr::expressions::{Literal, StatsType};
 use datafusion::physical_expr::window::WindowExpr;
@@ -102,7 +103,6 @@ use arrow::buffer::{BooleanBuffer, NullBuffer, OffsetBuffer};
 use arrow::row::{OwnedRow, RowConverter, SortField};
 use datafusion::common::utils::SingleRowListArrayBuilder;
 use datafusion::common::UnnestOptions;
-use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::limit::GlobalLimitExec;
 use datafusion::physical_plan::unnest::{ListUnnest, UnnestExec};
@@ -1637,44 +1637,18 @@ impl PhysicalPlanner {
                     NullEquality::NullEqualsNothing,
                 )?);
 
-                if join.filter.is_some() {
-                    // SMJ with join filter produces lots of tiny batches
-                    let coalesce_batches: Arc<dyn ExecutionPlan> =
-                        Arc::new(CoalesceBatchesExec::new(
-                            Arc::<SortMergeJoinExec>::clone(&join),
-                            self.session_ctx
-                                .state()
-                                .config_options()
-                                .execution
-                                .batch_size,
-                        ));
-                    Ok((
-                        scans,
-                        shuffle_scans,
-                        Arc::new(SparkPlan::new_with_additional(
-                            spark_plan.plan_id,
-                            coalesce_batches,
-                            vec![
-                                Arc::clone(&join_params.left),
-                                Arc::clone(&join_params.right),
-                            ],
-                            vec![join],
-                        )),
-                    ))
-                } else {
-                    Ok((
-                        scans,
-                        shuffle_scans,
-                        Arc::new(SparkPlan::new(
-                            spark_plan.plan_id,
-                            join,
-                            vec![
-                                Arc::clone(&join_params.left),
-                                Arc::clone(&join_params.right),
-                            ],
-                        )),
-                    ))
-                }
+                Ok((
+                    scans,
+                    shuffle_scans,
+                    Arc::new(SparkPlan::new(
+                        spark_plan.plan_id,
+                        join,
+                        vec![
+                            Arc::clone(&join_params.left),
+                            Arc::clone(&join_params.right),
+                        ],
+                    )),
+                ))
             }
             OpStruct::HashJoin(join) => {
                 let (join_params, scans, shuffle_scans) = self.parse_join_parameters(
@@ -1701,6 +1675,12 @@ impl PhysicalPlanner {
                     // null doesn't equal to null in Spark join key. If the join key is
                     // `EqualNullSafe`, Spark will rewrite it during planning.
                     NullEquality::NullEqualsNothing,
+                    // null_aware is for null-aware anti joins (NOT IN subqueries).
+                    // NullEquality controls whether NULL = NULL in join keys generally,
+                    // while null_aware changes anti-join semantics so any NULL changes
+                    // the entire result. Spark doesn't use this path (it rewrites
+                    // EqualNullSafe at plan time), so false is correct.
+                    false,
                 )?);
 
                 // If the hash join is build right, we need to swap the left and right
@@ -2636,15 +2616,44 @@ impl PhysicalPlanner {
                         other => other,
                     };
                     let func = self.session_ctx.udf(fun_name)?;
-                    let coerced_types = func
-                        .coerce_types(&input_expr_types)
-                        .unwrap_or_else(|_| input_expr_types.clone());
 
-                    let arg_fields = coerced_types
+                    // Type coercion strategy:
+                    //
+                    // In DF52, Comet used coerce_types() which returns NotImplemented
+                    // for most UDFs, so input types were kept unchanged. In DF53,
+                    // fields_with_udf() runs full coercion which aggressively promotes
+                    // types (e.g. Utf8 to Utf8View via Variadic signatures, Int32 to Int64
+                    // via Exact signatures). This breaks Comet's native implementations.
+                    //
+                    // Strategy:
+                    // 1. Try coerce_types() — only UDFs that explicitly implement it
+                    //    will return Ok. Same as DF52 behavior.
+                    // 2. For "well-supported" signatures (Coercible, String, Numeric,
+                    //    Comparable), use fields_with_udf(). These preserve input types
+                    //    (e.g. Utf8 stays Utf8, not promoted to Utf8View).
+                    // 3. For all other signatures (Variadic, Exact, etc.), keep original
+                    //    types unchanged. Same as DF52 behavior.
+                    let coerced_types = match func.coerce_types(&input_expr_types) {
+                        Ok(types) => types,
+                        Err(_) if needs_fields_coercion(&func.signature().type_signature) => {
+                            let input_fields: Vec<_> = input_expr_types
+                                .iter()
+                                .enumerate()
+                                .map(|(i, dt)| {
+                                    Arc::new(Field::new(format!("arg{i}"), dt.clone(), true))
+                                })
+                                .collect();
+                            let arg_fields = fields_with_udf(&input_fields, func.as_ref())?;
+                            arg_fields.iter().map(|f| f.data_type().clone()).collect()
+                        }
+                        Err(_) => input_expr_types.clone(),
+                    };
+
+                    let arg_fields: Vec<_> = coerced_types
                         .iter()
                         .enumerate()
                         .map(|(i, dt)| Arc::new(Field::new(format!("arg{i}"), dt.clone(), true)))
-                        .collect::<Vec<_>>();
+                        .collect();
 
                     // TODO this should try and find scalar
                     let arguments = args
@@ -2700,9 +2709,32 @@ impl PhysicalPlanner {
             fun_name,
             fun_expr,
             args.to_vec(),
-            Arc::new(Field::new(fun_name, data_type, true)),
+            Arc::new(Field::new(fun_name, data_type.clone(), true)),
             Arc::new(ConfigOptions::default()),
         ));
+
+        // DF53 changed some UDFs (e.g. md5) to return StringViewArray at execution
+        // time (apache/datafusion#20045). Comet does not yet support view types, so
+        // cast the result back to the non-view variant.
+        let scalar_expr = match data_type {
+            DataType::Utf8View => Arc::new(CastExpr::new(
+                scalar_expr,
+                DataType::Utf8,
+                Some(CastOptions {
+                    safe: false,
+                    ..Default::default()
+                }),
+            )) as Arc<dyn PhysicalExpr>,
+            DataType::BinaryView => Arc::new(CastExpr::new(
+                scalar_expr,
+                DataType::Binary,
+                Some(CastOptions {
+                    safe: false,
+                    ..Default::default()
+                }),
+            )) as Arc<dyn PhysicalExpr>,
+            _ => scalar_expr,
+        };
 
         Ok(scalar_expr)
     }
@@ -3664,6 +3696,24 @@ fn extract_literal_as_datum(expr: &spark_expression::Expr) -> Option<iceberg::sp
     }
 }
 
+/// Returns true for signature types that need fields_with_udf() for coercion.
+///
+/// "Well-supported" signatures (Coercible, String, Numeric, Comparable) preserve
+/// input types naturally (e.g. Utf8 stays Utf8) and need fields_with_udf() because
+/// they don't implement coerce_types(). Other signatures (Variadic, Exact, etc.)
+/// should keep original types to match DF52 behavior and avoid unwanted promotions
+/// like Utf8 to Utf8View or Int32 to Int64.
+fn needs_fields_coercion(sig: &TypeSignature) -> bool {
+    match sig {
+        TypeSignature::Coercible(_)
+        | TypeSignature::String(_)
+        | TypeSignature::Numeric(_)
+        | TypeSignature::Comparable(_) => true,
+        TypeSignature::OneOf(sigs) => sigs.iter().any(needs_fields_coercion),
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use futures::{poll, StreamExt};
@@ -4132,6 +4182,7 @@ mod tests {
 
     #[test]
     fn test_array_repeat() {
+        // Use built-in ArrayRepeat, not SparkArrayRepeat (see jni_api.rs comment)
         let session_ctx = SessionContext::new();
         let task_ctx = session_ctx.task_ctx();
         let planner = PhysicalPlanner::new(Arc::from(session_ctx), 0);
@@ -4250,7 +4301,7 @@ mod tests {
                             "+--------------+",
                             "| [0]          |",
                             "| [3, 3, 3, 3] |",
-                            "| []           |",
+                            "|              |",
                             "+--------------+",
                         ];
                         assert_batches_eq!(expected, &[batch]);
