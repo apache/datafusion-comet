@@ -85,11 +85,6 @@ the [Comet Supported Expressions Guide](expressions.md) for more information on 
 - **Tan**: `tan(-0.0)` produces `0.0` instead of `-0.0`.
   [#1897](https://github.com/apache/datafusion-comet/issues/1897)
 
-### Aggregate Expressions
-
-- **First, Last**: These functions are not deterministic. When `ignoreNulls` is set, results may not match Spark.
-  [#1630](https://github.com/apache/datafusion-comet/issues/1630)
-
 ### Struct Expressions
 
 - **StructsToJson (to_json)**: Does not support `+Infinity` and `-Infinity` for numeric types (float, double).
