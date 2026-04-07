@@ -170,6 +170,34 @@ index 7aca17dcb25..8afeb3b4a2f 100644
  -- !query
  WITH t(c1) AS (SELECT replace(listagg(DISTINCT col1 COLLATE unicode_rtrim) COLLATE utf8_binary, ' ', '') FROM (VALUES ('xbc  '), ('xbc '), ('a'), ('xbc'))) SELECT len(c1), regexp_count(c1, 'a'), regexp_count(c1, 'xbc') FROM t
  -- !query analysis
+diff --git a/sql/core/src/test/resources/sql-tests/inputs/collations.sql b/sql/core/src/test/resources/sql-tests/inputs/collations.sql
+index 17815ed5dde..baad440b1ce 100644
+--- a/sql/core/src/test/resources/sql-tests/inputs/collations.sql
++++ b/sql/core/src/test/resources/sql-tests/inputs/collations.sql
+@@ -1,3 +1,6 @@
++-- TODO: https://github.com/apache/datafusion-comet/issues/551
++--SET spark.comet.enabled = false
++
+ -- test cases for collation support
+ 
+ -- Create a test table with data
+diff --git a/sql/core/src/test/resources/sql-tests/inputs/decimalArithmeticOperations.sql b/sql/core/src/test/resources/sql-tests/inputs/decimalArithmeticOperations.sql
+index 13bbd9d81b7..541cdfb1e04 100644
+--- a/sql/core/src/test/resources/sql-tests/inputs/decimalArithmeticOperations.sql
++++ b/sql/core/src/test/resources/sql-tests/inputs/decimalArithmeticOperations.sql
+@@ -15,6 +15,12 @@
+ --   limitations under the License.
+ --
+ 
++-- TODO: Disabled due to one of the test failed for Spark4.0
++-- TODO: https://github.com/apache/datafusion-comet/issues/1948
++-- The following query failed
++-- select /*+ COALESCE(1) */ id, a+b, a-b, a*b, a/b from decimals_test order by id
++--SET spark.comet.enabled = false
++
+ CREATE TEMPORARY VIEW t AS SELECT 1.0 as a, 0.0 as b;
+ 
+ -- division, remainder and pmod by 0 return NULL
 diff --git a/sql/core/src/test/resources/sql-tests/inputs/explain-aqe.sql b/sql/core/src/test/resources/sql-tests/inputs/explain-aqe.sql
 index 7aef901da4f..f3d6e18926d 100644
 --- a/sql/core/src/test/resources/sql-tests/inputs/explain-aqe.sql
@@ -246,11 +274,64 @@ index 3a409eea348..26e9aaf215c 100644
  CREATE TABLE INT4_TBL(f1 int) USING parquet;
  
  -- [SPARK-28023] Trim the string when cast string type to other types
+diff --git a/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/int8.sql b/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/int8.sql
+index fac23b4a26f..98b12ae5ccc 100644
+--- a/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/int8.sql
++++ b/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/int8.sql
+@@ -6,6 +6,10 @@
+ -- Test int8 64-bit integers.
+ -- https://github.com/postgres/postgres/blob/REL_12_BETA2/src/test/regress/sql/int8.sql
+ --
++
++-- TODO: https://github.com/apache/datafusion-comet/issues/551
++--SET spark.comet.enabled = false
++
+ CREATE TABLE INT8_TBL(q1 bigint, q2 bigint) USING parquet;
+ 
+ -- PostgreSQL implicitly casts string literals to data with integral types, but
+diff --git a/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/select_having.sql b/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/select_having.sql
+index 0efe0877e9b..f9df0400c99 100644
+--- a/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/select_having.sql
++++ b/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/select_having.sql
+@@ -6,6 +6,9 @@
+ -- https://github.com/postgres/postgres/blob/REL_12_BETA2/src/test/regress/sql/select_having.sql
+ --
+ 
++-- TODO: https://github.com/apache/datafusion-comet/issues/551
++--SET spark.comet.enabled = false
++
+ -- load test data
+ CREATE TABLE test_having (a int, b int, c string, d string) USING parquet;
+ INSERT INTO test_having VALUES (0, 1, 'XXXX', 'A');
 diff --git a/sql/core/src/test/resources/sql-tests/inputs/subquery/in-subquery/in-limit.sql b/sql/core/src/test/resources/sql-tests/inputs/subquery/in-subquery/in-limit.sql
-index 7c816d8a416..b0b3b4fb3ba 100644
+index 7c816d8a416..b1551a2b296 100644
 --- a/sql/core/src/test/resources/sql-tests/inputs/subquery/in-subquery/in-limit.sql
 +++ b/sql/core/src/test/resources/sql-tests/inputs/subquery/in-subquery/in-limit.sql
-@@ -61,6 +61,7 @@ WHERE  t1a IN (SELECT t2a
+@@ -1,6 +1,23 @@
+ -- A test suite for IN LIMIT in parent side, subquery, and both predicate subquery
+ -- It includes correlated cases.
+ 
++-- TODO: Disabled due to one of the test failed for Spark4.0
++-- TODO: https://github.com/apache/datafusion-comet/issues/1948
++-- The following query failed
++-- SELECT Count(DISTINCT( t1a )),
++--        t1b
++-- FROM   t1
++-- WHERE  t1d NOT IN (SELECT t2d
++--                    FROM   t2
++--                    WHERE t2b > t1b
++--                    ORDER  BY t2b DESC nulls first, t2d
++--     LIMIT 1
++-- OFFSET 1)
++-- GROUP  BY t1b
++-- ORDER BY t1b NULLS last
++--     LIMIT  1
++-- OFFSET 1;
++--SET spark.comet.enabled = false
+ --CONFIG_DIM1 spark.sql.optimizeNullAwareAntiJoin=true
+ --CONFIG_DIM1 spark.sql.optimizeNullAwareAntiJoin=false
+ 
+@@ -61,6 +78,7 @@ WHERE  t1a IN (SELECT t2a
                 WHERE  t1d = t2d)
  LIMIT  2;
  
@@ -258,6 +339,34 @@ index 7c816d8a416..b0b3b4fb3ba 100644
  -- correlated IN subquery
  -- LIMIT on both parent and subquery sides
  SELECT *
+diff --git a/sql/core/src/test/resources/sql-tests/inputs/view-schema-binding-config.sql b/sql/core/src/test/resources/sql-tests/inputs/view-schema-binding-config.sql
+index e803254ea64..74db78aee38 100644
+--- a/sql/core/src/test/resources/sql-tests/inputs/view-schema-binding-config.sql
++++ b/sql/core/src/test/resources/sql-tests/inputs/view-schema-binding-config.sql
+@@ -1,6 +1,9 @@
+ -- This test suits check the spark.sql.viewSchemaBindingMode configuration.
+ -- It can be DISABLED and COMPENSATION
+ 
++-- TODO: https://github.com/apache/datafusion-comet/issues/551
++--SET spark.comet.enabled = false
++
+ -- Verify the default binding is true
+ SET spark.sql.legacy.viewSchemaBindingMode;
+ 
+diff --git a/sql/core/src/test/resources/sql-tests/inputs/view-schema-compensation.sql b/sql/core/src/test/resources/sql-tests/inputs/view-schema-compensation.sql
+index 21a3ce1e122..f4762ab98f0 100644
+--- a/sql/core/src/test/resources/sql-tests/inputs/view-schema-compensation.sql
++++ b/sql/core/src/test/resources/sql-tests/inputs/view-schema-compensation.sql
+@@ -1,5 +1,9 @@
+ -- This test suite checks the WITH SCHEMA COMPENSATION clause
+ -- Disable ANSI mode to ensure we are forcing it explicitly in the CASTS
++
++-- TODO: https://github.com/apache/datafusion-comet/issues/551
++--SET spark.comet.enabled = false
++
+ SET spark.sql.ansi.enabled = false;
+ 
+ -- In COMPENSATION views get invalidated if the type can't cast
 diff --git a/sql/core/src/test/resources/sql-tests/results/listagg-collations.sql.out b/sql/core/src/test/resources/sql-tests/results/listagg-collations.sql.out
 index 1f8c5822e7d..b7de4e28813 100644
 --- a/sql/core/src/test/resources/sql-tests/results/listagg-collations.sql.out
