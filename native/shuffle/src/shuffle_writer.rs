@@ -696,6 +696,8 @@ mod test {
         total_rows
     }
 
+    #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_empty_schema_shuffle_writer() {
         use std::fs;
         use std::io::Read;
@@ -849,7 +851,6 @@ mod test {
             assert_eq!(offset, 0, "All offsets should be 0 with zero rows");
         }
     }
-}
 
     /// Verify that spilling an empty repartitioner produces no spill files.
     #[tokio::test]
@@ -1025,6 +1026,141 @@ mod test {
         let _ = fs::remove_file("/tmp/no_spill_index.out");
         let _ = fs::remove_file("/tmp/spill_data.out");
         let _ = fs::remove_file("/tmp/spill_index.out");
+    }
+
+    /// Verify that spill output file size matches non-spill output.
+    /// This specifically tests that the byte range tracking in SpillInfo
+    /// correctly accounts for all bytes written during BufBatchWriter flush,
+    /// including the final coalescer batch that is emitted only during flush().
+    /// A bug here would cause the output file to be much smaller than expected
+    /// because copy_partition_with_handle() would copy truncated byte ranges.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_spill_output_file_size_matches_non_spill() {
+        use std::fs;
+
+        let batch_size = 100;
+        let num_batches = 50;
+        let num_partitions = 16;
+
+        let batch = create_batch(batch_size);
+        let batches = (0..num_batches).map(|_| batch.clone()).collect::<Vec<_>>();
+
+        // Run 1: no spilling
+        {
+            let partitions = std::slice::from_ref(&batches);
+            let exec = ShuffleWriterExec::try_new(
+                Arc::new(DataSourceExec::new(Arc::new(
+                    MemorySourceConfig::try_new(partitions, batch.schema(), None).unwrap(),
+                ))),
+                CometPartitioning::Hash(vec![Arc::new(Column::new("a", 0))], num_partitions),
+                CompressionCodec::Zstd(1),
+                "/tmp/size_no_spill_data.out".to_string(),
+                "/tmp/size_no_spill_index.out".to_string(),
+                false,
+                1024 * 1024,
+            )
+            .unwrap();
+
+            let config = SessionConfig::new();
+            let runtime_env = Arc::new(
+                RuntimeEnvBuilder::new()
+                    .with_memory_limit(100 * 1024 * 1024, 1.0)
+                    .build()
+                    .unwrap(),
+            );
+            let ctx = SessionContext::new_with_config_rt(config, runtime_env);
+            let task_ctx = ctx.task_ctx();
+            let stream = exec.execute(0, task_ctx).unwrap();
+            let rt = Runtime::new().unwrap();
+            rt.block_on(collect(stream)).unwrap();
+        }
+
+        // Run 2: with spilling (very small memory limit to force many spills
+        // with small batches that exercise the coalescer flush path)
+        {
+            let partitions = std::slice::from_ref(&batches);
+            let exec = ShuffleWriterExec::try_new(
+                Arc::new(DataSourceExec::new(Arc::new(
+                    MemorySourceConfig::try_new(partitions, batch.schema(), None).unwrap(),
+                ))),
+                CometPartitioning::Hash(vec![Arc::new(Column::new("a", 0))], num_partitions),
+                CompressionCodec::Zstd(1),
+                "/tmp/size_spill_data.out".to_string(),
+                "/tmp/size_spill_index.out".to_string(),
+                false,
+                1024 * 1024,
+            )
+            .unwrap();
+
+            let config = SessionConfig::new();
+            let runtime_env = Arc::new(
+                RuntimeEnvBuilder::new()
+                    .with_memory_limit(256 * 1024, 1.0)
+                    .build()
+                    .unwrap(),
+            );
+            let ctx = SessionContext::new_with_config_rt(config, runtime_env);
+            let task_ctx = ctx.task_ctx();
+            let stream = exec.execute(0, task_ctx).unwrap();
+            let rt = Runtime::new().unwrap();
+            rt.block_on(collect(stream)).unwrap();
+        }
+
+        let no_spill_data_size = fs::metadata("/tmp/size_no_spill_data.out").unwrap().len();
+        let spill_data_size = fs::metadata("/tmp/size_spill_data.out").unwrap().len();
+
+        // The spill output may differ slightly due to batch coalescing boundaries
+        // affecting compression ratios, but it must be within a reasonable range.
+        // A data-loss bug would produce a file that is drastically smaller (e.g. <10%).
+        let ratio = spill_data_size as f64 / no_spill_data_size as f64;
+        assert!(
+            ratio > 0.5 && ratio < 2.0,
+            "Spill output size ({spill_data_size}) should be comparable to \
+             non-spill output size ({no_spill_data_size}), ratio={ratio:.3}. \
+             A very small ratio indicates data loss in spill byte range tracking."
+        );
+
+        // Also verify row counts match
+        let parse_offsets = |index_data: &[u8]| -> Vec<i64> {
+            index_data
+                .chunks(8)
+                .map(|chunk| i64::from_le_bytes(chunk.try_into().unwrap()))
+                .collect()
+        };
+
+        let no_spill_index = fs::read("/tmp/size_no_spill_index.out").unwrap();
+        let spill_index = fs::read("/tmp/size_spill_index.out").unwrap();
+        let no_spill_offsets = parse_offsets(&no_spill_index);
+        let spill_offsets = parse_offsets(&spill_index);
+        let no_spill_data = fs::read("/tmp/size_no_spill_data.out").unwrap();
+        let spill_data = fs::read("/tmp/size_spill_data.out").unwrap();
+
+        let total_rows = batch_size * num_batches;
+        let mut ns_total = 0;
+        let mut s_total = 0;
+        for i in 0..num_partitions {
+            let ns_rows = read_all_ipc_blocks(
+                &no_spill_data[no_spill_offsets[i] as usize..no_spill_offsets[i + 1] as usize],
+            );
+            let s_rows = read_all_ipc_blocks(
+                &spill_data[spill_offsets[i] as usize..spill_offsets[i + 1] as usize],
+            );
+            assert_eq!(
+                ns_rows, s_rows,
+                "Partition {i} row count mismatch: no_spill={ns_rows}, spill={s_rows}"
+            );
+            ns_total += ns_rows;
+            s_total += s_rows;
+        }
+        assert_eq!(ns_total, total_rows, "Non-spill total row count mismatch");
+        assert_eq!(s_total, total_rows, "Spill total row count mismatch");
+
+        // Cleanup
+        let _ = fs::remove_file("/tmp/size_no_spill_data.out");
+        let _ = fs::remove_file("/tmp/size_no_spill_index.out");
+        let _ = fs::remove_file("/tmp/size_spill_data.out");
+        let _ = fs::remove_file("/tmp/size_spill_index.out");
     }
 
     /// Verify multiple spill events with subsequent insert_batch calls
