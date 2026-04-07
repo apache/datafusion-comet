@@ -28,14 +28,13 @@ import scala.jdk.CollectionConverters._
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, DynamicPruningExpression, Expression, GenericInternalRow, InputFileBlockLength, InputFileBlockStart, InputFileName, PlanExpression}
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.{sideBySide, ArrayBasedMapData, GenericArrayData, MetadataColumnHelper}
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
-import org.apache.spark.sql.comet.{CometBatchScanExec, CometScanExec, CometScanUtils}
+import org.apache.spark.sql.comet.{CometBatchScanExec, CometScanExec}
 import org.apache.spark.sql.execution.{FileSourceScanExec, InSubqueryExec, SparkPlan, SubqueryAdaptiveBroadcastExec}
-import org.apache.spark.sql.execution.datasources.{FilePartition, HadoopFsRelation}
+import org.apache.spark.sql.execution.datasources.HadoopFsRelation
 import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.datasources.v2.csv.CSVScan
@@ -172,29 +171,6 @@ case class CometScanRule(session: SparkSession)
             nativeDataFusionScan(plan, session, scanExec, r, hadoopConf).getOrElse(scanExec)
           case SCAN_NATIVE_ICEBERG_COMPAT =>
             nativeIcebergCompatScan(session, scanExec, r, hadoopConf).getOrElse(scanExec)
-        }
-
-        // Validate per-file schema compatibility regardless of which scan path was chosen.
-        // When the scan falls back to FileSourceScanExec (e.g., because native_datafusion
-        // doesn't support the query), DataFusion's Parquet reader may silently coerce
-        // incompatible types. This check reads Parquet footers to catch mismatches early.
-        // Use the relation's file listing to get all files across all partitions.
-        val allFiles = r.location.listFiles(Seq.empty, Seq.empty).flatMap { partDir =>
-          partDir.files.map { fs =>
-            org.apache.spark.sql.execution.datasources.PartitionedFile(
-              InternalRow.empty,
-              org.apache.spark.paths.SparkPath.fromPathString(fs.getPath.toString),
-              0,
-              fs.getLen)
-          }
-        }
-        if (allFiles.nonEmpty) {
-          CometScanUtils.validatePerFileSchemaCompatibility(
-            hadoopConf,
-            scanExec.requiredSchema,
-            r.partitionSchema.fieldNames.toSet,
-            r.sparkSession.sessionState.conf.caseSensitiveAnalysis,
-            Seq(FilePartition(0, allFiles.toArray)))
         }
 
         result

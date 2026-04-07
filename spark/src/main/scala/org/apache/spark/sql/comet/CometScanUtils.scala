@@ -131,10 +131,10 @@ object CometScanUtils {
                     case _: SchemaColumnConvertNotSupportedException =>
                     // TypeUtil doesn't know this type - skip, let execution handle it
                   }
-                } else {
-                  // File has complex type, read schema expects primitive -> mismatch
-                  throwSchemaMismatch(filePath, fieldName, field.dataType.catalogString, "group")
                 }
+              // else: file has complex (group) type for a non-Array/Struct/Map read type.
+              // This could be valid (e.g., variant, UDT stored as group). Let execution
+              // path handle any actual incompatibilities.
             }
           }
         }
