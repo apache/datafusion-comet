@@ -111,7 +111,7 @@ pub fn spark_round(
         return internal_err!("Invalid point argument for Round(): {:#?}", point);
     };
     // DataFusion's RoundFunc expects Int32 for decimal_places
-    let point_as_i32 = ColumnarValue::Scalar(ScalarValue::Int32(Some(*point as i32)));
+    let point_i32 = ColumnarValue::Scalar(ScalarValue::Int32(Some(*point as i32)));
     match value {
         ColumnarValue::Array(array) => match array.data_type() {
             DataType::Int64 if *point < 0 => {
@@ -135,10 +135,7 @@ pub fn spark_round(
                 let round_udf = RoundFunc::new();
                 let return_field = Arc::new(Field::new("round", array.data_type().clone(), true));
                 let args_for_round = ScalarFunctionArgs {
-                    args: vec![
-                        ColumnarValue::Array(Arc::clone(array)),
-                        point_as_i32.clone(),
-                    ],
+                    args: vec![ColumnarValue::Array(Arc::clone(array)), point_i32.clone()],
                     number_rows: array.len(),
                     return_field,
                     arg_fields: vec![],
@@ -171,7 +168,7 @@ pub fn spark_round(
                 let data_type = a.data_type();
                 let return_field = Arc::new(Field::new("round", data_type, true));
                 let args_for_round = ScalarFunctionArgs {
-                    args: vec![ColumnarValue::Scalar(a.clone()), point_as_i32.clone()],
+                    args: vec![ColumnarValue::Scalar(a.clone()), point_i32.clone()],
                     number_rows: 1,
                     return_field,
                     arg_fields: vec![],
