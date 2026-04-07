@@ -171,6 +171,18 @@ impl SparkCastOptions {
             binary_output_style: None,
         }
     }
+
+    pub fn new_with_version(
+        eval_mode: EvalMode,
+        timezone: &str,
+        allow_incompat: bool,
+        is_spark4_plus: bool,
+    ) -> Self {
+        Self {
+            is_spark4_plus,
+            ..Self::new(eval_mode, timezone, allow_incompat)
+        }
+    }
 }
 
 /// Spark-compatible cast implementation. Defers to DataFusion's cast where that is known
