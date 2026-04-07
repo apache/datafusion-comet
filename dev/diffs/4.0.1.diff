@@ -1181,10 +1181,10 @@ index 0df7f806272..92390bd819f 100644
  
    test("non-matching optional group") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
-index 2e33f6505ab..47fa031add5 100644
+index 2e33f6505ab..c74f3e5562f 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
-@@ -23,10 +23,11 @@ import org.apache.spark.SparkRuntimeException
+@@ -23,12 +23,14 @@ import org.apache.spark.SparkRuntimeException
  import org.apache.spark.sql.catalyst.expressions.SubqueryExpression
  import org.apache.spark.sql.catalyst.plans.{LeftAnti, LeftSemi}
  import org.apache.spark.sql.catalyst.plans.logical.{Aggregate, Filter, Join, LogicalPlan, Project, Sort, Union}
@@ -1196,8 +1196,11 @@ index 2e33f6505ab..47fa031add5 100644
 +import org.apache.spark.sql.execution.exchange.ShuffleExchangeLike
  import org.apache.spark.sql.execution.joins.{BaseJoinExec, BroadcastHashJoinExec, BroadcastNestedLoopJoinExec}
  import org.apache.spark.sql.internal.SQLConf
++import org.apache.spark.sql.IgnoreCometNativeDataFusion
  import org.apache.spark.sql.test.SharedSparkSession
-@@ -1529,6 +1530,12 @@ class SubquerySuite extends QueryTest
+ 
+ class SubquerySuite extends QueryTest
+@@ -1529,6 +1531,12 @@ class SubquerySuite extends QueryTest
              fs.inputRDDs().forall(
                _.asInstanceOf[FileScanRDD].filePartitions.forall(
                  _.files.forall(_.urlEncodedPath.contains("p=0"))))
@@ -1210,7 +1213,7 @@ index 2e33f6505ab..47fa031add5 100644
          case _ => false
        })
      }
-@@ -2094,7 +2101,7 @@ class SubquerySuite extends QueryTest
+@@ -2094,7 +2102,7 @@ class SubquerySuite extends QueryTest
  
        df.collect()
        val exchanges = collect(df.queryExecution.executedPlan) {
@@ -1219,7 +1222,13 @@ index 2e33f6505ab..47fa031add5 100644
        }
        assert(exchanges.size === 1)
      }
-@@ -2678,18 +2685,26 @@ class SubquerySuite extends QueryTest
+@@ -2674,22 +2682,31 @@ class SubquerySuite extends QueryTest
+     }
+   }
+ 
+-  test("SPARK-43402: FileSourceScanExec supports push down data filter with scalar subquery") {
++  test("SPARK-43402: FileSourceScanExec supports push down data filter with scalar subquery",
++    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3321")) {
      def checkFileSourceScan(query: String, answer: Seq[Row]): Unit = {
        val df = sql(query)
        checkAnswer(df, answer)
