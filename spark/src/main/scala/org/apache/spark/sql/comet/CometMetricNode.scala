@@ -52,6 +52,16 @@ case class CometMetricNode(metrics: Map[String, SQLMetric], children: Seq[CometM
   }
 
   /**
+   * Returns all leaf nodes (nodes with no children) in the metric tree. Unlike [[leafNode]] which
+   * only follows the first child, this finds all leaves, which is needed for plans with multiple
+   * scans (e.g., joins, unions).
+   */
+  def leafNodes: Seq[CometMetricNode] = {
+    if (children.isEmpty) Seq(this)
+    else children.flatMap(_.leafNodes)
+  }
+
+  /**
    * Gets a child node. Called from native.
    */
   def getChildNode(i: Int): CometMetricNode = {
