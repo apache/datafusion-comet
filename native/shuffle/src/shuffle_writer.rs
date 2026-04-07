@@ -35,7 +35,6 @@ use datafusion::{
         metrics::{ExecutionPlanMetricsSet, MetricsSet},
         stream::RecordBatchStreamAdapter,
         DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, SendableRecordBatchStream,
-        Statistics,
     },
 };
 use datafusion_comet_common::tracing::with_trace_async;
@@ -62,7 +61,7 @@ pub struct ShuffleWriterExec {
     /// Metrics
     metrics: ExecutionPlanMetricsSet,
     /// Cache for expensive-to-compute plan properties
-    cache: PlanProperties,
+    cache: Arc<PlanProperties>,
     /// The compression codec to use when compressing shuffle blocks
     codec: CompressionCodec,
     tracing_enabled: bool,
@@ -82,12 +81,12 @@ impl ShuffleWriterExec {
         tracing_enabled: bool,
         write_buffer_size: usize,
     ) -> Result<Self> {
-        let cache = PlanProperties::new(
+        let cache = Arc::new(PlanProperties::new(
             EquivalenceProperties::new(Arc::clone(&input.schema())),
             Partitioning::UnknownPartitioning(1),
             EmissionType::Final,
             Boundedness::Bounded,
-        );
+        ));
 
         Ok(ShuffleWriterExec {
             input,
@@ -133,11 +132,7 @@ impl ExecutionPlan for ShuffleWriterExec {
         Some(self.metrics.clone_inner())
     }
 
-    fn statistics(&self) -> Result<Statistics> {
-        self.input.partition_statistics(None)
-    }
-
-    fn properties(&self) -> &PlanProperties {
+    fn properties(&self) -> &Arc<PlanProperties> {
         &self.cache
     }
 
