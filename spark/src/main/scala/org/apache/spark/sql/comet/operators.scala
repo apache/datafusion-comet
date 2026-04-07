@@ -559,6 +559,7 @@ abstract class CometNativeExec extends CometExec {
 
         // Unified RDD creation - CometExecRDD handles all cases
         val subqueries = collectSubqueries(this)
+        val hasScanInput = sparkPlans.exists(_.isInstanceOf[CometNativeScanExec])
         new CometExecRDD(
           sparkContext,
           inputs.toSeq,
@@ -578,27 +579,8 @@ abstract class CometNativeExec extends CometExec {
             val res = super.compute(split, context)
 
             // Report scan input metrics only when the native plan contains a scan.
-            // Aggregate across all scan leaf nodes to handle plans with multiple
-            // scans (e.g., joins over different tables, unions).
-            if (sparkPlans.exists(_.isInstanceOf[CometNativeScanExec])) {
-              Option(context).foreach { ctx =>
-                ctx.addTaskCompletionListener[Unit] { _ =>
-                  val scanLeaves = nativeMetrics.leafNodes
-                    .filter(_.metrics.contains("bytes_scanned"))
-                  if (scanLeaves.nonEmpty) {
-                    val totalBytes = scanLeaves.map(_.metrics("bytes_scanned").value).sum
-                    val totalRows = scanLeaves.map { leaf =>
-                      val outputRows =
-                        leaf.metrics.get("output_rows").map(_.value).getOrElse(0L)
-                      val prunedRows =
-                        leaf.metrics.get("pushdown_rows_pruned").map(_.value).getOrElse(0L)
-                      outputRows + prunedRows
-                    }.sum
-                    ctx.taskMetrics().inputMetrics.setBytesRead(totalBytes)
-                    ctx.taskMetrics().inputMetrics.setRecordsRead(totalRows)
-                  }
-                }
-              }
+            if (hasScanInput) {
+              Option(context).foreach(nativeMetrics.reportScanInputMetrics)
             }
 
             res

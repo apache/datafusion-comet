@@ -21,7 +21,7 @@ package org.apache.spark.sql.comet
 
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.SparkContext
+import org.apache.spark.{SparkContext, TaskContext}
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
@@ -59,6 +59,29 @@ case class CometMetricNode(metrics: Map[String, SQLMetric], children: Seq[CometM
   def leafNodes: Seq[CometMetricNode] = {
     if (children.isEmpty) Seq(this)
     else children.flatMap(_.leafNodes)
+  }
+
+  /**
+   * Reports aggregated scan input metrics (bytesRead, recordsRead) to Spark's task metrics.
+   * Aggregates across all scan leaf nodes to handle plans with multiple scans (e.g., joins). Must
+   * be called in a TaskCompletionListener after the iterator is fully consumed.
+   */
+  def reportScanInputMetrics(ctx: TaskContext): Unit = {
+    ctx.addTaskCompletionListener[Unit] { _ =>
+      val scanLeaves = leafNodes.filter(_.metrics.contains("bytes_scanned"))
+      if (scanLeaves.nonEmpty) {
+        val totalBytes = scanLeaves.map(_.metrics("bytes_scanned").value).sum
+        val totalRows = scanLeaves.map { leaf =>
+          val outputRows =
+            leaf.metrics.get("output_rows").map(_.value).getOrElse(0L)
+          val prunedRows =
+            leaf.metrics.get("pushdown_rows_pruned").map(_.value).getOrElse(0L)
+          outputRows + prunedRows
+        }.sum
+        ctx.taskMetrics().inputMetrics.setBytesRead(totalBytes)
+        ctx.taskMetrics().inputMetrics.setRecordsRead(totalRows)
+      }
+    }
   }
 
   /**
