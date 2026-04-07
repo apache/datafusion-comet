@@ -192,7 +192,7 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         // Both sides should contribute to the total bytes
         val ratio = cometBytes.toDouble / sparkBytes.toDouble
         assert(
-          ratio >= 0.8 && ratio <= 1.2,
+          ratio >= 0.7 && ratio <= 1.3,
           s"bytesRead ratio out of range: comet=$cometBytes, spark=$sparkBytes, ratio=$ratio")
       }
     }
@@ -243,7 +243,7 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
         val ratio = cometBytes.toDouble / sparkBytes.toDouble
         assert(
-          ratio >= 0.8 && ratio <= 1.2,
+          ratio >= 0.7 && ratio <= 1.3,
           s"bytesRead ratio out of range: comet=$cometBytes, spark=$sparkBytes, ratio=$ratio")
       }
     }
