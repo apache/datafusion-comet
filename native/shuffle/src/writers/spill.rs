@@ -19,6 +19,7 @@ use super::ShuffleBlockWriter;
 use crate::metrics::ShufflePartitionerMetrics;
 use crate::partitioners::PartitionedBatchIterator;
 use crate::writers::buf_batch_writer::BufBatchWriter;
+use datafusion::common::DataFusionError;
 use datafusion::execution::disk_manager::RefCountedTempFile;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -55,25 +56,34 @@ impl SpillInfo {
         }
     }
 
-    /// Copy the data for `partition_id` from this spill file into `output`.
+    /// Copy the data for `partition_id` using a pre-opened file handle.
+    /// Avoids repeated File::open() calls when iterating over partitions.
     /// Returns the number of bytes copied.
-    pub(crate) fn copy_partition_to(
+    pub(crate) fn copy_partition_with_handle(
         &self,
         partition_id: usize,
+        spill_file: &mut File,
         output: &mut impl Write,
     ) -> datafusion::common::Result<u64> {
         if let Some(ref range) = self.partition_ranges[partition_id] {
             if range.length == 0 {
                 return Ok(0);
             }
-            let mut spill_file = File::open(&self.path)?;
             spill_file.seek(SeekFrom::Start(range.offset))?;
-            let mut limited = spill_file.take(range.length);
+            let mut limited = Read::take(spill_file, range.length);
             let copied = std::io::copy(&mut limited, output)?;
             Ok(copied)
         } else {
             Ok(0)
         }
+    }
+
+    /// Open the spill file for reading. The returned handle can be reused
+    /// across multiple copy_partition_with_handle() calls.
+    pub(crate) fn open_for_read(&self) -> datafusion::common::Result<File> {
+        File::open(&self.path).map_err(|e| {
+            DataFusionError::Execution(format!("Failed to open spill file for reading: {e}"))
+        })
     }
 }
 
