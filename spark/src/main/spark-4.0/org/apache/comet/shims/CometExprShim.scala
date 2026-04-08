@@ -31,7 +31,6 @@ import org.apache.comet.serde.{CommonStringExprs, Compatible, ExprOuterClass, In
 import org.apache.comet.serde.ExprOuterClass.{BinaryOutputStyle, Expr}
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
 
-
 /**
  * `CometExprShim` acts as a shim for parsing expressions from different Spark versions.
  */
