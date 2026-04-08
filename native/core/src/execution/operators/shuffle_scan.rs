@@ -182,12 +182,11 @@ impl ShuffleScanExec {
             })?;
             let input_source = Arc::clone(input_source);
             let reader = JVMClasses::with_env(|env| {
-                ShuffleStreamReader::new(env, input_source.as_obj())
-                    .map_err(|e| {
-                        CometError::from(ExecutionError::GeneralError(format!(
-                            "Failed to create ShuffleStreamReader: {e}"
-                        )))
-                    })
+                ShuffleStreamReader::new(env, input_source.as_obj()).map_err(|e| {
+                    CometError::from(ExecutionError::GeneralError(format!(
+                        "Failed to create ShuffleStreamReader: {e}"
+                    )))
+                })
             })?;
             self.stream_reader = Some(reader);
         }

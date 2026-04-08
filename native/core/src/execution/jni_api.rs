@@ -887,8 +887,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_openShuffleStream(
     input_stream: JObject,
 ) -> jlong {
     try_unwrap_or_throw(&e, |env| {
-        let reader =
-            ShuffleStreamReader::new(env, &input_stream).map_err(CometError::Internal)?;
+        let reader = ShuffleStreamReader::new(env, &input_stream).map_err(CometError::Internal)?;
         let handle = Box::into_raw(Box::new(reader));
         Ok(handle as jlong)
     })
