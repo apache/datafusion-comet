@@ -537,10 +537,11 @@ object CometConf extends ShimCometConf {
   val COMET_SHUFFLE_TARGET_BATCH_BYTES: ConfigEntry[Long] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.targetBatchBytes")
       .category(CATEGORY_SHUFFLE)
-      .doc("Target batch size in bytes for coalescing small batches before writing shuffle " +
-        "IPC blocks. Using a byte-based threshold instead of a fixed row count ensures that " +
-        "narrow schemas produce reasonably sized blocks. Larger values produce fewer, bigger " +
-        "blocks which reduces per-block schema overhead.")
+      .doc(
+        "Target batch size in bytes for coalescing small batches before writing shuffle " +
+          "IPC blocks. Using a byte-based threshold instead of a fixed row count ensures that " +
+          "narrow schemas produce reasonably sized blocks. Larger values produce fewer, bigger " +
+          "blocks which reduces per-block schema overhead.")
       .bytesConf(ByteUnit.MiB)
       .checkValue(v => v > 0, "Target batch bytes must be positive")
       .createWithDefault(1)
