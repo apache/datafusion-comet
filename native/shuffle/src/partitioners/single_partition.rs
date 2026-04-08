@@ -94,6 +94,8 @@ impl ShufflePartitioner for SinglePartitionShufflePartitioner {
 
         self.output_data_writer.flush(&self.metrics.encode_time)?;
 
+        let mut write_timer = self.metrics.write_time.timer();
+
         // Get data file length via filesystem metadata
         let data_file_length = std::fs::metadata(&self.output_data_path)
             .map(|m| m.len())
@@ -111,6 +113,7 @@ impl ShufflePartitioner for SinglePartitionShufflePartitioner {
             index_buf_writer.write_all(&(offset as i64).to_le_bytes()[..])?;
         }
         index_buf_writer.flush()?;
+        write_timer.stop();
 
         self.metrics
             .baseline
