@@ -30,6 +30,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.test.TestSparkSession
 
 import org.apache.comet.CometConf
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 
 /**
  * Because we need to modify some methods of Spark `TPCDSQueryTestSuite` but they are private, we
@@ -233,7 +234,8 @@ class CometTPCDSQueryTestSuite extends QueryTest with TPCDSBase with CometSQLQue
         s"tpcds-v2.7.0/$name.sql",
         classLoader = Thread.currentThread().getContextClassLoader)
       test(s"$name-v2.7") {
-        val goldenFile = new File(s"$baseResourcePath/v2_7", s"$name.sql.out")
+        val v27Dir = if (isSpark40Plus) "v2_7-spark4_0" else "v2_7"
+        val goldenFile = new File(s"$baseResourcePath/$v27Dir", s"$name.sql.out")
         joinConfs.foreach { conf =>
           val sortMergeJoin = sortMergeJoinConf == conf
           // Skip q72 for sort-merge join because it uses too many resources
