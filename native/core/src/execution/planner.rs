@@ -406,7 +406,12 @@ impl PhysicalPlanner {
                 Ok(Arc::new(Cast::new(
                     child,
                     datatype,
-                    SparkCastOptions::new(eval_mode, &expr.timezone, expr.allow_incompat),
+                    SparkCastOptions::new_with_version(
+                        eval_mode,
+                        &expr.timezone,
+                        expr.allow_incompat,
+                        expr.is_spark4_plus,
+                    ),
                     spark_expr.expr_id,
                     query_context,
                 )))
