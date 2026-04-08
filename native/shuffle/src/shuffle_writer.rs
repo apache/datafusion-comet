@@ -25,7 +25,8 @@ use crate::partitioners::{
 use crate::{CometPartitioning, CompressionCodec};
 use async_trait::async_trait;
 use datafusion::common::exec_datafusion_err;
-use datafusion::physical_expr::{EquivalenceProperties, Partitioning};
+use datafusion::common::tree_node::TreeNodeRecursion;
+use datafusion::physical_expr::{EquivalenceProperties, Partitioning, PhysicalExpr};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::EmptyRecordBatchStream;
 use datafusion::{
@@ -41,7 +42,6 @@ use datafusion::{
 use datafusion_comet_common::tracing::with_trace_async;
 use futures::{StreamExt, TryFutureExt, TryStreamExt};
 use std::{
-    any::Any,
     fmt,
     fmt::{Debug, Formatter},
     sync::Arc,
@@ -120,13 +120,15 @@ impl DisplayAs for ShuffleWriterExec {
 
 #[async_trait]
 impl ExecutionPlan for ShuffleWriterExec {
-    /// Return a reference to Any that can be used for downcasting
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn name(&self) -> &str {
         "ShuffleWriterExec"
+    }
+
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&dyn PhysicalExpr) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
     }
 
     fn metrics(&self) -> Option<MetricsSet> {

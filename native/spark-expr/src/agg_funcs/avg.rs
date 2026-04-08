@@ -28,7 +28,7 @@ use datafusion::logical_expr::{
     Accumulator, AggregateUDFImpl, EmitTo, GroupsAccumulator, ReversedUDAF, Signature,
 };
 use datafusion::physical_expr::expressions::format_state_name;
-use std::{any::Any, sync::Arc};
+use std::sync::Arc;
 
 use arrow::array::ArrowNativeTypeOp;
 use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
@@ -67,11 +67,6 @@ impl Avg {
 }
 
 impl AggregateUDFImpl for Avg {
-    /// Return a reference to Any that can be used for downcasting
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn accumulator(&self, _acc_args: AccumulatorArgs) -> Result<Box<dyn Accumulator>> {
         // All numeric types use Float64 accumulation after casting
         match (&self.input_data_type, &self.result_data_type) {
@@ -239,7 +234,7 @@ where
 impl<T, F> GroupsAccumulator for AvgGroupsAccumulator<T, F>
 where
     T: ArrowNumericType + Send,
-    F: Fn(T::Native, i64) -> Result<T::Native> + Send,
+    F: Fn(T::Native, i64) -> Result<T::Native> + Send + 'static,
 {
     fn update_batch(
         &mut self,

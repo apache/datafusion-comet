@@ -1704,7 +1704,7 @@ impl PhysicalPlanner {
                         hash_join.as_ref().swap_inputs(PartitionMode::Partitioned)?;
 
                     let mut additional_native_plans = vec![];
-                    if swapped_hash_join.as_any().is::<ProjectionExec>() {
+                    if swapped_hash_join.is::<ProjectionExec>() {
                         // a projection was added to the hash join
                         additional_native_plans.push(Arc::clone(swapped_hash_join.children()[0]));
                     }

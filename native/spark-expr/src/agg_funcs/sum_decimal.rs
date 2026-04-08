@@ -27,7 +27,7 @@ use datafusion::logical_expr::Volatility::Immutable;
 use datafusion::logical_expr::{
     Accumulator, AggregateUDFImpl, EmitTo, GroupsAccumulator, ReversedUDAF, Signature,
 };
-use std::{any::Any, sync::Arc};
+use std::sync::Arc;
 
 #[derive(Debug)]
 pub struct SumDecimal {
@@ -99,10 +99,6 @@ impl SumDecimal {
 }
 
 impl AggregateUDFImpl for SumDecimal {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn accumulator(&self, _args: AccumulatorArgs) -> DFResult<Box<dyn Accumulator>> {
         Ok(Box::new(SumDecimalAccumulator::new(
             self.precision,

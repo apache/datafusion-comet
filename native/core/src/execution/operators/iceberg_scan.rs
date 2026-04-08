@@ -17,7 +17,6 @@
 
 //! Native Iceberg table scan operator using iceberg-rust
 
-use std::any::Any;
 use std::collections::HashMap;
 use std::fmt;
 use std::pin::Pin;
@@ -26,6 +25,7 @@ use std::task::{Context, Poll};
 
 use arrow::array::{ArrayRef, RecordBatch, RecordBatchOptions};
 use arrow::datatypes::SchemaRef;
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{DataFusionError, Result as DFResult};
 use datafusion::execution::{RecordBatchStream, SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::expressions::Column;
@@ -108,8 +108,11 @@ impl ExecutionPlan for IcebergScanExec {
         "IcebergScanExec"
     }
 
-    fn as_any(&self) -> &dyn Any {
-        self
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&dyn PhysicalExpr) -> DFResult<TreeNodeRecursion>,
+    ) -> DFResult<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
     }
 
     fn schema(&self) -> SchemaRef {

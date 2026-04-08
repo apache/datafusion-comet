@@ -29,7 +29,6 @@ use datafusion::logical_expr::type_coercion::aggregates::NUMERICS;
 use datafusion::logical_expr::{Accumulator, AggregateUDFImpl, Signature, Volatility};
 use datafusion::physical_expr::expressions::format_state_name;
 use datafusion::physical_expr::expressions::StatsType;
-use std::any::Any;
 use std::sync::Arc;
 
 /// COVAR_SAMP and COVAR_POP aggregate expression
@@ -73,11 +72,6 @@ impl Covariance {
 }
 
 impl AggregateUDFImpl for Covariance {
-    /// Return a reference to Any that can be used for downcasting
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn name(&self) -> &str {
         &self.name
     }

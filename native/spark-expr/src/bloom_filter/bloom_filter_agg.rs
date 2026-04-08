@@ -17,7 +17,7 @@
 
 use arrow::datatypes::{Field, FieldRef};
 use datafusion::{arrow::datatypes::DataType, logical_expr::Volatility};
-use std::{any::Any, sync::Arc};
+use std::sync::Arc;
 
 use crate::bloom_filter::spark_bloom_filter;
 use crate::bloom_filter::spark_bloom_filter::SparkBloomFilter;
@@ -75,10 +75,6 @@ impl BloomFilterAgg {
 }
 
 impl AggregateUDFImpl for BloomFilterAgg {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn name(&self) -> &str {
         "bloom_filter_agg"
     }

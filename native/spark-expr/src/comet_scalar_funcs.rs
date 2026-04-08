@@ -34,7 +34,6 @@ use datafusion::logical_expr::{
     Volatility,
 };
 use datafusion::physical_plan::ColumnarValue;
-use std::any::Any;
 use std::fmt::Debug;
 use std::sync::Arc;
 
@@ -269,10 +268,6 @@ impl CometScalarFunction {
 }
 
 impl ScalarUDFImpl for CometScalarFunction {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn name(&self) -> &str {
         self.name.as_str()
     }

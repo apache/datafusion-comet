@@ -17,6 +17,7 @@
 
 use arrow::array::{RecordBatch, RecordBatchOptions};
 use arrow::datatypes::SchemaRef;
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::DataFusionError;
 use datafusion::physical_expr::{EquivalenceProperties, PhysicalExpr};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
@@ -29,7 +30,6 @@ use datafusion::{
 };
 use futures::{Stream, StreamExt};
 use std::{
-    any::Any,
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
@@ -91,8 +91,20 @@ impl DisplayAs for ExpandExec {
 }
 
 impl ExecutionPlan for ExpandExec {
-    fn as_any(&self) -> &dyn Any {
-        self
+    fn apply_expressions(
+        &self,
+        f: &mut dyn FnMut(&dyn PhysicalExpr) -> datafusion::common::Result<TreeNodeRecursion>,
+    ) -> datafusion::common::Result<TreeNodeRecursion> {
+        for projection in &self.projections {
+            for expr in projection {
+                match f(expr.as_ref())? {
+                    TreeNodeRecursion::Continue => {}
+                    TreeNodeRecursion::Jump => {}
+                    TreeNodeRecursion::Stop => return Ok(TreeNodeRecursion::Stop),
+                }
+            }
+        }
+        Ok(TreeNodeRecursion::Continue)
     }
 
     fn schema(&self) -> SchemaRef {
