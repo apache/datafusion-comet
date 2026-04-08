@@ -35,7 +35,7 @@ use datafusion::{
     physical_plan::{ExecutionPlan, *},
 };
 use futures::Stream;
-use jni::objects::GlobalRef;
+use jni::objects::{Global, JObject};
 use std::{
     any::Any,
     pin::Pin,
@@ -52,7 +52,7 @@ pub struct ShuffleScanExec {
     /// The ID of the execution context that owns this subquery.
     pub exec_context_id: i64,
     /// The input source: a global reference to a JVM InputStream object.
-    pub input_source: Option<Arc<GlobalRef>>,
+    pub input_source: Option<Arc<Global<JObject<'static>>>>,
     /// The data types of columns in the shuffle output.
     pub data_types: Vec<DataType>,
     /// Schema of the shuffle output.
@@ -62,7 +62,7 @@ pub struct ShuffleScanExec {
     /// Cached ShuffleStreamReader, created lazily on first get_next call.
     stream_reader: Option<ShuffleStreamReader>,
     /// Cache of plan properties.
-    cache: PlanProperties,
+    cache: Arc<PlanProperties>,
     /// Metrics collector.
     metrics: ExecutionPlanMetricsSet,
     /// Baseline metrics.
@@ -93,7 +93,7 @@ impl Clone for ShuffleScanExec {
             // stream_reader is not cloneable; cloned instances start without one
             // and will lazily create their own if needed.
             stream_reader: None,
-            cache: self.cache.clone(),
+            cache: Arc::clone(&self.cache),
             metrics: self.metrics.clone(),
             baseline_metrics: self.baseline_metrics.clone(),
             decode_time: self.decode_time.clone(),
@@ -104,7 +104,7 @@ impl Clone for ShuffleScanExec {
 impl ShuffleScanExec {
     pub fn new(
         exec_context_id: i64,
-        input_source: Option<Arc<GlobalRef>>,
+        input_source: Option<Arc<Global<JObject<'static>>>>,
         data_types: Vec<DataType>,
     ) -> Result<Self, CometError> {
         let metrics_set = ExecutionPlanMetricsSet::default();
@@ -113,12 +113,12 @@ impl ShuffleScanExec {
 
         let schema = schema_from_data_types(&data_types);
 
-        let cache = PlanProperties::new(
+        let cache = Arc::new(PlanProperties::new(
             EquivalenceProperties::new(Arc::clone(&schema)),
             Partitioning::UnknownPartitioning(1),
             EmissionType::Final,
             Boundedness::Bounded,
-        );
+        ));
 
         Ok(Self {
             exec_context_id,
@@ -180,13 +180,13 @@ impl ShuffleScanExec {
                     self.exec_context_id
                 )))
             })?;
-            let mut env = JVMClasses::get_env()?;
-            let reader =
-                ShuffleStreamReader::new(&mut env, input_source.as_obj()).map_err(|e| {
+            let reader = JVMClasses::with_env(|env| {
+                ShuffleStreamReader::new(env, input_source.as_ref()).map_err(|e| {
                     CometError::from(ExecutionError::GeneralError(format!(
                         "Failed to create ShuffleStreamReader: {e}"
                     )))
-                })?;
+                })
+            })?;
             self.stream_reader = Some(reader);
         }
 
@@ -280,7 +280,7 @@ impl ExecutionPlan for ShuffleScanExec {
         )))
     }
 
-    fn properties(&self) -> &PlanProperties {
+    fn properties(&self) -> &Arc<PlanProperties> {
         &self.cache
     }
 

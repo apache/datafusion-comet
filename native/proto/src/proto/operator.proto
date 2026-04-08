@@ -373,6 +373,7 @@ message WindowExpr {
   spark.spark_expression.Expr built_in_window_function = 1;
   spark.spark_expression.AggExpr agg_func = 2;
   WindowSpecDefinition spec = 3;
+  bool ignore_nulls = 4;
 }
 
 enum WindowFrameType {

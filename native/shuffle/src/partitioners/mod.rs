@@ -15,12 +15,14 @@
 // specific language governing permissions and limitations
 // under the License.
 
+mod empty_schema;
 mod immediate_mode;
 mod multi_partition;
 mod partitioned_batch_iterator;
 mod single_partition;
 mod traits;
 
+pub(crate) use empty_schema::EmptySchemaShufflePartitioner;
 pub(crate) use immediate_mode::ImmediateModePartitioner;
 pub(crate) use multi_partition::MultiPartitionShuffleRepartitioner;
 pub(crate) use partitioned_batch_iterator::PartitionedBatchIterator;
