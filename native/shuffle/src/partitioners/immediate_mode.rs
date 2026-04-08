@@ -16,8 +16,9 @@
 // under the License.
 
 use crate::metrics::ShufflePartitionerMetrics;
+use crate::partitioners::partition_id::{assign_hash_partition_ids, assign_range_partition_ids};
 use crate::partitioners::ShufflePartitioner;
-use crate::{comet_partitioning, CometPartitioning, CompressionCodec};
+use crate::{CometPartitioning, CompressionCodec};
 use arrow::array::builder::{
     make_builder, ArrayBuilder, BinaryBuilder, BinaryViewBuilder, BooleanBuilder,
     LargeBinaryBuilder, LargeStringBuilder, NullBuilder, PrimitiveBuilder, StringBuilder,
@@ -479,10 +480,7 @@ impl ImmediateModePartitioner {
                 hashes_buf.fill(42_u32);
                 create_murmur3_hashes(&arrays, hashes_buf)?;
                 let partition_ids = &mut self.partition_ids[..num_rows];
-                for (idx, hash) in hashes_buf.iter().enumerate() {
-                    partition_ids[idx] =
-                        comet_partitioning::pmod(*hash, num_output_partitions) as u32;
-                }
+                assign_hash_partition_ids(hashes_buf, partition_ids, num_output_partitions);
                 Ok(num_output_partitions)
             }
             CometPartitioning::RoundRobin(num_output_partitions, max_hash_columns) => {
@@ -500,10 +498,7 @@ impl ImmediateModePartitioner {
                 hashes_buf.fill(42_u32);
                 create_murmur3_hashes(&columns_to_hash, hashes_buf)?;
                 let partition_ids = &mut self.partition_ids[..num_rows];
-                for (idx, hash) in hashes_buf.iter().enumerate() {
-                    partition_ids[idx] =
-                        comet_partitioning::pmod(*hash, num_output_partitions) as u32;
-                }
+                assign_hash_partition_ids(hashes_buf, partition_ids, num_output_partitions);
                 Ok(num_output_partitions)
             }
             CometPartitioning::RangePartitioning(
@@ -519,12 +514,7 @@ impl ImmediateModePartitioner {
                     .collect::<Result<Vec<_>>>()?;
                 let row_batch = row_converter.convert_columns(arrays.as_slice())?;
                 let partition_ids = &mut self.partition_ids[..num_rows];
-                for (row_idx, row) in row_batch.iter().enumerate() {
-                    partition_ids[row_idx] = bounds
-                        .as_slice()
-                        .partition_point(|bound| bound.row() <= row)
-                        as u32;
-                }
+                assign_range_partition_ids(&row_batch, partition_ids, bounds);
                 Ok(num_output_partitions)
             }
             other => Err(DataFusionError::NotImplemented(format!(

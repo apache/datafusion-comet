@@ -85,7 +85,7 @@ Native shuffle (`CometExchange`) is selected when all of the following condition
 │                        Partitioner Selection                          │
 │  Controlled by spark.comet.exec.shuffle.partitionerMode               │
 ├───────────────────────────┬───────────────────────────────────────────┤
-│  immediate (default)      │  buffered                                 │
+│  immediate                │  buffered (default)                        │
 │  ImmediateModePartitioner │  MultiPartitionShuffleRepartitioner       │
 │  (hash/range/round-robin) │  (hash/range/round-robin)                 │
 │  Writes IPC blocks as     │  Buffers all rows in memory               │

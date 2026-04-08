@@ -18,6 +18,7 @@
 mod empty_schema;
 mod immediate_mode;
 mod multi_partition;
+mod partition_id;
 mod partitioned_batch_iterator;
 mod single_partition;
 mod traits;

@@ -19,9 +19,10 @@ use crate::metrics::ShufflePartitionerMetrics;
 use crate::partitioners::partitioned_batch_iterator::{
     PartitionedBatchIterator, PartitionedBatchesProducer,
 };
+use crate::partitioners::partition_id::{assign_hash_partition_ids, assign_range_partition_ids};
 use crate::partitioners::ShufflePartitioner;
 use crate::writers::{BufBatchWriter, PartitionWriter};
-use crate::{comet_partitioning, CometPartitioning, CompressionCodec, ShuffleBlockWriter};
+use crate::{CometPartitioning, CompressionCodec, ShuffleBlockWriter};
 use arrow::array::{ArrayRef, RecordBatch};
 use arrow::datatypes::SchemaRef;
 use datafusion::common::utils::proxy::VecAllocExt;
@@ -237,15 +238,13 @@ impl MultiPartitionShuffleRepartitioner {
 
                     // Generate partition ids for every row.
                     {
-                        // Hash arrays and compute partition ids based on number of partitions.
                         let partition_ids = &mut scratch.partition_ids[..num_rows];
-                        create_murmur3_hashes(&arrays, hashes_buf)?
-                            .iter()
-                            .enumerate()
-                            .for_each(|(idx, hash)| {
-                                partition_ids[idx] =
-                                    comet_partitioning::pmod(*hash, *num_output_partitions) as u32;
-                            });
+                        create_murmur3_hashes(&arrays, hashes_buf)?;
+                        assign_hash_partition_ids(
+                            hashes_buf,
+                            partition_ids,
+                            *num_output_partitions,
+                        );
                     }
 
                     // We now have partition ids for every input row, map that to partition starts
@@ -292,13 +291,7 @@ impl MultiPartitionShuffleRepartitioner {
                     {
                         let row_batch = row_converter.convert_columns(arrays.as_slice())?;
                         let partition_ids = &mut scratch.partition_ids[..num_rows];
-
-                        row_batch.iter().enumerate().for_each(|(row_idx, row)| {
-                            partition_ids[row_idx] = bounds
-                                .as_slice()
-                                .partition_point(|bound| bound.row() <= row)
-                                as u32
-                        });
+                        assign_range_partition_ids(&row_batch, partition_ids, bounds);
                     }
 
                     // We now have partition ids for every input row, map that to partition starts
@@ -356,10 +349,11 @@ impl MultiPartitionShuffleRepartitioner {
 
                     // Assign partition IDs based on hash (same as hash partitioning)
                     let partition_ids = &mut scratch.partition_ids[..num_rows];
-                    hashes_buf.iter().enumerate().for_each(|(idx, hash)| {
-                        partition_ids[idx] =
-                            comet_partitioning::pmod(*hash, *num_output_partitions) as u32;
-                    });
+                    assign_hash_partition_ids(
+                        hashes_buf,
+                        partition_ids,
+                        *num_output_partitions,
+                    );
 
                     // We now have partition ids for every input row, map that to partition starts
                     // and partition indices to eventually write these rows to partition buffers.
