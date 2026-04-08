@@ -89,8 +89,6 @@ the [Comet Supported Expressions Guide](expressions.md) for more information on 
 
 - **Corr**: Returns null instead of NaN in some edge cases.
   [#2646](https://github.com/apache/datafusion-comet/issues/2646)
-- **First, Last**: These functions are not deterministic. When `ignoreNulls` is set, results may not match Spark.
-  [#1630](https://github.com/apache/datafusion-comet/issues/1630)
 
 ### Struct Expressions
 
@@ -146,6 +144,15 @@ Cast operations in Comet fall into three levels of support:
 - **U (Unsupported)**: Comet does not provide a native version of this cast expression and the query stage will fall back to
   Spark.
 - **N/A**: Spark does not support this cast.
+
+### String to Timestamp
+
+Comet's native `CAST(string AS TIMESTAMP)` implementation supports all timestamp formats accepted
+by Apache Spark, including ISO 8601 date-time strings, date-only strings, time-only strings
+(`HH:MM:SS`), embedded timezone offsets (e.g. `+07:30`, `GMT-01:00`, `UTC`), named timezone
+suffixes (e.g. `Europe/Moscow`), and the full Spark timestamp year range
+(-290308 to 294247). Note that `CAST(string AS DATE)` is only compatible for years between
+262143 BC and 262142 AD due to an underlying library limitation.
 
 ### Legacy Mode
 
