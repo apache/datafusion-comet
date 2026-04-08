@@ -565,23 +565,26 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   }
 
   test("arrays_overlap - null handling behavior verification") {
-    withTable("t") {
-      sql("create table t using parquet as select CAST(NULL as array<int>) a1 from range(1)")
-      val data = Seq(
-        "array(1, 2, 3)",
-        "array(3, 4, 5)",
-        "array(1, 2)",
-        "array(3, 4)",
-        "array(1, null, 3)",
-        "array(4, 5)",
-        "array(1, 4)",
-        "array(1, null)",
-        "array(2, null)",
-        "array()",
-        "array(null)",
-        "a1")
-      for (y <- data; x <- data) {
-        checkSparkAnswerAndOperator(sql(s"SELECT arrays_overlap($y, $x) from t"))
+    withSQLConf("spark.sql.optimizer.excludedRules" -> "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+      withTable("t") {
+        sql("create table t using parquet as select CAST(NULL as array<int>) a1 from range(1)")
+        val data = Seq(
+          "array(1, 2, 3)",
+          "array(3, 4, 5)",
+          "array(1, 2)",
+          "array(3, 4)",
+          "array(1, NULL, 3)",
+          "array(4, 5)",
+          "array(1, 4)",
+          "array(1, NULL)",
+          "array(2, NULL)",
+          "array(NULL, 2)",
+          "array()",
+          "array(NULL)",
+          "a1")
+        for (y <- data; x <- data) {
+          checkSparkAnswerAndOperator(sql(s"SELECT arrays_overlap($y, $x) from t"))
+        }
       }
     }
   }
