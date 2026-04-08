@@ -24,7 +24,7 @@
 //! cargo run --release --bin shuffle_bench -- \
 //!   --input /data/tpch-sf100/lineitem/ \
 //!   --partitions 200 \
-//!   --codec lz4 \
+//!   --codec zstd --zstd-level 1 \
 //!   --hash-columns 0,3
 //! ```
 //!
@@ -32,7 +32,7 @@
 //! ```sh
 //! cargo flamegraph --release --bin shuffle_bench -- \
 //!   --input /data/tpch-sf100/lineitem/ \
-//!   --partitions 200 --codec lz4
+//!   --partitions 200 --codec zstd --zstd-level 1
 //! ```
 
 use arrow::datatypes::{DataType, SchemaRef};
@@ -79,7 +79,7 @@ struct Args {
     hash_columns: String,
 
     /// Compression codec: none, lz4, zstd, snappy
-    #[arg(long, default_value = "lz4")]
+    #[arg(long, default_value = "zstd")]
     codec: String,
 
     /// Zstd compression level (1-22)
@@ -114,6 +114,11 @@ struct Args {
     /// Each task reads the same input and writes to its own output files.
     #[arg(long, default_value_t = 1)]
     concurrent_tasks: usize,
+
+    /// Shuffle mode: 'immediate' writes IPC blocks per batch as they arrive,
+    /// 'buffered' buffers all rows before writing (original behavior).
+    #[arg(long, default_value = "immediate")]
+    mode: String,
 }
 
 fn main() {
@@ -141,6 +146,7 @@ fn main() {
     println!("Partitioning:   {}", args.partitioning);
     println!("Partitions:     {}", args.partitions);
     println!("Codec:          {:?}", codec);
+    println!("Mode:           {}", args.mode);
     println!("Hash columns:   {:?}", hash_col_indices);
     if let Some(mem_limit) = args.memory_limit {
         println!("Memory limit:   {}", format_bytes(mem_limit));
@@ -413,6 +419,7 @@ fn run_shuffle_write(
             args.limit,
             data_file.to_string(),
             index_file.to_string(),
+            args.mode == "immediate",
         )
         .await
         .unwrap();
@@ -436,6 +443,7 @@ async fn execute_shuffle_write(
     limit: usize,
     data_file: String,
     index_file: String,
+    immediate_mode: bool,
 ) -> datafusion::common::Result<(MetricsSet, MetricsSet)> {
     let config = SessionConfig::new().with_batch_size(batch_size);
     let mut runtime_builder = RuntimeEnvBuilder::new();
@@ -477,6 +485,7 @@ async fn execute_shuffle_write(
         index_file,
         false,
         write_buffer_size,
+        immediate_mode,
     )
     .expect("Failed to create ShuffleWriterExec");
 
@@ -541,6 +550,7 @@ fn run_concurrent_shuffle_writes(
             let memory_limit = args.memory_limit;
             let write_buffer_size = args.write_buffer_size;
             let limit = args.limit;
+            let immediate_mode = args.mode == "immediate";
 
             handles.push(tokio::spawn(async move {
                 execute_shuffle_write(
@@ -553,6 +563,7 @@ fn run_concurrent_shuffle_writes(
                     limit,
                     data_file,
                     index_file,
+                    immediate_mode,
                 )
                 .await
                 .unwrap()
