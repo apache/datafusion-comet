@@ -145,6 +145,15 @@ Cast operations in Comet fall into three levels of support:
   Spark.
 - **N/A**: Spark does not support this cast.
 
+### String to Timestamp
+
+Comet's native `CAST(string AS TIMESTAMP)` implementation supports all timestamp formats accepted
+by Apache Spark, including ISO 8601 date-time strings, date-only strings, time-only strings
+(`HH:MM:SS`), embedded timezone offsets (e.g. `+07:30`, `GMT-01:00`, `UTC`), named timezone
+suffixes (e.g. `Europe/Moscow`), and the full Spark timestamp year range
+(-290308 to 294247). Note that `CAST(string AS DATE)` is only compatible for years between
+262143 BC and 262142 AD due to an underlying library limitation.
+
 ### Legacy Mode
 
 <!--BEGIN:CAST_LEGACY_TABLE-->
@@ -161,7 +170,7 @@ Cast operations in Comet fall into three levels of support:
 | integer | C | C | C | N/A | C | C | C | - | C | C | C | C |
 | long | C | C | C | N/A | C | C | C | C | - | C | C | C |
 | short | C | C | C | N/A | C | C | C | C | C | - | C | C |
-| string | C | C | C | C | I | C | C | C | C | C | - | I |
+| string | C | C | C | C | I | C | C | C | C | C | - | C |
 | timestamp | N/A | U | U | C | U | U | U | U | C | U | C | - |
 
 **Notes:**
@@ -173,7 +182,6 @@ Cast operations in Comet fall into three levels of support:
 - **string -> date**: Only supports years between 262143 BC and 262142 AD
 - **string -> decimal**: Does not support fullwidth unicode digits (e.g \\uFF10)
 or strings containing null bytes (e.g \\u0000)
-- **string -> timestamp**: Not all valid formats are supported
 <!-- prettier-ignore-end -->
 <!--END:CAST_LEGACY_TABLE-->
 
@@ -193,7 +201,7 @@ or strings containing null bytes (e.g \\u0000)
 | integer | U | C | C | N/A | C | C | C | - | C | C | C | C |
 | long | U | C | C | N/A | C | C | C | C | - | C | C | C |
 | short | U | C | C | N/A | C | C | C | C | C | - | C | C |
-| string | C | C | C | C | I | C | C | C | C | C | - | I |
+| string | C | C | C | C | I | C | C | C | C | C | - | C |
 | timestamp | N/A | U | U | C | U | U | U | U | C | U | C | - |
 
 **Notes:**
@@ -205,7 +213,6 @@ or strings containing null bytes (e.g \\u0000)
 - **string -> date**: Only supports years between 262143 BC and 262142 AD
 - **string -> decimal**: Does not support fullwidth unicode digits (e.g \\uFF10)
 or strings containing null bytes (e.g \\u0000)
-- **string -> timestamp**: Not all valid formats are supported
 <!-- prettier-ignore-end -->
 <!--END:CAST_TRY_TABLE-->
 
@@ -225,7 +232,7 @@ or strings containing null bytes (e.g \\u0000)
 | integer | U | C | C | N/A | C | C | C | - | C | C | C | C |
 | long | U | C | C | N/A | C | C | C | C | - | C | C | C |
 | short | U | C | C | N/A | C | C | C | C | C | - | C | C |
-| string | C | C | C | C | I | C | C | C | C | C | - | I |
+| string | C | C | C | C | I | C | C | C | C | C | - | C |
 | timestamp | N/A | U | U | C | U | U | U | U | C | U | C | - |
 
 **Notes:**
@@ -237,7 +244,6 @@ or strings containing null bytes (e.g \\u0000)
 - **string -> date**: Only supports years between 262143 BC and 262142 AD
 - **string -> decimal**: Does not support fullwidth unicode digits (e.g \\uFF10)
 or strings containing null bytes (e.g \\u0000)
-- **string -> timestamp**: Not all valid formats are supported
 <!-- prettier-ignore-end -->
 <!--END:CAST_ANSI_TABLE-->
 

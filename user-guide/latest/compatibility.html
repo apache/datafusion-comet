@@ -591,6 +591,15 @@ recommended for production use.</p></li>
 Spark.</p></li>
 <li><p><strong>N/A</strong>: Spark does not support this cast.</p></li>
 </ul>
+<section id="string-to-timestamp">
+<h3>String to Timestamp<a class="headerlink" href="#string-to-timestamp" title="Link to this heading">#</a></h3>
+<p>Comet’s native <code class="docutils literal notranslate"><span class="pre">CAST(string</span> <span class="pre">AS</span> <span class="pre">TIMESTAMP)</span></code> implementation supports all timestamp formats accepted
+by Apache Spark, including ISO 8601 date-time strings, date-only strings, time-only strings
+(<code class="docutils literal notranslate"><span class="pre">HH:MM:SS</span></code>), embedded timezone offsets (e.g. <code class="docutils literal notranslate"><span class="pre">+07:30</span></code>, <code class="docutils literal notranslate"><span class="pre">GMT-01:00</span></code>, <code class="docutils literal notranslate"><span class="pre">UTC</span></code>), named timezone
+suffixes (e.g. <code class="docutils literal notranslate"><span class="pre">Europe/Moscow</span></code>), and the full Spark timestamp year range
+(-290308 to 294247). Note that <code class="docutils literal notranslate"><span class="pre">CAST(string</span> <span class="pre">AS</span> <span class="pre">DATE)</span></code> is only compatible for years between
+262143 BC and 262142 AD due to an underlying library limitation.</p>
+</section>
 <section id="legacy-mode">
 <h3>Legacy Mode<a class="headerlink" href="#legacy-mode" title="Link to this heading">#</a></h3>
 <!--BEGIN:CAST_LEGACY_TABLE-->
@@ -765,7 +774,7 @@ Spark.</p></li>
 <td><p>C</p></td>
 <td><p>C</p></td>
 <td><p>-</p></td>
-<td><p>I</p></td>
+<td><p>C</p></td>
 </tr>
 <tr class="row-odd"><td><p>timestamp</p></td>
 <td><p>N/A</p></td>
@@ -794,7 +803,6 @@ Spark.</p></li>
 <li><p><strong>string -&gt; date</strong>: Only supports years between 262143 BC and 262142 AD</p></li>
 <li><p><strong>string -&gt; decimal</strong>: Does not support fullwidth unicode digits (e.g \uFF10)
 or strings containing null bytes (e.g \u0000)</p></li>
-<li><p><strong>string -&gt; timestamp</strong>: Not all valid formats are supported</p></li>
 </ul>
 <!-- prettier-ignore-end -->
 <!--END:CAST_LEGACY_TABLE-->
@@ -973,7 +981,7 @@ or strings containing null bytes (e.g \u0000)</p></li>
 <td><p>C</p></td>
 <td><p>C</p></td>
 <td><p>-</p></td>
-<td><p>I</p></td>
+<td><p>C</p></td>
 </tr>
 <tr class="row-odd"><td><p>timestamp</p></td>
 <td><p>N/A</p></td>
@@ -1002,7 +1010,6 @@ or strings containing null bytes (e.g \u0000)</p></li>
 <li><p><strong>string -&gt; date</strong>: Only supports years between 262143 BC and 262142 AD</p></li>
 <li><p><strong>string -&gt; decimal</strong>: Does not support fullwidth unicode digits (e.g \uFF10)
 or strings containing null bytes (e.g \u0000)</p></li>
-<li><p><strong>string -&gt; timestamp</strong>: Not all valid formats are supported</p></li>
 </ul>
 <!-- prettier-ignore-end -->
 <!--END:CAST_TRY_TABLE-->
@@ -1181,7 +1188,7 @@ or strings containing null bytes (e.g \u0000)</p></li>
 <td><p>C</p></td>
 <td><p>C</p></td>
 <td><p>-</p></td>
-<td><p>I</p></td>
+<td><p>C</p></td>
 </tr>
 <tr class="row-odd"><td><p>timestamp</p></td>
 <td><p>N/A</p></td>
@@ -1210,7 +1217,6 @@ or strings containing null bytes (e.g \u0000)</p></li>
 <li><p><strong>string -&gt; date</strong>: Only supports years between 262143 BC and 262142 AD</p></li>
 <li><p><strong>string -&gt; decimal</strong>: Does not support fullwidth unicode digits (e.g \uFF10)
 or strings containing null bytes (e.g \u0000)</p></li>
-<li><p><strong>string -&gt; timestamp</strong>: Not all valid formats are supported</p></li>
 </ul>
 <!-- prettier-ignore-end -->
 <!--END:CAST_ANSI_TABLE-->
