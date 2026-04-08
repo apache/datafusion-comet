@@ -3088,7 +3088,7 @@ index 0acb21f3e6f..1f9c3fd13fc 100644
  
      withTempPath { dir =>
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetTypeWideningSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetTypeWideningSuite.scala
-index 09ed6955a51..28126184a4d 100644
+index 09ed6955a51..98e313cddd4 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetTypeWideningSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetTypeWideningSuite.scala
 @@ -24,7 +24,7 @@ import org.apache.parquet.format.converter.ParquetMetadataConverter
@@ -3130,9 +3130,9 @@ index 09ed6955a51..28126184a4d 100644
      )
 +    wideningTags: Seq[org.scalatest.Tag] =
 +      if (fromType == DateType && toType == TimestampNTZType) {
-+          Seq(IgnoreCometNativeDataFusion(
-+              "https://github.com/apache/datafusion-comet/issues/3321"))
-+        } else Seq.empty
++        Seq(IgnoreCometNativeDataFusion(
++          "https://github.com/apache/datafusion-comet/issues/3321"))
++      } else Seq.empty
    }
 -  test(s"parquet widening conversion $fromType -> $toType") {
 +  test(s"parquet widening conversion $fromType -> $toType", wideningTags: _*) {
