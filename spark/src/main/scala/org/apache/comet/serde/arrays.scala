@@ -189,7 +189,8 @@ object CometArrayContains extends CometExpressionSerde[ArrayContains] {
 
 object CometArrayDistinct extends CometExpressionSerde[ArrayDistinct] {
 
-  override def getSupportLevel(expr: ArrayDistinct): SupportLevel = Incompatible(None)
+  override def getSupportLevel(expr: ArrayDistinct): SupportLevel =
+    Incompatible(Some("Output elements are sorted rather than preserving insertion order"))
 
   override def convert(
       expr: ArrayDistinct,
