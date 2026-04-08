@@ -3088,9 +3088,18 @@ index 0acb21f3e6f..1f9c3fd13fc 100644
  
      withTempPath { dir =>
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetTypeWideningSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetTypeWideningSuite.scala
-index 09ed6955a51..236a4e99824 100644
+index 09ed6955a51..28126184a4d 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetTypeWideningSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetTypeWideningSuite.scala
+@@ -24,7 +24,7 @@ import org.apache.parquet.format.converter.ParquetMetadataConverter
+ import org.apache.parquet.hadoop.{ParquetFileReader, ParquetOutputFormat}
+ 
+ import org.apache.spark.SparkException
+-import org.apache.spark.sql.{DataFrame, QueryTest, Row}
++import org.apache.spark.sql.{DataFrame, IgnoreCometNativeDataFusion, QueryTest, Row}
+ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+ import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException
+ import org.apache.spark.sql.functions.col
 @@ -65,7 +65,9 @@ class ParquetTypeWideningSuite
      withClue(
        s"with dictionary encoding '$dictionaryEnabled' with timestamp rebase mode " +
@@ -3111,7 +3120,7 @@ index 09ed6955a51..236a4e99824 100644
      }
    }
  
-@@ -190,7 +192,8 @@ class ParquetTypeWideningSuite
+@@ -190,10 +192,16 @@ class ParquetTypeWideningSuite
        (Seq("1", "2", Short.MinValue.toString), ShortType, DoubleType),
        (Seq("1", "2", Int.MinValue.toString), IntegerType, DoubleType),
        (Seq("1.23", "10.34"), FloatType, DoubleType),
@@ -3119,8 +3128,67 @@ index 09ed6955a51..236a4e99824 100644
 +      // TODO: Comet cannot handle older than "1582-10-15"
 +      (Seq("2020-01-01", "2020-01-02"/* , "1312-02-27" */), DateType, TimestampNTZType)
      )
++    wideningTags: Seq[org.scalatest.Tag] =
++      if (fromType == DateType && toType == TimestampNTZType) {
++          Seq(IgnoreCometNativeDataFusion(
++              "https://github.com/apache/datafusion-comet/issues/3321"))
++        } else Seq.empty
    }
-   test(s"parquet widening conversion $fromType -> $toType") {
+-  test(s"parquet widening conversion $fromType -> $toType") {
++  test(s"parquet widening conversion $fromType -> $toType", wideningTags: _*) {
+     checkAllParquetReaders(values, fromType, toType, expectError = false)
+   }
+ 
+@@ -231,7 +239,8 @@ class ParquetTypeWideningSuite
+       (Seq("2020-01-01", "2020-01-02", "1312-02-27"), DateType, TimestampType)
+     )
+   }
+-  test(s"unsupported parquet conversion $fromType -> $toType") {
++  test(s"unsupported parquet conversion $fromType -> $toType",
++    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3321")) {
+     checkAllParquetReaders(values, fromType, toType, expectError = true)
+   }
+ 
+@@ -257,7 +266,8 @@ class ParquetTypeWideningSuite
+       (Seq("1", "2"), LongType, DecimalType(LongDecimal.precision, 1))
+     )
+   }
+-  test(s"unsupported parquet conversion $fromType -> $toType") {
++  test(s"unsupported parquet conversion $fromType -> $toType",
++    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3321")) {
+     checkAllParquetReaders(values, fromType, toType,
+       expectError =
+       // parquet-mr allows reading decimals into a smaller precision decimal type without
+@@ -271,7 +281,8 @@ class ParquetTypeWideningSuite
+       (Seq("2020-01-01", "2020-01-02", "1312-02-27"), TimestampNTZType, DateType))
+     outputTimestampType <- ParquetOutputTimestampType.values
+   }
+-  test(s"unsupported parquet timestamp conversion $fromType ($outputTimestampType) -> $toType") {
++  test(s"unsupported parquet timestamp conversion $fromType ($outputTimestampType) -> $toType",
++    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3321")) {
+     withSQLConf(
+       SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> outputTimestampType.toString,
+       SQLConf.PARQUET_INT96_REBASE_MODE_IN_WRITE.key -> LegacyBehaviorPolicy.CORRECTED.toString
+@@ -291,7 +302,8 @@ class ParquetTypeWideningSuite
+       Seq(7 -> 5, 10 -> 5, 20 -> 5, 12 -> 10, 20 -> 10, 22 -> 20)
+   }
+   test(
+-    s"parquet decimal precision change Decimal($fromPrecision, 2) -> Decimal($toPrecision, 2)") {
++    s"parquet decimal precision change Decimal($fromPrecision, 2) -> Decimal($toPrecision, 2)",
++    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3321")) {
+     checkAllParquetReaders(
+       values = Seq("1.23", "10.34"),
+       fromType = DecimalType(fromPrecision, 2),
+@@ -322,7 +334,8 @@ class ParquetTypeWideningSuite
+       Seq((5, 2) -> (6, 4), (10, 4) -> (12, 7), (20, 5) -> (22, 8))
+   }
+   test(s"parquet decimal precision and scale change Decimal($fromPrecision, $fromScale) -> " +
+-    s"Decimal($toPrecision, $toScale)"
++    s"Decimal($toPrecision, $toScale)",
++    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3321")
+   ) {
+     checkAllParquetReaders(
+       values = Seq("1.23", "10.34"),
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetVariantShreddingSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetVariantShreddingSuite.scala
 index 458b5dfc0f4..d209f3c85bc 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetVariantShreddingSuite.scala
