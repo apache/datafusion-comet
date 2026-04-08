@@ -231,10 +231,10 @@ Comet supports using the following aggregate functions within window contexts wi
 ## Array Expressions
 
 | Expression     | Spark-Compatible? | Compatibility Notes                                                                                                                                                                       |
-| -------------- |-------------------| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| -------------- | ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | ArrayAppend    | Yes               |                                                                                                                                                                                           |
 | ArrayCompact   | No                |                                                                                                                                                                                           |
-| ArrayContains  | Yes               |                                                 |
+| ArrayContains  | Yes               |                                                                                                                                                                                           |
 | ArrayDistinct  | No                | Behaves differently than spark. Comet first sorts then removes duplicates while Spark preserves the original order.                                                                       |
 | ArrayExcept    | No                |                                                                                                                                                                                           |
 | ArrayFilter    | Yes               | Only supports case where function is `IsNotNull`                                                                                                                                          |
