@@ -40,6 +40,7 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 use datafusion_comet_proto::spark_operator::Operator;
+use datafusion_spark::function::array::array_contains::SparkArrayContains;
 use datafusion_spark::function::bitwise::bit_count::SparkBitCount;
 use datafusion_spark::function::bitwise::bit_get::SparkBitGet;
 use datafusion_spark::function::bitwise::bitwise_not::SparkBitwiseNot;
@@ -58,7 +59,6 @@ use datafusion_spark::function::string::char::CharFunc;
 use datafusion_spark::function::string::concat::SparkConcat;
 use datafusion_spark::function::string::luhn_check::SparkLuhnCheck;
 use datafusion_spark::function::string::space::SparkSpace;
-use datafusion_spark::function::array::array_contains::SparkArrayContains;
 use futures::poll;
 use futures::stream::StreamExt;
 use futures::FutureExt;
