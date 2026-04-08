@@ -87,8 +87,9 @@ impl JniInputStream {
                     let mut i8_buf = vec![0i8; n_usize];
                     jbuf.get_region(env, 0, &mut i8_buf)?;
 
-                    let src =
-                        unsafe { std::slice::from_raw_parts(i8_buf.as_ptr() as *const u8, n_usize) };
+                    let src = unsafe {
+                        std::slice::from_raw_parts(i8_buf.as_ptr() as *const u8, n_usize)
+                    };
                     buf[..n_usize].copy_from_slice(src);
                 }
 
