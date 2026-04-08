@@ -444,12 +444,20 @@ impl MultiPartitionShuffleRepartitioner {
         encode_time: &Time,
         batch_size: usize,
     ) -> datafusion::common::Result<()> {
+        // Only create the IPC stream writer when there's data to write.
+        // Empty partitions must have zero bytes so that Spark's MapOutputTracker
+        // reports zero-size blocks, which affects coalesce partition grouping.
+        let first_batch = match partition_iter.next() {
+            Some(batch) => batch?,
+            None => return Ok(()),
+        };
         let mut buf_batch_writer = BufBatchWriter::try_new(
             output_data,
             Arc::clone(schema),
             write_options.clone(),
             batch_size,
         )?;
+        buf_batch_writer.write(&first_batch, encode_time)?;
         for batch in partition_iter {
             let batch = batch?;
             buf_batch_writer.write(&batch, encode_time)?;
