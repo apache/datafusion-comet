@@ -17,9 +17,10 @@
 
 use crate::metrics::ShufflePartitionerMetrics;
 use crate::partitioners::ShufflePartitioner;
-use crate::ShuffleBlockWriter;
+use crate::CompressionCodec;
 use arrow::array::RecordBatch;
 use arrow::datatypes::SchemaRef;
+use arrow::ipc::writer::StreamWriter;
 use datafusion::common::DataFusionError;
 use std::fs::OpenOptions;
 use std::io::{BufWriter, Seek, Write};
@@ -28,12 +29,12 @@ use tokio::time::Instant;
 /// A partitioner for zero-column schemas (e.g. queries where ColumnPruning removes all columns).
 /// This handles shuffles for operations like COUNT(*) that produce empty-schema record batches
 /// but contain a valid row count. Accumulates the total row count and writes a single
-/// zero-column IPC batch to partition 0. All other partitions get empty entries in the index file.
+/// zero-column IPC stream to partition 0. All other partitions get empty entries in the index file.
 pub(crate) struct EmptySchemaShufflePartitioner {
     output_data_file: String,
     output_index_file: String,
     schema: SchemaRef,
-    shuffle_block_writer: ShuffleBlockWriter,
+    codec: CompressionCodec,
     num_output_partitions: usize,
     total_rows: usize,
     metrics: ShufflePartitionerMetrics,
@@ -46,18 +47,17 @@ impl EmptySchemaShufflePartitioner {
         schema: SchemaRef,
         num_output_partitions: usize,
         metrics: ShufflePartitionerMetrics,
-        codec: crate::CompressionCodec,
+        codec: CompressionCodec,
     ) -> datafusion::common::Result<Self> {
         debug_assert!(
             schema.fields().is_empty(),
             "EmptySchemaShufflePartitioner requires a zero-column schema"
         );
-        let shuffle_block_writer = ShuffleBlockWriter::try_new(schema.as_ref(), codec)?;
         Ok(Self {
             output_data_file,
             output_index_file,
             schema,
-            shuffle_block_writer,
+            codec,
             num_output_partitions,
             total_rows: 0,
             metrics,
@@ -93,18 +93,20 @@ impl ShufflePartitioner for EmptySchemaShufflePartitioner {
             .map_err(|e| DataFusionError::Execution(format!("shuffle write error: {e:?}")))?;
         let mut output_data = BufWriter::new(output_data);
 
-        // Write a single zero-column batch with the accumulated row count to partition 0
+        // Write a single zero-column IPC stream with the accumulated row count to partition 0
         if self.total_rows > 0 {
             let batch = RecordBatch::try_new_with_options(
                 self.schema.clone(),
                 vec![],
                 &arrow::array::RecordBatchOptions::new().with_row_count(Some(self.total_rows)),
             )?;
-            self.shuffle_block_writer.write_batch(
-                &batch,
-                &mut output_data,
-                &self.metrics.encode_time,
-            )?;
+            let write_options = self.codec.ipc_write_options()?;
+            let mut encode_timer = self.metrics.encode_time.timer();
+            let mut writer =
+                StreamWriter::try_new_with_options(&mut output_data, &self.schema, write_options)?;
+            writer.write(&batch)?;
+            writer.finish()?;
+            encode_timer.stop();
         }
 
         let mut write_timer = self.metrics.write_time.timer();

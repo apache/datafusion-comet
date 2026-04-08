@@ -144,6 +144,17 @@ Comet provides a fully native shuffle implementation, which generally provides t
 supports `HashPartitioning`, `RangePartitioning` and `SinglePartitioning` but currently only supports primitive type
 partitioning keys. Columns that are not partitioning keys may contain complex types like maps, structs, and arrays.
 
+Native shuffle has two partitioner modes, configured via
+`spark.comet.exec.shuffle.partitionerMode`:
+
+- **`immediate`** (default): Writes partitioned Arrow IPC blocks to disk immediately as each batch
+  arrives. This mode uses less memory because it does not need to buffer the entire input before
+  writing. It is recommended for most workloads, especially large datasets.
+
+- **`buffered`**: Buffers all input rows in memory before partitioning and writing to disk. This
+  may improve performance for small datasets that fit in memory, but uses significantly more
+  memory.
+
 #### Columnar (JVM) Shuffle
 
 Comet Columnar shuffle is JVM-based and supports `HashPartitioning`, `RoundRobinPartitioning`, `RangePartitioning`, and

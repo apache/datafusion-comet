@@ -15,128 +15,65 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use super::ShuffleBlockWriter;
 use arrow::array::RecordBatch;
 use arrow::compute::kernels::coalesce::BatchCoalescer;
+use arrow::datatypes::SchemaRef;
+use arrow::ipc::writer::{IpcWriteOptions, StreamWriter};
 use datafusion::physical_plan::metrics::Time;
-use std::borrow::Borrow;
-use std::io::{Cursor, Seek, SeekFrom, Write};
+use std::io::Write;
 
-/// Write batches to writer while using a buffer to avoid frequent system calls.
-/// The record batches were first written by ShuffleBlockWriter into an internal buffer.
-/// Once the buffer exceeds the max size, the buffer will be flushed to the writer.
-///
-/// Small batches are coalesced using Arrow's [`BatchCoalescer`] before serialization,
-/// producing exactly `batch_size`-row output batches to reduce per-block IPC schema overhead.
-/// The coalescer is lazily initialized on the first write.
-pub(crate) struct BufBatchWriter<S: Borrow<ShuffleBlockWriter>, W: Write> {
-    shuffle_block_writer: S,
-    writer: W,
-    buffer: Vec<u8>,
-    buffer_max_size: usize,
+/// Writes batches to a persistent Arrow IPC `StreamWriter`. The schema is written once
+/// when the writer is created. Small batches are coalesced via [`BatchCoalescer`] before
+/// serialization, producing `batch_size`-row output batches.
+pub(crate) struct BufBatchWriter<W: Write> {
+    writer: StreamWriter<W>,
     /// Coalesces small batches into target_batch_size before serialization.
-    /// Lazily initialized on first write to capture the schema.
-    coalescer: Option<BatchCoalescer>,
-    /// Target batch size for coalescing
-    batch_size: usize,
+    coalescer: BatchCoalescer,
 }
 
-impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
-    pub(crate) fn new(
-        shuffle_block_writer: S,
-        writer: W,
-        buffer_max_size: usize,
+impl<W: Write> BufBatchWriter<W> {
+    pub(crate) fn try_new(
+        target: W,
+        schema: SchemaRef,
+        write_options: IpcWriteOptions,
         batch_size: usize,
-    ) -> Self {
-        Self {
-            shuffle_block_writer,
-            writer,
-            buffer: vec![],
-            buffer_max_size,
-            coalescer: None,
-            batch_size,
-        }
+    ) -> datafusion::common::Result<Self> {
+        let writer = StreamWriter::try_new_with_options(target, &schema, write_options)?;
+        let coalescer = BatchCoalescer::new(schema, batch_size);
+        Ok(Self { writer, coalescer })
     }
 
     pub(crate) fn write(
         &mut self,
         batch: &RecordBatch,
         encode_time: &Time,
-        write_time: &Time,
-    ) -> datafusion::common::Result<usize> {
-        let coalescer = self
-            .coalescer
-            .get_or_insert_with(|| BatchCoalescer::new(batch.schema(), self.batch_size));
-        coalescer.push_batch(batch.clone())?;
+    ) -> datafusion::common::Result<()> {
+        self.coalescer.push_batch(batch.clone())?;
 
-        // Drain completed batches into a local vec so the coalescer borrow ends
-        // before we call write_batch_to_buffer (which borrows &mut self).
         let mut completed = Vec::new();
-        while let Some(batch) = coalescer.next_completed_batch() {
+        while let Some(batch) = self.coalescer.next_completed_batch() {
             completed.push(batch);
         }
 
-        let mut bytes_written = 0;
         for batch in &completed {
-            bytes_written += self.write_batch_to_buffer(batch, encode_time, write_time)?;
+            let mut timer = encode_time.timer();
+            self.writer.write(batch)?;
+            timer.stop();
         }
-        Ok(bytes_written)
-    }
-
-    /// Serialize a single batch into the byte buffer, flushing to the writer if needed.
-    fn write_batch_to_buffer(
-        &mut self,
-        batch: &RecordBatch,
-        encode_time: &Time,
-        write_time: &Time,
-    ) -> datafusion::common::Result<usize> {
-        let mut cursor = Cursor::new(&mut self.buffer);
-        cursor.seek(SeekFrom::End(0))?;
-        let bytes_written =
-            self.shuffle_block_writer
-                .borrow()
-                .write_batch(batch, &mut cursor, encode_time)?;
-        let pos = cursor.position();
-        if pos >= self.buffer_max_size as u64 {
-            let mut write_timer = write_time.timer();
-            self.writer.write_all(&self.buffer)?;
-            write_timer.stop();
-            self.buffer.clear();
-        }
-        Ok(bytes_written)
-    }
-
-    pub(crate) fn flush(
-        &mut self,
-        encode_time: &Time,
-        write_time: &Time,
-    ) -> datafusion::common::Result<()> {
-        // Finish any remaining buffered rows in the coalescer
-        let mut remaining = Vec::new();
-        if let Some(coalescer) = &mut self.coalescer {
-            coalescer.finish_buffered_batch()?;
-            while let Some(batch) = coalescer.next_completed_batch() {
-                remaining.push(batch);
-            }
-        }
-        for batch in &remaining {
-            self.write_batch_to_buffer(batch, encode_time, write_time)?;
-        }
-
-        // Flush the byte buffer to the underlying writer
-        let mut write_timer = write_time.timer();
-        if !self.buffer.is_empty() {
-            self.writer.write_all(&self.buffer)?;
-        }
-        self.writer.flush()?;
-        write_timer.stop();
-        self.buffer.clear();
         Ok(())
     }
-}
 
-impl<S: Borrow<ShuffleBlockWriter>, W: Write + Seek> BufBatchWriter<S, W> {
-    pub(crate) fn writer_stream_position(&mut self) -> datafusion::common::Result<u64> {
-        self.writer.stream_position().map_err(Into::into)
+    pub(crate) fn flush(&mut self, encode_time: &Time) -> datafusion::common::Result<()> {
+        // Finish any remaining buffered rows in the coalescer
+        self.coalescer.finish_buffered_batch()?;
+        while let Some(batch) = self.coalescer.next_completed_batch() {
+            let mut timer = encode_time.timer();
+            self.writer.write(&batch)?;
+            timer.stop();
+        }
+
+        // Finish the IPC stream (writes the end-of-stream marker)
+        self.writer.finish()?;
+        Ok(())
     }
 }

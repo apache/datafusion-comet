@@ -41,15 +41,13 @@ datafusion-comet-jni-bridge = { workspace = true }
 datafusion-comet-spark-expr = { workspace = true }
 futures = { workspace = true }
 itertools = "0.14.0"
-jni = "0.21"
+jni = "0.22.4"
 log = "0.4"
 lz4_flex = { version = "0.13.0", default-features = false, features = ["frame"] }
 # parquet is only used by the shuffle_bench binary (shuffle-bench feature)
 parquet = { workspace = true, optional = true }
 simd-adler32 = "0.3.9"
-snap = "1.1"
 tokio = { version = "1", features = ["rt-multi-thread"] }
-zstd = "0.13.3"
 
 [dev-dependencies]
 criterion = { version = "0.7", features = ["async", "async_tokio", "async_std"] }

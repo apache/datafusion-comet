@@ -1359,7 +1359,6 @@ impl PhysicalPlanner {
 
                 let codec = match writer.codec.try_into() {
                     Ok(SparkCompressionCodec::None) => Ok(CompressionCodec::None),
-                    Ok(SparkCompressionCodec::Snappy) => Ok(CompressionCodec::Snappy),
                     Ok(SparkCompressionCodec::Zstd) => {
                         Ok(CompressionCodec::Zstd(writer.compression_level))
                     }
@@ -1379,6 +1378,7 @@ impl PhysicalPlanner {
                     writer.output_index_file.clone(),
                     writer.tracing_enabled,
                     write_buffer_size,
+                    writer.immediate_mode,
                 )?);
 
                 Ok((
