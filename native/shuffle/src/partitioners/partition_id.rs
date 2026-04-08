@@ -38,9 +38,6 @@ pub(crate) fn assign_range_partition_ids(
     bounds: &[arrow::row::OwnedRow],
 ) {
     for (row_idx, row) in rows.iter().enumerate() {
-        partition_ids[row_idx] = bounds
-            .as_ref()
-            .partition_point(|bound| bound.row() <= row)
-            as u32;
+        partition_ids[row_idx] = bounds.as_ref().partition_point(|bound| bound.row() <= row) as u32;
     }
 }

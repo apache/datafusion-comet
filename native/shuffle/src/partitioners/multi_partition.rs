@@ -16,10 +16,10 @@
 // under the License.
 
 use crate::metrics::ShufflePartitionerMetrics;
+use crate::partitioners::partition_id::{assign_hash_partition_ids, assign_range_partition_ids};
 use crate::partitioners::partitioned_batch_iterator::{
     PartitionedBatchIterator, PartitionedBatchesProducer,
 };
-use crate::partitioners::partition_id::{assign_hash_partition_ids, assign_range_partition_ids};
 use crate::partitioners::ShufflePartitioner;
 use crate::writers::{BufBatchWriter, PartitionWriter};
 use crate::{CometPartitioning, CompressionCodec, ShuffleBlockWriter};
@@ -349,11 +349,7 @@ impl MultiPartitionShuffleRepartitioner {
 
                     // Assign partition IDs based on hash (same as hash partitioning)
                     let partition_ids = &mut scratch.partition_ids[..num_rows];
-                    assign_hash_partition_ids(
-                        hashes_buf,
-                        partition_ids,
-                        *num_output_partitions,
-                    );
+                    assign_hash_partition_ids(hashes_buf, partition_ids, *num_output_partitions);
 
                     // We now have partition ids for every input row, map that to partition starts
                     // and partition indices to eventually write these rows to partition buffers.

@@ -20,8 +20,7 @@
 use crate::metrics::ShufflePartitionerMetrics;
 use crate::partitioners::{
     EmptySchemaShufflePartitioner, ImmediateModePartitioner, MultiPartitionShuffleRepartitioner,
-    ShufflePartitioner,
-    SinglePartitionShufflePartitioner,
+    ShufflePartitioner, SinglePartitionShufflePartitioner,
 };
 use crate::{CometPartitioning, CompressionCodec};
 use async_trait::async_trait;
