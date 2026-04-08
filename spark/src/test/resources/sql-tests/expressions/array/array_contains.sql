@@ -34,7 +34,7 @@ SELECT array_contains(arr, 2) FROM test_array_contains
 query
 SELECT array_contains(array(1, 2, 3), val) FROM test_array_contains
 
--- literal + literal345
+-- literal + literal
 query
 SELECT array_contains(array(1, 2, 3), 2), array_contains(array(1, 2, 3), 4), array_contains(array(), 1), array_contains(cast(NULL as array<int>), 1)
 
