@@ -141,12 +141,6 @@ object CometArrayAppend extends CometExpressionSerde[ArrayAppend] {
 
 object CometArrayContains extends CometExpressionSerde[ArrayContains] {
 
-  override def getSupportLevel(expr: ArrayContains): SupportLevel =
-    Incompatible(
-      Some(
-        "Returns null instead of false for empty arrays with literal values" +
-          " (https://github.com/apache/datafusion-comet/issues/3346)"))
-
   override def convert(
       expr: ArrayContains,
       inputs: Seq[Attribute],
@@ -154,36 +148,7 @@ object CometArrayContains extends CometExpressionSerde[ArrayContains] {
     val arrayExprProto = exprToProto(expr.children.head, inputs, binding)
     val keyExprProto = exprToProto(expr.children(1), inputs, binding)
 
-    val arrayContainsScalarExpr =
-      scalarFunctionExprToProto("array_has", arrayExprProto, keyExprProto)
-
-    // Handle NULL array input - return NULL if array is NULL (matching Spark's behavior)
-    val isNotNullExpr = createUnaryExpr(
-      expr,
-      expr.children.head,
-      inputs,
-      binding,
-      (builder, unaryExpr) => builder.setIsNotNull(unaryExpr))
-
-    val nullLiteralProto = exprToProto(Literal(null, BooleanType), Seq.empty)
-
-    if (arrayContainsScalarExpr.isDefined && isNotNullExpr.isDefined &&
-      nullLiteralProto.isDefined) {
-      val caseWhenExpr = ExprOuterClass.CaseWhen
-        .newBuilder()
-        .addWhen(isNotNullExpr.get)
-        .addThen(arrayContainsScalarExpr.get)
-        .setElseExpr(nullLiteralProto.get)
-        .build()
-      Some(
-        ExprOuterClass.Expr
-          .newBuilder()
-          .setCaseWhen(caseWhenExpr)
-          .build())
-    } else {
-      withInfo(expr, expr.children: _*)
-      None
-    }
+    scalarFunctionExprToProto("array_contains", arrayExprProto, keyExprProto)
   }
 }
 
