@@ -1709,6 +1709,14 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("negative zero order by") {
+    withTable("t1") {
+      Seq(0.0f, -0.0f).toDF("a").write.saveAsTable("t1")
+      val df = sql("SELECT * FROM t1 ORDER BY a")
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
   test("native execution after coalesce") {
     withTable("t1") {
       (0 until 5)
