@@ -28,3 +28,8 @@ pub use comet_partitioning::CometPartitioning;
 pub use ipc::read_ipc_compressed;
 pub use shuffle_writer::ShuffleWriterExec;
 pub use writers::{CompressionCodec, ShuffleBlockWriter};
+
+/// Default target batch size in bytes for coalescing small batches before writing
+/// shuffle IPC blocks. Using a byte-based threshold instead of a row count ensures
+/// that narrow schemas produce reasonably sized blocks.
+pub const DEFAULT_TARGET_BATCH_BYTES: usize = 1024 * 1024; // 1 MiB

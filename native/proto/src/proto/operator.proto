@@ -294,6 +294,10 @@ message ShuffleWriter {
   // Size of the write buffer in bytes used when writing shuffle data to disk.
   // Larger values may improve write performance but use more memory.
   int32 write_buffer_size = 8;
+  // Target batch size in bytes for coalescing small batches before writing IPC blocks.
+  // Larger values produce fewer, bigger blocks which reduces per-block schema overhead.
+  // A value of 0 means use the default (1 MiB).
+  int32 target_batch_bytes = 9;
 }
 
 message ParquetWriter {

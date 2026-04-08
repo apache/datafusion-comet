@@ -1371,6 +1371,11 @@ impl PhysicalPlanner {
                 }?;
 
                 let write_buffer_size = writer.write_buffer_size as usize;
+                let target_batch_bytes = if writer.target_batch_bytes > 0 {
+                    writer.target_batch_bytes as usize
+                } else {
+                    datafusion_comet_shuffle::DEFAULT_TARGET_BATCH_BYTES
+                };
                 let shuffle_writer = Arc::new(ShuffleWriterExec::try_new(
                     Arc::clone(&child.native_plan),
                     partitioning,
@@ -1379,6 +1384,7 @@ impl PhysicalPlanner {
                     writer.output_index_file.clone(),
                     writer.tracing_enabled,
                     write_buffer_size,
+                    target_batch_bytes,
                 )?);
 
                 Ok((

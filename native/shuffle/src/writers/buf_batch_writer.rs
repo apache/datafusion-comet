@@ -17,7 +17,6 @@
 
 use super::ShuffleBlockWriter;
 use arrow::array::RecordBatch;
-use arrow::compute::kernels::coalesce::BatchCoalescer;
 use datafusion::physical_plan::metrics::Time;
 use std::borrow::Borrow;
 use std::io::{Cursor, Seek, SeekFrom, Write};
@@ -26,19 +25,21 @@ use std::io::{Cursor, Seek, SeekFrom, Write};
 /// The record batches were first written by ShuffleBlockWriter into an internal buffer.
 /// Once the buffer exceeds the max size, the buffer will be flushed to the writer.
 ///
-/// Small batches are coalesced using Arrow's [`BatchCoalescer`] before serialization,
-/// producing exactly `batch_size`-row output batches to reduce per-block IPC schema overhead.
-/// The coalescer is lazily initialized on the first write.
+/// Small batches are coalesced based on a byte-size threshold before serialization,
+/// producing larger output batches to reduce per-block IPC schema overhead. This is
+/// especially beneficial for narrow schemas where a fixed row count would produce
+/// tiny blocks.
 pub(crate) struct BufBatchWriter<S: Borrow<ShuffleBlockWriter>, W: Write> {
     shuffle_block_writer: S,
     writer: W,
     buffer: Vec<u8>,
     buffer_max_size: usize,
-    /// Coalesces small batches into target_batch_size before serialization.
-    /// Lazily initialized on first write to capture the schema.
-    coalescer: Option<BatchCoalescer>,
-    /// Target batch size for coalescing
-    batch_size: usize,
+    /// Batches waiting to be coalesced and written
+    pending_batches: Vec<RecordBatch>,
+    /// Total memory size of pending batches in bytes
+    pending_bytes: usize,
+    /// Target batch size in bytes for coalescing
+    target_batch_bytes: usize,
 }
 
 impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
@@ -46,15 +47,16 @@ impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
         shuffle_block_writer: S,
         writer: W,
         buffer_max_size: usize,
-        batch_size: usize,
+        target_batch_bytes: usize,
     ) -> Self {
         Self {
             shuffle_block_writer,
             writer,
             buffer: vec![],
             buffer_max_size,
-            coalescer: None,
-            batch_size,
+            pending_batches: Vec::new(),
+            pending_bytes: 0,
+            target_batch_bytes,
         }
     }
 
@@ -64,23 +66,37 @@ impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
         encode_time: &Time,
         write_time: &Time,
     ) -> datafusion::common::Result<usize> {
-        let coalescer = self
-            .coalescer
-            .get_or_insert_with(|| BatchCoalescer::new(batch.schema(), self.batch_size));
-        coalescer.push_batch(batch.clone())?;
-
-        // Drain completed batches into a local vec so the coalescer borrow ends
-        // before we call write_batch_to_buffer (which borrows &mut self).
-        let mut completed = Vec::new();
-        while let Some(batch) = coalescer.next_completed_batch() {
-            completed.push(batch);
-        }
+        let batch_bytes = batch.get_array_memory_size();
+        self.pending_bytes += batch_bytes;
+        self.pending_batches.push(batch.clone());
 
         let mut bytes_written = 0;
-        for batch in &completed {
-            bytes_written += self.write_batch_to_buffer(batch, encode_time, write_time)?;
+        if self.pending_bytes >= self.target_batch_bytes {
+            bytes_written += self.flush_pending(encode_time, write_time)?;
         }
         Ok(bytes_written)
+    }
+
+    /// Concatenate pending batches and write as a single IPC block.
+    fn flush_pending(
+        &mut self,
+        encode_time: &Time,
+        write_time: &Time,
+    ) -> datafusion::common::Result<usize> {
+        if self.pending_batches.is_empty() {
+            return Ok(0);
+        }
+
+        let batch = if self.pending_batches.len() == 1 {
+            self.pending_batches.remove(0)
+        } else {
+            let schema = self.pending_batches[0].schema();
+            arrow::compute::concat_batches(&schema, self.pending_batches.iter())?
+        };
+        self.pending_batches.clear();
+        self.pending_bytes = 0;
+
+        self.write_batch_to_buffer(&batch, encode_time, write_time)
     }
 
     /// Serialize a single batch into the byte buffer, flushing to the writer if needed.
@@ -111,17 +127,7 @@ impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
         encode_time: &Time,
         write_time: &Time,
     ) -> datafusion::common::Result<()> {
-        // Finish any remaining buffered rows in the coalescer
-        let mut remaining = Vec::new();
-        if let Some(coalescer) = &mut self.coalescer {
-            coalescer.finish_buffered_batch()?;
-            while let Some(batch) = coalescer.next_completed_batch() {
-                remaining.push(batch);
-            }
-        }
-        for batch in &remaining {
-            self.write_batch_to_buffer(batch, encode_time, write_time)?;
-        }
+        self.flush_pending(encode_time, write_time)?;
 
         // Flush the byte buffer to the underlying writer
         let mut write_timer = write_time.timer();

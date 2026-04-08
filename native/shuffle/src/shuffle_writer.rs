@@ -68,6 +68,9 @@ pub struct ShuffleWriterExec {
     tracing_enabled: bool,
     /// Size of the write buffer in bytes
     write_buffer_size: usize,
+    /// Target batch size in bytes for coalescing small batches before writing IPC blocks.
+    /// Larger values produce fewer, bigger blocks which reduces per-block schema overhead.
+    target_batch_bytes: usize,
 }
 
 impl ShuffleWriterExec {
@@ -81,6 +84,7 @@ impl ShuffleWriterExec {
         output_index_file: String,
         tracing_enabled: bool,
         write_buffer_size: usize,
+        target_batch_bytes: usize,
     ) -> Result<Self> {
         let cache = Arc::new(PlanProperties::new(
             EquivalenceProperties::new(Arc::clone(&input.schema())),
@@ -99,6 +103,7 @@ impl ShuffleWriterExec {
             codec,
             tracing_enabled,
             write_buffer_size,
+            target_batch_bytes,
         })
     }
 }
@@ -159,6 +164,7 @@ impl ExecutionPlan for ShuffleWriterExec {
                 self.output_index_file.clone(),
                 self.tracing_enabled,
                 self.write_buffer_size,
+                self.target_batch_bytes,
             )?)),
             _ => panic!("ShuffleWriterExec wrong number of children"),
         }
@@ -186,6 +192,7 @@ impl ExecutionPlan for ShuffleWriterExec {
                     self.codec.clone(),
                     self.tracing_enabled,
                     self.write_buffer_size,
+                    self.target_batch_bytes,
                 )
                 .map_err(|e| ArrowError::ExternalError(Box::new(e))),
             )
@@ -206,6 +213,7 @@ async fn external_shuffle(
     codec: CompressionCodec,
     tracing_enabled: bool,
     write_buffer_size: usize,
+    target_batch_bytes: usize,
 ) -> Result<SendableRecordBatchStream> {
     with_trace_async("external_shuffle", tracing_enabled, || async {
         let schema = input.schema();
@@ -228,7 +236,7 @@ async fn external_shuffle(
                     output_index_file,
                     Arc::clone(&schema),
                     metrics,
-                    context.session_config().batch_size(),
+                    target_batch_bytes,
                     codec,
                     write_buffer_size,
                 )?)
@@ -242,6 +250,7 @@ async fn external_shuffle(
                 metrics,
                 context.runtime_env(),
                 context.session_config().batch_size(),
+                target_batch_bytes,
                 codec,
                 tracing_enabled,
                 write_buffer_size,
@@ -366,6 +375,7 @@ mod test {
             ShufflePartitionerMetrics::new(&metrics_set, 0),
             runtime_env,
             1024,
+            1024 * 1024, // target_batch_bytes: 1MB default
             CompressionCodec::Lz4Frame,
             false,
             1024 * 1024, // write_buffer_size: 1MB default
@@ -472,7 +482,8 @@ mod test {
                 "/tmp/data.out".to_string(),
                 "/tmp/index.out".to_string(),
                 false,
-                1024 * 1024, // write_buffer_size: 1MB default
+                1024 * 1024, // write_buffer_size
+                1024 * 1024, // target_batch_bytes
             )
             .unwrap();
 
@@ -531,6 +542,7 @@ mod test {
                 data_file.clone(),
                 index_file.clone(),
                 false,
+                1024 * 1024,
                 1024 * 1024,
             )
             .unwrap();
@@ -626,7 +638,7 @@ mod test {
         let encode_time = Time::default();
         let write_time = Time::default();
 
-        // Write with coalescing (batch_size=8192)
+        // Write with coalescing (target_batch_bytes=1MB)
         let mut coalesced_output = Vec::new();
         {
             let mut writer = ShuffleBlockWriter::try_new(schema.as_ref(), codec.clone()).unwrap();
@@ -634,7 +646,7 @@ mod test {
                 &mut writer,
                 Cursor::new(&mut coalesced_output),
                 1024 * 1024,
-                8192,
+                1024 * 1024,
             );
             for batch in &small_batches {
                 buf_writer.write(batch, &encode_time, &write_time).unwrap();
@@ -642,7 +654,7 @@ mod test {
             buf_writer.flush(&encode_time, &write_time).unwrap();
         }
 
-        // Write without coalescing (batch_size=1)
+        // Write without coalescing (target_batch_bytes=1 byte forces immediate flush)
         let mut uncoalesced_output = Vec::new();
         {
             let mut writer = ShuffleBlockWriter::try_new(schema.as_ref(), codec.clone()).unwrap();
@@ -736,6 +748,7 @@ mod test {
             index_file.to_str().unwrap().to_string(),
             false,
             1024 * 1024,
+            1024 * 1024,
         )
         .unwrap();
 
@@ -823,6 +836,7 @@ mod test {
             data_file.to_str().unwrap().to_string(),
             index_file.to_str().unwrap().to_string(),
             false,
+            1024 * 1024,
             1024 * 1024,
         )
         .unwrap();

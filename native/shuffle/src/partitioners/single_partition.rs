@@ -28,17 +28,16 @@ use tokio::time::Instant;
 
 /// A partitioner that writes all shuffle data to a single file and a single index file
 pub(crate) struct SinglePartitionShufflePartitioner {
-    // output_data_file: File,
     output_data_writer: BufBatchWriter<ShuffleBlockWriter, File>,
     output_index_path: String,
-    /// Batches that are smaller than the batch size and to be concatenated
+    /// Batches that are smaller than the target byte size and to be concatenated
     buffered_batches: Vec<RecordBatch>,
-    /// Number of rows in the concatenating batches
-    num_buffered_rows: usize,
+    /// Accumulated byte size of buffered batches
+    buffered_bytes: usize,
     /// Metrics for the repartitioner
     metrics: ShufflePartitionerMetrics,
-    /// The configured batch size
-    batch_size: usize,
+    /// Target batch size in bytes for coalescing
+    target_batch_bytes: usize,
 }
 
 impl SinglePartitionShufflePartitioner {
@@ -47,7 +46,7 @@ impl SinglePartitionShufflePartitioner {
         output_index_path: String,
         schema: SchemaRef,
         metrics: ShufflePartitionerMetrics,
-        batch_size: usize,
+        target_batch_bytes: usize,
         codec: CompressionCodec,
         write_buffer_size: usize,
     ) -> datafusion::common::Result<Self> {
@@ -63,23 +62,23 @@ impl SinglePartitionShufflePartitioner {
             shuffle_block_writer,
             output_data_file,
             write_buffer_size,
-            batch_size,
+            target_batch_bytes,
         );
 
         Ok(Self {
             output_data_writer,
             output_index_path,
             buffered_batches: vec![],
-            num_buffered_rows: 0,
+            buffered_bytes: 0,
             metrics,
-            batch_size,
+            target_batch_bytes,
         })
     }
 
     /// Add a batch to the buffer of the partitioner, these buffered batches will be concatenated
-    /// and written to the output data file when the number of rows in the buffer reaches the batch size.
+    /// and written to the output data file when the accumulated byte size reaches the target.
     fn add_buffered_batch(&mut self, batch: RecordBatch) {
-        self.num_buffered_rows += batch.num_rows();
+        self.buffered_bytes += batch.get_array_memory_size();
         self.buffered_batches.push(batch);
     }
 
@@ -89,14 +88,14 @@ impl SinglePartitionShufflePartitioner {
             Ok(None)
         } else if self.buffered_batches.len() == 1 {
             let batch = self.buffered_batches.remove(0);
-            self.num_buffered_rows = 0;
+            self.buffered_bytes = 0;
             Ok(Some(batch))
         } else {
             let schema = &self.buffered_batches[0].schema();
             match arrow::compute::concat_batches(schema, self.buffered_batches.iter()) {
                 Ok(concatenated) => {
                     self.buffered_batches.clear();
-                    self.num_buffered_rows = 0;
+                    self.buffered_bytes = 0;
                     Ok(Some(concatenated))
                 }
                 Err(e) => Err(DataFusionError::ArrowError(
@@ -115,10 +114,13 @@ impl ShufflePartitioner for SinglePartitionShufflePartitioner {
         let num_rows = batch.num_rows();
 
         if num_rows > 0 {
-            self.metrics.data_size.add(batch.get_array_memory_size());
+            let batch_bytes = batch.get_array_memory_size();
+            self.metrics.data_size.add(batch_bytes);
             self.metrics.baseline.record_output(num_rows);
 
-            if num_rows >= self.batch_size || num_rows + self.num_buffered_rows > self.batch_size {
+            if batch_bytes >= self.target_batch_bytes
+                || batch_bytes + self.buffered_bytes > self.target_batch_bytes
+            {
                 let concatenated_batch = self.concat_buffered_batches()?;
 
                 // Write the concatenated buffered batch
@@ -130,8 +132,8 @@ impl ShufflePartitioner for SinglePartitionShufflePartitioner {
                     )?;
                 }
 
-                if num_rows >= self.batch_size {
-                    // Write the new batch
+                if batch_bytes >= self.target_batch_bytes {
+                    // Write the new batch directly
                     self.output_data_writer.write(
                         &batch,
                         &self.metrics.encode_time,

@@ -118,8 +118,10 @@ pub(crate) struct MultiPartitionShuffleRepartitioner {
     metrics: ShufflePartitionerMetrics,
     /// Reused scratch space for computing partition indices
     scratch: ScratchSpace,
-    /// The configured batch size
+    /// The configured batch size in rows (used for scratch space sizing and input slicing)
     batch_size: usize,
+    /// Target batch size in bytes for coalescing before writing IPC blocks
+    target_batch_bytes: usize,
     /// Reservation for repartitioning
     reservation: MemoryReservation,
     tracing_enabled: bool,
@@ -138,6 +140,7 @@ impl MultiPartitionShuffleRepartitioner {
         metrics: ShufflePartitionerMetrics,
         runtime: Arc<RuntimeEnv>,
         batch_size: usize,
+        target_batch_bytes: usize,
         codec: CompressionCodec,
         tracing_enabled: bool,
         write_buffer_size: usize,
@@ -187,6 +190,7 @@ impl MultiPartitionShuffleRepartitioner {
             metrics,
             scratch,
             batch_size,
+            target_batch_bytes,
             reservation,
             tracing_enabled,
             write_buffer_size,
@@ -441,13 +445,13 @@ impl MultiPartitionShuffleRepartitioner {
         encode_time: &Time,
         write_time: &Time,
         write_buffer_size: usize,
-        batch_size: usize,
+        target_batch_bytes: usize,
     ) -> datafusion::common::Result<()> {
         let mut buf_batch_writer = BufBatchWriter::new(
             shuffle_block_writer,
             output_data,
             write_buffer_size,
-            batch_size,
+            target_batch_bytes,
         );
         for batch in partition_iter {
             let batch = batch?;
@@ -512,7 +516,7 @@ impl MultiPartitionShuffleRepartitioner {
                     &self.runtime,
                     &self.metrics,
                     self.write_buffer_size,
-                    self.batch_size,
+                    self.target_batch_bytes,
                 )?;
             }
 
@@ -599,7 +603,7 @@ impl ShufflePartitioner for MultiPartitionShuffleRepartitioner {
                     &self.metrics.encode_time,
                     &self.metrics.write_time,
                     self.write_buffer_size,
-                    self.batch_size,
+                    self.target_batch_bytes,
                 )?;
             }
 
