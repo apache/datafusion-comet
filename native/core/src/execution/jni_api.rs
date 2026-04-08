@@ -886,9 +886,9 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_openShuffleStream(
     _class: JClass,
     input_stream: JObject,
 ) -> jlong {
-    try_unwrap_or_throw(&e, |mut env| {
+    try_unwrap_or_throw(&e, |env| {
         let reader =
-            ShuffleStreamReader::new(&mut env, &input_stream).map_err(CometError::Internal)?;
+            ShuffleStreamReader::new(env, &input_stream).map_err(CometError::Internal)?;
         let handle = Box::into_raw(Box::new(reader));
         Ok(handle as jlong)
     })
@@ -906,10 +906,10 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_nextShuffleStreamBatc
     array_addrs: JLongArray,
     schema_addrs: JLongArray,
 ) -> jlong {
-    try_unwrap_or_throw(&e, |mut env| {
+    try_unwrap_or_throw(&e, |env| {
         let reader = unsafe { &mut *(handle as *mut ShuffleStreamReader) };
         match reader.next_batch().map_err(CometError::Internal)? {
-            Some(batch) => prepare_output(&mut env, array_addrs, schema_addrs, batch, false),
+            Some(batch) => prepare_output(env, array_addrs, schema_addrs, batch, false),
             None => Ok(-1_i64),
         }
     })

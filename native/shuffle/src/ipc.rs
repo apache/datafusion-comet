@@ -17,8 +17,8 @@
 
 use arrow::array::RecordBatch;
 use arrow::ipc::reader::StreamReader;
-use jni::objects::{GlobalRef, JObject, JValue};
-use jni::JavaVM;
+use jni::objects::{Global, JObject, JPrimitiveArray, JValue};
+use jni::{jni_sig, jni_str, JavaVM};
 use std::io::Read;
 
 /// Size of the internal read-ahead buffer (64 KB).
@@ -30,9 +30,9 @@ pub struct JniInputStream {
     /// Handle to the JVM for attaching threads.
     vm: JavaVM,
     /// Global reference to the JVM InputStream object.
-    input_stream: GlobalRef,
+    input_stream: Global<JObject<'static>>,
     /// Global reference to the JVM byte[] used for bulk reads.
-    jbuf: GlobalRef,
+    jbuf: Global<JPrimitiveArray<'static, i8>>,
     /// Internal Rust-side buffer holding bytes read from JVM.
     buf: Vec<u8>,
     /// Current read position within `buf`.
@@ -43,10 +43,10 @@ pub struct JniInputStream {
 
 impl JniInputStream {
     /// Create a new `JniInputStream` wrapping a JVM InputStream.
-    pub fn new(env: &mut jni::JNIEnv, input_stream: &JObject) -> jni::errors::Result<Self> {
+    pub fn new(env: &mut jni::Env, input_stream: &JObject) -> jni::errors::Result<Self> {
         let vm = env.get_java_vm()?;
         let input_stream = env.new_global_ref(input_stream)?;
-        let jbuf_local = env.new_byte_array(READ_AHEAD_BUF_SIZE as i32)?;
+        let jbuf_local = env.new_byte_array(READ_AHEAD_BUF_SIZE)?;
         let jbuf = env.new_global_ref(&jbuf_local)?;
         Ok(Self {
             vm,
@@ -60,29 +60,40 @@ impl JniInputStream {
 
     /// Refill the internal buffer by calling `InputStream.read(byte[], 0, len)` via JNI.
     fn refill(&mut self) -> std::io::Result<usize> {
-        let mut env = self
-            .vm
-            .attach_current_thread_as_daemon()
-            .map_err(|e| std::io::Error::other(e.to_string()))?;
+        let vm = &self.vm;
+        let input_stream = &self.input_stream;
+        let jbuf = &self.jbuf;
+        let buf = &mut self.buf;
 
-        // Get a local reference from the global ref for the byte array
-        let jbuf_local = env
-            .new_local_ref(self.jbuf.as_obj())
-            .map_err(|e| std::io::Error::other(e.to_string()))?;
+        let n: i32 = vm
+            .attach_current_thread(|env| -> jni::errors::Result<i32> {
+                let n = env
+                    .call_method(
+                        input_stream,
+                        jni_str!("read"),
+                        jni_sig!("([BII)I"),
+                        &[
+                            JValue::Object(jbuf.as_obj()),
+                            JValue::Int(0),
+                            JValue::Int(READ_AHEAD_BUF_SIZE as i32),
+                        ],
+                    )?
+                    .i()?;
 
-        let n = env
-            .call_method(
-                &self.input_stream,
-                "read",
-                "([BII)I",
-                &[
-                    JValue::Object(&jbuf_local),
-                    JValue::Int(0),
-                    JValue::Int(READ_AHEAD_BUF_SIZE as i32),
-                ],
-            )
-            .map_err(|e| std::io::Error::other(e.to_string()))?
-            .i()
+                if n > 0 {
+                    let n_usize = n as usize;
+                    // Copy bytes from JVM byte[] into our Rust buffer.
+                    // jbyte is i8; we read into a temporary i8 slice then reinterpret as u8.
+                    let mut i8_buf = vec![0i8; n_usize];
+                    jbuf.get_region(env, 0, &mut i8_buf)?;
+
+                    let src =
+                        unsafe { std::slice::from_raw_parts(i8_buf.as_ptr() as *const u8, n_usize) };
+                    buf[..n_usize].copy_from_slice(src);
+                }
+
+                Ok(n)
+            })
             .map_err(|e| std::io::Error::other(e.to_string()))?;
 
         if n <= 0 {
@@ -93,26 +104,6 @@ impl JniInputStream {
         }
 
         let n = n as usize;
-
-        // Copy bytes from JVM byte[] into our Rust buffer.
-        // jbyte is i8; we read into a temporary i8 slice then reinterpret as u8.
-        let mut i8_buf = vec![0i8; n];
-        let jbuf_array = unsafe { jni::objects::JByteArray::from_raw(jbuf_local.as_raw()) };
-        env.get_byte_array_region(&jbuf_array, 0, &mut i8_buf)
-            .map_err(|e| std::io::Error::other(e.to_string()))?;
-
-        // Don't let the JByteArray drop free the local ref — it was created from
-        // a local ref that we don't own (it came from new_local_ref).
-        // Actually, JByteArray::from_raw takes ownership conceptually, but the local
-        // ref table manages it. We need to forget it so the underlying JObject local
-        // ref doesn't get deleted twice. The new_local_ref created it, and from_raw
-        // wrapped it. We should not drop jbuf_array since that would call
-        // DeleteLocalRef on the same raw jobject that jbuf_local already points to.
-        // However, JByteArray doesn't impl Drop with DeleteLocalRef — jni objects
-        // are plain wrappers. So this is fine.
-
-        let src = unsafe { std::slice::from_raw_parts(i8_buf.as_ptr() as *const u8, n) };
-        self.buf[..n].copy_from_slice(src);
         self.pos = 0;
         self.len = n;
 
@@ -207,7 +198,7 @@ pub struct ShuffleStreamReader {
 impl ShuffleStreamReader {
     /// Create a new `ShuffleStreamReader` over a JVM InputStream.
     /// Returns a reader that yields no batches if the stream is empty.
-    pub fn new(env: &mut jni::JNIEnv, input_stream: &JObject) -> Result<Self, String> {
+    pub fn new(env: &mut jni::Env, input_stream: &JObject) -> Result<Self, String> {
         let jni_stream = SharedJniStream::new(
             JniInputStream::new(env, input_stream).map_err(|e| format!("JNI error: {e}"))?,
         );

@@ -93,7 +93,7 @@ impl Clone for ShuffleScanExec {
             // stream_reader is not cloneable; cloned instances start without one
             // and will lazily create their own if needed.
             stream_reader: None,
-            cache: self.cache.clone(),
+            cache: Arc::clone(&self.cache),
             metrics: self.metrics.clone(),
             baseline_metrics: self.baseline_metrics.clone(),
             decode_time: self.decode_time.clone(),
@@ -180,13 +180,15 @@ impl ShuffleScanExec {
                     self.exec_context_id
                 )))
             })?;
-            let mut env = JVMClasses::get_env()?;
-            let reader =
-                ShuffleStreamReader::new(&mut env, input_source.as_obj()).map_err(|e| {
-                    CometError::from(ExecutionError::GeneralError(format!(
-                        "Failed to create ShuffleStreamReader: {e}"
-                    )))
-                })?;
+            let input_source = Arc::clone(input_source);
+            let reader = JVMClasses::with_env(|env| {
+                ShuffleStreamReader::new(env, input_source.as_obj())
+                    .map_err(|e| {
+                        CometError::from(ExecutionError::GeneralError(format!(
+                            "Failed to create ShuffleStreamReader: {e}"
+                        )))
+                    })
+            })?;
             self.stream_reader = Some(reader);
         }
 

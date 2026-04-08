@@ -744,7 +744,9 @@ mod test {
         assert!(!data.is_empty(), "Data file should contain IPC data");
 
         // Verify row count survives roundtrip
-        let total_rows = read_all_ipc_blocks(&data);
+        let cursor = std::io::Cursor::new(&data);
+        let reader = arrow::ipc::reader::StreamReader::try_new(cursor, None).unwrap();
+        let total_rows: usize = reader.map(|b| b.unwrap().num_rows()).sum();
         assert_eq!(
             total_rows,
             num_rows * num_batches,

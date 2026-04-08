@@ -41,7 +41,7 @@ datafusion-comet-jni-bridge = { workspace = true }
 datafusion-comet-spark-expr = { workspace = true }
 futures = { workspace = true }
 itertools = "0.14.0"
-jni = "0.21"
+jni = "0.22.4"
 log = "0.4"
 # parquet is only used by the shuffle_bench binary (shuffle-bench feature)
 parquet = { workspace = true, optional = true }
