@@ -15,7 +15,6 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- ConfigMatrix: parquet.enable.dictionary=false,true
 
 statement
 CREATE TABLE test_array_compact(
@@ -60,3 +59,11 @@ SELECT array_compact(array('a', NULL, 'b'))
 -- all-null literal array
 query
 SELECT array_compact(array(NULL, NULL, NULL))
+
+-- double element type
+query
+SELECT array_compact(array(1.0, NULL, 2.0, NULL, 3.0))
+
+-- nested array type (removes null arrays from outer, preserves null elements in inner)
+query
+SELECT array_compact(array(array(1, NULL, 3), NULL, array(NULL, 2, 3)))

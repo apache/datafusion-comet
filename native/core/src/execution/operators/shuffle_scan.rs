@@ -18,8 +18,7 @@
 use crate::{
     errors::CometError,
     execution::{
-        operators::ExecutionError, planner::TEST_EXEC_CONTEXT_ID,
-        shuffle::codec::read_ipc_compressed,
+        operators::ExecutionError, planner::TEST_EXEC_CONTEXT_ID, shuffle::ipc::read_ipc_compressed,
     },
     jvm_bridge::{jni_call, JVMClasses},
 };
@@ -36,7 +35,7 @@ use datafusion::{
     physical_plan::{ExecutionPlan, *},
 };
 use futures::Stream;
-use jni::objects::{GlobalRef, JByteBuffer, JObject};
+use jni::objects::{Global, JByteBuffer, JObject};
 use std::{
     any::Any,
     pin::Pin,
@@ -54,7 +53,7 @@ pub struct ShuffleScanExec {
     /// The ID of the execution context that owns this subquery.
     pub exec_context_id: i64,
     /// The input source: a global reference to a JVM CometShuffleBlockIterator object.
-    pub input_source: Option<Arc<GlobalRef>>,
+    pub input_source: Option<Arc<Global<JObject<'static>>>>,
     /// The data types of columns in the shuffle output.
     pub data_types: Vec<DataType>,
     /// Schema of the shuffle output.
@@ -62,7 +61,7 @@ pub struct ShuffleScanExec {
     /// The current input batch, populated by get_next_batch() before poll_next().
     pub batch: Arc<Mutex<Option<InputBatch>>>,
     /// Cache of plan properties.
-    cache: PlanProperties,
+    cache: Arc<PlanProperties>,
     /// Metrics collector.
     metrics: ExecutionPlanMetricsSet,
     /// Baseline metrics.
@@ -74,7 +73,7 @@ pub struct ShuffleScanExec {
 impl ShuffleScanExec {
     pub fn new(
         exec_context_id: i64,
-        input_source: Option<Arc<GlobalRef>>,
+        input_source: Option<Arc<Global<JObject<'static>>>>,
         data_types: Vec<DataType>,
     ) -> Result<Self, CometError> {
         let metrics_set = ExecutionPlanMetricsSet::default();
@@ -83,12 +82,12 @@ impl ShuffleScanExec {
 
         let schema = schema_from_data_types(&data_types);
 
-        let cache = PlanProperties::new(
+        let cache = Arc::new(PlanProperties::new(
             EquivalenceProperties::new(Arc::clone(&schema)),
             Partitioning::UnknownPartitioning(1),
             EmissionType::Final,
             Boundedness::Bounded,
-        );
+        ));
 
         Ok(Self {
             exec_context_id,
@@ -150,55 +149,55 @@ impl ShuffleScanExec {
             ))));
         }
 
-        let mut env = JVMClasses::get_env()?;
+        JVMClasses::with_env(|env| {
+            // has_next() reads the next block and returns its length, or -1 if EOF
+            let block_length: i32 = unsafe {
+                jni_call!(env,
+                    comet_shuffle_block_iterator(iter).has_next() -> i32)?
+            };
 
-        // has_next() reads the next block and returns its length, or -1 if EOF
-        let block_length: i32 = unsafe {
-            jni_call!(&mut env,
-                comet_shuffle_block_iterator(iter).has_next() -> i32)?
-        };
+            if block_length == -1 {
+                return Ok(InputBatch::EOF);
+            }
 
-        if block_length == -1 {
-            return Ok(InputBatch::EOF);
-        }
+            // Get the DirectByteBuffer containing the compressed shuffle block
+            let buffer: JObject = unsafe {
+                jni_call!(env,
+                    comet_shuffle_block_iterator(iter).get_buffer() -> JObject)?
+            };
 
-        // Get the DirectByteBuffer containing the compressed shuffle block
-        let buffer: JObject = unsafe {
-            jni_call!(&mut env,
-                comet_shuffle_block_iterator(iter).get_buffer() -> JObject)?
-        };
+            let byte_buffer = unsafe { JByteBuffer::from_raw(env, buffer.into_raw()) };
+            let raw_pointer = env.get_direct_buffer_address(&byte_buffer)?;
+            let length = block_length as usize;
+            let slice: &[u8] = unsafe { std::slice::from_raw_parts(raw_pointer, length) };
 
-        let byte_buffer = JByteBuffer::from(buffer);
-        let raw_pointer = env.get_direct_buffer_address(&byte_buffer)?;
-        let length = block_length as usize;
-        let slice: &[u8] = unsafe { std::slice::from_raw_parts(raw_pointer, length) };
+            // Decode the compressed IPC data
+            let mut timer = decode_time.timer();
+            let batch = read_ipc_compressed(slice)?;
+            timer.stop();
 
-        // Decode the compressed IPC data
-        let mut timer = decode_time.timer();
-        let batch = read_ipc_compressed(slice)?;
-        timer.stop();
+            let num_rows = batch.num_rows();
 
-        let num_rows = batch.num_rows();
+            // Extract column arrays, unpacking any dictionary-encoded columns.
+            // Native shuffle may dictionary-encode string/binary columns for efficiency,
+            // but downstream DataFusion operators expect the value types declared in the
+            // schema (e.g. Utf8, not Dictionary<Int32, Utf8>).
+            let columns: Vec<ArrayRef> = batch
+                .columns()
+                .iter()
+                .map(|col| unpack_dictionary(col))
+                .collect();
 
-        // Extract column arrays, unpacking any dictionary-encoded columns.
-        // Native shuffle may dictionary-encode string/binary columns for efficiency,
-        // but downstream DataFusion operators expect the value types declared in the
-        // schema (e.g. Utf8, not Dictionary<Int32, Utf8>).
-        let columns: Vec<ArrayRef> = batch
-            .columns()
-            .iter()
-            .map(|col| unpack_dictionary(col))
-            .collect();
+            debug_assert_eq!(
+                columns.len(),
+                data_types.len(),
+                "Shuffle block column count mismatch: got {} but expected {}",
+                columns.len(),
+                data_types.len()
+            );
 
-        debug_assert_eq!(
-            columns.len(),
-            data_types.len(),
-            "Shuffle block column count mismatch: got {} but expected {}",
-            columns.len(),
-            data_types.len()
-        );
-
-        Ok(InputBatch::new(columns, Some(num_rows)))
+            Ok(InputBatch::new(columns, Some(num_rows)))
+        })
     }
 }
 
@@ -253,7 +252,7 @@ impl ExecutionPlan for ShuffleScanExec {
         )))
     }
 
-    fn properties(&self) -> &PlanProperties {
+    fn properties(&self) -> &Arc<PlanProperties> {
         &self.cache
     }
 
@@ -352,7 +351,7 @@ impl RecordBatchStream for ShuffleScanStream {
 
 #[cfg(test)]
 mod tests {
-    use crate::execution::shuffle::codec::{CompressionCodec, ShuffleBlockWriter};
+    use crate::execution::shuffle::{CompressionCodec, ShuffleBlockWriter};
     use arrow::array::{Int32Array, StringArray};
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatch;
@@ -360,7 +359,7 @@ mod tests {
     use std::io::Cursor;
     use std::sync::Arc;
 
-    use crate::execution::shuffle::codec::read_ipc_compressed;
+    use crate::execution::shuffle::ipc::read_ipc_compressed;
 
     #[test]
     #[cfg_attr(miri, ignore)] // Miri cannot call FFI functions (zstd)

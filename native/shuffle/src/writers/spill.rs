@@ -15,20 +15,22 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use super::ShuffleBlockWriter;
 use crate::metrics::ShufflePartitionerMetrics;
 use crate::partitioners::PartitionedBatchIterator;
 use crate::writers::buf_batch_writer::BufBatchWriter;
-use crate::ShuffleBlockWriter;
 use datafusion::common::DataFusionError;
 use datafusion::execution::disk_manager::RefCountedTempFile;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use std::fs::{File, OpenOptions};
 
+/// A temporary disk file for spilling a partition's intermediate shuffle data.
 struct SpillFile {
     temp_file: RefCountedTempFile,
     file: File,
 }
 
+/// Manages encoding and optional disk spilling for a single shuffle partition.
 pub(crate) struct PartitionWriter {
     /// Spill file for intermediate shuffle output for this partition. Each spill event
     /// will append to this file and the contents will be copied to the shuffle file at

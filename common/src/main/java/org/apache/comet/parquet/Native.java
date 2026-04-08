@@ -19,7 +19,6 @@
 
 package org.apache.comet.parquet;
 
-import java.nio.ByteBuffer;
 import java.util.Map;
 
 import org.apache.comet.IcebergApi;
@@ -108,17 +107,6 @@ public final class Native extends NativeBase {
    */
   public static native void setPageV1(
       long handle, int pageValueCount, byte[] pageData, int valueEncoding);
-
-  /**
-   * Passes a Parquet data page V1 to the native column reader.
-   *
-   * @param handle the handle to the native Parquet column reader
-   * @param pageValueCount the number of values in this data page
-   * @param buffer the actual page data, represented by a DirectByteBuffer.
-   * @param valueEncoding the encoding used by the values
-   */
-  public static native void setPageBufferV1(
-      long handle, int pageValueCount, ByteBuffer buffer, int valueEncoding);
 
   /**
    * Passes a Parquet data page V2 to the native column reader.

@@ -141,6 +141,12 @@ trait CometExprShim extends CommonStringExprs {
 //        val optExpr = scalarFunctionExprToProto("width_bucket", childExprs: _*)
 //        optExprWithInfo(optExpr, wb, wb.children: _*)
 
+      // KnownNotContainsNull is a TaggingExpression added in Spark 4.0 that only
+      // changes schema metadata (containsNull = false). It has no runtime effect,
+      // so we pass through to the child expression.
+      case k: KnownNotContainsNull =>
+        exprToProtoInternal(k.child, inputs, binding)
+
       case _ => None
     }
   }
