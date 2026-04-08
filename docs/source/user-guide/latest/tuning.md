@@ -147,13 +147,16 @@ partitioning keys. Columns that are not partitioning keys may contain complex ty
 Native shuffle has two partitioner modes, configured via
 `spark.comet.exec.shuffle.partitionerMode`:
 
-- **`immediate`** (default): Writes partitioned Arrow IPC blocks to disk immediately as each batch
-  arrives. This mode uses less memory because it does not need to buffer the entire input before
-  writing. It is recommended for most workloads, especially large datasets.
+- **`buffered`** (default): Buffers input batches in a shared memory pool before partitioning and
+  writing to disk. Per-partition overhead is minimal, so this mode scales well to large numbers
+  of partitions (1000+). It spills to disk when memory pressure is detected.
 
-- **`buffered`**: Buffers all input rows in memory before partitioning and writing to disk. This
-  may improve performance for small datasets that fit in memory, but uses significantly more
-  memory.
+- **`immediate`**: Partitions incoming batches immediately using per-partition Arrow array builders,
+  flushing compressed IPC blocks when they reach the target batch size. This avoids buffering the
+  entire input in memory, which can reduce peak memory usage for workloads with a moderate number
+  of partitions. However, because it allocates builders per partition (proportional to
+  `num_partitions × batch_size`), memory overhead grows with partition count. For workloads with
+  many partitions (1000+), `buffered` mode is recommended.
 
 #### Columnar (JVM) Shuffle
 
