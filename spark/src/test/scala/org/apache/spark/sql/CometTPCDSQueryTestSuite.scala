@@ -235,8 +235,9 @@ class CometTPCDSQueryTestSuite extends QueryTest with TPCDSBase with CometSQLQue
         classLoader = Thread.currentThread().getContextClassLoader)
       test(s"$name-v2.7") {
         val spark4File = new File(s"$baseResourcePath/v2_7-spark4_0", s"$name.sql.out")
-        val goldenFile = if (isSpark40Plus && spark4File.exists()) spark4File
-                         else new File(s"$baseResourcePath/v2_7", s"$name.sql.out")
+        val goldenFile =
+          if (isSpark40Plus && spark4File.exists()) spark4File
+          else new File(s"$baseResourcePath/v2_7", s"$name.sql.out")
         joinConfs.foreach { conf =>
           val sortMergeJoin = sortMergeJoinConf == conf
           // Skip q72 for sort-merge join because it uses too many resources
