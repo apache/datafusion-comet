@@ -68,8 +68,7 @@ class CometTPCDSQueryTestSuite extends QueryTest with TPCDSBase with CometSQLQue
   protected val baseResourcePath: String = {
     // use the same way as `SQLQueryTestSuite` to get the resource path
     getWorkspaceFilePath(
-      "sql",
-      "core",
+      "spark",
       "src",
       "test",
       "resources",
@@ -161,7 +160,9 @@ class CometTPCDSQueryTestSuite extends QueryTest with TPCDSBase with CometSQLQue
           val configs = conf.map { case (k, v) =>
             s"$k=$v"
           }
-          throw new Exception(s"${e.getMessage}\nError using configs:\n${configs.mkString("\n")}")
+          throw new Exception(
+            s"${e.getMessage}\nError using configs:\n${configs.mkString("\n")}",
+            e)
       }
     }
   }
