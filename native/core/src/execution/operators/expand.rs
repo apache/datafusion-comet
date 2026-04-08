@@ -95,16 +95,13 @@ impl ExecutionPlan for ExpandExec {
         &self,
         f: &mut dyn FnMut(&dyn PhysicalExpr) -> datafusion::common::Result<TreeNodeRecursion>,
     ) -> datafusion::common::Result<TreeNodeRecursion> {
+        let mut tnr = TreeNodeRecursion::Continue;
         for projection in &self.projections {
             for expr in projection {
-                match f(expr.as_ref())? {
-                    TreeNodeRecursion::Continue => {}
-                    TreeNodeRecursion::Jump => {}
-                    TreeNodeRecursion::Stop => return Ok(TreeNodeRecursion::Stop),
-                }
+                tnr = tnr.visit_sibling(|| f(expr.as_ref()))?;
             }
         }
-        Ok(TreeNodeRecursion::Continue)
+        Ok(tnr)
     }
 
     fn schema(&self) -> SchemaRef {
