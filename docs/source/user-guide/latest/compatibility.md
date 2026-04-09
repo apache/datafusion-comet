@@ -60,8 +60,6 @@ the [Comet Supported Expressions Guide](expressions.md) for more information on 
 
 ### Array Expressions
 
-- **ArrayContains**: Returns null instead of false for empty arrays with literal values.
-  [#3346](https://github.com/apache/datafusion-comet/issues/3346)
 - **ArrayRemove**: Returns null when the element to remove is null, instead of removing null elements from the array.
   [#3173](https://github.com/apache/datafusion-comet/issues/3173)
 - **ArraysOverlap**: Inconsistent behavior when arrays contain NULL values.

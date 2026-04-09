@@ -23,21 +23,19 @@ CREATE TABLE test_array_contains(arr array<int>, val int) USING parquet
 statement
 INSERT INTO test_array_contains VALUES (array(1, 2, 3), 2), (array(1, 2, 3), 4), (array(1, NULL, 3), NULL), (array(), 1), (NULL, 1)
 
-query spark_answer_only
+query
 SELECT array_contains(arr, val) FROM test_array_contains
 
 -- column + literal
-query ignore(https://github.com/apache/datafusion-comet/issues/3346)
+query
 SELECT array_contains(arr, 2) FROM test_array_contains
 
 -- literal + column
-query spark_answer_only
+query
 SELECT array_contains(array(1, 2, 3), val) FROM test_array_contains
 
 -- literal + literal
--- Note: array_contains(array(), 1) still has a bug (issue #3346) so we use spark_answer_only
--- The NULL array case (cast(NULL as array<int>)) was fixed in issue #3345
-query spark_answer_only
+query
 SELECT array_contains(array(1, 2, 3), 2), array_contains(array(1, 2, 3), 4), array_contains(array(), 1), array_contains(cast(NULL as array<int>), 1)
 
 -- Additional NULL array tests (issue #3345 fix verification)
