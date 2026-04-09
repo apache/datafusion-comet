@@ -93,7 +93,8 @@ class Native extends NativeBase {
       partition: Int,
       plan: Long,
       arrayAddrs: Array[Long],
-      schemaAddrs: Array[Long]): Long
+      schemaAddrs: Array[Long],
+      threadId: Long): Long
 
   /**
    * Release and drop the native query plan object and context object.
