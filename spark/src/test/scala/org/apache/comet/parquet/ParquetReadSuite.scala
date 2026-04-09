@@ -35,7 +35,6 @@ import org.apache.parquet.example.data.simple.SimpleGroup
 import org.apache.parquet.schema.MessageTypeParser
 import org.apache.spark.SparkException
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
-import org.apache.spark.sql.catalyst.expressions.GetArrayItem
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.comet.{CometNativeScanExec, CometScanExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
@@ -982,9 +981,12 @@ abstract class ParquetReadSuite extends CometTestBase {
                 Seq(StructField("_1", LongType, false), StructField("_2", DoubleType, false)))
 
             withParquetDataFrame(data, schema = Some(readSchema)) { df =>
-              // TODO: validate with Spark 3.x and 'usingDataFusionParquetExec=true'
-              if (enableSchemaEvolution || CometConf.COMET_NATIVE_SCAN_IMPL
-                  .get(conf) == CometConf.SCAN_NATIVE_DATAFUSION) {
+              val scan = CometConf.COMET_NATIVE_SCAN_IMPL.get(conf)
+              val isNativeDataFusionScan =
+                scan == CometConf.SCAN_NATIVE_DATAFUSION || scan == CometConf.SCAN_AUTO
+              if (enableSchemaEvolution || isNativeDataFusionScan) {
+                // native_datafusion has more permissive schema evolution
+                // https://github.com/apache/datafusion-comet/issues/3720
                 checkAnswer(df, data.map(Row.fromTuple))
               } else {
                 assertThrows[SparkException](df.collect())
@@ -1506,9 +1508,7 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
         withParquetTable(path.toUri.toString, "complex_types") {
           Seq(CometConf.SCAN_NATIVE_DATAFUSION, CometConf.SCAN_NATIVE_ICEBERG_COMPAT).foreach(
             scanMode => {
-              withSQLConf(
-                CometConf.COMET_NATIVE_SCAN_IMPL.key -> scanMode,
-                CometConf.getExprAllowIncompatConfigKey(classOf[GetArrayItem]) -> "true") {
+              withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> scanMode) {
                 checkSparkAnswerAndOperator(sql("select * from complex_types"))
                 // First level
                 checkSparkAnswerAndOperator(sql(

@@ -52,6 +52,7 @@ message Operator {
     ParquetWriter parquet_writer = 113;
     Explode explode = 114;
     CsvScan csv_scan = 115;
+    ShuffleScan shuffle_scan = 116;
   }
 }
 
@@ -83,6 +84,12 @@ message Scan {
   string source = 2;
   // Whether native code can assume ownership of batches that it receives
   bool arrow_ffi_safe = 3;
+}
+
+message ShuffleScan {
+  repeated spark.spark_expression.DataType fields = 1;
+  // Informational label for debug output (e.g., "CometShuffleExchangeExec [id=5]")
+  string source = 2;
 }
 
 // Common data shared by all partitions in split mode (sent once at planning)
@@ -362,6 +369,7 @@ message WindowExpr {
   spark.spark_expression.Expr built_in_window_function = 1;
   spark.spark_expression.AggExpr agg_func = 2;
   WindowSpecDefinition spec = 3;
+  bool ignore_nulls = 4;
 }
 
 enum WindowFrameType {

@@ -21,12 +21,11 @@ use std::sync::Arc;
 
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion_comet_proto::spark_operator::Operator;
-use jni::objects::GlobalRef;
+use jni::objects::{Global, JObject};
 
 use crate::{
     execution::{
-        operators::{ExecutionError, ScanExec},
-        planner::{operator_registry::OperatorBuilder, PhysicalPlanner},
+        planner::{operator_registry::OperatorBuilder, PhysicalPlanner, PlanCreationResult},
         spark_plan::SparkPlan,
     },
     extract_op,
@@ -39,15 +38,16 @@ impl OperatorBuilder for ProjectionBuilder {
     fn build(
         &self,
         spark_plan: &Operator,
-        inputs: &mut Vec<Arc<GlobalRef>>,
+        inputs: &mut Vec<Arc<Global<JObject<'static>>>>,
         partition_count: usize,
         planner: &PhysicalPlanner,
-    ) -> Result<(Vec<ScanExec>, Arc<SparkPlan>), ExecutionError> {
+    ) -> PlanCreationResult {
         let project = extract_op!(spark_plan, Projection);
         let children = &spark_plan.children;
 
         assert_eq!(children.len(), 1);
-        let (scans, child) = planner.create_plan(&children[0], inputs, partition_count)?;
+        let (scans, shuffle_scans, child) =
+            planner.create_plan(&children[0], inputs, partition_count)?;
 
         // Create projection expressions
         let exprs: Result<Vec<_>, _> = project
@@ -68,6 +68,7 @@ impl OperatorBuilder for ProjectionBuilder {
 
         Ok((
             scans,
+            shuffle_scans,
             Arc::new(SparkPlan::new(spark_plan.plan_id, projection, vec![child])),
         ))
     }

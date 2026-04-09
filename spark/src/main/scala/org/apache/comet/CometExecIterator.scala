@@ -19,10 +19,7 @@
 
 package org.apache.comet
 
-import java.io.FileNotFoundException
 import java.lang.management.ManagementFactory
-
-import scala.util.matching.Regex
 
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark._
@@ -70,7 +67,8 @@ class CometExecIterator(
     numParts: Int,
     partitionIndex: Int,
     broadcastedHadoopConfForEncryption: Option[Broadcast[SerializableConfiguration]] = None,
-    encryptedFilePaths: Seq[String] = Seq.empty)
+    encryptedFilePaths: Seq[String] = Seq.empty,
+    shuffleBlockIterators: Map[Int, CometShuffleBlockIterator] = Map.empty)
     extends Iterator[ColumnarBatch]
     with Logging {
 
@@ -81,8 +79,13 @@ class CometExecIterator(
   private val taskAttemptId = TaskContext.get().taskAttemptId
   private val taskCPUs = TaskContext.get().cpus()
   private val cometTaskMemoryManager = new CometTaskMemoryManager(id, taskAttemptId)
-  private val cometBatchIterators = inputs.map { iterator =>
-    new CometBatchIterator(iterator, nativeUtil)
+  // Build a mixed array of iterators: CometShuffleBlockIterator for shuffle
+  // scan indices, CometBatchIterator for regular scan indices.
+  private val inputIterators: Array[Object] = inputs.zipWithIndex.map {
+    case (_, idx) if shuffleBlockIterators.contains(idx) =>
+      shuffleBlockIterators(idx).asInstanceOf[Object]
+    case (iterator, _) =>
+      new CometBatchIterator(iterator, nativeUtil).asInstanceOf[Object]
   }.toArray
 
   private val plan = {
@@ -109,7 +112,7 @@ class CometExecIterator(
 
     nativeLib.createPlan(
       id,
-      cometBatchIterators,
+      inputIterators,
       protobufQueryPlan,
       protobufSparkConfigs,
       numParts,
@@ -163,19 +166,9 @@ class CometExecIterator(
         // threw the exception, so we log the exception with taskAttemptId here
         logError(s"Native execution for task $taskAttemptId failed", e)
 
-        val fileNotFoundPattern: Regex =
-          ("""^External: Object at location (.+?) not found: No such file or directory """ +
-            """\(os error \d+\)$""").r
-        val parquetError: Regex =
+        val parquetError: scala.util.matching.Regex =
           """^Parquet error: (?:.*)$""".r
         e.getMessage match {
-          case fileNotFoundPattern(filePath) =>
-            // See org.apache.spark.sql.errors.QueryExecutionErrors.readCurrentFileNotFoundError
-            throw new SparkException(
-              errorClass = "_LEGACY_ERROR_TEMP_2055",
-              messageParameters = Map("message" -> e.getMessage),
-              cause = new FileNotFoundException(filePath)
-            ) // Can't use SparkFileNotFoundException because it's private.
           case parquetError() =>
             // See org.apache.spark.sql.errors.QueryExecutionErrors.failedToReadDataError
             // See org.apache.parquet.hadoop.ParquetFileReader for error message.
@@ -242,6 +235,7 @@ class CometExecIterator(
         currentBatch = null
       }
       nativeUtil.close()
+      shuffleBlockIterators.values.foreach(_.close())
       nativeLib.releasePlan(plan)
 
       if (tracingEnabled) {
