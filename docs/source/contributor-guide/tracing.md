@@ -60,7 +60,8 @@ Example trace visualization:
 | --------------------- | -------------------------------------------------------------- |
 | jvm_heap_used         | JVM heap memory usage of live objects for the executor process |
 | jemalloc_allocated    | Native memory usage for the executor process                   |
-| task_memory_comet_NNN | Off-heap memory allocated by Comet for query execution         |
-| task_memory_spark_NNN | On-heap & Off-heap memory allocated by Spark                   |
+| task_NNN_comet_memory          | Off-heap memory allocated by Comet for query execution         |
+| task_NNN_comet_memory_reserved | Memory reserved by Comet's DataFusion memory pool              |
+| task_NNN_spark_memory          | On-heap & Off-heap memory allocated by Spark                   |
 | comet_shuffle_NNN     | Off-heap memory allocated by Comet for columnar shuffle        |
 | shuffle_spilled_bytes | Bytes written to disk in a single shuffle spill operation      |

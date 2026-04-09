@@ -259,8 +259,8 @@ class CometExecIterator(
     val cometTaskMemory = cometTaskMemoryManager.getUsed
     val sparkTaskMemory = totalTaskMemory - cometTaskMemory
     val threadId = Thread.currentThread().getId
-    nativeLib.logMemoryUsage(s"task_memory_comet_$threadId", cometTaskMemory)
-    nativeLib.logMemoryUsage(s"task_memory_spark_$threadId", sparkTaskMemory)
+    nativeLib.logMemoryUsage(s"task_${threadId}_comet_memory", cometTaskMemory)
+    nativeLib.logMemoryUsage(s"task_${threadId}_spark_memory", sparkTaskMemory)
   }
 }
 

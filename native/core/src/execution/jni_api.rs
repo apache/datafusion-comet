@@ -688,8 +688,9 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                 log_memory_usage("jemalloc_allocated", allocated.read().unwrap() as u64);
             }
             let runtime_env = exec_context.session_ctx.runtime_env();
+            let thread_id = datafusion_comet_common::tracing::get_thread_id();
             log_memory_usage(
-                &format!("memory_pool_reserved_{}", exec_context.task_attempt_id),
+                &format!("task_{thread_id}_comet_memory_reserved"),
                 runtime_env.memory_pool.reserved() as u64,
             );
         }
