@@ -180,6 +180,8 @@ struct ExecutionContext {
     pub memory_pool_config: MemoryPoolConfig,
     /// Whether to log memory usage on each call to execute_plan
     pub tracing_enabled: bool,
+    /// Java thread ID, used for aggregating tracing metrics per thread
+    pub java_thread_id: i64,
 }
 
 /// Accept serialized query plan and return the address of the native query plan.
@@ -206,6 +208,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     task_attempt_id: jlong,
     task_cpus: jlong,
     key_unwrapper_obj: JObject,
+    java_thread_id: jlong,
 ) -> jlong {
     try_unwrap_or_throw(&e, |env| {
         // Deserialize Spark configs
@@ -329,6 +332,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 explain_native,
                 memory_pool_config,
                 tracing_enabled,
+                java_thread_id,
             });
 
             Ok(Box::into_raw(exec_context) as i64)
@@ -666,7 +670,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                                 .memory_pool
                                 .reserved();
                             log_memory_usage(
-                                &format!("ctx_{exec_context_id:06}_comet_memory_reserved"),
+                                &format!("thread_{}_comet_memory_reserved", exec_context.java_thread_id),
                                 reserved as u64,
                             );
                         }
@@ -706,9 +710,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                 log_memory_usage("jemalloc_allocated", allocated.read().unwrap() as u64);
             }
             let runtime_env = exec_context.session_ctx.runtime_env();
-            let exec_context_id = exec_context.id;
             log_memory_usage(
-                &format!("ctx_{exec_context_id:06}_comet_memory_reserved"),
+                &format!("thread_{}_comet_memory_reserved", exec_context.java_thread_id),
                 runtime_env.memory_pool.reserved() as u64,
             );
         }
@@ -737,9 +740,8 @@ pub extern "system" fn Java_org_apache_comet_Native_releasePlan(
 
         // Emit final memory_reserved = 0 so tracing shows the drop
         if execution_context.tracing_enabled {
-            let exec_context_id = execution_context.id;
             log_memory_usage(
-                &format!("ctx_{exec_context_id:06}_comet_memory_reserved"),
+                &format!("thread_{}_comet_memory_reserved", execution_context.java_thread_id),
                 0,
             );
         }
