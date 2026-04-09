@@ -23,8 +23,7 @@ Tracing can be enabled by setting `spark.comet.tracing.enabled=true`.
 
 With this feature enabled, each Spark executor will write a JSON event log file in
 Chrome's [Trace Event Format]. The file will be written to the executor's current working
-directory with the filename `comet-event-trace-{pid}.json`, where `{pid}` is the executor
-process ID.
+directory with the filename `comet-event-trace.json`.
 
 [Trace Event Format]: https://docs.google.com/document/d/1CvAClvFfyA5R-PhYUmn5OOQtYMH4h6I0nSsKchNAySU/preview?tab=t.0#heading=h.yr4qxyxotyw
 
@@ -37,13 +36,13 @@ make release COMET_FEATURES="jemalloc"
 Example output:
 
 ```json
-{ "name": "decodeShuffleBlock", "cat": "PERF", "ph": "B", "pid": 12345, "tid": 5, "ts": 10109225730 },
-{ "name": "decodeShuffleBlock", "cat": "PERF", "ph": "E", "pid": 12345, "tid": 5, "ts": 10109228835 },
-{ "name": "decodeShuffleBlock", "cat": "PERF", "ph": "B", "pid": 12345, "tid": 5, "ts": 10109245928 },
-{ "name": "decodeShuffleBlock", "cat": "PERF", "ph": "E", "pid": 12345, "tid": 5, "ts": 10109248843 },
-{ "name": "execute_plan", "cat": "PERF", "ph": "E", "pid": 12345, "tid": 5, "ts": 10109350935 },
-{ "name": "CometExecIterator_getNextBatch", "cat": "PERF", "ph": "E", "pid": 12345, "tid": 5, "ts": 10109367116 },
-{ "name": "CometExecIterator_getNextBatch", "cat": "PERF", "ph": "B", "pid": 12345, "tid": 5, "ts": 10109479156 },
+{ "name": "decodeShuffleBlock", "cat": "PERF", "ph": "B", "pid": 1, "tid": 5, "ts": 10109225730 },
+{ "name": "decodeShuffleBlock", "cat": "PERF", "ph": "E", "pid": 1, "tid": 5, "ts": 10109228835 },
+{ "name": "decodeShuffleBlock", "cat": "PERF", "ph": "B", "pid": 1, "tid": 5, "ts": 10109245928 },
+{ "name": "decodeShuffleBlock", "cat": "PERF", "ph": "E", "pid": 1, "tid": 5, "ts": 10109248843 },
+{ "name": "executePlan", "cat": "PERF", "ph": "E", "pid": 1, "tid": 5, "ts": 10109350935 },
+{ "name": "getNextBatch[JVM] stage=2", "cat": "PERF", "ph": "E", "pid": 1, "tid": 5, "ts": 10109367116 },
+{ "name": "getNextBatch[JVM] stage=2", "cat": "PERF", "ph": "B", "pid": 1, "tid": 5, "ts": 10109479156 },
 ```
 
 Traces can be viewed with [Perfetto UI].
@@ -56,10 +55,9 @@ Example trace visualization:
 
 ## Definition of Labels
 
-| Label                 | Meaning                                                        |
-| --------------------- | -------------------------------------------------------------- |
-| jvm_heap_used         | JVM heap memory usage of live objects for the executor process |
-| jemalloc_allocated    | Native memory usage for the executor process                   |
+| Label                            | Meaning                                                                                      |
+| -------------------------------- | -------------------------------------------------------------------------------------------- |
+| jvm_heap_used                    | JVM heap memory usage of live objects for the executor process                               |
+| jemalloc_allocated               | Native memory usage for the executor process (requires `jemalloc` feature)                   |
 | thread_NNN_comet_memory_reserved | Memory reserved by Comet's DataFusion memory pool (summed across all contexts on the thread) |
-| comet_shuffle_NNN     | Off-heap memory allocated by Comet for columnar shuffle        |
-| shuffle_spilled_bytes | Bytes written to disk in a single shuffle spill operation      |
+| comet_shuffle_NNN                | Off-heap memory allocated by Comet for columnar shuffle                                      |
