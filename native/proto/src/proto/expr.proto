@@ -143,6 +143,10 @@ message AggExpr {
     BloomFilterAgg bloomFilterAgg = 16;
   }
 
+  // Optional filter expression for SQL FILTER (WHERE ...) clause.
+  // Only set in Partial aggregation mode; absent in Final/PartialMerge.
+  optional Expr filter = 89;
+
   // Optional QueryContext for error reporting (contains SQL text and position)
   optional QueryContext query_context = 90;
 
@@ -264,6 +268,9 @@ message Cast {
   string timezone = 3;
   EvalMode eval_mode = 4;
   bool allow_incompat = 5;
+  // True when running against Spark 4.0+. Controls version-specific cast behaviour
+  // such as the handling of leading whitespace before T-prefixed time-only strings.
+  bool is_spark4_plus = 6;
 }
 
 message BinaryExpr {

@@ -137,7 +137,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
         sql("SELECT array(struct(_1, _2)) as a, struct(_1, _2) as b FROM t1")
           .createOrReplaceTempView("t2")
         val expectedFallbackReason =
-          "is not fully compatible with Spark"
+          "data type not supported"
         checkSparkAnswerAndFallbackReason(
           sql("SELECT array_remove(a, b) FROM t2"),
           expectedFallbackReason)

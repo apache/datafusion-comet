@@ -25,7 +25,7 @@ use crate::execution::operators::init_csv_datasource_exec;
 use crate::execution::operators::IcebergScanExec;
 use crate::execution::{
     expressions::subquery::Subquery,
-    operators::{ExecutionError, ExpandExec, ParquetWriterExec, ScanExec},
+    operators::{ExecutionError, ExpandExec, ParquetWriterExec, ScanExec, ShuffleScanExec},
     planner::expression_registry::ExpressionRegistry,
     planner::operator_registry::OperatorRegistry,
     serde::to_arrow_datatype,
@@ -82,10 +82,11 @@ use datafusion::common::{
     JoinType as DFJoinType, NullEquality, ScalarValue,
 };
 use datafusion::datasource::listing::PartitionedFile;
+use datafusion::logical_expr::type_coercion::functions::fields_with_udf;
 use datafusion::logical_expr::type_coercion::other::get_coerce_type_for_case_expression;
 use datafusion::logical_expr::{
-    AggregateUDF, ReturnFieldArgs, ScalarUDF, WindowFrame, WindowFrameBound, WindowFrameUnits,
-    WindowFunctionDefinition,
+    AggregateUDF, ReturnFieldArgs, ScalarUDF, TypeSignature, WindowFrame, WindowFrameBound,
+    WindowFrameUnits, WindowFunctionDefinition,
 };
 use datafusion::physical_expr::expressions::{Literal, StatsType};
 use datafusion::physical_expr::window::WindowExpr;
@@ -102,7 +103,6 @@ use arrow::buffer::{BooleanBuffer, NullBuffer, OffsetBuffer};
 use arrow::row::{OwnedRow, RowConverter, SortField};
 use datafusion::common::utils::SingleRowListArrayBuilder;
 use datafusion::common::UnnestOptions;
-use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::limit::GlobalLimitExec;
 use datafusion::physical_plan::unnest::{ListUnnest, UnnestExec};
@@ -127,7 +127,7 @@ use datafusion_comet_spark_expr::{
     WideDecimalBinaryExpr, WideDecimalOp,
 };
 use itertools::Itertools;
-use jni::objects::GlobalRef;
+use jni::objects::{Global, JObject};
 use num::{BigInt, ToPrimitive};
 use object_store::path::Path;
 use std::cmp::max;
@@ -138,6 +138,8 @@ use url::Url;
 type PhyAggResult = Result<Vec<AggregateFunctionExpr>, ExecutionError>;
 type PhyExprResult = Result<Vec<(Arc<dyn PhysicalExpr>, String)>, ExecutionError>;
 type PartitionPhyExprResult = Result<Vec<Arc<dyn PhysicalExpr>>, ExecutionError>;
+pub type PlanCreationResult =
+    Result<(Vec<ScanExec>, Vec<ShuffleScanExec>, Arc<SparkPlan>), ExecutionError>;
 
 struct JoinParameters {
     pub left: Arc<SparkPlan>,
@@ -404,7 +406,12 @@ impl PhysicalPlanner {
                 Ok(Arc::new(Cast::new(
                     child,
                     datatype,
-                    SparkCastOptions::new(eval_mode, &expr.timezone, expr.allow_incompat),
+                    SparkCastOptions::new_with_version(
+                        eval_mode,
+                        &expr.timezone,
+                        expr.allow_incompat,
+                        expr.is_spark4_plus,
+                    ),
                     spark_expr.expr_id,
                     query_context,
                 )))
@@ -908,9 +915,9 @@ impl PhysicalPlanner {
     pub(crate) fn create_plan<'a>(
         &'a self,
         spark_plan: &'a Operator,
-        inputs: &mut Vec<Arc<GlobalRef>>,
+        inputs: &mut Vec<Arc<Global<JObject<'static>>>>,
         partition_count: usize,
-    ) -> Result<(Vec<ScanExec>, Arc<SparkPlan>), ExecutionError> {
+    ) -> PlanCreationResult {
         // Try to use the modular registry first - this automatically handles any registered operator types
         if OperatorRegistry::global().can_handle(spark_plan) {
             return OperatorRegistry::global().create_plan(
@@ -926,7 +933,8 @@ impl PhysicalPlanner {
         match spark_plan.op_struct.as_ref().unwrap() {
             OpStruct::Filter(filter) => {
                 assert_eq!(children.len(), 1);
-                let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
+                let (scans, shuffle_scans, child) =
+                    self.create_plan(&children[0], inputs, partition_count)?;
                 let predicate =
                     self.create_expr(filter.predicate.as_ref().unwrap(), child.schema())?;
 
@@ -937,12 +945,14 @@ impl PhysicalPlanner {
 
                 Ok((
                     scans,
+                    shuffle_scans,
                     Arc::new(SparkPlan::new(spark_plan.plan_id, filter, vec![child])),
                 ))
             }
             OpStruct::HashAgg(agg) => {
                 assert_eq!(children.len(), 1);
-                let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
+                let (scans, shuffle_scans, child) =
+                    self.create_plan(&children[0], inputs, partition_count)?;
 
                 let group_exprs: PhyExprResult = agg
                     .grouping_exprs
@@ -968,14 +978,28 @@ impl PhysicalPlanner {
                     .map(|expr| self.create_agg_expr(expr, Arc::clone(&schema)))
                     .collect();
 
-                let num_agg = agg.agg_exprs.len();
                 let aggr_expr = agg_exprs?.into_iter().map(Arc::new).collect();
+
+                // Build per-aggregate filter expressions from the FILTER (WHERE ...) clause.
+                // Filters are only present in Partial mode; Final/PartialMerge always get None.
+                let filter_exprs: Result<Vec<Option<Arc<dyn PhysicalExpr>>>, ExecutionError> = agg
+                    .agg_exprs
+                    .iter()
+                    .map(|expr| {
+                        if let Some(f) = expr.filter.as_ref() {
+                            self.create_expr(f, Arc::clone(&schema)).map(Some)
+                        } else {
+                            Ok(None)
+                        }
+                    })
+                    .collect();
+
                 let aggregate: Arc<dyn ExecutionPlan> = Arc::new(
                     datafusion::physical_plan::aggregates::AggregateExec::try_new(
                         mode,
                         group_by,
                         aggr_expr,
-                        vec![None; num_agg], // no filter expressions
+                        filter_exprs?,
                         Arc::clone(&child.native_plan),
                         Arc::clone(&schema),
                     )?,
@@ -993,6 +1017,7 @@ impl PhysicalPlanner {
                 if agg.result_exprs.is_empty() {
                     Ok((
                         scans,
+                        shuffle_scans,
                         Arc::new(SparkPlan::new(spark_plan.plan_id, aggregate, vec![child])),
                     ))
                 } else {
@@ -1009,6 +1034,7 @@ impl PhysicalPlanner {
                     )?);
                     Ok((
                         scans,
+                        shuffle_scans,
                         Arc::new(SparkPlan::new_with_additional(
                             spark_plan.plan_id,
                             projection,
@@ -1027,7 +1053,8 @@ impl PhysicalPlanner {
                         "Invalid limit/offset combination: [{num}. {offset}]"
                     )));
                 }
-                let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
+                let (scans, shuffle_scans, child) =
+                    self.create_plan(&children[0], inputs, partition_count)?;
                 let limit: Arc<dyn ExecutionPlan> = if offset == 0 {
                     Arc::new(LocalLimitExec::new(
                         Arc::clone(&child.native_plan),
@@ -1047,12 +1074,14 @@ impl PhysicalPlanner {
                 };
                 Ok((
                     scans,
+                    shuffle_scans,
                     Arc::new(SparkPlan::new(spark_plan.plan_id, limit, vec![child])),
                 ))
             }
             OpStruct::Sort(sort) => {
                 assert_eq!(children.len(), 1);
-                let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
+                let (scans, shuffle_scans, child) =
+                    self.create_plan(&children[0], inputs, partition_count)?;
 
                 let exprs: Result<Vec<PhysicalSortExpr>, ExecutionError> = sort
                     .sort_orders
@@ -1076,6 +1105,7 @@ impl PhysicalPlanner {
 
                 Ok((
                     scans,
+                    shuffle_scans,
                     Arc::new(SparkPlan::new(
                         spark_plan.plan_id,
                         sort_exec,
@@ -1112,6 +1142,7 @@ impl PhysicalPlanner {
                 if partition_files.partitioned_file.is_empty() {
                     let empty_exec = Arc::new(EmptyExec::new(required_schema));
                     return Ok((
+                        vec![],
                         vec![],
                         Arc::new(SparkPlan::new(spark_plan.plan_id, empty_exec, vec![])),
                     ));
@@ -1203,6 +1234,7 @@ impl PhysicalPlanner {
                 )?;
                 Ok((
                     vec![],
+                    vec![],
                     Arc::new(SparkPlan::new(spark_plan.plan_id, scan, vec![])),
                 ))
             }
@@ -1241,6 +1273,7 @@ impl PhysicalPlanner {
                 )?;
                 Ok((
                     vec![],
+                    vec![],
                     Arc::new(SparkPlan::new(spark_plan.plan_id, scan, vec![])),
                 ))
             }
@@ -1273,6 +1306,7 @@ impl PhysicalPlanner {
 
                 Ok((
                     vec![scan.clone()],
+                    vec![],
                     Arc::new(SparkPlan::new(spark_plan.plan_id, Arc::new(scan), vec![])),
                 ))
             }
@@ -1305,6 +1339,7 @@ impl PhysicalPlanner {
 
                 Ok((
                     vec![],
+                    vec![],
                     Arc::new(SparkPlan::new(
                         spark_plan.plan_id,
                         Arc::new(iceberg_scan),
@@ -1314,7 +1349,8 @@ impl PhysicalPlanner {
             }
             OpStruct::ShuffleWriter(writer) => {
                 assert_eq!(children.len(), 1);
-                let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
+                let (scans, shuffle_scans, child) =
+                    self.create_plan(&children[0], inputs, partition_count)?;
 
                 let partitioning = self.create_partitioning(
                     writer.partitioning.as_ref().unwrap(),
@@ -1347,6 +1383,7 @@ impl PhysicalPlanner {
 
                 Ok((
                     scans,
+                    shuffle_scans,
                     Arc::new(SparkPlan::new(
                         spark_plan.plan_id,
                         shuffle_writer,
@@ -1356,7 +1393,8 @@ impl PhysicalPlanner {
             }
             OpStruct::ParquetWriter(writer) => {
                 assert_eq!(children.len(), 1);
-                let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
+                let (scans, shuffle_scans, child) =
+                    self.create_plan(&children[0], inputs, partition_count)?;
 
                 let codec = match writer.compression.try_into() {
                     Ok(SparkCompressionCodec::None) => Ok(CompressionCodec::None),
@@ -1393,6 +1431,7 @@ impl PhysicalPlanner {
 
                 Ok((
                     scans,
+                    shuffle_scans,
                     Arc::new(SparkPlan::new(
                         spark_plan.plan_id,
                         parquet_writer,
@@ -1402,7 +1441,8 @@ impl PhysicalPlanner {
             }
             OpStruct::Expand(expand) => {
                 assert_eq!(children.len(), 1);
-                let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
+                let (scans, shuffle_scans, child) =
+                    self.create_plan(&children[0], inputs, partition_count)?;
 
                 let mut projections = vec![];
                 let mut projection = vec![];
@@ -1445,12 +1485,14 @@ impl PhysicalPlanner {
                 let expand = Arc::new(ExpandExec::new(projections, input, schema));
                 Ok((
                     scans,
+                    shuffle_scans,
                     Arc::new(SparkPlan::new(spark_plan.plan_id, expand, vec![child])),
                 ))
             }
             OpStruct::Explode(explode) => {
                 assert_eq!(children.len(), 1);
-                let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
+                let (scans, shuffle_scans, child) =
+                    self.create_plan(&children[0], inputs, partition_count)?;
 
                 // Create the expression for the array to explode
                 let child_expr = if let Some(child_expr) = &explode.child {
@@ -1556,11 +1598,12 @@ impl PhysicalPlanner {
 
                 Ok((
                     scans,
+                    shuffle_scans,
                     Arc::new(SparkPlan::new(spark_plan.plan_id, unnest_exec, vec![child])),
                 ))
             }
             OpStruct::SortMergeJoin(join) => {
-                let (join_params, scans) = self.parse_join_parameters(
+                let (join_params, scans, shuffle_scans) = self.parse_join_parameters(
                     inputs,
                     children,
                     &join.left_join_keys,
@@ -1599,45 +1642,21 @@ impl PhysicalPlanner {
                     NullEquality::NullEqualsNothing,
                 )?);
 
-                if join.filter.is_some() {
-                    // SMJ with join filter produces lots of tiny batches
-                    let coalesce_batches: Arc<dyn ExecutionPlan> =
-                        Arc::new(CoalesceBatchesExec::new(
-                            Arc::<SortMergeJoinExec>::clone(&join),
-                            self.session_ctx
-                                .state()
-                                .config_options()
-                                .execution
-                                .batch_size,
-                        ));
-                    Ok((
-                        scans,
-                        Arc::new(SparkPlan::new_with_additional(
-                            spark_plan.plan_id,
-                            coalesce_batches,
-                            vec![
-                                Arc::clone(&join_params.left),
-                                Arc::clone(&join_params.right),
-                            ],
-                            vec![join],
-                        )),
-                    ))
-                } else {
-                    Ok((
-                        scans,
-                        Arc::new(SparkPlan::new(
-                            spark_plan.plan_id,
-                            join,
-                            vec![
-                                Arc::clone(&join_params.left),
-                                Arc::clone(&join_params.right),
-                            ],
-                        )),
-                    ))
-                }
+                Ok((
+                    scans,
+                    shuffle_scans,
+                    Arc::new(SparkPlan::new(
+                        spark_plan.plan_id,
+                        join,
+                        vec![
+                            Arc::clone(&join_params.left),
+                            Arc::clone(&join_params.right),
+                        ],
+                    )),
+                ))
             }
             OpStruct::HashJoin(join) => {
-                let (join_params, scans) = self.parse_join_parameters(
+                let (join_params, scans, shuffle_scans) = self.parse_join_parameters(
                     inputs,
                     children,
                     &join.left_join_keys,
@@ -1661,12 +1680,19 @@ impl PhysicalPlanner {
                     // null doesn't equal to null in Spark join key. If the join key is
                     // `EqualNullSafe`, Spark will rewrite it during planning.
                     NullEquality::NullEqualsNothing,
+                    // null_aware is for null-aware anti joins (NOT IN subqueries).
+                    // NullEquality controls whether NULL = NULL in join keys generally,
+                    // while null_aware changes anti-join semantics so any NULL changes
+                    // the entire result. Spark doesn't use this path (it rewrites
+                    // EqualNullSafe at plan time), so false is correct.
+                    false,
                 )?);
 
                 // If the hash join is build right, we need to swap the left and right
                 if join.build_side == BuildSide::BuildLeft as i32 {
                     Ok((
                         scans,
+                        shuffle_scans,
                         Arc::new(SparkPlan::new(
                             spark_plan.plan_id,
                             hash_join,
@@ -1685,6 +1711,7 @@ impl PhysicalPlanner {
 
                     Ok((
                         scans,
+                        shuffle_scans,
                         Arc::new(SparkPlan::new_with_additional(
                             spark_plan.plan_id,
                             swapped_hash_join,
@@ -1695,7 +1722,8 @@ impl PhysicalPlanner {
                 }
             }
             OpStruct::Window(wnd) => {
-                let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
+                let (scans, shuffle_scans, child) =
+                    self.create_plan(&children[0], inputs, partition_count)?;
                 let input_schema = child.schema();
                 let sort_exprs: Result<Vec<PhysicalSortExpr>, ExecutionError> = wnd
                     .order_by_list
@@ -1733,7 +1761,35 @@ impl PhysicalPlanner {
                 )?);
                 Ok((
                     scans,
+                    shuffle_scans,
                     Arc::new(SparkPlan::new(spark_plan.plan_id, window_agg, vec![child])),
+                ))
+            }
+            OpStruct::ShuffleScan(scan) => {
+                let data_types = scan.fields.iter().map(to_arrow_datatype).collect_vec();
+
+                if self.exec_context_id != TEST_EXEC_CONTEXT_ID && inputs.is_empty() {
+                    return Err(GeneralError("No input for shuffle scan".to_string()));
+                }
+
+                let input_source =
+                    if self.exec_context_id == TEST_EXEC_CONTEXT_ID && inputs.is_empty() {
+                        None
+                    } else {
+                        Some(inputs.remove(0))
+                    };
+
+                let shuffle_scan =
+                    ShuffleScanExec::new(self.exec_context_id, input_source, data_types)?;
+
+                Ok((
+                    vec![],
+                    vec![shuffle_scan.clone()],
+                    Arc::new(SparkPlan::new(
+                        spark_plan.plan_id,
+                        Arc::new(shuffle_scan),
+                        vec![],
+                    )),
                 ))
             }
             _ => Err(GeneralError(format!(
@@ -1746,19 +1802,22 @@ impl PhysicalPlanner {
     #[allow(clippy::too_many_arguments)]
     fn parse_join_parameters(
         &self,
-        inputs: &mut Vec<Arc<GlobalRef>>,
+        inputs: &mut Vec<Arc<Global<JObject<'static>>>>,
         children: &[Operator],
         left_join_keys: &[Expr],
         right_join_keys: &[Expr],
         join_type: i32,
         condition: &Option<Expr>,
         partition_count: usize,
-    ) -> Result<(JoinParameters, Vec<ScanExec>), ExecutionError> {
+    ) -> Result<(JoinParameters, Vec<ScanExec>, Vec<ShuffleScanExec>), ExecutionError> {
         assert_eq!(children.len(), 2);
-        let (mut left_scans, left) = self.create_plan(&children[0], inputs, partition_count)?;
-        let (mut right_scans, right) = self.create_plan(&children[1], inputs, partition_count)?;
+        let (mut left_scans, mut left_shuffle_scans, left) =
+            self.create_plan(&children[0], inputs, partition_count)?;
+        let (mut right_scans, mut right_shuffle_scans, right) =
+            self.create_plan(&children[1], inputs, partition_count)?;
 
         left_scans.append(&mut right_scans);
+        left_shuffle_scans.append(&mut right_shuffle_scans);
 
         let left_join_exprs: Vec<_> = left_join_keys
             .iter()
@@ -1879,6 +1938,7 @@ impl PhysicalPlanner {
                 join_filter,
             },
             left_scans,
+            left_shuffle_scans,
         ))
     }
 
@@ -2377,7 +2437,7 @@ impl PhysicalPlanner {
             sort_phy_exprs,
             window_frame.into(),
             input_schema,
-            false, // TODO: Ignore nulls
+            spark_expr.ignore_nulls,
             false, // TODO: Spark does not support DISTINCT ... OVER
             None,
         )
@@ -2431,6 +2491,12 @@ impl PhysicalPlanner {
             .udaf(name)
             .map(WindowFunctionDefinition::AggregateUDF)
             .ok()
+            .or_else(|| {
+                registry
+                    .udwf(name)
+                    .map(WindowFunctionDefinition::WindowUDF)
+                    .ok()
+            })
     }
 
     /// Create a DataFusion physical partitioning from Spark physical partitioning
@@ -2555,15 +2621,44 @@ impl PhysicalPlanner {
                         other => other,
                     };
                     let func = self.session_ctx.udf(fun_name)?;
-                    let coerced_types = func
-                        .coerce_types(&input_expr_types)
-                        .unwrap_or_else(|_| input_expr_types.clone());
 
-                    let arg_fields = coerced_types
+                    // Type coercion strategy:
+                    //
+                    // In DF52, Comet used coerce_types() which returns NotImplemented
+                    // for most UDFs, so input types were kept unchanged. In DF53,
+                    // fields_with_udf() runs full coercion which aggressively promotes
+                    // types (e.g. Utf8 to Utf8View via Variadic signatures, Int32 to Int64
+                    // via Exact signatures). This breaks Comet's native implementations.
+                    //
+                    // Strategy:
+                    // 1. Try coerce_types() — only UDFs that explicitly implement it
+                    //    will return Ok. Same as DF52 behavior.
+                    // 2. For "well-supported" signatures (Coercible, String, Numeric,
+                    //    Comparable), use fields_with_udf(). These preserve input types
+                    //    (e.g. Utf8 stays Utf8, not promoted to Utf8View).
+                    // 3. For all other signatures (Variadic, Exact, etc.), keep original
+                    //    types unchanged. Same as DF52 behavior.
+                    let coerced_types = match func.coerce_types(&input_expr_types) {
+                        Ok(types) => types,
+                        Err(_) if needs_fields_coercion(&func.signature().type_signature) => {
+                            let input_fields: Vec<_> = input_expr_types
+                                .iter()
+                                .enumerate()
+                                .map(|(i, dt)| {
+                                    Arc::new(Field::new(format!("arg{i}"), dt.clone(), true))
+                                })
+                                .collect();
+                            let arg_fields = fields_with_udf(&input_fields, func.as_ref())?;
+                            arg_fields.iter().map(|f| f.data_type().clone()).collect()
+                        }
+                        Err(_) => input_expr_types.clone(),
+                    };
+
+                    let arg_fields: Vec<_> = coerced_types
                         .iter()
                         .enumerate()
                         .map(|(i, dt)| Arc::new(Field::new(format!("arg{i}"), dt.clone(), true)))
-                        .collect::<Vec<_>>();
+                        .collect();
 
                     // TODO this should try and find scalar
                     let arguments = args
@@ -2619,9 +2714,32 @@ impl PhysicalPlanner {
             fun_name,
             fun_expr,
             args.to_vec(),
-            Arc::new(Field::new(fun_name, data_type, true)),
+            Arc::new(Field::new(fun_name, data_type.clone(), true)),
             Arc::new(ConfigOptions::default()),
         ));
+
+        // DF53 changed some UDFs (e.g. md5) to return StringViewArray at execution
+        // time (apache/datafusion#20045). Comet does not yet support view types, so
+        // cast the result back to the non-view variant.
+        let scalar_expr = match data_type {
+            DataType::Utf8View => Arc::new(CastExpr::new(
+                scalar_expr,
+                DataType::Utf8,
+                Some(CastOptions {
+                    safe: false,
+                    ..Default::default()
+                }),
+            )) as Arc<dyn PhysicalExpr>,
+            DataType::BinaryView => Arc::new(CastExpr::new(
+                scalar_expr,
+                DataType::Binary,
+                Some(CastOptions {
+                    safe: false,
+                    ..Default::default()
+                }),
+            )) as Arc<dyn PhysicalExpr>,
+            _ => scalar_expr,
+        };
 
         Ok(scalar_expr)
     }
@@ -3583,6 +3701,24 @@ fn extract_literal_as_datum(expr: &spark_expression::Expr) -> Option<iceberg::sp
     }
 }
 
+/// Returns true for signature types that need fields_with_udf() for coercion.
+///
+/// "Well-supported" signatures (Coercible, String, Numeric, Comparable) preserve
+/// input types naturally (e.g. Utf8 stays Utf8) and need fields_with_udf() because
+/// they don't implement coerce_types(). Other signatures (Variadic, Exact, etc.)
+/// should keep original types to match DF52 behavior and avoid unwanted promotions
+/// like Utf8 to Utf8View or Int32 to Int64.
+fn needs_fields_coercion(sig: &TypeSignature) -> bool {
+    match sig {
+        TypeSignature::Coercible(_)
+        | TypeSignature::String(_)
+        | TypeSignature::Numeric(_)
+        | TypeSignature::Comparable(_) => true,
+        TypeSignature::OneOf(sigs) => sigs.iter().any(needs_fields_coercion),
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use futures::{poll, StreamExt};
@@ -3649,7 +3785,8 @@ mod tests {
         let input_array = DictionaryArray::new(keys, Arc::new(values));
         let input_batch = InputBatch::Batch(vec![Arc::new(input_array)], row_count);
 
-        let (mut scans, datafusion_plan) = planner.create_plan(&op, &mut vec![], 1).unwrap();
+        let (mut scans, _shuffle_scans, datafusion_plan) =
+            planner.create_plan(&op, &mut vec![], 1).unwrap();
         scans[0].set_input_batch(input_batch);
 
         let session_ctx = SessionContext::new();
@@ -3723,7 +3860,8 @@ mod tests {
         let input_array = DictionaryArray::new(keys, Arc::new(values));
         let input_batch = InputBatch::Batch(vec![Arc::new(input_array)], row_count);
 
-        let (mut scans, datafusion_plan) = planner.create_plan(&op, &mut vec![], 1).unwrap();
+        let (mut scans, _shuffle_scans, datafusion_plan) =
+            planner.create_plan(&op, &mut vec![], 1).unwrap();
 
         // Scan's schema is determined by the input batch, so we need to set it before execution.
         scans[0].set_input_batch(input_batch);
@@ -3770,7 +3908,8 @@ mod tests {
         let op = create_filter(op_scan, 0);
         let planner = PhysicalPlanner::default();
 
-        let (mut scans, datafusion_plan) = planner.create_plan(&op, &mut vec![], 1).unwrap();
+        let (mut scans, _shuffle_scans, datafusion_plan) =
+            planner.create_plan(&op, &mut vec![], 1).unwrap();
 
         let scan = &mut scans[0];
         scan.set_input_batch(InputBatch::EOF);
@@ -3855,7 +3994,8 @@ mod tests {
         let op = create_filter(op_scan, 0);
         let planner = PhysicalPlanner::default();
 
-        let (_scans, filter_exec) = planner.create_plan(&op, &mut vec![], 1).unwrap();
+        let (_scans, _shuffle_scans, filter_exec) =
+            planner.create_plan(&op, &mut vec![], 1).unwrap();
 
         assert_eq!("FilterExec", filter_exec.native_plan.name());
         assert_eq!(1, filter_exec.children.len());
@@ -3879,7 +4019,8 @@ mod tests {
 
         let planner = PhysicalPlanner::default();
 
-        let (_scans, hash_join_exec) = planner.create_plan(&op_join, &mut vec![], 1).unwrap();
+        let (_scans, _shuffle_scans, hash_join_exec) =
+            planner.create_plan(&op_join, &mut vec![], 1).unwrap();
 
         assert_eq!("HashJoinExec", hash_join_exec.native_plan.name());
         assert_eq!(2, hash_join_exec.children.len());
@@ -3993,7 +4134,7 @@ mod tests {
             })),
         };
 
-        let (mut scans, datafusion_plan) =
+        let (mut scans, _shuffle_scans, datafusion_plan) =
             planner.create_plan(&projection, &mut vec![], 1).unwrap();
 
         let mut stream = datafusion_plan.native_plan.execute(0, task_ctx).unwrap();
@@ -4046,6 +4187,7 @@ mod tests {
 
     #[test]
     fn test_array_repeat() {
+        // Use built-in ArrayRepeat, not SparkArrayRepeat (see jni_api.rs comment)
         let session_ctx = SessionContext::new();
         let task_ctx = session_ctx.task_ctx();
         let planner = PhysicalPlanner::new(Arc::from(session_ctx), 0);
@@ -4119,7 +4261,7 @@ mod tests {
         };
 
         // Create a physical plan
-        let (mut scans, datafusion_plan) =
+        let (mut scans, _shuffle_scans, datafusion_plan) =
             planner.create_plan(&projection, &mut vec![], 1).unwrap();
 
         // Start executing the plan in a separate thread
@@ -4164,7 +4306,7 @@ mod tests {
                             "+--------------+",
                             "| [0]          |",
                             "| [3, 3, 3, 3] |",
-                            "| []           |",
+                            "|              |",
                             "+--------------+",
                         ];
                         assert_batches_eq!(expected, &[batch]);
@@ -4610,7 +4752,7 @@ mod tests {
         };
 
         // Create the physical plan
-        let (mut scans, datafusion_plan) =
+        let (mut scans, _shuffle_scans, datafusion_plan) =
             planner.create_plan(&projection, &mut vec![], 1).unwrap();
 
         // Create test data: Date32 and Int8 columns

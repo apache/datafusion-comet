@@ -20,7 +20,7 @@ use std::{
     sync::Arc,
 };
 
-use jni::objects::GlobalRef;
+use jni::objects::{Global, JObject};
 
 use crate::{errors::CometResult, jvm_bridge::JVMClasses};
 use datafusion::common::resources_err;
@@ -34,7 +34,7 @@ use parking_lot::Mutex;
 /// A DataFusion fair `MemoryPool` implementation for Comet. Internally this is
 /// implemented via delegating calls to [`crate::jvm_bridge::CometTaskMemoryManager`].
 pub struct CometFairMemoryPool {
-    task_memory_manager_handle: Arc<GlobalRef>,
+    task_memory_manager_handle: Arc<Global<JObject<'static>>>,
     pool_size: usize,
     state: Mutex<CometFairPoolState>,
 }
@@ -57,7 +57,7 @@ impl Debug for CometFairMemoryPool {
 
 impl CometFairMemoryPool {
     pub fn new(
-        task_memory_manager_handle: Arc<GlobalRef>,
+        task_memory_manager_handle: Arc<Global<JObject<'static>>>,
         pool_size: usize,
     ) -> CometFairMemoryPool {
         Self {
@@ -68,20 +68,18 @@ impl CometFairMemoryPool {
     }
 
     fn acquire(&self, additional: usize) -> CometResult<i64> {
-        let mut env = JVMClasses::get_env()?;
         let handle = self.task_memory_manager_handle.as_obj();
-        unsafe {
-            jni_call!(&mut env,
+        JVMClasses::with_env(|env| unsafe {
+            jni_call!(env,
               comet_task_memory_manager(handle).acquire_memory(additional as i64) -> i64)
-        }
+        })
     }
 
     fn release(&self, size: usize) -> CometResult<()> {
-        let mut env = JVMClasses::get_env()?;
         let handle = self.task_memory_manager_handle.as_obj();
-        unsafe {
-            jni_call!(&mut env, comet_task_memory_manager(handle).release_memory(size as i64) -> ())
-        }
+        JVMClasses::with_env(|env| unsafe {
+            jni_call!(env, comet_task_memory_manager(handle).release_memory(size as i64) -> ())
+        })
     }
 }
 
@@ -105,16 +103,21 @@ impl MemoryPool for CometFairMemoryPool {
             .expect("unexpected amount of unregister happened");
     }
 
-    fn grow(&self, reservation: &MemoryReservation, additional: usize) {
-        self.try_grow(reservation, additional).unwrap();
+    fn grow(&self, _reservation: &MemoryReservation, additional: usize) {
+        self.try_grow(_reservation, additional).unwrap();
     }
 
-    fn shrink(&self, reservation: &MemoryReservation, subtractive: usize) {
+    fn shrink(&self, _reservation: &MemoryReservation, subtractive: usize) {
         if subtractive > 0 {
             let mut state = self.state.lock();
-            let size = reservation.size();
-            if size < subtractive {
-                panic!("Failed to release {subtractive} bytes where only {size} bytes reserved")
+            // We don't use reservation.size() here because DataFusion 53+ decrements
+            // the reservation's atomic size before calling pool.shrink(), so it would
+            // reflect the post-shrink value rather than the pre-shrink value.
+            if state.used < subtractive {
+                panic!(
+                    "Failed to release {subtractive} bytes where only {} bytes tracked by pool",
+                    state.used
+                )
             }
             self.release(subtractive)
                 .unwrap_or_else(|_| panic!("Failed to release {subtractive} bytes"));
@@ -124,7 +127,7 @@ impl MemoryPool for CometFairMemoryPool {
 
     fn try_grow(
         &self,
-        reservation: &MemoryReservation,
+        _reservation: &MemoryReservation,
         additional: usize,
     ) -> Result<(), DataFusionError> {
         if additional > 0 {
@@ -134,10 +137,13 @@ impl MemoryPool for CometFairMemoryPool {
                 .pool_size
                 .checked_div(num)
                 .expect("overflow in checked_div");
-            let size = reservation.size();
-            if limit < size + additional {
+            // We use state.used instead of reservation.size() because DataFusion 53+
+            // calls pool.try_grow() before incrementing the reservation's atomic size,
+            // so reservation.size() would not include prior grows.
+            let used = state.used;
+            if limit < used + additional {
                 return resources_err!(
-                    "Failed to acquire {additional} bytes where {size} bytes already reserved and the fair limit is {limit} bytes, {num} registered"
+                    "Failed to acquire {additional} bytes where {used} bytes already reserved and the fair limit is {limit} bytes, {num} registered"
                 );
             }
 

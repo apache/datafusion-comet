@@ -17,6 +17,7 @@
 
 use log::{debug, error};
 use std::collections::HashMap;
+use std::sync::OnceLock;
 use url::Url;
 
 use crate::execution::jni_api::get_runtime;
@@ -111,13 +112,48 @@ pub fn create_store(
     Ok((Box::new(object_store), path))
 }
 
+/// Process-wide cache of resolved S3 bucket regions, keyed by bucket name.
+///
+/// ## Why static / process lifetime?
+///
+/// See the equivalent rationale on `object_store_cache` in `parquet_support.rs`: the JNI
+/// call site creates a new `RuntimeEnv` per file, leaving the executor process as the only
+/// available scope for cross-call state.  In the standard Spark-on-Kubernetes deployment
+/// model each executor is dedicated to a single application, so process and application
+/// lifetimes are equivalent.
+///
+/// ## Unbounded size
+///
+/// A Spark job accesses a bounded, typically small set of S3 buckets, so the number of
+/// entries stays proportional to the number of distinct buckets.  Entries are just
+/// `(String, String)` pairs and the set does not grow beyond what the job actually touches.
+///
+/// ## Invalidation
+///
+/// An S3 bucket's region is permanently fixed at creation time and cannot change; no
+/// invalidation is therefore needed.  This is what makes a static, never-evicting cache
+/// safe here and on the equivalent region-resolution path inside the `object_store` crate.
+fn region_cache() -> &'static RwLock<HashMap<String, String>> {
+    static CACHE: OnceLock<RwLock<HashMap<String, String>>> = OnceLock::new();
+    CACHE.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
 /// Get the bucket region using the [HeadBucket API]. This will fail if the bucket does not exist.
+/// Results are cached per bucket to avoid redundant network calls.
 ///
 /// [HeadBucket API]: https://docs.aws.amazon.com/AmazonS3/latest/API/API_HeadBucket.html
 ///
 /// TODO this is copied from the object store crate and has been adapted as a workaround
 /// for https://github.com/apache/arrow-rs-object-store/issues/479
 pub async fn resolve_bucket_region(bucket: &str) -> Result<String, Box<dyn Error>> {
+    // Check cache first
+    if let Ok(cache) = region_cache().read() {
+        if let Some(region) = cache.get(bucket) {
+            debug!("Using cached region '{region}' for bucket '{bucket}'");
+            return Ok(region.clone());
+        }
+    }
+
     let endpoint = format!("https://{bucket}.s3.amazonaws.com");
     let client = reqwest::Client::new();
 
@@ -141,6 +177,12 @@ pub async fn resolve_bucket_region(bucket: &str) -> Result<String, Box<dyn Error
         })?
         .to_str()?
         .to_string();
+
+    // Cache the resolved region
+    if let Ok(mut cache) = region_cache().write() {
+        debug!("Caching region '{region}' for bucket '{bucket}'");
+        cache.insert(bucket.to_string(), region.clone());
+    }
 
     Ok(region)
 }
