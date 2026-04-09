@@ -85,6 +85,18 @@ impl ScalarUDFImpl for SparkArraysOverlap {
     fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
         let [left, right] = take_function_args(self.name(), &args.args)?;
 
+        // Return null if either input is a null scalar
+        if let ColumnarValue::Scalar(s) = &left {
+            if s.is_null() {
+                return Ok(ColumnarValue::Scalar(ScalarValue::Boolean(None)));
+            }
+        }
+        if let ColumnarValue::Scalar(s) = &right {
+            if s.is_null() {
+                return Ok(ColumnarValue::Scalar(ScalarValue::Boolean(None)));
+            }
+        }
+
         match (left, right) {
             (ColumnarValue::Array(left_arr), ColumnarValue::Array(right_arr)) => {
                 let result = match (left_arr.data_type(), right_arr.data_type()) {
@@ -161,8 +173,7 @@ fn arrays_overlap_list<OffsetSize: OffsetSizeTrait>(
 
         // DataFusion's make_array(NULL) produces a List<Null> with NullArray values.
         // NullArray means all elements are null by definition.
-        if left_values.data_type() == &DataType::Null
-            || right_values.data_type() == &DataType::Null
+        if left_values.data_type() == &DataType::Null || right_values.data_type() == &DataType::Null
         {
             builder.append_null();
             continue;
@@ -194,17 +205,6 @@ fn arrays_overlap_list<OffsetSize: OffsetSizeTrait>(
 
             if found_overlap {
                 break;
-            }
-        }
-
-        // If we haven't iterated right at all (left was all nulls),
-        // still need to check right for nulls
-        if !has_null {
-            for ri in 0..right_values.len() {
-                if right_values.is_null(ri) {
-                    has_null = true;
-                    break;
-                }
             }
         }
 

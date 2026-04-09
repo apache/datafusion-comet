@@ -260,41 +260,7 @@ object CometArraysOverlap extends CometExpressionSerde[ArraysOverlap] {
       false,
       leftArrayExprProto,
       rightArrayExprProto)
-
-    val leftIsNull = createUnaryExpr(
-      expr,
-      expr.left,
-      inputs,
-      binding,
-      (builder, unaryExpr) => builder.setIsNull(unaryExpr))
-    val rightIsNull = createUnaryExpr(
-      expr,
-      expr.right,
-      inputs,
-      binding,
-      (builder, unaryExpr) => builder.setIsNull(unaryExpr))
-
-    val nullLiteralProto = exprToProto(Literal(null, BooleanType), inputs)
-
-    if (arraysOverlapScalarExpr.isDefined && leftIsNull.isDefined &&
-      rightIsNull.isDefined && nullLiteralProto.isDefined) {
-      val caseWhenExpr = ExprOuterClass.CaseWhen
-        .newBuilder()
-        .addWhen(leftIsNull.get)
-        .addThen(nullLiteralProto.get)
-        .addWhen(rightIsNull.get)
-        .addThen(nullLiteralProto.get)
-        .setElseExpr(arraysOverlapScalarExpr.get)
-        .build()
-      Some(
-        ExprOuterClass.Expr
-          .newBuilder()
-          .setCaseWhen(caseWhenExpr)
-          .build())
-    } else {
-      withInfo(expr, expr.children: _*)
-      None
-    }
+    optExprWithInfo(arraysOverlapScalarExpr, expr, expr.children: _*)
   }
 }
 
