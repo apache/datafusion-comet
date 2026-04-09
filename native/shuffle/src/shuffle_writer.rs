@@ -375,7 +375,7 @@ mod test {
             1024,
             CompressionCodec::Lz4Frame,
             false,
-            1024 * 1024, // write_buffer_size: 1MB default
+            8 * 1024, // write_buffer_size: 8KB default
         )
         .unwrap();
 
@@ -479,7 +479,7 @@ mod test {
                 "/tmp/data.out".to_string(),
                 "/tmp/index.out".to_string(),
                 false,
-                1024 * 1024, // write_buffer_size: 1MB default
+                8 * 1024, // write_buffer_size: 8KB default
             )
             .unwrap();
 

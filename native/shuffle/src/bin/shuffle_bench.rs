@@ -109,7 +109,7 @@ struct Args {
     output_dir: PathBuf,
 
     /// Write buffer size in bytes
-    #[arg(long, default_value_t = 1048576)]
+    #[arg(long, default_value_t = 8192)]
     write_buffer_size: usize,
 
     /// Limit rows processed per iteration (0 = no limit)

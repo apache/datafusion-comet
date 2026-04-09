@@ -30,7 +30,7 @@ use tokio::time::Instant;
 /// Uses a persistent Arrow IPC StreamWriter via BufBatchWriter, so the schema is written
 /// once and batches are appended with built-in body compression.
 pub(crate) struct SinglePartitionShufflePartitioner {
-    output_data_writer: BufBatchWriter<File>,
+    output_data_writer: BufBatchWriter<BufWriter<File>>,
     output_data_path: String,
     output_index_path: String,
     /// Metrics for the repartitioner
@@ -45,7 +45,7 @@ impl SinglePartitionShufflePartitioner {
         metrics: ShufflePartitionerMetrics,
         batch_size: usize,
         codec: CompressionCodec,
-        _write_buffer_size: usize,
+        write_buffer_size: usize,
     ) -> datafusion::common::Result<Self> {
         let write_options = codec.ipc_write_options()?;
 
@@ -54,9 +54,10 @@ impl SinglePartitionShufflePartitioner {
             .create(true)
             .truncate(true)
             .open(&output_data_path)?;
+        let buffered_file = BufWriter::with_capacity(write_buffer_size, output_data_file);
 
         let output_data_writer =
-            BufBatchWriter::try_new(output_data_file, schema, write_options, batch_size)?;
+            BufBatchWriter::try_new(buffered_file, schema, write_options, batch_size)?;
 
         Ok(Self {
             output_data_writer,

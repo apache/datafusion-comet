@@ -127,6 +127,7 @@ pub(crate) struct MultiPartitionShuffleRepartitioner {
     /// Reservation for repartitioning
     reservation: MemoryReservation,
     tracing_enabled: bool,
+    write_buffer_size: usize,
 }
 
 impl MultiPartitionShuffleRepartitioner {
@@ -142,7 +143,7 @@ impl MultiPartitionShuffleRepartitioner {
         batch_size: usize,
         codec: CompressionCodec,
         tracing_enabled: bool,
-        _write_buffer_size: usize,
+        write_buffer_size: usize,
     ) -> datafusion::common::Result<Self> {
         let num_output_partitions = partitioning.partition_count();
         assert_ne!(
@@ -192,6 +193,7 @@ impl MultiPartitionShuffleRepartitioner {
             batch_size,
             reservation,
             tracing_enabled,
+            write_buffer_size,
         })
     }
 
@@ -576,7 +578,7 @@ impl ShufflePartitioner for MultiPartitionShuffleRepartitioner {
                 .open(data_file)
                 .map_err(|e| DataFusionError::Execution(format!("shuffle write error: {e:?}")))?;
 
-            let mut output_data = BufWriter::new(output_data);
+            let mut output_data = BufWriter::with_capacity(self.write_buffer_size, output_data);
 
             #[allow(clippy::needless_range_loop)]
             for i in 0..num_output_partitions {
