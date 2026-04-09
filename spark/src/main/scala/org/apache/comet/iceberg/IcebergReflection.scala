@@ -528,6 +528,44 @@ object IcebergReflection extends Logging {
    *   List of unsupported partition types (empty if all supported). Each entry is (fieldName,
    *   typeStr, reason)
    */
+  /**
+   * Checks whether a partition spec contains any non-identity transforms.
+   *
+   * Non-identity transforms include bucket, truncate, year, month, day, hour. These transforms
+   * mean that Iceberg's partition pruning cannot fully resolve equality filters on the source
+   * column, producing residual expressions that require post-scan filtering.
+   *
+   * @param partitionSpec
+   *   The Iceberg PartitionSpec object
+   * @return
+   *   Some(transformStr) for the first non-identity transform found, or None if all are identity
+   */
+  def findNonIdentityTransform(partitionSpec: Any): Option[String] = {
+    import scala.jdk.CollectionConverters._
+
+    try {
+      val fieldsMethod = partitionSpec.getClass.getMethod("fields")
+      val fields = fieldsMethod.invoke(partitionSpec).asInstanceOf[java.util.List[_]]
+
+      val partitionFieldClass = loadClass(ClassNames.PARTITION_FIELD)
+      val transformMethod = partitionFieldClass.getMethod("transform")
+
+      fields.asScala.foreach { field =>
+        val transform = transformMethod.invoke(field)
+        val transformStr = transform.toString
+        if (transformStr != Transforms.IDENTITY) {
+          return Some(transformStr)
+        }
+      }
+      None
+    } catch {
+      case e: Exception =>
+        logError(
+          s"Iceberg reflection failure: Failed to inspect partition transforms: ${e.getMessage}")
+        None
+    }
+  }
+
   def validatePartitionTypes(partitionSpec: Any, schema: Any): List[(String, String, String)] = {
     import scala.jdk.CollectionConverters._
 
