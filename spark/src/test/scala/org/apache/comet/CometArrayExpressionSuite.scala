@@ -579,13 +579,34 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
           "array(1, NULL)",
           "array(2, NULL)",
           "array(NULL, 2)",
+          "array(1)",
+          "array(2)",
           "array()",
           "array(NULL)",
           "a1")
         for (y <- data; x <- data) {
+          println(y, x)
           checkSparkAnswerAndOperator(sql(s"SELECT arrays_overlap($y, $x) from t"))
         }
       }
+    }
+  }
+
+  test("s") {
+    withTable("t") {
+      sql("CREATE TABLE t(a array<int>, b array<int>) USING parquet")
+      // sql("INSERT INTO t VALUES (array(1, NULL), array(NULL, 2))") // true -> null
+      // sql("INSERT INTO t VALUES (array(1, NULL), array(2))") // false -> null
+      // sql("INSERT INTO t VALUES (array(1, NULL), NULL)") // null -> null
+      // sql("INSERT INTO t VALUES (array(1, NULL), array(1))") // true -> true
+      // sql("INSERT INTO t VALUES (array(NULL, 1), array(1))") // true -> true
+      // sql("INSERT INTO t VALUES (array(NULL, 1), array(1, NULL))") // true -> true
+      // sql("INSERT INTO t VALUES (array(NULL, 1), array())") // false -> false
+      sql("INSERT INTO t VALUES (array(NULL, 4), array(1, 2, 3))") // false -> false
+      sql("SELECT arrays_overlap(a, b) FROM t").show()
+      checkSparkAnswerAndOperator(sql("SELECT arrays_overlap(a, b) FROM t"))
+      // sql("SELECT arrays_overlap(array(1, NULL), array(NULL, 2)) FROM t").show()
+      // checkSparkAnswerAndOperator(sql("SELECT arrays_overlap(array(1, NULL), array(NULL, 2)) FROM t"))
     }
   }
 
