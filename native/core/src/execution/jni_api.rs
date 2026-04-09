@@ -735,6 +735,15 @@ pub extern "system" fn Java_org_apache_comet_Native_releasePlan(
             execution_context.task_attempt_id,
         );
 
+        // Emit final memory_reserved = 0 so tracing shows the drop
+        if execution_context.tracing_enabled {
+            let exec_context_id = execution_context.id;
+            log_memory_usage(
+                &format!("ctx_{exec_context_id:06}_comet_memory_reserved"),
+                0,
+            );
+        }
+
         let _: Box<ExecutionContext> = Box::from_raw(execution_context);
         Ok(())
     })
