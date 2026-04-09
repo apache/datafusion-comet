@@ -66,7 +66,7 @@ impl Recorder {
     pub fn log_memory_usage(&self, name: &str, usage_bytes: u64) {
         let json = format!(
             "{{ \"name\": \"{name}\", \"cat\": \"PERF\", \"ph\": \"C\", \"pid\": 1, \"tid\": {}, \"ts\": {}, \"args\": {{ \"{name}\": {usage_bytes} }} }},\n",
-            Self::get_thread_id(),
+            get_thread_id(),
             self.now.elapsed().as_micros()
         );
         let mut writer = self.writer.lock().unwrap();
@@ -79,17 +79,13 @@ impl Recorder {
         let json = format!(
             "{{ \"name\": \"{}\", \"cat\": \"PERF\", \"ph\": \"{ph}\", \"pid\": 1, \"tid\": {}, \"ts\": {} }},\n",
             name,
-            Self::get_thread_id(),
+            get_thread_id(),
             self.now.elapsed().as_micros()
         );
         let mut writer = self.writer.lock().unwrap();
         writer
             .write_all(json.as_bytes())
             .expect("Error writing tracing");
-    }
-
-    fn get_thread_id() -> u64 {
-        get_thread_id()
     }
 }
 

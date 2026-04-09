@@ -73,9 +73,9 @@ use jni::{
     sys::{jboolean, jdouble, jint, jlong},
     Env, EnvUnowned,
 };
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use std::{sync::Arc, task::Poll};
 use tokio::runtime::Runtime;
@@ -104,34 +104,51 @@ use tikv_jemalloc_ctl::{epoch, stats};
 
 static TOKIO_RUNTIME: OnceLock<Runtime> = OnceLock::new();
 
+#[cfg(feature = "jemalloc")]
+fn log_jemalloc_usage() {
+    let e = epoch::mib().unwrap();
+    let allocated = stats::allocated::mib().unwrap();
+    e.advance().unwrap();
+    log_memory_usage("jemalloc_allocated", allocated.read().unwrap() as u64);
+}
+
 /// Registry of active memory pools per Java thread ID.
 /// Used to sum memory reservations across all contexts on the same thread for tracing.
 static THREAD_MEMORY_POOLS: OnceLock<Mutex<HashMap<i64, HashMap<i64, Arc<dyn MemoryPool>>>>> =
     OnceLock::new();
 
-fn get_thread_memory_pools() -> &'static Mutex<HashMap<i64, HashMap<i64, Arc<dyn MemoryPool>>>> {
+type ThreadPoolMap = HashMap<i64, HashMap<i64, Arc<dyn MemoryPool>>>;
+
+fn get_thread_memory_pools() -> &'static Mutex<ThreadPoolMap> {
     THREAD_MEMORY_POOLS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 fn register_memory_pool(thread_id: i64, context_id: i64, pool: Arc<dyn MemoryPool>) {
-    let mut map = get_thread_memory_pools().lock().unwrap();
-    map.entry(thread_id).or_default().insert(context_id, pool);
+    get_thread_memory_pools()
+        .lock()
+        .entry(thread_id)
+        .or_default()
+        .insert(context_id, pool);
 }
 
-fn unregister_memory_pool(thread_id: i64, context_id: i64) {
-    let mut map = get_thread_memory_pools().lock().unwrap();
+/// Unregister a context's pool and return the remaining total reserved for the thread.
+fn unregister_and_total(thread_id: i64, context_id: i64) -> usize {
+    let mut map = get_thread_memory_pools().lock();
     if let Some(pools) = map.get_mut(&thread_id) {
         pools.remove(&context_id);
         if pools.is_empty() {
             map.remove(&thread_id);
+            return 0;
         }
+        return pools.values().map(|p| p.reserved()).sum::<usize>();
     }
+    0
 }
 
 fn total_reserved_for_thread(thread_id: i64) -> usize {
-    let map = get_thread_memory_pools().lock().unwrap();
+    let map = get_thread_memory_pools().lock();
     map.get(&thread_id)
-        .map(|pools| pools.values().map(|p| p.reserved()).sum())
+        .map(|pools| pools.values().map(|p| p.reserved()).sum::<usize>())
         .unwrap_or(0)
 }
 
@@ -214,6 +231,8 @@ struct ExecutionContext {
     pub tracing_enabled: bool,
     /// Java thread ID, used for aggregating tracing metrics per thread
     pub java_thread_id: i64,
+    /// Pre-computed metric name for tracing memory usage
+    pub tracing_memory_metric_name: String,
 }
 
 /// Accept serialized query plan and return the address of the native query plan.
@@ -377,6 +396,9 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 memory_pool_config,
                 tracing_enabled,
                 java_thread_id,
+                tracing_memory_metric_name: format!(
+                    "thread_{java_thread_id}_comet_memory_reserved"
+                ),
             });
 
             Ok(Box::into_raw(exec_context) as i64)
@@ -683,35 +705,26 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
             }
 
             // ScanExec path: busy-poll to interleave JVM batch pulls with stream polling
-            let mut tracing_poll_count: u32 = 0;
             get_runtime().block_on(async {
                 loop {
                     let next_item = exec_context.stream.as_mut().unwrap().next();
                     let poll_output = poll!(next_item);
 
-                    // Only check time every 100 polls to reduce syscall overhead
-                    if let Some(interval) = exec_context.metrics_update_interval {
-                        exec_context.poll_count_since_metrics_check += 1;
-                        if exec_context.poll_count_since_metrics_check >= 100 {
+                    // Only check time/tracing every 100 polls to reduce overhead
+                    exec_context.poll_count_since_metrics_check += 1;
+                    if exec_context.poll_count_since_metrics_check >= 100 {
+                        exec_context.poll_count_since_metrics_check = 0;
+                        if let Some(interval) = exec_context.metrics_update_interval {
                             let now = Instant::now();
                             if now - exec_context.metrics_last_update_time >= interval {
                                 update_metrics(env, exec_context)?;
                                 exec_context.metrics_last_update_time = now;
                             }
-                            exec_context.poll_count_since_metrics_check = 0;
                         }
-                    }
-
-                    // Log memory inside the poll loop so we capture usage
-                    // while operators (e.g. shuffle writers) hold allocations.
-                    if exec_context.tracing_enabled {
-                        tracing_poll_count += 1;
-                        if tracing_poll_count >= 100 {
-                            tracing_poll_count = 0;
-                            let thread_id = exec_context.java_thread_id;
+                        if exec_context.tracing_enabled {
                             log_memory_usage(
-                                &format!("thread_{thread_id}_comet_memory_reserved"),
-                                total_reserved_for_thread(thread_id) as u64,
+                                &exec_context.tracing_memory_metric_name,
+                                total_reserved_for_thread(exec_context.java_thread_id) as u64,
                             );
                         }
                     }
@@ -743,16 +756,10 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
 
         if exec_context.tracing_enabled {
             #[cfg(feature = "jemalloc")]
-            {
-                let e = epoch::mib().unwrap();
-                let allocated = stats::allocated::mib().unwrap();
-                e.advance().unwrap();
-                log_memory_usage("jemalloc_allocated", allocated.read().unwrap() as u64);
-            }
-            let thread_id = exec_context.java_thread_id;
+            log_jemalloc_usage();
             log_memory_usage(
-                &format!("thread_{thread_id}_comet_memory_reserved"),
-                total_reserved_for_thread(thread_id) as u64,
+                &exec_context.tracing_memory_metric_name,
+                total_reserved_for_thread(exec_context.java_thread_id) as u64,
             );
         }
 
@@ -780,11 +787,11 @@ pub extern "system" fn Java_org_apache_comet_Native_releasePlan(
 
         // Unregister this context's pool and emit the remaining total for the thread
         if execution_context.tracing_enabled {
-            let thread_id = execution_context.java_thread_id;
-            unregister_memory_pool(thread_id, execution_context.id);
+            let remaining =
+                unregister_and_total(execution_context.java_thread_id, execution_context.id);
             log_memory_usage(
-                &format!("thread_{thread_id}_comet_memory_reserved"),
-                total_reserved_for_thread(thread_id) as u64,
+                &execution_context.tracing_memory_metric_name,
+                remaining as u64,
             );
         }
 
