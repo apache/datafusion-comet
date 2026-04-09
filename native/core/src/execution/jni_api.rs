@@ -40,6 +40,7 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 use datafusion_comet_proto::spark_operator::Operator;
+use datafusion_spark::function::array::array_contains::SparkArrayContains;
 use datafusion_spark::function::bitwise::bit_count::SparkBitCount;
 use datafusion_spark::function::bitwise::bit_get::SparkBitGet;
 use datafusion_spark::function::bitwise::bitwise_not::SparkBitwiseNot;
@@ -393,6 +394,11 @@ fn prepare_datafusion_session_context(
 
 // register UDFs from datafusion-spark crate
 fn register_datafusion_spark_function(session_ctx: &SessionContext) {
+    // Don't register SparkArrayRepeat — it returns NULL when the element is NULL
+    // (e.g. array_repeat(null, 3) returns NULL instead of [null, null, null]).
+    // Comet's Scala serde wraps the call in a CaseWhen for null count handling,
+    // so DataFusion's built-in ArrayRepeat is sufficient.
+    // TODO: file upstream issue against datafusion-spark
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkExpm1::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSha2::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(CharFunc::default()));
@@ -411,6 +417,7 @@ fn register_datafusion_spark_function(session_ctx: &SessionContext) {
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkLuhnCheck::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSpace::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitCount::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkArrayContains::default()));
 }
 
 /// Prepares arrow arrays for output.

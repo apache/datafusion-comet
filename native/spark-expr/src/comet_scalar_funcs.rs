@@ -23,8 +23,8 @@ use crate::math_funcs::modulo_expr::spark_modulo;
 use crate::{
     spark_ceil, spark_decimal_div, spark_decimal_integral_div, spark_floor, spark_isnan,
     spark_lpad, spark_make_decimal, spark_read_side_padding, spark_round, spark_rpad, spark_unhex,
-    spark_unscaled_value, EvalMode, SparkContains, SparkDateDiff, SparkDateTrunc, SparkMakeDate,
-    SparkSizeFunc,
+    spark_unscaled_value, EvalMode, SparkArrayCompact, SparkContains, SparkDateDiff,
+    SparkDateTrunc, SparkMakeDate, SparkSizeFunc,
 };
 use arrow::datatypes::DataType;
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
@@ -196,6 +196,7 @@ pub fn create_comet_physical_fun_with_eval_mode(
 
 fn all_scalar_functions() -> Vec<Arc<ScalarUDF>> {
     vec![
+        Arc::new(ScalarUDF::new_from_impl(SparkArrayCompact::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkContains::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkDateDiff::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkDateTrunc::default())),
