@@ -61,7 +61,7 @@ pub struct ShuffleScanExec {
     /// The current input batch, populated by get_next_batch() before poll_next().
     pub batch: Arc<Mutex<Option<InputBatch>>>,
     /// Cache of plan properties.
-    cache: PlanProperties,
+    cache: Arc<PlanProperties>,
     /// Metrics collector.
     metrics: ExecutionPlanMetricsSet,
     /// Baseline metrics.
@@ -82,12 +82,12 @@ impl ShuffleScanExec {
 
         let schema = schema_from_data_types(&data_types);
 
-        let cache = PlanProperties::new(
+        let cache = Arc::new(PlanProperties::new(
             EquivalenceProperties::new(Arc::clone(&schema)),
             Partitioning::UnknownPartitioning(1),
             EmissionType::Final,
             Boundedness::Bounded,
-        );
+        ));
 
         Ok(Self {
             exec_context_id,
@@ -252,7 +252,7 @@ impl ExecutionPlan for ShuffleScanExec {
         )))
     }
 
-    fn properties(&self) -> &PlanProperties {
+    fn properties(&self) -> &Arc<PlanProperties> {
         &self.cache
     }
 
