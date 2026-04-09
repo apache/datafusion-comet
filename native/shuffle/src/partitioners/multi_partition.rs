@@ -29,7 +29,7 @@ use datafusion::common::DataFusionError;
 use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::physical_plan::metrics::Time;
-use datafusion_comet_common::tracing::{log_memory_usage, with_trace, with_trace_async};
+use datafusion_comet_common::tracing::{with_trace, with_trace_async};
 use datafusion_comet_spark_expr::murmur3::create_murmur3_hashes;
 use itertools::Itertools;
 use std::fmt;
@@ -519,9 +519,6 @@ impl MultiPartitionShuffleRepartitioner {
             self.reservation.free();
             self.metrics.spill_count.add(1);
             self.metrics.spilled_bytes.add(spilled_bytes);
-            if self.tracing_enabled {
-                log_memory_usage("shuffle_spilled_bytes", spilled_bytes as u64);
-            }
             Ok(())
         })
     }

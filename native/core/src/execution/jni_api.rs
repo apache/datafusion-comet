@@ -533,14 +533,16 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
         };
 
         if exec_context.tracing_enabled {
+            use crate::execution::tracing::log_memory_usage;
             #[cfg(feature = "jemalloc")]
             {
                 let e = epoch::mib().unwrap();
                 let allocated = stats::allocated::mib().unwrap();
                 e.advance().unwrap();
-                use crate::execution::tracing::log_memory_usage;
                 log_memory_usage("jemalloc_allocated", allocated.read().unwrap() as u64);
             }
+            let runtime_env = exec_context.session_ctx.runtime_env();
+            log_memory_usage("memory_pool_reserved", runtime_env.memory_pool.reserved() as u64);
         }
 
         with_trace(tracing_event_name, exec_context.tracing_enabled, || {
