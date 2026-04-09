@@ -75,6 +75,7 @@ use jni::{
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use std::{sync::Arc, task::Poll};
 use tokio::runtime::Runtime;
@@ -102,6 +103,37 @@ use std::sync::OnceLock;
 use tikv_jemalloc_ctl::{epoch, stats};
 
 static TOKIO_RUNTIME: OnceLock<Runtime> = OnceLock::new();
+
+/// Registry of active memory pools per Java thread ID.
+/// Used to sum memory reservations across all contexts on the same thread for tracing.
+static THREAD_MEMORY_POOLS: OnceLock<Mutex<HashMap<i64, HashMap<i64, Arc<dyn MemoryPool>>>>> =
+    OnceLock::new();
+
+fn get_thread_memory_pools() -> &'static Mutex<HashMap<i64, HashMap<i64, Arc<dyn MemoryPool>>>> {
+    THREAD_MEMORY_POOLS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn register_memory_pool(thread_id: i64, context_id: i64, pool: Arc<dyn MemoryPool>) {
+    let mut map = get_thread_memory_pools().lock().unwrap();
+    map.entry(thread_id).or_default().insert(context_id, pool);
+}
+
+fn unregister_memory_pool(thread_id: i64, context_id: i64) {
+    let mut map = get_thread_memory_pools().lock().unwrap();
+    if let Some(pools) = map.get_mut(&thread_id) {
+        pools.remove(&context_id);
+        if pools.is_empty() {
+            map.remove(&thread_id);
+        }
+    }
+}
+
+fn total_reserved_for_thread(thread_id: i64) -> usize {
+    let map = get_thread_memory_pools().lock().unwrap();
+    map.get(&thread_id)
+        .map(|pools| pools.values().map(|p| p.reserved()).sum())
+        .unwrap_or(0)
+}
 
 fn parse_usize_env_var(name: &str) -> Option<usize> {
     std::env::var_os(name).and_then(|n| n.to_str().and_then(|s| s.parse::<usize>().ok()))
@@ -311,6 +343,18 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 );
             }
 
+            let session = Arc::new(session);
+
+            // Register this context's memory pool so we can sum all pools
+            // on the same thread when emitting tracing metrics.
+            if tracing_enabled {
+                register_memory_pool(
+                    java_thread_id,
+                    id,
+                    Arc::clone(&session.runtime_env().memory_pool),
+                );
+            }
+
             let exec_context = Box::new(ExecutionContext {
                 id,
                 task_attempt_id,
@@ -327,7 +371,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 metrics_last_update_time: Instant::now(),
                 poll_count_since_metrics_check: 0,
                 plan_creation_time,
-                session_ctx: Arc::new(session),
+                session_ctx: session,
                 debug_native,
                 explain_native,
                 memory_pool_config,
@@ -664,14 +708,10 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                         tracing_poll_count += 1;
                         if tracing_poll_count >= 100 {
                             tracing_poll_count = 0;
-                            let reserved = exec_context
-                                .session_ctx
-                                .runtime_env()
-                                .memory_pool
-                                .reserved();
+                            let thread_id = exec_context.java_thread_id;
                             log_memory_usage(
-                                &format!("thread_{}_comet_memory_reserved", exec_context.java_thread_id),
-                                reserved as u64,
+                                &format!("thread_{thread_id}_comet_memory_reserved"),
+                                total_reserved_for_thread(thread_id) as u64,
                             );
                         }
                     }
@@ -709,10 +749,10 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                 e.advance().unwrap();
                 log_memory_usage("jemalloc_allocated", allocated.read().unwrap() as u64);
             }
-            let runtime_env = exec_context.session_ctx.runtime_env();
+            let thread_id = exec_context.java_thread_id;
             log_memory_usage(
-                &format!("thread_{}_comet_memory_reserved", exec_context.java_thread_id),
-                runtime_env.memory_pool.reserved() as u64,
+                &format!("thread_{thread_id}_comet_memory_reserved"),
+                total_reserved_for_thread(thread_id) as u64,
             );
         }
 
@@ -738,11 +778,13 @@ pub extern "system" fn Java_org_apache_comet_Native_releasePlan(
             execution_context.task_attempt_id,
         );
 
-        // Emit final memory_reserved = 0 so tracing shows the drop
+        // Unregister this context's pool and emit the remaining total for the thread
         if execution_context.tracing_enabled {
+            let thread_id = execution_context.java_thread_id;
+            unregister_memory_pool(thread_id, execution_context.id);
             log_memory_usage(
-                &format!("thread_{}_comet_memory_reserved", execution_context.java_thread_id),
-                0,
+                &format!("thread_{thread_id}_comet_memory_reserved"),
+                total_reserved_for_thread(thread_id) as u64,
             );
         }
 
