@@ -28,7 +28,8 @@ Comet currently has two distinct implementations of the Parquet scan operator.
 
 The configuration property
 `spark.comet.scan.impl` is used to select an implementation. The default setting is `spark.comet.scan.impl=auto`, which
-currently always uses the `native_iceberg_compat` implementation. Most users should not need to change this setting.
+attempts to use `native_datafusion` first, and falls back to Spark if the scan cannot be converted
+(e.g., due to unsupported features). Most users should not need to change this setting.
 However, it is possible to force Comet to use a particular implementation for all scan operations by setting
 this configuration property to one of the following implementations. For example: `--conf spark.comet.scan.impl=native_datafusion`.
 
@@ -55,7 +56,8 @@ The following shared limitation may produce incorrect results without falling ba
   October 15, 1582.
 
 The `native_datafusion` scan has some additional limitations, mostly related to Parquet metadata. All of these
-cause Comet to fall back to Spark.
+cause Comet to fall back to Spark (including when using `auto` mode). Note that the `native_datafusion` scan
+requires `spark.comet.exec.enabled=true` because the scan node must be wrapped by `CometExecRule`.
 
 - No support for row indexes
 - No support for reading Parquet field IDs
