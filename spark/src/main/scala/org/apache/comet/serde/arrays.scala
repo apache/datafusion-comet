@@ -255,7 +255,7 @@ object CometArraysOverlap extends CometExpressionSerde[ArraysOverlap] {
     val rightArrayExprProto = exprToProto(expr.right, inputs, binding)
 
     val arraysOverlapScalarExpr = scalarFunctionExprToProtoWithReturnType(
-      "array_has_any",
+      "spark_arrays_overlap",
       BooleanType,
       false,
       leftArrayExprProto,

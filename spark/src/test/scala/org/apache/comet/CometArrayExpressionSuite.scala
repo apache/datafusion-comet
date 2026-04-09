@@ -565,7 +565,8 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   }
 
   test("arrays_overlap - null handling behavior verification") {
-    withSQLConf("spark.sql.optimizer.excludedRules" -> "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+    withSQLConf(
+      "spark.sql.optimizer.excludedRules" -> "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
       withTable("t") {
         sql("create table t using parquet as select CAST(NULL as array<int>) a1 from range(1)")
         val data = Seq(
