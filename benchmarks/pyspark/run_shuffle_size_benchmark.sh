@@ -68,12 +68,23 @@ echo "Executor memory: $EXECUTOR_MEMORY"
 echo "Off-heap size:   $OFFHEAP_SIZE"
 echo "========================================"
 
+# Use dedicated local dirs so we can measure actual shuffle file sizes on disk
+SPARK_LOCAL_DIR=$(mktemp -d /tmp/spark-shuffle-bench-spark-XXXXXX)
+COMET_LOCAL_DIR=$(mktemp -d /tmp/spark-shuffle-bench-comet-XXXXXX)
+
+cleanup() {
+  rm -rf "$SPARK_LOCAL_DIR" "$COMET_LOCAL_DIR"
+}
+trap cleanup EXIT
+
 # Run Spark baseline (no Comet)
 echo ""
 echo ">>> Running SPARK (no Comet) shuffle size benchmark..."
 $SPARK_HOME/bin/spark-submit \
   --master "$SPARK_MASTER" \
+  --driver-memory "$EXECUTOR_MEMORY" \
   --executor-memory "$EXECUTOR_MEMORY" \
+  --conf spark.local.dir="$SPARK_LOCAL_DIR" \
   --conf spark.comet.enabled=false \
   "$SCRIPT_DIR/run_benchmark.py" \
   --data "$DATA_PATH" \
@@ -85,16 +96,19 @@ echo ""
 echo ">>> Running COMET NATIVE shuffle size benchmark..."
 $SPARK_HOME/bin/spark-submit \
   --master "$SPARK_MASTER" \
+  --driver-memory "$EXECUTOR_MEMORY" \
   --executor-memory "$EXECUTOR_MEMORY" \
   --jars "$COMET_JAR" \
   --driver-class-path "$COMET_JAR" \
   --conf spark.executor.extraClassPath="$COMET_JAR" \
+  --conf spark.local.dir="$COMET_LOCAL_DIR" \
   --conf spark.plugins=org.apache.spark.CometPlugin \
   --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
   --conf spark.sql.extensions=org.apache.comet.CometSparkSessionExtensions \
   --conf spark.memory.offHeap.enabled=true \
   --conf spark.memory.offHeap.size="$OFFHEAP_SIZE" \
   --conf spark.comet.enabled=true \
+  --conf spark.comet.exec.shuffle.enabled=true \
   --conf spark.comet.exec.shuffle.mode=native \
   --conf spark.comet.explainFallback.enabled=true \
   "$SCRIPT_DIR/run_benchmark.py" \
@@ -106,4 +120,4 @@ echo ""
 echo "========================================"
 echo "BENCHMARK COMPLETE"
 echo "========================================"
-echo "Compare 'Shuffle write' and 'Bytes/record' between the two runs above."
+echo "Compare 'Shuffle disk' bytes/record between the two runs above."

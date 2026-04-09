@@ -19,12 +19,16 @@
 """
 Shuffle size benchmark for measuring shuffle write bytes.
 
-Measures the actual shuffle write bytes reported by Spark to compare
+Measures the actual shuffle file sizes on disk to compare
 shuffle file sizes between Spark and Comet shuffle implementations.
 This is useful for investigating shuffle format overhead (see issue #3882).
+
+The benchmark sets spark.local.dir to a dedicated temp directory and
+measures the total size of shuffle data files (.data) written there.
 """
 
 import json
+import os
 import urllib.request
 from typing import Dict, Any
 
@@ -43,6 +47,16 @@ def get_shuffle_write_bytes(spark) -> int:
     return sum(s.get("shuffleWriteBytes", 0) for s in stages)
 
 
+def get_shuffle_disk_bytes(local_dir: str) -> int:
+    """Walk spark.local.dir and sum the sizes of all shuffle .data files."""
+    total = 0
+    for root, _dirs, files in os.walk(local_dir):
+        for f in files:
+            if f.endswith(".data"):
+                total += os.path.getsize(os.path.join(root, f))
+    return total
+
+
 def format_bytes(b: int) -> str:
     """Format byte count as human-readable string."""
     if b >= 1024 ** 3:
@@ -55,11 +69,17 @@ def format_bytes(b: int) -> str:
 
 class ShuffleSizeBenchmark(Benchmark):
     """
-    Benchmark that measures shuffle write bytes via the Spark REST API.
+    Benchmark that measures shuffle write bytes on disk.
 
-    Runs a simple scan -> repartition -> write pipeline and reports
-    the shuffle write size alongside wall-clock time. Useful for
-    comparing shuffle format overhead between Spark and Comet.
+    Runs a simple scan -> repartition -> count pipeline and reports
+    the actual shuffle data file sizes alongside the Spark REST API
+    metric. Useful for comparing shuffle format overhead between
+    Spark and Comet.
+
+    NOTE: The Spark session must be configured with spark.local.dir
+    pointing to a dedicated empty directory so that we can measure
+    shuffle file sizes accurately. The run_shuffle_size_benchmark.sh
+    script handles this automatically.
     """
 
     def __init__(self, spark, data_path: str, mode: str,
@@ -73,7 +93,7 @@ class ShuffleSizeBenchmark(Benchmark):
 
     @classmethod
     def description(cls) -> str:
-        return "Measure shuffle write bytes (scan -> repartition -> write)"
+        return "Measure shuffle write bytes (scan -> repartition -> count)"
 
     def run(self) -> Dict[str, Any]:
         df = self.spark.read.parquet(self.data_path)
@@ -84,6 +104,11 @@ class ShuffleSizeBenchmark(Benchmark):
             f"{f.name}: {f.dataType.simpleString()}" for f in df.schema.fields
         )
         print(f"Schema: {schema_desc}")
+
+        # Read spark.local.dir so we can measure shuffle files on disk
+        local_dir = self.spark.sparkContext.getConf().get(
+            "spark.local.dir", "/tmp"
+        )
 
         output_path = (
             f"/tmp/shuffle-size-benchmark-output-{self.mode}"
@@ -96,23 +121,32 @@ class ShuffleSizeBenchmark(Benchmark):
 
         duration_ms = self._time_operation(benchmark_operation)
 
-        shuffle_write_bytes = 0
+        # Measure actual shuffle file sizes on disk.
+        # Shuffle .data files persist until SparkContext shutdown,
+        # so they are still available after the job completes.
+        disk_bytes = get_shuffle_disk_bytes(local_dir)
+
+        # Also grab the REST API metric for comparison
+        api_bytes = 0
         try:
-            shuffle_write_bytes = get_shuffle_write_bytes(self.spark)
+            api_bytes = get_shuffle_write_bytes(self.spark)
         except Exception as e:
-            print(f"Warning: could not read shuffle metrics: {e}")
+            print(f"Warning: could not read shuffle metrics from REST API: {e}")
 
-        bytes_per_record = (
-            shuffle_write_bytes / row_count if row_count > 0 else 0
-        )
+        disk_bpr = disk_bytes / row_count if row_count > 0 else 0
+        api_bpr = api_bytes / row_count if row_count > 0 else 0
 
-        print(f"Shuffle write: {format_bytes(shuffle_write_bytes)}")
-        print(f"Bytes/record:  {bytes_per_record:.1f}")
+        print(f"Shuffle disk:       {format_bytes(disk_bytes)} "
+              f"({disk_bpr:.1f} B/record)")
+        print(f"Shuffle API metric: {format_bytes(api_bytes)} "
+              f"({api_bpr:.1f} B/record)")
 
         return {
             "duration_ms": duration_ms,
             "row_count": row_count,
             "num_partitions": self.num_partitions,
-            "shuffle_write_bytes": shuffle_write_bytes,
-            "bytes_per_record": round(bytes_per_record, 1),
+            "shuffle_disk_bytes": disk_bytes,
+            "shuffle_disk_bytes_per_record": round(disk_bpr, 1),
+            "shuffle_api_bytes": api_bytes,
+            "shuffle_api_bytes_per_record": round(api_bpr, 1),
         }
