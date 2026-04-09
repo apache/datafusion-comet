@@ -522,7 +522,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
     exec_context: jlong,
     array_addrs: JLongArray,
     schema_addrs: JLongArray,
-    thread_id: jlong,
 ) -> jlong {
     try_unwrap_or_throw(&e, |env| {
         // Retrieve the query
@@ -636,6 +635,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
             }
 
             // ScanExec path: busy-poll to interleave JVM batch pulls with stream polling
+            let mut tracing_poll_count: u32 = 0;
             get_runtime().block_on(async {
                 loop {
                     let next_item = exec_context.stream.as_mut().unwrap().next();
@@ -651,6 +651,24 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                                 exec_context.metrics_last_update_time = now;
                             }
                             exec_context.poll_count_since_metrics_check = 0;
+                        }
+                    }
+
+                    // Log memory inside the poll loop so we capture usage
+                    // while operators (e.g. shuffle writers) hold allocations.
+                    if exec_context.tracing_enabled {
+                        tracing_poll_count += 1;
+                        if tracing_poll_count >= 100 {
+                            tracing_poll_count = 0;
+                            let reserved = exec_context
+                                .session_ctx
+                                .runtime_env()
+                                .memory_pool
+                                .reserved();
+                            log_memory_usage(
+                                &format!("ctx_{exec_context_id}_comet_memory_reserved"),
+                                reserved as u64,
+                            );
                         }
                     }
 
@@ -680,7 +698,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
         });
 
         if exec_context.tracing_enabled {
-            use crate::execution::tracing::log_memory_usage;
             #[cfg(feature = "jemalloc")]
             {
                 let e = epoch::mib().unwrap();
@@ -689,8 +706,9 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                 log_memory_usage("jemalloc_allocated", allocated.read().unwrap() as u64);
             }
             let runtime_env = exec_context.session_ctx.runtime_env();
+            let exec_context_id = exec_context.id;
             log_memory_usage(
-                &format!("thread_{thread_id}_comet_memory_reserved"),
+                &format!("ctx_{exec_context_id}_comet_memory_reserved"),
                 runtime_env.memory_pool.reserved() as u64,
             );
         }

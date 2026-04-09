@@ -147,13 +147,7 @@ class CometExecIterator(
           nativeUtil.getNextBatch(
             numOutputCols,
             (arrayAddrs, schemaAddrs) => {
-              nativeLib.executePlan(
-                ctx.stageId(),
-                partitionIndex,
-                plan,
-                arrayAddrs,
-                schemaAddrs,
-                Thread.currentThread().getId)
+              nativeLib.executePlan(ctx.stageId(), partitionIndex, plan, arrayAddrs, schemaAddrs)
             })
         })
 
@@ -264,9 +258,8 @@ class CometExecIterator(
     val totalTaskMemory = cometTaskMemoryManager.internal.getMemoryConsumptionForThisTask
     val cometTaskMemory = cometTaskMemoryManager.getUsed
     val sparkTaskMemory = totalTaskMemory - cometTaskMemory
-    val threadId = Thread.currentThread().getId
-    nativeLib.logMemoryUsage(s"thread_${threadId}_comet_memory", cometTaskMemory)
-    nativeLib.logMemoryUsage(s"thread_${threadId}_spark_memory", sparkTaskMemory)
+    nativeLib.logMemoryUsage(s"ctx_${id}_comet_memory", cometTaskMemory)
+    nativeLib.logMemoryUsage(s"ctx_${id}_spark_memory", sparkTaskMemory)
   }
 }
 
