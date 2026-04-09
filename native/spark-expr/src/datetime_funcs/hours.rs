@@ -19,36 +19,31 @@
 //!
 //! Computes the number of hours since the Unix epoch (1970-01-01 00:00:00 UTC).
 //!
-//! - For `Timestamp(Microsecond, Some(tz))`: applies timezone offset before computing.
-//! - For `Timestamp(Microsecond, None)` (NTZ): uses raw microseconds directly.
+//! Both `TimestampType` and `TimestampNTZType` are computationally identical. They
+//! extract the absolute hours since the epoch by directly dividing the microsecond
+//! value by the number of microseconds in an hour, ignoring session timezone offsets.
 
 use arrow::array::cast::as_primitive_array;
 use arrow::array::types::TimestampMicrosecondType;
 use arrow::array::{Array, Int32Array};
 use arrow::datatypes::{DataType, TimeUnit::Microsecond};
-use arrow::temporal_conversions::as_datetime;
-use chrono::{Offset, TimeZone};
 use datafusion::common::{internal_datafusion_err, DataFusionError};
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };
 use std::{any::Any, fmt::Debug, sync::Arc};
 
-use crate::timezone::Tz;
-
 const MICROS_PER_HOUR: i64 = 3_600_000_000;
 
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub struct SparkHoursTransform {
     signature: Signature,
-    timezone: String,
 }
 
 impl SparkHoursTransform {
-    pub fn new(timezone: String) -> Self {
+    pub fn new() -> Self {
         Self {
             signature: Signature::user_defined(Volatility::Immutable),
-            timezone,
         }
     }
 }
@@ -82,28 +77,7 @@ impl ScalarUDFImpl for SparkHoursTransform {
             [ColumnarValue::Array(array)] => {
                 let ts_array = as_primitive_array::<TimestampMicrosecondType>(&array);
                 let result: Int32Array = match array.data_type() {
-                    DataType::Timestamp(Microsecond, Some(_)) => {
-                        let tz: Tz = self.timezone.parse().map_err(|e| {
-                            DataFusionError::Execution(format!(
-                                "Failed to parse timezone '{}': {}",
-                                self.timezone, e
-                            ))
-                        })?;
-                        arrow::compute::kernels::arity::try_unary(ts_array, |micros| {
-                            let dt = as_datetime::<TimestampMicrosecondType>(micros).ok_or_else(
-                                || {
-                                    DataFusionError::Execution(format!(
-                                        "Cannot convert {micros} to datetime"
-                                    ))
-                                },
-                            )?;
-                            let offset_secs =
-                                tz.offset_from_utc_datetime(&dt).fix().local_minus_utc() as i64;
-                            let local_micros = micros + offset_secs * 1_000_000;
-                            Ok(local_micros.div_euclid(MICROS_PER_HOUR) as i32)
-                        })?
-                    }
-                    DataType::Timestamp(Microsecond, None) => {
+                    DataType::Timestamp(Microsecond, _) => {
                         arrow::compute::kernels::arity::unary(ts_array, |micros| {
                             micros.div_euclid(MICROS_PER_HOUR) as i32
                         })
@@ -134,7 +108,7 @@ mod tests {
 
     #[test]
     fn test_hours_transform_utc() {
-        let udf = SparkHoursTransform::new("UTC".to_string());
+        let udf = SparkHoursTransform::new();
         // 2023-10-01 14:30:00 UTC = 1696171800 seconds = 1696171800000000 micros
         // Expected hours since epoch = 1696171800000000 / 3600000000 = 471158
         let ts = TimestampMicrosecondArray::from(vec![Some(1_696_171_800_000_000i64)])
@@ -159,7 +133,7 @@ mod tests {
 
     #[test]
     fn test_hours_transform_ntz() {
-        let udf = SparkHoursTransform::new("UTC".to_string());
+        let udf = SparkHoursTransform::new();
         // Same timestamp but NTZ (no timezone on array)
         let ts = TimestampMicrosecondArray::from(vec![Some(1_696_171_800_000_000i64)]);
         let return_field = Arc::new(Field::new("hours_transform", DataType::Int32, true));
@@ -182,7 +156,7 @@ mod tests {
 
     #[test]
     fn test_hours_transform_negative_epoch() {
-        let udf = SparkHoursTransform::new("UTC".to_string());
+        let udf = SparkHoursTransform::new();
         // 1969-12-31 23:30:00 UTC = -1800 seconds = -1800000000 micros
         // Expected: div_euclid(-1800000000, 3600000000) = -1
         let ts =
@@ -207,7 +181,7 @@ mod tests {
 
     #[test]
     fn test_hours_transform_null() {
-        let udf = SparkHoursTransform::new("UTC".to_string());
+        let udf = SparkHoursTransform::new();
         let ts = TimestampMicrosecondArray::from(vec![None as Option<i64>]).with_timezone("UTC");
         let return_field = Arc::new(Field::new("hours_transform", DataType::Int32, true));
         let args = ScalarFunctionArgs {
@@ -229,7 +203,7 @@ mod tests {
 
     #[test]
     fn test_hours_transform_epoch_zero() {
-        let udf = SparkHoursTransform::new("UTC".to_string());
+        let udf = SparkHoursTransform::new();
         let ts = TimestampMicrosecondArray::from(vec![Some(0i64)]).with_timezone("UTC");
         let return_field = Arc::new(Field::new("hours_transform", DataType::Int32, true));
         let args = ScalarFunctionArgs {
@@ -251,9 +225,10 @@ mod tests {
 
     #[test]
     fn test_hours_transform_non_utc_timezone() {
-        // Asia/Tokyo is UTC+9. For a UTC timestamp of 1970-01-01 00:00:00 UTC (micros=0),
-        // local time = 1970-01-01 09:00:00 JST, so local hours since epoch = 9.
-        let udf = SparkHoursTransform::new("Asia/Tokyo".to_string());
+        // Spark's Hours partition transform evaluates absolute hours since epoch. Thus, a UTC
+        // timestamp of 1970-01-01 00:00:00 UTC (micros=0) maps to 0 hours, even if the
+        // timestamp array itself contains timezone metadata like Asia/Tokyo.
+        let udf = SparkHoursTransform::new();
         let ts = TimestampMicrosecondArray::from(vec![Some(0i64)]).with_timezone("Asia/Tokyo");
         let return_field = Arc::new(Field::new("hours_transform", DataType::Int32, true));
         let args = ScalarFunctionArgs {
@@ -267,7 +242,7 @@ mod tests {
         match result {
             ColumnarValue::Array(arr) => {
                 let int_arr = arr.as_any().downcast_ref::<Int32Array>().unwrap();
-                assert_eq!(int_arr.value(0), 9);
+                assert_eq!(int_arr.value(0), 0);
             }
             _ => panic!("Expected array"),
         }
@@ -275,9 +250,9 @@ mod tests {
 
     #[test]
     fn test_hours_transform_ntz_ignores_timezone() {
-        // NTZ with micros=0 should always return 0, regardless of the timezone
-        // string stored in the UDF (proving the NTZ path ignores timezone).
-        let udf = SparkHoursTransform::new("Asia/Tokyo".to_string());
+        // NTZ with micros=0 always returns 0 because NTZ is pure wall-clock time.
+        // There is no timezone offset logic applied to either TimestampType or NTZ.
+        let udf = SparkHoursTransform::new();
         let ts = TimestampMicrosecondArray::from(vec![Some(0i64)]); // No timezone on array
         let return_field = Arc::new(Field::new("hours_transform", DataType::Int32, true));
         let args = ScalarFunctionArgs {

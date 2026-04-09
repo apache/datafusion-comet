@@ -593,8 +593,8 @@ object CometDateFormat extends CometExpressionSerde[DateFormatClass] {
  * Converts a timestamp to the number of hours since Unix epoch (1970-01-01 00:00:00 UTC). This is
  * a V2 partition transform expression.
  *
- * For TimestampType: uses timezone-aware conversion to determine the local hour boundary. For
- * TimestampNTZType: directly divides the raw microsecond value (wall-clock time).
+ * Both TimestampType and TimestampNTZType use direct division of the raw microsecond value
+ * without applying any session timezone offset.
  */
 object CometHours extends CometExpressionSerde[Hours] {
   override def convert(
@@ -606,9 +606,6 @@ object CometHours extends CometExpressionSerde[Hours] {
     if (childExpr.isDefined) {
       val builder = ExprOuterClass.HoursTransform.newBuilder()
       builder.setChild(childExpr.get)
-
-      val timeZone = SQLConf.get.sessionLocalTimeZone
-      builder.setTimezone(timeZone)
 
       Some(
         ExprOuterClass.Expr

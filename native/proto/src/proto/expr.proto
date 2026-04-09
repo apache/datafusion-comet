@@ -352,7 +352,6 @@ message Hour {
 
 message HoursTransform {
   Expr child = 1;
-  string timezone = 2;
 }
 
 message Minute {

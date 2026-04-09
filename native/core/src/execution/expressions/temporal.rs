@@ -173,10 +173,8 @@ impl ExpressionBuilder for HoursTransformBuilder {
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
         let expr = extract_expr!(spark_expr, HoursTransform);
         let child = planner.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
-        let timezone = expr.timezone.clone();
         let args = vec![child];
-        let comet_hours_transform =
-            Arc::new(ScalarUDF::new_from_impl(SparkHoursTransform::new(timezone)));
+        let comet_hours_transform = Arc::new(ScalarUDF::new_from_impl(SparkHoursTransform::new()));
         let field_ref = Arc::new(Field::new("hours_transform", DataType::Int32, true));
         let expr: ScalarFunctionExpr = ScalarFunctionExpr::new(
             "hours_transform",
