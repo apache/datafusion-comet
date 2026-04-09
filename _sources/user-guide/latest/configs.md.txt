@@ -252,6 +252,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.FromUnixTime.enabled` | Enable Comet acceleration for `FromUnixTime` | true |
 | `spark.comet.expression.GetArrayItem.enabled` | Enable Comet acceleration for `GetArrayItem` | true |
 | `spark.comet.expression.GetArrayStructFields.enabled` | Enable Comet acceleration for `GetArrayStructFields` | true |
+| `spark.comet.expression.GetJsonObject.enabled` | Enable Comet acceleration for `GetJsonObject` | true |
 | `spark.comet.expression.GetMapValue.enabled` | Enable Comet acceleration for `GetMapValue` | true |
 | `spark.comet.expression.GetStructField.enabled` | Enable Comet acceleration for `GetStructField` | true |
 | `spark.comet.expression.GreaterThan.enabled` | Enable Comet acceleration for `GreaterThan` | true |
