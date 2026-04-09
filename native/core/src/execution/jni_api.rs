@@ -114,10 +114,9 @@ fn log_jemalloc_usage() {
 
 /// Registry of active memory pools per Java thread ID.
 /// Used to sum memory reservations across all contexts on the same thread for tracing.
-static THREAD_MEMORY_POOLS: OnceLock<Mutex<HashMap<i64, HashMap<i64, Arc<dyn MemoryPool>>>>> =
-    OnceLock::new();
-
 type ThreadPoolMap = HashMap<i64, HashMap<i64, Arc<dyn MemoryPool>>>;
+
+static THREAD_MEMORY_POOLS: OnceLock<Mutex<ThreadPoolMap>> = OnceLock::new();
 
 fn get_thread_memory_pools() -> &'static Mutex<ThreadPoolMap> {
     THREAD_MEMORY_POOLS.get_or_init(|| Mutex::new(HashMap::new()))
