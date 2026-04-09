@@ -60,10 +60,6 @@ the [Comet Supported Expressions Guide](expressions.md) for more information on 
 
 ### Array Expressions
 
-- **ArrayContains**: Returns null instead of false for empty arrays with literal values.
-  [#3346](https://github.com/apache/datafusion-comet/issues/3346)
-- **ArrayRemove**: Returns null when the element to remove is null, instead of removing null elements from the array.
-  [#3173](https://github.com/apache/datafusion-comet/issues/3173)
 - **ArrayUnion**: Sorts input arrays before performing the union, while Spark preserves the order of the first array
   and appends unique elements from the second.
   [#3644](https://github.com/apache/datafusion-comet/issues/3644)

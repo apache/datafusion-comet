@@ -29,7 +29,7 @@ import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.serde.{CommonStringExprs, Compatible, ExprOuterClass, Incompatible}
 import org.apache.comet.serde.ExprOuterClass.{BinaryOutputStyle, Expr}
-import org.apache.comet.serde.QueryPlanSerde.exprToProtoInternal
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
 
 /**
  * `CometExprShim` acts as a shim for parsing expressions from different Spark versions.
@@ -104,14 +104,9 @@ trait CometExprShim extends CommonStringExprs {
         }
 
       case wb: WidthBucket =>
-        withInfo(
-          wb,
-          "WidthBucket not supported, track https://github.com/apache/datafusion-comet/issues/3561")
-        None
-//        https://github.com/apache/datafusion-comet/issues/3561
-//        val childExprs = wb.children.map(exprToProtoInternal(_, inputs, binding))
-//        val optExpr = scalarFunctionExprToProto("width_bucket", childExprs: _*)
-//        optExprWithInfo(optExpr, wb, wb.children: _*)
+        val childExprs = wb.children.map(exprToProtoInternal(_, inputs, binding))
+        val optExpr = scalarFunctionExprToProto("width_bucket", childExprs: _*)
+        optExprWithInfo(optExpr, wb, wb.children: _*)
 
       // KnownNotContainsNull is a TaggingExpression added in Spark 4.0 that only
       // changes schema metadata (containsNull = false). It has no runtime effect,
