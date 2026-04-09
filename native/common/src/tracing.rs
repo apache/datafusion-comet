@@ -64,9 +64,8 @@ impl Recorder {
     }
 
     pub fn log_memory_usage(&self, name: &str, usage_bytes: u64) {
-        let usage_mb = (usage_bytes as f64 / 1024.0 / 1024.0) as usize;
         let json = format!(
-            "{{ \"name\": \"{name}\", \"cat\": \"PERF\", \"ph\": \"C\", \"pid\": 1, \"tid\": {}, \"ts\": {}, \"args\": {{ \"{name}\": {usage_mb} }} }},\n",
+            "{{ \"name\": \"{name}\", \"cat\": \"PERF\", \"ph\": \"C\", \"pid\": 1, \"tid\": {}, \"ts\": {}, \"args\": {{ \"{name}\": {usage_bytes} }} }},\n",
             Self::get_thread_id(),
             self.now.elapsed().as_micros()
         );

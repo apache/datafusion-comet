@@ -138,14 +138,10 @@ class CometExecIterator(
   private def getNextBatch: Option[ColumnarBatch] = {
     assert(partitionIndex >= 0 && partitionIndex < numParts)
 
-    if (tracingEnabled) {
-      traceMemoryUsage()
-    }
-
     val ctx = TaskContext.get()
 
     try {
-      withTrace(
+      val result = withTrace(
         s"getNextBatch[JVM] stage=${ctx.stageId()}",
         tracingEnabled, {
           nativeUtil.getNextBatch(
@@ -154,6 +150,12 @@ class CometExecIterator(
               nativeLib.executePlan(ctx.stageId(), partitionIndex, plan, arrayAddrs, schemaAddrs)
             })
         })
+
+      if (tracingEnabled) {
+        traceMemoryUsage()
+      }
+
+      result
     } catch {
       // Handle CometQueryExecutionException with JSON payload first
       case e: CometQueryExecutionException =>
