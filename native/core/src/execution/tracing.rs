@@ -100,7 +100,14 @@ impl Recorder {
     }
 
     fn get_thread_id() -> u64 {
-        std::thread::current().id().as_u64().get()
+        // Parse the numeric ID from ThreadId's Debug format ("ThreadId(N)")
+        // because ThreadId::as_u64() is an unstable feature.
+        let id = std::thread::current().id();
+        let s = format!("{:?}", id);
+        s.trim_start_matches("ThreadId(")
+            .trim_end_matches(')')
+            .parse::<u64>()
+            .unwrap_or(0)
     }
 }
 
