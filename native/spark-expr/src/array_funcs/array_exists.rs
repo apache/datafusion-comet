@@ -33,7 +33,9 @@ const LAMBDA_VAR_COLUMN: &str = "__comet_lambda_var";
 
 /// Collect all column indices referenced by an expression tree.
 fn collect_referenced_columns(expr: &Arc<dyn PhysicalExpr>, indices: &mut HashSet<usize>) {
-    if let Some(col) = expr.as_any().downcast_ref::<datafusion::physical_expr::expressions::Column>()
+    if let Some(col) = expr
+        .as_any()
+        .downcast_ref::<datafusion::physical_expr::expressions::Column>()
     {
         indices.insert(col.index());
     }
