@@ -624,7 +624,18 @@ object CometArrayFilter extends CometExpressionSerde[ArrayFilter] {
 
 object CometArrayExists extends CometExpressionSerde[ArrayExists] {
 
+  /** Check if a lambda body contains nested lambda expressions (e.g., nested exists calls). */
+  private def containsNestedLambda(expr: Expression, currentVar: NamedLambdaVariable): Boolean = {
+    expr match {
+      case _: LambdaFunction => true
+      case _ => expr.children.exists(containsNestedLambda(_, currentVar))
+    }
+  }
+
   override def getSupportLevel(expr: ArrayExists): SupportLevel = {
+    if (!expr.followThreeValuedLogic) {
+      return Unsupported(Some("legacy non-three-valued logic mode is not supported"))
+    }
     val elementType = expr.argument.dataType.asInstanceOf[ArrayType].elementType
     elementType match {
       case BooleanType | ByteType | ShortType | IntegerType | LongType | FloatType | DoubleType |
@@ -645,7 +656,14 @@ object CometArrayExists extends CometExpressionSerde[ArrayExists] {
     }
 
     expr.function match {
-      case LambdaFunction(body, Seq(_: NamedLambdaVariable), _) =>
+      case LambdaFunction(body, Seq(lambdaVar: NamedLambdaVariable), _) =>
+        // Detect nested lambdas or references to outer lambda variables
+        // that we cannot support yet
+        if (containsNestedLambda(body, lambdaVar)) {
+          withInfo(expr, "nested lambda expressions are not supported")
+          return None
+        }
+
         val bodyProto = exprToProto(body, inputs, binding)
         if (bodyProto.isEmpty) {
           withInfo(expr, body)

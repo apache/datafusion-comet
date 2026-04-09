@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::{Array, ArrayRef, BooleanArray, LargeListArray, ListArray};
+use arrow::array::{Array, ArrayRef, BooleanArray, LargeListArray, ListArray, NullArray};
 use arrow::buffer::NullBuffer;
 use arrow::compute::kernels::take::take;
 use arrow::datatypes::{DataType, Field, Schema, UInt32Type};
@@ -24,11 +24,23 @@ use datafusion::common::{DataFusionError, Result as DataFusionResult};
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::physical_expr::PhysicalExpr;
 use std::any::Any;
+use std::collections::HashSet;
 use std::fmt::{Debug, Display, Formatter};
 use std::hash::Hash;
 use std::sync::Arc;
 
 const LAMBDA_VAR_COLUMN: &str = "__comet_lambda_var";
+
+/// Collect all column indices referenced by an expression tree.
+fn collect_referenced_columns(expr: &Arc<dyn PhysicalExpr>, indices: &mut HashSet<usize>) {
+    if let Some(col) = expr.as_any().downcast_ref::<datafusion::physical_expr::expressions::Column>()
+    {
+        indices.insert(col.index());
+    }
+    for child in expr.children() {
+        collect_referenced_columns(child, indices);
+    }
+}
 
 /// Decomposed list array: offsets as usize, values, and optional null buffer.
 struct ListComponents {
@@ -153,13 +165,28 @@ impl PhysicalExpr for ArrayExistsExpr {
 
         let repeat_indices_array = arrow::array::PrimitiveArray::<UInt32Type>::from(repeat_indices);
 
+        // Only expand columns that are actually referenced by the lambda body.
+        // Unreferenced columns get a cheap NullArray placeholder to avoid costly take().
+        let mut referenced_columns = HashSet::new();
+        collect_referenced_columns(&self.lambda_body, &mut referenced_columns);
+
         let mut expanded_columns: Vec<ArrayRef> = Vec::with_capacity(batch.num_columns() + 1);
         let mut expanded_fields: Vec<Arc<Field>> = Vec::with_capacity(batch.num_columns() + 1);
 
         for (i, col) in batch.columns().iter().enumerate() {
-            let expanded = take(col.as_ref(), &repeat_indices_array, None)?;
-            expanded_columns.push(expanded);
-            expanded_fields.push(Arc::new(batch.schema().field(i).clone()));
+            if referenced_columns.contains(&i) {
+                let expanded = take(col.as_ref(), &repeat_indices_array, None)?;
+                expanded_columns.push(expanded);
+                expanded_fields.push(Arc::new(batch.schema().field(i).clone()));
+            } else {
+                // Use a cheap NullArray placeholder for columns not referenced by the lambda
+                expanded_columns.push(Arc::new(NullArray::new(total_elements)));
+                expanded_fields.push(Arc::new(Field::new(
+                    batch.schema().field(i).name(),
+                    DataType::Null,
+                    true,
+                )));
+            }
         }
 
         let element_field = Arc::new(Field::new(

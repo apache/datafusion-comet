@@ -1006,6 +1006,53 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
+  test("array_exists - literal false and literal null lambdas") {
+    val table = "t1"
+    withTable(table) {
+      sql(s"create table $table(arr array<int>) using parquet")
+      sql(s"insert into $table values (array(1, 2, 3))")
+      sql(s"insert into $table values (array())")
+      sql(s"insert into $table values (null)")
+
+      val df = spark.table(table)
+      checkSparkAnswerAndOperator(df.select(exists(col("arr"), _ => lit(false))))
+      checkSparkAnswerAndOperator(df.select(exists(col("arr"), _ => lit(true))))
+      checkSparkAnswerAndOperator(df.select(exists(col("arr"), _ => lit(null).cast("boolean"))))
+    }
+  }
+
+  test("array_exists - fallback for legacy non-three-valued logic") {
+    val table = "t1"
+    withTable(table) {
+      sql(s"create table $table(arr array<int>) using parquet")
+      sql(s"insert into $table values (array(1, null, 3))")
+
+      withSQLConf(SQLConf.LEGACY_ARRAY_EXISTS_FOLLOWS_THREE_VALUED_LOGIC.key -> "false") {
+        val df = spark.table(table)
+        checkSparkAnswerAndFallbackReason(
+          df.select(exists(col("arr"), x => x > 2)),
+          "legacy non-three-valued logic mode is not supported")
+      }
+    }
+  }
+
+  test("array_exists - nested lambda falls back") {
+    val table = "t1"
+    withTable(table) {
+      sql(s"create table $table(arr1 array<int>, arr2 array<int>) using parquet")
+      sql(s"insert into $table values (array(1, 2, 3), array(4, 5, 6))")
+      sql(s"insert into $table values (array(10, 20), array(1, 2))")
+      sql(s"insert into $table values (array(1), array(1))")
+
+      val df = spark.table(table)
+      // nested lambda: exists(arr1, x -> exists(arr2, y -> y > x))
+      // nested lambdas are not yet supported, should fall back to Spark
+      checkSparkAnswerAndFallbackReason(
+        df.select(exists(col("arr1"), x => exists(col("arr2"), y => y > x))),
+        "nested lambda expressions are not supported")
+    }
+  }
+
   // https://github.com/apache/datafusion-comet/issues/3375
   test("(ansi) array access out of bounds - GetArrayItem") {
     withSQLConf(
