@@ -666,7 +666,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                                 .memory_pool
                                 .reserved();
                             log_memory_usage(
-                                &format!("ctx_{exec_context_id}_comet_memory_reserved"),
+                                &format!("ctx_{exec_context_id:06}_comet_memory_reserved"),
                                 reserved as u64,
                             );
                         }
@@ -708,7 +708,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
             let runtime_env = exec_context.session_ctx.runtime_env();
             let exec_context_id = exec_context.id;
             log_memory_usage(
-                &format!("ctx_{exec_context_id}_comet_memory_reserved"),
+                &format!("ctx_{exec_context_id:06}_comet_memory_reserved"),
                 runtime_env.memory_pool.reserved() as u64,
             );
         }
