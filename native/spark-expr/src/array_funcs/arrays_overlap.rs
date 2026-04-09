@@ -25,7 +25,7 @@
 //!   - null  if no definite overlap but either array contains null elements
 //!   - false if no overlap and neither array contains null elements
 
-use arrow::array::{Array, ArrayRef, BooleanArray, GenericListArray, OffsetSizeTrait};
+use arrow::array::{Array, ArrayRef, BooleanArray, GenericListArray, OffsetSizeTrait, Scalar};
 use arrow::compute::kernels::cmp::eq;
 use arrow::datatypes::{DataType, FieldRef};
 use datafusion::common::{exec_err, utils::take_function_args, Result, ScalarValue};
@@ -180,37 +180,31 @@ fn arrays_overlap_list<OffsetSize: OffsetSizeTrait>(
         }
 
         let mut found_overlap = false;
-        let mut has_null = false;
 
-        // Compare each element of left against right with null tracking
-        for li in 0..left_values.len() {
-            if left_values.is_null(li) {
-                has_null = true;
+        // Ensure smaller array is on the probe side for fewer broadcast eq calls
+        let (probe, search) = if left_values.len() <= right_values.len() {
+            (&left_values, &right_values)
+        } else {
+            (&right_values, &left_values)
+        };
+
+        // For each non-null element in probe, broadcast eq against the full search array.
+        // One kernel call per probe element: O(p * s) total work but with vectorized inner loop.
+        for pi in 0..probe.len() {
+            if probe.is_null(pi) {
                 continue;
             }
-            let left_scalar = left_values.slice(li, 1);
-
-            for ri in 0..right_values.len() {
-                if right_values.is_null(ri) {
-                    has_null = true;
-                    continue;
-                }
-                let right_scalar = right_values.slice(ri, 1);
-                let eq_result = eq(&left_scalar, &right_scalar)?;
-                if eq_result.is_valid(0) && eq_result.value(0) {
-                    found_overlap = true;
-                    break;
-                }
-            }
-
-            if found_overlap {
+            let scalar = Scalar::new(probe.slice(pi, 1));
+            let eq_result = eq(search, &scalar)?;
+            if eq_result.true_count() > 0 {
+                found_overlap = true;
                 break;
             }
         }
 
         if found_overlap {
             builder.append_value(true);
-        } else if has_null {
+        } else if left_values.null_count() > 0 || right_values.null_count() > 0 {
             builder.append_null();
         } else {
             builder.append_value(false);
