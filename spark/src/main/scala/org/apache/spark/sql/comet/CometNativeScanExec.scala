@@ -147,10 +147,6 @@ case class CometNativeScanExec(
     val filePartitions = scan.getFilePartitions()
 
     // Validate per-file schema compatibility before native execution.
-    // This must run here (not in doExecuteColumnar) because when CometNativeScanExec
-    // is wrapped by a parent CometNativeExec, the parent's doExecuteColumnar() runs
-    // the entire plan in native code and CometNativeScanExec.doExecuteColumnar() is
-    // never called. This lazy val IS always evaluated via commonData/perPartitionData.
     CometScanUtils.validatePerFileSchemaCompatibility(
       relation.sparkSession.sessionState.newHadoopConfWithOptions(relation.options),
       requiredSchema,

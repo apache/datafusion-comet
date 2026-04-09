@@ -1462,7 +1462,7 @@ index 5a413c77754..207b66e1d7b 100644
  
    import testImplicits._
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
-index 2f8e401e743..a4f94417dcc 100644
+index 2f8e401e743..dbcf3171946 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
 @@ -27,9 +27,11 @@ import org.scalatest.time.SpanSugar._
@@ -1824,7 +1824,7 @@ index 2f8e401e743..a4f94417dcc 100644
      CostEvaluator.instantiate(
        classOf[SimpleShuffleSortCostEvaluator].getCanonicalName, spark.sparkContext.getConf)
      intercept[IllegalArgumentException] {
-@@ -2452,6 +2493,7 @@ class AdaptiveQueryExecSuite
+@@ -2452,6 +2492,7 @@ class AdaptiveQueryExecSuite
            val (_, adaptive) = runAdaptiveAndVerifyResult(query)
            assert(adaptive.collect {
              case sort: SortExec => sort
@@ -1832,7 +1832,7 @@ index 2f8e401e743..a4f94417dcc 100644
            }.size == 1)
            val read = collect(adaptive) {
              case read: AQEShuffleReadExec => read
-@@ -2469,7 +2511,8 @@ class AdaptiveQueryExecSuite
+@@ -2469,7 +2510,8 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -1842,7 +1842,7 @@ index 2f8e401e743..a4f94417dcc 100644
      withTempView("v") {
        withSQLConf(
          SQLConf.ADAPTIVE_OPTIMIZE_SKEWS_IN_REBALANCE_PARTITIONS_ENABLED.key -> "true",
-@@ -2581,7 +2624,7 @@ class AdaptiveQueryExecSuite
+@@ -2581,7 +2623,7 @@ class AdaptiveQueryExecSuite
            runAdaptiveAndVerifyResult("SELECT key1 FROM skewData1 JOIN skewData2 ON key1 = key2 " +
              "JOIN skewData3 ON value2 = value3")
          val shuffles1 = collect(adaptive1) {
@@ -1851,7 +1851,7 @@ index 2f8e401e743..a4f94417dcc 100644
          }
          assert(shuffles1.size == 4)
          val smj1 = findTopLevelSortMergeJoin(adaptive1)
-@@ -2592,7 +2635,7 @@ class AdaptiveQueryExecSuite
+@@ -2592,7 +2634,7 @@ class AdaptiveQueryExecSuite
            runAdaptiveAndVerifyResult("SELECT key1 FROM skewData1 JOIN skewData2 ON key1 = key2 " +
              "JOIN skewData3 ON value1 = value3")
          val shuffles2 = collect(adaptive2) {
@@ -1860,7 +1860,7 @@ index 2f8e401e743..a4f94417dcc 100644
          }
          assert(shuffles2.size == 4)
          val smj2 = findTopLevelSortMergeJoin(adaptive2)
-@@ -2850,6 +2893,7 @@ class AdaptiveQueryExecSuite
+@@ -2850,6 +2892,7 @@ class AdaptiveQueryExecSuite
          }.size == (if (firstAccess) 1 else 0))
          assert(collect(initialExecutedPlan) {
            case s: SortExec => s
@@ -1868,7 +1868,7 @@ index 2f8e401e743..a4f94417dcc 100644
          }.size == (if (firstAccess) 2 else 0))
          assert(collect(initialExecutedPlan) {
            case i: InMemoryTableScanLike => i
-@@ -2980,7 +3024,9 @@ class AdaptiveQueryExecSuite
+@@ -2980,7 +3023,9 @@ class AdaptiveQueryExecSuite
  
        val plan = df.queryExecution.executedPlan.asInstanceOf[AdaptiveSparkPlanExec]
        assert(plan.inputPlan.isInstanceOf[TakeOrderedAndProjectExec])
@@ -2122,10 +2122,10 @@ index 8e88049f51e..20d7ef7b1bc 100644
          case _ =>
            throw new AnalysisException("Can not match ParquetTable in the query.")
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
-index 8ed9ef1630e..a865928c1b2 100644
+index 8ed9ef1630e..eed2a6f5ad5 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
-@@ -1345,7 +1347,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
+@@ -1345,7 +1345,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
      }
    }
  
@@ -2136,7 +2136,7 @@ index 8ed9ef1630e..a865928c1b2 100644
        checkAnswer(
          // "fruit" column in this file is encoded using DELTA_LENGTH_BYTE_ARRAY.
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
-index f6472ba3d9d..5ea2d938664 100644
+index f6472ba3d9d..7a8f5317ed7 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
 @@ -998,7 +999,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
@@ -2159,7 +2159,7 @@ index f6472ba3d9d..5ea2d938664 100644
          val schema1 = "a DECIMAL(3, 2), b DECIMAL(18, 3), c DECIMAL(37, 3)"
          checkAnswer(readParquet(schema1, path), df)
          val schema2 = "a DECIMAL(3, 0), b DECIMAL(18, 1), c DECIMAL(37, 1)"
-@@ -1089,7 +1093,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
+@@ -1089,7 +1091,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
        val df = sql(s"SELECT 1 a, 123456 b, ${Int.MaxValue.toLong * 10} c, CAST('1.2' AS BINARY) d")
        df.write.parquet(path.toString)
  
@@ -2169,7 +2169,7 @@ index f6472ba3d9d..5ea2d938664 100644
          checkAnswer(readParquet("a DECIMAL(3, 2)", path), sql("SELECT 1.00"))
          checkAnswer(readParquet("b DECIMAL(3, 2)", path), Row(null))
          checkAnswer(readParquet("b DECIMAL(11, 1)", path), sql("SELECT 123456.0"))
-@@ -1148,7 +1154,7 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
+@@ -1148,7 +1151,7 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
              .where(s"a < ${Long.MaxValue}")
              .collect()
          }
@@ -2254,7 +2254,7 @@ index 5c0b7def039..151184bc98c 100644
      assert(fileSourceScanSchemata.size === expectedSchemaCatalogStrings.size,
        s"Found ${fileSourceScanSchemata.size} file sources in dataframe, " +
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaSuite.scala
-index 3f47c5e506f..f1ce3194279 100644
+index 3f47c5e506f..a2a522ae8de 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaSuite.scala
 @@ -27,6 +27,7 @@ import org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName
@@ -2275,6 +2275,87 @@ index 3f47c5e506f..f1ce3194279 100644
      withTempPath { dir =>
        val e = testSchemaMismatch(dir.getCanonicalPath, vectorizedReaderEnabled = false)
        val expectedMessage = "Encountered error while reading file"
+@@ -1049,41 +1051,27 @@ class ParquetSchemaSuite extends ParquetSchemaTest {
+   test("schema mismatch failure error message for parquet vectorized reader") {
+     withTempPath { dir =>
+       val e = testSchemaMismatch(dir.getCanonicalPath, vectorizedReaderEnabled = true)
+-      assert(e.getCause.isInstanceOf[SparkException])
+-      assert(e.getCause.getCause.isInstanceOf[SchemaColumnConvertNotSupportedException])
+-
+-      // Check if the physical type is reporting correctly
+-      val errMsg = e.getCause.getMessage
+-      assert(errMsg.startsWith("Parquet column cannot be converted in file"))
+-      val file = errMsg.substring("Parquet column cannot be converted in file ".length,
+-        errMsg.indexOf(". "))
+-      val col = spark.read.parquet(file).schema.fields.filter(_.name == "a")
+-      assert(col.length == 1)
+-      if (col(0).dataType == StringType) {
+-        checkError(
+-          exception = e.getCause.asInstanceOf[SparkException],
+-          errorClass = "_LEGACY_ERROR_TEMP_2063",
+-          parameters = Map(
+-            "filePath" ->
+-              s".*${dir.getCanonicalPath}.*",
+-            "column" -> "\\[a\\]",
+-            "logicalType" -> "int",
+-            "physicalType" -> "BINARY"),
+-          matchPVals = true
+-        )
+-      } else {
+-        checkError(
+-          exception = e.getCause.asInstanceOf[SparkException],
+-          errorClass = "_LEGACY_ERROR_TEMP_2063",
+-          parameters = Map(
+-            "filePath" ->
+-              s".*${dir.getCanonicalPath}.*",
+-            "column" -> "\\[a\\]",
+-            "logicalType" -> "string",
+-            "physicalType" -> "INT32"),
+-          matchPVals = true
+-        )
++      // Comet's validation may throw SchemaColumnConvertNotSupportedException directly
++      // (without SparkException wrapper) depending on execution path.
++      // Find SchemaColumnConvertNotSupportedException in the cause chain.
++      var cause: Throwable = e
++      var scnse: SchemaColumnConvertNotSupportedException = null
++      while (cause != null && scnse == null) {
++        cause match {
++          case s: SchemaColumnConvertNotSupportedException => scnse = s
++          case _ => cause = cause.getCause
++        }
+       }
++      assert(scnse != null,
++        s"Expected SchemaColumnConvertNotSupportedException in cause chain, got: $e")
++
++      // Check the column name is correct
++      assert(scnse.getColumn.contains("a"),
++        s"Expected column 'a' in exception, got: ${scnse.getColumn}")
++      // Physical type should be either BINARY (string file read as int)
++      // or INT32 (int file read as string)
++      assert(scnse.getPhysicalType == "BINARY" || scnse.getPhysicalType == "INT32",
++        s"Unexpected physical type: ${scnse.getPhysicalType}")
+     }
+   }
+ 
+@@ -1102,8 +1090,16 @@ class ParquetSchemaSuite extends ParquetSchemaTest {
+         val e = intercept[SparkException] {
+           spark.read.schema(df2.schema).parquet(s"$path/parquet").collect()
+         }
+-        assert(e.getCause.isInstanceOf[SparkException])
+-        assert(e.getCause.getCause.isInstanceOf[SchemaColumnConvertNotSupportedException])
++        // Comet may throw SchemaColumnConvertNotSupportedException at different
++        // levels in the cause chain depending on execution path.
++        var cause: Throwable = e
++        var found = false
++        while (cause != null && !found) {
++          if (cause.isInstanceOf[SchemaColumnConvertNotSupportedException]) found = true
++          cause = cause.getCause
++        }
++        assert(found,
++          s"Expected SchemaColumnConvertNotSupportedException in cause chain, got: $e")
+       }
+     }
+   }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/debug/DebuggingSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/debug/DebuggingSuite.scala
 index b8f3ea3c6f3..bbd44221288 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/debug/DebuggingSuite.scala

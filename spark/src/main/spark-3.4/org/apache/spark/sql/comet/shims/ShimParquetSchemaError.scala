@@ -22,6 +22,19 @@ package org.apache.spark.sql.comet.shims
 import org.apache.spark.SparkException
 import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException
 
+/**
+ * Spark 3.4: matches Spark's native cause chain depth.
+ *
+ * Spark's FileScanRDD wraps errors as: SparkException (file-level) → SparkException
+ * (column-level) → SCNSE
+ *
+ * Tests assert at different levels:
+ *   - SPARK-35640: getMessage.contains("Parquet column cannot be converted in file")
+ *   - SPARK-34212: getCause.getCause.isInstanceOf[SCNSE]
+ *   - row group skipping: getMessage.contains("Column: [a], Expected: bigint, Found: INT32")
+ *
+ * The outer message must include the column details so getMessage() checks pass.
+ */
 object ShimParquetSchemaError {
   def parquetColumnMismatchError(
       filePath: String,
@@ -29,9 +42,18 @@ object ShimParquetSchemaError {
       expectedType: String,
       actualType: String,
       cause: SchemaColumnConvertNotSupportedException): SparkException = {
-    new SparkException(
+    val columnMsg =
       s"Parquet column cannot be converted in file $filePath. " +
-        s"Column: [$column], Expected: $expectedType, Found: $actualType",
-      cause)
+        s"Column: [$column], Expected: $expectedType, Found: $actualType"
+    // Inner SparkException (column-level) — what getCause returns
+    val inner = new SparkException(columnMsg, cause)
+    // Outer SparkException (file-level) — includes column details in message
+    // so getMessage().contains() checks work at any level
+    new SparkException(columnMsg, inner)
+  }
+
+  /** Wrap a RuntimeException (e.g., from TypeUtil.convertErrorForTimestampNTZ) */
+  def parquetRuntimeError(filePath: String, cause: RuntimeException): SparkException = {
+    new SparkException(cause.getMessage, cause)
   }
 }

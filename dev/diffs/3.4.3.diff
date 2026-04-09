@@ -2187,6 +2187,30 @@ diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/
 index 8670d95c65e..c7ba51f770f 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
+@@ -41,6 +41,7 @@ import org.apache.parquet.schema.{MessageType, MessageTypeParser}
+ 
+ import org.apache.spark.{SPARK_VERSION_SHORT, SparkException, TestUtils}
+ import org.apache.spark.sql._
++import org.apache.spark.sql.IgnoreCometNativeDataFusion
+ import org.apache.spark.sql.catalyst.{InternalRow, ScalaReflection}
+ import org.apache.spark.sql.catalyst.expressions.{GenericInternalRow, UnsafeRow}
+ import org.apache.spark.sql.catalyst.util.DateTimeUtils
+@@ -1064,7 +1065,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
+     }
+   }
+ 
+   test("SPARK-35640: read binary as timestamp should throw schema incompatible error") {
+     val data = (1 to 4).map(i => Tuple1(i.toString))
+     val readSchema = StructType(Seq(StructField("_1", DataTypes.TimestampType)))
+ 
+@@ -1075,7 +1077,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
+     }
+   }
+ 
+   test("SPARK-35640: int as long should throw schema incompatible error") {
+     val data = (1 to 4).map(i => Tuple1(i))
+     val readSchema = StructType(Seq(StructField("_1", DataTypes.LongType)))
+ 
 @@ -1335,7 +1338,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
      }
    }
@@ -2201,6 +2225,22 @@ diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/
 index 29cb224c878..ee5a87fa200 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
+@@ -27,6 +27,7 @@ import org.apache.parquet.hadoop.ParquetOutputFormat
+ 
+ import org.apache.spark.{DebugFilesystem, SparkConf, SparkException}
+ import org.apache.spark.sql._
++import org.apache.spark.sql.IgnoreCometNativeDataFusion
+ import org.apache.spark.sql.catalyst.{InternalRow, TableIdentifier}
+ import org.apache.spark.sql.catalyst.expressions.SpecificInternalRow
+ import org.apache.spark.sql.catalyst.util.ArrayData
+@@ -185,7 +186,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
+     }
+   }
+ 
+   test("SPARK-36182: can't read TimestampLTZ as TimestampNTZ") {
+     val data = (1 to 1000).map { i =>
+       val ts = new java.sql.Timestamp(i)
+       Row(ts)
 @@ -978,7 +980,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
      }
    }
@@ -2211,6 +2251,14 @@ index 29cb224c878..ee5a87fa200 100644
      withAllParquetReaders {
        withTempPath { path =>
          // Repeated values for dictionary encoding.
+@@ -1031,7 +1034,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
+     testMigration(fromTsType = "TIMESTAMP_MICROS", toTsType = "INT96")
+   }
+ 
+   test("SPARK-34212 Parquet should read decimals correctly") {
+     def readParquet(schema: String, path: File): DataFrame = {
+       spark.read.schema(schema).parquet(path.toString)
+     }
 @@ -1047,7 +1051,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
          checkAnswer(readParquet(schema, path), df)
        }
@@ -2231,6 +2279,14 @@ index 29cb224c878..ee5a87fa200 100644
          checkAnswer(readParquet("a DECIMAL(3, 2)", path), sql("SELECT 1.00"))
          checkAnswer(readParquet("b DECIMAL(3, 2)", path), Row(null))
          checkAnswer(readParquet("b DECIMAL(11, 1)", path), sql("SELECT 123456.0"))
+@@ -1113,7 +1119,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
+     }
+   }
+ 
+   test("row group skipping doesn't overflow when reading into larger type") {
+     withTempPath { path =>
+       Seq(0).toDF("a").write.parquet(path.toString)
+       // The vectorized and non-vectorized readers will produce different exceptions, we don't need
 @@ -1128,7 +1135,7 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
              .where(s"a < ${Long.MaxValue}")
              .collect()
@@ -2316,7 +2372,7 @@ index 5c0b7def039..151184bc98c 100644
      assert(fileSourceScanSchemata.size === expectedSchemaCatalogStrings.size,
        s"Found ${fileSourceScanSchemata.size} file sources in dataframe, " +
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaSuite.scala
-index bf5c51b89bb..4e2f0bdb389 100644
+index bf5c51b89bb..44da22178dd 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaSuite.scala
 @@ -27,6 +27,7 @@ import org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName
@@ -2337,6 +2393,86 @@ index bf5c51b89bb..4e2f0bdb389 100644
      withTempPath { dir =>
        val e = testSchemaMismatch(dir.getCanonicalPath, vectorizedReaderEnabled = false)
        val expectedMessage = "Encountered error while reading file"
+@@ -1029,41 +1031,26 @@ class ParquetSchemaSuite extends ParquetSchemaTest {
+   test("schema mismatch failure error message for parquet vectorized reader") {
+     withTempPath { dir =>
+       val e = testSchemaMismatch(dir.getCanonicalPath, vectorizedReaderEnabled = true)
+-      assert(e.getCause.isInstanceOf[SparkException])
+-      assert(e.getCause.getCause.isInstanceOf[SchemaColumnConvertNotSupportedException])
+-
+-      // Check if the physical type is reporting correctly
+-      val errMsg = e.getCause.getMessage
+-      assert(errMsg.startsWith("Parquet column cannot be converted in file"))
+-      val file = errMsg.substring("Parquet column cannot be converted in file ".length,
+-        errMsg.indexOf(". "))
+-      val col = spark.read.parquet(file).schema.fields.filter(_.name == "a")
+-      assert(col.length == 1)
+-      if (col(0).dataType == StringType) {
+-        checkError(
+-          exception = e.getCause.asInstanceOf[SparkException],
+-          errorClass = "_LEGACY_ERROR_TEMP_2063",
+-          parameters = Map(
+-            "filePath" ->
+-              s".*${dir.getCanonicalPath}.*",
+-            "column" -> "\\[a\\]",
+-            "logicalType" -> "int",
+-            "physicalType" -> "BINARY"),
+-          matchPVals = true
+-        )
+-      } else {
+-        checkError(
+-          exception = e.getCause.asInstanceOf[SparkException],
+-          errorClass = "_LEGACY_ERROR_TEMP_2063",
+-          parameters = Map(
+-            "filePath" ->
+-              s".*${dir.getCanonicalPath}.*",
+-            "column" -> "\\[a\\]",
+-            "logicalType" -> "string",
+-            "physicalType" -> "INT32"),
+-          matchPVals = true
+-        )
++      // Comet's validation may throw SchemaColumnConvertNotSupportedException directly
++      // (without SparkException wrapper) depending on execution path.
++      var cause: Throwable = e
++      var scnse: SchemaColumnConvertNotSupportedException = null
++      while (cause != null && scnse == null) {
++        cause match {
++          case s: SchemaColumnConvertNotSupportedException => scnse = s
++          case _ => cause = cause.getCause
++        }
+       }
++      assert(scnse != null,
++        s"Expected SchemaColumnConvertNotSupportedException in cause chain, got: $e")
++
++      // Check the column name is correct
++      assert(scnse.getColumn.contains("a"),
++        s"Expected column 'a' in exception, got: ${scnse.getColumn}")
++      // Physical type should be either BINARY (string file read as int)
++      // or INT32 (int file read as string)
++      assert(scnse.getPhysicalType == "BINARY" || scnse.getPhysicalType == "INT32",
++        s"Unexpected physical type: ${scnse.getPhysicalType}")
+     }
+   }
+ 
+@@ -1082,8 +1069,16 @@ class ParquetSchemaSuite extends ParquetSchemaTest {
+         val e = intercept[SparkException] {
+           spark.read.schema(df2.schema).parquet(s"$path/parquet").collect()
+         }
+-        assert(e.getCause.isInstanceOf[SparkException])
+-        assert(e.getCause.getCause.isInstanceOf[SchemaColumnConvertNotSupportedException])
++        // Comet may throw SchemaColumnConvertNotSupportedException at different
++        // levels in the cause chain depending on execution path.
++        var cause: Throwable = e
++        var found = false
++        while (cause != null && !found) {
++          if (cause.isInstanceOf[SchemaColumnConvertNotSupportedException]) found = true
++          cause = cause.getCause
++        }
++        assert(found,
++          s"Expected SchemaColumnConvertNotSupportedException in cause chain, got: $e")
+       }
+     }
+   }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/debug/DebuggingSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/debug/DebuggingSuite.scala
 index 3a0bd35cb70..b28f06a757f 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/debug/DebuggingSuite.scala

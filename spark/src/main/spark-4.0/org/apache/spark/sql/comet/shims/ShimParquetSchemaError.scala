@@ -22,6 +22,9 @@ package org.apache.spark.sql.comet.shims
 import org.apache.spark.SparkException
 import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException
 
+/**
+ * Spark 4.0: uses structured error class with message parameters.
+ */
 object ShimParquetSchemaError {
   def parquetColumnMismatchError(
       filePath: String,
@@ -37,5 +40,10 @@ object ShimParquetSchemaError {
         "expectedType" -> expectedType,
         "actualType" -> actualType),
       cause = cause)
+  }
+
+  /** Wrap a RuntimeException (e.g., from TypeUtil.convertErrorForTimestampNTZ) */
+  def parquetRuntimeError(filePath: String, cause: RuntimeException): SparkException = {
+    new SparkException(cause.getMessage, cause)
   }
 }

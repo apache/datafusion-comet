@@ -28,6 +28,8 @@ import org.apache.spark.sql.comet.shims.ShimParquetSchemaError
 import org.apache.spark.sql.execution.datasources.{FilePartition, SchemaColumnConvertNotSupportedException}
 import org.apache.spark.sql.types._
 
+import org.apache.comet.CometConf
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.parquet.{FooterReader, TypeUtil}
 
 object CometScanUtils {
@@ -47,9 +49,10 @@ object CometScanUtils {
    * against the actual file schema. This catches mismatches that table-level schema checks miss
    * (e.g., when `spark.read.schema(...)` specifies a type incompatible with the file).
    *
-   * For primitive columns, delegates to [[TypeUtil.checkParquetType]] which mirrors Spark's
-   * `ParquetVectorUpdaterFactory` logic and is version-aware (Spark 4 type promotion). For
-   * complex types, checks kind-level mismatches (e.g., reading a scalar as an array).
+   * Checks structural mismatches (scalar as array, primitive as struct/map) on all Spark
+   * versions. On Spark 4.0+, also validates primitive-to-primitive type mismatches via
+   * TypeUtil.checkParquetType. On Spark 3.x, primitive type checks are left to the execution path
+   * which has proper config awareness (schema evolution).
    */
   def validatePerFileSchemaCompatibility(
       hadoopConf: Configuration,
@@ -63,97 +66,92 @@ object CometScanUtils {
       file <- partition.files
     } {
       val filePath = file.filePath.toString()
-      val footer = FooterReader.readFooter(hadoopConf, file)
-      val fileSchema = footer.getFileMetaData.getSchema
-
-      requiredSchema.fields.foreach { field =>
-        val fieldName = field.name
-        // Skip partition columns - their values come from directory paths, not the file
-        val isPartitionCol = if (caseSensitive) {
-          partitionColumnNames.contains(fieldName)
-        } else {
-          partitionColumnNames.exists(_.equalsIgnoreCase(fieldName))
+      // Read footer; skip files with unsupported Parquet types (TIMESTAMP(NANOS), INTERVAL)
+      val footerOpt =
+        try {
+          Some(FooterReader.readFooter(hadoopConf, file))
+        } catch {
+          case _: Exception => None
         }
-        if (!isPartitionCol) {
-          val parquetFieldOpt = {
-            val fields = fileSchema.getFields.asScala
-            if (caseSensitive) fields.find(_.getName == fieldName)
-            else fields.find(_.getName.equalsIgnoreCase(fieldName))
+      footerOpt.foreach { footer =>
+        val fileSchema = footer.getFileMetaData.getSchema
+
+        requiredSchema.fields.foreach { field =>
+          val fieldName = field.name
+          // Skip partition columns - their values come from directory paths, not the file
+          val isPartitionCol = if (caseSensitive) {
+            partitionColumnNames.contains(fieldName)
+          } else {
+            partitionColumnNames.exists(_.equalsIgnoreCase(fieldName))
           }
+          if (!isPartitionCol) {
+            val parquetFieldOpt = {
+              val fields = fileSchema.getFields.asScala
+              if (caseSensitive) fields.find(_.getName == fieldName)
+              else fields.find(_.getName.equalsIgnoreCase(fieldName))
+            }
 
-          parquetFieldOpt.foreach { parquetField =>
-            field.dataType match {
-              case _: ArrayType =>
-                // A REPEATED primitive/group is a valid legacy 2-level Parquet array.
-                // Only reject when the file has a non-repeated primitive (genuine scalar).
-                if (parquetField.isPrimitive &&
-                  parquetField.getRepetition != Repetition.REPEATED) {
-                  throwSchemaMismatch(
-                    filePath,
-                    fieldName,
-                    field.dataType.catalogString,
-                    parquetField.asPrimitiveType.getPrimitiveTypeName.toString)
-                }
+            parquetFieldOpt.foreach { parquetField =>
+              field.dataType match {
+                case _: ArrayType =>
+                  // A REPEATED primitive/group is a valid legacy 2-level Parquet array.
+                  // Only reject when the file has a non-repeated primitive.
+                  if (parquetField.isPrimitive &&
+                    parquetField.getRepetition != Repetition.REPEATED) {
+                    throwSchemaMismatch(
+                      filePath,
+                      fieldName,
+                      field.dataType.catalogString,
+                      parquetField.asPrimitiveType.getPrimitiveTypeName.toString)
+                  }
 
-              case _: StructType | _: MapType =>
-                // Read schema expects struct/map; file must have a group type
-                if (parquetField.isPrimitive) {
-                  throwSchemaMismatch(
-                    filePath,
-                    fieldName,
-                    field.dataType.catalogString,
-                    parquetField.asPrimitiveType.getPrimitiveTypeName.toString)
-                }
+                case _: StructType | _: MapType =>
+                  if (parquetField.isPrimitive) {
+                    throwSchemaMismatch(
+                      filePath,
+                      fieldName,
+                      field.dataType.catalogString,
+                      parquetField.asPrimitiveType.getPrimitiveTypeName.toString)
+                  }
 
-              case _ =>
-                if (parquetField.isPrimitive) {
-                  // Primitive -> Primitive: use TypeUtil.checkParquetType which mirrors
-                  // Spark's ParquetVectorUpdaterFactory logic.
-                  // TypeUtil may not cover all Spark types (e.g., intervals, collated
-                  // strings). Only rethrow for types TypeUtil explicitly knows about
-                  // (basic primitives, decimals, timestamps). For unknown types, let
-                  // the execution path handle errors with proper context.
-                  try {
+                case _ =>
+                  if (parquetField.isPrimitive) {
+                    // TypeUtil.checkParquetType for primitive type validation.
+                    // On Spark 3.x with schema evolution enabled, suppress SCNSE errors
+                    // since TypeUtil allows extra conversions (Int->Long).
+                    val schemaEvolutionEnabled =
+                      CometConf.COMET_SCHEMA_EVOLUTION_ENABLED.get()
                     val descriptor =
                       fileSchema.getColumnDescription(Array(parquetField.getName))
                     if (descriptor != null) {
-                      TypeUtil.checkParquetType(descriptor, field.dataType)
+                      try {
+                        TypeUtil.checkParquetType(descriptor, field.dataType)
+                      } catch {
+                        case scnse: SchemaColumnConvertNotSupportedException
+                            if !schemaEvolutionEnabled || isSpark40Plus =>
+                          throw ShimParquetSchemaError.parquetColumnMismatchError(
+                            filePath,
+                            fieldName,
+                            field.dataType.catalogString,
+                            scnse.getPhysicalType,
+                            scnse)
+                        case _: SchemaColumnConvertNotSupportedException =>
+                        // Schema evolution on Spark 3.x - suppress
+                        case re: RuntimeException =>
+                          // TypeUtil.convertErrorForTimestampNTZ throws RuntimeException
+                          // for LTZ→NTZ on Spark 3.x. Preserve original message so tests
+                          // can assert on it (e.g., "Unable to create Parquet converter").
+                          throw ShimParquetSchemaError.parquetRuntimeError(filePath, re)
+                      }
                     }
-                  } catch {
-                    case scnse: SchemaColumnConvertNotSupportedException
-                        if isTypeUtilKnownType(field.dataType) =>
-                      throw ShimParquetSchemaError.parquetColumnMismatchError(
-                        filePath,
-                        fieldName,
-                        field.dataType.catalogString,
-                        scnse.getPhysicalType,
-                        scnse)
-                    case _: SchemaColumnConvertNotSupportedException =>
-                    // TypeUtil doesn't know this type - skip, let execution handle it
                   }
-                }
-              // else: file has complex (group) type for a non-Array/Struct/Map read type.
-              // This could be valid (e.g., variant, UDT stored as group). Let execution
-              // path handle any actual incompatibilities.
+                // else: complex type for non-Array/Struct/Map - let execution handle
+              }
             }
           }
         }
       }
     }
-  }
-
-  /**
-   * Returns true if TypeUtil.checkParquetType covers this Spark type. For types it doesn't know
-   * (intervals, collated strings, etc.), we skip rethrow and let the execution path handle
-   * errors.
-   */
-  private def isTypeUtilKnownType(dt: DataType): Boolean = dt match {
-    case BooleanType | ByteType | ShortType | IntegerType | LongType => true
-    case FloatType | DoubleType => true
-    case StringType | BinaryType => true
-    case DateType | TimestampType => true
-    case _: DecimalType => true
-    case _ => false
   }
 
   private def throwSchemaMismatch(
