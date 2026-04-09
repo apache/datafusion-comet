@@ -141,6 +141,19 @@ Cast operations in Comet fall into three levels of support:
   Spark.
 - **N/A**: Spark does not support this cast.
 
+### String to Decimal
+
+Comet's native `CAST(string AS DECIMAL)` implementation matches Apache Spark's behavior,
+including:
+
+- Leading and trailing ASCII whitespace is trimmed before parsing.
+- Null bytes (`\u0000`) at the start or end of a string are trimmed, matching Spark's
+  `UTF8String` behavior. Null bytes embedded in the middle of a string produce `NULL`.
+- Fullwidth Unicode digits (U+FF10–U+FF19, e.g. `１２３.４５`) are treated as their ASCII
+  equivalents, so `CAST('１２３.４５' AS DECIMAL(10,2))` returns `123.45`.
+- Scientific notation (e.g. `1.23E+5`) is supported.
+- Special values (`inf`, `infinity`, `nan`) produce `NULL`.
+
 ### String to Timestamp
 
 Comet's native `CAST(string AS TIMESTAMP)` implementation supports all timestamp formats accepted
