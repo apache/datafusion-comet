@@ -157,6 +157,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[Concat] -> CometConcat,
     classOf[Contains] -> CometScalarFunction("contains"),
     classOf[EndsWith] -> CometScalarFunction("ends_with"),
+    classOf[GetJsonObject] -> CometGetJsonObject,
     classOf[InitCap] -> CometInitCap,
     classOf[Length] -> CometLength,
     classOf[Like] -> CometLike,

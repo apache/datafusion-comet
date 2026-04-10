@@ -61,24 +61,18 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
   }
 
   test("native shuffle: different data type") {
-    // https://github.com/apache/datafusion-comet/issues/1538
-    assume(CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_DATAFUSION)
-    Seq(true, false).foreach { execEnabled =>
-      Seq(true, false).foreach { dictionaryEnabled =>
-        withTempDir { dir =>
-          val path = new Path(dir.toURI.toString, "test.parquet")
-          makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 1000)
-          var allTypes: Seq[Int] = (1 to 20)
-          allTypes.map(i => s"_$i").foreach { c =>
-            withSQLConf(
-              CometConf.COMET_EXEC_ENABLED.key -> execEnabled.toString,
-              "parquet.enable.dictionary" -> dictionaryEnabled.toString) {
-              readParquetFile(path.toString) { df =>
-                val shuffled = df
-                  .select($"_1")
-                  .repartition(10, col(c))
-                checkShuffleAnswer(shuffled, 1, checkNativeOperators = execEnabled)
-              }
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 1000)
+        var allTypes: Seq[Int] = (1 to 20)
+        allTypes.map(i => s"_$i").foreach { c =>
+          withSQLConf("parquet.enable.dictionary" -> dictionaryEnabled.toString) {
+            readParquetFile(path.toString) { df =>
+              val shuffled = df
+                .select($"_1")
+                .repartition(10, col(c))
+              checkShuffleAnswer(shuffled, 1, checkNativeOperators = true)
             }
           }
         }
@@ -471,6 +465,37 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
           .agg(count("l_id").as("cnt"))
           .orderBy("key")
         checkSparkAnswer(df)
+      }
+    }
+  }
+
+  // Regression test for https://github.com/apache/datafusion-comet/issues/3846
+  test("repartition count") {
+    withTempPath { dir =>
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        spark
+          .range(1000)
+          .selectExpr("id", "concat('name_', id) as name")
+          .repartition(100)
+          .write
+          .parquet(dir.toString)
+      }
+      withSQLConf(
+        CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
+        CometConf.COMET_EXEC_SHUFFLE_WITH_ROUND_ROBIN_PARTITIONING_ENABLED.key -> "true") {
+        val testDF = spark.read.parquet(dir.toString).repartition(10)
+        // Verify CometShuffleExchangeExec is in the plan
+        assert(
+          find(testDF.queryExecution.executedPlan) {
+            case _: CometShuffleExchangeExec => true
+            case _ => false
+          }.isDefined,
+          "Expected CometShuffleExchangeExec in the plan")
+        // Actual validation, no crash
+        val count = testDF.count()
+        assert(count == 1000)
+        // Ensure test df evaluated by Comet
+        checkSparkAnswerAndOperator(testDF)
       }
     }
   }
