@@ -120,9 +120,10 @@ case class CometShuffleExchangeExec(
               val inputSources = scala.collection.mutable.ArrayBuffer.empty[SparkPlan]
               nativeChild.foreachUntilCometInput(nativeChild)(inputSources += _)
 
-              // Only optimize single-source native scan case for now
+              // Optimize when all input sources are native scans
+              // (CometNativeScanExec, CometIcebergNativeScanExec).
               // JVM scan wrappers (CometScanExec, CometBatchScanExec) still need JNI input,
-              // so we don't optimize those yet
+              // so we don't optimize those.
               // Check if the plan contains subqueries (e.g., bloom filters with might_contain).
               // Subqueries are registered with the parent execution context ID, but direct
               // native shuffle creates a new execution context, so subquery lookup would fail.
