@@ -58,6 +58,13 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   val DIVIDE_BY_ZERO_EXCEPTION_MSG =
     """Division by zero. Use `try_divide` to tolerate divisor being 0 and return NULL instead"""
 
+  // Temporary test to verify checkSparkAnswer failure output labels Comet/Spark correctly.
+  ignore("check output labels on mismatch") {
+    val cometDf = Seq((1, "apple"), (2, "banana"), (3, "cherry")).toDF("id", "fruit")
+    val sparkAnswer = Seq(Row(1, "apple"), Row(2, "BANANA"), Row(3, "cherry"))
+    checkCometAnswer(cometDf, sparkAnswer)
+  }
+
   test("sort floating point with negative zero") {
     val schema = StructType(
       Seq(
