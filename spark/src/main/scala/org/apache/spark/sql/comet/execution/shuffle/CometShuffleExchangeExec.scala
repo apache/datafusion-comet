@@ -30,7 +30,7 @@ import org.apache.spark.rdd.RDD
 import org.apache.spark.serializer.Serializer
 import org.apache.spark.shuffle.sort.SortShuffleManager
 import org.apache.spark.sql.catalyst.{InternalRow, SQLConfHelper}
-import org.apache.spark.sql.catalyst.expressions.{Attribute, BoundReference, UnsafeProjection, UnsafeRow}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, BoundReference, Expression, PlanExpression, UnsafeProjection, UnsafeRow}
 import org.apache.spark.sql.catalyst.expressions.codegen.LazilyGeneratedOrdering
 import org.apache.spark.sql.catalyst.plans.logical.Statistics
 import org.apache.spark.sql.catalyst.plans.physical._
@@ -542,6 +542,11 @@ object CometShuffleExchangeExec
       return false
     }
 
+    if (CometConf.COMET_DPP_FALLBACK_ENABLED.get() && stageContainsDPPScan(s)) {
+      withInfo(s, "Stage contains a scan with Dynamic Partition Pruning")
+      return false
+    }
+
     if (!isCometJVMShuffleMode(s.conf)) {
       withInfo(s, "Comet columnar shuffle not enabled")
       return false
@@ -630,6 +635,22 @@ object CometShuffleExchangeExec
       case op: ShuffleQueryStageExec if op.plan.isInstanceOf[CometShuffleExchangeExec] => true
       case _: CometShuffleExchangeExec => true
       case op: CometSinkPlaceHolder => isShuffleOperator(op.child)
+      case _ => false
+    }
+  }
+
+  /**
+   * Returns true if the stage (the subtree rooted at this shuffle) contains a scan with Dynamic
+   * Partition Pruning (DPP). When DPP is present, the scan falls back to Spark, and wrapping the
+   * stage with Comet shuffle creates inefficient row-to-columnar transitions.
+   */
+  private def stageContainsDPPScan(s: ShuffleExchangeExec): Boolean = {
+    def isDynamicPruningFilter(e: Expression): Boolean =
+      e.exists(_.isInstanceOf[PlanExpression[_]])
+
+    s.child.exists {
+      case scan: FileSourceScanExec =>
+        scan.partitionFilters.exists(isDynamicPruningFilter)
       case _ => false
     }
   }
