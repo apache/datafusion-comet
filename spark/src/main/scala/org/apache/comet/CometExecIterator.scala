@@ -127,8 +127,7 @@ class CometExecIterator(
       memoryConfig.memoryLimitPerTask,
       taskAttemptId,
       taskCPUs,
-      keyUnwrapper,
-      Thread.currentThread().getId)
+      keyUnwrapper)
   }
 
   private var nextBatch: Option[ColumnarBatch] = None

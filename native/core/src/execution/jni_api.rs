@@ -88,7 +88,9 @@ use crate::execution::operators::{ScanExec, ShuffleScanExec};
 use crate::execution::shuffle::{read_ipc_compressed, CompressionCodec};
 use crate::execution::spark_plan::SparkPlan;
 
-use crate::execution::tracing::{log_memory_usage, trace_begin, trace_end, with_trace};
+use crate::execution::tracing::{
+    get_thread_id, log_memory_usage, trace_begin, trace_end, with_trace,
+};
 
 use crate::execution::memory_pools::logging_pool::LoggingMemoryPool;
 use crate::execution::spark_config::{
@@ -112,9 +114,9 @@ fn log_jemalloc_usage() {
     log_memory_usage("jemalloc_allocated", allocated.read().unwrap() as u64);
 }
 
-/// Registry of active memory pools per Java thread ID.
+/// Registry of active memory pools per Rust thread ID.
 /// Used to sum memory reservations across all contexts on the same thread for tracing.
-type ThreadPoolMap = HashMap<i64, HashMap<i64, Arc<dyn MemoryPool>>>;
+type ThreadPoolMap = HashMap<u64, HashMap<i64, Arc<dyn MemoryPool>>>;
 
 static THREAD_MEMORY_POOLS: OnceLock<Mutex<ThreadPoolMap>> = OnceLock::new();
 
@@ -122,7 +124,7 @@ fn get_thread_memory_pools() -> &'static Mutex<ThreadPoolMap> {
     THREAD_MEMORY_POOLS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn register_memory_pool(thread_id: i64, context_id: i64, pool: Arc<dyn MemoryPool>) {
+fn register_memory_pool(thread_id: u64, context_id: i64, pool: Arc<dyn MemoryPool>) {
     get_thread_memory_pools()
         .lock()
         .entry(thread_id)
@@ -131,7 +133,7 @@ fn register_memory_pool(thread_id: i64, context_id: i64, pool: Arc<dyn MemoryPoo
 }
 
 /// Unregister a context's pool and return the remaining total reserved for the thread.
-fn unregister_and_total(thread_id: i64, context_id: i64) -> usize {
+fn unregister_and_total(thread_id: u64, context_id: i64) -> usize {
     let mut map = get_thread_memory_pools().lock();
     if let Some(pools) = map.get_mut(&thread_id) {
         pools.remove(&context_id);
@@ -144,7 +146,7 @@ fn unregister_and_total(thread_id: i64, context_id: i64) -> usize {
     0
 }
 
-fn total_reserved_for_thread(thread_id: i64) -> usize {
+fn total_reserved_for_thread(thread_id: u64) -> usize {
     let map = get_thread_memory_pools().lock();
     map.get(&thread_id)
         .map(|pools| pools.values().map(|p| p.reserved()).sum::<usize>())
@@ -228,8 +230,8 @@ struct ExecutionContext {
     pub memory_pool_config: MemoryPoolConfig,
     /// Whether to log memory usage on each call to execute_plan
     pub tracing_enabled: bool,
-    /// Java thread ID, used for aggregating tracing metrics per thread
-    pub java_thread_id: i64,
+    /// Rust thread ID, used for aggregating tracing metrics per thread
+    pub rust_thread_id: u64,
     /// Pre-computed metric name for tracing memory usage
     pub tracing_memory_metric_name: String,
 }
@@ -258,7 +260,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     task_attempt_id: jlong,
     task_cpus: jlong,
     key_unwrapper_obj: JObject,
-    java_thread_id: jlong,
 ) -> jlong {
     try_unwrap_or_throw(&e, |env| {
         // Deserialize Spark configs
@@ -365,9 +366,10 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
 
             // Register this context's memory pool so we can sum all pools
             // on the same thread when emitting tracing metrics.
+            let rust_thread_id = get_thread_id();
             if tracing_enabled {
                 register_memory_pool(
-                    java_thread_id,
+                    rust_thread_id,
                     id,
                     Arc::clone(&session.runtime_env().memory_pool),
                 );
@@ -394,9 +396,9 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 explain_native,
                 memory_pool_config,
                 tracing_enabled,
-                java_thread_id,
+                rust_thread_id,
                 tracing_memory_metric_name: format!(
-                    "thread_{java_thread_id}_comet_memory_reserved"
+                    "thread_{rust_thread_id}_comet_memory_reserved"
                 ),
             });
 
@@ -723,7 +725,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                         if exec_context.tracing_enabled {
                             log_memory_usage(
                                 &exec_context.tracing_memory_metric_name,
-                                total_reserved_for_thread(exec_context.java_thread_id) as u64,
+                                total_reserved_for_thread(exec_context.rust_thread_id) as u64,
                             );
                         }
                     }
@@ -758,7 +760,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
             log_jemalloc_usage();
             log_memory_usage(
                 &exec_context.tracing_memory_metric_name,
-                total_reserved_for_thread(exec_context.java_thread_id) as u64,
+                total_reserved_for_thread(exec_context.rust_thread_id) as u64,
             );
         }
 
@@ -787,7 +789,7 @@ pub extern "system" fn Java_org_apache_comet_Native_releasePlan(
         // Unregister this context's pool and emit the remaining total for the thread
         if execution_context.tracing_enabled {
             let remaining =
-                unregister_and_total(execution_context.java_thread_id, execution_context.id);
+                unregister_and_total(execution_context.rust_thread_id, execution_context.id);
             log_memory_usage(
                 &execution_context.tracing_memory_metric_name,
                 remaining as u64,
@@ -1033,6 +1035,16 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_logMemoryUsage(
         log_memory_usage(&name, value as u64);
         Ok(())
     })
+}
+
+#[no_mangle]
+/// Returns the Rust thread ID for the current thread.
+/// This allows Java code to use Rust thread IDs in tracing metric names.
+pub extern "system" fn Java_org_apache_comet_Native_getRustThreadId(
+    _e: EnvUnowned,
+    _class: JClass,
+) -> jlong {
+    get_thread_id() as jlong
 }
 
 // ============================================================================

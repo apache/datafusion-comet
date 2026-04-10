@@ -214,7 +214,7 @@ public class CometUnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
     if (tracingEnabled) {
       nativeLib.traceBegin("comet_unsafe_shuffle_writer");
     }
-    String offheapMemKey = "comet_shuffle_" + Thread.currentThread().getId();
+    String offheapMemKey = "thread_" + nativeLib.getRustThreadId() + "_comet_jvm_shuffle";
     try {
       while (records.hasNext()) {
         insertRecordIntoSorter(records.next());

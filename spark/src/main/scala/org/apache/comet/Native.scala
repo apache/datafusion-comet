@@ -69,8 +69,7 @@ class Native extends NativeBase {
       memoryLimitPerTask: Long,
       taskAttemptId: Long,
       taskCPUs: Long,
-      keyUnwrapper: CometFileKeyUnwrapper,
-      javaThreadId: Long): Long
+      keyUnwrapper: CometFileKeyUnwrapper): Long
   // scalastyle:on
 
   /**
@@ -203,6 +202,11 @@ class Native extends NativeBase {
    *   Number of bytes in use
    */
   @native def logMemoryUsage(name: String, memoryUsageBytes: Long): Unit
+
+  /**
+   * Returns the Rust thread ID for the current thread.
+   */
+  @native def getRustThreadId(): Long
 
   // Native Columnar to Row conversion methods
 

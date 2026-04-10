@@ -59,5 +59,5 @@ Example trace visualization:
 | -------------------------------- | -------------------------------------------------------------------------------------------- |
 | jvm_heap_used                    | JVM heap memory usage of live objects for the executor process                               |
 | jemalloc_allocated               | Native memory usage for the executor process (requires `jemalloc` feature)                   |
-| thread_NNN_comet_memory_reserved | Memory reserved by Comet's DataFusion memory pool (summed across all contexts on the thread) |
-| comet_shuffle_NNN                | Off-heap memory allocated by Comet for columnar shuffle                                      |
+| thread_NNN_comet_memory_reserved | Memory reserved by Comet's DataFusion memory pool (summed across all contexts on the thread). NNN is the Rust thread ID. |
+| thread_NNN_comet_jvm_shuffle     | Off-heap memory allocated by Comet for columnar shuffle. NNN is the Rust thread ID.          |

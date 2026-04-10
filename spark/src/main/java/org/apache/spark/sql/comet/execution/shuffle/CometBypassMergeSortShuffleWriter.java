@@ -233,7 +233,7 @@ final class CometBypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V>
       }
 
       Native _native = new Native();
-      String shuffleMemKey = "comet_shuffle_" + Thread.currentThread().getId();
+      String shuffleMemKey = "thread_" + _native.getRustThreadId() + "_comet_jvm_shuffle";
       if (tracingEnabled) {
         _native.logMemoryUsage(shuffleMemKey, allocator.getUsed());
       }
