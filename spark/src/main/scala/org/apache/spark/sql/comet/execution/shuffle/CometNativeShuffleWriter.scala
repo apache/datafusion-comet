@@ -46,8 +46,12 @@ import org.apache.comet.serde.QueryPlanSerde.serializeDataType
  *
  * @param childNativePlan
  *   When provided, the shuffle writer will execute this native plan directly and pipe its output
- *   to the ShuffleWriter, avoiding the JNI round-trip for intermediate batches. This is used for
- *   direct native execution optimization when the shuffle's child is a single-source native plan.
+ *   to the ShuffleWriter, avoiding the JNI round-trip for intermediate batches. Used when all
+ *   input sources are native scans (CometNativeScanExec, CometIcebergNativeScanExec).
+ * @param commonByKey
+ *   Common planning data (schemas, filters) keyed by source identifier, for PlanDataInjector.
+ * @param perPartitionByKey
+ *   Per-partition planning data (file lists) keyed by source identifier, for PlanDataInjector.
  */
 class CometNativeShuffleWriter[K, V](
     outputPartitioning: Partitioning,
