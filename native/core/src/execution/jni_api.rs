@@ -218,7 +218,10 @@ fn build_tracing_event_name(plan: &Operator) -> String {
     if names.is_empty() {
         "executePlan".to_string()
     } else {
-        format!("executePlan({})", names.into_iter().collect::<Vec<_>>().join(","))
+        format!(
+            "executePlan({})",
+            names.into_iter().collect::<Vec<_>>().join(",")
+        )
     }
 }
 
