@@ -2187,6 +2187,27 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("SparkToColumnar with timestamps in non-UTC timezone") {
+    withTempDir { dir =>
+      val path = new java.io.File(dir, "data").getAbsolutePath
+      Seq(
+        (1, java.sql.Timestamp.valueOf("2024-01-15 10:30:00")),
+        (2, java.sql.Timestamp.valueOf("2024-06-15 14:00:00")),
+        (3, java.sql.Timestamp.valueOf("2024-12-25 08:00:00")))
+        .toDF("id", "ts")
+        .write
+        .parquet(path)
+      withSQLConf(
+        CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
+        CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true",
+        CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true",
+        SESSION_LOCAL_TIMEZONE.key -> "America/Los_Angeles") {
+        val df = spark.read.parquet(path).orderBy("ts")
+        checkSparkAnswerAndOperator(df)
+      }
+    }
+  }
+
   test("sort on timestamps with non-UTC timezone via LocalTableScan") {
     // When session timezone is non-UTC, CometLocalTableScanExec and
     // CometSparkToColumnarExec must use UTC for the Arrow schema timezone
