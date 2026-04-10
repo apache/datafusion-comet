@@ -142,7 +142,7 @@ fn main() {
             }
             // Record violation (sample - don't record every single one)
             if violations.is_empty()
-                || event.ts - violations.last().unwrap().ts > 1_000_000
+                || event.ts.saturating_sub(violations.last().unwrap().ts) > 1_000_000
                 || excess == peak_excess
             {
                 violations.push(MemorySnapshot {
