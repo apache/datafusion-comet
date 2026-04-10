@@ -423,7 +423,11 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 );
             }
 
-            let tracing_event_name = build_tracing_event_name(&spark_plan);
+            let tracing_event_name = if tracing_enabled {
+                build_tracing_event_name(&spark_plan)
+            } else {
+                String::new()
+            };
 
             let exec_context = Box::new(ExecutionContext {
                 id,
@@ -649,10 +653,16 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
         // Retrieve the query
         let exec_context = get_execution_context(exec_context);
 
-        let tracing_event_name = exec_context.tracing_event_name.clone();
         let tracing_enabled = exec_context.tracing_enabled;
+        let tracing_event_name;
+        let tracing_label = if tracing_enabled {
+            tracing_event_name = exec_context.tracing_event_name.clone();
+            tracing_event_name.as_str()
+        } else {
+            ""
+        };
 
-        let result = with_trace(&tracing_event_name, tracing_enabled, || {
+        let result = with_trace(tracing_label, tracing_enabled, || {
             let exec_context_id = exec_context.id;
 
             // Initialize the execution stream.
