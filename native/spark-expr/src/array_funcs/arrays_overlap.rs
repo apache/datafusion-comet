@@ -242,7 +242,7 @@ mod tests {
 
         let result = arrays_overlap_list::<i32>(&left, &right)?;
         let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
-        assert_eq!(result.value(0), true);
+        assert!(result.value(0));
         assert!(result.is_valid(0));
         Ok(())
     }
@@ -255,7 +255,7 @@ mod tests {
 
         let result = arrays_overlap_list::<i32>(&left, &right)?;
         let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
-        assert_eq!(result.value(0), false);
+        assert!(!result.value(0));
         assert!(result.is_valid(0));
         Ok(())
     }
@@ -280,7 +280,7 @@ mod tests {
 
         let result = arrays_overlap_list::<i32>(&left, &right)?;
         let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
-        assert_eq!(result.value(0), true);
+        assert!(result.value(0));
         assert!(result.is_valid(0));
         Ok(())
     }
@@ -297,7 +297,7 @@ mod tests {
 
         let result = arrays_overlap_list::<i32>(&left, &right)?;
         let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
-        assert_eq!(result.value(0), false);
+        assert!(!result.value(0));
         assert!(result.is_valid(0));
         Ok(())
     }
