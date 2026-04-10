@@ -500,6 +500,8 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
       .createDataFrame(spark.sparkContext.parallelize(data), schema)
       .createOrReplaceTempView("dst_tbl")
 
+    // We `allowIncompatible` here because casts involving TimestampNTZ are marked
+    // as Incompatible (due to incorrect behaviour when casting from a string)
     withSQLConf(
       SQLConf.SESSION_LOCAL_TIMEZONE.key -> "Europe/London",
       "spark.comet.expression.Cast.allowIncompatible" -> "true") {

@@ -36,7 +36,7 @@ use arrow::{
     array::{as_dictionary_array, Array, ArrayRef, PrimitiveArray},
     temporal_conversions::as_datetime,
 };
-use chrono::{DateTime, LocalResult, NaiveDateTime, Offset, TimeDelta, TimeZone};
+use chrono::{DateTime, LocalResult, NaiveDateTime, Offset, TimeZone};
 
 /// Preprocesses input arrays to add timezone information from Spark to Arrow array datatype or
 /// to apply timezone offset.
@@ -174,19 +174,30 @@ fn datetime_cast_err(value: i64) -> ArrowError {
     ))
 }
 
+/// Resolves a local datetime in the given timezone to an absolute DateTime,
+/// handling DST ambiguity and spring-forward gaps.
+/// Parameters:
+///     tz - timezone used to interpret local_datetime
+///     local_datetime - a naive local datetime to resolve
 fn resolve_local_datetime(tz: &Tz, local_datetime: NaiveDateTime) -> DateTime<Tz> {
     match tz.from_local_datetime(&local_datetime) {
         LocalResult::Single(dt) => dt,
         LocalResult::Ambiguous(dt, _) => dt,
         LocalResult::None => {
-            // Interpret nonexistent local time by shifting from one hour earlier.
-            // This handles the common case of DST transitions with 1-hour gaps.
-            // NOTE: Some timezones have non-standard DST transitions (e.g., Australia/Lord_Howe
-            // has a 30-minute shift). This function assumes a 1-hour gap and may not correctly
-            // handle those cases.
-            let shift = TimeDelta::hours(1);
-            let before = tz.from_local_datetime(&(local_datetime - shift)).unwrap();
-            before + shift
+            // Determine offset before time-change
+            let probe = local_datetime - chrono::Duration::hours(3);
+            let pre_offset = match tz.from_local_datetime(&probe) {
+                LocalResult::Single(dt) => dt.offset().fix(),
+                LocalResult::Ambiguous(dt, _) => dt.offset().fix(),
+                LocalResult::None => {
+                    // Cannot determine offset; fall back to UTC interpretation
+                    return local_datetime.and_utc().with_timezone(tz);
+                }
+            };
+            let offset_secs = pre_offset.local_minus_utc() as i64;
+
+            let utc_naive = local_datetime - chrono::Duration::seconds(offset_secs);
+            utc_naive.and_utc().with_timezone(tz)
         }
     }
 }
