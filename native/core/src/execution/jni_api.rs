@@ -654,13 +654,17 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
         let exec_context = get_execution_context(exec_context);
 
         let tracing_enabled = exec_context.tracing_enabled;
+        // Clone the label only when tracing is enabled. The clone is needed
+        // because the closure below mutably borrows exec_context.
+        let owned_label;
         let tracing_label = if tracing_enabled {
-            exec_context.tracing_event_name.clone()
+            owned_label = exec_context.tracing_event_name.clone();
+            owned_label.as_str()
         } else {
-            String::new()
+            ""
         };
 
-        let result = with_trace(&tracing_label, tracing_enabled, || {
+        let result = with_trace(tracing_label, tracing_enabled, || {
             let exec_context_id = exec_context.id;
 
             // Initialize the execution stream.
