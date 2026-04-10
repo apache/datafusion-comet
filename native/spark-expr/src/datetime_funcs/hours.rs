@@ -31,6 +31,7 @@ use datafusion::common::{internal_datafusion_err, DataFusionError};
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };
+use num::integer::div_floor;
 use std::{any::Any, fmt::Debug, sync::Arc};
 
 const MICROS_PER_HOUR: i64 = 3_600_000_000;
@@ -45,6 +46,12 @@ impl SparkHoursTransform {
         Self {
             signature: Signature::user_defined(Volatility::Immutable),
         }
+    }
+}
+
+impl Default for SparkHoursTransform {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -75,11 +82,11 @@ impl ScalarUDFImpl for SparkHoursTransform {
 
         match args {
             [ColumnarValue::Array(array)] => {
-                let ts_array = as_primitive_array::<TimestampMicrosecondType>(&array);
                 let result: Int32Array = match array.data_type() {
                     DataType::Timestamp(Microsecond, _) => {
+                        let ts_array = as_primitive_array::<TimestampMicrosecondType>(&array);
                         arrow::compute::kernels::arity::unary(ts_array, |micros| {
-                            micros.div_euclid(MICROS_PER_HOUR) as i32
+                            div_floor(micros, MICROS_PER_HOUR) as i32
                         })
                     }
                     other => {
@@ -158,7 +165,7 @@ mod tests {
     fn test_hours_transform_negative_epoch() {
         let udf = SparkHoursTransform::new();
         // 1969-12-31 23:30:00 UTC = -1800 seconds = -1800000000 micros
-        // Expected: div_euclid(-1800000000, 3600000000) = -1
+        // Expected: floor_div(-1800000000, 3600000000) = -1
         let ts =
             TimestampMicrosecondArray::from(vec![Some(-1_800_000_000i64)]).with_timezone("UTC");
         let return_field = Arc::new(Field::new("hours_transform", DataType::Int32, true));

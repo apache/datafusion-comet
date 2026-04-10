@@ -23,7 +23,8 @@ import scala.util.Random
 
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row, SaveMode}
 import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
-import org.apache.spark.sql.catalyst.expressions.{Days, Literal}
+import org.apache.spark.sql.catalyst.expressions.{Days, Hours, Literal}
+import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
@@ -506,7 +507,6 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
   }
 
   test("hours - timestamp input") {
-    import org.apache.spark.sql.catalyst.expressions.Hours
     val r = new Random(42)
     val tsSchema = StructType(Seq(StructField("ts", DataTypes.TimestampType, true)))
     val tsDF = FuzzDataGenerator.generateDataFrame(r, spark, tsSchema, 1000, DataGenOptions())
@@ -521,21 +521,22 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
   }
 
   test("hours - timestamp_ntz input") {
-    import org.apache.spark.sql.catalyst.expressions.Hours
     val r = new Random(42)
     val ntzSchema = StructType(Seq(StructField("ts", DataTypes.TimestampNTZType, true)))
     val ntzDF = FuzzDataGenerator.generateDataFrame(r, spark, ntzSchema, 1000, DataGenOptions())
 
+    // Spark 3.4: unix_micros() does not accept TIMESTAMP_NTZ; baseline matches micros / hour.
     val _spark = spark
     import _spark.implicits._
     val expectedDF = ntzDF
       .map { row =>
         val ts = row.getAs[java.time.LocalDateTime]("ts")
-        val micros = if (ts != null) {
-          org.apache.spark.sql.catalyst.util.DateTimeUtils.localDateTimeToMicros(ts)
-        } else 0L // assuming safe non-null
-        val hours = Math.floorDiv(micros, 3600000000L).toInt
-        (ts, hours)
+        val hoursCol: java.lang.Integer =
+          if (ts == null) null
+          else
+            Integer.valueOf(
+              Math.floorDiv(DateTimeUtils.localDateTimeToMicros(ts), 3600000000L).toInt)
+        (ts, hoursCol)
       }
       .toDF("ts", "hours")
 

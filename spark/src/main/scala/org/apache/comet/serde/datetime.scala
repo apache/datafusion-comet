@@ -23,7 +23,7 @@ import java.util.Locale
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, DateAdd, DateDiff, DateFormatClass, DateSub, DayOfMonth, DayOfWeek, DayOfYear, Days, GetDateField, Hour, Hours, LastDay, Literal, MakeDate, Minute, Month, NextDay, Quarter, Second, TruncDate, TruncTimestamp, UnixDate, UnixTimestamp, WeekDay, WeekOfYear, Year}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{DateType, IntegerType, StringType, TimestampType}
+import org.apache.spark.sql.types.{DateType, IntegerType, StringType, TimestampNTZType, TimestampType}
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
@@ -601,21 +601,22 @@ object CometHours extends CometExpressionSerde[Hours] {
       expr: Hours,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val childExpr = exprToProtoInternal(expr.child, inputs, binding)
+    val optExpr = expr.child.dataType match {
+      case TimestampType | TimestampNTZType =>
+        exprToProtoInternal(expr.child, inputs, binding).map { childExpr =>
+          val builder = ExprOuterClass.HoursTransform.newBuilder()
+          builder.setChild(childExpr)
 
-    if (childExpr.isDefined) {
-      val builder = ExprOuterClass.HoursTransform.newBuilder()
-      builder.setChild(childExpr.get)
-
-      Some(
-        ExprOuterClass.Expr
-          .newBuilder()
-          .setHoursTransform(builder)
-          .build())
-    } else {
-      withInfo(expr, expr.child)
-      None
+          ExprOuterClass.Expr
+            .newBuilder()
+            .setHoursTransform(builder)
+            .build()
+        }
+      case other =>
+        withInfo(expr, s"Hours does not support input type: $other")
+        None
     }
+    optExprWithInfo(optExpr, expr, expr.child)
   }
 }
 
