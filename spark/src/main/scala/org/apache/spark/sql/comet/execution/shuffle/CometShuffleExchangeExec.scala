@@ -148,12 +148,17 @@ case class CometShuffleExchangeExec(
                   val partitionCounts = perPartitionByKey.values.map(_.length).toSet
                   if (partitionCounts.size <= 1) {
                     val numPartitions = partitionCounts.headOption.getOrElse(0)
-                    Some(
-                      DirectNativeExecutionInfo(
-                        nativeChild.nativeOp,
-                        numPartitions,
-                        commonByKey,
-                        perPartitionByKey))
+                    if (numPartitions == 0) {
+                      // Empty table (no data files) - fall back to normal execution
+                      None
+                    } else {
+                      Some(
+                        DirectNativeExecutionInfo(
+                          nativeChild.nativeOp,
+                          numPartitions,
+                          commonByKey,
+                          perPartitionByKey))
+                    }
                   } else {
                     None // Partition count mismatch across scans
                   }
