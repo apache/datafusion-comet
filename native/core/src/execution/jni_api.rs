@@ -188,6 +188,49 @@ pub fn get_runtime() -> &'static Runtime {
     TOKIO_RUNTIME.get_or_init(|| build_runtime(None))
 }
 
+/// Returns a short name for an OpStruct variant.
+fn op_name(op: &OpStruct) -> &'static str {
+    match op {
+        OpStruct::Scan(_) => "Scan",
+        OpStruct::Projection(_) => "Projection",
+        OpStruct::Filter(_) => "Filter",
+        OpStruct::Sort(_) => "Sort",
+        OpStruct::HashAgg(_) => "HashAgg",
+        OpStruct::Limit(_) => "Limit",
+        OpStruct::ShuffleWriter(_) => "ShuffleWriter",
+        OpStruct::Expand(_) => "Expand",
+        OpStruct::SortMergeJoin(_) => "SortMergeJoin",
+        OpStruct::HashJoin(_) => "HashJoin",
+        OpStruct::Window(_) => "Window",
+        OpStruct::NativeScan(_) => "NativeScan",
+        OpStruct::IcebergScan(_) => "IcebergScan",
+        OpStruct::ParquetWriter(_) => "ParquetWriter",
+        OpStruct::Explode(_) => "Explode",
+        OpStruct::CsvScan(_) => "CsvScan",
+        OpStruct::ShuffleScan(_) => "ShuffleScan",
+    }
+}
+
+/// Collect distinct operator names from a plan tree and build a tracing event name.
+fn build_tracing_event_name(plan: &Operator) -> String {
+    let mut names = std::collections::BTreeSet::new();
+    collect_op_names(plan, &mut names);
+    if names.is_empty() {
+        "executePlan".to_string()
+    } else {
+        format!("executePlan({})", names.into_iter().collect::<Vec<_>>().join(","))
+    }
+}
+
+fn collect_op_names<'a>(op: &'a Operator, names: &mut std::collections::BTreeSet<&'a str>) {
+    if let Some(ref op_struct) = op.op_struct {
+        names.insert(op_name(op_struct));
+    }
+    for child in &op.children {
+        collect_op_names(child, names);
+    }
+}
+
 /// Comet native execution context. Kept alive across JNI calls.
 struct ExecutionContext {
     /// The id of the execution context.
@@ -234,6 +277,8 @@ struct ExecutionContext {
     pub rust_thread_id: u64,
     /// Pre-computed metric name for tracing memory usage
     pub tracing_memory_metric_name: String,
+    /// Pre-computed tracing event name for executePlan calls
+    pub tracing_event_name: String,
 }
 
 /// Accept serialized query plan and return the address of the native query plan.
@@ -375,6 +420,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 );
             }
 
+            let tracing_event_name = build_tracing_event_name(&spark_plan);
+
             let exec_context = Box::new(ExecutionContext {
                 id,
                 task_attempt_id,
@@ -400,6 +447,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 tracing_memory_metric_name: format!(
                     "thread_{rust_thread_id}_comet_memory_reserved"
                 ),
+                tracing_event_name,
             });
 
             Ok(Box::into_raw(exec_context) as i64)
@@ -598,12 +646,10 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
         // Retrieve the query
         let exec_context = get_execution_context(exec_context);
 
-        let tracing_event_name = match &exec_context.spark_plan.op_struct {
-            Some(OpStruct::ShuffleWriter(_)) => "executePlan(ShuffleWriter)",
-            _ => "executePlan",
-        };
+        let tracing_event_name = exec_context.tracing_event_name.clone();
+        let tracing_enabled = exec_context.tracing_enabled;
 
-        let result = with_trace(tracing_event_name, exec_context.tracing_enabled, || {
+        let result = with_trace(&tracing_event_name, tracing_enabled, || {
             let exec_context_id = exec_context.id;
 
             // Initialize the execution stream.
