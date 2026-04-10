@@ -76,11 +76,6 @@ the [Comet Supported Expressions Guide](expressions.md) for more information on 
   timezone is UTC.
   [#2649](https://github.com/apache/datafusion-comet/issues/2649)
 
-### Math Expressions
-
-- **Tan**: `tan(-0.0)` produces `0.0` instead of `-0.0`.
-  [#1897](https://github.com/apache/datafusion-comet/issues/1897)
-
 ### Aggregate Expressions
 
 - **Corr**: Returns null instead of NaN in some edge cases.
