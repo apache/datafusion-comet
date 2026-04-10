@@ -351,11 +351,10 @@ object CometConf extends ShimCometConf {
           "instead of reading intermediate batches via JNI. This optimization avoids the " +
           "JNI round-trip for native plans whose inputs are all native scans " +
           "(CometNativeScanExec, CometIcebergNativeScanExec). Supports single and multi-source " +
-          "plans (e.g., joins over native scans). " +
-          "This is an experimental feature and is disabled by default.")
+          "plans (such as joins over native scans).")
       .internal()
       .booleanConf
-      .createWithDefault(false)
+      .createWithDefault(true)
 
   val COMET_SHUFFLE_DIRECT_READ_ENABLED: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.directRead.enabled")
