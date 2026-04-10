@@ -593,6 +593,31 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
+  test("arrays_overlap - nested array null handling behavior verification") {
+    withSQLConf(
+      "spark.sql.optimizer.excludedRules" -> "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+      withTable("t") {
+        sql(
+          "create table t using parquet as select CAST(NULL as array<array<int>>) a1 from range(1)")
+        val data = Seq(
+          "array(array(1, 2), array(3, 4))",
+          "array(array(1, 2), array(5, 6))",
+          "array(array(1, 2))",
+          "array(array(3, 4))",
+          "array(array(1, NULL))",
+          "array(array(NULL, 2))",
+          "array(array(NULL))",
+          "array(CAST(NULL as array<int>))",
+          "array(array(1, 2), CAST(NULL as array<int>))",
+          "array()",
+          "a1")
+        for (y <- data; x <- data) {
+          checkSparkAnswerAndOperator(sql(s"SELECT arrays_overlap($y, $x) from t"))
+        }
+      }
+    }
+  }
+
   test("array_compact") {
     // TODO fix for Spark 4.0.0
     assume(!isSpark40Plus)
