@@ -307,6 +307,8 @@ class CometNativeShuffleWriter[K, V](
             s"Partitioning $outputPartitioning is not supported.")
       }
 
+      shuffleWriterBuilder.setTracingEnabled(CometConf.COMET_TRACING_ENABLED.get())
+
       val shuffleWriterOpBuilder = OperatorOuterClass.Operator.newBuilder()
       shuffleWriterOpBuilder
         .setShuffleWriter(shuffleWriterBuilder)
