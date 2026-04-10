@@ -19,7 +19,8 @@
 
 use crate::metrics::ShufflePartitionerMetrics;
 use crate::partitioners::{
-    MultiPartitionShuffleRepartitioner, ShufflePartitioner, SinglePartitionShufflePartitioner,
+    EmptySchemaShufflePartitioner, MultiPartitionShuffleRepartitioner, ShufflePartitioner,
+    SinglePartitionShufflePartitioner,
 };
 use crate::{CometPartitioning, CompressionCodec};
 use async_trait::async_trait;
@@ -35,7 +36,6 @@ use datafusion::{
         metrics::{ExecutionPlanMetricsSet, MetricsSet},
         stream::RecordBatchStreamAdapter,
         DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, SendableRecordBatchStream,
-        Statistics,
     },
 };
 use datafusion_comet_common::tracing::with_trace_async;
@@ -62,7 +62,7 @@ pub struct ShuffleWriterExec {
     /// Metrics
     metrics: ExecutionPlanMetricsSet,
     /// Cache for expensive-to-compute plan properties
-    cache: PlanProperties,
+    cache: Arc<PlanProperties>,
     /// The compression codec to use when compressing shuffle blocks
     codec: CompressionCodec,
     tracing_enabled: bool,
@@ -82,12 +82,12 @@ impl ShuffleWriterExec {
         tracing_enabled: bool,
         write_buffer_size: usize,
     ) -> Result<Self> {
-        let cache = PlanProperties::new(
+        let cache = Arc::new(PlanProperties::new(
             EquivalenceProperties::new(Arc::clone(&input.schema())),
             Partitioning::UnknownPartitioning(1),
             EmissionType::Final,
             Boundedness::Bounded,
-        );
+        ));
 
         Ok(ShuffleWriterExec {
             input,
@@ -133,11 +133,7 @@ impl ExecutionPlan for ShuffleWriterExec {
         Some(self.metrics.clone_inner())
     }
 
-    fn statistics(&self) -> Result<Statistics> {
-        self.input.partition_statistics(None)
-    }
-
-    fn properties(&self) -> &PlanProperties {
+    fn properties(&self) -> &Arc<PlanProperties> {
         &self.cache
     }
 
@@ -215,6 +211,17 @@ async fn external_shuffle(
         let schema = input.schema();
 
         let mut repartitioner: Box<dyn ShufflePartitioner> = match &partitioning {
+            _ if schema.fields().is_empty() => {
+                log::debug!("found empty schema, overriding {partitioning:?} partitioning with EmptySchemaShufflePartitioner");
+                Box::new(EmptySchemaShufflePartitioner::try_new(
+                    output_data_file,
+                    output_index_file,
+                    Arc::clone(&schema),
+                    partitioning.partition_count(),
+                    metrics,
+                    codec,
+                )?)
+            }
             any if any.partition_count() == 1 => {
                 Box::new(SinglePartitionShufflePartitioner::try_new(
                     output_data_file,
@@ -692,5 +699,161 @@ mod test {
             offset = block_end;
         }
         total_rows
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_empty_schema_shuffle_writer() {
+        use std::fs;
+        use std::io::Read;
+
+        let num_rows = 1000;
+        let num_batches = 5;
+        let num_partitions = 10;
+
+        let schema = Arc::new(Schema::new(Vec::<Field>::new()));
+        let batch = RecordBatch::try_new_with_options(
+            Arc::clone(&schema),
+            vec![],
+            &arrow::array::RecordBatchOptions::new().with_row_count(Some(num_rows)),
+        )
+        .unwrap();
+
+        let batches = (0..num_batches).map(|_| batch.clone()).collect::<Vec<_>>();
+        let partitions = &[batches];
+
+        let dir = tempfile::tempdir().unwrap();
+        let data_file = dir.path().join("data.out");
+        let index_file = dir.path().join("index.out");
+
+        let exec = ShuffleWriterExec::try_new(
+            Arc::new(DataSourceExec::new(Arc::new(
+                MemorySourceConfig::try_new(partitions, Arc::clone(&schema), None).unwrap(),
+            ))),
+            CometPartitioning::RoundRobin(num_partitions, 0),
+            CompressionCodec::Zstd(1),
+            data_file.to_str().unwrap().to_string(),
+            index_file.to_str().unwrap().to_string(),
+            false,
+            1024 * 1024,
+        )
+        .unwrap();
+
+        let config = SessionConfig::new();
+        let runtime_env = Arc::new(RuntimeEnvBuilder::new().build().unwrap());
+        let ctx = SessionContext::new_with_config_rt(config, runtime_env);
+        let task_ctx = ctx.task_ctx();
+        let stream = exec.execute(0, task_ctx).unwrap();
+        let rt = Runtime::new().unwrap();
+        rt.block_on(collect(stream)).unwrap();
+
+        // Verify data file is non-empty (contains IPC batch with row count)
+        let mut data = Vec::new();
+        fs::File::open(&data_file)
+            .unwrap()
+            .read_to_end(&mut data)
+            .unwrap();
+        assert!(!data.is_empty(), "Data file should contain IPC data");
+
+        // Verify row count survives roundtrip
+        let total_rows = read_all_ipc_blocks(&data);
+        assert_eq!(
+            total_rows,
+            num_rows * num_batches,
+            "Row count should survive roundtrip"
+        );
+
+        // Verify index file structure: num_partitions + 1 offsets
+        let mut index_data = Vec::new();
+        fs::File::open(&index_file)
+            .unwrap()
+            .read_to_end(&mut index_data)
+            .unwrap();
+        let expected_index_size = (num_partitions + 1) * 8;
+        assert_eq!(index_data.len(), expected_index_size);
+
+        // First offset should be 0
+        let first_offset = i64::from_le_bytes(index_data[0..8].try_into().unwrap());
+        assert_eq!(first_offset, 0);
+
+        // Second offset should equal data file length (partition 0 holds all data)
+        let data_len = data.len() as i64;
+        let second_offset = i64::from_le_bytes(index_data[8..16].try_into().unwrap());
+        assert_eq!(second_offset, data_len);
+
+        // All remaining offsets should equal data file length (empty partitions)
+        for i in 2..=num_partitions {
+            let offset = i64::from_le_bytes(index_data[i * 8..(i + 1) * 8].try_into().unwrap());
+            assert_eq!(
+                offset, data_len,
+                "Partition {i} offset should equal data length"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_empty_schema_shuffle_writer_zero_rows() {
+        use std::fs;
+        use std::io::Read;
+
+        let num_partitions = 4;
+
+        let schema = Arc::new(Schema::new(Vec::<Field>::new()));
+        let batch = RecordBatch::try_new_with_options(
+            Arc::clone(&schema),
+            vec![],
+            &arrow::array::RecordBatchOptions::new().with_row_count(Some(0)),
+        )
+        .unwrap();
+
+        let batches = vec![batch];
+        let partitions = &[batches];
+
+        let dir = tempfile::tempdir().unwrap();
+        let data_file = dir.path().join("data.out");
+        let index_file = dir.path().join("index.out");
+
+        let exec = ShuffleWriterExec::try_new(
+            Arc::new(DataSourceExec::new(Arc::new(
+                MemorySourceConfig::try_new(partitions, Arc::clone(&schema), None).unwrap(),
+            ))),
+            CometPartitioning::RoundRobin(num_partitions, 0),
+            CompressionCodec::Zstd(1),
+            data_file.to_str().unwrap().to_string(),
+            index_file.to_str().unwrap().to_string(),
+            false,
+            1024 * 1024,
+        )
+        .unwrap();
+
+        let config = SessionConfig::new();
+        let runtime_env = Arc::new(RuntimeEnvBuilder::new().build().unwrap());
+        let ctx = SessionContext::new_with_config_rt(config, runtime_env);
+        let task_ctx = ctx.task_ctx();
+        let stream = exec.execute(0, task_ctx).unwrap();
+        let rt = Runtime::new().unwrap();
+        rt.block_on(collect(stream)).unwrap();
+
+        // Data file should be empty (no rows to write)
+        let mut data = Vec::new();
+        fs::File::open(&data_file)
+            .unwrap()
+            .read_to_end(&mut data)
+            .unwrap();
+        assert!(data.is_empty(), "Data file should be empty with zero rows");
+
+        // Index file should have all-zero offsets
+        let mut index_data = Vec::new();
+        fs::File::open(&index_file)
+            .unwrap()
+            .read_to_end(&mut index_data)
+            .unwrap();
+        let expected_index_size = (num_partitions + 1) * 8;
+        assert_eq!(index_data.len(), expected_index_size);
+        for i in 0..=num_partitions {
+            let offset = i64::from_le_bytes(index_data[i * 8..(i + 1) * 8].try_into().unwrap());
+            assert_eq!(offset, 0, "All offsets should be 0 with zero rows");
+        }
     }
 }

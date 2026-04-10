@@ -21,7 +21,7 @@ package org.apache.spark.sql.comet
 
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.SparkContext
+import org.apache.spark.{SparkContext, TaskContext}
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
@@ -40,6 +40,49 @@ import org.apache.comet.serde.Metric
  */
 case class CometMetricNode(metrics: Map[String, SQLMetric], children: Seq[CometMetricNode])
     extends Logging {
+
+  /**
+   * Returns the leaf node (deepest single-child descendant). For a native scan plan like
+   * FilterExec -> DataSourceExec, this returns the DataSourceExec node which has the
+   * bytes_scanned and output_rows metrics from the Parquet reader.
+   */
+  def leafNode: CometMetricNode = {
+    if (children.isEmpty) this
+    else children.head.leafNode
+  }
+
+  /**
+   * Returns all leaf nodes (nodes with no children) in the metric tree. Unlike [[leafNode]] which
+   * only follows the first child, this finds all leaves, which is needed for plans with multiple
+   * scans (e.g., joins, unions).
+   */
+  def leafNodes: Seq[CometMetricNode] = {
+    if (children.isEmpty) Seq(this)
+    else children.flatMap(_.leafNodes)
+  }
+
+  /**
+   * Reports aggregated scan input metrics (bytesRead, recordsRead) to Spark's task metrics.
+   * Aggregates across all scan leaf nodes to handle plans with multiple scans (e.g., joins). Must
+   * be called in a TaskCompletionListener after the iterator is fully consumed.
+   */
+  def reportScanInputMetrics(ctx: TaskContext): Unit = {
+    ctx.addTaskCompletionListener[Unit] { _ =>
+      val scanLeaves = leafNodes.filter(_.metrics.contains("bytes_scanned"))
+      if (scanLeaves.nonEmpty) {
+        val totalBytes = scanLeaves.map(_.metrics("bytes_scanned").value).sum
+        val totalRows = scanLeaves.map { leaf =>
+          val outputRows =
+            leaf.metrics.get("output_rows").map(_.value).getOrElse(0L)
+          val prunedRows =
+            leaf.metrics.get("pushdown_rows_pruned").map(_.value).getOrElse(0L)
+          outputRows + prunedRows
+        }.sum
+        ctx.taskMetrics().inputMetrics.setBytesRead(totalBytes)
+        ctx.taskMetrics().inputMetrics.setRecordsRead(totalRows)
+      }
+    }
+  }
 
   /**
    * Gets a child node. Called from native.
@@ -79,6 +122,7 @@ case class CometMetricNode(metrics: Map[String, SQLMetric], children: Seq[CometM
     }
   }
 
+  // Called via JNI from `comet_metric_node.rs`
   def set_all_from_bytes(bytes: Array[Byte]): Unit = {
     val metricNode = Metric.NativeMetricNode.parseFrom(bytes)
     set_all(metricNode)
