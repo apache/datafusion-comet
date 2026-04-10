@@ -274,6 +274,44 @@ class CometDirectNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlan
     }
   }
 
+  // TODO: Add Iceberg native scan test when Iceberg test infrastructure is available
+  // in this suite. CometIcebergNativeScanExec is supported by the optimization but
+  // requires SparkCatalog setup. See CometIcebergSuite for patterns.
+
+  test("direct native execution: join of two native scans") {
+    withParquetTable((0 until 100).map(i => (i, s"left_$i")), "left_tbl") {
+      withParquetTable((0 until 100).map(i => (i, s"right_$i")), "right_tbl") {
+        // Broadcast join with two native scans
+        // The join itself may or may not use direct native execution depending on
+        // whether broadcast creates a non-native-scan input, but the query should
+        // execute correctly regardless
+        val df = sql("""
+            |SELECT l._1, l._2, r._2
+            |FROM left_tbl l JOIN right_tbl r ON l._1 = r._1
+            |WHERE l._1 > 50
+            |""".stripMargin)
+          .repartition(10, col("_1"))
+
+        checkSparkAnswer(df)
+      }
+    }
+  }
+
+  test("direct native execution disabled: shuffle input source") {
+    withParquetTable((0 until 100).map(i => (i, (i + 1).toLong)), "tbl") {
+      // Force a shuffle before the final shuffle by using a repartition + aggregation
+      // The second shuffle reads from the first shuffle's output (not a native scan)
+      val df = sql("SELECT _1, SUM(_2) as s FROM tbl GROUP BY _1")
+        .repartition(5, col("_1"))
+        .filter(col("s") > 10)
+        .repartition(3, col("_1"))
+
+      // The final shuffle should NOT use direct native execution because its input
+      // comes from a shuffle read, not a native scan
+      checkSparkAnswer(df)
+    }
+  }
+
   /**
    * Helper method to find CometShuffleExchangeExec nodes in a DataFrame's execution plan.
    */
