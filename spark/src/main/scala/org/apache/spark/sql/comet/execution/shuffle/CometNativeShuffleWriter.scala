@@ -32,11 +32,11 @@ import org.apache.spark.shuffle.{IndexShuffleBlockResolver, ShuffleWriteMetricsR
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, Literal}
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, Partitioning, RangePartitioning, RoundRobinPartitioning, SinglePartition}
-import org.apache.spark.sql.comet.{CometExec, CometMetricNode}
+import org.apache.spark.sql.comet.{CometExec, CometMetricNode, PlanDataInjector}
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
-import org.apache.comet.CometConf
+import org.apache.comet.{CometConf, CometExecIterator}
 import org.apache.comet.serde.{OperatorOuterClass, PartitioningOuterClass, QueryPlanSerde}
 import org.apache.comet.serde.OperatorOuterClass.{CompressionCodec, Operator}
 import org.apache.comet.serde.QueryPlanSerde.serializeDataType
@@ -59,7 +59,9 @@ class CometNativeShuffleWriter[K, V](
     context: TaskContext,
     metricsReporter: ShuffleWriteMetricsReporter,
     rangePartitionBounds: Option[Seq[InternalRow]] = None,
-    childNativePlan: Option[Operator] = None)
+    childNativePlan: Option[Operator] = None,
+    commonByKey: Map[String, Array[Byte]] = Map.empty,
+    perPartitionByKey: Map[String, Array[Array[Byte]]] = Map.empty)
     extends ShuffleWriter[K, V]
     with Logging {
 
@@ -80,6 +82,18 @@ class CometNativeShuffleWriter[K, V](
 
     // Call native shuffle write
     val nativePlan = getNativePlan(tempDataFilename, tempIndexFilename)
+
+    // Inject per-partition file data if this is a direct native execution plan
+    val actualPlan = if (commonByKey.nonEmpty && perPartitionByKey.nonEmpty) {
+      val partitionIdx = context.partitionId()
+      val partitionByKey = perPartitionByKey.map { case (key, arr) =>
+        key -> arr(partitionIdx)
+      }
+      val injected = PlanDataInjector.injectPlanData(nativePlan, commonByKey, partitionByKey)
+      CometExec.serializeNativePlan(injected)
+    } else {
+      CometExec.serializeNativePlan(nativePlan)
+    }
 
     val detailedMetrics = Seq(
       "elapsed_compute",
@@ -102,15 +116,14 @@ class CometNativeShuffleWriter[K, V](
     // Getting rid of the fake partitionId
     val newInputs = inputs.asInstanceOf[Iterator[_ <: Product2[Any, Any]]].map(_._2)
 
-    val cometIter = CometExec.getCometIterator(
+    val cometIter = new CometExecIterator(
+      CometExec.newIterId,
       Seq(newInputs.asInstanceOf[Iterator[ColumnarBatch]]),
       outputAttributes.length,
-      nativePlan,
+      actualPlan,
       nativeMetrics,
       numParts,
-      context.partitionId(),
-      broadcastedHadoopConfForEncryption = None,
-      encryptedFilePaths = Seq.empty)
+      context.partitionId())
 
     while (cometIter.hasNext) {
       cometIter.next()

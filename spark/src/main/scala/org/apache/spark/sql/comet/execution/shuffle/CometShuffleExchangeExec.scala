@@ -34,7 +34,7 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, BoundReference, Exp
 import org.apache.spark.sql.catalyst.expressions.codegen.LazilyGeneratedOrdering
 import org.apache.spark.sql.catalyst.plans.logical.Statistics
 import org.apache.spark.sql.catalyst.plans.physical._
-import org.apache.spark.sql.comet.{CometMetricNode, CometNativeExec, CometNativeScanExec, CometPlan, CometSinkPlaceHolder}
+import org.apache.spark.sql.comet.{CometIcebergNativeScanExec, CometMetricNode, CometNativeExec, CometNativeScanExec, CometPlan, CometSinkPlaceHolder}
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.ScalarSubquery
 import org.apache.spark.sql.execution.adaptive.ShuffleQueryStageExec
@@ -132,20 +132,33 @@ case class CometShuffleExchangeExec(
               if (containsSubquery) {
                 // Fall back to avoid subquery lookup failures
                 None
-              } else if (inputSources.size == 1) {
-                inputSources.head match {
-                  case scan: CometNativeScanExec =>
-                    // Fully native scan - no JNI input needed, native code reads files directly
-                    // Get the partition count from the underlying scan
-                    val numPartitions = scan.originalPlan.inputRDD.getNumPartitions
-                    Some(DirectNativeExecutionInfo(nativeChild.nativeOp, numPartitions))
-                  case _ =>
-                    // Other input sources (JVM scans, shuffle, broadcast, etc.) - fall back
-                    None
-                }
               } else {
-                // Multiple input sources (joins, unions) - fall back for now
-                None
+                // Check that ALL input sources are native scans (file-reading, no JNI)
+                val allNativeScans = inputSources.nonEmpty && inputSources.forall {
+                  case _: CometNativeScanExec => true
+                  case _: CometIcebergNativeScanExec => true
+                  case _ => false
+                }
+                if (allNativeScans) {
+                  // Collect per-partition plan data from all native scans
+                  val (commonByKey, perPartitionByKey) =
+                    nativeChild.findAllPlanData(nativeChild)
+                  // All scans must have the same partition count
+                  val partitionCounts = perPartitionByKey.values.map(_.length).toSet
+                  if (partitionCounts.size <= 1) {
+                    val numPartitions = partitionCounts.headOption.getOrElse(0)
+                    Some(
+                      DirectNativeExecutionInfo(
+                        nativeChild.nativeOp,
+                        numPartitions,
+                        commonByKey,
+                        perPartitionByKey))
+                  } else {
+                    None // Partition count mismatch across scans
+                  }
+                } else {
+                  None
+                }
               }
             case _ =>
               None
@@ -230,7 +243,9 @@ case class CometShuffleExchangeExec(
         outputPartitioning,
         serializer,
         metrics,
-        directNativeExecutionInfo.map(_.childNativePlan))
+        directNativeExecutionInfo.map(_.childNativePlan),
+        directNativeExecutionInfo.map(_.commonByKey).getOrElse(Map.empty),
+        directNativeExecutionInfo.map(_.perPartitionByKey).getOrElse(Map.empty))
       metrics("numPartitions").set(dep.partitioner.numPartitions)
       val executionId = sparkContext.getLocalProperty(SQLExecution.EXECUTION_ID_KEY)
       SQLMetrics.postDriverMetricUpdates(
@@ -675,7 +690,9 @@ object CometShuffleExchangeExec
       outputPartitioning: Partitioning,
       serializer: Serializer,
       metrics: Map[String, SQLMetric],
-      childNativePlan: Option[Operator] = None)
+      childNativePlan: Option[Operator] = None,
+      commonByKey: Map[String, Array[Byte]] = Map.empty,
+      perPartitionByKey: Map[String, Array[Array[Byte]]] = Map.empty)
       : ShuffleDependency[Int, ColumnarBatch, ColumnarBatch] = {
     val numParts = rdd.getNumPartitions
 
@@ -744,7 +761,9 @@ object CometShuffleExchangeExec
       shuffleWriteMetrics = metrics,
       numParts = numParts,
       rangePartitionBounds = rangePartitionBounds,
-      childNativePlan = childNativePlan)
+      childNativePlan = childNativePlan,
+      commonByKey = commonByKey,
+      perPartitionByKey = perPartitionByKey)
     dependency
   }
 
@@ -960,4 +979,6 @@ object CometShuffleExchangeExec
  */
 private[shuffle] case class DirectNativeExecutionInfo(
     childNativePlan: Operator,
-    numPartitions: Int)
+    numPartitions: Int,
+    commonByKey: Map[String, Array[Byte]],
+    perPartitionByKey: Map[String, Array[Array[Byte]]])

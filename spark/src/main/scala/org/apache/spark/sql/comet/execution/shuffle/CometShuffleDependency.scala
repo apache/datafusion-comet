@@ -53,7 +53,9 @@ class CometShuffleDependency[K: ClassTag, V: ClassTag, C: ClassTag](
     val numParts: Int = 0,
     val rangePartitionBounds: Option[Seq[InternalRow]] = None,
     // For direct native execution: the child's native plan to compose with ShuffleWriter
-    val childNativePlan: Option[Operator] = None)
+    val childNativePlan: Option[Operator] = None,
+    val commonByKey: Map[String, Array[Byte]] = Map.empty,
+    val perPartitionByKey: Map[String, Array[Array[Byte]]] = Map.empty)
     extends ShuffleDependency[K, V, C](
       _rdd,
       partitioner,
