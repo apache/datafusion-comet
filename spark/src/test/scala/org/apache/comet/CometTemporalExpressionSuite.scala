@@ -491,7 +491,6 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
     }
   }
 
-
   /**
    * Checks that the Comet-evaluated DataFrame produces the same results as the baseline DataFrame
    * evaluated by native Spark JVM, and that Comet native operators are used. This is needed
