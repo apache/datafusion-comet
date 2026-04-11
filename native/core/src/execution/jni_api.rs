@@ -40,6 +40,7 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 use datafusion_comet_proto::spark_operator::Operator;
+use datafusion_spark::function::array::array_contains::SparkArrayContains;
 use datafusion_spark::function::bitwise::bit_count::SparkBitCount;
 use datafusion_spark::function::bitwise::bit_get::SparkBitGet;
 use datafusion_spark::function::bitwise::bitwise_not::SparkBitwiseNot;
@@ -66,12 +67,13 @@ use jni::sys::{jlongArray, JNI_FALSE};
 use jni::{
     errors::Result as JNIResult,
     objects::{
-        GlobalRef, JByteArray, JClass, JIntArray, JLongArray, JObject, JObjectArray, JString,
+        Global, JByteArray, JClass, JIntArray, JLongArray, JObject, JObjectArray, JString,
         ReleaseMode,
     },
     sys::{jboolean, jdouble, jint, jlong},
-    JNIEnv,
+    Env, EnvUnowned,
 };
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -86,7 +88,9 @@ use crate::execution::operators::{ScanExec, ShuffleScanExec};
 use crate::execution::shuffle::{read_ipc_compressed, CompressionCodec};
 use crate::execution::spark_plan::SparkPlan;
 
-use crate::execution::tracing::{log_memory_usage, trace_begin, trace_end, with_trace};
+use crate::execution::tracing::{
+    get_thread_id, log_memory_usage, trace_begin, trace_end, with_trace,
+};
 
 use crate::execution::memory_pools::logging_pool::LoggingMemoryPool;
 use crate::execution::spark_config::{
@@ -101,6 +105,53 @@ use std::sync::OnceLock;
 use tikv_jemalloc_ctl::{epoch, stats};
 
 static TOKIO_RUNTIME: OnceLock<Runtime> = OnceLock::new();
+
+#[cfg(feature = "jemalloc")]
+fn log_jemalloc_usage() {
+    let e = epoch::mib().unwrap();
+    let allocated = stats::allocated::mib().unwrap();
+    e.advance().unwrap();
+    log_memory_usage("jemalloc_allocated", allocated.read().unwrap() as u64);
+}
+
+/// Registry of active memory pools per Rust thread ID.
+/// Used to sum memory reservations across all contexts on the same thread for tracing.
+type ThreadPoolMap = HashMap<u64, HashMap<i64, Arc<dyn MemoryPool>>>;
+
+static THREAD_MEMORY_POOLS: OnceLock<Mutex<ThreadPoolMap>> = OnceLock::new();
+
+fn get_thread_memory_pools() -> &'static Mutex<ThreadPoolMap> {
+    THREAD_MEMORY_POOLS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn register_memory_pool(thread_id: u64, context_id: i64, pool: Arc<dyn MemoryPool>) {
+    get_thread_memory_pools()
+        .lock()
+        .entry(thread_id)
+        .or_default()
+        .insert(context_id, pool);
+}
+
+/// Unregister a context's pool and return the remaining total reserved for the thread.
+fn unregister_and_total(thread_id: u64, context_id: i64) -> usize {
+    let mut map = get_thread_memory_pools().lock();
+    if let Some(pools) = map.get_mut(&thread_id) {
+        pools.remove(&context_id);
+        if pools.is_empty() {
+            map.remove(&thread_id);
+            return 0;
+        }
+        return pools.values().map(|p| p.reserved()).sum::<usize>();
+    }
+    0
+}
+
+fn total_reserved_for_thread(thread_id: u64) -> usize {
+    let map = get_thread_memory_pools().lock();
+    map.get(&thread_id)
+        .map(|pools| pools.values().map(|p| p.reserved()).sum::<usize>())
+        .unwrap_or(0)
+}
 
 fn parse_usize_env_var(name: &str) -> Option<usize> {
     std::env::var_os(name).and_then(|n| n.to_str().and_then(|s| s.parse::<usize>().ok()))
@@ -137,6 +188,52 @@ pub fn get_runtime() -> &'static Runtime {
     TOKIO_RUNTIME.get_or_init(|| build_runtime(None))
 }
 
+/// Returns a short name for an OpStruct variant.
+fn op_name(op: &OpStruct) -> &'static str {
+    match op {
+        OpStruct::Scan(_) => "Scan",
+        OpStruct::Projection(_) => "Projection",
+        OpStruct::Filter(_) => "Filter",
+        OpStruct::Sort(_) => "Sort",
+        OpStruct::HashAgg(_) => "HashAgg",
+        OpStruct::Limit(_) => "Limit",
+        OpStruct::ShuffleWriter(_) => "ShuffleWriter",
+        OpStruct::Expand(_) => "Expand",
+        OpStruct::SortMergeJoin(_) => "SortMergeJoin",
+        OpStruct::HashJoin(_) => "HashJoin",
+        OpStruct::Window(_) => "Window",
+        OpStruct::NativeScan(_) => "NativeScan",
+        OpStruct::IcebergScan(_) => "IcebergScan",
+        OpStruct::ParquetWriter(_) => "ParquetWriter",
+        OpStruct::Explode(_) => "Explode",
+        OpStruct::CsvScan(_) => "CsvScan",
+        OpStruct::ShuffleScan(_) => "ShuffleScan",
+    }
+}
+
+/// Collect distinct operator names from a plan tree and build a tracing event name.
+fn build_tracing_event_name(plan: &Operator) -> String {
+    let mut names = std::collections::BTreeSet::new();
+    collect_op_names(plan, &mut names);
+    if names.is_empty() {
+        "executePlan".to_string()
+    } else {
+        format!(
+            "executePlan({})",
+            names.into_iter().collect::<Vec<_>>().join(",")
+        )
+    }
+}
+
+fn collect_op_names<'a>(op: &'a Operator, names: &mut std::collections::BTreeSet<&'a str>) {
+    if let Some(ref op_struct) = op.op_struct {
+        names.insert(op_name(op_struct));
+    }
+    for child in &op.children {
+        collect_op_names(child, names);
+    }
+}
+
 /// Comet native execution context. Kept alive across JNI calls.
 struct ExecutionContext {
     /// The id of the execution context.
@@ -154,13 +251,13 @@ struct ExecutionContext {
     /// The shuffle scan input sources for the DataFusion plan
     pub shuffle_scans: Vec<ShuffleScanExec>,
     /// The global reference of input sources for the DataFusion plan
-    pub input_sources: Vec<Arc<GlobalRef>>,
+    pub input_sources: Vec<Arc<Global<JObject<'static>>>>,
     /// The record batch stream to pull results from
     pub stream: Option<SendableRecordBatchStream>,
     /// Receives batches from a spawned tokio task (async I/O path)
     pub batch_receiver: Option<mpsc::Receiver<DataFusionResult<RecordBatch>>>,
     /// Native metrics
-    pub metrics: Arc<GlobalRef>,
+    pub metrics: Arc<Global<JObject<'static>>>,
     // The interval in milliseconds to update metrics
     pub metrics_update_interval: Option<Duration>,
     // The last update time of metrics
@@ -179,6 +276,12 @@ struct ExecutionContext {
     pub memory_pool_config: MemoryPoolConfig,
     /// Whether to log memory usage on each call to execute_plan
     pub tracing_enabled: bool,
+    /// Rust thread ID, used for aggregating tracing metrics per thread
+    pub rust_thread_id: u64,
+    /// Pre-computed metric name for tracing memory usage
+    pub tracing_memory_metric_name: String,
+    /// Pre-computed tracing event name for executePlan calls
+    pub tracing_event_name: String,
 }
 
 /// Accept serialized query plan and return the address of the native query plan.
@@ -186,7 +289,7 @@ struct ExecutionContext {
 /// This function is inherently unsafe since it deals with raw pointers passed from JNI.
 #[no_mangle]
 pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
-    e: JNIEnv,
+    e: EnvUnowned,
     _class: JClass,
     id: jlong,
     iterators: JObjectArray,
@@ -206,7 +309,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     task_cpus: jlong,
     key_unwrapper_obj: JObject,
 ) -> jlong {
-    try_unwrap_or_throw(&e, |mut env| {
+    try_unwrap_or_throw(&e, |env| {
         // Deserialize Spark configs
         let bytes = env.convert_byte_array(serialized_spark_configs)?;
         let spark_configs = serde::deserialize_config(bytes.as_slice())?;
@@ -227,7 +330,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
 
         with_trace("createPlan", tracing_enabled, || {
             // Init JVM classes
-            JVMClasses::init(&mut env);
+            JVMClasses::init(env);
 
             let start = Instant::now();
 
@@ -239,9 +342,9 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
 
             // Get the global references of input sources
             let mut input_sources = vec![];
-            let num_inputs = env.get_array_length(&iterators)?;
+            let num_inputs = iterators.len(env)?;
             for i in 0..num_inputs {
-                let input_source = env.get_object_array_element(&iterators, i)?;
+                let input_source = iterators.get_element(env, i)?;
                 let input_source = Arc::new(jni_new_global_ref!(env, input_source)?);
                 input_sources.push(input_source);
             }
@@ -250,7 +353,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             let task_memory_manager =
                 Arc::new(jni_new_global_ref!(env, comet_task_memory_manager_obj)?);
 
-            let memory_pool_type = env.get_string(&memory_pool_type)?.into();
+            let memory_pool_type = memory_pool_type.try_to_string(env)?;
             let memory_pool_config = parse_memory_pool_config(
                 off_heap_mode != JNI_FALSE,
                 memory_pool_type,
@@ -267,12 +370,13 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             };
 
             // Get local directories for storing spill files
-            let num_local_dirs = env.get_array_length(&local_dirs)?;
+            let num_local_dirs = local_dirs.len(env)?;
             let mut local_dirs_vec = vec![];
             for i in 0..num_local_dirs {
-                let local_dir: JString = env.get_object_array_element(&local_dirs, i)?.into();
-                let local_dir = env.get_string(&local_dir)?;
-                local_dirs_vec.push(local_dir.into());
+                let local_dir = local_dirs.get_element(env, i)?;
+                let local_dir = unsafe { JString::from_raw(&*env, local_dir.into_raw()) };
+                let local_dir = local_dir.try_to_string(env)?;
+                local_dirs_vec.push(local_dir);
             }
 
             // We need to keep the session context alive. Some session state like temporary
@@ -298,13 +402,32 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             // Handle key unwrapper for encrypted files
             if !key_unwrapper_obj.is_null() {
                 let encryption_factory = CometEncryptionFactory {
-                    key_unwrapper: jni_new_global_ref!(env, key_unwrapper_obj)?,
+                    key_unwrapper: Arc::new(jni_new_global_ref!(env, key_unwrapper_obj)?),
                 };
                 session.runtime_env().register_parquet_encryption_factory(
                     ENCRYPTION_FACTORY_ID,
                     Arc::new(encryption_factory),
                 );
             }
+
+            let session = Arc::new(session);
+
+            // Register this context's memory pool so we can sum all pools
+            // on the same thread when emitting tracing metrics.
+            let rust_thread_id = get_thread_id();
+            if tracing_enabled {
+                register_memory_pool(
+                    rust_thread_id,
+                    id,
+                    Arc::clone(&session.runtime_env().memory_pool),
+                );
+            }
+
+            let tracing_event_name = if tracing_enabled {
+                build_tracing_event_name(&spark_plan)
+            } else {
+                String::new()
+            };
 
             let exec_context = Box::new(ExecutionContext {
                 id,
@@ -322,11 +445,16 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 metrics_last_update_time: Instant::now(),
                 poll_count_since_metrics_check: 0,
                 plan_creation_time,
-                session_ctx: Arc::new(session),
+                session_ctx: session,
                 debug_native,
                 explain_native,
                 memory_pool_config,
                 tracing_enabled,
+                rust_thread_id,
+                tracing_memory_metric_name: format!(
+                    "thread_{rust_thread_id}_comet_memory_reserved"
+                ),
+                tracing_event_name,
             });
 
             Ok(Box::into_raw(exec_context) as i64)
@@ -392,6 +520,11 @@ fn prepare_datafusion_session_context(
 
 // register UDFs from datafusion-spark crate
 fn register_datafusion_spark_function(session_ctx: &SessionContext) {
+    // Don't register SparkArrayRepeat — it returns NULL when the element is NULL
+    // (e.g. array_repeat(null, 3) returns NULL instead of [null, null, null]).
+    // Comet's Scala serde wraps the call in a CaseWhen for null count handling,
+    // so DataFusion's built-in ArrayRepeat is sufficient.
+    // TODO: file upstream issue against datafusion-spark
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkExpm1::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSha2::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(CharFunc::default()));
@@ -410,22 +543,23 @@ fn register_datafusion_spark_function(session_ctx: &SessionContext) {
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkLuhnCheck::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSpace::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitCount::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkArrayContains::default()));
 }
 
 /// Prepares arrow arrays for output.
 fn prepare_output(
-    env: &mut JNIEnv,
+    env: &mut Env,
     array_addrs: JLongArray,
     schema_addrs: JLongArray,
     output_batch: RecordBatch,
     validate: bool,
 ) -> CometResult<jlong> {
-    let num_cols = env.get_array_length(&array_addrs)? as usize;
+    let num_cols = array_addrs.len(env)?;
 
-    let array_addrs = unsafe { env.get_array_elements(&array_addrs, ReleaseMode::NoCopyBack)? };
+    let array_addrs = unsafe { array_addrs.get_elements(env, ReleaseMode::NoCopyBack)? };
     let array_addrs = &*array_addrs;
 
-    let schema_addrs = unsafe { env.get_array_elements(&schema_addrs, ReleaseMode::NoCopyBack)? };
+    let schema_addrs = unsafe { schema_addrs.get_elements(env, ReleaseMode::NoCopyBack)? };
     let schema_addrs = &*schema_addrs;
 
     let results = output_batch.columns();
@@ -507,7 +641,7 @@ fn pull_input_batches(exec_context: &mut ExecutionContext) -> Result<(), CometEr
 /// This function is inherently unsafe since it deals with raw pointers passed from JNI.
 #[no_mangle]
 pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
-    e: JNIEnv,
+    e: EnvUnowned,
     _class: JClass,
     stage_id: jint,
     partition: jint,
@@ -515,27 +649,22 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
     array_addrs: JLongArray,
     schema_addrs: JLongArray,
 ) -> jlong {
-    try_unwrap_or_throw(&e, |mut env| {
+    try_unwrap_or_throw(&e, |env| {
         // Retrieve the query
         let exec_context = get_execution_context(exec_context);
 
-        let tracing_event_name = match &exec_context.spark_plan.op_struct {
-            Some(OpStruct::ShuffleWriter(_)) => "executePlan(ShuffleWriter)",
-            _ => "executePlan",
+        let tracing_enabled = exec_context.tracing_enabled;
+        // Clone the label only when tracing is enabled. The clone is needed
+        // because the closure below mutably borrows exec_context.
+        let owned_label;
+        let tracing_label = if tracing_enabled {
+            owned_label = exec_context.tracing_event_name.clone();
+            owned_label.as_str()
+        } else {
+            ""
         };
 
-        if exec_context.tracing_enabled {
-            #[cfg(feature = "jemalloc")]
-            {
-                let e = epoch::mib().unwrap();
-                let allocated = stats::allocated::mib().unwrap();
-                e.advance().unwrap();
-                use crate::execution::tracing::log_memory_usage;
-                log_memory_usage("jemalloc_allocated", allocated.read().unwrap() as u64);
-            }
-        }
-
-        with_trace(tracing_event_name, exec_context.tracing_enabled, || {
+        let result = with_trace(tracing_label, tracing_enabled, || {
             let exec_context_id = exec_context.id;
 
             // Initialize the execution stream.
@@ -618,9 +747,9 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
             if let Some(rx) = &mut exec_context.batch_receiver {
                 match rx.blocking_recv() {
                     Some(Ok(batch)) => {
-                        update_metrics(&mut env, exec_context)?;
+                        update_metrics(env, exec_context)?;
                         return prepare_output(
-                            &mut env,
+                            env,
                             array_addrs,
                             schema_addrs,
                             batch,
@@ -643,23 +772,29 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                     let next_item = exec_context.stream.as_mut().unwrap().next();
                     let poll_output = poll!(next_item);
 
-                    // Only check time every 100 polls to reduce syscall overhead
-                    if let Some(interval) = exec_context.metrics_update_interval {
-                        exec_context.poll_count_since_metrics_check += 1;
-                        if exec_context.poll_count_since_metrics_check >= 100 {
+                    // Only check time/tracing every 100 polls to reduce overhead
+                    exec_context.poll_count_since_metrics_check += 1;
+                    if exec_context.poll_count_since_metrics_check >= 100 {
+                        exec_context.poll_count_since_metrics_check = 0;
+                        if let Some(interval) = exec_context.metrics_update_interval {
                             let now = Instant::now();
                             if now - exec_context.metrics_last_update_time >= interval {
-                                update_metrics(&mut env, exec_context)?;
+                                update_metrics(env, exec_context)?;
                                 exec_context.metrics_last_update_time = now;
                             }
-                            exec_context.poll_count_since_metrics_check = 0;
+                        }
+                        if exec_context.tracing_enabled {
+                            log_memory_usage(
+                                &exec_context.tracing_memory_metric_name,
+                                total_reserved_for_thread(exec_context.rust_thread_id) as u64,
+                            );
                         }
                     }
 
                     match poll_output {
                         Poll::Ready(Some(output)) => {
                             return prepare_output(
-                                &mut env,
+                                env,
                                 array_addrs,
                                 schema_addrs,
                                 output?,
@@ -679,35 +814,55 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                     }
                 }
             })
-        })
+        });
+
+        if exec_context.tracing_enabled {
+            #[cfg(feature = "jemalloc")]
+            log_jemalloc_usage();
+            log_memory_usage(
+                &exec_context.tracing_memory_metric_name,
+                total_reserved_for_thread(exec_context.rust_thread_id) as u64,
+            );
+        }
+
+        result
     })
 }
 
 #[no_mangle]
 /// Drop the native query plan object and context object.
 pub extern "system" fn Java_org_apache_comet_Native_releasePlan(
-    e: JNIEnv,
+    e: EnvUnowned,
     _class: JClass,
     exec_context: jlong,
 ) {
-    try_unwrap_or_throw(&e, |mut env| unsafe {
+    try_unwrap_or_throw(&e, |env| unsafe {
         let execution_context = get_execution_context(exec_context);
 
         // Update metrics
-        update_metrics(&mut env, execution_context)?;
+        update_metrics(env, execution_context)?;
 
         handle_task_shared_pool_release(
             execution_context.memory_pool_config.pool_type,
             execution_context.task_attempt_id,
         );
 
+        // Unregister this context's pool and emit the remaining total for the thread
+        if execution_context.tracing_enabled {
+            let remaining =
+                unregister_and_total(execution_context.rust_thread_id, execution_context.id);
+            log_memory_usage(
+                &execution_context.tracing_memory_metric_name,
+                remaining as u64,
+            );
+        }
+
         let _: Box<ExecutionContext> = Box::from_raw(execution_context);
         Ok(())
     })
 }
 
-/// Updates the metrics of the query plan.
-fn update_metrics(env: &mut JNIEnv, exec_context: &mut ExecutionContext) -> CometResult<()> {
+fn update_metrics(env: &mut Env, exec_context: &mut ExecutionContext) -> CometResult<()> {
     if let Some(native_query) = &exec_context.root_op {
         let metrics = exec_context.metrics.as_obj();
         update_comet_metric(env, metrics, native_query)
@@ -732,15 +887,15 @@ fn log_plan_metrics(exec_context: &ExecutionContext, stage_id: jint, partition: 
 }
 
 fn convert_datatype_arrays(
-    env: &'_ mut JNIEnv<'_>,
+    env: &mut Env,
     serialized_datatypes: JObjectArray,
 ) -> JNIResult<Vec<ArrowDataType>> {
-    let array_len = env.get_array_length(&serialized_datatypes)?;
+    let array_len = serialized_datatypes.len(env)?;
     let mut res: Vec<ArrowDataType> = Vec::new();
 
     for i in 0..array_len {
-        let inner_array = env.get_object_array_element(&serialized_datatypes, i)?;
-        let inner_array: JByteArray = inner_array.into();
+        let inner_array = serialized_datatypes.get_element(env, i)?;
+        let inner_array = unsafe { JByteArray::from_raw(&*env, inner_array.into_raw()) };
         let bytes = env.convert_byte_array(inner_array)?;
         let data_type = serde::deserialize_data_type(bytes.as_slice()).unwrap();
         let arrow_dt = to_arrow_datatype(&data_type);
@@ -763,7 +918,7 @@ fn get_execution_context<'a>(id: i64) -> &'a mut ExecutionContext {
 /// This function is inherently unsafe since it deals with raw pointers passed from JNI.
 #[no_mangle]
 pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative(
-    e: JNIEnv,
+    e: EnvUnowned,
     _class: JClass,
     row_addresses: JLongArray,
     row_sizes: JIntArray,
@@ -778,25 +933,23 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative
     compression_level: jint,
     tracing_enabled: jboolean,
 ) -> jlongArray {
-    try_unwrap_or_throw(&e, |mut env| unsafe {
+    try_unwrap_or_throw(&e, |env| unsafe {
         with_trace(
             "writeSortedFileNative",
             tracing_enabled != JNI_FALSE,
             || {
-                let data_types = convert_datatype_arrays(&mut env, serialized_datatypes)?;
+                let data_types = convert_datatype_arrays(env, serialized_datatypes)?;
 
-                let row_num = env.get_array_length(&row_addresses)? as usize;
-                let row_addresses =
-                    env.get_array_elements(&row_addresses, ReleaseMode::NoCopyBack)?;
+                let row_num = row_addresses.len(env)?;
+                let row_addresses = row_addresses.get_elements(env, ReleaseMode::NoCopyBack)?;
 
-                let row_sizes = env.get_array_elements(&row_sizes, ReleaseMode::NoCopyBack)?;
+                let row_sizes = row_sizes.get_elements(env, ReleaseMode::NoCopyBack)?;
 
                 let row_addresses_ptr = row_addresses.as_ptr();
                 let row_sizes_ptr = row_sizes.as_ptr();
 
-                let output_path: String = env.get_string(&file_path).unwrap().into();
+                let output_path: String = file_path.try_to_string(env).unwrap();
 
-                let checksum_enabled = checksum_enabled == 1;
                 let current_checksum = if current_checksum == i64::MIN {
                     // Initial checksum is not available.
                     None
@@ -804,7 +957,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative
                     Some(current_checksum as u32)
                 };
 
-                let compression_codec: String = env.get_string(&compression_codec).unwrap().into();
+                let compression_codec: String = compression_codec.try_to_string(env).unwrap();
 
                 let compression_codec = match compression_codec.as_str() {
                     "zstd" => CompressionCodec::Zstd(compression_level),
@@ -836,7 +989,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative
                 };
 
                 let long_array = env.new_long_array(2)?;
-                env.set_long_array_region(&long_array, 0, &[written_bytes, checksum])?;
+                long_array.set_region(env, 0, &[written_bytes, checksum])?;
 
                 Ok(long_array.into_raw())
             },
@@ -847,7 +1000,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative
 #[no_mangle]
 /// Used by Comet shuffle external sorter to sort in-memory row partition ids.
 pub extern "system" fn Java_org_apache_comet_Native_sortRowPartitionsNative(
-    e: JNIEnv,
+    e: EnvUnowned,
     _class: JClass,
     address: jlong,
     size: jlong,
@@ -880,7 +1033,7 @@ pub extern "system" fn Java_org_apache_comet_Native_sortRowPartitionsNative(
 /// # Safety
 /// This function is inherently unsafe since it deals with raw pointers passed from JNI.
 pub unsafe extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlock(
-    e: JNIEnv,
+    e: EnvUnowned,
     _class: JClass,
     byte_buffer: JByteBuffer,
     length: jint,
@@ -888,13 +1041,13 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlock(
     schema_addrs: JLongArray,
     tracing_enabled: jboolean,
 ) -> jlong {
-    try_unwrap_or_throw(&e, |mut env| {
+    try_unwrap_or_throw(&e, |env| {
         with_trace("decodeShuffleBlock", tracing_enabled != JNI_FALSE, || {
             let raw_pointer = env.get_direct_buffer_address(&byte_buffer)?;
             let length = length as usize;
             let slice: &[u8] = unsafe { std::slice::from_raw_parts(raw_pointer, length) };
             let batch = read_ipc_compressed(slice)?;
-            prepare_output(&mut env, array_addrs, schema_addrs, batch, false)
+            prepare_output(env, array_addrs, schema_addrs, batch, false)
         })
     })
 }
@@ -903,12 +1056,12 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlock(
 /// # Safety
 /// This function is inherently unsafe since it deals with raw pointers passed from JNI.
 pub unsafe extern "system" fn Java_org_apache_comet_Native_traceBegin(
-    e: JNIEnv,
+    e: EnvUnowned,
     _class: JClass,
     event: JString,
 ) {
-    try_unwrap_or_throw(&e, |mut env| {
-        let name: String = env.get_string(&event).unwrap().into();
+    try_unwrap_or_throw(&e, |env| {
+        let name: String = event.try_to_string(env).unwrap();
         trace_begin(&name);
         Ok(())
     })
@@ -918,12 +1071,12 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_traceBegin(
 /// # Safety
 /// This function is inherently unsafe since it deals with raw pointers passed from JNI.
 pub unsafe extern "system" fn Java_org_apache_comet_Native_traceEnd(
-    e: JNIEnv,
+    e: EnvUnowned,
     _class: JClass,
     event: JString,
 ) {
-    try_unwrap_or_throw(&e, |mut env| {
-        let name: String = env.get_string(&event).unwrap().into();
+    try_unwrap_or_throw(&e, |env| {
+        let name: String = event.try_to_string(env).unwrap();
         trace_end(&name);
         Ok(())
     })
@@ -933,16 +1086,26 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_traceEnd(
 /// # Safety
 /// This function is inherently unsafe since it deals with raw pointers passed from JNI.
 pub unsafe extern "system" fn Java_org_apache_comet_Native_logMemoryUsage(
-    e: JNIEnv,
+    e: EnvUnowned,
     _class: JClass,
     name: JString,
     value: jlong,
 ) {
-    try_unwrap_or_throw(&e, |mut env| {
-        let name: String = env.get_string(&name).unwrap().into();
+    try_unwrap_or_throw(&e, |env| {
+        let name: String = name.try_to_string(env).unwrap();
         log_memory_usage(&name, value as u64);
         Ok(())
     })
+}
+
+#[no_mangle]
+/// Returns the Rust thread ID for the current thread.
+/// This allows Java code to use Rust thread IDs in tracing metric names.
+pub extern "system" fn Java_org_apache_comet_Native_getRustThreadId(
+    _e: EnvUnowned,
+    _class: JClass,
+) -> jlong {
+    get_thread_id() as jlong
 }
 
 // ============================================================================
@@ -958,14 +1121,14 @@ use arrow::ffi::{from_ffi, FFI_ArrowArray, FFI_ArrowSchema};
 /// This function is inherently unsafe since it deals with raw pointers passed from JNI.
 #[no_mangle]
 pub unsafe extern "system" fn Java_org_apache_comet_Native_columnarToRowInit(
-    e: JNIEnv,
+    e: EnvUnowned,
     _class: JClass,
     serialized_schema: JObjectArray,
     batch_size: jint,
 ) -> jlong {
-    try_unwrap_or_throw(&e, |mut env| {
+    try_unwrap_or_throw(&e, |env| {
         // Deserialize the schema
-        let schema = convert_datatype_arrays(&mut env, serialized_schema)?;
+        let schema = convert_datatype_arrays(env, serialized_schema)?;
 
         // Create the context
         let ctx = Box::new(ColumnarToRowContext::new(schema, batch_size as usize));
@@ -980,26 +1143,27 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_columnarToRowInit(
 /// This function is inherently unsafe since it deals with raw pointers passed from JNI.
 #[no_mangle]
 pub unsafe extern "system" fn Java_org_apache_comet_Native_columnarToRowConvert(
-    e: JNIEnv,
+    e: EnvUnowned,
     _class: JClass,
     c2r_handle: jlong,
     array_addrs: JLongArray,
     schema_addrs: JLongArray,
     num_rows: jint,
 ) -> jni::sys::jobject {
-    try_unwrap_or_throw(&e, |mut env| {
+    try_unwrap_or_throw(&e, |env| {
         // Get the context
         debug_assert!(c2r_handle != 0, "columnarToRowConvert: c2r_handle is null");
         let ctx = (c2r_handle as *mut ColumnarToRowContext)
             .as_mut()
             .ok_or_else(|| CometError::Internal("Null columnar to row context".to_string()))?;
 
-        let num_cols = env.get_array_length(&array_addrs)? as usize;
+        let num_cols = array_addrs.len(env)?;
 
         // Get array and schema addresses
-        let array_addrs_elements = env.get_array_elements(&array_addrs, ReleaseMode::NoCopyBack)?;
+        let array_addrs_elements =
+            unsafe { array_addrs.get_elements(env, ReleaseMode::NoCopyBack)? };
         let schema_addrs_elements =
-            env.get_array_elements(&schema_addrs, ReleaseMode::NoCopyBack)?;
+            unsafe { schema_addrs.get_elements(env, ReleaseMode::NoCopyBack)? };
 
         // Import Arrow arrays from FFI
         let mut arrays = Vec::with_capacity(num_cols);
@@ -1019,8 +1183,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_columnarToRowConvert(
             );
 
             // Take ownership of the FFI structures
-            let ffi_array = std::ptr::read(array_ptr);
-            let ffi_schema = std::ptr::read(schema_ptr);
+            let ffi_array = unsafe { std::ptr::read(array_ptr) };
+            let ffi_schema = unsafe { std::ptr::read(schema_ptr) };
 
             // Convert to Arrow ArrayData
             let array_data = from_ffi(ffi_array, &ffi_schema)
@@ -1038,17 +1202,18 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_columnarToRowConvert(
         let (buffer_ptr, offsets, lengths) = ctx.convert(&arrays, num_rows as usize)?;
 
         // Create Java int arrays for offsets and lengths
-        let offsets_array = env.new_int_array(offsets.len() as i32)?;
-        env.set_int_array_region(&offsets_array, 0, offsets)?;
+        let offsets_array = env.new_int_array(offsets.len())?;
+        offsets_array.set_region(env, 0, offsets)?;
 
-        let lengths_array = env.new_int_array(lengths.len() as i32)?;
-        env.set_int_array_region(&lengths_array, 0, lengths)?;
+        let lengths_array = env.new_int_array(lengths.len())?;
+        lengths_array.set_region(env, 0, lengths)?;
 
         // Create the NativeColumnarToRowInfo object
-        let info_class = env.find_class("org/apache/comet/NativeColumnarToRowInfo")?;
+        let info_class =
+            env.find_class(jni::jni_str!("org/apache/comet/NativeColumnarToRowInfo"))?;
         let info_obj = env.new_object(
             info_class,
-            "(J[I[I)V",
+            jni::jni_sig!("(J[I[I)V"),
             &[
                 jni::objects::JValue::Long(buffer_ptr as jlong),
                 jni::objects::JValue::Object(&offsets_array),
@@ -1066,7 +1231,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_columnarToRowConvert(
 /// This function is inherently unsafe since it deals with raw pointers passed from JNI.
 #[no_mangle]
 pub unsafe extern "system" fn Java_org_apache_comet_Native_columnarToRowClose(
-    e: JNIEnv,
+    e: EnvUnowned,
     _class: JClass,
     c2r_handle: jlong,
 ) {

@@ -25,6 +25,7 @@ import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
 import scala.jdk.CollectionConverters._
 
+import org.apache.spark.{Partition, TaskContext}
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
@@ -558,7 +559,8 @@ abstract class CometNativeExec extends CometExec {
 
         // Unified RDD creation - CometExecRDD handles all cases
         val subqueries = collectSubqueries(this)
-        CometExecRDD(
+        val hasScanInput = sparkPlans.exists(_.isInstanceOf[CometNativeScanExec])
+        new CometExecRDD(
           sparkContext,
           inputs.toSeq,
           commonByKey,
@@ -570,7 +572,20 @@ abstract class CometNativeExec extends CometExec {
           subqueries,
           broadcastedHadoopConfForEncryption,
           encryptedFilePaths,
-          shuffleScanIndices)
+          shuffleScanIndices) {
+          override def compute(
+              split: Partition,
+              context: TaskContext): Iterator[ColumnarBatch] = {
+            val res = super.compute(split, context)
+
+            // Report scan input metrics only when the native plan contains a scan.
+            if (hasScanInput) {
+              Option(context).foreach(nativeMetrics.reportScanInputMetrics)
+            }
+
+            res
+          }
+        }
     }
   }
 
@@ -1359,12 +1374,6 @@ trait CometBaseAggregate {
 
     if (groupingExpressions.isEmpty && aggregateExpressions.isEmpty) {
       withInfo(aggregate, "No group by or aggregation")
-      return None
-    }
-
-    // Aggregate expressions with filter are not supported yet.
-    if (aggregateExpressions.exists(_.filter.isDefined)) {
-      withInfo(aggregate, "Aggregate expression with filter is not supported")
       return None
     }
 

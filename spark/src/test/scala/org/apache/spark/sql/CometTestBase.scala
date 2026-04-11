@@ -191,6 +191,32 @@ abstract class CometTestBase
   }
 
   /**
+   * Assert that the schema produced by a Comet-enabled execution matches the schema produced by
+   * vanilla Spark for the same logical plan. Useful for catching regressions where Comet modifies
+   * expression result types (e.g. decimal precision promotion).
+   */
+  protected def checkSparkSchema(df: DataFrame): Unit = {
+    var sparkSchema: StructType = null
+    withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+      sparkSchema = datasetOfRows(spark, df.logicalPlan).schema
+    }
+    assert(
+      df.schema == sparkSchema,
+      s"Schema mismatch:\nSpark:  $sparkSchema\nComet: ${df.schema}")
+  }
+
+  /**
+   * Check that the query returns the correct results when Comet is enabled and that Comet
+   * replaced all possible operators. Use the provided `absTol` when comparing floating-point
+   * results.
+   */
+  protected def checkSparkAnswerAndOperatorWithTolerance(
+      query: String,
+      absTol: Double = 1e-6): (SparkPlan, SparkPlan) = {
+    checkSparkAnswerAndOperatorWithTol(sql(query), absTol)
+  }
+
+  /**
    * Check that the query returns the correct results when Comet is enabled and that Comet
    * replaced all possible operators except for those specified in the excluded list.
    */

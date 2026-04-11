@@ -27,6 +27,7 @@ import scala.util.Random
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row, SaveMode}
 import org.apache.spark.sql.catalyst.expressions.Cast
+import org.apache.spark.sql.catalyst.parser.ParseException
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
@@ -498,6 +499,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       -1.0f,
       Short.MinValue.toFloat,
       Short.MaxValue.toFloat,
+      -0.0f,
       0.0f) ++
       Range(0, dataSize).map(_ => r.nextFloat())
     castTest(withNulls(values).toDF("a"), DataTypes.StringType)
@@ -558,6 +560,11 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       Double.NaN,
       Double.PositiveInfinity,
       Double.NegativeInfinity,
+      1.0d,
+      -1.0d,
+      Int.MinValue.toDouble,
+      Int.MaxValue.toDouble,
+      -0.0d,
       0.0d) ++
       Range(0, dataSize).map(_ => r.nextDouble())
     castTest(withNulls(values).toDF("a"), DataTypes.StringType)
@@ -987,31 +994,17 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         "213170-06-15T12:34",
         "213170-06-15T12:34:56",
         "213170-06-15T12:34:56.123456")
-      castTimestampTest(values.toDF("a"), DataTypes.TimestampType)
+      castTimestampTest(values.toDF("a"), DataTypes.TimestampType, assertNative = true)
     }
   }
 
-  ignore("cast StringType to TimestampType") {
-    // TODO: enable once string→timestamp is marked Compatible in CometCast.canCastFromString.
-    // All Spark timestamp formats are now supported natively (space separator, Z/offset suffix,
-    // T-prefixed and bare H:M time-only, negative years). The fuzz filter below can be removed
-    // when enabling the native path.
+  test("cast StringType to TimestampType") {
     withSQLConf((SQLConf.SESSION_LOCAL_TIMEZONE.key, "UTC")) {
       val values = Seq("2020-01-01T12:34:56.123456", "T2") ++ gen.generateStrings(
         dataSize,
         timestampPattern,
         8)
       castTest(values.toDF("a"), DataTypes.TimestampType)
-    }
-  }
-
-  test("cast StringType to TimestampType disabled for non-UTC timezone") {
-    withSQLConf((SQLConf.SESSION_LOCAL_TIMEZONE.key, "America/Denver")) {
-      val values = Seq("2020-01-01T12:34:56.123456", "T2").toDF("a")
-      castFallbackTest(
-        values.toDF("a"),
-        DataTypes.TimestampType,
-        "Cast will use UTC instead of Some(America/Denver)")
     }
   }
 
@@ -1057,6 +1050,8 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         "2020-01-01T12:34:56Z",
         "2020-01-01T12:34:56+05:30",
         "2020-01-01T12:34:56-08:00",
+        // Single-digit hour offset (extract_offset_suffix supports ±H:MM)
+        "2020-01-01T12:34:56+5:30",
         // T-prefixed time-only with colon
         "T12:34",
         "T12:34:56",
@@ -1066,7 +1061,45 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         "12:34:56",
         // Negative year
         "-0001-01-01T12:34:56")
-      castTimestampTest(values.toDF("a"), DataTypes.TimestampType)
+      castTimestampTest(values.toDF("a"), DataTypes.TimestampType, assertNative = true)
+    }
+  }
+
+  test("cast StringType to TimestampType - T-hour-only whitespace handling") {
+    // Spark 4.0+ changed whitespace handling for T-prefixed time-only strings:
+    //   - Spark 3.x: trims all whitespace first, so " T2" → valid timestamp
+    //   - Spark 4.0+: raw bytes are used; leading whitespace causes the T-check to fail → null
+    // Comet matches the behaviour of whichever Spark version is running (controlled via
+    // is_spark4_plus in the Cast proto, set from CometSparkSessionExtensions.isSpark40Plus).
+    // This test compares Comet output against Spark output for all cases — no hard-coded
+    // null/valid assertions needed.
+    withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC") {
+      val values = Seq(
+        // Bare T-hour-only: no leading whitespace (valid on all versions)
+        "T2", // single-digit hour
+        "T23", // two-digit hour
+        "T0", // midnight
+        // Bare T-hour-only: trailing whitespace only (valid on all versions)
+        "T2 ", // trailing space
+        "T2\t", // trailing tab
+        "T2\n", // trailing newline
+        // Bare T-hour-only: leading whitespace (null on 4.0+, valid on 3.x)
+        " T2", // leading space
+        "\tT2", // leading tab
+        "\nT2", // leading newline
+        "\r\nT2", // leading CRLF
+        "\t T2", // tab then space
+        "  T2", // double space
+        // T-hour:minute with leading whitespace (null on 4.0+, valid on 3.x)
+        " T2:30",
+        "\tT2:30",
+        "\nT2:30",
+        // Full datetime: leading whitespace (valid on all versions — full trim applies)
+        " 2020-01-01T12:34:56",
+        "\t2020-01-01T12:34:56",
+        "\n2020-01-01T12:34:56",
+        "\r\n2020-01-01T12:34:56")
+      castTimestampTest(values.toDF("a"), DataTypes.TimestampType, assertNative = true)
     }
   }
 
@@ -1281,8 +1314,13 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     // cast to negative scale
     checkSparkAnswerMaybeThrows(
       spark.sql("select a, cast(a as DECIMAL(10,-4)) from t order by a")) match {
+      case (Some(expected: ParseException), Some(actual: ParseException)) =>
+        assert(
+          expected.getMessage.contains("PARSE_SYNTAX_ERROR") && actual.getMessage.contains(
+            "PARSE_SYNTAX_ERROR"))
       case (expected, actual) =>
-        assert(expected.contains("PARSE_SYNTAX_ERROR") === actual.contains("PARSE_SYNTAX_ERROR"))
+        fail(
+          s"Expected Spark and Comet throw ParseException, but got Spark=$expected and Comet=$actual")
     }
   }
 
@@ -1557,7 +1595,8 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           case (None, Some(e)) =>
             throw e
           case (Some(e), None) =>
-            fail(s"Comet should have failed with ${e.getCause.getMessage}")
+            val msg = if (e.getCause != null) e.getCause.getMessage else e.getMessage
+            fail(s"Comet should have failed with $msg")
           case (Some(sparkException), Some(cometException)) =>
             val sparkMessage =
               if (sparkException.getCause != null) sparkException.getCause.getMessage

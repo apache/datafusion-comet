@@ -15,18 +15,17 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Config: spark.comet.expression.Ceil.allowIncompatible=true
 -- ConfigMatrix: parquet.enable.dictionary=false,true
 
 statement
-CREATE TABLE test_ceil(f float, d double) USING parquet
+CREATE TABLE test_ceil(f float, d double, dec DECIMAL(5, 2)) USING parquet
 
 statement
-INSERT INTO test_ceil VALUES (1.1, 1.1), (-1.1, -1.1), (0.0, 0.0), (1.0, 1.0), (NULL, NULL), (cast('NaN' as float), cast('NaN' as double)), (cast('Infinity' as float), cast('Infinity' as double))
+INSERT INTO test_ceil VALUES (1.1, 1.1, 1.10), (-1.1, -1.1, -1.10), (0.0, 0.0, 0.00), (1.0, 1.0, 1.00), (NULL, NULL, NULL), (cast('NaN' as float), cast('NaN' as double), NULL), (cast('Infinity' as float), cast('Infinity' as double), NULL)
 
 query
-SELECT ceil(f), ceil(d) FROM test_ceil
+SELECT ceil(f), ceil(d), ceil(dec) FROM test_ceil
 
 -- literal arguments
 query
-SELECT ceil(1.1), ceil(-1.1), ceil(0.0), ceil(NULL)
+SELECT ceil(1.1), ceil(-1.1), ceil(0.0), ceil(NULL), ceil(cast(1.10 as DECIMAL(5, 2))), ceil(cast(-1.10 as DECIMAL(5, 2)))

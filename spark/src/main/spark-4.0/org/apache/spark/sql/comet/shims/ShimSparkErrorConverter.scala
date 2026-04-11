@@ -37,6 +37,25 @@ object ShimSparkErrorConverter {
  */
 trait ShimSparkErrorConverter {
 
+  private def parseFloatLiteral(value: String): Float = {
+    value.toLowerCase match {
+      case "inf" | "+inf" | "infinity" | "+infinity" => Float.PositiveInfinity
+      case "-inf" | "-infinity" => Float.NegativeInfinity
+      case "nan" | "+nan" | "-nan" => Float.NaN
+      case _ => value.toFloat
+    }
+  }
+
+  private def parseDoubleLiteral(value: String): Double = {
+    val normalized = value.toLowerCase.stripSuffix("d")
+    normalized match {
+      case "inf" | "+inf" | "infinity" | "+infinity" => Double.PositiveInfinity
+      case "-inf" | "-infinity" => Double.NegativeInfinity
+      case "nan" | "+nan" | "-nan" => Double.NaN
+      case _ => normalized.toDouble
+    }
+  }
+
   /**
    * Convert error type string and parameters to appropriate Spark exception. Version-specific
    * implementations call the correct QueryExecutionErrors.* methods.
@@ -213,8 +232,8 @@ trait ShimSparkErrorConverter {
             // Strip "L" suffix for BIGINT literals
             val cleanStr = if (valueStr.endsWith("L")) valueStr.dropRight(1) else valueStr
             cleanStr.toLong
-          case FloatType => valueStr.toFloat
-          case DoubleType => valueStr.toDouble
+          case FloatType => parseFloatLiteral(valueStr)
+          case DoubleType => parseDoubleLiteral(valueStr)
           case StringType => UTF8String.fromString(valueStr)
           case _ => valueStr // Fallback to string
         }
