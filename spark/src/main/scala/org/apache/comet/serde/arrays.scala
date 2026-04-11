@@ -152,21 +152,42 @@ object CometArrayContains extends CometExpressionSerde[ArrayContains] {
     val arrayHasValueExpr =
       scalarFunctionExprToProto("array_has", arrayExprProto, keyExprProto)
 
-    // Check if array contains null elements (for three-valued logic)
+    // Detect null elements without `array_has(array, null)`: DataFusion's array_has returns
+    // null when the needle is null, so it cannot be used as a boolean predicate in CaseWhen.
+    // Removing nulls and comparing lengths matches Spark's indeterminate case.
     val nullKeyLiteralProto = exprToProto(Literal(null, expr.children(1).dataType), Seq.empty)
-    val arrayHasNullExpr =
-      scalarFunctionExprToProto("array_has", arrayExprProto, nullKeyLiteralProto)
+    val arrayType = expr.children.head.dataType.asInstanceOf[ArrayType]
+    val arrayWithoutNullsExpr = scalarFunctionExprToProtoWithReturnType(
+      "array_remove_all",
+      arrayType,
+      false,
+      arrayExprProto,
+      nullKeyLiteralProto)
+    val arraySizeExpr = scalarFunctionExprToProto("size", arrayExprProto)
+    val arraySizeWithoutNullsExpr = arrayWithoutNullsExpr.flatMap { removed =>
+      scalarFunctionExprToProto("size", Some(removed))
+    }
+    val arrayHasNullElementExpr = for {
+      s0 <- arraySizeExpr
+      s1 <- arraySizeWithoutNullsExpr
+    } yield {
+      val neq = ExprOuterClass.BinaryExpr
+        .newBuilder()
+        .setLeft(s0)
+        .setRight(s1)
+        .build()
+      ExprOuterClass.Expr.newBuilder().setNeq(neq).build()
+    }
 
     // Build the three-valued logic:
     // 1. If array is null -> return null
     // 2. If key is null -> return null
     // 3. If array_has(array, key) is true -> return true
-    // 4. If array_has(array, key) is false AND array_has(array, null) is true
+    // 4. If array_has(array, key) is false AND the array still contains null elements
     //    -> return null (indeterminate)
-    // 5. If array_has(array, key) is false AND array_has(array, null) is false
-    //    -> return false
+    // 5. If array_has(array, key) is false AND there are no null elements -> return false
     if (isArrayNotNullExpr.isDefined && isKeyNotNullExpr.isDefined &&
-      arrayHasValueExpr.isDefined && arrayHasNullExpr.isDefined &&
+      arrayHasValueExpr.isDefined && arrayHasNullElementExpr.isDefined &&
       nullKeyLiteralProto.isDefined) {
       // Create boolean literals
       val trueLiteralProto = exprToProto(Literal(true, BooleanType), Seq.empty)
@@ -176,10 +197,10 @@ object CometArrayContains extends CometExpressionSerde[ArrayContains] {
       if (trueLiteralProto.isDefined && falseLiteralProto.isDefined &&
         nullBooleanLiteralProto.isDefined) {
         // If array_has(array, key) is false, check if array has nulls
-        // If array_has(array, null) is true -> return null, else return false
+        // If size(array) != size(array_remove_all(array, null)) -> return null, else false
         val whenNotFoundCheckNulls = ExprOuterClass.CaseWhen
           .newBuilder()
-          .addWhen(arrayHasNullExpr.get) // if array has nulls
+          .addWhen(arrayHasNullElementExpr.get) // if array has null elements
           .addThen(nullBooleanLiteralProto.get) // return null (indeterminate)
           .setElseExpr(falseLiteralProto.get) // else return false
           .build()
