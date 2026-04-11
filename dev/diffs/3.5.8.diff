@@ -941,48 +941,6 @@ index 3cf2bfd17ab..49728c35c42 100644
      AccumulatorSuite.verifyPeakExecutionMemorySet(sparkContext, "external sort") {
        sql("SELECT * FROM testData2 ORDER BY a ASC, b ASC").collect()
      }
-@@ -4459,7 +4460,8 @@ class SQLQuerySuite extends QueryTest with SharedSparkSession with AdaptiveSpark
-   }
- 
-   test("SPARK-39166: Query context of binary arithmetic should be serialized to executors" +
--    " when WSCG is off") {
-+    " when WSCG is off",
-+    IgnoreComet("https://github.com/apache/datafusion-comet/issues/2215")) {
-     withSQLConf(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
-       SQLConf.ANSI_ENABLED.key -> "true") {
-       withTable("t") {
-@@ -4480,7 +4482,8 @@ class SQLQuerySuite extends QueryTest with SharedSparkSession with AdaptiveSpark
-   }
- 
-   test("SPARK-39175: Query context of Cast should be serialized to executors" +
--    " when WSCG is off") {
-+    " when WSCG is off",
-+    IgnoreComet("https://github.com/apache/datafusion-comet/issues/2215")) {
-     withSQLConf(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
-       SQLConf.ANSI_ENABLED.key -> "true") {
-       withTable("t") {
-@@ -4497,14 +4500,19 @@ class SQLQuerySuite extends QueryTest with SharedSparkSession with AdaptiveSpark
-           val msg = intercept[SparkException] {
-             sql(query).collect()
-           }.getMessage
--          assert(msg.contains(query))
-+          if (!isCometEnabled) {
-+            // Comet's error message does not include the original SQL query
-+            // https://github.com/apache/datafusion-comet/issues/2215
-+            assert(msg.contains(query))
-+          }
-         }
-       }
-     }
-   }
- 
-   test("SPARK-39190,SPARK-39208,SPARK-39210: Query context of decimal overflow error should " +
--    "be serialized to executors when WSCG is off") {
-+    "be serialized to executors when WSCG is off",
-+    IgnoreComet("https://github.com/apache/datafusion-comet/issues/2215")) {
-     withSQLConf(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
-       SQLConf.ANSI_ENABLED.key -> "true") {
-       withTable("t") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala
 index 8b4ac474f87..3f79f20822f 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala
@@ -1824,16 +1782,6 @@ index 2f8e401e743..a4f94417dcc 100644
      CostEvaluator.instantiate(
        classOf[SimpleShuffleSortCostEvaluator].getCanonicalName, spark.sparkContext.getConf)
      intercept[IllegalArgumentException] {
-@@ -2417,7 +2457,8 @@ class AdaptiveQueryExecSuite
-   }
- 
-   test("SPARK-48037: Fix SortShuffleWriter lacks shuffle write related metrics " +
--    "resulting in potentially inaccurate data") {
-+    "resulting in potentially inaccurate data",
-+    IgnoreComet("https://github.com/apache/datafusion-comet/issues/1501")) {
-     withTable("t3") {
-       withSQLConf(
-         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
 @@ -2452,6 +2493,7 @@ class AdaptiveQueryExecSuite
            val (_, adaptive) = runAdaptiveAndVerifyResult(query)
            assert(adaptive.collect {
