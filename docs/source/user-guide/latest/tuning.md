@@ -58,20 +58,20 @@ Comet implements multiple memory pool implementations. The type of pool can be s
 
 The valid pool types are:
 
-- `fair_unified_task_shared` (default when `spark.memory.offHeap.enabled=true` is set)
-- `fair_unified`
+- `fair_unified` (default when `spark.memory.offHeap.enabled=true` is set)
+- `fair_unified_task_shared`
 - `greedy_unified`
-
-The `fair_unified_task_shared` pool is the same as `fair_unified` but is shared across all native plans within the
-same Spark task. This ensures that the total memory consumption does not exceed the per-task limit even when multiple
-native plans (e.g. a shuffle writer and its child plan) execute concurrently. Without this, each plan gets its own
-pool at the full per-task limit, effectively doubling the memory that can be consumed.
 
 The `fair_unified` pool prevents operators from using more than an even fraction of the available memory
 (i.e. `pool_size / num_reservations`). This pool works best when you know beforehand
 the query has multiple operators that will likely all need to spill. Sometimes it will cause spills even
 when there is sufficient memory in order to leave enough memory for other operators. Note that when using this pool
 type, each native plan gets its own pool, so the total memory consumption can exceed the per-task limit.
+
+The `fair_unified_task_shared` pool is the same as `fair_unified` but is shared across all native plans within the
+same Spark task. This ensures that the total memory consumption does not exceed the per-task limit even when multiple
+native plans (e.g. a shuffle writer and its child plan) execute concurrently. Without this, each plan gets its own
+pool at the full per-task limit, effectively doubling the memory that can be consumed.
 
 The `greedy_unified` pool type implements a greedy first-come first-serve limit. This pool works well for queries that do not
 need to spill or have a single spillable operator.
