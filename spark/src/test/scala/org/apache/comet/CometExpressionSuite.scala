@@ -28,7 +28,7 @@ import org.scalatest.Tag
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
-import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, FromUnixTime, Literal, StructsToJson, Tan, TruncDate, TruncTimestamp}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, FromUnixTime, Literal, StructsToJson, TruncDate, TruncTimestamp}
 import org.apache.spark.sql.catalyst.optimizer.SimplifyExtractValueOps
 import org.apache.spark.sql.comet.CometProjectExec
 import org.apache.spark.sql.execution.{ProjectExec, SparkPlan}
@@ -167,6 +167,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             {
               val decimalLiteral = Decimal(0.00)
               val cometDf = df.select($"dec" / decimalLiteral, $"dec" % decimalLiteral)
+              checkSparkSchema(cometDf)
               checkSparkAnswerAndOperator(cometDf)
             }
           }
@@ -1215,6 +1216,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                   val cometDf = df.select(
                     $"dec1" + $"dec2",
                     $"dec1" - $"dec2",
+                    $"dec1" / $"dec2",
                     $"dec1" % $"dec2",
                     $"dec1" >= $"dec1",
                     $"dec1" === "1.0",
@@ -1229,6 +1231,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                       .select(
                         $"dec1" + $"dec2",
                         $"dec1" - $"dec2",
+                        $"dec1" / $"dec2",
                         $"dec1" % $"dec2",
                         $"dec1" >= $"dec1",
                         $"dec1" === "1.0",
@@ -1238,6 +1241,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                         $"dec1" - decimalLiteral2)
                       .collect()
                       .toSeq)
+                  checkSparkSchema(cometDf)
                 }
               }
             }
@@ -1253,7 +1257,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         sql("CREATE TABLE tbl (a INT) USING PARQUET")
         sql("INSERT INTO tbl VALUES (0)")
 
-        val combinations = Seq((7, 3), (18, 10), (38, 4))
+        val combinations = Seq((7, 3), (18, 10), (27, 2), (38, 4))
         for ((precision, scale) <- combinations) {
           for (op <- Seq("+", "-", "*", "/", "%")) {
             val left = s"CAST(1.00 AS DECIMAL($precision, $scale))"
@@ -1262,10 +1266,35 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             withSQLConf(
               "spark.sql.optimizer.excludedRules" ->
                 "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
-
-              checkSparkAnswerAndOperator(s"SELECT $left $op $right FROM tbl")
+              val df = sql(s"SELECT $left $op $right FROM tbl")
+              checkSparkSchema(df)
+              checkSparkAnswerAndOperator(df)
             }
           }
+        }
+      }
+    }
+  }
+
+  test("decimal division result type matches Spark") {
+    // Regression test for Comet applying DecimalPrecision.promote() on Spark 4, which overrides
+    // Spark's computed result type. For example, decimal(27,2)/decimal(27,2) should produce
+    // decimal(38,20) per Spark 4 semantics, but promote() would give decimal(38,11).
+    // checkSparkAnswerAndOperator verifies both the schema and the numeric values match.
+    withTable("tbl") {
+      sql("CREATE TABLE tbl (a INT) USING PARQUET")
+      sql("INSERT INTO tbl VALUES (1)")
+      withSQLConf(
+        CometConf.COMET_ENABLED.key -> "true",
+        "spark.sql.optimizer.excludedRules" ->
+          "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+        // (27, 2) hits the overflow-adjustment path where promote() and Spark 4 diverge
+        val combinations = Seq((5, 2), (18, 10), (27, 2), (38, 4))
+        for ((p, s) <- combinations) {
+          val df =
+            sql(s"SELECT CAST(1.00 AS DECIMAL($p, $s)) / CAST(3.00 AS DECIMAL($p, $s)) FROM tbl")
+          checkSparkSchema(df)
+          checkSparkAnswerAndOperator(df)
         }
       }
     }
@@ -1333,8 +1362,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   private val doubleValues: Seq[Double] = Seq(
     -1.0,
-    // TODO we should eventually enable negative zero but there are known issues still
-    // -0.0,
+    -0.0,
     0.0,
     +1.0,
     Double.MinValue,
@@ -1345,42 +1373,41 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     Double.NegativeInfinity)
 
   test("various math scalar functions") {
-    val data = doubleValues.map(n => (n, n))
-    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[Tan]) -> "true") {
-      withParquetTable(data, "tbl") {
-        // expressions with single arg
-        for (expr <- Seq(
-            "acos",
-            "asin",
-            "atan",
-            "cos",
-            "cosh",
-            "exp",
-            "ln",
-            "log10",
-            "log2",
-            "sin",
-            "sinh",
-            "sqrt",
-            "tan",
-            "tanh",
-            "cot")) {
-          val (_, cometPlan) =
-            checkSparkAnswerAndOperatorWithTol(sql(s"SELECT $expr(_1), $expr(_2) FROM tbl"))
-          val cometProjectExecs = collect(cometPlan) { case op: CometProjectExec =>
-            op
-          }
-          assert(cometProjectExecs.length == 1, expr)
+    withParquetTable(doubleValues.map(n => (n, n)), "tbl") {
+      // expressions with single arg
+      for (expr <- Seq(
+          "acos",
+          "asin",
+          "atan",
+          "cos",
+          "cosh",
+          "exp",
+          "ln",
+          "log10",
+          "log2",
+          "sin",
+          "sinh",
+          "sqrt",
+          "tan",
+          "tanh",
+          "cot")) {
+        val (_, cometPlan) =
+          checkSparkAnswerAndOperatorWithTol(sql(s"SELECT $expr(_1), $expr(_2) FROM tbl"))
+        val cometProjectExecs = collect(cometPlan) { case op: CometProjectExec =>
+          op
         }
-        // expressions with two args
-        for (expr <- Seq("atan2", "pow")) {
-          val (_, cometPlan) =
-            checkSparkAnswerAndOperatorWithTol(sql(s"SELECT $expr(_1, _2) FROM tbl"))
-          val cometProjectExecs = collect(cometPlan) { case op: CometProjectExec =>
-            op
-          }
-          assert(cometProjectExecs.length == 1, expr)
+        assert(cometProjectExecs.length == 1, expr)
+      }
+    }
+    withParquetTable(doubleValues.flatMap(m => doubleValues.map(n => (m, n))), "tbl") {
+      // expressions with two args
+      for (expr <- Seq("atan2", "pow")) {
+        val (_, cometPlan) =
+          checkSparkAnswerAndOperatorWithTol(sql(s"SELECT $expr(_1, _2) FROM tbl"))
+        val cometProjectExecs = collect(cometPlan) { case op: CometProjectExec =>
+          op
         }
+        assert(cometProjectExecs.length == 1, expr)
       }
     }
   }
