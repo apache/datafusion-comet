@@ -56,6 +56,11 @@ For more details about Spark off-heap memory mode, please refer to [Spark docume
 
 Comet implements multiple memory pool implementations. The type of pool can be specified with `spark.comet.exec.memoryPool`.
 
+When Comet executes a shuffle, it creates two separate native plans within the same Spark task: the child plan
+(e.g. scan, filter, join) and the shuffle writer plan. These two plans run concurrently in a pipelined fashion —
+the child plan produces batches that the shuffle writer consumes and repartitions. This means both plans hold
+memory reservations at the same time, which is important to understand when choosing a memory pool type.
+
 The valid pool types are:
 
 - `fair_unified` (default when `spark.memory.offHeap.enabled=true` is set)
@@ -66,12 +71,14 @@ The `fair_unified` pool prevents operators from using more than an even fraction
 (i.e. `pool_size / num_reservations`). This pool works best when you know beforehand
 the query has multiple operators that will likely all need to spill. Sometimes it will cause spills even
 when there is sufficient memory in order to leave enough memory for other operators. Note that when using this pool
-type, each native plan gets its own pool, so the total memory consumption can exceed the per-task limit.
+type, each native plan gets its own pool, so the total memory consumption can exceed the per-task limit when two
+plans are running concurrently (e.g. during shuffle).
 
 The `fair_unified_task_shared` pool is the same as `fair_unified` but is shared across all native plans within the
-same Spark task. This ensures that the total memory consumption does not exceed the per-task limit even when multiple
-native plans (e.g. a shuffle writer and its child plan) execute concurrently. Without this, each plan gets its own
-pool at the full per-task limit, effectively doubling the memory that can be consumed.
+same Spark task. Because the child plan and shuffle writer each get their own pool with `fair_unified`, both can
+independently allocate up to the full per-task memory limit, effectively allowing 2x the intended memory to be
+consumed. The `fair_unified_task_shared` pool avoids this by sharing a single pool instance, ensuring that the
+combined memory usage of both plans stays within the per-task limit.
 
 The `greedy_unified` pool type implements a greedy first-come first-serve limit. This pool works well for queries that do not
 need to spill or have a single spillable operator.
