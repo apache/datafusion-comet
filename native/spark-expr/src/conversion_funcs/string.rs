@@ -691,7 +691,7 @@ pub(crate) fn cast_string_to_timestamp(
                 TimestampMicrosecondType,
                 timestamp_parser,
                 tz,
-                Some(to_tz.as_ref())
+                Some(to_tz)
             )?
         }
         DataType::Timestamp(_, None) => {
@@ -1541,7 +1541,6 @@ mod tests {
             Some("2020-01-01T12:34:56.123456"),
             Some("not_a_timestamp"),
         ]));
-        let tz = &timezone::Tz::from_str("UTC").unwrap();
         let string_array = array
             .as_any()
             .downcast_ref::<GenericStringArray<i32>>()
@@ -1557,25 +1556,14 @@ mod tests {
             None::<&str>
         );
 
-        // Key assertion: TimestampNTZ should have NO timezone
-        assert_eq!(
-            result.data_type(),
-            &DataType::Timestamp(TimeUnit::Microsecond, None)
-        );
-        assert_eq!(result.len(), 3);
-
-        // Verify the actual values are not timezone-converted
-        let ts_array = result
-            .as_any()
-            .downcast_ref::<PrimitiveArray<TimestampMicrosecondType>>()
-            .expect("Expected a timestamp array");
-
-        // 2020-01-01T12:34:56.123456 as naive epoch micros
-        assert_eq!(ts_array.value(0), 1577882096123456);
-        // "not_a_timestamp" is invalid and should be null
-        assert!(ts_array.is_null(1));
-        // 2020-01-01 as naive epoch micros (midnight)
-        assert_eq!(ts_array.value(2), 1577836800000000);
+        assert!(result.is_err());
+        if let Err(SparkError::InvalidInputInCastToDatetime { value, from_type, to_type }) = result {
+            assert_eq!(value, "not_a_timestamp");
+            assert_eq!(from_type, "STRING");
+            assert_eq!(to_type, "TIMESTAMP");
+        } else {
+            panic!("Expected InvalidInputInCastToDatetime error, got {:?}", result);
+        }
     }
 
     #[test]
@@ -1603,7 +1591,7 @@ mod tests {
             timestamp_ntz_parser,
             &Utc,
             None::<&str>
-        );
+        ).unwrap();
 
         assert_eq!(
             result.data_type(),
