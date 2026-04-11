@@ -416,6 +416,7 @@ fn register_datafusion_spark_function(session_ctx: &SessionContext) {
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkLuhnCheck::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSpace::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitCount::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBin::default()));
 }
 
 /// Prepares arrow arrays for output.
@@ -954,6 +955,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_logMemoryUsage(
 
 use crate::execution::columnar_to_row::ColumnarToRowContext;
 use arrow::ffi::{from_ffi, FFI_ArrowArray, FFI_ArrowSchema};
+use datafusion_spark::function::math::bin::SparkBin;
 
 /// Initialize a native columnar to row converter.
 ///
