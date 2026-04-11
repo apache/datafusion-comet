@@ -141,7 +141,12 @@ fn unregister_and_total(thread_id: u64, context_id: i64) -> usize {
             map.remove(&thread_id);
             return 0;
         }
-        return pools.values().map(|p| p.reserved()).sum::<usize>();
+        let mut seen = std::collections::HashSet::new();
+        return pools
+            .values()
+            .filter(|p| seen.insert(Arc::as_ptr(p) as *const () as usize))
+            .map(|p| p.reserved())
+            .sum::<usize>();
     }
     0
 }
@@ -149,7 +154,16 @@ fn unregister_and_total(thread_id: u64, context_id: i64) -> usize {
 fn total_reserved_for_thread(thread_id: u64) -> usize {
     let map = get_thread_memory_pools().lock();
     map.get(&thread_id)
-        .map(|pools| pools.values().map(|p| p.reserved()).sum::<usize>())
+        .map(|pools| {
+            // Deduplicate pools that share the same underlying allocation
+            // (e.g. task-shared pools registered by multiple execution contexts)
+            let mut seen = std::collections::HashSet::new();
+            pools
+                .values()
+                .filter(|p| seen.insert(Arc::as_ptr(p) as *const () as usize))
+                .map(|p| p.reserved())
+                .sum::<usize>()
+        })
         .unwrap_or(0)
 }
 
