@@ -56,12 +56,58 @@ query
 SELECT sort_array(arr, false) FROM test_sort_array_string
 
 statement
-CREATE TABLE test_sort_array_float(arr array<double>) USING parquet
+CREATE TABLE test_sort_array_double(arr array<double>) USING parquet
+
+statement
+INSERT INTO test_sort_array_double VALUES
+  (array(
+    CAST('Infinity' AS DOUBLE),
+    CAST('-Infinity' AS DOUBLE),
+    CAST('NaN' AS DOUBLE),
+    3.0,
+    1.0,
+    NULL,
+    -0.0,
+    0.0)),
+  (array(
+    CAST('NaN' AS DOUBLE),
+    CAST('NaN' AS DOUBLE),
+    CAST('Infinity' AS DOUBLE),
+    CAST('-Infinity' AS DOUBLE),
+    -5.0,
+    2.0)),
+  (array()),
+  (NULL)
+
+query
+SELECT sort_array(arr) FROM test_sort_array_double
+
+query
+SELECT sort_array(arr, true) FROM test_sort_array_double
+
+query
+SELECT sort_array(arr, false) FROM test_sort_array_double
+
+statement
+CREATE TABLE test_sort_array_float(arr array<float>) USING parquet
 
 statement
 INSERT INTO test_sort_array_float VALUES
-  (array(CAST('NaN' AS DOUBLE), 3.0, 1.0, NULL, -0.0, 0.0)),
-  (array(CAST('NaN' AS DOUBLE), CAST('NaN' AS DOUBLE), -5.0, 2.0)),
+  (array(
+    CAST('Infinity' AS FLOAT),
+    CAST('-Infinity' AS FLOAT),
+    CAST('NaN' AS FLOAT),
+    CAST(3.0 AS FLOAT),
+    CAST(1.0 AS FLOAT),
+    CAST(NULL AS FLOAT),
+    CAST(-0.0 AS FLOAT),
+    CAST(0.0 AS FLOAT))),
+  (array(
+    CAST('NaN' AS FLOAT),
+    CAST('Infinity' AS FLOAT),
+    CAST('-Infinity' AS FLOAT),
+    CAST(-5.0 AS FLOAT),
+    CAST(2.0 AS FLOAT))),
   (array()),
   (NULL)
 
@@ -75,11 +121,16 @@ query
 SELECT sort_array(arr, false) FROM test_sort_array_float
 
 statement
-CREATE TABLE test_sort_array_decimal(arr array<decimal(10, 0)>) USING parquet
+CREATE TABLE test_sort_array_decimal(arr array<decimal(12, 3)>) USING parquet
 
 statement
 INSERT INTO test_sort_array_decimal VALUES
-  (array(CAST(100 AS DECIMAL(10, 0)), CAST(10 AS DECIMAL(10, 0)))),
+  (CAST(array(CAST(100 AS DECIMAL(10, 0)), CAST(10 AS DECIMAL(10, 0))) AS array<decimal(12, 3)>)),
+  (CAST(array(
+    CAST(1 AS DECIMAL(10, 0)),
+    CAST(1.0 AS DECIMAL(10, 1)),
+    CAST(1.00 AS DECIMAL(10, 2)),
+    CAST(1.000 AS DECIMAL(10, 3))) AS array<decimal(12, 3)>)),
   (array()),
   (NULL)
 
@@ -173,11 +224,56 @@ SELECT
   sort_array(array(3, 1, 4, 1, 5), true),
   sort_array(array(3, NULL, 1, NULL, 2)),
   sort_array(array(3, NULL, 1, NULL, 2), false),
-  sort_array(array(CAST('NaN' AS DOUBLE), 1.0, NULL, -0.0, 0.0)),
-  sort_array(array(CAST('NaN' AS DOUBLE), 1.0, NULL, -0.0, 0.0), false),
-  sort_array(array(CAST(100 AS DECIMAL(10, 0)), CAST(10 AS DECIMAL(10, 0)))),
   sort_array(
-    array(CAST(100 AS DECIMAL(10, 0)), CAST(10 AS DECIMAL(10, 0))),
+    array(
+      CAST('Infinity' AS DOUBLE),
+      CAST('-Infinity' AS DOUBLE),
+      CAST('NaN' AS DOUBLE),
+      1.0,
+      NULL,
+      -0.0,
+      0.0)),
+  sort_array(
+    array(
+      CAST('Infinity' AS DOUBLE),
+      CAST('-Infinity' AS DOUBLE),
+      CAST('NaN' AS DOUBLE),
+      1.0,
+      NULL,
+      -0.0,
+      0.0),
+    false),
+  sort_array(
+    array(
+      CAST('Infinity' AS FLOAT),
+      CAST('-Infinity' AS FLOAT),
+      CAST('NaN' AS FLOAT),
+      CAST(1.0 AS FLOAT),
+      CAST(NULL AS FLOAT),
+      CAST(-0.0 AS FLOAT),
+      CAST(0.0 AS FLOAT))),
+  sort_array(
+    array(
+      CAST('Infinity' AS FLOAT),
+      CAST('-Infinity' AS FLOAT),
+      CAST('NaN' AS FLOAT),
+      CAST(1.0 AS FLOAT),
+      CAST(NULL AS FLOAT),
+      CAST(-0.0 AS FLOAT),
+      CAST(0.0 AS FLOAT)),
+    false),
+  sort_array(
+    CAST(array(
+      CAST(100 AS DECIMAL(10, 0)),
+      CAST(10 AS DECIMAL(10, 0)),
+      CAST(1 AS DECIMAL(10, 0)),
+      CAST(1.00 AS DECIMAL(10, 2))) AS array<decimal(12, 3)>)),
+  sort_array(
+    CAST(array(
+      CAST(100 AS DECIMAL(10, 0)),
+      CAST(10 AS DECIMAL(10, 0)),
+      CAST(1 AS DECIMAL(10, 0)),
+      CAST(1.00 AS DECIMAL(10, 2))) AS array<decimal(12, 3)>),
     false),
   sort_array(array(true, false, true, false)),
   sort_array(array(true, false, true, NULL, false)),

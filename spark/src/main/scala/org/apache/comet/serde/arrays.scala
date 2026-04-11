@@ -213,33 +213,28 @@ object CometSortArray extends CometExpressionSerde[SortArray] {
     }
   }
 
-  private def canRank(dt: DataType, nestedInArray: Boolean = false): Boolean = {
+  private def supportedSortArrayElementType(
+      dt: DataType,
+      nestedInArray: Boolean = false): Boolean = {
     dt match {
-      case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
-          _: DoubleType | _: DecimalType =>
-        true
-      case _: DateType | _: TimestampType | _: TimestampNTZType =>
-        true
       // DataFusion's array_sort compares nested arrays through Arrow's rank kernel.
       // That kernel does not support Struct or Null child values,
       // so array<array<struct<...>>> and array<array<null>> would fail at runtime.
       case _: NullType if !nestedInArray =>
         true
-      case _: BooleanType | _: BinaryType | _: StringType =>
-        true
       case ArrayType(elementType, _) =>
-        canRank(elementType, nestedInArray = true)
+        supportedSortArrayElementType(elementType, nestedInArray = true)
       case StructType(fields) if !nestedInArray =>
-        fields.forall(f => canRank(f.dataType))
+        fields.forall(f => supportedSortArrayElementType(f.dataType))
       case _ =>
-        false
+        supportedScalarSortElementType(dt)
     }
   }
 
   override def getSupportLevel(expr: SortArray): SupportLevel = {
     val elementType = expr.base.dataType.asInstanceOf[ArrayType].elementType
 
-    if (!canRank(elementType)) {
+    if (!supportedSortArrayElementType(elementType)) {
       Unsupported(Some(s"Sort on array element type $elementType is not supported"))
     } else if (CometConf.COMET_EXEC_STRICT_FLOATING_POINT.get() &&
       containsFloatingPoint(elementType)) {
