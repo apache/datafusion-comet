@@ -96,6 +96,26 @@ class Native extends NativeBase {
       schemaAddrs: Array[Long]): Long
 
   /**
+   * Execute one step of the native query plan, stashing the output RecordBatch in the native
+   * BatchStash instead of exporting via Arrow FFI. Returns the stash handle (positive long)
+   * or -1 for EOF. Used when the output feeds directly into another native plan (e.g.,
+   * native ShuffleWriter) to avoid unnecessary FFI round-trips.
+   *
+   * @param stage
+   *   the stage ID, for informational purposes
+   * @param partition
+   *   the partition ID, for informational purposes
+   * @param plan
+   *   the address to native query plan.
+   * @return
+   *   a batch stash handle (positive), or -1 for EOF.
+   */
+  @native def executePlanBatchHandle(
+      stage: Int,
+      partition: Int,
+      plan: Long): Long
+
+  /**
    * Release and drop the native query plan object and context object.
    *
    * @param plan
