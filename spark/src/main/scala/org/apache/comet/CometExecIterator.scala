@@ -82,7 +82,7 @@ class CometExecIterator(
   private val cometTaskMemoryManager = new CometTaskMemoryManager(id, taskAttemptId)
   // When true, executePlan stashes output batches natively and returns handles
   // instead of exporting via Arrow FFI. Used when output feeds a native ShuffleWriter.
-  @volatile private var stashMode: Boolean = false
+  private var stashMode: Boolean = false
   private var pendingHandle: Long = -1L
   // Build a mixed array of iterators: CometShuffleBlockIterator for shuffle
   // scan indices, CometBatchIterator for regular scan indices.
@@ -276,15 +276,11 @@ class CometExecIterator(
     }
 
     val ctx = TaskContext.get()
-    try {
-      val handle = nativeLib.executePlanBatchHandle(ctx.stageId(), partitionIndex, plan)
-      if (handle == -1L) {
-        close()
-      }
-      handle
-    } catch {
-      case e: Throwable => throw e
+    val handle = nativeLib.executePlanBatchHandle(ctx.stageId(), partitionIndex, plan)
+    if (handle == -1L) {
+      close()
     }
+    handle
   }
 
   def close(): Unit = synchronized {

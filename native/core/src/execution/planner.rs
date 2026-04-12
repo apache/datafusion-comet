@@ -1304,11 +1304,9 @@ impl PhysicalPlanner {
                     scan.arrow_ffi_safe,
                 )?;
 
-                // Check if the scan source indicates handle mode (batch stash path).
-                // When the JVM sets source to "ShuffleWriterInputHandle", the input
-                // is a CometHandleBatchIterator and batches should be retrieved from
-                // the BatchStash instead of via Arrow FFI.
-                if scan.input_source_description == "ShuffleWriterInputHandle" {
+                if scan.input_source_description
+                    == crate::execution::batch_stash::HANDLE_SCAN_SOURCE
+                {
                     scan.handle_mode = true;
                 }
 

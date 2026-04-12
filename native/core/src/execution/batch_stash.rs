@@ -18,11 +18,12 @@
 //! Global registry for passing RecordBatch values between native execution contexts
 //! via opaque u64 handles, without Arrow FFI serialization.
 
-// These items will be called from JNI and other modules added in subsequent tasks.
-#![allow(dead_code)]
-
 use arrow::record_batch::RecordBatch;
 use once_cell::sync::Lazy;
+
+/// Scan source name indicating the input uses the batch stash handle path.
+/// Must match the value set in CometNativeShuffleWriter.getNativePlan().
+pub(crate) const HANDLE_SCAN_SOURCE: &str = "ShuffleWriterInputHandle";
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;

@@ -618,10 +618,198 @@ fn prepare_output(
 }
 
 /// Stash the output RecordBatch in the BatchStash and return the handle.
-/// Used when output feeds directly into another native plan.
 fn stash_output(output_batch: RecordBatch) -> CometResult<jlong> {
     let handle = crate::execution::batch_stash::stash(output_batch);
     Ok(handle as jlong)
+}
+
+/// How to handle output batches from the execution plan.
+enum OutputMode<'a> {
+    /// Export via Arrow FFI to the provided addresses.
+    Ffi {
+        array_addrs: JLongArray<'a>,
+        schema_addrs: JLongArray<'a>,
+        validate: bool,
+    },
+    /// Stash in BatchStash and return handle.
+    Stash,
+}
+
+impl OutputMode<'_> {
+    fn handle_batch(&self, env: &mut Env, batch: RecordBatch) -> CometResult<jlong> {
+        match self {
+            OutputMode::Ffi {
+                array_addrs,
+                schema_addrs,
+                validate,
+            } => {
+                // Safety: JLongArray is a raw JNI reference that remains valid for the
+                // duration of the JNI call. We reborrow it here since prepare_output
+                // only reads from it.
+                let array_addrs = unsafe { JLongArray::from_raw(env, array_addrs.as_raw()) };
+                let schema_addrs = unsafe { JLongArray::from_raw(env, schema_addrs.as_raw()) };
+                prepare_output(env, array_addrs, schema_addrs, batch, *validate)
+            }
+            OutputMode::Stash => stash_output(batch),
+        }
+    }
+}
+
+/// Shared execution logic for `executePlan` and `executePlanBatchHandle`.
+fn execute_plan_impl(
+    env: &mut Env,
+    stage_id: jint,
+    partition: jint,
+    exec_context: &mut ExecutionContext,
+    output_mode: &OutputMode,
+) -> CometResult<jlong> {
+    let tracing_enabled = exec_context.tracing_enabled;
+    let owned_label;
+    let tracing_label = if tracing_enabled {
+        owned_label = exec_context.tracing_event_name.clone();
+        owned_label.as_str()
+    } else {
+        ""
+    };
+
+    let result = with_trace(tracing_label, tracing_enabled, || {
+        let exec_context_id = exec_context.id;
+
+        // Initialize the execution stream.
+        // Because we don't know if input arrays are dictionary-encoded when we create
+        // query plan, we need to defer stream initialization to first time execution.
+        if exec_context.root_op.is_none() {
+            let start = Instant::now();
+            let planner = PhysicalPlanner::new(Arc::clone(&exec_context.session_ctx), partition)
+                .with_exec_id(exec_context_id);
+            let (scans, shuffle_scans, root_op) = planner.create_plan(
+                &exec_context.spark_plan,
+                &mut exec_context.input_sources.clone(),
+                exec_context.partition_count,
+            )?;
+            let physical_plan_time = start.elapsed();
+
+            exec_context.plan_creation_time += physical_plan_time;
+            exec_context.scans = scans;
+            exec_context.shuffle_scans = shuffle_scans;
+
+            if exec_context.explain_native {
+                let formatted_plan_str =
+                    DisplayableExecutionPlan::new(root_op.native_plan.as_ref()).indent(true);
+                info!("Comet native query plan:\n{formatted_plan_str:}");
+            }
+
+            let task_ctx = exec_context.session_ctx.task_ctx();
+            // Each Comet native execution corresponds to a single Spark partition,
+            // so we should always execute partition 0.
+            let stream = root_op.native_plan.execute(0, task_ctx)?;
+
+            if exec_context.scans.is_empty() && exec_context.shuffle_scans.is_empty() {
+                // No JVM data sources -- spawn onto tokio so the executor
+                // thread parks in blocking_recv instead of busy-polling.
+                let (tx, rx) = mpsc::channel(2);
+                let mut stream = stream;
+                get_runtime().spawn(async move {
+                    let result = std::panic::AssertUnwindSafe(async {
+                        while let Some(batch) = stream.next().await {
+                            if tx.send(batch).await.is_err() {
+                                break;
+                            }
+                        }
+                    })
+                    .catch_unwind()
+                    .await;
+
+                    if let Err(panic) = result {
+                        let msg = match panic.downcast_ref::<&str>() {
+                            Some(s) => s.to_string(),
+                            None => match panic.downcast_ref::<String>() {
+                                Some(s) => s.clone(),
+                                None => "unknown panic".to_string(),
+                            },
+                        };
+                        let _ = tx
+                            .send(Err(DataFusionError::Execution(format!(
+                                "native panic: {msg}"
+                            ))))
+                            .await;
+                    }
+                });
+                exec_context.batch_receiver = Some(rx);
+            } else {
+                exec_context.stream = Some(stream);
+            }
+            exec_context.root_op = Some(root_op);
+        } else {
+            pull_input_batches(exec_context)?;
+        }
+
+        if let Some(rx) = &mut exec_context.batch_receiver {
+            match rx.blocking_recv() {
+                Some(Ok(batch)) => {
+                    update_metrics(env, exec_context)?;
+                    return output_mode.handle_batch(env, batch);
+                }
+                Some(Err(e)) => {
+                    return Err(e.into());
+                }
+                None => {
+                    log_plan_metrics(exec_context, stage_id, partition);
+                    return Ok(-1);
+                }
+            }
+        }
+
+        // ScanExec path: busy-poll to interleave JVM batch pulls with stream polling
+        get_runtime().block_on(async {
+            loop {
+                let next_item = exec_context.stream.as_mut().unwrap().next();
+                let poll_output = poll!(next_item);
+
+                exec_context.poll_count_since_metrics_check += 1;
+                if exec_context.poll_count_since_metrics_check >= 100 {
+                    exec_context.poll_count_since_metrics_check = 0;
+                    if let Some(interval) = exec_context.metrics_update_interval {
+                        let now = Instant::now();
+                        if now - exec_context.metrics_last_update_time >= interval {
+                            update_metrics(env, exec_context)?;
+                            exec_context.metrics_last_update_time = now;
+                        }
+                    }
+                    if exec_context.tracing_enabled {
+                        log_memory_usage(
+                            &exec_context.tracing_memory_metric_name,
+                            total_reserved_for_thread(exec_context.rust_thread_id) as u64,
+                        );
+                    }
+                }
+
+                match poll_output {
+                    Poll::Ready(Some(output)) => {
+                        return output_mode.handle_batch(env, output?);
+                    }
+                    Poll::Ready(None) => {
+                        log_plan_metrics(exec_context, stage_id, partition);
+                        return Ok(-1);
+                    }
+                    Poll::Pending => {
+                        tokio::task::block_in_place(|| pull_input_batches(exec_context))?;
+                    }
+                }
+            }
+        })
+    });
+
+    if exec_context.tracing_enabled {
+        #[cfg(feature = "jemalloc")]
+        log_jemalloc_usage();
+        log_memory_usage(
+            &exec_context.tracing_memory_metric_name,
+            total_reserved_for_thread(exec_context.rust_thread_id) as u64,
+        );
+    }
+
+    result
 }
 
 /// Pull the next input from JVM. Note that we cannot pull input batches in
@@ -657,188 +845,18 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
     schema_addrs: JLongArray,
 ) -> jlong {
     try_unwrap_or_throw(&e, |env| {
-        // Retrieve the query
         let exec_context = get_execution_context(exec_context);
-
-        let tracing_enabled = exec_context.tracing_enabled;
-        // Clone the label only when tracing is enabled. The clone is needed
-        // because the closure below mutably borrows exec_context.
-        let owned_label;
-        let tracing_label = if tracing_enabled {
-            owned_label = exec_context.tracing_event_name.clone();
-            owned_label.as_str()
-        } else {
-            ""
+        let output_mode = OutputMode::Ffi {
+            array_addrs,
+            schema_addrs,
+            validate: exec_context.debug_native,
         };
-
-        let result = with_trace(tracing_label, tracing_enabled, || {
-            let exec_context_id = exec_context.id;
-
-            // Initialize the execution stream.
-            // Because we don't know if input arrays are dictionary-encoded when we create
-            // query plan, we need to defer stream initialization to first time execution.
-            if exec_context.root_op.is_none() {
-                let start = Instant::now();
-                let planner =
-                    PhysicalPlanner::new(Arc::clone(&exec_context.session_ctx), partition)
-                        .with_exec_id(exec_context_id);
-                let (scans, shuffle_scans, root_op) = planner.create_plan(
-                    &exec_context.spark_plan,
-                    &mut exec_context.input_sources.clone(),
-                    exec_context.partition_count,
-                )?;
-                let physical_plan_time = start.elapsed();
-
-                exec_context.plan_creation_time += physical_plan_time;
-                exec_context.scans = scans;
-                exec_context.shuffle_scans = shuffle_scans;
-
-                if exec_context.explain_native {
-                    let formatted_plan_str =
-                        DisplayableExecutionPlan::new(root_op.native_plan.as_ref()).indent(true);
-                    info!("Comet native query plan:\n{formatted_plan_str:}");
-                }
-
-                let task_ctx = exec_context.session_ctx.task_ctx();
-                // Each Comet native execution corresponds to a single Spark partition,
-                // so we should always execute partition 0.
-                let stream = root_op.native_plan.execute(0, task_ctx)?;
-
-                if exec_context.scans.is_empty() && exec_context.shuffle_scans.is_empty() {
-                    // No JVM data sources — spawn onto tokio so the executor
-                    // thread parks in blocking_recv instead of busy-polling.
-                    //
-                    // Channel capacity of 2 allows the producer to work one batch
-                    // ahead while the consumer processes the current one via JNI,
-                    // without buffering excessive memory. Increasing this would
-                    // trade memory for latency hiding if JNI/FFI overhead dominates;
-                    // decreasing to 1 would serialize production and consumption.
-                    let (tx, rx) = mpsc::channel(2);
-                    let mut stream = stream;
-                    get_runtime().spawn(async move {
-                        let result = std::panic::AssertUnwindSafe(async {
-                            while let Some(batch) = stream.next().await {
-                                if tx.send(batch).await.is_err() {
-                                    break;
-                                }
-                            }
-                        })
-                        .catch_unwind()
-                        .await;
-
-                        if let Err(panic) = result {
-                            let msg = match panic.downcast_ref::<&str>() {
-                                Some(s) => s.to_string(),
-                                None => match panic.downcast_ref::<String>() {
-                                    Some(s) => s.clone(),
-                                    None => "unknown panic".to_string(),
-                                },
-                            };
-                            let _ = tx
-                                .send(Err(DataFusionError::Execution(format!(
-                                    "native panic: {msg}"
-                                ))))
-                                .await;
-                        }
-                    });
-                    exec_context.batch_receiver = Some(rx);
-                } else {
-                    exec_context.stream = Some(stream);
-                }
-                exec_context.root_op = Some(root_op);
-            } else {
-                // Pull input batches
-                pull_input_batches(exec_context)?;
-            }
-
-            if let Some(rx) = &mut exec_context.batch_receiver {
-                match rx.blocking_recv() {
-                    Some(Ok(batch)) => {
-                        update_metrics(env, exec_context)?;
-                        return prepare_output(
-                            env,
-                            array_addrs,
-                            schema_addrs,
-                            batch,
-                            exec_context.debug_native,
-                        );
-                    }
-                    Some(Err(e)) => {
-                        return Err(e.into());
-                    }
-                    None => {
-                        log_plan_metrics(exec_context, stage_id, partition);
-                        return Ok(-1);
-                    }
-                }
-            }
-
-            // ScanExec path: busy-poll to interleave JVM batch pulls with stream polling
-            get_runtime().block_on(async {
-                loop {
-                    let next_item = exec_context.stream.as_mut().unwrap().next();
-                    let poll_output = poll!(next_item);
-
-                    // Only check time/tracing every 100 polls to reduce overhead
-                    exec_context.poll_count_since_metrics_check += 1;
-                    if exec_context.poll_count_since_metrics_check >= 100 {
-                        exec_context.poll_count_since_metrics_check = 0;
-                        if let Some(interval) = exec_context.metrics_update_interval {
-                            let now = Instant::now();
-                            if now - exec_context.metrics_last_update_time >= interval {
-                                update_metrics(env, exec_context)?;
-                                exec_context.metrics_last_update_time = now;
-                            }
-                        }
-                        if exec_context.tracing_enabled {
-                            log_memory_usage(
-                                &exec_context.tracing_memory_metric_name,
-                                total_reserved_for_thread(exec_context.rust_thread_id) as u64,
-                            );
-                        }
-                    }
-
-                    match poll_output {
-                        Poll::Ready(Some(output)) => {
-                            return prepare_output(
-                                env,
-                                array_addrs,
-                                schema_addrs,
-                                output?,
-                                exec_context.debug_native,
-                            );
-                        }
-                        Poll::Ready(None) => {
-                            log_plan_metrics(exec_context, stage_id, partition);
-                            return Ok(-1);
-                        }
-                        Poll::Pending => {
-                            // JNI call to pull batches from JVM into ScanExec operators.
-                            // block_in_place lets tokio move other tasks off this worker
-                            // while we wait for JVM data.
-                            tokio::task::block_in_place(|| pull_input_batches(exec_context))?;
-                        }
-                    }
-                }
-            })
-        });
-
-        if exec_context.tracing_enabled {
-            #[cfg(feature = "jemalloc")]
-            log_jemalloc_usage();
-            log_memory_usage(
-                &exec_context.tracing_memory_metric_name,
-                total_reserved_for_thread(exec_context.rust_thread_id) as u64,
-            );
-        }
-
-        result
+        execute_plan_impl(env, stage_id, partition, exec_context, &output_mode)
     })
 }
 
-/// Execute one step of the native query plan, stashing the output RecordBatch in the
-/// BatchStash instead of exporting via Arrow FFI. Returns the stash handle (positive long)
-/// or -1 for EOF. Used when the output feeds directly into another native plan.
+/// Like executePlan but stashes the output RecordBatch and returns a handle instead of
+/// exporting via Arrow FFI. Used when output feeds directly into another native plan.
 /// # Safety
 /// This function is inherently unsafe since it deals with raw pointers passed from JNI.
 #[no_mangle]
@@ -850,170 +868,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlanBatchHandl
     exec_context: jlong,
 ) -> jlong {
     try_unwrap_or_throw(&e, |env| {
-        // Retrieve the query
         let exec_context = get_execution_context(exec_context);
-
-        let tracing_enabled = exec_context.tracing_enabled;
-        // Clone the label only when tracing is enabled. The clone is needed
-        // because the closure below mutably borrows exec_context.
-        let owned_label;
-        let tracing_label = if tracing_enabled {
-            owned_label = exec_context.tracing_event_name.clone();
-            owned_label.as_str()
-        } else {
-            ""
-        };
-
-        let result = with_trace(tracing_label, tracing_enabled, || {
-            let exec_context_id = exec_context.id;
-
-            // Initialize the execution stream.
-            // Because we don't know if input arrays are dictionary-encoded when we create
-            // query plan, we need to defer stream initialization to first time execution.
-            if exec_context.root_op.is_none() {
-                let start = Instant::now();
-                let planner =
-                    PhysicalPlanner::new(Arc::clone(&exec_context.session_ctx), partition)
-                        .with_exec_id(exec_context_id);
-                let (scans, shuffle_scans, root_op) = planner.create_plan(
-                    &exec_context.spark_plan,
-                    &mut exec_context.input_sources.clone(),
-                    exec_context.partition_count,
-                )?;
-                let physical_plan_time = start.elapsed();
-
-                exec_context.plan_creation_time += physical_plan_time;
-                exec_context.scans = scans;
-                exec_context.shuffle_scans = shuffle_scans;
-
-                if exec_context.explain_native {
-                    let formatted_plan_str =
-                        DisplayableExecutionPlan::new(root_op.native_plan.as_ref()).indent(true);
-                    info!("Comet native query plan:\n{formatted_plan_str:}");
-                }
-
-                let task_ctx = exec_context.session_ctx.task_ctx();
-                // Each Comet native execution corresponds to a single Spark partition,
-                // so we should always execute partition 0.
-                let stream = root_op.native_plan.execute(0, task_ctx)?;
-
-                if exec_context.scans.is_empty() && exec_context.shuffle_scans.is_empty() {
-                    // No JVM data sources — spawn onto tokio so the executor
-                    // thread parks in blocking_recv instead of busy-polling.
-                    //
-                    // Channel capacity of 2 allows the producer to work one batch
-                    // ahead while the consumer processes the current one via JNI,
-                    // without buffering excessive memory. Increasing this would
-                    // trade memory for latency hiding if JNI/FFI overhead dominates;
-                    // decreasing to 1 would serialize production and consumption.
-                    let (tx, rx) = mpsc::channel(2);
-                    let mut stream = stream;
-                    get_runtime().spawn(async move {
-                        let result = std::panic::AssertUnwindSafe(async {
-                            while let Some(batch) = stream.next().await {
-                                if tx.send(batch).await.is_err() {
-                                    break;
-                                }
-                            }
-                        })
-                        .catch_unwind()
-                        .await;
-
-                        if let Err(panic) = result {
-                            let msg = match panic.downcast_ref::<&str>() {
-                                Some(s) => s.to_string(),
-                                None => match panic.downcast_ref::<String>() {
-                                    Some(s) => s.clone(),
-                                    None => "unknown panic".to_string(),
-                                },
-                            };
-                            let _ = tx
-                                .send(Err(DataFusionError::Execution(format!(
-                                    "native panic: {msg}"
-                                ))))
-                                .await;
-                        }
-                    });
-                    exec_context.batch_receiver = Some(rx);
-                } else {
-                    exec_context.stream = Some(stream);
-                }
-                exec_context.root_op = Some(root_op);
-            } else {
-                // Pull input batches
-                pull_input_batches(exec_context)?;
-            }
-
-            if let Some(rx) = &mut exec_context.batch_receiver {
-                match rx.blocking_recv() {
-                    Some(Ok(batch)) => {
-                        update_metrics(env, exec_context)?;
-                        return stash_output(batch);
-                    }
-                    Some(Err(e)) => {
-                        return Err(e.into());
-                    }
-                    None => {
-                        log_plan_metrics(exec_context, stage_id, partition);
-                        return Ok(-1);
-                    }
-                }
-            }
-
-            // ScanExec path: busy-poll to interleave JVM batch pulls with stream polling
-            get_runtime().block_on(async {
-                loop {
-                    let next_item = exec_context.stream.as_mut().unwrap().next();
-                    let poll_output = poll!(next_item);
-
-                    // Only check time/tracing every 100 polls to reduce overhead
-                    exec_context.poll_count_since_metrics_check += 1;
-                    if exec_context.poll_count_since_metrics_check >= 100 {
-                        exec_context.poll_count_since_metrics_check = 0;
-                        if let Some(interval) = exec_context.metrics_update_interval {
-                            let now = Instant::now();
-                            if now - exec_context.metrics_last_update_time >= interval {
-                                update_metrics(env, exec_context)?;
-                                exec_context.metrics_last_update_time = now;
-                            }
-                        }
-                        if exec_context.tracing_enabled {
-                            log_memory_usage(
-                                &exec_context.tracing_memory_metric_name,
-                                total_reserved_for_thread(exec_context.rust_thread_id) as u64,
-                            );
-                        }
-                    }
-
-                    match poll_output {
-                        Poll::Ready(Some(output)) => {
-                            return stash_output(output?);
-                        }
-                        Poll::Ready(None) => {
-                            log_plan_metrics(exec_context, stage_id, partition);
-                            return Ok(-1);
-                        }
-                        Poll::Pending => {
-                            // JNI call to pull batches from JVM into ScanExec operators.
-                            // block_in_place lets tokio move other tasks off this worker
-                            // while we wait for JVM data.
-                            tokio::task::block_in_place(|| pull_input_batches(exec_context))?;
-                        }
-                    }
-                }
-            })
-        });
-
-        if exec_context.tracing_enabled {
-            #[cfg(feature = "jemalloc")]
-            log_jemalloc_usage();
-            log_memory_usage(
-                &exec_context.tracing_memory_metric_name,
-                total_reserved_for_thread(exec_context.rust_thread_id) as u64,
-            );
-        }
-
-        result
+        execute_plan_impl(env, stage_id, partition, exec_context, &OutputMode::Stash)
     })
 }
 
