@@ -73,10 +73,15 @@ class CometNativeShuffleWriter[K, V](
     val tempIndexFilePath = Paths.get(tempIndexFilename)
 
     // Detect if input comes from a native plan (CometExecIterator)
-    val nativeIter: Option[CometExecIterator] = inputs match {
-      case swi: CometShuffleWriterInputIterator => swi.nativeIterator
-      case _ => None
-    }
+    val nativeIter: Option[CometExecIterator] =
+      if (CometConf.COMET_SHUFFLE_BATCH_STASH_ENABLED.get()) {
+        inputs match {
+          case swi: CometShuffleWriterInputIterator => swi.nativeIterator
+          case _ => None
+        }
+      } else {
+        None
+      }
     val useHandleMode = nativeIter.isDefined
 
     // Call native shuffle write

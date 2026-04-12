@@ -448,6 +448,16 @@ object CometConf extends ShimCometConf {
       .intConf
       .createWithDefault(1)
 
+  val COMET_SHUFFLE_BATCH_STASH_ENABLED: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.batchStash.enabled")
+      .category(CATEGORY_SHUFFLE)
+      .doc(
+        "When enabled, batches passed between a native child plan and a native shuffle " +
+          "writer are transferred via an opaque handle instead of Arrow FFI, avoiding " +
+          "unnecessary serialization overhead.")
+      .booleanConf
+      .createWithDefault(true)
+
   val COMET_COLUMNAR_SHUFFLE_ASYNC_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.columnar.shuffle.async.enabled")
       .category(CATEGORY_SHUFFLE)
