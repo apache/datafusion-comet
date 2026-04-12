@@ -291,11 +291,7 @@ impl ScanExec {
             }
 
             match crate::execution::batch_stash::take(handle as u64) {
-                Some(batch) => {
-                    let arrays: Vec<ArrayRef> = batch.columns().to_vec();
-                    let num_rows = batch.num_rows();
-                    Ok(InputBatch::new(arrays, Some(num_rows)))
-                }
+                Some(batch) => Ok(InputBatch::Complete(batch)),
                 None => Err(CometError::from(ExecutionError::GeneralError(format!(
                     "Batch stash handle {handle} not found"
                 )))),
@@ -578,6 +574,10 @@ impl Stream for ScanStream<'_> {
                 let maybe_batch = self.build_record_batch(columns, *num_rows);
                 Poll::Ready(Some(maybe_batch))
             }
+            InputBatch::Complete(batch) => {
+                self.baseline_metrics.record_output(batch.num_rows());
+                Poll::Ready(Some(Ok(batch.clone())))
+            }
         };
 
         *scan_batch = None;
@@ -604,6 +604,10 @@ pub enum InputBatch {
     /// It is possible to have a zero-column batch with a non-zero number of rows,
     /// i.e. reading empty schema from scan.
     Batch(Vec<ArrayRef>, usize),
+
+    /// A complete RecordBatch retrieved from the BatchStash. Bypasses
+    /// `build_record_batch` since the batch is already fully formed.
+    Complete(RecordBatch),
 }
 
 impl InputBatch {
