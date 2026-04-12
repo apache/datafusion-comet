@@ -1296,13 +1296,28 @@ impl PhysicalPlanner {
                     };
 
                 // The `ScanExec` operator will take actual arrays from Spark during execution
-                let scan = ScanExec::new(
+                let mut scan = ScanExec::new(
                     self.exec_context_id,
-                    input_source,
+                    input_source.clone(),
                     &scan.source,
                     data_types,
                     scan.arrow_ffi_safe,
                 )?;
+
+                // Check if the input source is a CometHandleBatchIterator.
+                // If so, enable handle mode on the scan to retrieve batches from
+                // the BatchStash instead of via Arrow FFI.
+                if let Some(ref source) = input_source {
+                    let is_handle_iter = crate::jvm_bridge::JVMClasses::with_env(|env| {
+                        let handle_class =
+                            &crate::jvm_bridge::JVMClasses::get().comet_handle_batch_iterator.class;
+                        let result = env.is_instance_of(source.as_obj(), handle_class)?;
+                        Ok::<bool, crate::errors::CometError>(result)
+                    })?;
+                    if is_handle_iter {
+                        scan.handle_mode = true;
+                    }
+                }
 
                 Ok((
                     vec![scan.clone()],
