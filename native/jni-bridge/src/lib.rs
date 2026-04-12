@@ -181,11 +181,13 @@ pub use comet_exec::*;
 mod batch_iterator;
 mod comet_metric_node;
 mod comet_task_memory_manager;
+mod handle_batch_iterator;
 mod shuffle_block_iterator;
 
 use batch_iterator::CometBatchIterator;
 pub use comet_metric_node::*;
 pub use comet_task_memory_manager::*;
+use handle_batch_iterator::CometHandleBatchIterator;
 use shuffle_block_iterator::CometShuffleBlockIterator;
 
 /// The JVM classes that are used in the JNI calls.
@@ -214,6 +216,8 @@ pub struct JVMClasses<'a> {
     pub comet_batch_iterator: CometBatchIterator<'a>,
     /// The CometShuffleBlockIterator class. Used for iterating over shuffle blocks.
     pub comet_shuffle_block_iterator: CometShuffleBlockIterator<'a>,
+    /// The CometHandleBatchIterator class. Used for passing batch handles between native contexts.
+    pub comet_handle_batch_iterator: CometHandleBatchIterator<'a>,
     /// The CometTaskMemoryManager used for interacting with JVM side to
     /// acquire & release native memory.
     pub comet_task_memory_manager: CometTaskMemoryManager<'a>,
@@ -286,6 +290,7 @@ impl JVMClasses<'_> {
                 comet_exec: CometExec::new(env).unwrap(),
                 comet_batch_iterator: CometBatchIterator::new(env).unwrap(),
                 comet_shuffle_block_iterator: CometShuffleBlockIterator::new(env).unwrap(),
+                comet_handle_batch_iterator: CometHandleBatchIterator::new(env).unwrap(),
                 comet_task_memory_manager: CometTaskMemoryManager::new(env).unwrap(),
             }
         });
