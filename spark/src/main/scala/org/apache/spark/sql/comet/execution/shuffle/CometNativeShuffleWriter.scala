@@ -36,7 +36,7 @@ import org.apache.spark.sql.comet.{CometExec, CometMetricNode}
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
-import org.apache.comet.CometConf
+import org.apache.comet.{CometConf, CometExecIterator, CometHandleBatchIterator}
 import org.apache.comet.serde.{OperatorOuterClass, PartitioningOuterClass, QueryPlanSerde}
 import org.apache.comet.serde.OperatorOuterClass.{CompressionCodec, Operator}
 import org.apache.comet.serde.QueryPlanSerde.serializeDataType
@@ -93,18 +93,37 @@ class CometNativeShuffleWriter[K, V](
       metrics.filterKeys(detailedMetrics.contains)
     val nativeMetrics = CometMetricNode(nativeSQLMetrics)
 
-    // Getting rid of the fake partitionId
-    val newInputs = inputs.asInstanceOf[Iterator[_ <: Product2[Any, Any]]].map(_._2)
+    // Detect if input comes from a native plan (CometExecIterator)
+    val nativeIter: Option[CometExecIterator] = inputs match {
+      case swi: CometShuffleWriterInputIterator => swi.nativeIterator
+      case _ => None
+    }
 
-    val cometIter = CometExec.getCometIterator(
-      Seq(newInputs.asInstanceOf[Iterator[ColumnarBatch]]),
-      outputAttributes.length,
-      nativePlan,
-      nativeMetrics,
-      numParts,
-      context.partitionId(),
-      broadcastedHadoopConfForEncryption = None,
-      encryptedFilePaths = Seq.empty)
+    val cometIter = nativeIter match {
+      case Some(childIter) =>
+        // Stash mode: child plan stashes batches, shuffle writer retrieves via handles
+        childIter.enableStashMode()
+        val handleIter = new CometHandleBatchIterator(childIter)
+        CometExec.getCometIteratorWithHandleInputs(
+          Array(handleIter.asInstanceOf[Object]),
+          outputAttributes.length,
+          nativePlan,
+          nativeMetrics,
+          numParts,
+          context.partitionId())
+      case None =>
+        // Normal FFI mode: wrap input in CometBatchIterator as before
+        val newInputs = inputs.asInstanceOf[Iterator[_ <: Product2[Any, Any]]].map(_._2)
+        CometExec.getCometIterator(
+          Seq(newInputs.asInstanceOf[Iterator[ColumnarBatch]]),
+          outputAttributes.length,
+          nativePlan,
+          nativeMetrics,
+          numParts,
+          context.partitionId(),
+          broadcastedHadoopConfForEncryption = None,
+          encryptedFilePaths = Seq.empty)
+    }
 
     while (cometIter.hasNext) {
       cometIter.next()

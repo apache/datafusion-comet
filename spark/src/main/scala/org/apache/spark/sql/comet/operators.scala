@@ -371,6 +371,29 @@ object CometExec {
   }
 
   /**
+   * Create a CometExecIterator with pre-built input iterators (e.g., CometHandleBatchIterator).
+   * Bypasses the normal CometBatchIterator wrapping.
+   */
+  def getCometIteratorWithHandleInputs(
+      handleInputs: Array[Object],
+      numOutputCols: Int,
+      nativePlan: Operator,
+      nativeMetrics: CometMetricNode,
+      numParts: Int,
+      partitionIdx: Int): CometExecIterator = {
+    val bytes = serializeNativePlan(nativePlan)
+    new CometExecIterator(
+      newIterId,
+      Seq.empty,
+      numOutputCols,
+      bytes,
+      nativeMetrics,
+      numParts,
+      partitionIdx,
+      handleInputs = handleInputs)
+  }
+
+  /**
    * Executes this Comet operator and serialized output ColumnarBatch into bytes.
    */
   def getByteArrayRdd(cometPlan: CometPlan): RDD[(Long, ChunkedByteBuffer)] = {
