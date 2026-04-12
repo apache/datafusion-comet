@@ -50,6 +50,7 @@ import com.google.common.base.Objects
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometConf.{COMET_EXEC_SHUFFLE_ENABLED, COMET_SHUFFLE_MODE}
+import org.apache.comet.CometExecIterator
 import org.apache.comet.CometSparkSessionExtensions.{isCometShuffleManagerEnabled, withInfo}
 import org.apache.comet.serde.{Compatible, OperatorOuterClass, QueryPlanSerde, SupportLevel, Unsupported}
 import org.apache.comet.serde.operator.CometSink
@@ -640,10 +641,16 @@ object CometShuffleExchangeExec
           None)
     }
 
+    val wrappedRDD = rdd.mapPartitions { iter =>
+      val nativeIter = iter match {
+        case cei: CometExecIterator => Some(cei)
+        case _ => None
+      }
+      new CometShuffleWriterInputIterator(iter, nativeIter)
+    }
+
     val dependency = new CometShuffleDependency[Int, ColumnarBatch, ColumnarBatch](
-      rdd.map(
-        (0, _)
-      ), // adding fake partitionId that is always 0 because ShuffleDependency requires it
+      wrappedRDD,
       serializer = serializer,
       shuffleWriterProcessor = ShuffleExchangeExec.createShuffleWriteProcessor(metrics),
       shuffleType = CometNativeShuffle,
@@ -857,4 +864,17 @@ object CometShuffleExchangeExec
 
     dependency
   }
+}
+
+/**
+ * An iterator wrapper that preserves access to the underlying CometExecIterator
+ * when present. Used by CometNativeShuffleWriter to detect native child plans
+ * and enable the batch stash optimization.
+ */
+private[shuffle] class CometShuffleWriterInputIterator(
+    underlying: Iterator[ColumnarBatch],
+    val nativeIterator: Option[CometExecIterator])
+    extends Iterator[Product2[Int, ColumnarBatch]] {
+  override def hasNext: Boolean = underlying.hasNext
+  override def next(): Product2[Int, ColumnarBatch] = (0, underlying.next())
 }
