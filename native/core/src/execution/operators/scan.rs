@@ -77,6 +77,9 @@ pub struct ScanExec {
     baseline_metrics: BaselineMetrics,
     /// Whether native code can assume ownership of batches that it receives
     arrow_ffi_safe: bool,
+    /// When true, input comes from a CometHandleBatchIterator and batches are
+    /// retrieved from the BatchStash instead of via Arrow FFI import.
+    pub handle_mode: bool,
 }
 
 impl ScanExec {
@@ -113,6 +116,7 @@ impl ScanExec {
             baseline_metrics,
             schema,
             arrow_ffi_safe,
+            handle_mode: false,
         })
     }
 
@@ -141,12 +145,19 @@ impl ScanExec {
 
         let mut current_batch = self.batch.try_lock().unwrap();
         if current_batch.is_none() {
-            let next_batch = ScanExec::get_next(
-                self.exec_context_id,
-                self.input_source.as_ref().unwrap().as_obj(),
-                self.data_types.len(),
-                self.arrow_ffi_safe,
-            )?;
+            let next_batch = if self.handle_mode {
+                ScanExec::get_next_handle(
+                    self.exec_context_id,
+                    self.input_source.as_ref().unwrap().as_obj(),
+                )?
+            } else {
+                ScanExec::get_next(
+                    self.exec_context_id,
+                    self.input_source.as_ref().unwrap().as_obj(),
+                    self.data_types.len(),
+                    self.arrow_ffi_safe,
+                )?
+            };
             *current_batch = Some(next_batch);
         }
 
@@ -254,6 +265,44 @@ impl ScanExec {
             };
 
             Ok(InputBatch::new(inputs, Some(actual_num_rows)))
+        })
+    }
+
+    /// Pull next input batch from a CometHandleBatchIterator via batch stash handle.
+    fn get_next_handle(
+        exec_context_id: i64,
+        iter: &JObject,
+    ) -> Result<InputBatch, CometError> {
+        if exec_context_id == TEST_EXEC_CONTEXT_ID {
+            return Ok(InputBatch::EOF);
+        }
+
+        if iter.is_null() {
+            return Err(CometError::from(ExecutionError::GeneralError(format!(
+                "Null handle batch iterator object. Plan id: {exec_context_id}"
+            ))));
+        }
+
+        JVMClasses::with_env(|env| {
+            let handle: i64 = unsafe {
+                jni_call!(env,
+                    comet_handle_batch_iterator(iter).next_handle() -> i64)?
+            };
+
+            if handle == -1 {
+                return Ok(InputBatch::EOF);
+            }
+
+            match crate::execution::batch_stash::take(handle as u64) {
+                Some(batch) => {
+                    let arrays: Vec<ArrayRef> = batch.columns().to_vec();
+                    let num_rows = batch.num_rows();
+                    Ok(InputBatch::new(arrays, Some(num_rows)))
+                }
+                None => Err(CometError::from(ExecutionError::GeneralError(format!(
+                    "Batch stash handle {handle} not found"
+                )))),
+            }
         })
     }
 
