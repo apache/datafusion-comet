@@ -21,8 +21,8 @@ package org.apache.comet;
 
 /**
  * Iterator that passes opaque native batch handles between two native execution contexts through
- * the JVM. Used when a native child plan feeds directly into a native ShuffleWriter, avoiding
- * Arrow FFI export/import overhead.
+ * the JVM. Used when a native child plan feeds directly into a native ShuffleWriter, avoiding Arrow
+ * FFI export/import overhead.
  *
  * <p>Called from native ScanExec via JNI. The source CometExecIterator must be in stash mode.
  */

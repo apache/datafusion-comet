@@ -223,7 +223,8 @@ class CometExecIterator(
 
       nextBatch = getNextBatch
 
-      logTrace(s"Task $taskAttemptId memory pool usage is ${cometTaskMemoryManager.getUsed} bytes")
+      logTrace(
+        s"Task $taskAttemptId memory pool usage is ${cometTaskMemoryManager.getUsed} bytes")
 
       if (nextBatch.isEmpty) {
         close()
@@ -262,8 +263,8 @@ class CometExecIterator(
   }
 
   /**
-   * In stash mode, advance the native plan and return the batch handle.
-   * Returns a positive handle, or -1 for EOF.
+   * In stash mode, advance the native plan and return the batch handle. Returns a positive
+   * handle, or -1 for EOF.
    */
   def nextHandle(): Long = {
     if (closed) return -1L

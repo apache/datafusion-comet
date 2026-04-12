@@ -867,9 +867,9 @@ object CometShuffleExchangeExec
 }
 
 /**
- * An iterator wrapper that preserves access to the underlying CometExecIterator
- * when present. Used by CometNativeShuffleWriter to detect native child plans
- * and enable the batch stash optimization.
+ * An iterator wrapper that preserves access to the underlying CometExecIterator when present.
+ * Used by CometNativeShuffleWriter to detect native child plans and enable the batch stash
+ * optimization.
  */
 private[shuffle] class CometShuffleWriterInputIterator(
     underlying: Iterator[ColumnarBatch],
