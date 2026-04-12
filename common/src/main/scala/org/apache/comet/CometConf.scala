@@ -654,7 +654,7 @@ object CometConf extends ShimCometConf {
           "(e.g. a shuffle writer and its child plan) execute concurrently. " +
           s"$TUNING_GUIDE.")
       .stringConf
-      .createWithDefault("fair_unified")
+      .createWithDefault("fair_unified_task_shared")
 
   val COMET_ONHEAP_MEMORY_POOL_TYPE: ConfigEntry[String] = conf(
     "spark.comet.exec.onHeap.memoryPool")
