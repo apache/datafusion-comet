@@ -72,8 +72,15 @@ class CometNativeShuffleWriter[K, V](
     val tempDataFilePath = Paths.get(tempDataFilename)
     val tempIndexFilePath = Paths.get(tempIndexFilename)
 
+    // Detect if input comes from a native plan (CometExecIterator)
+    val nativeIter: Option[CometExecIterator] = inputs match {
+      case swi: CometShuffleWriterInputIterator => swi.nativeIterator
+      case _ => None
+    }
+    val useHandleMode = nativeIter.isDefined
+
     // Call native shuffle write
-    val nativePlan = getNativePlan(tempDataFilename, tempIndexFilename)
+    val nativePlan = getNativePlan(tempDataFilename, tempIndexFilename, useHandleMode)
 
     val detailedMetrics = Seq(
       "elapsed_compute",
@@ -92,12 +99,6 @@ class CometNativeShuffleWriter[K, V](
       "write_time" -> metricsWriteTime) ++
       metrics.filterKeys(detailedMetrics.contains)
     val nativeMetrics = CometMetricNode(nativeSQLMetrics)
-
-    // Detect if input comes from a native plan (CometExecIterator)
-    val nativeIter: Option[CometExecIterator] = inputs match {
-      case swi: CometShuffleWriterInputIterator => swi.nativeIterator
-      case _ => None
-    }
 
     val cometIter = nativeIter match {
       case Some(childIter) =>
@@ -181,8 +182,12 @@ class CometNativeShuffleWriter[K, V](
     case _ => false
   }
 
-  private def getNativePlan(dataFile: String, indexFile: String): Operator = {
-    val scanBuilder = OperatorOuterClass.Scan.newBuilder().setSource("ShuffleWriterInput")
+  private def getNativePlan(
+      dataFile: String,
+      indexFile: String,
+      useHandleMode: Boolean = false): Operator = {
+    val scanSource = if (useHandleMode) "ShuffleWriterInputHandle" else "ShuffleWriterInput"
+    val scanBuilder = OperatorOuterClass.Scan.newBuilder().setSource(scanSource)
     val opBuilder = OperatorOuterClass.Operator.newBuilder()
 
     val scanTypes = outputAttributes.flatten { attr =>

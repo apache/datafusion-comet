@@ -269,10 +269,7 @@ impl ScanExec {
     }
 
     /// Pull next input batch from a CometHandleBatchIterator via batch stash handle.
-    fn get_next_handle(
-        exec_context_id: i64,
-        iter: &JObject,
-    ) -> Result<InputBatch, CometError> {
+    fn get_next_handle(exec_context_id: i64, iter: &JObject) -> Result<InputBatch, CometError> {
         if exec_context_id == TEST_EXEC_CONTEXT_ID {
             return Ok(InputBatch::EOF);
         }

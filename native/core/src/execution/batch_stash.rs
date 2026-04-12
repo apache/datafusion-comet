@@ -31,8 +31,7 @@ use std::sync::Mutex;
 static NEXT_HANDLE: AtomicU64 = AtomicU64::new(1);
 
 /// Global stash mapping handles to RecordBatch values.
-static STASH: Lazy<Mutex<HashMap<u64, RecordBatch>>> =
-    Lazy::new(|| Mutex::new(HashMap::new()));
+static STASH: Lazy<Mutex<HashMap<u64, RecordBatch>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 
 /// Store a RecordBatch in the global stash and return a unique handle.
 pub(crate) fn stash(batch: RecordBatch) -> u64 {
