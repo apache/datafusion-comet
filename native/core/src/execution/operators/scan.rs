@@ -576,7 +576,18 @@ impl Stream for ScanStream<'_> {
             }
             InputBatch::Complete(batch) => {
                 self.baseline_metrics.record_output(batch.num_rows());
-                Poll::Ready(Some(Ok(batch.clone())))
+                let columns = batch.columns();
+                let num_rows = batch.num_rows();
+                if columns.len() == self.schema.fields().len() {
+                    // Column counts match. Use build_record_batch to handle any
+                    // type differences (e.g., timestamp timezone casting).
+                    let maybe_batch = self.build_record_batch(columns, num_rows);
+                    Poll::Ready(Some(maybe_batch))
+                } else {
+                    // Column count mismatch (e.g., empty schema scan).
+                    // Return the stashed batch as-is since it's already valid.
+                    Poll::Ready(Some(Ok(batch.clone())))
+                }
             }
         };
 
