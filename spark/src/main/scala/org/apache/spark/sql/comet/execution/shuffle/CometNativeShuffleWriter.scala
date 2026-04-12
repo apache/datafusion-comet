@@ -186,8 +186,10 @@ class CometNativeShuffleWriter[K, V](
       dataFile: String,
       indexFile: String,
       useHandleMode: Boolean = false): Operator = {
-    val scanSource = if (useHandleMode) "ShuffleWriterInputHandle" else "ShuffleWriterInput"
-    val scanBuilder = OperatorOuterClass.Scan.newBuilder().setSource(scanSource)
+    val scanBuilder = OperatorOuterClass.Scan
+      .newBuilder()
+      .setSource("ShuffleWriterInput")
+      .setBatchStashHandle(useHandleMode)
     val opBuilder = OperatorOuterClass.Operator.newBuilder()
 
     val scanTypes = outputAttributes.flatten { attr =>

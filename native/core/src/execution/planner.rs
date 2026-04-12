@@ -1295,6 +1295,8 @@ impl PhysicalPlanner {
                         Some(inputs.remove(0))
                     };
 
+                let use_batch_stash = scan.batch_stash_handle;
+
                 // The `ScanExec` operator will take actual arrays from Spark during execution
                 let mut scan = ScanExec::new(
                     self.exec_context_id,
@@ -1304,9 +1306,7 @@ impl PhysicalPlanner {
                     scan.arrow_ffi_safe,
                 )?;
 
-                if scan.input_source_description
-                    == crate::execution::batch_stash::HANDLE_SCAN_SOURCE
-                {
+                if use_batch_stash {
                     scan.handle_mode = true;
                 }
 

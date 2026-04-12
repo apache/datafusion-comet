@@ -20,10 +20,6 @@
 
 use arrow::record_batch::RecordBatch;
 use once_cell::sync::Lazy;
-
-/// Scan source name indicating the input uses the batch stash handle path.
-/// Must match the value set in CometNativeShuffleWriter.getNativePlan().
-pub(crate) const HANDLE_SCAN_SOURCE: &str = "ShuffleWriterInputHandle";
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
