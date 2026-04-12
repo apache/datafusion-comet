@@ -64,7 +64,7 @@ memory reservations at the same time, which is important to understand when choo
 The valid pool types are:
 
 - `fair_unified_task_shared` (default when `spark.memory.offHeap.enabled=true` is set)
-- `fair_unified` 
+- `fair_unified`
 - `greedy_unified`
 
 The `fair_unified` pool prevents operators from using more than an even fraction of the available memory
