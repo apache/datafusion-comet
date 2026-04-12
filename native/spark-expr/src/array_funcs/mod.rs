@@ -16,13 +16,14 @@
 // under the License.
 
 mod array_compact;
+mod array_distinct;
 mod array_insert;
 mod get_array_struct_fields;
 mod list_extract;
 mod size;
-mod array_distinct;
 
 pub use array_compact::SparkArrayCompact;
+pub use array_distinct::SparkArrayDistinct;
 pub use array_insert::ArrayInsert;
 pub use get_array_struct_fields::GetArrayStructFields;
 pub use list_extract::ListExtract;

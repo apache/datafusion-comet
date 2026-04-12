@@ -119,22 +119,7 @@ object CometArrayContains extends CometExpressionSerde[ArrayContains] {
   }
 }
 
-object CometArrayDistinct extends CometExpressionSerde[ArrayDistinct] {
-
-  override def getSupportLevel(expr: ArrayDistinct): SupportLevel =
-    Incompatible(Some("Output elements are sorted rather than preserving insertion order"))
-
-  override def convert(
-      expr: ArrayDistinct,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val arrayExprProto = exprToProto(expr.children.head, inputs, binding)
-
-    val arrayDistinctScalarExpr =
-      scalarFunctionExprToProto("array_distinct", arrayExprProto)
-    optExprWithInfo(arrayDistinctScalarExpr, expr)
-  }
-}
+object CometArrayDistinct extends CometScalarFunction[ArrayDistinct]("array_distinct")
 
 object CometArrayIntersect extends CometExpressionSerde[ArrayIntersect] {
 

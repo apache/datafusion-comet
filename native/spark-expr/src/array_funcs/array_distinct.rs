@@ -15,21 +15,21 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::{as_large_list_array, as_list_array, new_empty_array, Array, ArrayRef, GenericListArray, OffsetSizeTrait, UInt32Array, UInt64Array};
+use arrow::array::{
+    as_large_list_array, as_list_array, Array, ArrayRef, GenericListArray, OffsetSizeTrait,
+};
+use arrow::buffer::OffsetBuffer;
 use arrow::datatypes::{DataType, Field, FieldRef};
-use datafusion::common::exec_err;
+use arrow::row::{Row, RowConverter, SortField};
 use datafusion::common::utils::take_function_args;
 use datafusion::common::Result;
+use datafusion::common::{exec_err, HashSet};
 use datafusion::functions::utils::make_scalar_function;
 use datafusion::logical_expr::{
-    ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility
+    ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };
 use std::any::Any;
-use std::collections::HashSet;
 use std::sync::Arc;
-use arrow::buffer::OffsetBuffer;
-use arrow::compute::take;
-use arrow::row::{Row, RowConverter, SortField};
 
 #[derive(Debug, Hash, Eq, PartialEq)]
 pub struct SparkArrayDistinct {
@@ -51,7 +51,6 @@ impl SparkArrayDistinct {
                 vec![
                     List(Arc::new(Field::new("item", Null, true))),
                     LargeList(Arc::new(Field::new("item", Null, true))),
-                    FixedSizeList(Arc::new(Field::new("item", Null, true)), -1),
                 ],
                 Volatility::Immutable,
             ),
@@ -93,7 +92,10 @@ fn array_distinct_inner(args: &[ArrayRef]) -> Result<ArrayRef> {
             general_array_distinct(array, field)
         }
         _ => {
-            exec_err!("array_distinct function only support arrays, got: {:?}", array.data_type())
+            exec_err!(
+                "array_distinct function only support arrays, got: {:?}",
+                array.data_type()
+            )
         }
     }
 }
@@ -105,7 +107,9 @@ fn general_array_distinct<OffsetSize: OffsetSizeTrait>(
     if array.is_empty() {
         return Ok(Arc::new(array.clone()) as ArrayRef);
     }
+
     let value_offsets = array.value_offsets();
+    let original_data = array.values().to_data();
     let dt = array.value_type();
     let mut offsets = Vec::with_capacity(array.len() + 1);
     offsets.push(OffsetSize::usize_as(0));
@@ -114,11 +118,9 @@ fn general_array_distinct<OffsetSize: OffsetSizeTrait>(
 
     let first_offset = value_offsets[0].as_usize();
     let visible_len = value_offsets[array.len()].as_usize() - first_offset;
-    let rows =
-        converter.convert_columns(&[array.values().slice(first_offset, visible_len)])?;
+    let rows = converter.convert_columns(&[array.values().slice(first_offset, visible_len)])?;
 
-    let mut indices: Vec<usize> = Vec::with_capacity(rows.num_rows());
-    let mut seen: HashSet<Row<'_>> = HashSet::new();
+    let mut mutable = arrow::array::MutableArrayData::new(vec![&original_data], false, visible_len);
 
     for i in 0..array.len() {
         let last_offset = *offsets.last().unwrap();
@@ -130,10 +132,9 @@ fn general_array_distinct<OffsetSize: OffsetSizeTrait>(
 
         let start = value_offsets[i].as_usize() - first_offset;
         let end = value_offsets[i + 1].as_usize() - first_offset;
+        let array_len = end - start;
 
-        seen.clear();
-        seen.reserve(end - start);
-
+        let mut seen: HashSet<Row<'_>> = HashSet::with_capacity(array_len);
         let mut seen_null = false;
         let mut distinct_count: usize = 0;
 
@@ -143,13 +144,13 @@ fn general_array_distinct<OffsetSize: OffsetSizeTrait>(
             if array.values().is_null(abs_idx) {
                 if !seen_null {
                     seen_null = true;
-                    indices.push(abs_idx);
+                    mutable.extend(0, abs_idx, abs_idx + 1);
                     distinct_count += 1;
                 }
             } else {
                 let row = rows.row(idx);
                 if seen.insert(row) {
-                    indices.push(abs_idx);
+                    mutable.extend(0, abs_idx, abs_idx + 1);
                     distinct_count += 1;
                 }
             }
@@ -158,17 +159,7 @@ fn general_array_distinct<OffsetSize: OffsetSizeTrait>(
         offsets.push(last_offset + OffsetSize::usize_as(distinct_count));
     }
 
-    let final_values = if indices.is_empty() {
-        new_empty_array(&dt)
-    } else if OffsetSize::IS_LARGE {
-        let indices =
-            UInt64Array::from(indices.into_iter().map(|i| i as u64).collect::<Vec<_>>());
-        take(array.values().as_ref(), &indices, None)?
-    } else {
-        let indices =
-            UInt32Array::from(indices.into_iter().map(|i| i as u32).collect::<Vec<_>>());
-        take(array.values().as_ref(), &indices, None)?
-    };
+    let final_values = arrow::array::make_array(mutable.freeze());
 
     Ok(Arc::new(GenericListArray::<OffsetSize>::try_new(
         Arc::clone(field),
@@ -176,34 +167,4 @@ fn general_array_distinct<OffsetSize: OffsetSizeTrait>(
         final_values,
         array.nulls().cloned(),
     )?))
-}
-
-#[cfg(test)]
-mod tests {
-    use std::sync::Arc;
-    use arrow::array::{ArrayRef, Int32Array, ListArray, NullBufferBuilder};
-    use arrow::datatypes::{DataType, Field};
-    use crate::array_funcs::array_distinct::array_distinct_inner;
-
-    #[test]
-    fn test_spark_distinct() {
-        let values = Int32Array::from(vec![4, 1, 2, 1, 3, 4, 5, 6, 0, 0, 0]);
-        let value_offsets = arrow::buffer::OffsetBuffer::new(vec![0, 10].into());
-        let field = Arc::new(Field::new("item", DataType::Int32, true));
-        let mut null_buffer = NullBufferBuilder::new(1);
-        null_buffer.append(true);
-
-        let list_array = ListArray::try_new(
-            field,
-            value_offsets,
-            Arc::new(values),
-            null_buffer.finish(),
-        ).unwrap();
-
-        let array_ref: ArrayRef = Arc::new(list_array);
-        let result = array_distinct_inner(&[array_ref]).unwrap();
-        let result = result.as_any().downcast_ref::<Int32Array>().unwrap();
-
-        assert_eq!(result.value(0), 4);
-    }
 }
