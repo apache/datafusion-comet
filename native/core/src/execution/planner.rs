@@ -3778,6 +3778,7 @@ mod tests {
                 }],
                 source: "".to_string(),
                 arrow_ffi_safe: false,
+                batch_stash_handle: false,
             })),
         };
 
@@ -3844,6 +3845,7 @@ mod tests {
                 }],
                 source: "".to_string(),
                 arrow_ffi_safe: false,
+                batch_stash_handle: false,
             })),
         };
 
@@ -4053,6 +4055,7 @@ mod tests {
                 fields: vec![create_proto_datatype()],
                 source: "".to_string(),
                 arrow_ffi_safe: false,
+                batch_stash_handle: false,
             })),
         }
     }
@@ -4096,6 +4099,7 @@ mod tests {
                 ],
                 source: "".to_string(),
                 arrow_ffi_safe: false,
+                batch_stash_handle: false,
             })),
         };
 
@@ -4219,6 +4223,7 @@ mod tests {
                 ],
                 source: "".to_string(),
                 arrow_ffi_safe: false,
+                batch_stash_handle: false,
             })),
         };
 
@@ -4702,6 +4707,7 @@ mod tests {
                 ],
                 source: "".to_string(),
                 arrow_ffi_safe: false,
+                batch_stash_handle: false,
             })),
         };
 
