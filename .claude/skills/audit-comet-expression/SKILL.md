@@ -311,6 +311,20 @@ After implementing tests, tell the user how to run them:
 
 ---
 
+## Step 8: Update the Expression Audit Log
+
+After completing the audit (whether or not tests were added), append a row to the audit log at
+`docs/source/contributor-guide/expression-audit-log.md`.
+
+The row should include:
+
+- Expression name
+- Spark versions checked (e.g. 3.4.3, 3.5.8, 4.0.1)
+- Today's date
+- A brief summary of findings (behavioral differences, bugs found/fixed, tests added, known incompatibilities)
+
+---
+
 ## Output Format
 
 Present the audit as:
