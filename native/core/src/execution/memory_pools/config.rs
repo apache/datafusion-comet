@@ -22,6 +22,7 @@ pub(crate) enum MemoryPoolType {
     GreedyUnified,
     FairUnified,
     FairUnifiedTaskShared,
+    GreedyUnifiedTaskShared,
     Greedy,
     FairSpill,
     GreedyTaskShared,
@@ -38,6 +39,7 @@ impl MemoryPoolType {
             MemoryPoolType::GreedyTaskShared
                 | MemoryPoolType::FairSpillTaskShared
                 | MemoryPoolType::FairUnifiedTaskShared
+                | MemoryPoolType::GreedyUnifiedTaskShared
         )
     }
 }
@@ -74,6 +76,9 @@ pub(crate) fn parse_memory_pool_config(
                 // memory therefore does not need a size to be explicitly set. The pool size
                 // shared with Spark is set by `spark.memory.offHeap.size`.
                 MemoryPoolConfig::new(MemoryPoolType::GreedyUnified, 0)
+            }
+            "greedy_unified_task_shared" => {
+                MemoryPoolConfig::new(MemoryPoolType::GreedyUnifiedTaskShared, 0)
             }
             _ => {
                 return Err(CometError::Config(format!(

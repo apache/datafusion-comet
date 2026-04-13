@@ -67,6 +67,7 @@ The valid pool types are:
 
 - `fair_unified_task_shared` (default when `spark.memory.offHeap.enabled=true` is set)
 - `fair_unified`
+- `greedy_unified_task_shared`
 - `greedy_unified`
 
 The `fair_unified` pool prevents operators from using more than an even fraction of the available memory
@@ -83,7 +84,11 @@ with `fair_unified`, both can independently allocate up to the full per-task mem
 instance, ensuring that the combined memory usage stays within the per-task limit.
 
 The `greedy_unified` pool type implements a greedy first-come first-serve limit. This pool works well for queries that do not
-need to spill or have a single spillable operator.
+need to spill or have a single spillable operator. Like `fair_unified`, each execution context gets its own pool,
+so memory consumption can exceed the per-task limit during shuffle.
+
+The `greedy_unified_task_shared` pool is the same as `greedy_unified` but is shared across all execution contexts
+within the same Spark task, ensuring the combined memory usage stays within the per-task limit.
 
 [shuffle]: #shuffle
 [Advanced Memory Tuning]: #advanced-memory-tuning

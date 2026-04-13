@@ -103,6 +103,22 @@ pub(crate) fn create_memory_pool(
             per_task_memory_pool.num_plans += 1;
             Arc::clone(&per_task_memory_pool.memory_pool)
         }
+        MemoryPoolType::GreedyUnifiedTaskShared => {
+            let mut memory_pool_map = TASK_SHARED_MEMORY_POOLS.lock().unwrap();
+            let per_task_memory_pool =
+                memory_pool_map.entry(task_attempt_id).or_insert_with(|| {
+                    let pool: Arc<dyn MemoryPool> = Arc::new(TrackConsumersPool::new(
+                        CometUnifiedMemoryPool::new(
+                            Arc::clone(&comet_task_memory_manager),
+                            task_attempt_id,
+                        ),
+                        NonZeroUsize::new(NUM_TRACKED_CONSUMERS).unwrap(),
+                    ));
+                    PerTaskMemoryPool::new(pool)
+                });
+            per_task_memory_pool.num_plans += 1;
+            Arc::clone(&per_task_memory_pool.memory_pool)
+        }
         MemoryPoolType::GreedyTaskShared | MemoryPoolType::FairSpillTaskShared => {
             let mut memory_pool_map = TASK_SHARED_MEMORY_POOLS.lock().unwrap();
             let per_task_memory_pool =
