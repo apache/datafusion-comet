@@ -580,6 +580,20 @@ recommended for production use.</p></li>
 Spark.</p></li>
 <li><p><strong>N/A</strong>: Spark does not support this cast.</p></li>
 </ul>
+<section id="string-to-decimal">
+<h3>String to Decimal<a class="headerlink" href="#string-to-decimal" title="Link to this heading">#</a></h3>
+<p>Comet’s native <code class="docutils literal notranslate"><span class="pre">CAST(string</span> <span class="pre">AS</span> <span class="pre">DECIMAL)</span></code> implementation matches Apache Spark’s behavior,
+including:</p>
+<ul class="simple">
+<li><p>Leading and trailing ASCII whitespace is trimmed before parsing.</p></li>
+<li><p>Null bytes (<code class="docutils literal notranslate"><span class="pre">\u0000</span></code>) at the start or end of a string are trimmed, matching Spark’s
+<code class="docutils literal notranslate"><span class="pre">UTF8String</span></code> behavior. Null bytes embedded in the middle of a string produce <code class="docutils literal notranslate"><span class="pre">NULL</span></code>.</p></li>
+<li><p>Fullwidth Unicode digits (U+FF10–U+FF19, e.g. <code class="docutils literal notranslate"><span class="pre">１２３.４５</span></code>) are treated as their ASCII
+equivalents, so <code class="docutils literal notranslate"><span class="pre">CAST('１２３.４５'</span> <span class="pre">AS</span> <span class="pre">DECIMAL(10,2))</span></code> returns <code class="docutils literal notranslate"><span class="pre">123.45</span></code>.</p></li>
+<li><p>Scientific notation (e.g. <code class="docutils literal notranslate"><span class="pre">1.23E+5</span></code>) is supported.</p></li>
+<li><p>Special values (<code class="docutils literal notranslate"><span class="pre">inf</span></code>, <code class="docutils literal notranslate"><span class="pre">infinity</span></code>, <code class="docutils literal notranslate"><span class="pre">nan</span></code>) produce <code class="docutils literal notranslate"><span class="pre">NULL</span></code>.</p></li>
+</ul>
+</section>
 <section id="string-to-timestamp">
 <h3>String to Timestamp<a class="headerlink" href="#string-to-timestamp" title="Link to this heading">#</a></h3>
 <p>Comet’s native <code class="docutils literal notranslate"><span class="pre">CAST(string</span> <span class="pre">AS</span> <span class="pre">TIMESTAMP)</span></code> implementation supports all timestamp formats accepted
@@ -756,7 +770,7 @@ suffixes (e.g. <code class="docutils literal notranslate"><span class="pre">Euro
 <td><p>C</p></td>
 <td><p>C</p></td>
 <td><p>C</p></td>
-<td><p>I</p></td>
+<td><p>C</p></td>
 <td><p>C</p></td>
 <td><p>C</p></td>
 <td><p>C</p></td>
@@ -790,8 +804,6 @@ suffixes (e.g. <code class="docutils literal notranslate"><span class="pre">Euro
 <li><p><strong>float -&gt; decimal</strong>: There can be rounding differences</p></li>
 <li><p><strong>float -&gt; string</strong>: There can be differences in precision. For example, the input “1.4E-45” will produce 1.0E-45 instead of 1.4E-45</p></li>
 <li><p><strong>string -&gt; date</strong>: Only supports years between 262143 BC and 262142 AD</p></li>
-<li><p><strong>string -&gt; decimal</strong>: Does not support fullwidth unicode digits (e.g \uFF10)
-or strings containing null bytes (e.g \u0000)</p></li>
 </ul>
 <!-- prettier-ignore-end -->
 <!--END:CAST_LEGACY_TABLE-->
@@ -963,7 +975,7 @@ or strings containing null bytes (e.g \u0000)</p></li>
 <td><p>C</p></td>
 <td><p>C</p></td>
 <td><p>C</p></td>
-<td><p>I</p></td>
+<td><p>C</p></td>
 <td><p>C</p></td>
 <td><p>C</p></td>
 <td><p>C</p></td>
@@ -997,8 +1009,6 @@ or strings containing null bytes (e.g \u0000)</p></li>
 <li><p><strong>float -&gt; decimal</strong>: There can be rounding differences</p></li>
 <li><p><strong>float -&gt; string</strong>: There can be differences in precision. For example, the input “1.4E-45” will produce 1.0E-45 instead of 1.4E-45</p></li>
 <li><p><strong>string -&gt; date</strong>: Only supports years between 262143 BC and 262142 AD</p></li>
-<li><p><strong>string -&gt; decimal</strong>: Does not support fullwidth unicode digits (e.g \uFF10)
-or strings containing null bytes (e.g \u0000)</p></li>
 </ul>
 <!-- prettier-ignore-end -->
 <!--END:CAST_TRY_TABLE-->
@@ -1170,7 +1180,7 @@ or strings containing null bytes (e.g \u0000)</p></li>
 <td><p>C</p></td>
 <td><p>C</p></td>
 <td><p>C</p></td>
-<td><p>I</p></td>
+<td><p>C</p></td>
 <td><p>C</p></td>
 <td><p>C</p></td>
 <td><p>C</p></td>
@@ -1204,8 +1214,6 @@ or strings containing null bytes (e.g \u0000)</p></li>
 <li><p><strong>float -&gt; decimal</strong>: There can be rounding differences</p></li>
 <li><p><strong>float -&gt; string</strong>: There can be differences in precision. For example, the input “1.4E-45” will produce 1.0E-45 instead of 1.4E-45</p></li>
 <li><p><strong>string -&gt; date</strong>: Only supports years between 262143 BC and 262142 AD</p></li>
-<li><p><strong>string -&gt; decimal</strong>: Does not support fullwidth unicode digits (e.g \uFF10)
-or strings containing null bytes (e.g \u0000)</p></li>
 </ul>
 <!-- prettier-ignore-end -->
 <!--END:CAST_ANSI_TABLE-->

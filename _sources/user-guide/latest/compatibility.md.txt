@@ -136,6 +136,19 @@ Cast operations in Comet fall into three levels of support:
   Spark.
 - **N/A**: Spark does not support this cast.
 
+### String to Decimal
+
+Comet's native `CAST(string AS DECIMAL)` implementation matches Apache Spark's behavior,
+including:
+
+- Leading and trailing ASCII whitespace is trimmed before parsing.
+- Null bytes (`\u0000`) at the start or end of a string are trimmed, matching Spark's
+  `UTF8String` behavior. Null bytes embedded in the middle of a string produce `NULL`.
+- Fullwidth Unicode digits (U+FF10–U+FF19, e.g. `１２３.４５`) are treated as their ASCII
+  equivalents, so `CAST('１２３.４５' AS DECIMAL(10,2))` returns `123.45`.
+- Scientific notation (e.g. `1.23E+5`) is supported.
+- Special values (`inf`, `infinity`, `nan`) produce `NULL`.
+
 ### String to Timestamp
 
 Comet's native `CAST(string AS TIMESTAMP)` implementation supports all timestamp formats accepted
@@ -161,7 +174,7 @@ suffixes (e.g. `Europe/Moscow`), and the full Spark timestamp year range
 | integer | C | C | C | N/A | C | C | C | - | C | C | C | C |
 | long | C | C | C | N/A | C | C | C | C | - | C | C | C |
 | short | C | C | C | N/A | C | C | C | C | C | - | C | C |
-| string | C | C | C | C | I | C | C | C | C | C | - | C |
+| string | C | C | C | C | C | C | C | C | C | C | - | C |
 | timestamp | N/A | U | U | C | U | U | U | U | C | U | C | - |
 
 **Notes:**
@@ -171,8 +184,6 @@ suffixes (e.g. `Europe/Moscow`), and the full Spark timestamp year range
 - **float -> decimal**: There can be rounding differences
 - **float -> string**: There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45
 - **string -> date**: Only supports years between 262143 BC and 262142 AD
-- **string -> decimal**: Does not support fullwidth unicode digits (e.g \\uFF10)
-or strings containing null bytes (e.g \\u0000)
 <!-- prettier-ignore-end -->
 <!--END:CAST_LEGACY_TABLE-->
 
@@ -192,7 +203,7 @@ or strings containing null bytes (e.g \\u0000)
 | integer | U | C | C | N/A | C | C | C | - | C | C | C | C |
 | long | U | C | C | N/A | C | C | C | C | - | C | C | C |
 | short | U | C | C | N/A | C | C | C | C | C | - | C | C |
-| string | C | C | C | C | I | C | C | C | C | C | - | C |
+| string | C | C | C | C | C | C | C | C | C | C | - | C |
 | timestamp | N/A | U | U | C | U | U | U | U | C | U | C | - |
 
 **Notes:**
@@ -202,8 +213,6 @@ or strings containing null bytes (e.g \\u0000)
 - **float -> decimal**: There can be rounding differences
 - **float -> string**: There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45
 - **string -> date**: Only supports years between 262143 BC and 262142 AD
-- **string -> decimal**: Does not support fullwidth unicode digits (e.g \\uFF10)
-or strings containing null bytes (e.g \\u0000)
 <!-- prettier-ignore-end -->
 <!--END:CAST_TRY_TABLE-->
 
@@ -223,7 +232,7 @@ or strings containing null bytes (e.g \\u0000)
 | integer | U | C | C | N/A | C | C | C | - | C | C | C | C |
 | long | U | C | C | N/A | C | C | C | C | - | C | C | C |
 | short | U | C | C | N/A | C | C | C | C | C | - | C | C |
-| string | C | C | C | C | I | C | C | C | C | C | - | C |
+| string | C | C | C | C | C | C | C | C | C | C | - | C |
 | timestamp | N/A | U | U | C | U | U | U | U | C | U | C | - |
 
 **Notes:**
@@ -233,8 +242,6 @@ or strings containing null bytes (e.g \\u0000)
 - **float -> decimal**: There can be rounding differences
 - **float -> string**: There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45
 - **string -> date**: Only supports years between 262143 BC and 262142 AD
-- **string -> decimal**: Does not support fullwidth unicode digits (e.g \\uFF10)
-or strings containing null bytes (e.g \\u0000)
 <!-- prettier-ignore-end -->
 <!--END:CAST_ANSI_TABLE-->
 
