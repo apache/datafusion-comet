@@ -155,8 +155,10 @@ Native shuffle has two partitioner modes, configured via
 - **`immediate`**: Partitions incoming batches immediately using per-partition Arrow array builders,
   flushing compressed IPC blocks when they reach the target batch size. This avoids buffering the
   entire input in memory. However, because it maintains builders for all partitions simultaneously
-  (proportional to `num_partitions × batch_size × num_columns`), memory overhead grows with
-  partition count. For workloads with many partitions (1000+), `buffered` mode is recommended.
+  (proportional to `num_partitions × num_columns × batch_size_in_rows`), memory overhead grows
+  with partition count. Data skew can also increase memory usage, since partitions receiving more
+  rows accumulate larger IPC buffers before spilling. For workloads with many partitions (1000+),
+  `buffered` mode is recommended.
 
 #### Columnar (JVM) Shuffle
 

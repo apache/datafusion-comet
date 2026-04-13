@@ -88,8 +88,9 @@ Native shuffle (`CometExchange`) is selected when all of the following condition
 │  immediate                │  buffered (default)                        │
 │  ImmediateModePartitioner │  MultiPartitionShuffleRepartitioner       │
 │  (hash/range/round-robin) │  (hash/range/round-robin)                 │
-│  Writes IPC blocks as     │  Buffers all rows in memory               │
-│  batches arrive           │  before writing                           │
+│  Partitions batches as    │  Buffers all input batches in             │
+│  they arrive, buffers as  │  memory before writing                    │
+│  IPC blocks               │                                           │
 ├───────────────────────────┴───────────────────────────────────────────┤
 │  SinglePartitionShufflePartitioner (single partition case)            │
 └───────────────────────────────────────────────────────────────────────┘
@@ -150,8 +151,8 @@ Native shuffle (`CometExchange`) is selected when all of the following condition
 
    - **Buffered mode** (`MultiPartitionShuffleRepartitioner`): For hash/range/round-robin
      partitioning. Buffers all input `RecordBatch`es in memory, then partitions and writes
-     them in a single pass. When memory pressure exceeds the threshold, partitions spill to
-     temporary files.
+     them in a single pass. When memory pressure exceeds the threshold, buffered data is
+     partitioned and spilled to per-partition temporary files.
 
    - `SinglePartitionShufflePartitioner`: For single partition (simpler path, used regardless
      of partitioner mode).
@@ -227,17 +228,17 @@ between the two partitioner modes:
 ### Immediate Mode
 
 Immediate mode keeps memory usage low by partitioning and encoding data eagerly as it arrives,
-rather than buffering all input rows before writing:
+rather than buffering all input batches before writing:
 
 - **Per-partition builders**: Each partition has a set of Arrow array builders sized to the
   target batch size. When a builder fills up, it is flushed as a compressed IPC block to an
   in-memory buffer.
-- **Memory footprint**: Proportional to `num_partitions × batch_size` for the builders, plus
-  the accumulated IPC buffers. This is typically much smaller than buffered mode since IPC
-  encoding is more compact than raw Arrow arrays.
+- **Memory footprint**: Proportional to `num_partitions × num_columns × batch_size_in_rows`
+  for the builders, plus the accumulated IPC buffers. This is typically much smaller than
+  buffered mode since IPC encoding is more compact than raw Arrow arrays.
 - **Spilling**: When memory pressure is detected via DataFusion's `MemoryConsumer` trait,
-  partition builders are flushed and all IPC buffers are drained to per-partition temporary
-  files on disk.
+  partition builders are flushed, held references to sliced/filtered `RecordBatch`es are
+  released, and all IPC buffers are drained to per-partition temporary files on disk.
 
 ### Buffered Mode
 
@@ -277,7 +278,7 @@ independently compressed, allowing parallel decompression during reads.
 | ------------------------------------------------- | ----------- | ------------------------------------------- |
 | `spark.comet.exec.shuffle.enabled`                | `true`      | Enable Comet shuffle                        |
 | `spark.comet.exec.shuffle.mode`                   | `auto`      | Shuffle mode: `native`, `jvm`, or `auto`    |
-| `spark.comet.exec.shuffle.partitionerMode`        | `immediate` | Partitioner mode: `immediate` or `buffered` |
+| `spark.comet.exec.shuffle.partitionerMode`        | `buffered`  | Partitioner mode: `immediate` or `buffered` |
 | `spark.comet.exec.shuffle.compression.codec`      | `zstd`      | Compression codec                           |
 | `spark.comet.exec.shuffle.compression.zstd.level` | `1`         | Zstd compression level                      |
 | `spark.comet.shuffle.write.buffer.size`           | `1MB`       | Write buffer size                           |

@@ -24,9 +24,7 @@ use arrow::array::builder::{
     LargeBinaryBuilder, LargeStringBuilder, NullBuilder, PrimitiveBuilder, StringBuilder,
     StringViewBuilder,
 };
-use arrow::array::{
-    Array, ArrayRef, AsArray, BinaryViewArray, RecordBatch, StringViewArray, UInt32Array,
-};
+use arrow::array::{Array, ArrayRef, AsArray, RecordBatch, UInt32Array};
 use arrow::compute::take;
 use arrow::datatypes::{
     DataType, Date32Type, Date64Type, Decimal128Type, Decimal256Type, Float32Type, Float64Type,
@@ -64,11 +62,8 @@ macro_rules! scatter_byte_array {
 }
 
 macro_rules! scatter_byte_view {
-    ($builder:expr, $source:expr, $indices:expr, $array_type:ty, $builder_type:ty) => {{
-        let src = $source
-            .as_any()
-            .downcast_ref::<$array_type>()
-            .expect("array type mismatch");
+    ($builder:expr, $source:expr, $indices:expr, $cast:ident, $builder_type:ty) => {{
+        let src = $source.$cast();
         let dst = $builder
             .as_any_mut()
             .downcast_mut::<$builder_type>()
@@ -163,10 +158,10 @@ fn scatter_append(
             scatter_byte_array!(builder, source, indices, i64, LargeBinaryBuilder, as_binary)
         }
         Utf8View => {
-            scatter_byte_view!(builder, source, indices, StringViewArray, StringViewBuilder)
+            scatter_byte_view!(builder, source, indices, as_string_view, StringViewBuilder)
         }
         BinaryView => {
-            scatter_byte_view!(builder, source, indices, BinaryViewArray, BinaryViewBuilder)
+            scatter_byte_view!(builder, source, indices, as_binary_view, BinaryViewBuilder)
         }
         Null => {
             let dst = builder.as_any_mut().downcast_mut::<NullBuilder>().unwrap();
