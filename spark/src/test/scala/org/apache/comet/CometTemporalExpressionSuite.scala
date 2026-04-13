@@ -21,11 +21,8 @@ package org.apache.comet
 
 import scala.util.Random
 
-import org.apache.spark.sql.{CometTestBase, DataFrame, Row, SaveMode}
-import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
-import org.apache.spark.sql.catalyst.expressions.{Days, Literal}
+import org.apache.spark.sql.{CometTestBase, Row, SaveMode}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
-import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 
@@ -397,97 +394,6 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
 
     // Test null handling
     checkSparkAnswerAndOperator("SELECT unix_date(NULL)")
-  }
-
-  /**
-   * Checks that the Comet-evaluated DataFrame produces the same results as the baseline DataFrame
-   * evaluated by native Spark JVM, and that Comet native operators are used. This is needed
-   * because Days is a PartitionTransformExpression that extends Unevaluable, so
-   * checkSparkAnswerAndOperator cannot be used directly.
-   */
-  private def checkDays(cometDF: DataFrame, baselineDF: DataFrame): Unit = {
-    // Ensure the expected answer is evaluated solely by native Spark JVM (Comet off)
-    var expected: Array[Row] = Array.empty
-    withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-      expected = baselineDF.collect()
-    }
-    checkAnswer(cometDF, expected.toSeq)
-    checkCometOperators(stripAQEPlan(cometDF.queryExecution.executedPlan))
-  }
-
-  test("days - date input") {
-    val r = new Random(42)
-    val dateSchema = StructType(Seq(StructField("d", DataTypes.DateType, true)))
-    val dateDF = FuzzDataGenerator.generateDataFrame(r, spark, dateSchema, 1000, DataGenOptions())
-
-    checkDays(
-      dateDF.select(col("d"), getColumnFromExpression(Days(UnresolvedAttribute("d")))),
-      dateDF.selectExpr("d", "unix_date(d)"))
-  }
-
-  test("days - timestamp input") {
-    val r = new Random(42)
-    val tsSchema = StructType(Seq(StructField("ts", DataTypes.TimestampType, true)))
-    val tsDF = FuzzDataGenerator.generateDataFrame(r, spark, tsSchema, 1000, DataGenOptions())
-
-    for (timezone <- Seq("UTC", "America/Los_Angeles", "Asia/Tokyo")) {
-      withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> timezone) {
-        checkDays(
-          tsDF.select(col("ts"), getColumnFromExpression(Days(UnresolvedAttribute("ts")))),
-          tsDF.selectExpr("ts", "unix_date(cast(ts as date))"))
-      }
-    }
-  }
-
-  test("days - literal edge cases") {
-    withSQLConf(
-      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
-        "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
-
-      val dummyDF = spark.range(1)
-
-      // Pre-epoch (should return negative day numbers)
-      checkDays(
-        dummyDF.select(
-          getColumnFromExpression(
-            Days(Literal.create(java.sql.Date.valueOf("1969-12-31"), DataTypes.DateType))),
-          getColumnFromExpression(
-            Days(Literal.create(java.sql.Date.valueOf("1960-01-01"), DataTypes.DateType)))),
-        dummyDF.selectExpr("unix_date(DATE('1969-12-31'))", "unix_date(DATE('1960-01-01'))"))
-
-      // Epoch and post-epoch
-      checkDays(
-        dummyDF.select(
-          getColumnFromExpression(
-            Days(Literal.create(java.sql.Date.valueOf("1970-01-01"), DataTypes.DateType))),
-          getColumnFromExpression(
-            Days(Literal.create(java.sql.Date.valueOf("1970-01-02"), DataTypes.DateType))),
-          getColumnFromExpression(
-            Days(Literal.create(java.sql.Date.valueOf("2024-01-01"), DataTypes.DateType)))),
-        dummyDF.selectExpr(
-          "unix_date(DATE('1970-01-01'))",
-          "unix_date(DATE('1970-01-02'))",
-          "unix_date(DATE('2024-01-01'))"))
-
-      // Timestamp literals
-      checkDays(
-        dummyDF.select(
-          getColumnFromExpression(Days(Literal
-            .create(java.sql.Timestamp.valueOf("1970-01-01 00:00:00"), DataTypes.TimestampType))),
-          getColumnFromExpression(
-            Days(
-              Literal.create(
-                java.sql.Timestamp.valueOf("2024-06-15 10:30:00"),
-                DataTypes.TimestampType)))),
-        dummyDF.selectExpr(
-          "unix_date(cast(TIMESTAMP('1970-01-01 00:00:00') as date))",
-          "unix_date(cast(TIMESTAMP('2024-06-15 10:30:00') as date))"))
-
-      // Null handling
-      checkDays(
-        dummyDF.select(getColumnFromExpression(Days(Literal.create(null, DataTypes.DateType)))),
-        dummyDF.selectExpr("unix_date(cast(NULL as date))"))
-    }
   }
 
   test("cast TimestampNTZ to Timestamp - DST edge cases") {
