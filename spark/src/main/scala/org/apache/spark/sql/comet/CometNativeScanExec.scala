@@ -21,6 +21,7 @@ package org.apache.spark.sql.comet
 
 import scala.reflect.ClassTag
 
+import org.apache.spark.{Partition, TaskContext}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst._
@@ -77,6 +78,33 @@ case class CometNativeScanExec(
 
   override val nodeName: String =
     s"CometNativeScan $relation ${tableIdentifier.map(_.unquotedString).getOrElse("")}"
+
+  override def verboseStringWithOperatorId(): String = {
+    val metadataStr = metadata.toSeq.sorted
+      .filterNot {
+        case (_, value) if (value.isEmpty || value.equals("[]")) => true
+        case (key, _) if (key.equals("DataFilters") || key.equals("Format")) => true
+        case (_, _) => false
+      }
+      .map {
+        case (key, _) if (key.equals("Location")) =>
+          val location = relation.location
+          val numPaths = location.rootPaths.length
+          val abbreviatedLocation = if (numPaths <= 1) {
+            location.rootPaths.mkString("[", ", ", "]")
+          } else {
+            "[" + location.rootPaths.head + s", ... ${numPaths - 1} entries]"
+          }
+          s"$key: ${location.getClass.getSimpleName} ${redact(abbreviatedLocation)}"
+        case (key, value) => s"$key: ${redact(value)}"
+      }
+
+    s"""
+       |$formattedNodeName
+       |${ExplainUtils.generateFieldString("Output", output)}
+       |${metadataStr.mkString("\n")}
+       |""".stripMargin
+  }
 
   // exposed for testing
   lazy val bucketedScan: Boolean = originalPlan.bucketedScan && !disableBucketedScan
@@ -153,18 +181,27 @@ case class CometNativeScanExec(
       (None, Seq.empty)
     }
 
-    CometExecRDD(
+    new CometExecRDD(
       sparkContext,
-      inputRDDs = Seq.empty,
-      commonByKey = Map(sourceKey -> commonData),
-      perPartitionByKey = Map(sourceKey -> perPartitionData),
-      serializedPlan = serializedPlan,
-      numPartitions = perPartitionData.length,
-      numOutputCols = output.length,
-      nativeMetrics = nativeMetrics,
-      subqueries = Seq.empty,
-      broadcastedHadoopConfForEncryption = broadcastedHadoopConfForEncryption,
-      encryptedFilePaths = encryptedFilePaths)
+      Seq.empty,
+      Map(sourceKey -> commonData),
+      Map(sourceKey -> perPartitionData),
+      serializedPlan,
+      perPartitionData.length,
+      output.length,
+      nativeMetrics,
+      Seq.empty,
+      broadcastedHadoopConfForEncryption,
+      encryptedFilePaths) {
+      override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
+        val res = super.compute(split, context)
+
+        // Report scan input metrics after the iterator is fully consumed.
+        Option(context).foreach(nativeMetrics.reportScanInputMetrics)
+
+        res
+      }
+    }
   }
 
   override def doCanonicalize(): CometNativeScanExec = {
@@ -202,8 +239,25 @@ case class CometNativeScanExec(
 
   override def hashCode(): Int = Objects.hashCode(originalPlan, serializedPlanOpt)
 
-  override lazy val metrics: Map[String, SQLMetric] =
-    CometMetricNode.nativeScanMetrics(session.sparkContext)
+  private val driverMetricKeys =
+    Set(
+      "numFiles",
+      "filesSize",
+      "numPartitions",
+      "metadataTime",
+      "staticFilesNum",
+      "staticFilesSize",
+      "pruningTime")
+
+  override lazy val metrics: Map[String, SQLMetric] = {
+    val nativeMetrics = CometMetricNode.nativeScanMetrics(session.sparkContext)
+    // Map native metric names to Spark metric names
+    val withAlias = nativeMetrics.get("output_rows") match {
+      case Some(metric) => nativeMetrics + ("numOutputRows" -> metric)
+      case None => nativeMetrics
+    }
+    withAlias ++ scan.metrics.filterKeys(driverMetricKeys)
+  }
 
   /**
    * See [[org.apache.spark.sql.execution.DataSourceScanExec.inputRDDs]]. Only used for tests.

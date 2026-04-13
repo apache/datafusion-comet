@@ -18,11 +18,13 @@
 use crate::hash_funcs::*;
 use crate::math_funcs::abs::abs;
 use crate::math_funcs::checked_arithmetic::{checked_add, checked_div, checked_mul, checked_sub};
+use crate::math_funcs::log::spark_log;
 use crate::math_funcs::modulo_expr::spark_modulo;
 use crate::{
     spark_ceil, spark_decimal_div, spark_decimal_integral_div, spark_floor, spark_isnan,
     spark_lpad, spark_make_decimal, spark_read_side_padding, spark_round, spark_rpad, spark_unhex,
-    spark_unscaled_value, EvalMode, SparkContains, SparkDateDiff, SparkDateFromUnixDate,
+    spark_unscaled_value, EvalMode, SparkArrayCompact, SparkContains, SparkDateDiff,
+    SparkDateFromUnixDate,
     SparkDateTrunc, SparkMakeDate, SparkSizeFunc,
 };
 use arrow::datatypes::DataType;
@@ -177,9 +179,17 @@ pub fn create_comet_physical_fun_with_eval_mode(
             let func = Arc::new(abs);
             make_comet_scalar_udf!("abs", func, without data_type)
         }
+        "spark_log" => {
+            let func = Arc::new(spark_log);
+            make_comet_scalar_udf!("spark_log", func, without data_type)
+        }
         "split" => {
             let func = Arc::new(crate::string_funcs::spark_split);
             make_comet_scalar_udf!("split", func, without data_type)
+        }
+        "get_json_object" => {
+            let func = Arc::new(crate::string_funcs::spark_get_json_object);
+            make_comet_scalar_udf!("get_json_object", func, without data_type)
         }
         _ => registry.udf(fun_name).map_err(|e| {
             DataFusionError::Execution(format!(
@@ -191,6 +201,7 @@ pub fn create_comet_physical_fun_with_eval_mode(
 
 fn all_scalar_functions() -> Vec<Arc<ScalarUDF>> {
     vec![
+        Arc::new(ScalarUDF::new_from_impl(SparkArrayCompact::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkContains::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkDateDiff::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkDateFromUnixDate::default())),

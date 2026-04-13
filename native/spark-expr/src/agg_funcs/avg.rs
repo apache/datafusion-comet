@@ -245,7 +245,7 @@ where
         &mut self,
         values: &[ArrayRef],
         group_indices: &[usize],
-        _opt_filter: Option<&arrow::array::BooleanArray>,
+        opt_filter: Option<&arrow::array::BooleanArray>,
         total_num_groups: usize,
     ) -> Result<()> {
         assert_eq!(values.len(), 1, "single argument to update_batch");
@@ -257,7 +257,7 @@ where
         self.sums.resize(total_num_groups, T::default_value());
 
         let iter = group_indices.iter().zip(data.iter());
-        if values.null_count() == 0 {
+        if opt_filter.is_none() && values.null_count() == 0 {
             for (&group_index, &value) in iter {
                 let sum = &mut self.sums[group_index];
                 // No overflow checking - Infinity is a valid result
@@ -266,6 +266,11 @@ where
             }
         } else {
             for (idx, (&group_index, &value)) in iter.enumerate() {
+                if let Some(f) = opt_filter {
+                    if !f.is_valid(idx) || !f.value(idx) {
+                        continue;
+                    }
+                }
                 if values.is_null(idx) {
                     continue;
                 }

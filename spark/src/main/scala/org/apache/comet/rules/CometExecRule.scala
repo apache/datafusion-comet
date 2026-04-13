@@ -185,7 +185,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         convertToComet(scan, CometNativeScan).getOrElse(scan)
 
       // Fully native Iceberg scan for V2 (iceberg-rust path)
-      // Only handle scans with native metadata; SupportsComet scans fall through to isCometScan
+      // Only handle scans with native metadata; other scans fall through to isCometScan
       // Config checks (COMET_ICEBERG_NATIVE_ENABLED, COMET_EXEC_ENABLED) are done in CometScanRule
       case scan: CometBatchScanExec if scan.nativeIcebergScanMetadata.isDefined =>
         convertToComet(scan, CometIcebergNativeScan).getOrElse(scan)

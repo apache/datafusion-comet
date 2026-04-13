@@ -35,5 +35,5 @@ query
 SELECT s RLIKE '' FROM test_rlike_enabled
 
 -- literal arguments
-query ignore(https://github.com/apache/datafusion-comet/issues/3343)
+query
 SELECT 'hello' RLIKE '^[a-z]+$', '12345' RLIKE '^[a-z]+$', '' RLIKE '', NULL RLIKE 'a'
