@@ -144,8 +144,10 @@ fn unregister_and_total(thread_id: u64, context_id: i64) -> usize {
         let mut seen = std::collections::HashSet::new();
         return pools
             .values()
-            .filter(|p| seen.insert(Arc::as_ptr(p) as *const () as usize))
-            .map(|p| p.reserved())
+            .filter_map(|p| {
+                let ptr = Arc::as_ptr(p) as *const ();
+                seen.insert(ptr).then(|| p.reserved())
+            })
             .sum::<usize>();
     }
     0
@@ -160,8 +162,10 @@ fn total_reserved_for_thread(thread_id: u64) -> usize {
             let mut seen = std::collections::HashSet::new();
             pools
                 .values()
-                .filter(|p| seen.insert(Arc::as_ptr(p) as *const () as usize))
-                .map(|p| p.reserved())
+                .filter_map(|p| {
+                    let ptr = Arc::as_ptr(p) as *const ();
+                    seen.insert(ptr).then(|| p.reserved())
+                })
                 .sum::<usize>()
         })
         .unwrap_or(0)
