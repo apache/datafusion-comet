@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.catalyst.expressions.{And, Attribute, If, IsNaN, Literal}
+import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, Corr, Count, Covariance, CovPopulation, CovSample, First, Last, Max, Min, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ByteType, DataTypes, DecimalType, IntegerType, LongType, ShortType, StringType}
@@ -590,12 +590,7 @@ object CometCorr extends CometAggregateExpressionSerde[Corr] {
       inputs: Seq[Attribute],
       binding: Boolean,
       conf: SQLConf): Option[ExprOuterClass.AggExpr] = {
-    // When both inputs are NaN, convert one input to null in order to return null.
-    // This matches Spark's behavior where corr(NaN, NaN) returns null.
-    val wrappedX =
-      If(And(IsNaN(corr.x), IsNaN(corr.y)), Literal.create(null, corr.x.dataType), corr.x)
-
-    val child1Expr = exprToProto(wrappedX, inputs, binding)
+    val child1Expr = exprToProto(corr.x, inputs, binding)
     val child2Expr = exprToProto(corr.y, inputs, binding)
     val dataType = serializeDataType(corr.dataType)
 

@@ -15,9 +15,12 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::compute::{and, filter, is_not_null};
+use arrow::compute::{and, filter, is_not_null, not};
 
 use std::{any::Any, sync::Arc};
+
+use arrow::array::Float64Array;
+use arrow::buffer::BooleanBuffer;
 
 use crate::agg_funcs::covariance::CovarianceAccumulator;
 use crate::agg_funcs::stddev::StddevAccumulator;
@@ -154,12 +157,12 @@ impl Accumulator for CorrelationAccumulator {
     }
 
     fn update_batch(&mut self, values: &[ArrayRef]) -> Result<()> {
-        let values = if values[0].null_count() != 0 || values[1].null_count() != 0 {
-            let mask = and(&is_not_null(&values[0])?, &is_not_null(&values[1])?)?;
-            let values1 = filter(&values[0], &mask)?;
-            let values2 = filter(&values[1], &mask)?;
+        // Filter out rows where either value is null OR both values are NaN.
+        // Spark's corr() treats (NaN, NaN) as invalid and returns null for such inputs.
+        let mask = corr_valid_mask(&values[0], &values[1])?;
 
-            vec![values1, values2]
+        let values = if mask.true_count() != values[0].len() {
+            vec![filter(&values[0], &mask)?, filter(&values[1], &mask)?]
         } else {
             values.to_vec()
         };
@@ -174,12 +177,10 @@ impl Accumulator for CorrelationAccumulator {
     }
 
     fn retract_batch(&mut self, values: &[ArrayRef]) -> Result<()> {
-        let values = if values[0].null_count() != 0 || values[1].null_count() != 0 {
-            let mask = and(&is_not_null(&values[0])?, &is_not_null(&values[1])?)?;
-            let values1 = filter(&values[0], &mask)?;
-            let values2 = filter(&values[1], &mask)?;
+        let mask = corr_valid_mask(&values[0], &values[1])?;
 
-            vec![values1, values2]
+        let values = if mask.true_count() != values[0].len() {
+            vec![filter(&values[0], &mask)?, filter(&values[1], &mask)?]
         } else {
             values.to_vec()
         };
@@ -243,5 +244,24 @@ impl Accumulator for CorrelationAccumulator {
             + self.stddev1.size()
             - std::mem::size_of_val(&self.stddev2)
             + self.stddev2.size()
+    }
+}
+
+/// Build a mask that is true for rows where both values are not null and
+/// not both NaN. Correlation inputs are always Float64.
+fn corr_valid_mask(left: &ArrayRef, right: &ArrayRef) -> Result<arrow::array::BooleanArray> {
+    let not_null = and(&is_not_null(left)?, &is_not_null(right)?)?;
+
+    let left_f64 = left.as_any().downcast_ref::<Float64Array>();
+    let right_f64 = right.as_any().downcast_ref::<Float64Array>();
+
+    if let (Some(l), Some(r)) = (left_f64, right_f64) {
+        let both_nan =
+            arrow::array::BooleanArray::from(BooleanBuffer::collect_bool(l.len(), |i| {
+                l.value(i).is_nan() && r.value(i).is_nan()
+            }));
+        Ok(and(&not_null, &not(&both_nan)?)?)
+    } else {
+        Ok(not_null)
     }
 }
