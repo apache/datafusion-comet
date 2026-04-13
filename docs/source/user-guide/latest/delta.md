@@ -93,8 +93,9 @@ The native Delta reader supports the following features:
 2. **Row-group-level (ParquetSource):** Comet's ParquetSource applies predicate pushdown
    within the files that kernel kept, using Parquet page-index and row-group stats.
 
-Supported predicates: `=`, `!=`, `>`, `>=`, `<`, `<=`, `AND`, `OR`, `NOT`,
-`IS NULL`, `IS NOT NULL`.
+Supported predicates: `=`, `!=`, `>`, `>=`, `<`, `<=`, `IN`, `NOT IN`,
+`AND`, `OR`, `NOT`, `IS NULL`, `IS NOT NULL`. `Cast` wrappers are
+unwrapped automatically.
 
 **Partitioning:**
 
