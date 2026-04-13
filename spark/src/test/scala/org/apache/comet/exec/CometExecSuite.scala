@@ -2301,7 +2301,6 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
-
 }
 
 case class BucketedTableTestSpec(
