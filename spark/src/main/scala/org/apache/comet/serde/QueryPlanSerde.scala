@@ -88,9 +88,12 @@ object QueryPlanSerde extends Logging with CometExprShim {
 
   private val mathExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     classOf[Acos] -> CometScalarFunction("acos"),
+    classOf[Acosh] -> CometScalarFunction("acosh"),
     classOf[Add] -> CometAdd,
     classOf[Asin] -> CometScalarFunction("asin"),
+    classOf[Asinh] -> CometScalarFunction("asinh"),
     classOf[Atan] -> CometScalarFunction("atan"),
+    classOf[Atanh] -> CometScalarFunction("atanh"),
     classOf[Atan2] -> CometAtan2,
     classOf[Ceil] -> CometCeil,
     classOf[Cos] -> CometScalarFunction("cos"),
