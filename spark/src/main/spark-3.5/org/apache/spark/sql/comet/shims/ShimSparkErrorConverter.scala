@@ -323,7 +323,21 @@ trait ShimSparkErrorConverter {
         try {
           DataType.fromDDL(typeName)
         } catch {
-          case _: Exception => StringType
+          case _: Exception =>
+            // fromDDL rejects types that are syntactically invalid in SQL DDL, such as
+            // DECIMAL(p,s) with a negative scale (valid when allowNegativeScaleOfDecimal=true).
+            // Parse those manually rather than silently falling back to StringType.
+            if (typeName.toUpperCase.startsWith("DECIMAL(") && typeName.endsWith(")")) {
+              val inner = typeName.substring("DECIMAL(".length, typeName.length - 1)
+              val parts = inner.split(",")
+              if (parts.length == 2) {
+                try {
+                  DataTypes.createDecimalType(parts(0).trim.toInt, parts(1).trim.toInt)
+                } catch {
+                  case _: Exception => StringType
+                }
+              } else StringType
+            } else StringType
         }
     }
   }

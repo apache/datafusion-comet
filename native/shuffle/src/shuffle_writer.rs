@@ -38,7 +38,6 @@ use datafusion::{
         DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, SendableRecordBatchStream,
     },
 };
-use datafusion_comet_common::tracing::with_trace_async;
 use futures::{StreamExt, TryFutureExt, TryStreamExt};
 use std::{
     any::Any,
@@ -214,77 +213,72 @@ async fn external_shuffle(
     write_buffer_size: usize,
     immediate_mode: bool,
 ) -> Result<SendableRecordBatchStream> {
-    with_trace_async("external_shuffle", tracing_enabled, || async {
-        let schema = input.schema();
+    let schema = input.schema();
 
-        let mut repartitioner: Box<dyn ShufflePartitioner> = match &partitioning {
-            _ if schema.fields().is_empty() => {
-                log::debug!("found empty schema, overriding {partitioning:?} partitioning with EmptySchemaShufflePartitioner");
-                Box::new(EmptySchemaShufflePartitioner::try_new(
-                    output_data_file,
-                    output_index_file,
-                    Arc::clone(&schema),
-                    partitioning.partition_count(),
-                    metrics,
-                    codec,
-                )?)
-            }
-            any if any.partition_count() == 1 => {
-                Box::new(SinglePartitionShufflePartitioner::try_new(
-                    output_data_file,
-                    output_index_file,
-                    Arc::clone(&schema),
-                    metrics,
-                    context.session_config().batch_size(),
-                    codec,
-                    write_buffer_size,
-                )?)
-            }
-            _ if immediate_mode => Box::new(ImmediateModePartitioner::try_new(
-                partition,
+    let mut repartitioner: Box<dyn ShufflePartitioner> = match &partitioning {
+        _ if schema.fields().is_empty() => {
+            log::debug!("found empty schema, overriding {partitioning:?} partitioning with EmptySchemaShufflePartitioner");
+            Box::new(EmptySchemaShufflePartitioner::try_new(
                 output_data_file,
                 output_index_file,
                 Arc::clone(&schema),
-                partitioning,
+                partitioning.partition_count(),
                 metrics,
-                context.runtime_env(),
-                context.session_config().batch_size(),
                 codec,
-            )?),
-            _ => Box::new(MultiPartitionShuffleRepartitioner::try_new(
-                partition,
-                output_data_file,
-                output_index_file,
-                Arc::clone(&schema),
-                partitioning,
-                metrics,
-                context.runtime_env(),
-                context.session_config().batch_size(),
-                codec,
-                tracing_enabled,
-                write_buffer_size,
-            )?),
-        };
-
-        while let Some(batch) = input.next().await {
-            // Await the repartitioner to insert the batch and shuffle the rows
-            // into the corresponding partition buffer.
-            // Otherwise, pull the next batch from the input stream might overwrite the
-            // current batch in the repartitioner.
-            repartitioner
-                .insert_batch(batch?)
-                .await
-                .map_err(|err| exec_datafusion_err!("Error inserting batch: {err}"))?;
+            )?)
         }
+        any if any.partition_count() == 1 => Box::new(SinglePartitionShufflePartitioner::try_new(
+            output_data_file,
+            output_index_file,
+            Arc::clone(&schema),
+            metrics,
+            context.session_config().batch_size(),
+            codec,
+            write_buffer_size,
+        )?),
+        _ if immediate_mode => Box::new(ImmediateModePartitioner::try_new(
+            partition,
+            output_data_file,
+            output_index_file,
+            Arc::clone(&schema),
+            partitioning,
+            metrics,
+            context.runtime_env(),
+            context.session_config().batch_size(),
+            codec,
+        )?),
+        _ => Box::new(MultiPartitionShuffleRepartitioner::try_new(
+            partition,
+            output_data_file,
+            output_index_file,
+            Arc::clone(&schema),
+            partitioning,
+            metrics,
+            context.runtime_env(),
+            context.session_config().batch_size(),
+            codec,
+            tracing_enabled,
+            write_buffer_size,
+        )?),
+    };
 
+    while let Some(batch) = input.next().await {
+        // Await the repartitioner to insert the batch and shuffle the rows
+        // into the corresponding partition buffer.
+        // Otherwise, pull the next batch from the input stream might overwrite the
+        // current batch in the repartitioner.
         repartitioner
-            .shuffle_write()
-            .map_err(|err| exec_datafusion_err!("Error in shuffle write: {err}"))?;
+            .insert_batch(batch?)
+            .await
+            .map_err(|err| exec_datafusion_err!("Error inserting batch: {err}"))?;
+    }
 
-        // shuffle writer always has empty output
-        Ok(Box::pin(EmptyRecordBatchStream::new(Arc::clone(&schema))) as SendableRecordBatchStream)
-    })
-    .await
+    repartitioner
+        .shuffle_write()
+        .map_err(|err| exec_datafusion_err!("Error in shuffle write: {err}"))?;
+
+    // shuffle writer always has empty output
+    Ok(Box::pin(EmptyRecordBatchStream::new(Arc::clone(&schema))) as SendableRecordBatchStream)
 }
 
 #[cfg(test)]
