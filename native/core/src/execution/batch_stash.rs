@@ -28,6 +28,9 @@ use std::sync::Mutex;
 static NEXT_HANDLE: AtomicU64 = AtomicU64::new(1);
 
 /// Global stash mapping handles to RecordBatch values.
+/// Entries are removed by `take()` when the downstream ScanExec consumes them,
+/// so there is no leak under normal operation. The stash lives for the process
+/// lifetime but is effectively empty between query executions.
 static STASH: Lazy<Mutex<HashMap<u64, RecordBatch>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 
 /// Store a RecordBatch in the global stash and return a unique handle.
@@ -35,7 +38,7 @@ pub(crate) fn stash(batch: RecordBatch) -> u64 {
     let handle = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
     STASH
         .lock()
-        .expect("batch_stash lock poisoned")
+        .unwrap_or_else(|e| e.into_inner())
         .insert(handle, batch);
     handle
 }
@@ -46,7 +49,7 @@ pub(crate) fn stash(batch: RecordBatch) -> u64 {
 pub(crate) fn take(handle: u64) -> Option<RecordBatch> {
     STASH
         .lock()
-        .expect("batch_stash lock poisoned")
+        .unwrap_or_else(|e| e.into_inner())
         .remove(&handle)
 }
 

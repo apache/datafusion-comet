@@ -559,8 +559,7 @@ impl Stream for ScanStream<'_> {
         let mut timer = self.baseline_metrics.elapsed_compute().timer();
         let mut scan_batch = self.scan.batch.try_lock().unwrap();
 
-        let input_batch = &*scan_batch;
-        let input_batch = if let Some(batch) = input_batch {
+        let input_batch = if let Some(batch) = scan_batch.take() {
             batch
         } else {
             timer.stop();
@@ -569,9 +568,9 @@ impl Stream for ScanStream<'_> {
 
         let result = match input_batch {
             InputBatch::EOF => Poll::Ready(None),
-            InputBatch::Batch(columns, num_rows) => {
-                self.baseline_metrics.record_output(*num_rows);
-                let maybe_batch = self.build_record_batch(columns, *num_rows);
+            InputBatch::Batch(ref columns, num_rows) => {
+                self.baseline_metrics.record_output(num_rows);
+                let maybe_batch = self.build_record_batch(columns, num_rows);
                 Poll::Ready(Some(maybe_batch))
             }
             InputBatch::Complete(batch) => {
@@ -586,12 +585,10 @@ impl Stream for ScanStream<'_> {
                 } else {
                     // Column count mismatch (e.g., empty schema scan).
                     // Return the stashed batch as-is since it's already valid.
-                    Poll::Ready(Some(Ok(batch.clone())))
+                    Poll::Ready(Some(Ok(batch)))
                 }
             }
         };
-
-        *scan_batch = None;
 
         timer.stop();
 
@@ -616,8 +613,9 @@ pub enum InputBatch {
     /// i.e. reading empty schema from scan.
     Batch(Vec<ArrayRef>, usize),
 
-    /// A complete RecordBatch retrieved from the BatchStash. Bypasses
-    /// `build_record_batch` since the batch is already fully formed.
+    /// A complete RecordBatch retrieved from the BatchStash. May still
+    /// go through `build_record_batch` for schema reconciliation (e.g.,
+    /// timestamp timezone casting) when column counts match.
     Complete(RecordBatch),
 }
 
