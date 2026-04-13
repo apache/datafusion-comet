@@ -114,6 +114,11 @@ struct Args {
     /// Each task reads the same input and writes to its own output files.
     #[arg(long, default_value_t = 1)]
     concurrent_tasks: usize,
+
+    /// Shuffle mode: 'buffered' buffers all rows before writing (default),
+    /// 'sort' sorts each batch by partition ID and writes immediately.
+    #[arg(long, default_value = "buffered")]
+    mode: String,
 }
 
 fn main() {
@@ -141,6 +146,7 @@ fn main() {
     println!("Partitioning:   {}", args.partitioning);
     println!("Partitions:     {}", args.partitions);
     println!("Codec:          {:?}", codec);
+    println!("Mode:           {}", args.mode);
     println!("Hash columns:   {:?}", hash_col_indices);
     if let Some(mem_limit) = args.memory_limit {
         println!("Memory limit:   {}", format_bytes(mem_limit));
@@ -403,6 +409,7 @@ fn run_shuffle_write(
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
         let start = Instant::now();
+        let sort_based = args.mode == "sort";
         let (shuffle_metrics, input_metrics) = execute_shuffle_write(
             input_path.to_str().unwrap(),
             codec.clone(),
@@ -413,6 +420,7 @@ fn run_shuffle_write(
             args.limit,
             data_file.to_string(),
             index_file.to_string(),
+            sort_based,
         )
         .await
         .unwrap();
@@ -436,6 +444,7 @@ async fn execute_shuffle_write(
     limit: usize,
     data_file: String,
     index_file: String,
+    sort_based: bool,
 ) -> datafusion::common::Result<(MetricsSet, MetricsSet)> {
     let config = SessionConfig::new().with_batch_size(batch_size);
     let mut runtime_builder = RuntimeEnvBuilder::new();
@@ -477,7 +486,7 @@ async fn execute_shuffle_write(
         index_file,
         false,
         write_buffer_size,
-        false,
+        sort_based,
     )
     .expect("Failed to create ShuffleWriterExec");
 
@@ -542,6 +551,7 @@ fn run_concurrent_shuffle_writes(
             let memory_limit = args.memory_limit;
             let write_buffer_size = args.write_buffer_size;
             let limit = args.limit;
+            let sort_based = args.mode == "sort";
 
             handles.push(tokio::spawn(async move {
                 execute_shuffle_write(
@@ -554,6 +564,7 @@ fn run_concurrent_shuffle_writes(
                     limit,
                     data_file,
                     index_file,
+                    sort_based,
                 )
                 .await
                 .unwrap()
