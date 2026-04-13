@@ -28,12 +28,12 @@ import scala.jdk.CollectionConverters._
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.catalyst.expressions.{Attribute, DynamicPruningExpression, Expression, GenericInternalRow, InputFileBlockLength, InputFileBlockStart, InputFileName, PlanExpression}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, DynamicPruningExpression, EqualTo, Expression, GenericInternalRow, InputFileBlockLength, InputFileBlockStart, InputFileName, Literal, PlanExpression}
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.{sideBySide, ArrayBasedMapData, GenericArrayData, MetadataColumnHelper}
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
 import org.apache.spark.sql.comet.{CometBatchScanExec, CometScanExec}
-import org.apache.spark.sql.execution.{FileSourceScanExec, InSubqueryExec, SparkPlan, SubqueryAdaptiveBroadcastExec}
+import org.apache.spark.sql.execution.{FileSourceScanExec, FilterExec, InSubqueryExec, ProjectExec, SparkPlan, SubqueryAdaptiveBroadcastExec}
 import org.apache.spark.sql.execution.datasources.HadoopFsRelation
 import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
@@ -45,11 +45,12 @@ import org.apache.comet.{CometConf, CometNativeException, DataTypeSupport}
 import org.apache.comet.CometConf._
 import org.apache.comet.CometSparkSessionExtensions.{isCometLoaded, withInfo, withInfos}
 import org.apache.comet.DataTypeSupport.isComplexType
+import org.apache.comet.delta.DeltaReflection
 import org.apache.comet.iceberg.{CometIcebergNativeScanMetadata, IcebergReflection}
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.parquet.CometParquetUtils.{encryptionEnabled, isEncryptionConfigSupported}
 import org.apache.comet.parquet.Native
-import org.apache.comet.serde.operator.{CometIcebergNativeScan, CometNativeScan}
+import org.apache.comet.serde.operator.{CometDeltaNativeScan, CometIcebergNativeScan, CometNativeScan}
 import org.apache.comet.shims.{CometTypeShim, ShimFileFormat, ShimSubqueryBroadcast}
 
 /**
@@ -75,6 +76,29 @@ case class CometScanRule(session: SparkSession)
 
   private def _apply(plan: SparkPlan): SparkPlan = {
     if (!isCometLoaded(conf)) return plan
+
+    // Phase 3 pre-pass: undo Delta's PreprocessTableWithDVs plan rewrite for
+    // DV-in-use scans so the scan reaches our normal Delta native path. Delta's
+    // rule wraps a DV-bearing scan in:
+    //   ProjectExec(userOutput,
+    //     FilterExec(__delta_internal_is_row_deleted = 0,
+    //       ProjectExec([...userCols, is_row_deleted, _metadata_structs...],
+    //         FileSourceScanExec(has is_row_deleted in output))))
+    // We strip the wrappers, returning a FileSourceScanExec whose output is the
+    // original userOutput and whose required/data schemas no longer carry the
+    // synthetic column. CometScanRule's scan-level transform below then picks
+    // up the clean scan and routes it through nativeDeltaScan, at which point
+    // kernel's per-file `deleted_row_indexes` feed into our DeltaDvFilterExec
+    // wrapper on the native side.
+    //
+    // Gated on COMET_DELTA_NATIVE_ENABLED: if the user has turned off Comet's
+    // Delta path, we must leave Delta's own plan rewrite intact so vanilla
+    // Spark+Delta applies the DV via DeltaParquetFileFormat at read time.
+    val stripped = if (CometConf.COMET_DELTA_NATIVE_ENABLED.get(conf)) {
+      stripDeltaDvWrappers(plan)
+    } else {
+      plan
+    }
 
     def isSupportedScanNode(plan: SparkPlan): Boolean = plan match {
       case _: FileSourceScanExec => true
@@ -132,20 +156,114 @@ case class CometScanRule(session: SparkSession)
         }
     }
 
-    plan.transform {
+    stripped.transform {
       case scan if isSupportedScanNode(scan) => transformScan(scan)
     }
   }
 
-  private def transformV1Scan(plan: SparkPlan, scanExec: FileSourceScanExec): SparkPlan = {
-
-    if (COMET_DPP_FALLBACK_ENABLED.get() &&
-      scanExec.partitionFilters.exists(isDynamicPruningFilter)) {
-      return withInfo(scanExec, "Dynamic Partition Pruning is not supported")
+  /**
+   * Plan-tree rewrite that undoes Delta's `PreprocessTableWithDVs` Catalyst Strategy for
+   * DV-bearing reads. Delta's strategy runs at logical-to-physical conversion and wraps every
+   * DV-in-use Delta scan in an outer Project + Filter subtree that references a synthetic
+   * `__delta_internal_is_row_deleted` column produced by `DeltaParquetFileFormat`'s runtime
+   * reader. Since Comet reads via its own tuned parquet path (not Delta's file format), that
+   * synthetic column never gets produced, and the downstream Filter silently drops everything.
+   *
+   * We detect the pattern and replace it with a clean `FileSourceScanExec` whose required schema
+   * + output no longer mention the synthetic column. Kernel provides the actual DV row indexes on
+   * the driver side, and `DeltaDvFilterExec` applies them at execution time.
+   */
+  private def stripDeltaDvWrappers(plan: SparkPlan): SparkPlan = {
+    plan.transformUp {
+      case proj @ ProjectExec(projectList, FilterExec(cond, inner))
+          if isDeltaDvFilterPattern(cond) =>
+        val userOutput = projectList.map(_.toAttribute)
+        findAndStripDeltaScanBelow(inner, userOutput).getOrElse(proj)
     }
+  }
+
+  /** Matches `__delta_internal_is_row_deleted = 0` (the filter Delta injects). */
+  private def isDeltaDvFilterPattern(cond: Expression): Boolean = {
+    def isRowDeletedRef(name: String): Boolean =
+      name.equalsIgnoreCase(DeltaReflection.IsRowDeletedColumnName)
+    cond match {
+      case EqualTo(attr: AttributeReference, lit: Literal) if isRowDeletedRef(attr.name) =>
+        lit.value != null && lit.value.toString == "0"
+      case EqualTo(lit: Literal, attr: AttributeReference) if isRowDeletedRef(attr.name) =>
+        lit.value != null && lit.value.toString == "0"
+      case _ => false
+    }
+  }
+
+  /**
+   * Recursively descend through the Filter's child subtree looking for a Delta
+   * `FileSourceScanExec` whose output contains the synthetic is-row-deleted column. On match,
+   * rebuild it without the synthetic column. Returns None if no such scan is found (in which case
+   * we leave the original Project/Filter in place).
+   */
+  private def findAndStripDeltaScanBelow(
+      plan: SparkPlan,
+      userOutput: Seq[Attribute]): Option[SparkPlan] = plan match {
+    case scan: FileSourceScanExec
+        if DeltaReflection.isDeltaFileFormat(scan.relation.fileFormat) &&
+          scan.output.exists(_.name.equalsIgnoreCase(DeltaReflection.IsRowDeletedColumnName)) =>
+      Some(rebuildDeltaScanWithoutDvColumn(scan, userOutput))
+    case other if other.children.size == 1 =>
+      // Single-child wrappers (Project, ColumnarToRow, etc.) Delta may insert between
+      // its Filter and the real scan. Drop the wrapper entirely - the stripped scan
+      // already produces the final user output shape.
+      findAndStripDeltaScanBelow(other.children.head, userOutput)
+    case _ => None
+  }
+
+  /**
+   * Produce a new `FileSourceScanExec` whose `output`, `requiredSchema`, and
+   * `relation.dataSchema` no longer mention `__delta_internal_is_row_deleted`. The outputs are
+   * expected to be a superset of `userOutput` (minus the synthetic column) so we match by exprId;
+   * anything left over is appended untouched.
+   */
+  private def rebuildDeltaScanWithoutDvColumn(
+      scan: FileSourceScanExec,
+      userOutput: Seq[Attribute]): FileSourceScanExec = {
+    val dvName = DeltaReflection.IsRowDeletedColumnName
+    val newOutput = scan.output.filterNot(_.name == dvName)
+    val newRequiredSchema =
+      StructType(scan.requiredSchema.fields.filterNot(_.name == dvName))
+    val newDataSchema =
+      StructType(scan.relation.dataSchema.fields.filterNot(_.name == dvName))
+    val newRelation = scan.relation.copy(dataSchema = newDataSchema)(scan.relation.sparkSession)
+    // Spark's filter pushdown may have moved Delta's injected `is_row_deleted = 0`
+    // predicate into `dataFilters`. The column no longer exists in our rebuilt scan, so
+    // any filter that references it must also be dropped - otherwise downstream code
+    // (e.g. our native Delta serde) sees a predicate it can't translate and falls back.
+    val newDataFilters = scan.dataFilters.filterNot { f =>
+      f.references.exists(_.name == dvName)
+    }
+    scan.copy(
+      relation = newRelation,
+      output = newOutput,
+      requiredSchema = newRequiredSchema,
+      dataFilters = newDataFilters)
+  }
+
+  private def transformV1Scan(plan: SparkPlan, scanExec: FileSourceScanExec): SparkPlan = {
 
     scanExec.relation match {
       case r: HadoopFsRelation =>
+        // Delta Lake (V1 path): detect BEFORE the DPP fallback check below,
+        // because Delta's native path handles DPP through partition pruning
+        // at execution time (DPP expressions are filtered out of the
+        // planning-time InterpretedPredicate and applied by Spark post-scan).
+        if (DeltaReflection.isDeltaFileFormat(r.fileFormat)) {
+          return nativeDeltaScan(session, scanExec, r, hadoopConfOrNull = null)
+            .getOrElse(scanExec)
+        }
+        // DPP fallback for non-Delta scans (DataFusion/Iceberg-compat paths
+        // don't support DPP natively).
+        if (COMET_DPP_FALLBACK_ENABLED.get() &&
+          scanExec.partitionFilters.exists(isDynamicPruningFilter)) {
+          return withInfo(scanExec, "Dynamic Partition Pruning is not supported")
+        }
         if (!CometScanExec.isFileFormatSupported(r.fileFormat)) {
           return withInfo(scanExec, s"Unsupported file format ${r.fileFormat}")
         }
@@ -243,6 +361,62 @@ case class CometScanRule(session: SparkSession)
       return None
     }
     Some(CometScanExec(scanExec, session, SCAN_NATIVE_ICEBERG_COMPAT))
+  }
+
+  /**
+   * Delta Lake native scan path (V1 relations). Gated on
+   * [[CometConf.COMET_DELTA_NATIVE_ENABLED]]; returns None when the feature flag is off so the
+   * caller's `.getOrElse(scanExec)` falls back to Spark's Delta reader.
+   *
+   * Schema / type validation reuses the native Iceberg checker since both paths converge on
+   * Comet's ParquetSource under the hood.
+   */
+  private def nativeDeltaScan(
+      session: SparkSession,
+      scanExec: FileSourceScanExec,
+      r: HadoopFsRelation,
+      hadoopConfOrNull: Configuration): Option[SparkPlan] = {
+    if (!CometConf.COMET_DELTA_NATIVE_ENABLED.get()) {
+      withInfo(
+        scanExec,
+        s"Native Delta scan disabled because ${CometConf.COMET_DELTA_NATIVE_ENABLED.key} " +
+          "is not enabled")
+      return None
+    }
+    if (!COMET_EXEC_ENABLED.get()) {
+      withInfo(scanExec, s"Native Delta scan requires ${COMET_EXEC_ENABLED.key} to be enabled")
+      return None
+    }
+    val hadoopConf = Option(hadoopConfOrNull).getOrElse(
+      r.sparkSession.sessionState.newHadoopConfWithOptions(r.options))
+    if (encryptionEnabled(hadoopConf) && !isEncryptionConfigSupported(hadoopConf)) {
+      withInfo(scanExec, s"Native Delta scan does not support encryption")
+      return None
+    }
+    if (!isSchemaSupported(scanExec, SCAN_NATIVE_DELTA_COMPAT, r)) {
+      return None
+    }
+
+    // Validate filesystem schemes from the scan's input files.
+    val supportedSchemes =
+      Set("file", "s3", "s3a", "gs", "gcs", "abfss", "abfs", "wasbs", "wasb", "oss")
+    val inputFiles = scanExec.relation.location.inputFiles
+    if (inputFiles.nonEmpty) {
+      val schemes = inputFiles
+        .map(f => new java.net.URI(f).getScheme)
+        .filter(_ != null)
+        .toSet
+      val unsupported = schemes -- supportedSchemes
+      if (unsupported.nonEmpty) {
+        withInfo(
+          scanExec,
+          s"Native Delta scan does not support filesystem schemes: " +
+            unsupported.mkString(", "))
+        return None
+      }
+    }
+
+    Some(CometScanExec(scanExec, session, SCAN_NATIVE_DELTA_COMPAT))
   }
 
   private def transformV2Scan(scanExec: BatchScanExec): SparkPlan = {

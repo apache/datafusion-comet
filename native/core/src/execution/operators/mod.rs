@@ -20,10 +20,12 @@
 pub use crate::errors::ExecutionError;
 
 pub use copy::*;
+pub use delta_dv_filter::DeltaDvFilterExec;
 pub use iceberg_scan::*;
 pub use scan::*;
 
 mod copy;
+mod delta_dv_filter;
 mod expand;
 pub use expand::ExpandExec;
 mod iceberg_scan;

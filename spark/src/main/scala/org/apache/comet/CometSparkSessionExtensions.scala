@@ -49,6 +49,46 @@ class CometSparkSessionExtensions
     extensions.injectColumnar { session => CometExecColumnar(session) }
     extensions.injectQueryStagePrepRule { session => CometScanRule(session) }
     extensions.injectQueryStagePrepRule { session => CometExecRule(session) }
+
+    // Phase 3 auto-config: tell Delta to use its older DV read strategy
+    // (Project + Filter with __delta_internal_is_row_deleted) instead of
+    // the default metadata-row-index strategy. The older strategy inserts
+    // a plan-level Filter that CometScanRule.stripDeltaDvWrappers can
+    // detect and remove, routing DVs through our DeltaDvFilterExec.
+    //
+    // The metadata-row-index strategy applies DVs opaquely inside
+    // DeletionVectorBoundFileFormat at read time, which Comet's native
+    // reader can't intercept. By setting this config in an optimizer rule,
+    // it takes effect BEFORE Delta's PreprocessTableWithDVsStrategy runs
+    // (optimizer -> strategies ordering in Catalyst).
+    extensions.injectOptimizerRule { session =>
+      new org.apache.spark.sql.catalyst.rules.Rule[
+        org.apache.spark.sql.catalyst.plans.logical.LogicalPlan] {
+        private val configLock = new Object()
+        @volatile private var configured = false
+        override def apply(plan: org.apache.spark.sql.catalyst.plans.logical.LogicalPlan)
+            : org.apache.spark.sql.catalyst.plans.logical.LogicalPlan = {
+          if (!configured) {
+            configLock.synchronized {
+              if (!configured) {
+                try {
+                  if (CometConf.COMET_DELTA_NATIVE_ENABLED.get(session.sessionState.conf)) {
+                    session.conf.set(
+                      "spark.databricks.delta.deletionVectors.useMetadataRowIndex",
+                      "false")
+                  }
+                } catch {
+                  case _: Throwable => // delta-spark not on classpath; ignore
+                }
+                configured = true
+              }
+            }
+          }
+          plan
+        }
+        override val ruleName: String = "CometDeltaDvConfigRule"
+      }
+    }
   }
 
   case class CometScanColumnar(session: SparkSession) extends ColumnarRule {

@@ -1347,6 +1347,181 @@ impl PhysicalPlanner {
                     )),
                 ))
             }
+            OpStruct::DeltaScan(scan) => {
+                // Delta scan implementation. Most of the work mirrors NativeScan —
+                // we feed files into `init_datasource_exec` so the actual parquet
+                // reads go through Comet's tuned ParquetSource. Phase 3 adds
+                // deletion-vector support: files with DVs attached each become
+                // their own FileGroup (= one partition per DV'd file), and a
+                // DeltaDvFilterExec wraps the child ExecutionPlan to drop the
+                // deleted rows batch-by-batch.
+                let common = scan
+                    .common
+                    .as_ref()
+                    .ok_or_else(|| GeneralError("DeltaScan proto missing 'common' field (Scala serialization error)".into()))?;
+
+                let required_schema: SchemaRef =
+                    convert_spark_types_to_arrow_schema(common.required_schema.as_slice());
+                let mut data_schema: SchemaRef =
+                    convert_spark_types_to_arrow_schema(common.data_schema.as_slice());
+                let partition_schema: SchemaRef =
+                    convert_spark_types_to_arrow_schema(common.partition_schema.as_slice());
+
+                // Phase 4: Column mapping. When the table uses column_mapping_mode=id
+                // or =name, the parquet files have PHYSICAL column names that differ
+                // from the LOGICAL names in data_schema. Substitute physical names into
+                // data_schema so ParquetSource projects by the names actually in the
+                // parquet file. We'll add a rename projection on top later.
+                let logical_to_physical: HashMap<String, String> = common
+                    .column_mappings
+                    .iter()
+                    .map(|cm| (cm.logical_name.clone(), cm.physical_name.clone()))
+                    .collect();
+                let has_column_mapping = !logical_to_physical.is_empty();
+                if has_column_mapping {
+                    let new_fields: Vec<_> = data_schema
+                        .fields()
+                        .iter()
+                        .map(|f| {
+                            if let Some(physical) = logical_to_physical.get(f.name()) {
+                                Arc::new(Field::new(
+                                    physical,
+                                    f.data_type().clone(),
+                                    f.is_nullable(),
+                                ))
+                            } else {
+                                Arc::clone(f)
+                            }
+                        })
+                        .collect();
+                    data_schema = Arc::new(Schema::new(new_fields));
+                }
+                let projection_vector: Vec<usize> = common
+                    .projection_vector
+                    .iter()
+                    .map(|offset| *offset as usize)
+                    .collect();
+
+                // Empty-partition fast path (same as NativeScan)
+                if scan.tasks.is_empty() {
+                    let empty_exec = Arc::new(EmptyExec::new(required_schema));
+                    return Ok((
+                        vec![],
+                        vec![],
+                        Arc::new(SparkPlan::new(spark_plan.plan_id, empty_exec, vec![])),
+                    ));
+                }
+
+                let data_filters: Result<Vec<Arc<dyn PhysicalExpr>>, ExecutionError> = common
+                    .data_filters
+                    .iter()
+                    .map(|expr| {
+                        let filter =
+                            self.create_expr(expr, Arc::clone(&required_schema))?;
+                        if has_column_mapping {
+                            let mut rewriter = ColumnMappingFilterRewriter {
+                                logical_to_physical: &logical_to_physical,
+                                data_schema: &data_schema,
+                            };
+                            Ok(filter.rewrite(&mut rewriter).data()?)
+                        } else {
+                            Ok(filter)
+                        }
+                    })
+                    .collect();
+
+                let object_store_options: HashMap<String, String> = common
+                    .object_store_options
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+
+                // Build PartitionedFiles from our DeltaScanTasks. Kernel has already
+                // resolved each file path to an absolute URL on the driver, so we
+                // can thread them straight through.
+                let files = build_delta_partitioned_files(
+                    &scan.tasks,
+                    partition_schema.as_ref(),
+                )?;
+
+                // Split files by DV presence. Each DV'd file becomes its own
+                // FileGroup so the DeltaDvFilterExec's per-partition mapping is
+                // 1:1 with one physical parquet file. All non-DV files go in a
+                // single combined group (fast path — matches the pre-Phase-3
+                // Phase 1 behavior for tables without DVs in use).
+                let mut file_groups: Vec<Vec<PartitionedFile>> = Vec::new();
+                let mut deleted_indexes_per_group: Vec<Vec<u64>> = Vec::new();
+                let mut non_dv_files: Vec<PartitionedFile> = Vec::new();
+                for (file, task) in files.into_iter().zip(scan.tasks.iter()) {
+                    if task.deleted_row_indexes.is_empty() {
+                        non_dv_files.push(file);
+                    } else {
+                        file_groups.push(vec![file]);
+                        deleted_indexes_per_group.push(task.deleted_row_indexes.clone());
+                    }
+                }
+                if !non_dv_files.is_empty() {
+                    file_groups.push(non_dv_files);
+                    deleted_indexes_per_group.push(Vec::new());
+                }
+
+                // Pick any one file to register the object store (they all share
+                // the same root)
+                let one_file = scan
+                    .tasks
+                    .first()
+                    .map(|t| t.file_path.clone())
+                    .ok_or_else(|| GeneralError("DeltaScan has no tasks after split-mode injection (check DeltaPlanDataInjector)".into()))?;
+                let (object_store_url, _) = prepare_object_store_with_configs(
+                    self.session_ctx.runtime_env(),
+                    one_file,
+                    &object_store_options,
+                )?;
+
+                // Keep required_schema in LOGICAL names (Spark's convention).
+                // data_schema uses physical names (when column mapping is active).
+                // DataFusion's schema adapter bridges the gap: it matches file
+                // columns against data_schema by name and produces the
+                // required_schema output shape, injecting nulls for missing
+                // columns (schema evolution).
+                let delta_exec = init_datasource_exec(
+                    Arc::clone(&required_schema),
+                    Some(data_schema),
+                    Some(partition_schema),
+                    object_store_url,
+                    file_groups,
+                    Some(projection_vector),
+                    Some(data_filters?),
+                    None, // default_values: Phase 4 (column mapping)
+                    common.session_timezone.as_str(),
+                    common.case_sensitive,
+                    self.session_ctx(),
+                    false, // encryption_enabled: Phase beyond 1
+                )?;
+
+                // Wrap in a DV filter whenever any partition has a DV. When none
+                // do, skip the wrapper entirely to avoid the per-batch pass-through
+                // cost for the common "no DVs in use" case.
+                let final_exec: Arc<dyn ExecutionPlan> =
+                    if deleted_indexes_per_group.iter().any(|v| !v.is_empty()) {
+                        Arc::new(crate::execution::operators::DeltaDvFilterExec::new(
+                            delta_exec,
+                            deleted_indexes_per_group,
+                        )?)
+                    } else {
+                        delta_exec
+                    };
+
+                // No rename projection needed: required_schema already uses
+                // logical names, and DataFusion's schema adapter handles the
+                // physical→logical mapping internally via data_schema.
+
+                Ok((
+                    vec![],
+                    vec![],
+                    Arc::new(SparkPlan::new(spark_plan.plan_id, final_exec, vec![])),
+                ))
+            }
             OpStruct::ShuffleWriter(writer) => {
                 assert_eq!(children.len(), 1);
                 let (scans, shuffle_scans, child) =
@@ -2794,6 +2969,45 @@ fn expr_to_columns(
     Ok((left_field_indices, right_field_indices))
 }
 
+/// Rewrites Column references in a PhysicalExpr from logical names/indices
+/// (as in required_schema) to physical names/indices (as in data_schema).
+/// Used by the Delta scan path when column mapping is active so that pushed-down
+/// data filters match the DataSourceExec's base schema (physical column names).
+struct ColumnMappingFilterRewriter<'a> {
+    logical_to_physical: &'a HashMap<String, String>,
+    data_schema: &'a SchemaRef,
+}
+
+impl TreeNodeRewriter for ColumnMappingFilterRewriter<'_> {
+    type Node = Arc<dyn PhysicalExpr>;
+
+    fn f_down(
+        &mut self,
+        node: Self::Node,
+    ) -> datafusion::common::Result<Transformed<Self::Node>> {
+        if let Some(column) = node.as_any().downcast_ref::<Column>() {
+            if let Some(physical_name) = self.logical_to_physical.get(column.name()) {
+                if let Some(idx) = self
+                    .data_schema
+                    .fields()
+                    .iter()
+                    .position(|f| f.name() == physical_name)
+                {
+                    return Ok(Transformed::yes(Arc::new(Column::new(physical_name, idx))));
+                }
+                log::warn!(
+                    "Column mapping: physical name '{}' for logical '{}' not found in data_schema; \
+                     filter may fail at execution time",
+                    physical_name, column.name()
+                );
+            }
+            Ok(Transformed::no(node))
+        } else {
+            Ok(Transformed::no(node))
+        }
+    }
+}
+
 /// A physical join filter rewritter which rewrites the column indices in the expression
 /// to use the new column indices. See `rewrite_physical_expr`.
 struct JoinFilterRewriter<'a> {
@@ -2911,6 +3125,68 @@ fn convert_spark_types_to_arrow_schema(
         .collect_vec();
     let arrow_schema: SchemaRef = Arc::new(Schema::new(arrow_fields));
     arrow_schema
+}
+
+/// Convert a list of `DeltaScanTask` protobuf messages into DataFusion
+/// `PartitionedFile`s ready for `init_datasource_exec`.
+///
+/// Delta stores partition values as strings inside add actions, so each
+/// task's `partition_values` list is parsed against `partition_schema`
+/// into typed `ScalarValue`s in the order declared by the schema. Missing
+/// or null values become `ScalarValue::Null` of the target type.
+fn build_delta_partitioned_files(
+    tasks: &[spark_operator::DeltaScanTask],
+    partition_schema: &Schema,
+) -> Result<Vec<PartitionedFile>, ExecutionError> {
+    let mut files = Vec::with_capacity(tasks.len());
+    for task in tasks {
+        // Delta's add.path is an absolute URL once kernel has resolved it
+        // on the driver. Parse it the same way NativeScan does.
+        let url = Url::parse(task.file_path.as_ref())
+            .map_err(|e| GeneralError(format!("Invalid Delta file URL: {e}")))?;
+        let path =
+            Path::from_url_path(url.path()).map_err(|e| GeneralError(e.to_string()))?;
+
+        let mut partitioned_file = PartitionedFile::new(
+            // placeholder — overwritten below by object_meta.location
+            String::new(),
+            task.file_size,
+        );
+        partitioned_file.object_meta.location = path;
+
+        let mut partition_values: Vec<ScalarValue> =
+            Vec::with_capacity(partition_schema.fields().len());
+        for field in partition_schema.fields() {
+            // Delta's add action carries partition values as an unordered
+            // string map, so match by name.
+            let proto_value = task
+                .partition_values
+                .iter()
+                .find(|p| p.name == *field.name());
+
+            let scalar = match proto_value.and_then(|p| p.value.clone()) {
+                Some(s) => {
+                    ScalarValue::try_from_string(s, field.data_type()).map_err(|e| {
+                        GeneralError(format!(
+                            "Failed to parse Delta partition value for column '{}': {e}",
+                            field.name()
+                        ))
+                    })?
+                }
+                None => ScalarValue::try_from(field.data_type()).map_err(|e| {
+                    GeneralError(format!(
+                        "Failed to build null partition value for column '{}': {e}",
+                        field.name()
+                    ))
+                })?,
+            };
+            partition_values.push(scalar);
+        }
+        partitioned_file.partition_values = partition_values;
+
+        files.push(partitioned_file);
+    }
+    Ok(files)
 }
 
 /// Converts a protobuf PartitionValue to an iceberg Literal.

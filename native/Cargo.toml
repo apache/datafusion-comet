@@ -60,6 +60,16 @@ aws-config = "1.8.14"
 aws-credential-types = "1.2.13"
 iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "477a1e5" }
 iceberg-storage-opendal = { git = "https://github.com/apache/iceberg-rust", rev = "477a1e5", features = ["opendal-all"] }
+# Delta Lake table log reader. delta_kernel 0.19 pins arrow-57 / object_store-0.12 internally;
+# these live in a separate dep subtree from Comet's arrow-58 / object_store-0.13 and never
+# exchange typed values — only plain Rust types cross the boundary (ScanFile, HashMap, etc.).
+delta_kernel = { version = "0.19", default-features = false, features = ["default-engine-rustls", "arrow"] }
+# Second object_store version required by delta_kernel 0.19 (kernel's engine uses 0.12 API).
+# Renamed so it doesn't collide with the workspace-wide `object_store = "0.13.1"` above.
+object_store_kernel = { package = "object_store", version = "0.12", features = ["aws", "azure"] }
+# Roaring bitmap decoder for Delta deletion vectors (inline + on-disk).
+# Arrow-independent, used to materialize a parquet-58 RowSelection for Comet's ParquetSource.
+roaring = "0.10"
 
 [profile.release]
 debug = true
