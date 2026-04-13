@@ -572,10 +572,10 @@ object CometArrayFilter extends CometExpressionSerde[ArrayFilter] {
 object CometArrayExists extends CometExpressionSerde[ArrayExists] {
 
   /** Check if a lambda body contains nested lambda expressions (e.g., nested exists calls). */
-  private def containsNestedLambda(expr: Expression, currentVar: NamedLambdaVariable): Boolean = {
+  private def containsNestedLambda(expr: Expression): Boolean = {
     expr match {
       case _: LambdaFunction => true
-      case _ => expr.children.exists(containsNestedLambda(_, currentVar))
+      case _ => expr.children.exists(containsNestedLambda)
     }
   }
 
@@ -604,9 +604,8 @@ object CometArrayExists extends CometExpressionSerde[ArrayExists] {
 
     expr.function match {
       case LambdaFunction(body, Seq(lambdaVar: NamedLambdaVariable), _) =>
-        // Detect nested lambdas or references to outer lambda variables
-        // that we cannot support yet
-        if (containsNestedLambda(body, lambdaVar)) {
+        // Detect nested lambdas that we cannot support yet
+        if (containsNestedLambda(body)) {
           withInfo(expr, "nested lambda expressions are not supported")
           return None
         }

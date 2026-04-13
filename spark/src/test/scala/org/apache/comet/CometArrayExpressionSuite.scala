@@ -1036,6 +1036,35 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
+  test("array_exists - DataFrame API with timestamp") {
+    val table = "t1"
+    withTable(table) {
+      sql(s"create table $table(arr array<timestamp>) using parquet")
+      sql(
+        s"insert into $table values (array(timestamp'2024-01-01 00:00:00', timestamp'2024-06-15 12:30:00'))")
+      sql(s"insert into $table values (array(timestamp'2023-01-01 00:00:00'))")
+
+      val df = spark.table(table)
+      checkSparkAnswerAndOperator(
+        df.select(exists(col("arr"), x => x > lit("2024-03-01 00:00:00").cast("timestamp"))))
+    }
+  }
+
+  test("array_exists - CaseWhen/If in lambda") {
+    val table = "t1"
+    withTable(table) {
+      sql(s"create table $table(arr array<int>) using parquet")
+      sql(s"insert into $table values (array(1, 2, 3))")
+      sql(s"insert into $table values (array(-1, 0, 1))")
+      sql(s"insert into $table values (null)")
+
+      val df = spark.table(table)
+      checkSparkAnswerAndOperator(
+        df.selectExpr("exists(arr, x -> CASE WHEN x > 0 THEN true ELSE false END)"))
+      checkSparkAnswerAndOperator(df.selectExpr("exists(arr, x -> IF(x > 0, true, false))"))
+    }
+  }
+
   test("array_exists - nested lambda falls back") {
     val table = "t1"
     withTable(table) {

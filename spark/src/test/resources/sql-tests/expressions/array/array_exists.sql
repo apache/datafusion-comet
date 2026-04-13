@@ -89,6 +89,18 @@ SELECT exists(array(1, NULL, 3), x -> x > 5)
 query
 SELECT exists(array(1, NULL, 3), x -> x > 2)
 
+-- null elements with IS NULL predicate (non-null result despite null elements)
+query
+SELECT exists(array(0, null, 2, 3, null), x -> x IS NULL)
+
+-- timestamp type
+query
+SELECT exists(array(timestamp'2024-01-01 00:00:00', timestamp'2024-06-15 12:30:00'), x -> x > timestamp'2024-03-01 00:00:00')
+
+-- timestamp_ntz type
+query
+SELECT exists(array(timestamp_ntz'2024-01-01 00:00:00', timestamp_ntz'2024-06-15 12:30:00'), x -> x > timestamp_ntz'2024-03-01 00:00:00')
+
 -- complex predicate
 query
 SELECT exists(arr_int, x -> x > 1 AND x < 3) FROM test_array_exists
