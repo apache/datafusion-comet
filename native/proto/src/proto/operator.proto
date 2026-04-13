@@ -294,6 +294,10 @@ message ShuffleWriter {
   // Size of the write buffer in bytes used when writing shuffle data to disk.
   // Larger values may improve write performance but use more memory.
   int32 write_buffer_size = 8;
+  // When true, uses sort-based repartitioning for native shuffle.
+  // This avoids per-partition memory overhead from builders, making it more
+  // memory-efficient for large partition counts.
+  bool sort_based = 9;
 }
 
 message ParquetWriter {

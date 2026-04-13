@@ -534,6 +534,16 @@ object CometConf extends ShimCometConf {
       .checkValue(v => v > 0, "Write buffer size must be positive")
       .createWithDefault(1)
 
+  val COMET_SHUFFLE_SORT_BASED: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.sort_based")
+      .category(CATEGORY_SHUFFLE)
+      .doc(
+        "When enabled, uses sort-based repartitioning for native shuffle. " +
+          "This avoids per-partition memory overhead from builders, making it more " +
+          "memory-efficient for large partition counts. Default is false (uses buffered mode).")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_SHUFFLE_PREFER_DICTIONARY_RATIO: ConfigEntry[Double] = conf(
     "spark.comet.shuffle.preferDictionary.ratio")
     .category(CATEGORY_SHUFFLE)
