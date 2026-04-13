@@ -24,7 +24,7 @@
 //! cargo run --release --bin shuffle_bench -- \
 //!   --input /data/tpch-sf100/lineitem/ \
 //!   --partitions 200 \
-//!   --codec zstd --zstd-level 1 \
+//!   --codec lz4 \
 //!   --hash-columns 0,3
 //! ```
 //!
@@ -32,7 +32,7 @@
 //! ```sh
 //! cargo flamegraph --release --bin shuffle_bench -- \
 //!   --input /data/tpch-sf100/lineitem/ \
-//!   --partitions 200 --codec zstd --zstd-level 1
+//!   --partitions 200 --codec lz4
 //! ```
 
 use arrow::datatypes::{DataType, SchemaRef};
