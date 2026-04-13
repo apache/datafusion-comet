@@ -647,7 +647,7 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_TUNING)
       .doc(
         "The type of memory pool to be used for Comet native execution when running Spark in " +
-          "off-heap mode. Available pool types are `greedy_unified`, `fair_unified`, " +
+          "off-heap mode. Available pool types are `fair_unified`, `greedy_unified`, " +
           "`fair_unified_task_shared`, and `greedy_unified_task_shared`. " +
           "During shuffle, Comet runs two native execution " +
           "contexts concurrently in the same Spark task: one for the pre-shuffle operators " +
