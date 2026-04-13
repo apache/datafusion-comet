@@ -15,15 +15,35 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
+
 statement
 CREATE TABLE test_array_compact(arr array<int>) USING parquet
 
 statement
 INSERT INTO test_array_compact VALUES (array(1, NULL, 2, NULL, 3)), (array()), (NULL), (array(NULL, NULL)), (array(1, 2, 3))
 
-query spark_answer_only
+-- column argument
+query
 SELECT array_compact(arr) FROM test_array_compact
 
 -- literal arguments
-query spark_answer_only
+query
 SELECT array_compact(array(1, NULL, 2, NULL, 3))
+
+-- string element type
+statement
+CREATE TABLE test_array_compact_str(arr array<string>) USING parquet
+
+statement
+INSERT INTO test_array_compact_str VALUES (array('a', NULL, 'b', NULL, 'c')), (array()), (NULL), (array(NULL, NULL)), (array('', NULL, '', NULL))
+
+query
+SELECT array_compact(arr) FROM test_array_compact_str
+
+-- double element type
+query
+SELECT array_compact(array(1.0, NULL, 2.0, NULL, 3.0))
+
+-- nested array type (removes null arrays from outer, preserves null elements in inner)
+query
+SELECT array_compact(array(array(1, NULL, 3), NULL, array(NULL, 2, 3)))

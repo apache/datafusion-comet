@@ -167,11 +167,7 @@ case class CometScanRule(session: SparkSession)
         }
 
         COMET_NATIVE_SCAN_IMPL.get() match {
-          case SCAN_AUTO =>
-            // TODO add support for native_datafusion in the future
-            nativeIcebergCompatScan(session, scanExec, r, hadoopConf)
-              .getOrElse(scanExec)
-          case SCAN_NATIVE_DATAFUSION =>
+          case SCAN_AUTO | SCAN_NATIVE_DATAFUSION =>
             nativeDataFusionScan(plan, session, scanExec, r, hadoopConf).getOrElse(scanExec)
           case SCAN_NATIVE_ICEBERG_COMPAT =>
             nativeIcebergCompatScan(session, scanExec, r, hadoopConf).getOrElse(scanExec)
@@ -188,6 +184,12 @@ case class CometScanRule(session: SparkSession)
       scanExec: FileSourceScanExec,
       r: HadoopFsRelation,
       hadoopConf: Configuration): Option[SparkPlan] = {
+    if (!COMET_EXEC_ENABLED.get()) {
+      withInfo(
+        scanExec,
+        s"$SCAN_NATIVE_DATAFUSION scan requires ${COMET_EXEC_ENABLED.key} to be enabled")
+      return None
+    }
     if (!CometNativeScan.isSupported(scanExec)) {
       return None
     }

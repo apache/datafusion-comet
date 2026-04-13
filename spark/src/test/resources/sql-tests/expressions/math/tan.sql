@@ -21,11 +21,11 @@ statement
 CREATE TABLE test_tan(d double) USING parquet
 
 statement
-INSERT INTO test_tan VALUES (0.0), (0.7853981633974483), (-0.7853981633974483), (1.0), (NULL), (cast('NaN' as double)), (cast('Infinity' as double))
+INSERT INTO test_tan VALUES (0.0), (-0.0), (0.7853981633974483), (-0.7853981633974483), (1.0), (NULL), (cast('NaN' as double)), (cast('Infinity' as double))
 
 query tolerance=1e-6
 SELECT tan(d) FROM test_tan
 
 -- literal arguments
 query tolerance=1e-6
-SELECT tan(0.0), tan(0.7853981633974483), tan(NULL)
+SELECT tan(0.0), tan(-0.0), tan(0.7853981633974483), tan(NULL)
