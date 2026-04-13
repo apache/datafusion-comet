@@ -647,18 +647,10 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_TUNING)
       .doc(
         "The type of memory pool to be used for Comet native execution when running Spark in " +
-          "off-heap mode. Available pool types are `fair_unified`, `greedy_unified`, " +
-          "`fair_unified_task_shared`, and `greedy_unified_task_shared`. " +
-          "During shuffle, Comet runs two native execution " +
-          "contexts concurrently in the same Spark task: one for the pre-shuffle operators " +
-          "(e.g. scan, filter, join) and one for the shuffle writer. With `fair_unified` or " +
-          "`greedy_unified`, each context gets its own pool, so both can allocate up to the " +
-          "per-task memory limit independently, potentially using 2x the intended memory. " +
-          "The `_task_shared` variants avoid this by sharing a single pool across " +
-          "all native execution contexts in the same task. " +
+          "off-heap mode. Available pool types are `greedy_unified` and `fair_unified`. " +
           s"$TUNING_GUIDE.")
       .stringConf
-      .createWithDefault("fair_unified_task_shared")
+      .createWithDefault("fair_unified")
 
   val COMET_ONHEAP_MEMORY_POOL_TYPE: ConfigEntry[String] = conf(
     "spark.comet.exec.onHeap.memoryPool")

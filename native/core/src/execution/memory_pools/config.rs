@@ -21,8 +21,6 @@ use crate::errors::{CometError, CometResult};
 pub(crate) enum MemoryPoolType {
     GreedyUnified,
     FairUnified,
-    FairUnifiedTaskShared,
-    GreedyUnifiedTaskShared,
     Greedy,
     FairSpill,
     GreedyTaskShared,
@@ -38,8 +36,8 @@ impl MemoryPoolType {
             self,
             MemoryPoolType::GreedyTaskShared
                 | MemoryPoolType::FairSpillTaskShared
-                | MemoryPoolType::FairUnifiedTaskShared
-                | MemoryPoolType::GreedyUnifiedTaskShared
+                | MemoryPoolType::FairUnified
+                | MemoryPoolType::GreedyUnified
         )
     }
 }
@@ -68,17 +66,11 @@ pub(crate) fn parse_memory_pool_config(
     let memory_pool_config = if off_heap_mode {
         match memory_pool_type.as_str() {
             "fair_unified" => MemoryPoolConfig::new(MemoryPoolType::FairUnified, pool_size),
-            "fair_unified_task_shared" => {
-                MemoryPoolConfig::new(MemoryPoolType::FairUnifiedTaskShared, pool_size)
-            }
             "greedy_unified" => {
                 // the `unified` memory pool interacts with Spark's memory pool to allocate
                 // memory therefore does not need a size to be explicitly set. The pool size
                 // shared with Spark is set by `spark.memory.offHeap.size`.
                 MemoryPoolConfig::new(MemoryPoolType::GreedyUnified, 0)
-            }
-            "greedy_unified_task_shared" => {
-                MemoryPoolConfig::new(MemoryPoolType::GreedyUnifiedTaskShared, 0)
             }
             _ => {
                 return Err(CometError::Config(format!(

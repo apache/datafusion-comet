@@ -56,39 +56,23 @@ For more details about Spark off-heap memory mode, please refer to [Spark docume
 
 Comet implements multiple memory pool implementations. The type of pool can be specified with `spark.comet.exec.memoryPool`.
 
-When Comet executes a shuffle, it runs two native execution contexts concurrently within the same
-Spark task. For example, consider a stage that scans, filters, and repartitions data: one execution
-context runs the scan and filter operators, while a second execution context runs the shuffle writer.
-These two contexts execute in a pipelined fashion — the first produces batches that the second
-consumes and repartitions. Because both contexts hold memory reservations at the same time, the
-choice of memory pool type affects how much memory a single task can consume.
-
 The valid pool types are:
 
-- `fair_unified_task_shared` (default when `spark.memory.offHeap.enabled=true` is set)
-- `fair_unified`
-- `greedy_unified_task_shared`
+- `fair_unified` (default when `spark.memory.offHeap.enabled=true` is set)
 - `greedy_unified`
+
+Both pool types are shared across all native execution contexts within the same Spark task. When
+Comet executes a shuffle, it runs two native execution contexts concurrently (e.g. one for
+pre-shuffle operators and one for the shuffle writer). The shared pool ensures that the combined
+memory usage stays within the per-task limit.
 
 The `fair_unified` pool prevents operators from using more than an even fraction of the available memory
 (i.e. `pool_size / num_reservations`). This pool works best when you know beforehand
 the query has multiple operators that will likely all need to spill. Sometimes it will cause spills even
-when there is sufficient memory in order to leave enough memory for other operators. Note that when using this pool
-type, each execution context gets its own pool, so the total memory consumption can exceed the per-task limit when
-two contexts are running concurrently (e.g. during shuffle).
-
-The `fair_unified_task_shared` pool is the same as `fair_unified` but is shared across all execution contexts
-within the same Spark task. Because the pre-shuffle operators and the shuffle writer each get their own pool
-with `fair_unified`, both can independently allocate up to the full per-task memory limit, effectively allowing
-2x the intended memory to be consumed. The `fair_unified_task_shared` pool avoids this by sharing a single pool
-instance, ensuring that the combined memory usage stays within the per-task limit.
+when there is sufficient memory in order to leave enough memory for other operators.
 
 The `greedy_unified` pool type implements a greedy first-come first-serve limit. This pool works well for queries that do not
-need to spill or have a single spillable operator. Like `fair_unified`, each execution context gets its own pool,
-so memory consumption can exceed the per-task limit during shuffle.
-
-The `greedy_unified_task_shared` pool is the same as `greedy_unified` but is shared across all execution contexts
-within the same Spark task, ensuring the combined memory usage stays within the per-task limit.
+need to spill or have a single spillable operator.
 
 [shuffle]: #shuffle
 [Advanced Memory Tuning]: #advanced-memory-tuning
