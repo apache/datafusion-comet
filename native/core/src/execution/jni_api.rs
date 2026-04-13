@@ -26,6 +26,8 @@ use crate::{
     },
     jvm_bridge::JVMClasses,
 };
+use std::collections::HashSet;
+
 use arrow::array::{Array, RecordBatch, UInt32Array};
 use arrow::compute::{take, TakeOptions};
 use arrow::datatypes::DataType as ArrowDataType;
@@ -141,7 +143,7 @@ fn unregister_and_total(thread_id: u64, context_id: i64) -> usize {
             map.remove(&thread_id);
             return 0;
         }
-        let mut seen = std::collections::HashSet::new();
+        let mut seen = HashSet::new();
         return pools
             .values()
             .filter_map(|p| {
@@ -159,7 +161,7 @@ fn total_reserved_for_thread(thread_id: u64) -> usize {
         .map(|pools| {
             // Deduplicate pools that share the same underlying allocation
             // (e.g. task-shared pools registered by multiple execution contexts)
-            let mut seen = std::collections::HashSet::new();
+            let mut seen = HashSet::new();
             pools
                 .values()
                 .filter_map(|p| {
