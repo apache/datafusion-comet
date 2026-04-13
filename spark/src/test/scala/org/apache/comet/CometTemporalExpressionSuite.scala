@@ -23,7 +23,8 @@ import scala.util.Random
 
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row, SaveMode}
 import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
-import org.apache.spark.sql.catalyst.expressions.{Days, Literal}
+import org.apache.spark.sql.catalyst.expressions.{Days, Hours, Literal}
+import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
@@ -488,6 +489,60 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
         dummyDF.select(getColumnFromExpression(Days(Literal.create(null, DataTypes.DateType)))),
         dummyDF.selectExpr("unix_date(cast(NULL as date))"))
     }
+  }
+
+  /**
+   * Checks that the Comet-evaluated DataFrame produces the same results as the baseline DataFrame
+   * evaluated by native Spark JVM, and that Comet native operators are used. This is needed
+   * because Hours is a PartitionTransformExpression that extends Unevaluable.
+   */
+  private def checkHours(cometDF: DataFrame, baselineDF: DataFrame): Unit = {
+    // Ensure the expected answer is evaluated solely by native Spark JVM (Comet off)
+    var expected: Array[Row] = Array.empty
+    withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+      expected = baselineDF.collect()
+    }
+    checkAnswer(cometDF, expected.toSeq)
+    checkCometOperators(stripAQEPlan(cometDF.queryExecution.executedPlan))
+  }
+
+  test("hours - timestamp input") {
+    val r = new Random(42)
+    val tsSchema = StructType(Seq(StructField("ts", DataTypes.TimestampType, true)))
+    val tsDF = FuzzDataGenerator.generateDataFrame(r, spark, tsSchema, 1000, DataGenOptions())
+
+    for (timezone <- Seq("UTC", "America/Los_Angeles", "Asia/Tokyo")) {
+      withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> timezone) {
+        checkHours(
+          tsDF.select(col("ts"), getColumnFromExpression(Hours(UnresolvedAttribute("ts")))),
+          tsDF.selectExpr("ts", "cast(floor(unix_micros(ts) / 3600000000D) as int)"))
+      }
+    }
+  }
+
+  test("hours - timestamp_ntz input") {
+    val r = new Random(42)
+    val ntzSchema = StructType(Seq(StructField("ts", DataTypes.TimestampNTZType, true)))
+    val ntzDF = FuzzDataGenerator.generateDataFrame(r, spark, ntzSchema, 1000, DataGenOptions())
+
+    // Spark 3.4: unix_micros() does not accept TIMESTAMP_NTZ; baseline matches micros / hour.
+    val _spark = spark
+    import _spark.implicits._
+    val expectedDF = ntzDF
+      .map { row =>
+        val ts = row.getAs[java.time.LocalDateTime]("ts")
+        val hoursCol: java.lang.Integer =
+          if (ts == null) null
+          else
+            Integer.valueOf(
+              Math.floorDiv(DateTimeUtils.localDateTimeToMicros(ts), 3600000000L).toInt)
+        (ts, hoursCol)
+      }
+      .toDF("ts", "hours")
+
+    checkHours(
+      ntzDF.select(col("ts"), getColumnFromExpression(Hours(UnresolvedAttribute("ts")))),
+      expectedDF)
   }
 
   test("cast TimestampNTZ to Timestamp - DST edge cases") {

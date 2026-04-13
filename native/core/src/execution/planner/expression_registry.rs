@@ -111,6 +111,7 @@ pub enum ExpressionType {
     Second,
     TruncTimestamp,
     UnixTimestamp,
+    HoursTransform,
 }
 
 /// Registry for expression builders
@@ -311,6 +312,10 @@ impl ExpressionRegistry {
             ExpressionType::TruncTimestamp,
             Box::new(TruncTimestampBuilder),
         );
+        self.builders.insert(
+            ExpressionType::HoursTransform,
+            Box::new(HoursTransformBuilder),
+        );
     }
 
     /// Extract expression type from Spark protobuf expression
@@ -384,6 +389,7 @@ impl ExpressionRegistry {
             Some(ExprStruct::Second(_)) => Ok(ExpressionType::Second),
             Some(ExprStruct::TruncTimestamp(_)) => Ok(ExpressionType::TruncTimestamp),
             Some(ExprStruct::UnixTimestamp(_)) => Ok(ExpressionType::UnixTimestamp),
+            Some(ExprStruct::HoursTransform(_)) => Ok(ExpressionType::HoursTransform),
 
             Some(other) => Err(ExecutionError::GeneralError(format!(
                 "Unsupported expression type: {:?}",
