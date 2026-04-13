@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import scala.annotation.tailrec
 
-import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayFilter, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayRemove, ArrayRepeat, ArraysOverlap, ArrayUnion, Attribute, CreateArray, ElementAt, Expression, Flatten, GetArrayItem, IsNotNull, Literal, Reverse, Size}
+import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayExists, ArrayFilter, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayRemove, ArrayRepeat, ArraysOverlap, ArrayUnion, Attribute, CreateArray, ElementAt, Expression, Flatten, GetArrayItem, IsNotNull, LambdaFunction, Literal, NamedLambdaVariable, Reverse, Size}
 import org.apache.spark.sql.catalyst.util.GenericArrayData
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
@@ -566,6 +566,97 @@ object CometArrayFilter extends CometExpressionSerde[ArrayFilter] {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     CometArrayCompact.convert(expr, inputs, binding)
+  }
+}
+
+object CometArrayExists extends CometExpressionSerde[ArrayExists] {
+
+  /** Check if a lambda body contains nested lambda expressions (e.g., nested exists calls). */
+  private def containsNestedLambda(expr: Expression): Boolean = {
+    expr match {
+      case _: LambdaFunction => true
+      case _ => expr.children.exists(containsNestedLambda)
+    }
+  }
+
+  override def getSupportLevel(expr: ArrayExists): SupportLevel = {
+    if (!expr.followThreeValuedLogic) {
+      return Unsupported(Some("legacy non-three-valued logic mode is not supported"))
+    }
+    val elementType = expr.argument.dataType.asInstanceOf[ArrayType].elementType
+    elementType match {
+      case BooleanType | ByteType | ShortType | IntegerType | LongType | FloatType | DoubleType |
+          _: DecimalType | DateType | TimestampType | TimestampNTZType | StringType =>
+        Compatible()
+      case _ => Unsupported(Some(s"element type not supported: $elementType"))
+    }
+  }
+
+  override def convert(
+      expr: ArrayExists,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val arrayExprProto = exprToProto(expr.argument, inputs, binding)
+    if (arrayExprProto.isEmpty) {
+      withInfo(expr, expr.argument)
+      return None
+    }
+
+    expr.function match {
+      case LambdaFunction(body, Seq(lambdaVar: NamedLambdaVariable), _) =>
+        // Detect nested lambdas that we cannot support yet
+        if (containsNestedLambda(body)) {
+          withInfo(expr, "nested lambda expressions are not supported")
+          return None
+        }
+
+        val bodyProto = exprToProto(body, inputs, binding)
+        if (bodyProto.isEmpty) {
+          withInfo(expr, body)
+          return None
+        }
+
+        val arrayExistsBuilder = ExprOuterClass.ArrayExists
+          .newBuilder()
+          .setArray(arrayExprProto.get)
+          .setLambdaBody(bodyProto.get)
+          .setFollowThreeValuedLogic(expr.followThreeValuedLogic)
+
+        Some(
+          ExprOuterClass.Expr
+            .newBuilder()
+            .setArrayExists(arrayExistsBuilder)
+            .build())
+
+      case other =>
+        withInfo(expr, s"Unsupported lambda function form: $other")
+        None
+    }
+  }
+
+}
+
+object CometNamedLambdaVariable extends CometExpressionSerde[NamedLambdaVariable] {
+
+  override def convert(
+      expr: NamedLambdaVariable,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val dataTypeProto = serializeDataType(expr.dataType)
+    if (dataTypeProto.isEmpty) {
+      withInfo(expr, s"Cannot serialize data type: ${expr.dataType}")
+      return None
+    }
+
+    val lambdaVarBuilder = ExprOuterClass.LambdaVariable
+      .newBuilder()
+      .setDatatype(dataTypeProto.get)
+
+    Some(
+      ExprOuterClass.Expr
+        .newBuilder()
+        .setLambdaVariable(lambdaVarBuilder)
+        .build())
   }
 }
 

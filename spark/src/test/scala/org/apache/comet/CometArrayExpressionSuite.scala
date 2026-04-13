@@ -930,6 +930,158 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
+  test("array_exists - DataFrame API") {
+    val table = "t1"
+    withTable(table) {
+      sql(s"create table $table(arr array<int>, threshold int) using parquet")
+      sql(s"insert into $table values (array(1, 2, 3), 2)")
+      sql(s"insert into $table values (array(1, 2), 5)")
+      sql(s"insert into $table values (array(), 0)")
+      sql(s"insert into $table values (null, 1)")
+      sql(s"insert into $table values (array(1, null, 3), 2)")
+
+      val df = spark.table(table)
+
+      checkSparkAnswerAndOperator(df.select(exists(col("arr"), x => x > 2)))
+      checkSparkAnswerAndOperator(df.select(exists(col("arr"), x => x > col("threshold"))))
+      checkSparkAnswerAndOperator(
+        df.select(
+          exists(col("arr"), x => x > 0).as("any_positive"),
+          exists(col("arr"), x => x > 100).as("any_large")))
+    }
+  }
+
+  test("array_exists - DataFrame API with decimal") {
+    val table = "t1"
+    withTable(table) {
+      sql(s"create table $table(arr array<decimal(10,2)>) using parquet")
+      sql(s"insert into $table values (array(1.50, 2.75, 3.25))")
+      sql(s"insert into $table values (array(0.10, 0.20))")
+
+      val df = spark.table(table)
+      checkSparkAnswerAndOperator(df.select(exists(col("arr"), x => x > 2.0)))
+    }
+  }
+
+  test("array_exists - DataFrame API with date") {
+    val table = "t1"
+    withTable(table) {
+      sql(s"create table $table(arr array<date>) using parquet")
+      sql(s"insert into $table values (array(date'2024-01-01', date'2024-06-15'))")
+      sql(s"insert into $table values (array(date'2023-01-01'))")
+
+      val df = spark.table(table)
+      checkSparkAnswerAndOperator(
+        df.select(exists(col("arr"), x => x > lit("2024-03-01").cast("date"))))
+    }
+  }
+
+  test("array_exists - fallback for unsupported element type") {
+    val table = "t1"
+    withTable(table) {
+      sql(s"create table $table(arr array<binary>) using parquet")
+      sql(s"insert into $table values (array(X'01', X'02'))")
+
+      val df = spark.table(table)
+      checkSparkAnswerAndFallbackReason(
+        df.select(exists(col("arr"), x => x.isNotNull)),
+        "element type not supported")
+    }
+  }
+
+  test("array_exists - fallback with UDF in lambda") {
+    val table = "t1"
+    withTable(table) {
+      sql(s"create table $table(arr array<int>) using parquet")
+      sql(s"insert into $table values (array(1, 2, 3))")
+      sql(s"insert into $table values (array(4, 5, 6))")
+      sql(s"insert into $table values (null)")
+
+      val isEven = udf((x: Int) => x % 2 == 0)
+
+      val df = spark.table(table)
+      checkSparkAnswerAndFallbackReason(
+        df.select(exists(col("arr"), x => isEven(x))),
+        "scalaudf is not supported")
+    }
+  }
+
+  test("array_exists - literal false and literal null lambdas") {
+    val table = "t1"
+    withTable(table) {
+      sql(s"create table $table(arr array<int>) using parquet")
+      sql(s"insert into $table values (array(1, 2, 3))")
+      sql(s"insert into $table values (array())")
+      sql(s"insert into $table values (null)")
+
+      val df = spark.table(table)
+      checkSparkAnswerAndOperator(df.select(exists(col("arr"), _ => lit(false))))
+      checkSparkAnswerAndOperator(df.select(exists(col("arr"), _ => lit(true))))
+      checkSparkAnswerAndOperator(df.select(exists(col("arr"), _ => lit(null).cast("boolean"))))
+    }
+  }
+
+  test("array_exists - fallback for legacy non-three-valued logic") {
+    val table = "t1"
+    withTable(table) {
+      sql(s"create table $table(arr array<int>) using parquet")
+      sql(s"insert into $table values (array(1, null, 3))")
+
+      withSQLConf(SQLConf.LEGACY_ARRAY_EXISTS_FOLLOWS_THREE_VALUED_LOGIC.key -> "false") {
+        val df = spark.table(table)
+        checkSparkAnswerAndFallbackReason(
+          df.select(exists(col("arr"), x => x > 2)),
+          "legacy non-three-valued logic mode is not supported")
+      }
+    }
+  }
+
+  test("array_exists - DataFrame API with timestamp") {
+    val table = "t1"
+    withTable(table) {
+      sql(s"create table $table(arr array<timestamp>) using parquet")
+      sql(
+        s"insert into $table values (array(timestamp'2024-01-01 00:00:00', timestamp'2024-06-15 12:30:00'))")
+      sql(s"insert into $table values (array(timestamp'2023-01-01 00:00:00'))")
+
+      val df = spark.table(table)
+      checkSparkAnswerAndOperator(
+        df.select(exists(col("arr"), x => x > lit("2024-03-01 00:00:00").cast("timestamp"))))
+    }
+  }
+
+  test("array_exists - CaseWhen/If in lambda") {
+    val table = "t1"
+    withTable(table) {
+      sql(s"create table $table(arr array<int>) using parquet")
+      sql(s"insert into $table values (array(1, 2, 3))")
+      sql(s"insert into $table values (array(-1, 0, 1))")
+      sql(s"insert into $table values (null)")
+
+      val df = spark.table(table)
+      checkSparkAnswerAndOperator(
+        df.selectExpr("exists(arr, x -> CASE WHEN x > 0 THEN true ELSE false END)"))
+      checkSparkAnswerAndOperator(df.selectExpr("exists(arr, x -> IF(x > 0, true, false))"))
+    }
+  }
+
+  test("array_exists - nested lambda falls back") {
+    val table = "t1"
+    withTable(table) {
+      sql(s"create table $table(arr1 array<int>, arr2 array<int>) using parquet")
+      sql(s"insert into $table values (array(1, 2, 3), array(4, 5, 6))")
+      sql(s"insert into $table values (array(10, 20), array(1, 2))")
+      sql(s"insert into $table values (array(1), array(1))")
+
+      val df = spark.table(table)
+      // nested lambda: exists(arr1, x -> exists(arr2, y -> y > x))
+      // nested lambdas are not yet supported, should fall back to Spark
+      checkSparkAnswerAndFallbackReason(
+        df.select(exists(col("arr1"), x => exists(col("arr2"), y => y > x))),
+        "nested lambda expressions are not supported")
+    }
+  }
+
   // https://github.com/apache/datafusion-comet/issues/3375
   test("(ansi) array access out of bounds - GetArrayItem") {
     withSQLConf(
