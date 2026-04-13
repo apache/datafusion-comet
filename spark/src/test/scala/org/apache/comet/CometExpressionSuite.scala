@@ -28,7 +28,7 @@ import org.scalatest.Tag
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
-import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, FromUnixTime, Literal, StructsToJson, Tan, TruncDate, TruncTimestamp}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, FromUnixTime, Literal, StructsToJson, TruncDate, TruncTimestamp}
 import org.apache.spark.sql.catalyst.optimizer.SimplifyExtractValueOps
 import org.apache.spark.sql.comet.CometProjectExec
 import org.apache.spark.sql.execution.{ProjectExec, SparkPlan}
@@ -57,6 +57,13 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     """[ARITHMETIC_OVERFLOW] integer overflow. If necessary set "spark.sql.ansi.enabled" to "false" to bypass this error"""
   val DIVIDE_BY_ZERO_EXCEPTION_MSG =
     """Division by zero. Use `try_divide` to tolerate divisor being 0 and return NULL instead"""
+
+  // Temporary test to verify checkSparkAnswer failure output labels Comet/Spark correctly.
+  ignore("check output labels on mismatch") {
+    val cometDf = Seq((1, "apple"), (2, "banana"), (3, "cherry")).toDF("id", "fruit")
+    val sparkAnswer = Seq(Row(1, "apple"), Row(2, "BANANA"), Row(3, "cherry"))
+    checkCometAnswer(cometDf, sparkAnswer)
+  }
 
   test("sort floating point with negative zero") {
     val schema = StructType(
@@ -1362,8 +1369,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   private val doubleValues: Seq[Double] = Seq(
     -1.0,
-    // TODO we should eventually enable negative zero but there are known issues still
-    // -0.0,
+    -0.0,
     0.0,
     +1.0,
     Double.MinValue,
@@ -1374,42 +1380,41 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     Double.NegativeInfinity)
 
   test("various math scalar functions") {
-    val data = doubleValues.map(n => (n, n))
-    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[Tan]) -> "true") {
-      withParquetTable(data, "tbl") {
-        // expressions with single arg
-        for (expr <- Seq(
-            "acos",
-            "asin",
-            "atan",
-            "cos",
-            "cosh",
-            "exp",
-            "ln",
-            "log10",
-            "log2",
-            "sin",
-            "sinh",
-            "sqrt",
-            "tan",
-            "tanh",
-            "cot")) {
-          val (_, cometPlan) =
-            checkSparkAnswerAndOperatorWithTol(sql(s"SELECT $expr(_1), $expr(_2) FROM tbl"))
-          val cometProjectExecs = collect(cometPlan) { case op: CometProjectExec =>
-            op
-          }
-          assert(cometProjectExecs.length == 1, expr)
+    withParquetTable(doubleValues.map(n => (n, n)), "tbl") {
+      // expressions with single arg
+      for (expr <- Seq(
+          "acos",
+          "asin",
+          "atan",
+          "cos",
+          "cosh",
+          "exp",
+          "ln",
+          "log10",
+          "log2",
+          "sin",
+          "sinh",
+          "sqrt",
+          "tan",
+          "tanh",
+          "cot")) {
+        val (_, cometPlan) =
+          checkSparkAnswerAndOperatorWithTol(sql(s"SELECT $expr(_1), $expr(_2) FROM tbl"))
+        val cometProjectExecs = collect(cometPlan) { case op: CometProjectExec =>
+          op
         }
-        // expressions with two args
-        for (expr <- Seq("atan2", "pow")) {
-          val (_, cometPlan) =
-            checkSparkAnswerAndOperatorWithTol(sql(s"SELECT $expr(_1, _2) FROM tbl"))
-          val cometProjectExecs = collect(cometPlan) { case op: CometProjectExec =>
-            op
-          }
-          assert(cometProjectExecs.length == 1, expr)
+        assert(cometProjectExecs.length == 1, expr)
+      }
+    }
+    withParquetTable(doubleValues.flatMap(m => doubleValues.map(n => (m, n))), "tbl") {
+      // expressions with two args
+      for (expr <- Seq("atan2", "pow")) {
+        val (_, cometPlan) =
+          checkSparkAnswerAndOperatorWithTol(sql(s"SELECT $expr(_1, _2) FROM tbl"))
+        val cometProjectExecs = collect(cometPlan) { case op: CometProjectExec =>
+          op
         }
+        assert(cometProjectExecs.length == 1, expr)
       }
     }
   }

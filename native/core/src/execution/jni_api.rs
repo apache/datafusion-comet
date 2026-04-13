@@ -26,6 +26,8 @@ use crate::{
     },
     jvm_bridge::JVMClasses,
 };
+use std::collections::HashSet;
+
 use arrow::array::{Array, RecordBatch, UInt32Array};
 use arrow::compute::{take, TakeOptions};
 use arrow::datatypes::DataType as ArrowDataType;
@@ -73,6 +75,7 @@ use jni::{
     sys::{jboolean, jdouble, jint, jlong},
     Env, EnvUnowned,
 };
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -87,7 +90,9 @@ use crate::execution::operators::{ScanExec, ShuffleScanExec};
 use crate::execution::shuffle::{read_ipc_compressed, CompressionCodec};
 use crate::execution::spark_plan::SparkPlan;
 
-use crate::execution::tracing::{log_memory_usage, trace_begin, trace_end, with_trace};
+use crate::execution::tracing::{
+    get_thread_id, log_memory_usage, trace_begin, trace_end, with_trace,
+};
 
 use crate::execution::memory_pools::logging_pool::LoggingMemoryPool;
 use crate::execution::spark_config::{
@@ -102,6 +107,71 @@ use std::sync::OnceLock;
 use tikv_jemalloc_ctl::{epoch, stats};
 
 static TOKIO_RUNTIME: OnceLock<Runtime> = OnceLock::new();
+
+#[cfg(feature = "jemalloc")]
+fn log_jemalloc_usage() {
+    let e = epoch::mib().unwrap();
+    let allocated = stats::allocated::mib().unwrap();
+    e.advance().unwrap();
+    log_memory_usage("jemalloc_allocated", allocated.read().unwrap() as u64);
+}
+
+/// Registry of active memory pools per Rust thread ID.
+/// Used to sum memory reservations across all contexts on the same thread for tracing.
+type ThreadPoolMap = HashMap<u64, HashMap<i64, Arc<dyn MemoryPool>>>;
+
+static THREAD_MEMORY_POOLS: OnceLock<Mutex<ThreadPoolMap>> = OnceLock::new();
+
+fn get_thread_memory_pools() -> &'static Mutex<ThreadPoolMap> {
+    THREAD_MEMORY_POOLS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn register_memory_pool(thread_id: u64, context_id: i64, pool: Arc<dyn MemoryPool>) {
+    get_thread_memory_pools()
+        .lock()
+        .entry(thread_id)
+        .or_default()
+        .insert(context_id, pool);
+}
+
+/// Unregister a context's pool and return the remaining total reserved for the thread.
+fn unregister_and_total(thread_id: u64, context_id: i64) -> usize {
+    let mut map = get_thread_memory_pools().lock();
+    if let Some(pools) = map.get_mut(&thread_id) {
+        pools.remove(&context_id);
+        if pools.is_empty() {
+            map.remove(&thread_id);
+            return 0;
+        }
+        let mut seen = HashSet::new();
+        return pools
+            .values()
+            .filter_map(|p| {
+                let ptr = Arc::as_ptr(p) as *const ();
+                seen.insert(ptr).then(|| p.reserved())
+            })
+            .sum::<usize>();
+    }
+    0
+}
+
+fn total_reserved_for_thread(thread_id: u64) -> usize {
+    let map = get_thread_memory_pools().lock();
+    map.get(&thread_id)
+        .map(|pools| {
+            // Deduplicate pools that share the same underlying allocation
+            // (e.g. task-shared pools registered by multiple execution contexts)
+            let mut seen = HashSet::new();
+            pools
+                .values()
+                .filter_map(|p| {
+                    let ptr = Arc::as_ptr(p) as *const ();
+                    seen.insert(ptr).then(|| p.reserved())
+                })
+                .sum::<usize>()
+        })
+        .unwrap_or(0)
+}
 
 fn parse_usize_env_var(name: &str) -> Option<usize> {
     std::env::var_os(name).and_then(|n| n.to_str().and_then(|s| s.parse::<usize>().ok()))
@@ -136,6 +206,52 @@ pub fn init_runtime(default_worker_threads: usize) {
 /// Function to get a handle to the global Tokio runtime
 pub fn get_runtime() -> &'static Runtime {
     TOKIO_RUNTIME.get_or_init(|| build_runtime(None))
+}
+
+/// Returns a short name for an OpStruct variant.
+fn op_name(op: &OpStruct) -> &'static str {
+    match op {
+        OpStruct::Scan(_) => "Scan",
+        OpStruct::Projection(_) => "Projection",
+        OpStruct::Filter(_) => "Filter",
+        OpStruct::Sort(_) => "Sort",
+        OpStruct::HashAgg(_) => "HashAgg",
+        OpStruct::Limit(_) => "Limit",
+        OpStruct::ShuffleWriter(_) => "ShuffleWriter",
+        OpStruct::Expand(_) => "Expand",
+        OpStruct::SortMergeJoin(_) => "SortMergeJoin",
+        OpStruct::HashJoin(_) => "HashJoin",
+        OpStruct::Window(_) => "Window",
+        OpStruct::NativeScan(_) => "NativeScan",
+        OpStruct::IcebergScan(_) => "IcebergScan",
+        OpStruct::ParquetWriter(_) => "ParquetWriter",
+        OpStruct::Explode(_) => "Explode",
+        OpStruct::CsvScan(_) => "CsvScan",
+        OpStruct::ShuffleScan(_) => "ShuffleScan",
+    }
+}
+
+/// Collect distinct operator names from a plan tree and build a tracing event name.
+fn build_tracing_event_name(plan: &Operator) -> String {
+    let mut names = std::collections::BTreeSet::new();
+    collect_op_names(plan, &mut names);
+    if names.is_empty() {
+        "executePlan".to_string()
+    } else {
+        format!(
+            "executePlan({})",
+            names.into_iter().collect::<Vec<_>>().join(",")
+        )
+    }
+}
+
+fn collect_op_names<'a>(op: &'a Operator, names: &mut std::collections::BTreeSet<&'a str>) {
+    if let Some(ref op_struct) = op.op_struct {
+        names.insert(op_name(op_struct));
+    }
+    for child in &op.children {
+        collect_op_names(child, names);
+    }
 }
 
 /// Comet native execution context. Kept alive across JNI calls.
@@ -180,6 +296,12 @@ struct ExecutionContext {
     pub memory_pool_config: MemoryPoolConfig,
     /// Whether to log memory usage on each call to execute_plan
     pub tracing_enabled: bool,
+    /// Rust thread ID, used for aggregating tracing metrics per thread
+    pub rust_thread_id: u64,
+    /// Pre-computed metric name for tracing memory usage
+    pub tracing_memory_metric_name: String,
+    /// Pre-computed tracing event name for executePlan calls
+    pub tracing_event_name: String,
 }
 
 /// Accept serialized query plan and return the address of the native query plan.
@@ -308,6 +430,25 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 );
             }
 
+            let session = Arc::new(session);
+
+            // Register this context's memory pool so we can sum all pools
+            // on the same thread when emitting tracing metrics.
+            let rust_thread_id = get_thread_id();
+            if tracing_enabled {
+                register_memory_pool(
+                    rust_thread_id,
+                    id,
+                    Arc::clone(&session.runtime_env().memory_pool),
+                );
+            }
+
+            let tracing_event_name = if tracing_enabled {
+                build_tracing_event_name(&spark_plan)
+            } else {
+                String::new()
+            };
+
             let exec_context = Box::new(ExecutionContext {
                 id,
                 task_attempt_id,
@@ -324,11 +465,16 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 metrics_last_update_time: Instant::now(),
                 poll_count_since_metrics_check: 0,
                 plan_creation_time,
-                session_ctx: Arc::new(session),
+                session_ctx: session,
                 debug_native,
                 explain_native,
                 memory_pool_config,
                 tracing_enabled,
+                rust_thread_id,
+                tracing_memory_metric_name: format!(
+                    "thread_{rust_thread_id}_comet_memory_reserved"
+                ),
+                tracing_event_name,
             });
 
             Ok(Box::into_raw(exec_context) as i64)
@@ -527,23 +673,18 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
         // Retrieve the query
         let exec_context = get_execution_context(exec_context);
 
-        let tracing_event_name = match &exec_context.spark_plan.op_struct {
-            Some(OpStruct::ShuffleWriter(_)) => "executePlan(ShuffleWriter)",
-            _ => "executePlan",
+        let tracing_enabled = exec_context.tracing_enabled;
+        // Clone the label only when tracing is enabled. The clone is needed
+        // because the closure below mutably borrows exec_context.
+        let owned_label;
+        let tracing_label = if tracing_enabled {
+            owned_label = exec_context.tracing_event_name.clone();
+            owned_label.as_str()
+        } else {
+            ""
         };
 
-        if exec_context.tracing_enabled {
-            #[cfg(feature = "jemalloc")]
-            {
-                let e = epoch::mib().unwrap();
-                let allocated = stats::allocated::mib().unwrap();
-                e.advance().unwrap();
-                use crate::execution::tracing::log_memory_usage;
-                log_memory_usage("jemalloc_allocated", allocated.read().unwrap() as u64);
-            }
-        }
-
-        with_trace(tracing_event_name, exec_context.tracing_enabled, || {
+        let result = with_trace(tracing_label, tracing_enabled, || {
             let exec_context_id = exec_context.id;
 
             // Initialize the execution stream.
@@ -651,16 +792,22 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                     let next_item = exec_context.stream.as_mut().unwrap().next();
                     let poll_output = poll!(next_item);
 
-                    // Only check time every 100 polls to reduce syscall overhead
-                    if let Some(interval) = exec_context.metrics_update_interval {
-                        exec_context.poll_count_since_metrics_check += 1;
-                        if exec_context.poll_count_since_metrics_check >= 100 {
+                    // Only check time/tracing every 100 polls to reduce overhead
+                    exec_context.poll_count_since_metrics_check += 1;
+                    if exec_context.poll_count_since_metrics_check >= 100 {
+                        exec_context.poll_count_since_metrics_check = 0;
+                        if let Some(interval) = exec_context.metrics_update_interval {
                             let now = Instant::now();
                             if now - exec_context.metrics_last_update_time >= interval {
                                 update_metrics(env, exec_context)?;
                                 exec_context.metrics_last_update_time = now;
                             }
-                            exec_context.poll_count_since_metrics_check = 0;
+                        }
+                        if exec_context.tracing_enabled {
+                            log_memory_usage(
+                                &exec_context.tracing_memory_metric_name,
+                                total_reserved_for_thread(exec_context.rust_thread_id) as u64,
+                            );
                         }
                     }
 
@@ -687,7 +834,18 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                     }
                 }
             })
-        })
+        });
+
+        if exec_context.tracing_enabled {
+            #[cfg(feature = "jemalloc")]
+            log_jemalloc_usage();
+            log_memory_usage(
+                &exec_context.tracing_memory_metric_name,
+                total_reserved_for_thread(exec_context.rust_thread_id) as u64,
+            );
+        }
+
+        result
     })
 }
 
@@ -708,6 +866,16 @@ pub extern "system" fn Java_org_apache_comet_Native_releasePlan(
             execution_context.memory_pool_config.pool_type,
             execution_context.task_attempt_id,
         );
+
+        // Unregister this context's pool and emit the remaining total for the thread
+        if execution_context.tracing_enabled {
+            let remaining =
+                unregister_and_total(execution_context.rust_thread_id, execution_context.id);
+            log_memory_usage(
+                &execution_context.tracing_memory_metric_name,
+                remaining as u64,
+            );
+        }
 
         let _: Box<ExecutionContext> = Box::from_raw(execution_context);
         Ok(())
@@ -948,6 +1116,16 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_logMemoryUsage(
         log_memory_usage(&name, value as u64);
         Ok(())
     })
+}
+
+#[no_mangle]
+/// Returns the Rust thread ID for the current thread.
+/// This allows Java code to use Rust thread IDs in tracing metric names.
+pub extern "system" fn Java_org_apache_comet_Native_getRustThreadId(
+    _e: EnvUnowned,
+    _class: JClass,
+) -> jlong {
+    get_thread_id() as jlong
 }
 
 // ============================================================================
