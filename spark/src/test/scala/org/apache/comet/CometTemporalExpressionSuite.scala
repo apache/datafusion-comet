@@ -21,8 +21,11 @@ package org.apache.comet
 
 import scala.util.Random
 
-import org.apache.spark.sql.{CometTestBase, Row, SaveMode}
+import org.apache.spark.sql.{CometTestBase, DataFrame, Row, SaveMode}
+import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
+import org.apache.spark.sql.catalyst.expressions.{Days, Literal}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 
