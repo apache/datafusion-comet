@@ -477,6 +477,7 @@ async fn execute_shuffle_write(
         index_file,
         false,
         write_buffer_size,
+        false,
     )
     .expect("Failed to create ShuffleWriterExec");
 

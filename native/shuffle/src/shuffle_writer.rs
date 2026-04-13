@@ -20,7 +20,7 @@
 use crate::metrics::ShufflePartitionerMetrics;
 use crate::partitioners::{
     EmptySchemaShufflePartitioner, MultiPartitionShuffleRepartitioner, ShufflePartitioner,
-    SinglePartitionShufflePartitioner,
+    SinglePartitionShufflePartitioner, SortBasedPartitioner,
 };
 use crate::{CometPartitioning, CompressionCodec};
 use async_trait::async_trait;
@@ -67,6 +67,8 @@ pub struct ShuffleWriterExec {
     tracing_enabled: bool,
     /// Size of the write buffer in bytes
     write_buffer_size: usize,
+    /// Whether to use sort-based partitioning
+    sort_based: bool,
 }
 
 impl ShuffleWriterExec {
@@ -80,6 +82,7 @@ impl ShuffleWriterExec {
         output_index_file: String,
         tracing_enabled: bool,
         write_buffer_size: usize,
+        sort_based: bool,
     ) -> Result<Self> {
         let cache = Arc::new(PlanProperties::new(
             EquivalenceProperties::new(Arc::clone(&input.schema())),
@@ -98,6 +101,7 @@ impl ShuffleWriterExec {
             codec,
             tracing_enabled,
             write_buffer_size,
+            sort_based,
         })
     }
 }
@@ -158,6 +162,7 @@ impl ExecutionPlan for ShuffleWriterExec {
                 self.output_index_file.clone(),
                 self.tracing_enabled,
                 self.write_buffer_size,
+                self.sort_based,
             )?)),
             _ => panic!("ShuffleWriterExec wrong number of children"),
         }
@@ -185,6 +190,7 @@ impl ExecutionPlan for ShuffleWriterExec {
                     self.codec.clone(),
                     self.tracing_enabled,
                     self.write_buffer_size,
+                    self.sort_based,
                 )
                 .map_err(|e| ArrowError::ExternalError(Box::new(e))),
             )
@@ -205,6 +211,7 @@ async fn external_shuffle(
     codec: CompressionCodec,
     tracing_enabled: bool,
     write_buffer_size: usize,
+    sort_based: bool,
 ) -> Result<SendableRecordBatchStream> {
     let schema = input.schema();
 
@@ -225,6 +232,18 @@ async fn external_shuffle(
             output_index_file,
             Arc::clone(&schema),
             metrics,
+            context.session_config().batch_size(),
+            codec,
+            write_buffer_size,
+        )?),
+        _ if sort_based => Box::new(SortBasedPartitioner::try_new(
+            partition,
+            output_data_file,
+            output_index_file,
+            Arc::clone(&schema),
+            partitioning,
+            metrics,
+            context.runtime_env(),
             context.session_config().batch_size(),
             codec,
             write_buffer_size,
@@ -312,34 +331,61 @@ mod test {
     #[test]
     #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
     fn test_single_partition_shuffle_writer() {
-        shuffle_write_test(1000, 100, 1, None);
-        shuffle_write_test(10000, 10, 1, None);
+        shuffle_write_test(1000, 100, 1, None, false);
+        shuffle_write_test(10000, 10, 1, None, false);
     }
 
     #[test]
     #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
     fn test_insert_larger_batch() {
-        shuffle_write_test(10000, 1, 16, None);
+        shuffle_write_test(10000, 1, 16, None, false);
     }
 
     #[test]
     #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
     fn test_insert_smaller_batch() {
-        shuffle_write_test(1000, 1, 16, None);
-        shuffle_write_test(1000, 10, 16, None);
+        shuffle_write_test(1000, 1, 16, None, false);
+        shuffle_write_test(1000, 10, 16, None, false);
     }
 
     #[test]
     #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
     fn test_large_number_of_partitions() {
-        shuffle_write_test(10000, 10, 200, Some(10 * 1024 * 1024));
-        shuffle_write_test(10000, 10, 2000, Some(10 * 1024 * 1024));
+        shuffle_write_test(10000, 10, 200, Some(10 * 1024 * 1024), false);
+        shuffle_write_test(10000, 10, 2000, Some(10 * 1024 * 1024), false);
     }
 
     #[test]
     #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
     fn test_large_number_of_partitions_spilling() {
-        shuffle_write_test(10000, 100, 200, Some(10 * 1024 * 1024));
+        shuffle_write_test(10000, 100, 200, Some(10 * 1024 * 1024), false);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
+    fn test_sort_based_basic() {
+        shuffle_write_test(1000, 100, 1, None, true);
+        shuffle_write_test(10000, 10, 1, None, true);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
+    fn test_sort_based_insert_larger_batch() {
+        shuffle_write_test(10000, 1, 16, None, true);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
+    fn test_sort_based_insert_smaller_batch() {
+        shuffle_write_test(1000, 1, 16, None, true);
+        shuffle_write_test(1000, 10, 16, None, true);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
+    fn test_sort_based_large_number_of_partitions() {
+        shuffle_write_test(10000, 10, 200, Some(10 * 1024 * 1024), true);
+        shuffle_write_test(10000, 10, 2000, Some(10 * 1024 * 1024), true);
     }
 
     #[tokio::test]
@@ -403,6 +449,7 @@ mod test {
         num_batches: usize,
         num_partitions: usize,
         memory_limit: Option<usize>,
+        sort_based: bool,
     ) {
         let batch = create_batch(batch_size);
 
@@ -467,6 +514,7 @@ mod test {
                 "/tmp/index.out".to_string(),
                 false,
                 1024 * 1024, // write_buffer_size: 1MB default
+                sort_based,
             )
             .unwrap();
 
@@ -526,6 +574,7 @@ mod test {
                 index_file.clone(),
                 false,
                 1024 * 1024,
+                false,
             )
             .unwrap();
 
@@ -730,6 +779,7 @@ mod test {
             index_file.to_str().unwrap().to_string(),
             false,
             1024 * 1024,
+            false,
         )
         .unwrap();
 
@@ -818,6 +868,7 @@ mod test {
             index_file.to_str().unwrap().to_string(),
             false,
             1024 * 1024,
+            false,
         )
         .unwrap();
 

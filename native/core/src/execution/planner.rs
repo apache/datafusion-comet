@@ -1379,6 +1379,7 @@ impl PhysicalPlanner {
                     writer.output_index_file.clone(),
                     writer.tracing_enabled,
                     write_buffer_size,
+                    false,
                 )?);
 
                 Ok((

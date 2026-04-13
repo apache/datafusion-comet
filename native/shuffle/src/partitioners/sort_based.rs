@@ -15,9 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// TODO: Remove once SortBasedPartitioner is wired into the shuffle writer factory
-#![allow(dead_code)]
-
 use crate::metrics::ShufflePartitionerMetrics;
 use crate::partitioners::ShufflePartitioner;
 use crate::writers::PartitionWriter;
@@ -43,7 +40,6 @@ use tokio::time::Instant;
 pub(crate) struct SortBasedPartitioner {
     output_data_file: String,
     output_index_file: String,
-    #[allow(dead_code)]
     schema: SchemaRef,
     partition_writers: Vec<PartitionWriter>,
     shuffle_block_writer: ShuffleBlockWriter,
@@ -51,7 +47,6 @@ pub(crate) struct SortBasedPartitioner {
     runtime: Arc<RuntimeEnv>,
     metrics: ShufflePartitionerMetrics,
     batch_size: usize,
-    #[allow(dead_code)]
     reservation: MemoryReservation,
     write_buffer_size: usize,
     hashes_buf: Vec<u32>,
