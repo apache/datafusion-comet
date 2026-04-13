@@ -35,7 +35,7 @@ import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType,
 
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.rules.CometScanTypeChecker
-import org.apache.comet.serde.Compatible
+import org.apache.comet.serde.{Compatible, Incompatible}
 
 class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
@@ -641,6 +641,68 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateDecimalsPrecision10Scale2(), DataTypes.StringType)
   }
 
+  test("cast DecimalType(38,18) to StringType") {
+    castTest(generateDecimalsPrecision38Scale18(), DataTypes.StringType)
+  }
+
+  test("cast DecimalType with negative scale to StringType") {
+    // Negative-scale decimals are a legacy Spark feature gated on
+    // spark.sql.legacy.allowNegativeScaleOfDecimal=true. Spark LEGACY cast uses Java's
+    // BigDecimal.toString() which produces scientific notation for negative-scale values
+    // (e.g. 12300 stored as Decimal(7,-2) with unscaled=123 → "1.23E+4").
+    // CometCast.canCastToString checks the
+    // config and returns Incompatible when it is false.
+    //
+    // Parquet does not support negative-scale decimals so we use checkSparkAnswer directly
+    // (no parquet round-trip) to avoid schema coercion.
+
+    // With config enabled: Comet should match Spark's plain string output
+    withSQLConf("spark.sql.legacy.allowNegativeScaleOfDecimal" -> "true") {
+      val dfNeg2 = Seq(
+        Some(BigDecimal("0")),
+        Some(BigDecimal("100")),
+        Some(BigDecimal("12300")),
+        Some(BigDecimal("-99900")),
+        Some(BigDecimal("9999900")),
+        None)
+        .toDF("b")
+        .withColumn("a", col("b").cast(DecimalType(7, -2)))
+        .drop("b")
+        .select(col("a").cast(DataTypes.StringType).as("result"))
+      checkSparkAnswer(dfNeg2)
+
+      val dfNeg4 = Seq(
+        Some(BigDecimal("0")),
+        Some(BigDecimal("10000")),
+        Some(BigDecimal("120000")),
+        Some(BigDecimal("-9990000")),
+        None)
+        .toDF("b")
+        .withColumn("a", col("b").cast(DecimalType(7, -4)))
+        .drop("b")
+        .select(col("a").cast(DataTypes.StringType).as("result"))
+      checkSparkAnswer(dfNeg4)
+    }
+
+    // With config disabled (default): the SQL parser rejects negative scale, so
+    // negative-scale decimals cannot be created through normal SQL paths.
+    // CometCast.isSupported returns Incompatible for this case, ensuring Comet does
+    // not attempt native execution if such a value ever reaches the planner.
+    // Note: DecimalType(7, -2) must be constructed while config=true, because the
+    // constructor itself checks the config and throws if negative scale is disallowed.
+    val negScaleType = withSQLConf("spark.sql.legacy.allowNegativeScaleOfDecimal" -> "true") {
+      DecimalType(7, -2)
+    }
+    withSQLConf("spark.sql.legacy.allowNegativeScaleOfDecimal" -> "false") {
+      assert(
+        CometCast.isSupported(
+          negScaleType,
+          DataTypes.StringType,
+          None,
+          CometEvalMode.LEGACY) == Incompatible())
+    }
+  }
+
   test("cast DecimalType(10,2) to TimestampType") {
     castTest(generateDecimalsPrecision10Scale2(), DataTypes.TimestampType)
   }
@@ -1173,6 +1235,9 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast DateType to StringType") {
+    // generateDates() covers: 1970-2027 sampled monthly, DST transition dates, and edge
+    // cases including "999-01-01" (year < 1000, zero-padded to "0999-01-01") and
+    // "12345-01-01" (year > 9999, no truncation). Date→String is timezone-independent.
     castTest(generateDates(), DataTypes.StringType)
   }
 
@@ -1247,7 +1312,19 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast TimestampType to StringType") {
-    castTest(generateTimestamps(), DataTypes.StringType)
+    // UTC baseline — also exercises fractional-second trailing-zero stripping
+    // and pre-epoch values via generateTimestamps()
+    withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC") {
+      castTest(generateTimestamps(), DataTypes.StringType)
+    }
+    // Spark formats timestamps in the session timezone without tz suffix.
+    // pre_timestamp_cast shifts the UTC value by the session tz offset before
+    // passing to DataFusion, so DST-sensitive timezones must also be correct.
+    compatibleTimezones.foreach { tz =>
+      withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
+        castTest(generateTimestamps(), DataTypes.StringType)
+      }
+    }
   }
 
   test("cast TimestampType to DateType") {
@@ -1690,15 +1767,32 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       values.toDF("str").select(col("str").cast(DataTypes.TimestampType).as("a")))
   }
 
-  private def generateTimestampLiterals(): Seq[String] =
-    Seq(
-      "2024-01-01T12:34:56.123456",
-      "2024-01-01T01:00:00Z",
-      "9999-12-31T01:00:00-02:00",
-      "2024-12-31T01:00:00+02:00")
-
   private def generateTimestamps(): DataFrame = {
-    val values = generateTimestampLiterals()
+    val values = Seq(
+      // post-epoch with microseconds
+      "2024-01-01T12:34:56.123456",
+      // UTC, no fractional seconds (output has no decimal point)
+      "2024-01-01T01:00:00Z",
+      // year 9999 boundary
+      "9999-12-31T01:00:00-02:00",
+      // positive UTC offset
+      "2024-12-31T01:00:00+02:00",
+      // pre-epoch
+      "1960-01-01T00:00:00Z",
+      "1900-06-15T10:30:00Z",
+      // last microsecond before epoch
+      "1969-12-31T23:59:59.999999",
+      // year < 1000: Spark zero-pads to 4 digits (e.g. "0100-...")
+      "0100-03-01T00:00:00Z",
+      // fractional-second trailing-zero stripping
+      // .100000 → ".1", .123000 → ".123", .001000 → ".001", .000001 → ".000001"
+      "2024-06-01T00:00:00.100000",
+      "2024-06-01T00:00:00.123000",
+      "2024-06-01T00:00:00.001000",
+      "2024-06-01T00:00:00.000001",
+      // DST transition moments (America/New_York spring-forward / fall-back in UTC)
+      "2024-03-10T07:00:00Z",
+      "2024-11-03T06:00:00Z")
     withNulls(values)
       .toDF("str")
       .withColumn("a", col("str").cast(DataTypes.TimestampType))

@@ -242,12 +242,18 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
             "There can be differences in precision. " +
               "For example, the input \"1.4E-45\" will produce 1.0E-45 " +
               "instead of 1.4E-45"))
+      case d: DecimalType if d.scale < 0 =>
+        // Negative-scale decimals require spark.sql.legacy.allowNegativeScaleOfDecimal=true.
+        // When that config is enabled, Spark formats them using Java BigDecimal.toString()
+        // which produces scientific notation (e.g. "1.23E+4"). Comet matches this behavior.
+        // When the config is disabled, negative-scale decimals cannot be created in Spark,
+        // so we mark this as incompatible to avoid native execution on unexpected inputs.
+        val allowNegativeScale = SQLConf.get
+          .getConfString("spark.sql.legacy.allowNegativeScaleOfDecimal", "false")
+          .toBoolean
+        if (allowNegativeScale) Compatible() else Incompatible()
       case _: DecimalType =>
-        // https://github.com/apache/datafusion-comet/issues/1068
-        Compatible(
-          Some(
-            "There can be formatting differences in some case due to Spark using " +
-              "scientific notation where Comet does not"))
+        Compatible()
       case DataTypes.BinaryType =>
         Compatible()
       case StructType(fields) =>
