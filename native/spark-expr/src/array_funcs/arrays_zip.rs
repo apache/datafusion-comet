@@ -56,7 +56,7 @@ impl SparkArraysZipFunc {
                     return exec_err!("arrays_zip expects array arguments, got {dt}");
                 }
             };
-            fields.push(Field::new(format!("{}", self.names[i]), element_type, true));
+            fields.push(Field::new(self.names[i].to_string(), element_type, true));
         }
 
         Ok(fields)
@@ -97,7 +97,7 @@ impl PhysicalExpr for SparkArraysZipFunc {
             .map(|e| e.evaluate(batch))
             .collect::<datafusion::common::Result<Vec<_>>>()?;
 
-        make_scalar_function(|arr| arrays_zip_inner(arr, self.names.clone()))(&*values)
+        make_scalar_function(|arr| arrays_zip_inner(arr, self.names.clone()))(&values)
     }
 
     fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
