@@ -82,6 +82,8 @@ pub struct Cast {
     pub child: Arc<dyn PhysicalExpr>,
     pub data_type: DataType,
     pub cast_options: SparkCastOptions,
+    pub expr_id: Option<u64>,
+    pub query_context: Option<Arc<crate::QueryContext>>,
 }
 
 impl PartialEq for Cast {
@@ -105,11 +107,15 @@ impl Cast {
         child: Arc<dyn PhysicalExpr>,
         data_type: DataType,
         cast_options: SparkCastOptions,
+        expr_id: Option<u64>,
+        query_context: Option<Arc<crate::QueryContext>>,
     ) -> Self {
         Self {
             child,
             data_type,
             cast_options,
+            expr_id,
+            query_context,
         }
     }
 }
@@ -125,6 +131,9 @@ pub struct SparkCastOptions {
     pub timezone: String,
     /// Allow casts that are supported but not guaranteed to be 100% compatible
     pub allow_incompat: bool,
+    /// True when running against Spark 4.0+. Enables version-specific cast behaviour
+    /// such as the handling of leading whitespace before T-prefixed time-only strings.
+    pub is_spark4_plus: bool,
     /// Support casting unsigned ints to signed ints (used by Parquet SchemaAdapter)
     pub allow_cast_unsigned_ints: bool,
     /// We also use the cast logic for adapting Parquet schemas, so this flag is used
@@ -142,6 +151,7 @@ impl SparkCastOptions {
             eval_mode,
             timezone: timezone.to_string(),
             allow_incompat,
+            is_spark4_plus: false,
             allow_cast_unsigned_ints: false,
             is_adapting_schema: false,
             null_string: "null".to_string(),
@@ -154,10 +164,23 @@ impl SparkCastOptions {
             eval_mode,
             timezone: "".to_string(),
             allow_incompat,
+            is_spark4_plus: false,
             allow_cast_unsigned_ints: false,
             is_adapting_schema: false,
             null_string: "null".to_string(),
             binary_output_style: None,
+        }
+    }
+
+    pub fn new_with_version(
+        eval_mode: EvalMode,
+        timezone: &str,
+        allow_incompat: bool,
+        is_spark4_plus: bool,
+    ) -> Self {
+        Self {
+            is_spark4_plus,
+            ..Self::new(eval_mode, timezone, allow_incompat)
         }
     }
 }
@@ -290,9 +313,13 @@ pub(crate) fn cast_array(
     let cast_result = match (&from_type, to_type) {
         (Utf8, Boolean) => spark_cast_utf8_to_boolean::<i32>(&array, eval_mode),
         (LargeUtf8, Boolean) => spark_cast_utf8_to_boolean::<i64>(&array, eval_mode),
-        (Utf8, Timestamp(_, _)) => {
-            cast_string_to_timestamp(&array, to_type, eval_mode, &cast_options.timezone)
-        }
+        (Utf8, Timestamp(_, _)) => cast_string_to_timestamp(
+            &array,
+            to_type,
+            eval_mode,
+            &cast_options.timezone,
+            cast_options.is_spark4_plus,
+        ),
         (Utf8, Date32) => cast_string_to_date(&array, to_type, eval_mode),
         (Date32, Int32) => {
             // Date32 is stored as days since epoch (i32), so this is a simple reinterpret cast
@@ -686,7 +713,23 @@ impl PhysicalExpr for Cast {
 
     fn evaluate(&self, batch: &RecordBatch) -> DataFusionResult<ColumnarValue> {
         let arg = self.child.evaluate(batch)?;
-        spark_cast(arg, &self.data_type, &self.cast_options)
+        let result = spark_cast(arg, &self.data_type, &self.cast_options);
+
+        // If there's an error and we have query_context, wrap it
+        match result {
+            Err(DataFusionError::External(e)) if self.query_context.is_some() => {
+                if let Some(spark_err) = e.downcast_ref::<crate::SparkError>() {
+                    let wrapped = crate::SparkErrorWithContext::with_context(
+                        spark_err.clone(),
+                        Arc::clone(self.query_context.as_ref().unwrap()),
+                    );
+                    Err(DataFusionError::External(Box::new(wrapped)))
+                } else {
+                    Err(DataFusionError::External(e))
+                }
+            }
+            other => other,
+        }
     }
 
     fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
@@ -702,6 +745,8 @@ impl PhysicalExpr for Cast {
                 Arc::clone(&children[0]),
                 self.data_type.clone(),
                 self.cast_options.clone(),
+                self.expr_id,
+                self.query_context.clone(),
             ))),
             _ => internal_err!("Cast should have exactly one child"),
         }

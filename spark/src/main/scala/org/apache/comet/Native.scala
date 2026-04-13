@@ -54,7 +54,7 @@ class Native extends NativeBase {
   // scalastyle:off
   @native def createPlan(
       id: Long,
-      iterators: Array[CometBatchIterator],
+      iterators: Array[Object],
       plan: Array[Byte],
       configMapProto: Array[Byte],
       partitionCount: Int,
@@ -202,6 +202,11 @@ class Native extends NativeBase {
    *   Number of bytes in use
    */
   @native def logMemoryUsage(name: String, memoryUsageBytes: Long): Unit
+
+  /**
+   * Returns the Rust thread ID for the current thread.
+   */
+  @native def getRustThreadId(): Long
 
   // Native Columnar to Row conversion methods
 

@@ -28,7 +28,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.BinaryOutputStyle
 import org.apache.spark.sql.types.DataTypes
 
-import org.apache.comet.{CometConf, CometFuzzTestBase}
+import org.apache.comet.CometFuzzTestBase
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.serde.Compatible
 
@@ -59,9 +59,7 @@ class CometToPrettyStringSuite extends CometFuzzTestBase {
             Some(spark.sessionState.conf.sessionLocalTimeZone),
             CometEvalMode.TRY)
           supportLevel match {
-            case _: Compatible
-                if CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_COMET =>
-              checkSparkAnswerAndOperator(result)
+            case _: Compatible => checkSparkAnswerAndOperator(result)
             case _ => checkSparkAnswer(result)
           }
         }
