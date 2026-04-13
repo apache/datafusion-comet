@@ -296,7 +296,7 @@
 - [x] atan
 - [x] atan2
 - [ ] atanh
-- [ ] bin
+- [x] bin
 - [ ] bround
 - [ ] cbrt
 - [x] ceil
