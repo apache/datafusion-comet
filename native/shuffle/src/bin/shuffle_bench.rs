@@ -79,7 +79,7 @@ struct Args {
     hash_columns: String,
 
     /// Compression codec: none, lz4, zstd, snappy
-    #[arg(long, default_value = "zstd")]
+    #[arg(long, default_value = "lz4")]
     codec: String,
 
     /// Zstd compression level (1-22)
