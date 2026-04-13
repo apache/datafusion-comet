@@ -26,6 +26,9 @@ use crate::{
     },
     jvm_bridge::{jni_new_global_ref, JVMClasses},
 };
+use parking_lot::Mutex;
+use std::collections::HashSet;
+
 use arrow::array::{Array, RecordBatch, UInt32Array};
 use arrow::compute::{take, TakeOptions};
 use arrow::datatypes::DataType as ArrowDataType;
@@ -102,6 +105,70 @@ use tikv_jemalloc_ctl::{epoch, stats};
 
 static TOKIO_RUNTIME: OnceLock<Runtime> = OnceLock::new();
 
+#[cfg(feature = "jemalloc")]
+fn log_jemalloc_usage() {
+    let e = epoch::mib().unwrap();
+    let allocated = stats::allocated::mib().unwrap();
+    e.advance().unwrap();
+    log_memory_usage("jemalloc_allocated", allocated.read().unwrap() as u64);
+}
+
+/// Registry of active memory pools per Rust thread ID.
+/// Used to sum memory reservations across all contexts on the same thread for tracing.
+type ThreadPoolMap = HashMap<u64, HashMap<i64, Arc<dyn MemoryPool>>>;
+
+static THREAD_MEMORY_POOLS: OnceLock<Mutex<ThreadPoolMap>> = OnceLock::new();
+
+fn get_thread_memory_pools() -> &'static Mutex<ThreadPoolMap> {
+    THREAD_MEMORY_POOLS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn register_memory_pool(thread_id: u64, context_id: i64, pool: Arc<dyn MemoryPool>) {
+    get_thread_memory_pools()
+        .lock()
+        .entry(thread_id)
+        .or_default()
+        .insert(context_id, pool);
+}
+
+/// Unregister a context's pool and return the remaining total reserved for the thread.
+fn unregister_and_total(thread_id: u64, context_id: i64) -> usize {
+    let mut map = get_thread_memory_pools().lock();
+    if let Some(pools) = map.get_mut(&thread_id) {
+        pools.remove(&context_id);
+        if pools.is_empty() {
+            map.remove(&thread_id);
+            return 0;
+        }
+        let mut seen = HashSet::new();
+        return pools
+            .values()
+            .filter_map(|p| {
+                let ptr = Arc::as_ptr(p) as *const ();
+                seen.insert(ptr).then(|| p.reserved())
+            })
+            .sum::<usize>();
+    }
+    0
+}
+
+fn total_reserved_for_thread(thread_id: u64) -> usize {
+    let map = get_thread_memory_pools().lock();
+    map.get(&thread_id)
+        .map(|pools| {
+            // Deduplicate pools that share the same underlying allocation
+            // (e.g. task-shared pools registered by multiple execution contexts)
+            let mut seen = HashSet::new();
+            pools
+                .values()
+                .filter_map(|p| {
+                    let ptr = Arc::as_ptr(p) as *const ();
+                    seen.insert(ptr).then(|| p.reserved())
+                })
+                .sum::<usize>()
+        })
+        .unwrap_or(0)
+}
 fn parse_usize_env_var(name: &str) -> Option<usize> {
     std::env::var_os(name).and_then(|n| n.to_str().and_then(|s| s.parse::<usize>().ok()))
 }

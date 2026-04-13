@@ -42,22 +42,36 @@ pub(crate) fn create_memory_pool(
     const NUM_TRACKED_CONSUMERS: usize = 10;
     match memory_pool_config.pool_type {
         MemoryPoolType::GreedyUnified => {
-            // Set Comet memory pool for native
-            let memory_pool =
-                CometUnifiedMemoryPool::new(comet_task_memory_manager, task_attempt_id);
-            Arc::new(TrackConsumersPool::new(
-                memory_pool,
-                NonZeroUsize::new(NUM_TRACKED_CONSUMERS).unwrap(),
-            ))
+            let mut memory_pool_map = TASK_SHARED_MEMORY_POOLS.lock().unwrap();
+            let per_task_memory_pool =
+                memory_pool_map.entry(task_attempt_id).or_insert_with(|| {
+                    let pool: Arc<dyn MemoryPool> = Arc::new(TrackConsumersPool::new(
+                        CometUnifiedMemoryPool::new(
+                            Arc::clone(&comet_task_memory_manager),
+                            task_attempt_id,
+                        ),
+                        NonZeroUsize::new(NUM_TRACKED_CONSUMERS).unwrap(),
+                    ));
+                    PerTaskMemoryPool::new(pool)
+                });
+            per_task_memory_pool.num_plans += 1;
+            Arc::clone(&per_task_memory_pool.memory_pool)
         }
         MemoryPoolType::FairUnified => {
-            // Set Comet fair memory pool for native
-            let memory_pool =
-                CometFairMemoryPool::new(comet_task_memory_manager, memory_pool_config.pool_size);
-            Arc::new(TrackConsumersPool::new(
-                memory_pool,
-                NonZeroUsize::new(NUM_TRACKED_CONSUMERS).unwrap(),
-            ))
+            let mut memory_pool_map = TASK_SHARED_MEMORY_POOLS.lock().unwrap();
+            let per_task_memory_pool =
+                memory_pool_map.entry(task_attempt_id).or_insert_with(|| {
+                    let pool: Arc<dyn MemoryPool> = Arc::new(TrackConsumersPool::new(
+                        CometFairMemoryPool::new(
+                            Arc::clone(&comet_task_memory_manager),
+                            memory_pool_config.pool_size,
+                        ),
+                        NonZeroUsize::new(NUM_TRACKED_CONSUMERS).unwrap(),
+                    ));
+                    PerTaskMemoryPool::new(pool)
+                });
+            per_task_memory_pool.num_plans += 1;
+            Arc::clone(&per_task_memory_pool.memory_pool)
         }
         MemoryPoolType::Greedy => Arc::new(TrackConsumersPool::new(
             GreedyMemoryPool::new(memory_pool_config.pool_size),
