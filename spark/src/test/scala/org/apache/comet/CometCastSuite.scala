@@ -852,6 +852,13 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       "inf",
       "",
       "abc",
+      // values from https://github.com/apache/datafusion-comet/issues/325
+      "0",
+      "1",
+      "+1.0",
+      ".34",
+      "-10.0",
+      "4e7",
       null).toDF("a")
     Seq(true, false).foreach(ansiEnabled =>
       castTest(values, DataTypes.createDecimalType(10, 2), testAnsi = ansiEnabled))
