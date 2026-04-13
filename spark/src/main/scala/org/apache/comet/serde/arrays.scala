@@ -22,7 +22,7 @@ package org.apache.comet.serde
 import scala.annotation.tailrec
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayFilter, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayRemove, ArrayRepeat, ArraysOverlap, ArraysZip, ArrayUnion, Attribute, CreateArray, ElementAt, EmptyRow, Expression, Flatten, GetArrayItem, IsNotNull, Literal, Reverse, Size}
+import org.apache.spark.sql.catalyst.expressions.{And, ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayFilter, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayRemove, ArrayRepeat, ArraysOverlap, ArraysZip, ArrayUnion, Attribute, CreateArray, ElementAt, EmptyRow, Expression, Flatten, GetArrayItem, IsNotNull, Literal, Reverse, Size}
 import org.apache.spark.sql.catalyst.util.GenericArrayData
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
@@ -692,16 +692,35 @@ object CometArraysZip extends CometExpressionSerde[ArraysZip] {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
 
-    val exprChildren = expr.children.map(exprToProtoInternal(_, inputs, binding))
-    val names = expr.names.map(_.eval(EmptyRow))
+    val exprChildren: Seq[Option[ExprOuterClass.Expr]] =
+      expr.children.map(exprToProtoInternal(_, inputs, binding))
+    val names: Seq[Any] = expr.names.map(_.eval(EmptyRow))
 
-    if (exprChildren.forall(_.isDefined)) {
-      val builder = ExprOuterClass.ArraysZip
+    // mimic Spark's ArraysZip behavior: returns NULL if any argument is NULL
+    val combinedNullCheck = expr.children.map(child => IsNotNull(child)).reduce(And)
+    val isNotNullExpr = exprToProtoInternal(combinedNullCheck, inputs, binding)
+    val nullLiteralProto = exprToProto(Literal(null, BooleanType), Seq.empty)
+
+    if (exprChildren.forall(
+        _.isDefined) && isNotNullExpr.isDefined && nullLiteralProto.isDefined) {
+      val arraysZip: ExprOuterClass.ArraysZip = ExprOuterClass.ArraysZip
         .newBuilder()
         .addAllValues(exprChildren.map(_.get).asJava)
         .addAllNames(names.map(_.toString).asJava)
+        .build()
 
-      Some(ExprOuterClass.Expr.newBuilder().setArraysZip(builder).build())
+      val caseWhenExpr = ExprOuterClass.CaseWhen
+        .newBuilder()
+        .addWhen(isNotNullExpr.get)
+        .addThen(ExprOuterClass.Expr.newBuilder().setArraysZip(arraysZip).build())
+        .setElseExpr(nullLiteralProto.get)
+        .build()
+      Some(
+        ExprOuterClass.Expr
+          .newBuilder()
+          .setCaseWhen(caseWhenExpr)
+          .build())
+
     } else {
       withInfo(expr, "unsupported arguments for ArraysZip", expr.children ++ expr.names: _*)
       None

@@ -106,9 +106,9 @@ select arrays_zip(array(1, 2, 3));
 query
 select arrays_zip(cast(NULL AS array<int>), array(1, 2, 3));
 
--- FIXME: real array + NULL list
--- query
--- select arrays_zip(array(1, 2), cast(NULL AS array<int>));
+-- real array + NULL list
+query
+select arrays_zip(array(1, 2), cast(NULL AS array<int>));
 
 -- w/ names
 statement
@@ -133,9 +133,9 @@ select arrays_zip(a) FROM test_arrays_zip
 query
 select arrays_zip(b) FROM test_arrays_zip
 
--- FIXME: real array + NULL list
--- query spark_answer_only
--- SELECT arrays_zip(a, b) FROM (SELECT array(1, 2, 3) as a, null as b)
+-- real array + NULL list
+query
+SELECT arrays_zip(a, b) FROM (SELECT array(1, 2, 3) as a, null as b)
 
 query
 SELECT arrays_zip(b, a) FROM (SELECT array(1, 2, 3) as a, null as b)
