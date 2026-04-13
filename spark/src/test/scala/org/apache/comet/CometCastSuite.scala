@@ -690,8 +690,9 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     // not attempt native execution if such a value ever reaches the planner.
     // Note: DecimalType(7, -2) must be constructed while config=true, because the
     // constructor itself checks the config and throws if negative scale is disallowed.
-    val negScaleType = withSQLConf("spark.sql.legacy.allowNegativeScaleOfDecimal" -> "true") {
-      DecimalType(7, -2)
+    var negScaleType: DecimalType = null
+    withSQLConf("spark.sql.legacy.allowNegativeScaleOfDecimal" -> "true") {
+      negScaleType = DecimalType(7, -2)
     }
     withSQLConf("spark.sql.legacy.allowNegativeScaleOfDecimal" -> "false") {
       assert(
