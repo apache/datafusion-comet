@@ -19,16 +19,42 @@
 
 package org.apache.spark.sql.comet.shims
 
+import scala.util.matching.Regex
+
 import org.apache.spark.QueryContext
 import org.apache.spark.SparkException
+import org.apache.spark.SparkFileNotFoundException
 import org.apache.spark.sql.errors.QueryExecutionErrors
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
+
+object ShimSparkErrorConverter {
+  val ObjectLocationPattern: Regex = "Object at location (.+?) not found".r
+}
 
 /**
  * Spark 4.0-specific implementation for converting error types to proper Spark exceptions.
  */
 trait ShimSparkErrorConverter {
+
+  private def parseFloatLiteral(value: String): Float = {
+    value.toLowerCase match {
+      case "inf" | "+inf" | "infinity" | "+infinity" => Float.PositiveInfinity
+      case "-inf" | "-infinity" => Float.NegativeInfinity
+      case "nan" | "+nan" | "-nan" => Float.NaN
+      case _ => value.toFloat
+    }
+  }
+
+  private def parseDoubleLiteral(value: String): Double = {
+    val normalized = value.toLowerCase.stripSuffix("d")
+    normalized match {
+      case "inf" | "+inf" | "infinity" | "+infinity" => Double.PositiveInfinity
+      case "-inf" | "-infinity" => Double.NegativeInfinity
+      case "nan" | "+nan" | "-nan" => Double.NaN
+      case _ => normalized.toDouble
+    }
+  }
 
   /**
    * Convert error type string and parameters to appropriate Spark exception. Version-specific
@@ -175,6 +201,13 @@ trait ShimSparkErrorConverter {
           QueryExecutionErrors
             .invalidInputInCastToNumberError(targetType, str, context.headOption.orNull))
 
+      case "InvalidInputInCastToDatetime" =>
+        val str = UTF8String.fromString(params("value").toString)
+        val targetType = getDataType(params("toType").toString)
+        Some(
+          QueryExecutionErrors
+            .invalidInputInCastToDatetimeError(str, targetType, context.headOption.orNull))
+
       case "CastOverFlow" =>
         val fromType = getDataType(params("fromType").toString)
         val toType = getDataType(params("toType").toString)
@@ -199,8 +232,8 @@ trait ShimSparkErrorConverter {
             // Strip "L" suffix for BIGINT literals
             val cleanStr = if (valueStr.endsWith("L")) valueStr.dropRight(1) else valueStr
             cleanStr.toLong
-          case FloatType => valueStr.toFloat
-          case DoubleType => valueStr.toDouble
+          case FloatType => parseFloatLiteral(valueStr)
+          case DoubleType => parseDoubleLiteral(valueStr)
           case StringType => UTF8String.fromString(valueStr)
           case _ => valueStr // Fallback to string
         }
@@ -250,6 +283,26 @@ trait ShimSparkErrorConverter {
         Some(
           QueryExecutionErrors.withoutSuggestionIntervalArithmeticOverflowError(
             context.headOption.orNull))
+
+      case "DuplicateFieldCaseInsensitive" =>
+        Some(
+          QueryExecutionErrors.foundDuplicateFieldInCaseInsensitiveModeError(
+            params("requiredFieldName").toString,
+            params("matchedOrcFields").toString))
+
+      case "FileNotFound" =>
+        val msg = params("message").toString
+        // Extract file path from native error message and format like Hadoop's
+        // FileNotFoundException: "File <path> does not exist"
+        val path = ShimSparkErrorConverter.ObjectLocationPattern
+          .findFirstMatchIn(msg)
+          .map(_.group(1))
+          .getOrElse(msg)
+        // readCurrentFileNotFoundError was removed in Spark 4.0; construct directly
+        Some(
+          new SparkFileNotFoundException(
+            errorClass = "_LEGACY_ERROR_TEMP_2055",
+            messageParameters = Map("message" -> s"File $path does not exist")))
 
       case _ =>
         // Unknown error type - return None to trigger fallback

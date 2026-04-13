@@ -32,6 +32,64 @@ import org.apache.comet.CometConf
 // spotless:on
 object CometArrayExpressionBenchmark extends CometBenchmarkBase {
 
+  private def buildWideIntArrayExpr(width: Int, modulus: Int): String = {
+    require(width > 0, "width must be positive")
+
+    (0 until width)
+      .map { i =>
+        val seed = 13 + i * 17
+        if (i % 11 == 0) {
+          s"CASE WHEN value % 32 = 0 THEN NULL ELSE CAST((value * $seed + $i) % $modulus AS INT) END"
+        } else {
+          s"CAST((value * $seed + $i) % $modulus AS INT)"
+        }
+      }
+      .mkString("array(", ",\n                ", ")")
+  }
+
+  private def prepareSortArrayTable(width: Int)(f: => Unit): Unit = {
+    val intArrayExpr = buildWideIntArrayExpr(width, modulus = width * 32)
+    withTempPath { dir =>
+      withTempTable("parquetV1Table") {
+        prepareTable(
+          dir,
+          spark.sql(s"""
+            SELECT
+              $intArrayExpr AS int_arr
+            FROM $tbl
+          """))
+        f
+      }
+    }
+  }
+
+  def sortArrayIntAscBenchmark(values: Int, width: Int): Unit = {
+    prepareSortArrayTable(width) {
+      runExpressionBenchmark(
+        s"sort_array int ascending (width=$width)",
+        values,
+        "SELECT sort_array(int_arr) FROM parquetV1Table")
+    }
+  }
+
+  def sortArrayIntDescBenchmark(values: Int, width: Int): Unit = {
+    prepareSortArrayTable(width) {
+      runExpressionBenchmark(
+        s"sort_array int descending (width=$width)",
+        values,
+        "SELECT sort_array(int_arr, false) FROM parquetV1Table")
+    }
+  }
+
+  def sortArrayIntAscFirstElementBenchmark(values: Int, width: Int): Unit = {
+    prepareSortArrayTable(width) {
+      runExpressionBenchmark(
+        s"element_at(sort_array(int_arr), 1) (width=$width)",
+        values,
+        "SELECT element_at(sort_array(int_arr), 1) FROM parquetV1Table")
+    }
+  }
+
   def arrayPositionBenchmark(values: Int): Unit = {
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
@@ -99,7 +157,23 @@ object CometArrayExpressionBenchmark extends CometBenchmarkBase {
   }
 
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
-    val values = 1024 * 1024
+    val values = 4 * 1024 * 1024
+
+    runBenchmarkWithTable("sortArrayIntAsc", values) { v =>
+      sortArrayIntAscBenchmark(v, width = 16)
+    }
+
+    runBenchmarkWithTable("sortArrayIntDesc", values) { v =>
+      sortArrayIntDescBenchmark(v, width = 16)
+    }
+
+    runBenchmarkWithTable("sortArrayIntAscWide", values) { v =>
+      sortArrayIntAscBenchmark(v, width = 32)
+    }
+
+    runBenchmarkWithTable("sortArrayIntAscFirstElement", values) { v =>
+      sortArrayIntAscFirstElementBenchmark(v, width = 32)
+    }
 
     runBenchmarkWithTable("ArrayPosition", values) { v =>
       arrayPositionBenchmark(v)

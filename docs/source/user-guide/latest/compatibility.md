@@ -58,6 +58,34 @@ Expressions that are not 100% Spark-compatible will fall back to Spark by defaul
 `spark.comet.expression.EXPRNAME.allowIncompatible=true`, where `EXPRNAME` is the Spark expression class name. See
 the [Comet Supported Expressions Guide](expressions.md) for more information on this configuration setting.
 
+### Array Expressions
+
+- **ArraysOverlap**: Inconsistent behavior when arrays contain NULL values.
+  [#3645](https://github.com/apache/datafusion-comet/issues/3645),
+  [#2036](https://github.com/apache/datafusion-comet/issues/2036)
+- **ArrayUnion**: Sorts input arrays before performing the union, while Spark preserves the order of the first array
+  and appends unique elements from the second.
+  [#3644](https://github.com/apache/datafusion-comet/issues/3644)
+
+### Date/Time Expressions
+
+- **Hour, Minute, Second**: Incorrectly apply timezone conversion to TimestampNTZ inputs. TimestampNTZ stores local
+  time without timezone, so no conversion should be applied. These expressions work correctly with Timestamp inputs.
+  [#3180](https://github.com/apache/datafusion-comet/issues/3180)
+- **TruncTimestamp (date_trunc)**: Produces incorrect results when used with non-UTC timezones. Compatible when
+  timezone is UTC.
+  [#2649](https://github.com/apache/datafusion-comet/issues/2649)
+
+### Aggregate Expressions
+
+- **Corr**: Returns null instead of NaN in some edge cases.
+  [#2646](https://github.com/apache/datafusion-comet/issues/2646)
+
+### Struct Expressions
+
+- **StructsToJson (to_json)**: Does not support `+Infinity` and `-Infinity` for numeric types (float, double).
+  [#3016](https://github.com/apache/datafusion-comet/issues/3016)
+
 ## Regular Expressions
 
 Comet uses the Rust regexp crate for evaluating regular expressions, and this has different behavior from Java's
@@ -107,6 +135,15 @@ Cast operations in Comet fall into three levels of support:
 - **U (Unsupported)**: Comet does not provide a native version of this cast expression and the query stage will fall back to
   Spark.
 - **N/A**: Spark does not support this cast.
+
+### String to Timestamp
+
+Comet's native `CAST(string AS TIMESTAMP)` implementation supports all timestamp formats accepted
+by Apache Spark, including ISO 8601 date-time strings, date-only strings, time-only strings
+(`HH:MM:SS`), embedded timezone offsets (e.g. `+07:30`, `GMT-01:00`, `UTC`), named timezone
+suffixes (e.g. `Europe/Moscow`), and the full Spark timestamp year range
+(-290308 to 294247). Note that `CAST(string AS DATE)` is only compatible for years between
+262143 BC and 262142 AD due to an underlying library limitation.
 
 ### Legacy Mode
 

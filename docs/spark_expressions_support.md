@@ -245,7 +245,7 @@
 ### json_funcs
 
 - [ ] from_json
-- [ ] get_json_object
+- [x] get_json_object
 - [ ] json_array_length
 - [ ] json_object_keys
 - [ ] json_tuple
