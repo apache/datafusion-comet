@@ -19,10 +19,14 @@ mod empty_schema;
 mod multi_partition;
 mod partitioned_batch_iterator;
 mod single_partition;
+mod sort_based;
 mod traits;
 
 pub(crate) use empty_schema::EmptySchemaShufflePartitioner;
 pub(crate) use multi_partition::MultiPartitionShuffleRepartitioner;
 pub(crate) use partitioned_batch_iterator::PartitionedBatchIterator;
 pub(crate) use single_partition::SinglePartitionShufflePartitioner;
+#[allow(unused_imports)]
+// TODO: Remove once SortBasedPartitioner is wired into the shuffle writer factory
+pub(crate) use sort_based::SortBasedPartitioner;
 pub(crate) use traits::ShufflePartitioner;
