@@ -15,12 +15,14 @@
 // specific language governing permissions and limitations
 // under the License.
 
+mod array_compact;
 mod array_insert;
 mod arrays_zip;
 mod get_array_struct_fields;
 mod list_extract;
 mod size;
 
+pub use array_compact::SparkArrayCompact;
 pub use array_insert::ArrayInsert;
 pub use arrays_zip::SparkArraysZipFunc;
 pub use get_array_struct_fields::GetArrayStructFields;

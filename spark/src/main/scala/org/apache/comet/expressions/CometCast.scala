@@ -24,7 +24,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, NullType, StructType, TimestampType}
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, withInfo}
 import org.apache.comet.serde.{CometExpressionSerde, Compatible, ExprOuterClass, Incompatible, SupportLevel, Unsupported}
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProtoInternal, serializeDataType}
@@ -118,6 +118,7 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
             .getConfString(CometConf.getExprAllowIncompatConfigKey(classOf[Cast]), "false")
             .toBoolean)
         castBuilder.setTimezone(timeZoneId.getOrElse("UTC"))
+        castBuilder.setIsSpark4Plus(isSpark40Plus)
         Some(
           ExprOuterClass.Expr
             .newBuilder()
@@ -149,6 +150,7 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
         isSupported(dt.elementType, dt1.elementType, timeZoneId, evalMode)
       case (dt: DataType, _) if dt.typeName == "timestamp_ntz" =>
         // https://github.com/apache/datafusion-comet/issues/378
+        // https://github.com/apache/datafusion-comet/issues/3179
         toType match {
           case DataTypes.TimestampType | DataTypes.DateType | DataTypes.StringType =>
             Incompatible()
@@ -215,13 +217,8 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
       case DataTypes.DateType =>
         // https://github.com/apache/datafusion-comet/issues/327
         Compatible(Some("Only supports years between 262143 BC and 262142 AD"))
-      case DataTypes.TimestampType if timeZoneId.exists(tz => tz != "UTC") =>
-        Incompatible(Some(s"Cast will use UTC instead of $timeZoneId"))
-      case DataTypes.TimestampType if evalMode == CometEvalMode.ANSI =>
-        Incompatible(Some("ANSI mode not supported"))
       case DataTypes.TimestampType =>
-        // https://github.com/apache/datafusion-comet/issues/328
-        Incompatible(Some("Not all valid formats are supported"))
+        Compatible()
       case _ =>
         unsupported(DataTypes.StringType, toType)
     }

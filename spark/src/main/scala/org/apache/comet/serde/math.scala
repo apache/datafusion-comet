@@ -19,8 +19,8 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Abs, Atan2, Attribute, Ceil, CheckOverflow, Expression, Floor, Hex, If, LessThanOrEqual, Literal, Log, Log10, Log2, Tan, Unhex}
-import org.apache.spark.sql.types.{DecimalType, NumericType}
+import org.apache.spark.sql.catalyst.expressions.{Abs, Add, Atan2, Attribute, Ceil, CheckOverflow, Expression, Floor, Hex, If, LessThanOrEqual, Literal, Log, Log10, Log2, Logarithm, Unhex}
+import org.apache.spark.sql.types.{DecimalType, DoubleType, NumericType}
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType, serializeDataType}
@@ -30,26 +30,17 @@ object CometAtan2 extends CometExpressionSerde[Atan2] {
       expr: Atan2,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val leftExpr = exprToProtoInternal(expr.left, inputs, binding)
-    val rightExpr = exprToProtoInternal(expr.right, inputs, binding)
+    // Spark adds +0.0 to inputs in order to convert -0.0 to +0.0
+    val left = Add(expr.left, Literal.default(expr.left.dataType))
+    val right = Add(expr.right, Literal.default(expr.right.dataType))
+    val leftExpr = exprToProtoInternal(left, inputs, binding)
+    val rightExpr = exprToProtoInternal(right, inputs, binding)
     val optExpr = scalarFunctionExprToProto("atan2", leftExpr, rightExpr)
     optExprWithInfo(optExpr, expr, expr.left, expr.right)
   }
 }
 
 object CometCeil extends CometExpressionSerde[Ceil] {
-
-  override def getSupportLevel(expr: Ceil): SupportLevel = {
-    expr.child.dataType match {
-      case _: DecimalType =>
-        Incompatible(
-          Some(
-            "Incorrect results for Decimal type inputs" +
-              " (https://github.com/apache/datafusion-comet/issues/1729)"))
-      case _ => Compatible()
-    }
-  }
-
   override def convert(
       expr: Ceil,
       inputs: Seq[Attribute],
@@ -70,18 +61,6 @@ object CometCeil extends CometExpressionSerde[Ceil] {
 }
 
 object CometFloor extends CometExpressionSerde[Floor] {
-
-  override def getSupportLevel(expr: Floor): SupportLevel = {
-    expr.child.dataType match {
-      case _: DecimalType =>
-        Incompatible(
-          Some(
-            "Incorrect results for Decimal type inputs" +
-              " (https://github.com/apache/datafusion-comet/issues/1729)"))
-      case _ => Compatible()
-    }
-  }
-
   override def convert(
       expr: Floor,
       inputs: Seq[Attribute],
@@ -135,6 +114,21 @@ object CometLog2 extends CometExpressionSerde[Log2] with MathExprBase {
     val optExpr = scalarFunctionExprToProto("log2", childExpr)
     optExprWithInfo(optExpr, expr, expr.child)
 
+  }
+}
+
+object CometLogarithm extends CometExpressionSerde[Logarithm] {
+  override def convert(
+      expr: Logarithm,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    // Uses custom spark_log UDF that returns null when base <= 0 or value <= 0,
+    // matching Spark's Logarithm.nullSafeEval behavior.
+    val leftExpr = exprToProtoInternal(expr.left, inputs, binding)
+    val rightExpr = exprToProtoInternal(expr.right, inputs, binding)
+    val optExpr =
+      scalarFunctionExprToProtoWithReturnType("spark_log", DoubleType, false, leftExpr, rightExpr)
+    optExprWithInfo(optExpr, expr, expr.left, expr.right)
   }
 }
 
@@ -195,24 +189,6 @@ object CometAbs extends CometExpressionSerde[Abs] with MathExprBase {
         childExpr,
         failOnErrorExpr)
     optExprWithInfo(optExpr, expr, expr.child)
-  }
-}
-
-object CometTan extends CometExpressionSerde[Tan] {
-
-  override def getSupportLevel(expr: Tan): SupportLevel =
-    Incompatible(
-      Some(
-        "tan(-0.0) produces incorrect result" +
-          " (https://github.com/apache/datafusion-comet/issues/1897)"))
-
-  override def convert(
-      expr: Tan,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val childExpr = expr.children.map(exprToProtoInternal(_, inputs, binding))
-    val optExpr = scalarFunctionExprToProto("tan", childExpr: _*)
-    optExprWithInfo(optExpr, expr, expr.children: _*)
   }
 }
 

@@ -67,7 +67,8 @@ class CometExecIterator(
     numParts: Int,
     partitionIndex: Int,
     broadcastedHadoopConfForEncryption: Option[Broadcast[SerializableConfiguration]] = None,
-    encryptedFilePaths: Seq[String] = Seq.empty)
+    encryptedFilePaths: Seq[String] = Seq.empty,
+    shuffleBlockIterators: Map[Int, CometShuffleBlockIterator] = Map.empty)
     extends Iterator[ColumnarBatch]
     with Logging {
 
@@ -78,8 +79,13 @@ class CometExecIterator(
   private val taskAttemptId = TaskContext.get().taskAttemptId
   private val taskCPUs = TaskContext.get().cpus()
   private val cometTaskMemoryManager = new CometTaskMemoryManager(id, taskAttemptId)
-  private val cometBatchIterators = inputs.map { iterator =>
-    new CometBatchIterator(iterator, nativeUtil)
+  // Build a mixed array of iterators: CometShuffleBlockIterator for shuffle
+  // scan indices, CometBatchIterator for regular scan indices.
+  private val inputIterators: Array[Object] = inputs.zipWithIndex.map {
+    case (_, idx) if shuffleBlockIterators.contains(idx) =>
+      shuffleBlockIterators(idx).asInstanceOf[Object]
+    case (iterator, _) =>
+      new CometBatchIterator(iterator, nativeUtil).asInstanceOf[Object]
   }.toArray
 
   private val plan = {
@@ -106,7 +112,7 @@ class CometExecIterator(
 
     nativeLib.createPlan(
       id,
-      cometBatchIterators,
+      inputIterators,
       protobufQueryPlan,
       protobufSparkConfigs,
       numParts,
@@ -132,14 +138,10 @@ class CometExecIterator(
   private def getNextBatch: Option[ColumnarBatch] = {
     assert(partitionIndex >= 0 && partitionIndex < numParts)
 
-    if (tracingEnabled) {
-      traceMemoryUsage()
-    }
-
     val ctx = TaskContext.get()
 
     try {
-      withTrace(
+      val result = withTrace(
         s"getNextBatch[JVM] stage=${ctx.stageId()}",
         tracingEnabled, {
           nativeUtil.getNextBatch(
@@ -148,6 +150,12 @@ class CometExecIterator(
               nativeLib.executePlan(ctx.stageId(), partitionIndex, plan, arrayAddrs, schemaAddrs)
             })
         })
+
+      if (tracingEnabled) {
+        traceMemoryUsage()
+      }
+
+      result
     } catch {
       // Handle CometQueryExecutionException with JSON payload first
       case e: CometQueryExecutionException =>
@@ -229,6 +237,7 @@ class CometExecIterator(
         currentBatch = null
       }
       nativeUtil.close()
+      shuffleBlockIterators.values.foreach(_.close())
       nativeLib.releasePlan(plan)
 
       if (tracingEnabled) {
@@ -245,13 +254,7 @@ class CometExecIterator(
   }
 
   private def traceMemoryUsage(): Unit = {
-    nativeLib.logMemoryUsage("jvm_heapUsed", memoryMXBean.getHeapMemoryUsage.getUsed)
-    val totalTaskMemory = cometTaskMemoryManager.internal.getMemoryConsumptionForThisTask
-    val cometTaskMemory = cometTaskMemoryManager.getUsed
-    val sparkTaskMemory = totalTaskMemory - cometTaskMemory
-    val threadId = Thread.currentThread().getId
-    nativeLib.logMemoryUsage(s"task_memory_comet_$threadId", cometTaskMemory)
-    nativeLib.logMemoryUsage(s"task_memory_spark_$threadId", sparkTaskMemory)
+    nativeLib.logMemoryUsage("jvm_heap_used", memoryMXBean.getHeapMemoryUsage.getUsed)
   }
 }
 
