@@ -149,10 +149,7 @@ fn compact_list<OffsetSize: OffsetSizeTrait>(
         let mut copied = 0usize;
 
         for i in start..end {
-            let is_null = value_nulls
-                .as_ref()
-                .map(|n| n.is_null(i))
-                .unwrap_or(false);
+            let is_null = value_nulls.as_ref().map(|n| n.is_null(i)).unwrap_or(false);
             if !is_null {
                 mutable.extend(0, i, i + 1);
                 copied += 1;
