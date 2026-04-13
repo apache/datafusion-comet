@@ -199,8 +199,7 @@ impl DeltaDvFilterMetrics {
     fn new(metrics: &ExecutionPlanMetricsSet, partition: usize) -> Self {
         Self {
             baseline: BaselineMetrics::new(metrics, partition),
-            num_deleted: MetricBuilder::new(metrics)
-                .counter("dv_rows_scheduled_delete", partition),
+            num_deleted: MetricBuilder::new(metrics).counter("dv_rows_scheduled_delete", partition),
             rows_dropped: MetricBuilder::new(metrics).counter("dv_rows_dropped", partition),
         }
     }

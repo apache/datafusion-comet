@@ -93,7 +93,11 @@ pub fn create_object_store(
                 builder = builder.with_virtual_hosted_style_request(false);
             }
             // Allow HTTP endpoints (MinIO, LocalStack, custom S3-compat)
-            if config.aws_endpoint.as_ref().map_or(false, |e| e.starts_with("http://")) {
+            if config
+                .aws_endpoint
+                .as_ref()
+                .is_some_and(|e| e.starts_with("http://"))
+            {
                 builder = builder.with_allow_http(true);
             }
 

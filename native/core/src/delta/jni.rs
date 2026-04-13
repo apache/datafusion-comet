@@ -29,10 +29,7 @@ use jni::{
 };
 use prost::Message;
 
-use crate::delta::{
-    scan::plan_delta_scan_with_predicate,
-    DeltaStorageConfig,
-};
+use crate::delta::{scan::plan_delta_scan_with_predicate, DeltaStorageConfig};
 use crate::errors::{try_unwrap_or_throw, CometError, CometResult};
 use datafusion_comet_proto::spark_operator::{
     DeltaPartitionValue, DeltaScanTask, DeltaScanTaskList,
@@ -108,8 +105,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_planDeltaScan(
             match datafusion_comet_proto::spark_expression::Expr::decode(bytes.as_slice()) {
                 Ok(expr) => Some(
                     crate::delta::predicate::catalyst_to_kernel_predicate_with_names(
-                        &expr,
-                        &col_names,
+                        &expr, &col_names,
                     ),
                 ),
                 Err(e) => {
@@ -122,11 +118,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_planDeltaScan(
             }
         });
 
-        let plan =
-            plan_delta_scan_with_predicate(&url_str, &config, version, kernel_predicate)
-                .map_err(|e| {
-                    CometError::Internal(format!("delta_kernel log replay failed: {e}"))
-                })?;
+        let plan = plan_delta_scan_with_predicate(&url_str, &config, version, kernel_predicate)
+            .map_err(|e| CometError::Internal(format!("delta_kernel log replay failed: {e}")))?;
 
         let tasks: Vec<DeltaScanTask> = plan
             .entries
@@ -155,17 +148,15 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_planDeltaScan(
             })
             .collect();
 
-        let column_mappings: Vec<
-            datafusion_comet_proto::spark_operator::DeltaColumnMapping,
-        > = plan
+        let column_mappings: Vec<datafusion_comet_proto::spark_operator::DeltaColumnMapping> = plan
             .column_mappings
             .into_iter()
-            .map(|(logical, physical)| {
-                datafusion_comet_proto::spark_operator::DeltaColumnMapping {
+            .map(
+                |(logical, physical)| datafusion_comet_proto::spark_operator::DeltaColumnMapping {
                     logical_name: logical,
                     physical_name: physical,
-                }
-            })
+                },
+            )
             .collect();
 
         let msg = DeltaScanTaskList {
@@ -204,10 +195,7 @@ fn resolve_file_path(table_root: &str, relative: &str) -> String {
 /// [`DeltaStorageConfig`]. Checks both kernel-style keys (`aws_access_key_id`)
 /// and Hadoop-style keys (`fs.s3a.access.key`) since Comet's
 /// `NativeConfig.extractObjectStoreOptions` passes the latter.
-fn extract_storage_config(
-    env: &mut Env,
-    jmap: &JMap<'_>,
-) -> CometResult<DeltaStorageConfig> {
+fn extract_storage_config(env: &mut Env, jmap: &JMap<'_>) -> CometResult<DeltaStorageConfig> {
     // Helper: try kernel key first, fall back to Hadoop key.
     let get = |env: &mut Env, k1: &str, k2: &str| -> CometResult<Option<String>> {
         let v = map_get_string(env, jmap, k1)?;
@@ -221,8 +209,11 @@ fn extract_storage_config(
         aws_access_key: get(env, "aws_access_key_id", "fs.s3a.access.key")?,
         aws_secret_key: get(env, "aws_secret_access_key", "fs.s3a.secret.key")?,
         aws_session_token: get(env, "aws_session_token", "fs.s3a.session.token")?,
-        aws_region: get(env, "aws_region", "fs.s3a.endpoint.region")?
-            .or(map_get_string(env, jmap, "fs.s3a.region")?),
+        aws_region: get(env, "aws_region", "fs.s3a.endpoint.region")?.or(map_get_string(
+            env,
+            jmap,
+            "fs.s3a.region",
+        )?),
         aws_endpoint: get(env, "aws_endpoint", "fs.s3a.endpoint")?,
         aws_force_path_style: get(env, "aws_force_path_style", "fs.s3a.path.style.access")?
             .map(|s| s == "true")
@@ -234,10 +225,7 @@ fn extract_storage_config(
 }
 
 /// Read a Java `String[]` into a `Vec<String>`. Returns empty vec for null arrays.
-fn read_string_array(
-    env: &mut Env,
-    arr: &jni::objects::JObjectArray,
-) -> CometResult<Vec<String>> {
+fn read_string_array(env: &mut Env, arr: &jni::objects::JObjectArray) -> CometResult<Vec<String>> {
     if arr.is_null() {
         return Ok(Vec::new());
     }
@@ -256,11 +244,7 @@ fn read_string_array(
 
 /// `map.get(key)` for a `java.util.Map<String, String>` surfaced as a
 /// `JMap`. Returns `None` if the key is absent or the value is `null`.
-fn map_get_string(
-    env: &mut Env,
-    jmap: &JMap<'_>,
-    key: &str,
-) -> CometResult<Option<String>> {
+fn map_get_string(env: &mut Env, jmap: &JMap<'_>, key: &str) -> CometResult<Option<String>> {
     let key_obj = env.new_string(key)?;
     let key_jobj: JObject = key_obj.into();
     match jmap.get(env, &key_jobj)? {

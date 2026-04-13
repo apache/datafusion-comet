@@ -107,8 +107,7 @@ async fn delta_end_to_end_read_unpartitioned() {
 
     // --- 2. Kernel-side log replay: list the active files ---
     let config = DeltaStorageConfig::default();
-    let (entries, version) =
-        list_delta_files(table_dir.to_str().unwrap(), &config, None).unwrap();
+    let (entries, version) = list_delta_files(table_dir.to_str().unwrap(), &config, None).unwrap();
 
     assert_eq!(version, 0);
     assert_eq!(entries.len(), 1);

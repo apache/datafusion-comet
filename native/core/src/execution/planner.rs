@@ -1355,10 +1355,11 @@ impl PhysicalPlanner {
                 // their own FileGroup (= one partition per DV'd file), and a
                 // DeltaDvFilterExec wraps the child ExecutionPlan to drop the
                 // deleted rows batch-by-batch.
-                let common = scan
-                    .common
-                    .as_ref()
-                    .ok_or_else(|| GeneralError("DeltaScan proto missing 'common' field (Scala serialization error)".into()))?;
+                let common = scan.common.as_ref().ok_or_else(|| {
+                    GeneralError(
+                        "DeltaScan proto missing 'common' field (Scala serialization error)".into(),
+                    )
+                })?;
 
                 let required_schema: SchemaRef =
                     convert_spark_types_to_arrow_schema(common.required_schema.as_slice());
@@ -1416,8 +1417,7 @@ impl PhysicalPlanner {
                     .data_filters
                     .iter()
                     .map(|expr| {
-                        let filter =
-                            self.create_expr(expr, Arc::clone(&required_schema))?;
+                        let filter = self.create_expr(expr, Arc::clone(&required_schema))?;
                         if has_column_mapping {
                             let mut rewriter = ColumnMappingFilterRewriter {
                                 logical_to_physical: &logical_to_physical,
@@ -1439,10 +1439,7 @@ impl PhysicalPlanner {
                 // Build PartitionedFiles from our DeltaScanTasks. Kernel has already
                 // resolved each file path to an absolute URL on the driver, so we
                 // can thread them straight through.
-                let files = build_delta_partitioned_files(
-                    &scan.tasks,
-                    partition_schema.as_ref(),
-                )?;
+                let files = build_delta_partitioned_files(&scan.tasks, partition_schema.as_ref())?;
 
                 // Split files by DV presence. Each DV'd file becomes its own
                 // FileGroup so the DeltaDvFilterExec's per-partition mapping is
@@ -2981,10 +2978,7 @@ struct ColumnMappingFilterRewriter<'a> {
 impl TreeNodeRewriter for ColumnMappingFilterRewriter<'_> {
     type Node = Arc<dyn PhysicalExpr>;
 
-    fn f_down(
-        &mut self,
-        node: Self::Node,
-    ) -> datafusion::common::Result<Transformed<Self::Node>> {
+    fn f_down(&mut self, node: Self::Node) -> datafusion::common::Result<Transformed<Self::Node>> {
         if let Some(column) = node.as_any().downcast_ref::<Column>() {
             if let Some(physical_name) = self.logical_to_physical.get(column.name()) {
                 if let Some(idx) = self
@@ -3144,8 +3138,7 @@ fn build_delta_partitioned_files(
         // on the driver. Parse it the same way NativeScan does.
         let url = Url::parse(task.file_path.as_ref())
             .map_err(|e| GeneralError(format!("Invalid Delta file URL: {e}")))?;
-        let path =
-            Path::from_url_path(url.path()).map_err(|e| GeneralError(e.to_string()))?;
+        let path = Path::from_url_path(url.path()).map_err(|e| GeneralError(e.to_string()))?;
 
         let mut partitioned_file = PartitionedFile::new(
             // placeholder — overwritten below by object_meta.location
@@ -3165,14 +3158,12 @@ fn build_delta_partitioned_files(
                 .find(|p| p.name == *field.name());
 
             let scalar = match proto_value.and_then(|p| p.value.clone()) {
-                Some(s) => {
-                    ScalarValue::try_from_string(s, field.data_type()).map_err(|e| {
-                        GeneralError(format!(
-                            "Failed to parse Delta partition value for column '{}': {e}",
-                            field.name()
-                        ))
-                    })?
-                }
+                Some(s) => ScalarValue::try_from_string(s, field.data_type()).map_err(|e| {
+                    GeneralError(format!(
+                        "Failed to parse Delta partition value for column '{}': {e}",
+                        field.name()
+                    ))
+                })?,
                 None => ScalarValue::try_from(field.data_type()).map_err(|e| {
                     GeneralError(format!(
                         "Failed to build null partition value for column '{}': {e}",

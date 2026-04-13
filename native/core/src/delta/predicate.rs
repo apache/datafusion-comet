@@ -24,17 +24,12 @@
 //! `Predicate::unknown()`, which disables data skipping for that
 //! subtree but is never incorrect.
 
-use delta_kernel::expressions::{
-    ArrayData, BinaryPredicateOp, Expression, Predicate, Scalar,
-};
-use delta_kernel::schema::{ArrayType, DataType};
 use datafusion_comet_proto::spark_expression::{self, expr::ExprStruct, literal, Expr};
+use delta_kernel::expressions::{ArrayData, BinaryPredicateOp, Expression, Predicate, Scalar};
+use delta_kernel::schema::{ArrayType, DataType};
 
 /// Translate with column name resolution for BoundReferences.
-pub fn catalyst_to_kernel_predicate_with_names(
-    expr: &Expr,
-    column_names: &[String],
-) -> Predicate {
+pub fn catalyst_to_kernel_predicate_with_names(expr: &Expr, column_names: &[String]) -> Predicate {
     translate_predicate(expr, column_names)
 }
 
@@ -56,57 +51,53 @@ fn translate_predicate(expr: &Expr, names: &[String]) -> Predicate {
             None => Predicate::unknown("missing_child"),
         },
         Some(ExprStruct::Eq(binary)) => binary_pred_n(
-            |a, b| Predicate::eq(a, b),
+            Predicate::eq,
             binary.left.as_deref(),
             binary.right.as_deref(),
             names,
         ),
         Some(ExprStruct::Neq(binary)) => binary_pred_n(
-            |a, b| Predicate::ne(a, b),
+            Predicate::ne,
             binary.left.as_deref(),
             binary.right.as_deref(),
             names,
         ),
         Some(ExprStruct::Lt(binary)) => binary_pred_n(
-            |a, b| Predicate::lt(a, b),
+            Predicate::lt,
             binary.left.as_deref(),
             binary.right.as_deref(),
             names,
         ),
         Some(ExprStruct::LtEq(binary)) => binary_pred_n(
-            |a, b| Predicate::le(a, b),
+            Predicate::le,
             binary.left.as_deref(),
             binary.right.as_deref(),
             names,
         ),
         Some(ExprStruct::Gt(binary)) => binary_pred_n(
-            |a, b| Predicate::gt(a, b),
+            Predicate::gt,
             binary.left.as_deref(),
             binary.right.as_deref(),
             names,
         ),
         Some(ExprStruct::GtEq(binary)) => binary_pred_n(
-            |a, b| Predicate::ge(a, b),
+            Predicate::ge,
             binary.left.as_deref(),
             binary.right.as_deref(),
             names,
         ),
-        Some(ExprStruct::And(binary)) => {
-            match (binary.left.as_deref(), binary.right.as_deref()) {
-                (Some(l), Some(r)) => {
-                    Predicate::and(translate_predicate(l, names), translate_predicate(r, names))
-                }
-                _ => Predicate::unknown("and_missing_child"),
+        Some(ExprStruct::And(binary)) => match (binary.left.as_deref(), binary.right.as_deref()) {
+            (Some(l), Some(r)) => {
+                Predicate::and(translate_predicate(l, names), translate_predicate(r, names))
             }
-        }
-        Some(ExprStruct::Or(binary)) => {
-            match (binary.left.as_deref(), binary.right.as_deref()) {
-                (Some(l), Some(r)) => {
-                    Predicate::or(translate_predicate(l, names), translate_predicate(r, names))
-                }
-                _ => Predicate::unknown("or_missing_child"),
+            _ => Predicate::unknown("and_missing_child"),
+        },
+        Some(ExprStruct::Or(binary)) => match (binary.left.as_deref(), binary.right.as_deref()) {
+            (Some(l), Some(r)) => {
+                Predicate::or(translate_predicate(l, names), translate_predicate(r, names))
             }
-        }
+            _ => Predicate::unknown("or_missing_child"),
+        },
         Some(ExprStruct::Not(unary)) => match unary.child.as_deref() {
             Some(child) => Predicate::not(translate_predicate(child, names)),
             None => Predicate::unknown("not_missing_child"),
@@ -130,7 +121,7 @@ fn translate_in(in_expr: &spark_expression::In, names: &[String]) -> Predicate {
     let scalars: Vec<Scalar> = in_expr
         .lists
         .iter()
-        .filter_map(|item| catalyst_literal_to_scalar(item))
+        .filter_map(catalyst_literal_to_scalar)
         .collect();
 
     if scalars.is_empty() {
@@ -229,8 +220,8 @@ pub fn catalyst_to_kernel_expression_with_names(
 fn catalyst_literal_to_kernel(lit: &spark_expression::Literal) -> Expression {
     match &lit.value {
         Some(literal::Value::BoolVal(b)) => Expression::literal(*b),
-        Some(literal::Value::ByteVal(v)) => Expression::literal(*v as i32),
-        Some(literal::Value::ShortVal(v)) => Expression::literal(*v as i32),
+        Some(literal::Value::ByteVal(v)) => Expression::literal(*v),
+        Some(literal::Value::ShortVal(v)) => Expression::literal(*v),
         Some(literal::Value::IntVal(v)) => Expression::literal(*v),
         Some(literal::Value::LongVal(v)) => Expression::literal(*v),
         Some(literal::Value::FloatVal(v)) => Expression::literal(*v),

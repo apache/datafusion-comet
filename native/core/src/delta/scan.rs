@@ -173,9 +173,7 @@ pub fn plan_delta_scan_with_predicate(
                     .metadata
                     .get(ColumnMetadataKey::ColumnMappingPhysicalName.as_ref())
                     .and_then(|v| match v {
-                        MetadataValue::String(phys) => {
-                            Some((field.name().clone(), phys.clone()))
-                        }
+                        MetadataValue::String(phys) => Some((field.name().clone(), phys.clone())),
                         _ => None,
                     })
             })
@@ -214,8 +212,7 @@ pub fn plan_delta_scan_with_predicate(
         let meta: delta_kernel::scan::ScanMetadata = meta_result?;
         raw = meta.visit_scan_files(
             raw,
-            |acc: &mut Vec<RawEntry>,
-             scan_file: delta_kernel::scan::state::ScanFile| {
+            |acc: &mut Vec<RawEntry>, scan_file: delta_kernel::scan::state::ScanFile| {
                 let num_records = scan_file.stats.as_ref().map(|s| s.num_records);
                 acc.push(RawEntry {
                     path: scan_file.path,
@@ -243,9 +240,12 @@ pub fn plan_delta_scan_with_predicate(
         let deleted_row_indexes = if r.dv_info.has_vector() {
             r.dv_info
                 .get_row_indexes(&engine, &table_root_url)?
-                .ok_or_else(|| DeltaError::Internal(
-                    format!("DV has_vector() true but get_row_indexes() returned None for {}", r.path),
-                ))?
+                .ok_or_else(|| {
+                    DeltaError::Internal(format!(
+                        "DV has_vector() true but get_row_indexes() returned None for {}",
+                        r.path
+                    ))
+                })?
         } else {
             Vec::new()
         };
@@ -307,13 +307,12 @@ pub(crate) fn normalize_url(url_str: &str) -> DeltaResult<Url> {
         ensure_trailing_slash(&mut url);
         Ok(url)
     } else {
-        let abs_path =
-            std::path::Path::new(url_str)
-                .canonicalize()
-                .map_err(|e| DeltaError::PathResolution {
-                    path: url_str.to_string(),
-                    source: e,
-                })?;
+        let abs_path = std::path::Path::new(url_str).canonicalize().map_err(|e| {
+            DeltaError::PathResolution {
+                path: url_str.to_string(),
+                source: e,
+            }
+        })?;
         Url::from_directory_path(&abs_path).map_err(|_| DeltaError::PathToUrl {
             path: abs_path.display().to_string(),
         })
