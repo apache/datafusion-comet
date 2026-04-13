@@ -1385,7 +1385,7 @@ mod tests {
 
         // scale >= 0, adj_exp < -6 → scientific notation (Spark LEGACY mode)
         assert_eq!(decimal128_to_java_string(0, 18), "0E-18"); // adj_exp = -18
-        assert_eq!(decimal128_to_java_string(0, 7), "0E-7");   // adj_exp = -7
+        assert_eq!(decimal128_to_java_string(0, 7), "0E-7"); // adj_exp = -7
         assert_eq!(decimal128_to_java_string(1, 7), "1E-7");
         assert_eq!(decimal128_to_java_string(1, 18), "1E-18");
 
