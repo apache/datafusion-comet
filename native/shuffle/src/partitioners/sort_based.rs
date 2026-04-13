@@ -17,12 +17,13 @@
 
 use crate::metrics::ShufflePartitionerMetrics;
 use crate::partitioners::ShufflePartitioner;
-use crate::writers::PartitionWriter;
+use crate::writers::BufBatchWriter;
 use crate::{comet_partitioning, CometPartitioning, CompressionCodec, ShuffleBlockWriter};
 use arrow::array::{ArrayRef, RecordBatch, UInt32Array};
 use arrow::compute::take;
 use arrow::datatypes::SchemaRef;
 use datafusion::common::DataFusionError;
+use datafusion::execution::disk_manager::RefCountedTempFile;
 use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion_comet_spark_expr::murmur3::create_murmur3_hashes;
@@ -33,14 +34,106 @@ use std::io::{BufWriter, Seek, Write};
 use std::sync::Arc;
 use tokio::time::Instant;
 
+/// Per-partition writer that owns a persistent BufBatchWriter with BatchCoalescer,
+/// so small batches are accumulated to batch_size before encoding.
+struct PartitionSpillWriter {
+    /// The BufBatchWriter that coalesces and encodes batches.
+    /// None until the first batch is written to this partition.
+    writer: Option<BufBatchWriter<ShuffleBlockWriter, File>>,
+    /// Temp file handle — kept alive so the file isn't deleted until we're done
+    _temp_file: Option<RefCountedTempFile>,
+    /// Path to the spill file for copying in shuffle_write
+    spill_path: Option<std::path::PathBuf>,
+}
+
+impl PartitionSpillWriter {
+    fn new() -> Self {
+        Self {
+            writer: None,
+            _temp_file: None,
+            spill_path: None,
+        }
+    }
+
+    fn ensure_writer(
+        &mut self,
+        runtime: &RuntimeEnv,
+        shuffle_block_writer: &ShuffleBlockWriter,
+        write_buffer_size: usize,
+        batch_size: usize,
+    ) -> datafusion::common::Result<()> {
+        if self.writer.is_none() {
+            let temp_file = runtime
+                .disk_manager
+                .create_tmp_file("sort shuffle spill")?;
+            let path = temp_file.path().to_path_buf();
+            let file = OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&path)
+                .map_err(|e| {
+                    DataFusionError::Execution(format!("Error creating spill file: {e}"))
+                })?;
+            self.writer = Some(BufBatchWriter::new(
+                shuffle_block_writer.clone(),
+                file,
+                write_buffer_size,
+                batch_size,
+            ));
+            self.spill_path = Some(path);
+            self._temp_file = Some(temp_file);
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn write_batch(
+        &mut self,
+        batch: &RecordBatch,
+        runtime: &RuntimeEnv,
+        shuffle_block_writer: &ShuffleBlockWriter,
+        write_buffer_size: usize,
+        batch_size: usize,
+        encode_time: &datafusion::physical_plan::metrics::Time,
+        write_time: &datafusion::physical_plan::metrics::Time,
+    ) -> datafusion::common::Result<()> {
+        self.ensure_writer(runtime, shuffle_block_writer, write_buffer_size, batch_size)?;
+        self.writer
+            .as_mut()
+            .unwrap()
+            .write(batch, encode_time, write_time)?;
+        Ok(())
+    }
+
+    fn flush(
+        &mut self,
+        encode_time: &datafusion::physical_plan::metrics::Time,
+        write_time: &datafusion::physical_plan::metrics::Time,
+    ) -> datafusion::common::Result<()> {
+        if let Some(writer) = &mut self.writer {
+            writer.flush(encode_time, write_time)?;
+        }
+        Ok(())
+    }
+
+    fn path(&self) -> Option<&std::path::Path> {
+        self.spill_path.as_deref()
+    }
+}
+
 /// A shuffle repartitioner that sorts each batch by partition ID using counting sort,
 /// then slices and writes per-partition sub-batches immediately. This avoids
 /// per-partition Arrow builders, so memory usage is O(batch_size) regardless of
 /// partition count.
+///
+/// Each partition has a persistent BufBatchWriter with a BatchCoalescer that accumulates
+/// small slices to batch_size before encoding, avoiding per-slice IPC schema overhead.
 pub(crate) struct SortBasedPartitioner {
     output_data_file: String,
     output_index_file: String,
-    partition_writers: Vec<PartitionWriter>,
+    partition_writers: Vec<PartitionSpillWriter>,
+    shuffle_block_writer: ShuffleBlockWriter,
     partitioning: CometPartitioning,
     runtime: Arc<RuntimeEnv>,
     metrics: ShufflePartitionerMetrics,
@@ -71,8 +164,8 @@ impl SortBasedPartitioner {
         let num_output_partitions = partitioning.partition_count();
         let shuffle_block_writer = ShuffleBlockWriter::try_new(schema.as_ref(), codec.clone())?;
         let partition_writers = (0..num_output_partitions)
-            .map(|_| PartitionWriter::try_new(shuffle_block_writer.clone()))
-            .collect::<datafusion::common::Result<Vec<_>>>()?;
+            .map(|_| PartitionSpillWriter::new())
+            .collect();
         let reservation = MemoryConsumer::new(format!("SortBasedPartitioner[{partition}]"))
             .register(&runtime.memory_pool);
         let hashes_buf = match partitioning {
@@ -85,6 +178,7 @@ impl SortBasedPartitioner {
             output_data_file,
             output_index_file,
             partition_writers,
+            shuffle_block_writer,
             partitioning,
             runtime,
             metrics,
@@ -222,12 +316,14 @@ impl SortBasedPartitioner {
                 continue;
             }
             let partition_batch = sorted_batch.slice(start, len);
-            self.partition_writers[partition_id].spill_batch(
+            self.partition_writers[partition_id].write_batch(
                 &partition_batch,
                 &self.runtime,
-                &self.metrics,
+                &self.shuffle_block_writer,
                 self.write_buffer_size,
                 self.batch_size,
+                &self.metrics.encode_time,
+                &self.metrics.write_time,
             )?;
         }
         Ok(())
@@ -259,6 +355,11 @@ impl ShufflePartitioner for SortBasedPartitioner {
         let mut offsets = vec![0i64; num_output_partitions + 1];
         let data_file = self.output_data_file.clone();
         let index_file = self.output_index_file.clone();
+
+        // Flush all partition writers to ensure all data is written to spill files
+        for writer in &mut self.partition_writers {
+            writer.flush(&self.metrics.encode_time, &self.metrics.write_time)?;
+        }
 
         let output_data = OpenOptions::new()
             .write(true)
