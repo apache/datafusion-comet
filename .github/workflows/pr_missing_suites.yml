@@ -18,6 +18,9 @@
 name: Check that all test suites are added to PR workflows
 
 on:
+  push:
+    branches:
+      - main
   pull_request:
     types: [opened, synchronize, reopened]
 
