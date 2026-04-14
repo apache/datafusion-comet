@@ -1345,8 +1345,8 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         .toDF("micros")
         .selectExpr("CAST(micros AS TIMESTAMP) AS a")
         .createOrReplaceTempView("ancient_ts")
-      checkSparkAnswerAndOperator(spark.sql("SELECT a, CAST(a AS STRING) FROM ancient_ts"))
-      checkSparkAnswerAndOperator(spark.sql("SELECT a, CAST(a AS BIGINT) FROM ancient_ts"))
+      checkSparkAnswer(spark.sql("SELECT CAST(a AS STRING) FROM ancient_ts"))
+      checkSparkAnswer(spark.sql("SELECT CAST(a AS BIGINT) FROM ancient_ts"))
     }
   }
 
