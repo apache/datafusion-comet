@@ -225,7 +225,7 @@ object CometShuffleExchangeExec
     if (nativeShuffleSupported(op) || columnarShuffleSupported(op)) {
       Compatible()
     } else {
-      Unsupported()
+      Unsupported("Comet shuffle is not enabled or the partitioning is not supported")
     }
   }
 

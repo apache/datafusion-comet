@@ -42,7 +42,7 @@ object CometMakeDecimal extends CometExpressionSerde[MakeDecimal] {
   override def getSupportLevel(expr: MakeDecimal): SupportLevel = {
     expr.child.dataType match {
       case LongType => Compatible()
-      case other => Unsupported(Some(s"Unsupported input data type: $other"))
+      case other => Unsupported(s"Unsupported input data type: $other")
     }
   }
 

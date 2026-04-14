@@ -309,7 +309,7 @@ object CometUnixTimestamp extends CometExpressionSerde[UnixTimestamp] {
       Compatible()
     } else {
       val inputType = expr.children.head.dataType
-      Unsupported(Some(s"unix_timestamp does not support input type: $inputType"))
+      Unsupported(s"unix_timestamp does not support input type: $inputType")
     }
   }
 
@@ -394,7 +394,7 @@ object CometTruncDate extends CometExpressionSerde[TruncDate] {
         if (supportedFormats.contains(fmt.toString.toLowerCase(Locale.ROOT))) {
           Compatible()
         } else {
-          Unsupported(Some(s"Format $fmt is not supported"))
+          Unsupported(s"Format $fmt is not supported")
         }
       case _ =>
         Incompatible(
@@ -454,7 +454,7 @@ object CometTruncTimestamp extends CometExpressionSerde[TruncTimestamp] {
                   " (https://github.com/apache/datafusion-comet/issues/2649)"))
           }
         } else {
-          Unsupported(Some(s"Format $fmt is not supported"))
+          Unsupported(s"Format $fmt is not supported")
         }
       case _ =>
         Incompatible(
@@ -550,12 +550,11 @@ object CometDateFormat extends CometExpressionSerde[DateFormatClass] {
           }
         } else {
           Unsupported(
-            Some(
-              s"Format '$format' is not supported. Supported formats: " +
-                supportedFormats.keys.mkString(", ")))
+            s"Format '$format' is not supported. Supported formats: " +
+              supportedFormats.keys.mkString(", "))
         }
       case _ =>
-        Unsupported(Some("Only literal format strings are supported"))
+        Unsupported("Only literal format strings are supported")
     }
   }
 

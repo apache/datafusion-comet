@@ -1188,13 +1188,13 @@ object CometExplodeExec extends CometOperatorSerde[GenerateExec] {
 
   override def getSupportLevel(op: GenerateExec): SupportLevel = {
     if (!op.generator.deterministic) {
-      return Unsupported(Some("Only deterministic generators are supported"))
+      return Unsupported("Only deterministic generators are supported")
     }
     if (op.generator.children.length != 1) {
-      return Unsupported(Some("generators with multiple inputs are not supported"))
+      return Unsupported("generators with multiple inputs are not supported")
     }
     if (op.generator.nodeName.toLowerCase(Locale.ROOT) != "explode") {
-      return Unsupported(Some(s"Unsupported generator: ${op.generator.nodeName}"))
+      return Unsupported(s"Unsupported generator: ${op.generator.nodeName}")
     }
     if (op.outer) {
       // DataFusion UnnestExec has different semantics to Spark for this case
@@ -1207,9 +1207,9 @@ object CometExplodeExec extends CometOperatorSerde[GenerateExec] {
       case _: MapType =>
         // TODO add support for map types
         // https://github.com/apache/datafusion-comet/issues/2837
-        Unsupported(Some("Comet only supports explode/explode_outer for arrays, not maps"))
+        Unsupported("Comet only supports explode/explode_outer for arrays, not maps")
       case other =>
-        Unsupported(Some(s"Unsupported data type: $other"))
+        Unsupported(s"Unsupported data type: $other")
     }
   }
 
@@ -1524,11 +1524,11 @@ object CometHashAggregateExec
     // CometExecRule does not allow mixed Spark/Comet aggregates
     if (!CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE.get(op.conf) &&
       op.aggregateExpressions.exists(expr => expr.mode == Partial || expr.mode == PartialMerge)) {
-      return Unsupported(Some("Partial aggregates disabled via test config"))
+      return Unsupported("Partial aggregates disabled via test config")
     }
     if (!CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.get(op.conf) &&
       op.aggregateExpressions.exists(_.mode == Final)) {
-      return Unsupported(Some("Final aggregates disabled via test config"))
+      return Unsupported("Final aggregates disabled via test config")
     }
     Compatible()
   }

@@ -69,7 +69,7 @@ object CometLower extends CometCaseConversionBase[Lower]("lower")
 
 object CometLength extends CometScalarFunction[Length]("length") {
   override def getSupportLevel(expr: Length): SupportLevel = expr.child.dataType match {
-    case _: BinaryType => Unsupported(Some("Length on BinaryType is not supported"))
+    case _: BinaryType => Unsupported("Length on BinaryType is not supported")
     case _ => Compatible()
   }
 }
@@ -139,7 +139,7 @@ object CometLeft extends CometExpressionSerde[Left] {
   override def getSupportLevel(expr: Left): SupportLevel = {
     expr.str.dataType match {
       case _: BinaryType | _: StringType => Compatible()
-      case _ => Unsupported(Some(s"LEFT does not support ${expr.str.dataType}"))
+      case _ => Unsupported(s"LEFT does not support ${expr.str.dataType}")
     }
   }
 }
@@ -182,7 +182,7 @@ object CometRight extends CometExpressionSerde[Right] {
   override def getSupportLevel(expr: Right): SupportLevel = {
     expr.str.dataType match {
       case _: StringType => Compatible()
-      case _ => Unsupported(Some(s"RIGHT does not support ${expr.str.dataType}"))
+      case _ => Unsupported(s"RIGHT does not support ${expr.str.dataType}")
     }
   }
 }
@@ -271,10 +271,10 @@ object CometStringRPad extends CometExpressionSerde[StringRPad] {
 
   override def getSupportLevel(expr: StringRPad): SupportLevel = {
     if (expr.str.isInstanceOf[Literal]) {
-      return Unsupported(Some("Scalar values are not supported for the str argument"))
+      return Unsupported("Scalar values are not supported for the str argument")
     }
     if (!expr.pad.isInstanceOf[Literal]) {
-      return Unsupported(Some("Only scalar values are supported for the pad argument"))
+      return Unsupported("Only scalar values are supported for the pad argument")
     }
     Compatible()
   }
@@ -296,10 +296,10 @@ object CometStringLPad extends CometExpressionSerde[StringLPad] {
 
   override def getSupportLevel(expr: StringLPad): SupportLevel = {
     if (expr.str.isInstanceOf[Literal]) {
-      return Unsupported(Some("Scalar values are not supported for the str argument"))
+      return Unsupported("Scalar values are not supported for the str argument")
     }
     if (!expr.pad.isInstanceOf[Literal]) {
-      return Unsupported(Some("Only scalar values are supported for the pad argument"))
+      return Unsupported("Only scalar values are supported for the pad argument")
     }
     Compatible()
   }
@@ -330,7 +330,7 @@ object CometRegExpReplace extends CometExpressionSerde[RegExpReplace] {
     expr.pos match {
       case Literal(value, DataTypes.IntegerType) if value == 1 => Compatible()
       case _ =>
-        Unsupported(Some("Comet only supports regexp_replace with an offset of 1 (no offset)."))
+        Unsupported("Comet only supports regexp_replace with an offset of 1 (no offset).")
     }
   }
 
