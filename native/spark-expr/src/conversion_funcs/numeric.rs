@@ -67,8 +67,8 @@ pub(crate) fn is_df_cast_from_decimal_spark_compatible(to_type: &DataType) -> bo
             | DataType::Int16
             | DataType::Int32
             | DataType::Int64
-            | DataType::Float32
-            | DataType::Float64
+            | DataType::Float32 // DataFusion divides raw i128 by 10^scale in f64, which is
+            | DataType::Float64 // ULP-equivalent to Spark's BigDecimal.doubleValue/floatValue
             | DataType::Decimal128(_, _)
             | DataType::Decimal256(_, _)
             | DataType::Utf8 // note that there can be formatting differences

@@ -637,6 +637,18 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       DataTypes.LongType)
   }
 
+  test("cast DecimalType(38,18) to FloatType") {
+    castTest(generateDecimalsPrecision38Scale18(), DataTypes.FloatType)
+  }
+
+  test("cast DecimalType(38,18) to DoubleType") {
+    castTest(generateDecimalsPrecision38Scale18(), DataTypes.DoubleType)
+  }
+
+  test("cast DecimalType(38,18) to BooleanType") {
+    castTest(generateDecimalsPrecision38Scale18(), DataTypes.BooleanType)
+  }
+
   test("cast DecimalType(10,2) to StringType") {
     castTest(generateDecimalsPrecision10Scale2(), DataTypes.StringType)
   }
