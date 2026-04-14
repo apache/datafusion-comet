@@ -55,6 +55,33 @@ SELECT cast(d5 as double) FROM test_cast_decimal
 query
 SELECT cast(d5 as boolean) FROM test_cast_decimal
 
+-- decimal(38,18) table: covers boundary values that exercise the i128 code path
+statement
+CREATE TABLE test_cast_decimal_high_precision(d38 decimal(38,18)) USING parquet
+
+statement
+INSERT INTO test_cast_decimal_high_precision VALUES
+  (CAST('99999999999999999999.999999999999999999' AS decimal(38,18))),
+  (CAST('-99999999999999999999.999999999999999999' AS decimal(38,18))),
+  (CAST('9223372036854775807.000000000000000000' AS decimal(38,18))),
+  (CAST('-9223372036854775808.000000000000000000' AS decimal(38,18))),
+  (CAST('1.000000000000000000' AS decimal(38,18))),
+  (CAST('-1.000000000000000000' AS decimal(38,18))),
+  (CAST('0.000000000000000000' AS decimal(38,18))),
+  (NULL)
+
+-- decimal(38,18) column to FLOAT
+query
+SELECT cast(d38 as float) FROM test_cast_decimal_high_precision
+
+-- decimal(38,18) column to DOUBLE
+query
+SELECT cast(d38 as double) FROM test_cast_decimal_high_precision
+
+-- decimal(38,18) column to BOOLEAN
+query
+SELECT cast(d38 as boolean) FROM test_cast_decimal_high_precision
+
 -- literal casts: decimal(10,2) to float
 query
 SELECT cast(cast(1.50 as decimal(10,2)) as float),

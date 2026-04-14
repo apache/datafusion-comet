@@ -67,11 +67,15 @@ pub(crate) fn is_df_cast_from_decimal_spark_compatible(to_type: &DataType) -> bo
             | DataType::Int16
             | DataType::Int32
             | DataType::Int64
-            | DataType::Float32 // DataFusion divides raw i128 by 10^scale in f64, which is
-            | DataType::Float64 // ULP-equivalent to Spark's BigDecimal.doubleValue/floatValue
+            | DataType::Float32 // DataFusion divides i128 by 10^scale in f64, then narrows to
+            | DataType::Float64 // f32 if needed; empirically matches Spark's BigDecimal.doubleValue
+                                // / floatValue for all tested values
             | DataType::Decimal128(_, _)
             | DataType::Decimal256(_, _)
             | DataType::Utf8 // note that there can be formatting differences
+                             // Note: Boolean is intentionally absent. Decimal-to-boolean uses a dedicated
+                             // spark_cast_decimal_to_boolean function (in cast.rs) that checks the raw i128
+                             // value, bypassing the DataFusion cast kernel entirely.
     )
 }
 
