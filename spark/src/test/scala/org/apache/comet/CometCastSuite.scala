@@ -1328,6 +1328,29 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("cast TimestampType to StringType - ancient timestamps") {
+    // Pre-1900 timestamps cannot go through Parquet (INT96 rejects them) so we create
+    // the data in-memory via microseconds-since-epoch cast to TimestampType.
+    withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC") {
+      // Epoch-micros for a few three-digit-year dates:
+      //   0100-03-01 00:00:00 UTC  = -59,006,361,600,000,000 µs from epoch
+      //   0500-06-15 12:30:00 UTC  = -46,374,377,400,000,000 µs from epoch
+      //   0999-12-31 23:59:59 UTC  = -30,610,224,001,000,000 µs from epoch
+      val ancientMicros = Seq(
+        -59006361600000000L, // 0100-03-01
+        -46374377400000000L, // 0500-06-15
+        -30610224001000000L) // 0999-12-31
+      ancientMicros
+        .toDF("micros")
+        .selectExpr("CAST(micros AS TIMESTAMP) AS a")
+        .createOrReplaceTempView("ancient_ts")
+      checkSparkAnswerAndOperator(
+        spark.sql("SELECT a, CAST(a AS STRING) FROM ancient_ts"))
+      checkSparkAnswerAndOperator(
+        spark.sql("SELECT a, CAST(a AS BIGINT) FROM ancient_ts"))
+    }
+  }
+
   test("cast TimestampType to DateType") {
     castTest(generateTimestamps(), DataTypes.DateType)
   }
@@ -1783,8 +1806,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       "1900-06-15T10:30:00Z",
       // last microsecond before epoch
       "1969-12-31T23:59:59.999999",
-      // year < 1000: Spark zero-pads to 4 digits (e.g. "0100-...")
-      "0100-03-01T00:00:00Z",
       // fractional-second trailing-zero stripping
       // .100000 → ".1", .123000 → ".123", .001000 → ".001", .000001 → ".000001"
       "2024-06-01T00:00:00.100000",
@@ -2012,7 +2033,12 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   private def roundtripParquet(df: DataFrame, tempDir: File): DataFrame = {
     val filename = new File(tempDir, s"castTest_${System.currentTimeMillis()}.parquet").toString
-    df.write.mode(SaveMode.Overwrite).parquet(filename)
+    // CORRECTED mode writes timestamps as proleptic Gregorian without rebase.
+    // Required because generateTimestamps() includes pre-1900 values (e.g. 1900-06-15)
+    // which trigger INT96's default EXCEPTION mode when written with certain timezones.
+    withSQLConf("spark.sql.parquet.int96RebaseModeInWrite" -> "CORRECTED") {
+      df.write.mode(SaveMode.Overwrite).parquet(filename)
+    }
     spark.read.parquet(filename)
   }
 }
