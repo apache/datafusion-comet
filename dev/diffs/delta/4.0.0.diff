@@ -1,0 +1,126 @@
+diff --git a/build.sbt b/build.sbt
+index e89a99c..e0137f3 100644
+--- a/build.sbt
++++ b/build.sbt
+@@ -53,6 +53,8 @@ val default_scala_version = settingKey[String]("Default Scala version")
+ Global / default_scala_version := scala213
+ 
+ val LATEST_RELEASED_SPARK_VERSION = "3.5.3"
++val cometVersion = "0.15.0-SNAPSHOT"
++ThisBuild / resolvers += Resolver.mavenLocal
+ val SPARK_MASTER_VERSION = "4.0.0"
+ val sparkVersion = settingKey[String]("Spark version")
+ spark / sparkVersion := getSparkVersion()
+@@ -432,6 +434,8 @@ lazy val spark = (project in file("spark"))
+       "org.apache.spark" %% "spark-sql" % sparkVersion.value % "test" classifier "tests",
+       "org.apache.spark" %% "spark-hive" % sparkVersion.value % "test" classifier "tests",
+       "org.mockito" % "mockito-inline" % "4.11.0" % "test",
++      // Comet regression testing
++      "org.apache.datafusion" % s"comet-spark-spark4.0_${scalaBinaryVersion.value}" % cometVersion % "test",
+     ),
+     Compile / packageBin / mappings := (Compile / packageBin / mappings).value ++
+         listPythonFiles(baseDirectory.value.getParentFile / "python"),
+diff --git a/spark/src/test/scala/org/apache/spark/sql/delta/CometSmokeTest.scala b/spark/src/test/scala/org/apache/spark/sql/delta/CometSmokeTest.scala
+new file mode 100644
+index 0000000..35f9456
+--- /dev/null
++++ b/spark/src/test/scala/org/apache/spark/sql/delta/CometSmokeTest.scala
+@@ -0,0 +1,55 @@
++/*
++ * Copyright (2021) The Delta Lake Project Authors.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ * http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.apache.spark.sql.delta
++
++import org.apache.spark.sql.{QueryTest, Row}
++import org.apache.spark.sql.delta.test.DeltaSQLCommandTest
++import org.apache.spark.sql.test.SharedSparkSession
++
++/**
++ * Smoke test asserting that Comet is actually loaded and executing queries when the
++ * Delta regression diff is applied. This catches silent configuration drift where
++ * Comet is on the classpath but not wired into the physical plan (e.g. a typo in
++ * `spark.plugins` that Spark silently ignores).
++ *
++ * This test is added by the Comet regression diff at
++ * `dev/diffs/delta/<version>.diff` in the Apache DataFusion Comet repository.
++ */
++class CometSmokeTest extends QueryTest with SharedSparkSession with DeltaSQLCommandTest {
++
++  test("Comet plugin is registered in SparkConf") {
++    val plugins = spark.conf.get("spark.plugins")
++    assert(plugins.contains("CometPlugin"),
++      s"Comet plugin not registered. spark.plugins=$plugins")
++  }
++
++  test("Comet operators appear in Delta query physical plan") {
++    withTempDir { dir =>
++      val path = dir.getCanonicalPath
++      spark.range(10).toDF("id")
++        .write.format("delta").save(path)
++
++      val df = spark.read.format("delta").load(path).filter("id > 2")
++      val planString = df.queryExecution.executedPlan.toString
++
++      assert(planString.contains("Comet"),
++        s"No Comet operators found in physical plan. Is Comet actually wired in?\n$planString")
++
++      checkAnswer(df, (3 until 10).map(i => Row(i)))
++    }
++  }
++}
+diff --git a/spark/src/test/scala/org/apache/spark/sql/delta/test/DeltaHiveTest.scala b/spark/src/test/scala/org/apache/spark/sql/delta/test/DeltaHiveTest.scala
+index ed74b41..57f4ffb 100644
+--- a/spark/src/test/scala/org/apache/spark/sql/delta/test/DeltaHiveTest.scala
++++ b/spark/src/test/scala/org/apache/spark/sql/delta/test/DeltaHiveTest.scala
+@@ -43,6 +43,17 @@ trait DeltaHiveTest extends SparkFunSuite with BeforeAndAfterAll { self: DeltaSQ
+     conf.set(SQLConf.V2_SESSION_CATALOG_IMPLEMENTATION.key, classOf[DeltaCatalog].getName)
+     conf.set(StaticSQLConf.SPARK_SESSION_EXTENSIONS.key,
+       classOf[DeltaSparkSessionExtension].getName)
++    conf.set("spark.plugins", "org.apache.spark.CometPlugin")
++    conf.set("spark.shuffle.manager",
++      "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++    conf.set("spark.comet.enabled", "true")
++    conf.set("spark.comet.exec.enabled", "true")
++    conf.set("spark.comet.exec.shuffle.enabled", "true")
++    conf.set("spark.comet.scan.enabled", "true")
++    conf.set("spark.comet.scan.deltaNative.enabled", "true")
++    conf.set("spark.comet.explainFallback.enabled", "true")
++    conf.set("spark.memory.offHeap.enabled", "true")
++    conf.set("spark.memory.offHeap.size", "10g")
+     _sc = new SparkContext("local", this.getClass.getName, conf)
+     _hiveContext = new TestHiveContext(_sc)
+     _session = _hiveContext.sparkSession
+diff --git a/spark/src/test/scala/org/apache/spark/sql/delta/test/DeltaSQLCommandTest.scala b/spark/src/test/scala/org/apache/spark/sql/delta/test/DeltaSQLCommandTest.scala
+index cb28a4f..a9aba34 100644
+--- a/spark/src/test/scala/org/apache/spark/sql/delta/test/DeltaSQLCommandTest.scala
++++ b/spark/src/test/scala/org/apache/spark/sql/delta/test/DeltaSQLCommandTest.scala
+@@ -35,5 +35,16 @@ trait DeltaSQLCommandTest extends SharedSparkSession {
+         classOf[DeltaSparkSessionExtension].getName)
+       .set(SQLConf.V2_SESSION_CATALOG_IMPLEMENTATION.key,
+         classOf[DeltaCatalog].getName)
++      .set("spark.plugins", "org.apache.spark.CometPlugin")
++      .set("spark.shuffle.manager",
++        "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++      .set("spark.comet.enabled", "true")
++      .set("spark.comet.exec.enabled", "true")
++      .set("spark.comet.exec.shuffle.enabled", "true")
++      .set("spark.comet.scan.enabled", "true")
++      .set("spark.comet.scan.deltaNative.enabled", "true")
++      .set("spark.comet.explainFallback.enabled", "true")
++      .set("spark.memory.offHeap.enabled", "true")
++      .set("spark.memory.offHeap.size", "10g")
+   }
+ }

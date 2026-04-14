@@ -1,0 +1,149 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+name: Delta Lake Regression Tests
+
+concurrency:
+  group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
+  cancel-in-progress: true
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - "benchmarks/**"
+      - "doc/**"
+      - "docs/**"
+      - "**.md"
+      - "native/core/benches/**"
+      - "native/spark-expr/benches/**"
+      - "spark/src/test/scala/org/apache/spark/sql/benchmark/**"
+  pull_request:
+    paths-ignore:
+      - "benchmarks/**"
+      - "doc/**"
+      - "docs/**"
+      - "**.md"
+      - "native/core/benches/**"
+      - "native/spark-expr/benches/**"
+      - "spark/src/test/scala/org/apache/spark/sql/benchmark/**"
+  # manual trigger
+  workflow_dispatch:
+
+env:
+  RUST_VERSION: stable
+  RUST_BACKTRACE: 1
+
+jobs:
+  # Build native library once and share with all test jobs
+  build-native:
+    name: Build Native Library
+    runs-on: ubuntu-24.04
+    container:
+      image: amd64/rust
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Rust & Java toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: ${{ env.RUST_VERSION }}
+          jdk-version: 17
+
+      - name: Restore Cargo cache
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/target
+          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-
+
+      - name: Build native library
+        # Use CI profile for faster builds (no LTO) and to share cache with pr_build_linux.yml.
+        run: |
+          cd native && cargo build --profile ci
+        env:
+          RUSTFLAGS: "-Ctarget-cpu=x86-64-v3"
+
+      - name: Save Cargo cache
+        uses: actions/cache/save@v5
+        if: github.ref == 'refs/heads/main'
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/target
+          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
+
+      - name: Upload native library
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-lib-delta-regression
+          path: native/target/ci/libcomet.so
+          retention-days: 1
+
+  delta-spark:
+    needs: build-native
+    strategy:
+      matrix:
+        os: [ubuntu-24.04]
+        java-version: [17]
+        delta-version:
+          - {full: '3.3.2', spark-short: '3.5', scala: '2.13', module: 'spark'}
+          - {full: '4.0.0', spark-short: '4.0', scala: '2.13', module: 'spark'}
+          - {full: '2.4.0', spark-short: '3.4', scala: '2.12', module: 'core'}
+      fail-fast: false
+    name: delta-regression/${{ matrix.os }}/delta-${{ matrix.delta-version.full }}/java-${{ matrix.java-version }}
+    runs-on: ${{ matrix.os }}
+    container:
+      image: amd64/rust
+    env:
+      SPARK_LOCAL_IP: localhost
+    steps:
+      - uses: actions/checkout@v6
+      - name: Setup Rust & Java toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: ${{ env.RUST_VERSION }}
+          jdk-version: ${{ matrix.java-version }}
+      - name: Download native library
+        uses: actions/download-artifact@v8
+        with:
+          name: native-lib-delta-regression
+          path: native/target/release/
+      - name: Build Comet
+        run: |
+          ./mvnw install -Prelease -DskipTests -Pspark-${{ matrix.delta-version.spark-short }}
+      - name: Setup Delta Lake
+        uses: ./.github/actions/setup-delta-builder
+        with:
+          delta-version: ${{ matrix.delta-version.full }}
+      - name: Run Comet smoke test (fail fast)
+        # Verify Comet is actually wired into Delta's test SparkSession before
+        # running the full suite. Catches silent config drift where the plugin
+        # is on the classpath but not applied to query plans.
+        run: |
+          cd delta-lake
+          build/sbt "${{ matrix.delta-version.module }}/testOnly org.apache.spark.sql.delta.CometSmokeTest"
+      - name: Run Delta Lake Spark tests
+        run: |
+          cd delta-lake
+          build/sbt "${{ matrix.delta-version.module }}/test"

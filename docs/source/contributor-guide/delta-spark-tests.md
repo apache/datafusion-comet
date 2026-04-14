@@ -63,6 +63,83 @@ to use Delta's older DV read strategy that inserts a `Project -> Filter` subtree
 (which Comet's plan rewrite can detect and strip), rather than the default
 metadata-row-index strategy that's opaque to plan-level rewriting.
 
+## Delta Lake Regression Suite
+
+In addition to Comet's own Delta test suites, we run Delta Lake's own Spark test suite with Comet
+enabled as a regression check. This is analogous to the [Iceberg regression suite](iceberg-spark-tests.md)
+and ensures that Comet's Spark plugin and shuffle manager don't break Delta Lake's existing
+functionality.
+
+The diffs patch three files in the Delta Lake source:
+
+- `build.sbt` — adds Comet as a test dependency
+- `DeltaSQLCommandTest` — injects Comet plugin and shuffle manager into `sparkConf`
+- `DeltaHiveTest` — injects the same config for Hive-based tests
+
+### Running locally
+
+The easiest way is the helper script, which builds Comet, clones Delta at the right tag, applies the
+diff, and runs tests in one command:
+
+```shell
+# smoke test only (fast — verifies Comet is wired in)
+dev/run-delta-regression.sh 3.3.2
+
+# a specific test class
+dev/run-delta-regression.sh 3.3.2 DeltaTimeTravelSuite
+
+# full Delta test suite (slow)
+dev/run-delta-regression.sh 3.3.2 full
+```
+
+Set `DELTA_WORKDIR=/path/to/checkout` to reuse an existing Delta clone between runs.
+
+To do the steps manually:
+
+1. Build and install Comet to the local Maven repository:
+
+```shell
+./mvnw install -Prelease -DskipTests -Pspark-3.5
+```
+
+2. Clone Delta Lake and apply the diff:
+
+```shell
+git clone --depth 1 --branch v3.3.2 https://github.com/delta-io/delta.git delta-lake
+cd delta-lake
+git apply ../datafusion-comet/dev/diffs/delta/3.3.2.diff
+```
+
+3. Run the Delta Spark tests:
+
+```shell
+SPARK_LOCAL_IP=localhost build/sbt "spark/test"
+```
+
+### Updating diffs
+
+To update a diff (e.g. after modifying test configuration), apply the existing diff, make your
+changes, then regenerate:
+
+```shell
+cd delta-lake
+git checkout -- .
+git apply ../datafusion-comet/dev/diffs/delta/3.3.2.diff
+
+# Make changes ...
+
+git diff > ../datafusion-comet/dev/diffs/delta/3.3.2.diff
+```
+
+Repeat for each Delta version (2.4.0, 3.3.2, 4.0.0). Each diff must be generated against its own
+tag.
+
+### Running in CI
+
+The `delta_regression_test.yml` workflow applies these diffs and runs Delta's test suite with Comet
+enabled. The test matrix covers Delta 2.4.0 (Spark 3.4), 3.3.2 (Spark 3.5), and 4.0.0 (Spark 4.0)
+with Java 17.
+
 ## Benchmarks
 
 ### Micro-benchmark
