@@ -18,15 +18,35 @@
 -- Config: spark.sql.session.timeZone=UTC
 -- ConfigMatrix: parquet.enable.dictionary=false,true
 
+-- bigint column
 statement
-CREATE TABLE test_timestamp_seconds(c0 bigint) USING parquet
+CREATE TABLE test_ts_seconds_bigint(c0 bigint) USING parquet
 
 statement
-INSERT INTO test_timestamp_seconds VALUES (0), (1640995200), (-86400), (4102444800), (-2208988800), (NULL)
+INSERT INTO test_ts_seconds_bigint VALUES (0), (1640995200), (-86400), (4102444800), (-2208988800), (NULL)
 
--- column argument
 query
-SELECT c0, timestamp_seconds(c0) FROM test_timestamp_seconds
+SELECT c0, timestamp_seconds(c0) FROM test_ts_seconds_bigint
+
+-- int column
+statement
+CREATE TABLE test_ts_seconds_int(c0 int) USING parquet
+
+statement
+INSERT INTO test_ts_seconds_int VALUES (0), (1640995200), (-86400), (NULL)
+
+query
+SELECT c0, timestamp_seconds(c0) FROM test_ts_seconds_int
+
+-- double column
+statement
+CREATE TABLE test_ts_seconds_double(c0 double) USING parquet
+
+statement
+INSERT INTO test_ts_seconds_double VALUES (0.0), (1640995200.123), (-86400.5), (NULL)
+
+query
+SELECT c0, timestamp_seconds(c0) FROM test_ts_seconds_double
 
 -- literal arguments
 query
@@ -46,3 +66,15 @@ SELECT timestamp_seconds(CAST(1640995200.123 AS DOUBLE))
 -- null handling
 query
 SELECT timestamp_seconds(NULL)
+
+-- NaN input (should return null)
+query
+SELECT timestamp_seconds(CAST('NaN' AS DOUBLE))
+
+-- Infinity input (should return null)
+query
+SELECT timestamp_seconds(CAST('Infinity' AS DOUBLE))
+
+-- Negative infinity input (should return null)
+query
+SELECT timestamp_seconds(CAST('-Infinity' AS DOUBLE))
