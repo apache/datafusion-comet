@@ -253,7 +253,7 @@ private[comet] object DeltaPlanDataInjector extends PlanDataInjector {
       op.getDeltaScan.hasCommon
 
   override def getKey(op: Operator): Option[String] =
-    Some(op.getDeltaScan.getCommon.getTableRoot)
+    Some(CometDeltaNativeScanExec.computeSourceKey(op))
 
   override def inject(
       op: Operator,
@@ -721,12 +721,14 @@ abstract class CometNativeExec extends CometExec {
           Map(nativeScan.sourceKey -> nativeScan.commonData),
           Map(nativeScan.sourceKey -> nativeScan.perPartitionData))
 
-      // Found a Delta scan with planning data
+      // Found a Delta scan with planning data. Keyed by `sourceKey` (not `tableRoot`) so
+      // two scans of the same table at different snapshot versions don't collide when
+      // `.toMap` below flattens results from multiple children.
       case deltaScan: CometDeltaNativeScanExec
           if deltaScan.commonData != null && deltaScan.perPartitionData != null =>
         (
-          Map(deltaScan.tableRoot -> deltaScan.commonData),
-          Map(deltaScan.tableRoot -> deltaScan.perPartitionData))
+          Map(deltaScan.sourceKey -> deltaScan.commonData),
+          Map(deltaScan.sourceKey -> deltaScan.perPartitionData))
 
       // Broadcast stages are boundaries - don't collect per-partition data from inside them.
       // After DPP filtering, broadcast scans may have different partition counts than the

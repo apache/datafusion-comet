@@ -144,6 +144,18 @@ case class CometDeltaNativeScanExec(
   def commonData: Array[Byte] = serializedPartitionData._1
   def perPartitionData: Array[Array[Byte]] = serializedPartitionData._2
 
+  /**
+   * Unique key for matching this scan's common/per-partition data to its operator in the native
+   * plan. Must be distinct across multiple Delta scans in the same plan tree -- e.g. a self-join
+   * reading two snapshot versions of the same table, where `tableRoot` alone is not unique.
+   *
+   * Derived identically in `DeltaPlanDataInjector.getKey` from the serialized `DeltaScanCommon`
+   * proto so the driver-side map and the executor-side lookup agree.
+   *
+   * Mirrors the pattern used by `CometNativeScanExec.sourceKey`.
+   */
+  def sourceKey: String = CometDeltaNativeScanExec.computeSourceKey(nativeOp)
+
   def numPartitions: Int = perPartitionData.length
 
   override lazy val outputPartitioning: Partitioning =
@@ -191,8 +203,8 @@ case class CometDeltaNativeScanExec(
     CometExecRDD(
       sparkContext,
       inputRDDs = Seq.empty,
-      commonByKey = Map(tableRoot -> commonData),
-      perPartitionByKey = Map(tableRoot -> perPartitionData),
+      commonByKey = Map(sourceKey -> commonData),
+      perPartitionByKey = Map(sourceKey -> perPartitionData),
       serializedPlan = serializedPlan,
       numPartitions = perPartitionData.length,
       numOutputCols = output.length,
@@ -244,12 +256,41 @@ case class CometDeltaNativeScanExec(
 
   override def equals(obj: Any): Boolean = obj match {
     case other: CometDeltaNativeScanExec =>
+      // Include `sourceKey` so two scans of the same table at different snapshot versions
+      // are NOT considered equal. Without this, Spark's ReuseExchangeAndSubquery rule
+      // collapses a self-join across versions into a single exchange and reuses v0's
+      // shuffle output for both sides of the join.
       tableRoot == other.tableRoot &&
       output == other.output &&
-      serializedPlanOpt == other.serializedPlanOpt
+      serializedPlanOpt == other.serializedPlanOpt &&
+      sourceKey == other.sourceKey
     case _ => false
   }
 
   override def hashCode(): Int =
-    Objects.hashCode(tableRoot, output.asJava, serializedPlanOpt)
+    Objects.hashCode(tableRoot, output.asJava, serializedPlanOpt, sourceKey)
+}
+
+object CometDeltaNativeScanExec {
+
+  /**
+   * Compute a stable, per-scan unique key from a `DeltaScan` operator proto. Must be
+   * deterministic and identical between the driver side (`CometDeltaNativeScanExec.sourceKey`)
+   * and the injector side (`DeltaPlanDataInjector.getKey`).
+   *
+   * Includes `snapshot_version` so that two scans of the same table at different time-travel
+   * versions produce distinct keys -- otherwise `findAllPlanData` collapses their per-partition
+   * data into a single map entry and one scan inherits the other's file list.
+   */
+  def computeSourceKey(nativeOp: Operator): String = {
+    val common = nativeOp.getDeltaScan.getCommon
+    val components = Seq(
+      common.getTableRoot,
+      common.getSnapshotVersion.toString,
+      common.getRequiredSchemaList.toString,
+      common.getDataFiltersList.toString,
+      common.getProjectionVectorList.toString,
+      common.getColumnMappingsList.toString)
+    s"${common.getSource}_${components.mkString("|").hashCode}"
+  }
 }
