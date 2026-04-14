@@ -60,14 +60,6 @@ the [Comet Supported Expressions Guide](expressions.md) for more information on 
 
 ### Array Expressions
 
-- **ArrayContains**: Returns null instead of false for empty arrays with literal values.
-  [#3346](https://github.com/apache/datafusion-comet/issues/3346)
-- **ArrayRemove**: Returns null when the element to remove is null, instead of removing null elements from the array.
-  [#3173](https://github.com/apache/datafusion-comet/issues/3173)
-- **GetArrayItem**: Known correctness issues with index handling, including off-by-one errors and incorrect results
-  with dynamic (non-literal) index values.
-  [#3330](https://github.com/apache/datafusion-comet/issues/3330),
-  [#3332](https://github.com/apache/datafusion-comet/issues/3332)
 - **ArraysOverlap**: Inconsistent behavior when arrays contain NULL values.
   [#3645](https://github.com/apache/datafusion-comet/issues/3645),
   [#2036](https://github.com/apache/datafusion-comet/issues/2036)
@@ -84,19 +76,10 @@ the [Comet Supported Expressions Guide](expressions.md) for more information on 
   timezone is UTC.
   [#2649](https://github.com/apache/datafusion-comet/issues/2649)
 
-### Math Expressions
-
-- **Ceil, Floor**: Incorrect results for Decimal type inputs.
-  [#1729](https://github.com/apache/datafusion-comet/issues/1729)
-- **Tan**: `tan(-0.0)` produces `0.0` instead of `-0.0`.
-  [#1897](https://github.com/apache/datafusion-comet/issues/1897)
-
 ### Aggregate Expressions
 
 - **Corr**: Returns null instead of NaN in some edge cases.
   [#2646](https://github.com/apache/datafusion-comet/issues/2646)
-- **First, Last**: These functions are not deterministic. When `ignoreNulls` is set, results may not match Spark.
-  [#1630](https://github.com/apache/datafusion-comet/issues/1630)
 
 ### Struct Expressions
 
@@ -152,6 +135,28 @@ Cast operations in Comet fall into three levels of support:
 - **U (Unsupported)**: Comet does not provide a native version of this cast expression and the query stage will fall back to
   Spark.
 - **N/A**: Spark does not support this cast.
+
+### String to Decimal
+
+Comet's native `CAST(string AS DECIMAL)` implementation matches Apache Spark's behavior,
+including:
+
+- Leading and trailing ASCII whitespace is trimmed before parsing.
+- Null bytes (`\u0000`) at the start or end of a string are trimmed, matching Spark's
+  `UTF8String` behavior. Null bytes embedded in the middle of a string produce `NULL`.
+- Fullwidth Unicode digits (U+FF10–U+FF19, e.g. `１２３.４５`) are treated as their ASCII
+  equivalents, so `CAST('１２３.４５' AS DECIMAL(10,2))` returns `123.45`.
+- Scientific notation (e.g. `1.23E+5`) is supported.
+- Special values (`inf`, `infinity`, `nan`) produce `NULL`.
+
+### String to Timestamp
+
+Comet's native `CAST(string AS TIMESTAMP)` implementation supports all timestamp formats accepted
+by Apache Spark, including ISO 8601 date-time strings, date-only strings, time-only strings
+(`HH:MM:SS`), embedded timezone offsets (e.g. `+07:30`, `GMT-01:00`, `UTC`), named timezone
+suffixes (e.g. `Europe/Moscow`), and the full Spark timestamp year range
+(-290308 to 294247). Note that `CAST(string AS DATE)` is only compatible for years between
+262143 BC and 262142 AD due to an underlying library limitation.
 
 ### Legacy Mode
 

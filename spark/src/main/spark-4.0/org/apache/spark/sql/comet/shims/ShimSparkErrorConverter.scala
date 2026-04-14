@@ -37,6 +37,25 @@ object ShimSparkErrorConverter {
  */
 trait ShimSparkErrorConverter {
 
+  private def parseFloatLiteral(value: String): Float = {
+    value.toLowerCase match {
+      case "inf" | "+inf" | "infinity" | "+infinity" => Float.PositiveInfinity
+      case "-inf" | "-infinity" => Float.NegativeInfinity
+      case "nan" | "+nan" | "-nan" => Float.NaN
+      case _ => value.toFloat
+    }
+  }
+
+  private def parseDoubleLiteral(value: String): Double = {
+    val normalized = value.toLowerCase.stripSuffix("d")
+    normalized match {
+      case "inf" | "+inf" | "infinity" | "+infinity" => Double.PositiveInfinity
+      case "-inf" | "-infinity" => Double.NegativeInfinity
+      case "nan" | "+nan" | "-nan" => Double.NaN
+      case _ => normalized.toDouble
+    }
+  }
+
   /**
    * Convert error type string and parameters to appropriate Spark exception. Version-specific
    * implementations call the correct QueryExecutionErrors.* methods.
@@ -213,8 +232,8 @@ trait ShimSparkErrorConverter {
             // Strip "L" suffix for BIGINT literals
             val cleanStr = if (valueStr.endsWith("L")) valueStr.dropRight(1) else valueStr
             cleanStr.toLong
-          case FloatType => valueStr.toFloat
-          case DoubleType => valueStr.toDouble
+          case FloatType => parseFloatLiteral(valueStr)
+          case DoubleType => parseDoubleLiteral(valueStr)
           case StringType => UTF8String.fromString(valueStr)
           case _ => valueStr // Fallback to string
         }
@@ -309,7 +328,21 @@ trait ShimSparkErrorConverter {
         try {
           DataType.fromDDL(typeName)
         } catch {
-          case _: Exception => StringType
+          case _: Exception =>
+            // fromDDL rejects types that are syntactically invalid in SQL DDL, such as
+            // DECIMAL(p,s) with a negative scale (valid when allowNegativeScaleOfDecimal=true).
+            // Parse those manually rather than silently falling back to StringType.
+            if (typeName.toUpperCase.startsWith("DECIMAL(") && typeName.endsWith(")")) {
+              val inner = typeName.substring("DECIMAL(".length, typeName.length - 1)
+              val parts = inner.split(",")
+              if (parts.length == 2) {
+                try {
+                  DataTypes.createDecimalType(parts(0).trim.toInt, parts(1).trim.toInt)
+                } catch {
+                  case _: Exception => StringType
+                }
+              } else StringType
+            } else StringType
         }
     }
   }

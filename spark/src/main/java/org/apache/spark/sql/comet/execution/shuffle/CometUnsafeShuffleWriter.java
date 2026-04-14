@@ -212,9 +212,9 @@ public class CometUnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
     // generic throwables.
     boolean success = false;
     if (tracingEnabled) {
-      nativeLib.traceBegin("CometUnsafeShuffleWriter");
+      nativeLib.traceBegin("comet_unsafe_shuffle_writer");
     }
-    String offheapMemKey = "comet_shuffle_" + Thread.currentThread().getId();
+    String offheapMemKey = "thread_" + nativeLib.getRustThreadId() + "_comet_jvm_shuffle";
     try {
       while (records.hasNext()) {
         insertRecordIntoSorter(records.next());
@@ -226,7 +226,7 @@ public class CometUnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
       success = true;
     } finally {
       if (tracingEnabled) {
-        nativeLib.traceEnd("CometUnsafeShuffleWriter");
+        nativeLib.traceEnd("comet_unsafe_shuffle_writer");
       }
       if (sorter != null) {
         try {
