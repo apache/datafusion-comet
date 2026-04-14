@@ -26,6 +26,7 @@ import scala.collection.mutable.ListBuffer
 import scala.jdk.CollectionConverters._
 
 import org.apache.hadoop.conf.Configuration
+import org.apache.hadoop.fs.Path
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, DynamicPruningExpression, EqualTo, Expression, GenericInternalRow, InputFileBlockLength, InputFileBlockStart, InputFileName, Literal, PlanExpression}
@@ -402,8 +403,12 @@ case class CometScanRule(session: SparkSession)
       Set("file", "s3", "s3a", "gs", "gcs", "abfss", "abfs", "wasbs", "wasb", "oss")
     val inputFiles = scanExec.relation.location.inputFiles
     if (inputFiles.nonEmpty) {
+      // Use Hadoop Path to safely handle paths containing characters that are
+      // invalid in a raw URI (e.g. unescaped '%' in Delta's test-only filename
+      // prefixes). Parsing them with `new URI(f)` directly throws
+      // URISyntaxException on such paths.
       val schemes = inputFiles
-        .map(f => new java.net.URI(f).getScheme)
+        .map(f => new Path(f).toUri.getScheme)
         .filter(_ != null)
         .toSet
       val unsupported = schemes -- supportedSchemes
