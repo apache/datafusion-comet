@@ -18,6 +18,7 @@
 statement
 CREATE TABLE test_date_from_unix_date(i int) USING parquet
 
+-- -719162 = 0001-01-01 (Spark min date), 2932896 = 9999-12-31 (Spark max date)
 statement
 INSERT INTO test_date_from_unix_date VALUES (0), (1), (-1), (18993), (-25567), (-719162), (2932896), (NULL)
 
