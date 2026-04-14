@@ -656,8 +656,12 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     // Parquet does not support negative-scale decimals so we use checkSparkAnswer directly
     // (no parquet round-trip) to avoid schema coercion.
 
-    // With config enabled: Comet should match Spark's plain string output
-    withSQLConf("spark.sql.legacy.allowNegativeScaleOfDecimal" -> "true") {
+    // With config enabled, enable localTableScan so Comet can take over the full plan
+    // and execute the cast natively. Parquet does not support negative-scale decimals so
+    // the data is kept in-memory; localTableScan.enabled bridges that gap.
+    withSQLConf(
+      "spark.sql.legacy.allowNegativeScaleOfDecimal" -> "true",
+      "spark.comet.exec.localTableScan.enabled" -> "true") {
       val dfNeg2 = Seq(
         Some(BigDecimal("0")),
         Some(BigDecimal("100")),
@@ -669,7 +673,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         .withColumn("a", col("b").cast(DecimalType(7, -2)))
         .drop("b")
         .select(col("a").cast(DataTypes.StringType).as("result"))
-      checkSparkAnswer(dfNeg2)
+      checkSparkAnswerAndOperator(dfNeg2)
 
       val dfNeg4 = Seq(
         Some(BigDecimal("0")),
@@ -681,7 +685,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         .withColumn("a", col("b").cast(DecimalType(7, -4)))
         .drop("b")
         .select(col("a").cast(DataTypes.StringType).as("result"))
-      checkSparkAnswer(dfNeg4)
+      checkSparkAnswerAndOperator(dfNeg4)
     }
 
     // With config disabled (default): the SQL parser rejects negative scale, so
@@ -1702,6 +1706,10 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       BigDecimal("-2147483647.123123123"),
       BigDecimal("-123456.789"),
       BigDecimal("0.00000000000"),
+      // Small-magnitude non-zero: adj_exp = -9 + 0 = -9 < -6, so LEGACY produces
+      // scientific notation "1E-9" / "1.000000000E-9" rather than plain "0.000000001".
+      BigDecimal("0.000000001"),
+      BigDecimal("-0.000000001"),
       BigDecimal("123456.789"),
       // Int Max
       BigDecimal("2147483647.123123123"),
