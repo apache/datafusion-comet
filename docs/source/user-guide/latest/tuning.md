@@ -160,7 +160,6 @@ The native shuffle writer buffers input batches in memory and periodically spill
 control when spilling occurs:
 
 1. **Memory pressure**: When the memory pool rejects an allocation, the writer spills its buffered data to disk.
-   This is controlled by the overall Comet memory allocation (`spark.comet.memory.overhead.factor`).
 
 2. **Batch spill limit**: The writer also spills after buffering a fixed number of input batches, regardless of
    memory availability. This prevents the writer from accumulating too much data, which can degrade throughput
