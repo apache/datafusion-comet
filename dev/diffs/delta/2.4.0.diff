@@ -125,10 +125,40 @@ index 0b8c556..685d045 100644
      _hiveContext = new TestHiveContext(_sc)
      _session = _hiveContext.sparkSession
 diff --git a/core/src/test/scala/org/apache/spark/sql/delta/test/DeltaSQLCommandTest.scala b/core/src/test/scala/org/apache/spark/sql/delta/test/DeltaSQLCommandTest.scala
-index b712972..97cbebc 100644
+index b712972..12b45aa 100644
 --- a/core/src/test/scala/org/apache/spark/sql/delta/test/DeltaSQLCommandTest.scala
 +++ b/core/src/test/scala/org/apache/spark/sql/delta/test/DeltaSQLCommandTest.scala
-@@ -46,7 +46,19 @@ trait DeltaSQLCommandTest { self: SharedSparkSession =>
+@@ -34,6 +34,29 @@ class DeltaTestSparkSession(sparkConf: SparkConf) extends TestSparkSession(spark
+   override val extensions: SparkSessionExtensions = {
+     val extensions = new SparkSessionExtensions
+     new DeltaSparkSessionExtension().apply(extensions)
++    // Delta 2.4.0's hard-coded `extensions` override bypasses `spark.sql.extensions` as a
++    // workaround for SPARK-25003. Re-apply any extensions named in the conf (e.g. Comet's
++    // `CometSparkSessionExtensions`) so plugin-installed rules still activate.
++    //
++    // Read from the LIVE SparkContext conf rather than the constructor's `sparkConf`. Comet's
++    // DriverPlugin sets `spark.sql.extensions` during SparkContext init, which happens after
++    // `sparkConf` was captured but before `extensions` is evaluated.
++    val liveConf = org.apache.spark.SparkContext.getOrCreate().getConf
++    val extraExtensions = liveConf.get("spark.sql.extensions", "")
++      .split(',').map(_.trim).filter(_.nonEmpty)
++    extraExtensions.foreach { className =>
++      try {
++        val cls = Class.forName(className)
++        val instance = cls.getDeclaredConstructor().newInstance()
++          .asInstanceOf[SparkSessionExtensions => Unit]
++        instance.apply(extensions)
++      } catch {
++        case t: Throwable =>
++          // Surface failures in stderr so drift in CometSparkSessionExtensions is visible.
++          System.err.println(
++            s"[DeltaTestSparkSession] failed to apply extension $className: $t")
++      }
++    }
+     extensions
+   }
+ }
+@@ -46,7 +69,19 @@ trait DeltaSQLCommandTest { self: SharedSparkSession =>
  
    override protected def createSparkSession: TestSparkSession = {
      SparkSession.cleanupAnyExistingSession()
