@@ -200,7 +200,7 @@ case class CometDeltaNativeScanExec(
   override def doExecuteColumnar(): RDD[ColumnarBatch] = {
     val nativeMetrics = CometMetricNode.fromCometPlan(this)
     val serializedPlan = CometExec.serializeNativePlan(nativeOp)
-    CometExecRDD(
+    val baseRDD = CometExecRDD(
       sparkContext,
       inputRDDs = Seq.empty,
       commonByKey = Map(sourceKey -> commonData),
@@ -210,6 +210,12 @@ case class CometDeltaNativeScanExec(
       numOutputCols = output.length,
       nativeMetrics = nativeMetrics,
       subqueries = Seq.empty)
+
+    // InputFileBlockHolder for downstream `input_file_name()` is populated in
+    // `CometExecRDD.setInputFileForDeltaScan` so it also fires when this scan
+    // is embedded inside a larger Comet native tree (where this exec's own
+    // `doExecuteColumnar` is bypassed in favour of the parent's).
+    baseRDD
   }
 
   override def convertBlock(): CometDeltaNativeScanExec = {
