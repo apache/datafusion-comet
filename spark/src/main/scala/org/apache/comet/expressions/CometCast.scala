@@ -211,9 +211,7 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
       case DataTypes.FloatType | DataTypes.DoubleType =>
         Compatible()
       case _: DecimalType =>
-        // https://github.com/apache/datafusion-comet/issues/325
-        Incompatible(Some("""Does not support fullwidth unicode digits (e.g \\uFF10)
-            |or strings containing null bytes (e.g \\u0000)""".stripMargin))
+        Compatible()
       case DataTypes.DateType =>
         // https://github.com/apache/datafusion-comet/issues/327
         Compatible(Some("Only supports years between 262143 BC and 262142 AD"))

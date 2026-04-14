@@ -37,6 +37,8 @@ import org.apache.parquet.hadoop.example.{ExampleParquetWriter, GroupWriteSuppor
 import org.apache.parquet.schema.{MessageType, MessageTypeParser}
 import org.apache.spark._
 import org.apache.spark.internal.config.{MEMORY_OFFHEAP_ENABLED, MEMORY_OFFHEAP_SIZE, SHUFFLE_MANAGER}
+import org.apache.spark.sql.catalyst.plans.logical
+import org.apache.spark.sql.catalyst.util.sideBySide
 import org.apache.spark.sql.comet.CometPlanChecker
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution._
@@ -128,7 +130,7 @@ abstract class CometTestBase
     if (withTol.isDefined) {
       checkAnswerWithTolerance(dfComet, expected, withTol.get)
     } else {
-      checkAnswer(dfComet, expected)
+      checkCometAnswer(dfComet, expected)
     }
 
     if (assertCometNative) {
@@ -355,6 +357,48 @@ abstract class CometTestBase
         (None, None)
       case _ =>
         (expected.failed.toOption, actual.failed.toOption)
+    }
+  }
+
+  /**
+   * Compares the Comet DataFrame result against the expected Spark answer, using labels that
+   * correctly identify which side is Comet and which is Spark. This avoids the misleading "Spark
+   * Answer" label that Spark's built-in `checkAnswer` would apply to the Comet result.
+   */
+  protected def checkCometAnswer(cometDf: DataFrame, sparkAnswer: Seq[Row]): Unit = {
+    val isSorted = cometDf.logicalPlan.collect { case s: logical.Sort => s }.nonEmpty
+    val cometAnswer =
+      try cometDf.collect().toSeq
+      catch {
+        case e: Exception =>
+          fail(s"""Exception thrown while executing query in Comet:
+             |${cometDf.queryExecution}
+             |== Exception ==
+             |$e
+             |${org.apache.spark.sql.catalyst.util.stackTraceToString(e)}
+           """.stripMargin)
+      }
+    if (!QueryTest.compare(
+        QueryTest.prepareAnswer(sparkAnswer, isSorted),
+        QueryTest.prepareAnswer(cometAnswer, isSorted))) {
+      val getRowType: Option[Row] => String = row =>
+        row
+          .map(r => if (r.schema == null) "struct<>" else r.schema.catalogString)
+          .getOrElse("struct<>")
+      fail(s"""Results do not match for query:
+           |Timezone: ${java.util.TimeZone.getDefault}
+           |Timezone Env: ${sys.env.getOrElse("TZ", "")}
+           |
+           |${cometDf.queryExecution}
+           |== Results ==
+           |${sideBySide(
+               s"== Spark Answer - ${sparkAnswer.size} ==" +:
+                 getRowType(sparkAnswer.headOption) +:
+                 QueryTest.prepareAnswer(sparkAnswer, isSorted).map(_.toString()),
+               s"== Comet Answer - ${cometAnswer.size} ==" +:
+                 getRowType(cometAnswer.headOption) +:
+                 QueryTest.prepareAnswer(cometAnswer, isSorted).map(_.toString())).mkString("\n")}
+         """.stripMargin)
     }
   }
 
