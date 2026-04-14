@@ -67,6 +67,8 @@ pub struct ShuffleWriterExec {
     tracing_enabled: bool,
     /// Size of the write buffer in bytes
     write_buffer_size: usize,
+    /// Maximum number of buffered batches before spilling, 0 = disabled
+    batch_spill_limit: usize,
 }
 
 impl ShuffleWriterExec {
@@ -80,6 +82,7 @@ impl ShuffleWriterExec {
         output_index_file: String,
         tracing_enabled: bool,
         write_buffer_size: usize,
+        batch_spill_limit: usize,
     ) -> Result<Self> {
         let cache = Arc::new(PlanProperties::new(
             EquivalenceProperties::new(Arc::clone(&input.schema())),
@@ -98,6 +101,7 @@ impl ShuffleWriterExec {
             codec,
             tracing_enabled,
             write_buffer_size,
+            batch_spill_limit,
         })
     }
 }
@@ -158,6 +162,7 @@ impl ExecutionPlan for ShuffleWriterExec {
                 self.output_index_file.clone(),
                 self.tracing_enabled,
                 self.write_buffer_size,
+                self.batch_spill_limit,
             )?)),
             _ => panic!("ShuffleWriterExec wrong number of children"),
         }
@@ -185,6 +190,7 @@ impl ExecutionPlan for ShuffleWriterExec {
                     self.codec.clone(),
                     self.tracing_enabled,
                     self.write_buffer_size,
+                    self.batch_spill_limit,
                 )
                 .map_err(|e| ArrowError::ExternalError(Box::new(e))),
             )
@@ -205,6 +211,7 @@ async fn external_shuffle(
     codec: CompressionCodec,
     tracing_enabled: bool,
     write_buffer_size: usize,
+    batch_spill_limit: usize,
 ) -> Result<SendableRecordBatchStream> {
     let schema = input.schema();
 
@@ -241,6 +248,7 @@ async fn external_shuffle(
             codec,
             tracing_enabled,
             write_buffer_size,
+            batch_spill_limit,
         )?),
     };
 
@@ -363,6 +371,7 @@ mod test {
             CompressionCodec::Lz4Frame,
             false,
             1024 * 1024, // write_buffer_size: 1MB default
+            0,           // batch_spill_limit: disabled
         )
         .unwrap();
 
@@ -467,6 +476,7 @@ mod test {
                 "/tmp/index.out".to_string(),
                 false,
                 1024 * 1024, // write_buffer_size: 1MB default
+                0,           // batch_spill_limit: disabled
             )
             .unwrap();
 
@@ -526,6 +536,7 @@ mod test {
                 index_file.clone(),
                 false,
                 1024 * 1024,
+                0,
             )
             .unwrap();
 
@@ -730,6 +741,7 @@ mod test {
             index_file.to_str().unwrap().to_string(),
             false,
             1024 * 1024,
+            0,
         )
         .unwrap();
 
@@ -818,6 +830,7 @@ mod test {
             index_file.to_str().unwrap().to_string(),
             false,
             1024 * 1024,
+            0,
         )
         .unwrap();
 

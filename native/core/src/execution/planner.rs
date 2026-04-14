@@ -1371,6 +1371,7 @@ impl PhysicalPlanner {
                 }?;
 
                 let write_buffer_size = writer.write_buffer_size as usize;
+                let batch_spill_limit = writer.batch_spill_limit as usize;
                 let shuffle_writer = Arc::new(ShuffleWriterExec::try_new(
                     Arc::clone(&child.native_plan),
                     partitioning,
@@ -1379,6 +1380,7 @@ impl PhysicalPlanner {
                     writer.output_index_file.clone(),
                     writer.tracing_enabled,
                     write_buffer_size,
+                    batch_spill_limit,
                 )?);
 
                 Ok((

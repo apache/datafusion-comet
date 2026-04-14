@@ -114,6 +114,10 @@ struct Args {
     /// Each task reads the same input and writes to its own output files.
     #[arg(long, default_value_t = 1)]
     concurrent_tasks: usize,
+
+    /// Maximum number of buffered batches before spilling (0 = disabled)
+    #[arg(long, default_value_t = 0)]
+    batch_spill_limit: usize,
 }
 
 fn main() {
@@ -413,6 +417,7 @@ fn run_shuffle_write(
             args.limit,
             data_file.to_string(),
             index_file.to_string(),
+            args.batch_spill_limit,
         )
         .await
         .unwrap();
@@ -436,6 +441,7 @@ async fn execute_shuffle_write(
     limit: usize,
     data_file: String,
     index_file: String,
+    batch_spill_limit: usize,
 ) -> datafusion::common::Result<(MetricsSet, MetricsSet)> {
     let config = SessionConfig::new().with_batch_size(batch_size);
     let mut runtime_builder = RuntimeEnvBuilder::new();
@@ -477,6 +483,7 @@ async fn execute_shuffle_write(
         index_file,
         false,
         write_buffer_size,
+        batch_spill_limit,
     )
     .expect("Failed to create ShuffleWriterExec");
 
@@ -541,6 +548,7 @@ fn run_concurrent_shuffle_writes(
             let memory_limit = args.memory_limit;
             let write_buffer_size = args.write_buffer_size;
             let limit = args.limit;
+            let batch_spill_limit = args.batch_spill_limit;
 
             handles.push(tokio::spawn(async move {
                 execute_shuffle_write(
@@ -553,6 +561,7 @@ fn run_concurrent_shuffle_writes(
                     limit,
                     data_file,
                     index_file,
+                    batch_spill_limit,
                 )
                 .await
                 .unwrap()
