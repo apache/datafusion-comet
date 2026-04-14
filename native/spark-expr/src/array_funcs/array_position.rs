@@ -18,13 +18,14 @@
 use arrow::array::{
     Array, ArrayRef, AsArray, BooleanArray, GenericListArray, Int64Array, OffsetSizeTrait,
 };
+use arrow::buffer::{NullBuffer, ScalarBuffer};
 use arrow::datatypes::{
     ArrowPrimitiveType, DataType, Date32Type, Decimal128Type, Float32Type, Float64Type, Int16Type,
     Int32Type, Int64Type, Int8Type, TimestampMicrosecondType,
 };
 use datafusion::common::{exec_err, DataFusionError, Result as DataFusionResult, ScalarValue};
 use datafusion::logical_expr::{
-    ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
+    ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, TypeSignature, Volatility,
 };
 use num::Float;
 use std::any::Any;
@@ -77,7 +78,7 @@ fn generic_array_position<O: OffsetSizeTrait>(
     let list_array = array
         .as_any()
         .downcast_ref::<GenericListArray<O>>()
-        .unwrap();
+        .ok_or_else(|| DataFusionError::Internal("expected list array".into()))?;
 
     let values = list_array.values();
     let offsets = list_array.offsets();
@@ -107,6 +108,16 @@ fn generic_array_position<O: OffsetSizeTrait>(
     }
 }
 
+/// Compute the combined null buffer from list array and element nulls.
+fn combined_nulls(list_array_nulls: Option<&NullBuffer>, element_nulls: Option<&NullBuffer>) -> Option<NullBuffer> {
+    match (list_array_nulls, element_nulls) {
+        (Some(a), Some(b)) => NullBuffer::union(Some(a), Some(b)),
+        (Some(a), None) => Some(a.clone()),
+        (None, Some(b)) => Some(b.clone()),
+        (None, None) => None,
+    }
+}
+
 /// Fast path for primitive types: downcast once, iterate using offsets into the flat buffer.
 fn position_primitive<O: OffsetSizeTrait, T: ArrowPrimitiveType>(
     list_array: &GenericListArray<O>,
@@ -120,27 +131,25 @@ where
     let values_typed = values.as_primitive::<T>();
     let element_typed = element.as_primitive::<T>();
     let num_rows = list_array.len();
-    let mut result = Vec::with_capacity(num_rows);
+    let nulls = combined_nulls(list_array.nulls(), element.nulls());
+    let mut result = vec![0i64; num_rows];
 
     for (row_index, w) in offsets.windows(2).enumerate() {
-        if list_array.is_null(row_index) || element.is_null(row_index) {
-            result.push(None);
+        if nulls.as_ref().is_some_and(|n| n.is_null(row_index)) {
             continue;
         }
         let start = w[0].as_usize();
         let end = w[1].as_usize();
         let search_val = element_typed.value(row_index);
-        let mut pos: i64 = 0;
         for i in start..end {
             if !values_typed.is_null(i) && values_typed.value(i) == search_val {
-                pos = (i - start + 1) as i64;
+                result[row_index] = (i - start + 1) as i64;
                 break;
             }
         }
-        result.push(Some(pos));
     }
 
-    Ok(Arc::new(Int64Array::from(result)))
+    Ok(Arc::new(Int64Array::new(ScalarBuffer::from(result), nulls)))
 }
 
 /// Float path: same as primitive but treats NaN == NaN (Spark's ordering.equiv() semantics).
@@ -156,31 +165,29 @@ where
     let values_typed = values.as_primitive::<T>();
     let element_typed = element.as_primitive::<T>();
     let num_rows = list_array.len();
-    let mut result = Vec::with_capacity(num_rows);
+    let nulls = combined_nulls(list_array.nulls(), element.nulls());
+    let mut result = vec![0i64; num_rows];
 
     for (row_index, w) in offsets.windows(2).enumerate() {
-        if list_array.is_null(row_index) || element.is_null(row_index) {
-            result.push(None);
+        if nulls.as_ref().is_some_and(|n| n.is_null(row_index)) {
             continue;
         }
         let start = w[0].as_usize();
         let end = w[1].as_usize();
         let search_val = element_typed.value(row_index);
         let search_is_nan = search_val.is_nan();
-        let mut pos: i64 = 0;
         for i in start..end {
             if !values_typed.is_null(i) {
                 let v = values_typed.value(i);
                 if (search_is_nan && v.is_nan()) || v == search_val {
-                    pos = (i - start + 1) as i64;
+                    result[row_index] = (i - start + 1) as i64;
                     break;
                 }
             }
         }
-        result.push(Some(pos));
     }
 
-    Ok(Arc::new(Int64Array::from(result)))
+    Ok(Arc::new(Int64Array::new(ScalarBuffer::from(result), nulls)))
 }
 
 /// Boolean path.
@@ -190,30 +197,30 @@ fn position_boolean<O: OffsetSizeTrait>(
     values: &ArrayRef,
     element: &ArrayRef,
 ) -> Result<ArrayRef, DataFusionError> {
-    let values_typed = values.as_any().downcast_ref::<BooleanArray>().unwrap();
-    let element_typed = element.as_any().downcast_ref::<BooleanArray>().unwrap();
+    let values_typed = values.as_any().downcast_ref::<BooleanArray>()
+        .ok_or_else(|| DataFusionError::Internal("expected boolean array".into()))?;
+    let element_typed = element.as_any().downcast_ref::<BooleanArray>()
+        .ok_or_else(|| DataFusionError::Internal("expected boolean array".into()))?;
     let num_rows = list_array.len();
-    let mut result = Vec::with_capacity(num_rows);
+    let nulls = combined_nulls(list_array.nulls(), element.nulls());
+    let mut result = vec![0i64; num_rows];
 
     for (row_index, w) in offsets.windows(2).enumerate() {
-        if list_array.is_null(row_index) || element.is_null(row_index) {
-            result.push(None);
+        if nulls.as_ref().is_some_and(|n| n.is_null(row_index)) {
             continue;
         }
         let start = w[0].as_usize();
         let end = w[1].as_usize();
         let search_val = element_typed.value(row_index);
-        let mut pos: i64 = 0;
         for i in start..end {
             if !values_typed.is_null(i) && values_typed.value(i) == search_val {
-                pos = (i - start + 1) as i64;
+                result[row_index] = (i - start + 1) as i64;
                 break;
             }
         }
-        result.push(Some(pos));
     }
 
-    Ok(Arc::new(Int64Array::from(result)))
+    Ok(Arc::new(Int64Array::new(ScalarBuffer::from(result), nulls)))
 }
 
 /// String path: downcast once, iterate using offsets into the flat string buffer.
@@ -226,27 +233,25 @@ fn position_string<O: OffsetSizeTrait, S: OffsetSizeTrait>(
     let values_typed = values.as_string::<S>();
     let element_typed = element.as_string::<S>();
     let num_rows = list_array.len();
-    let mut result = Vec::with_capacity(num_rows);
+    let nulls = combined_nulls(list_array.nulls(), element.nulls());
+    let mut result = vec![0i64; num_rows];
 
     for (row_index, w) in offsets.windows(2).enumerate() {
-        if list_array.is_null(row_index) || element.is_null(row_index) {
-            result.push(None);
+        if nulls.as_ref().is_some_and(|n| n.is_null(row_index)) {
             continue;
         }
         let start = w[0].as_usize();
         let end = w[1].as_usize();
         let search_val = element_typed.value(row_index);
-        let mut pos: i64 = 0;
         for i in start..end {
             if !values_typed.is_null(i) && values_typed.value(i) == search_val {
-                pos = (i - start + 1) as i64;
+                result[row_index] = (i - start + 1) as i64;
                 break;
             }
         }
-        result.push(Some(pos));
     }
 
-    Ok(Arc::new(Int64Array::from(result)))
+    Ok(Arc::new(Int64Array::new(ScalarBuffer::from(result), nulls)))
 }
 
 /// Fallback for complex types (nested arrays, structs, etc.) using ScalarValue comparison.
@@ -257,30 +262,28 @@ fn position_fallback<O: OffsetSizeTrait>(
     element: &ArrayRef,
 ) -> Result<ArrayRef, DataFusionError> {
     let num_rows = list_array.len();
-    let mut result = Vec::with_capacity(num_rows);
+    let nulls = combined_nulls(list_array.nulls(), element.nulls());
+    let mut result = vec![0i64; num_rows];
 
     for (row_index, w) in offsets.windows(2).enumerate() {
-        if list_array.is_null(row_index) || element.is_null(row_index) {
-            result.push(None);
+        if nulls.as_ref().is_some_and(|n| n.is_null(row_index)) {
             continue;
         }
         let start = w[0].as_usize();
         let end = w[1].as_usize();
         let search_scalar = ScalarValue::try_from_array(element, row_index)?;
-        let mut pos: i64 = 0;
         for i in start..end {
             if !values.is_null(i) {
                 let item_scalar = ScalarValue::try_from_array(values, i)?;
                 if search_scalar == item_scalar {
-                    pos = (i - start + 1) as i64;
+                    result[row_index] = (i - start + 1) as i64;
                     break;
                 }
             }
         }
-        result.push(Some(pos));
     }
 
-    Ok(Arc::new(Int64Array::from(result)))
+    Ok(Arc::new(Int64Array::new(ScalarBuffer::from(result), nulls)))
 }
 
 #[derive(Debug, Hash, Eq, PartialEq)]
@@ -297,7 +300,7 @@ impl Default for SparkArrayPositionFunc {
 impl SparkArrayPositionFunc {
     pub fn new() -> Self {
         Self {
-            signature: Signature::variadic_any(Volatility::Immutable),
+            signature: Signature::new(TypeSignature::Any(2), Volatility::Immutable),
         }
     }
 }

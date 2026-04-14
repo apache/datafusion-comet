@@ -218,6 +218,13 @@ INSERT INTO test_ap_date VALUES
 query
 SELECT array_position(arr, val) FROM test_ap_date
 
+-- nested array (exercises position_fallback code path)
+query spark_answer_only
+SELECT array_position(array(array(1, 2), array(3, 4)), array(1, 2))
+
+query spark_answer_only
+SELECT array_position(array(array(1, 2), array(3, 4)), array(5, 6))
+
 -- timestamp arrays
 statement
 CREATE TABLE test_ap_ts(arr array<timestamp>, val timestamp) USING parquet
