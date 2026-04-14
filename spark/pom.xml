@@ -218,10 +218,11 @@ under the License.
           <version>9.4.53.v20231009</version>
           <scope>test</scope>
         </dependency>
-        <!-- Delta 2.4.x targets Spark 3.4.x -->
+        <!-- Delta 2.4.x targets Spark 3.4.x. Note: artifact renamed from delta-core to
+             delta-spark starting at Delta 3.0; 2.4.0 still uses delta-core. -->
         <dependency>
           <groupId>io.delta</groupId>
-          <artifactId>delta-spark_${scala.binary.version}</artifactId>
+          <artifactId>delta-core_${scala.binary.version}</artifactId>
           <version>2.4.0</version>
           <scope>test</scope>
           <exclusions>
