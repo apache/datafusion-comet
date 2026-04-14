@@ -19,7 +19,7 @@ use arrow::compute::{and, filter, is_not_null};
 
 use std::{any::Any, sync::Arc};
 
-use arrow::array::Float64Array;
+use arrow::array::{BooleanArray, Float64Array};
 use arrow::buffer::BooleanBuffer;
 
 use crate::agg_funcs::covariance::CovarianceAccumulator;
@@ -157,9 +157,7 @@ impl Accumulator for CorrelationAccumulator {
     }
 
     fn update_batch(&mut self, values: &[ArrayRef]) -> Result<()> {
-        // Filter out rows where either value is null OR both values are NaN.
-        // Spark's corr() treats (NaN, NaN) as invalid and returns null for such inputs.
-        let mask = corr_valid_mask(&values[0], &values[1])?;
+        let mask = corr_valid_mask(&values[0], &values[1], self.null_on_divide_by_zero)?;
 
         let values = if mask.true_count() != values[0].len() {
             vec![filter(&values[0], &mask)?, filter(&values[1], &mask)?]
@@ -177,7 +175,7 @@ impl Accumulator for CorrelationAccumulator {
     }
 
     fn retract_batch(&mut self, values: &[ArrayRef]) -> Result<()> {
-        let mask = corr_valid_mask(&values[0], &values[1])?;
+        let mask = corr_valid_mask(&values[0], &values[1], self.null_on_divide_by_zero)?;
 
         let values = if mask.true_count() != values[0].len() {
             vec![filter(&values[0], &mask)?, filter(&values[1], &mask)?]
@@ -247,20 +245,30 @@ impl Accumulator for CorrelationAccumulator {
     }
 }
 
-/// Build a mask that is true for rows where both values are not null and
-/// not both NaN. Correlation inputs are always Float64.
-fn corr_valid_mask(left: &ArrayRef, right: &ArrayRef) -> Result<arrow::array::BooleanArray> {
+/// Build a mask that is true for rows where both values are not null.
+/// When `null_on_divide_by_zero` is true (non-legacy mode), also filters out
+/// rows where both values are NaN, matching Spark's behavior where
+/// corr(NaN, NaN) returns null instead of NaN.
+fn corr_valid_mask(
+    left: &ArrayRef,
+    right: &ArrayRef,
+    null_on_divide_by_zero: bool,
+) -> Result<BooleanArray> {
     let not_null = and(&is_not_null(left)?, &is_not_null(right)?)?;
+
+    if !null_on_divide_by_zero {
+        // Legacy mode: let NaN propagate through the computation
+        return Ok(not_null);
+    }
 
     let left_f64 = left.as_any().downcast_ref::<Float64Array>();
     let right_f64 = right.as_any().downcast_ref::<Float64Array>();
 
     if let (Some(l), Some(r)) = (left_f64, right_f64) {
-        let both_nan =
-            arrow::array::BooleanArray::from(BooleanBuffer::collect_bool(l.len(), |i| {
-                !l.value(i).is_nan() && !r.value(i).is_nan()
-            }));
-        Ok(and(&not_null, &both_nan)?)
+        let not_both_nan = BooleanArray::from(BooleanBuffer::collect_bool(l.len(), |i| {
+            !l.value(i).is_nan() || !r.value(i).is_nan()
+        }));
+        Ok(and(&not_null, &not_both_nan)?)
     } else {
         Ok(not_null)
     }
