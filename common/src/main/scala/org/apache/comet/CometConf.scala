@@ -537,12 +537,13 @@ object CometConf extends ShimCometConf {
   val COMET_SHUFFLE_BATCH_SPILL_LIMIT: ConfigEntry[Int] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.batchSpillLimit")
       .category(CATEGORY_SHUFFLE)
-      .doc("Maximum number of input batches buffered before the native shuffle writer " +
-        "spills to disk, regardless of available memory. This prevents the shuffle writer " +
-        "from buffering too much data, which can degrade throughput due to poor cache " +
-        "locality during the final write phase. A value of 0 disables this threshold, " +
-        "meaning spills only occur when the memory pool is full. " +
-        "The default is 100.")
+      .doc(
+        "Maximum number of input batches buffered before the native shuffle writer " +
+          "spills to disk, regardless of available memory. This prevents the shuffle writer " +
+          "from buffering too much data, which can degrade throughput due to poor cache " +
+          "locality during the final write phase. A value of 0 disables this threshold, " +
+          "meaning spills only occur when the memory pool is full. " +
+          "The default is 100.")
       .intConf
       .checkValue(v => v >= 0, "Batch spill limit must be non-negative")
       .createWithDefault(100)
