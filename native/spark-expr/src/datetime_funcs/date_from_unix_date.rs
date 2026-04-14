@@ -17,7 +17,7 @@
 
 use arrow::array::{Array, Date32Array, Int32Array};
 use arrow::datatypes::DataType;
-use datafusion::common::{utils::take_function_args, DataFusionError, Result};
+use datafusion::common::{utils::take_function_args, DataFusionError, Result, ScalarValue};
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };
@@ -82,20 +82,17 @@ impl ScalarUDFImpl for SparkDateFromUnixDate {
 
                 Ok(ColumnarValue::Array(Arc::new(date_array)))
             }
-            ColumnarValue::Scalar(scalar) => {
-                // Handle scalar case by converting to single-element array and back
-                let arr = scalar.to_array()?;
-                let int_array = arr.as_any().downcast_ref::<Int32Array>().ok_or_else(|| {
-                    DataFusionError::Execution(
-                        "date_from_unix_date expects Int32 scalar input".to_string(),
-                    )
-                })?;
-
-                let date_array =
-                    Date32Array::new(int_array.values().clone(), int_array.nulls().cloned());
-
-                Ok(ColumnarValue::Array(Arc::new(date_array)))
-            }
+            ColumnarValue::Scalar(scalar) => match scalar {
+                ScalarValue::Int32(Some(days)) => {
+                    Ok(ColumnarValue::Scalar(ScalarValue::Date32(Some(days))))
+                }
+                ScalarValue::Int32(None) | ScalarValue::Null => {
+                    Ok(ColumnarValue::Scalar(ScalarValue::Date32(None)))
+                }
+                _ => Err(DataFusionError::Execution(
+                    "date_from_unix_date expects Int32 scalar input".to_string(),
+                )),
+            },
         }
     }
 
