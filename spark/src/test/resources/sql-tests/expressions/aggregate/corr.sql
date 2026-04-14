@@ -16,7 +16,6 @@
 -- under the License.
 
 -- Config: spark.comet.expression.Corr.allowIncompatible=true
--- ConfigMatrix: parquet.enable.dictionary=false,true
 
 statement
 CREATE TABLE test_corr(x double, y double, grp string) USING parquet
