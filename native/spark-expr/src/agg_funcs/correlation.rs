@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::compute::{and, filter, is_not_null, not};
+use arrow::compute::{and, filter, is_not_null};
 
 use std::{any::Any, sync::Arc};
 
@@ -258,9 +258,9 @@ fn corr_valid_mask(left: &ArrayRef, right: &ArrayRef) -> Result<arrow::array::Bo
     if let (Some(l), Some(r)) = (left_f64, right_f64) {
         let both_nan =
             arrow::array::BooleanArray::from(BooleanBuffer::collect_bool(l.len(), |i| {
-                l.value(i).is_nan() && r.value(i).is_nan()
+                !l.value(i).is_nan() && !r.value(i).is_nan()
             }));
-        Ok(and(&not_null, &not(&both_nan)?)?)
+        Ok(and(&not_null, &both_nan)?)
     } else {
         Ok(not_null)
     }
