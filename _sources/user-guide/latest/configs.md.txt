@@ -259,6 +259,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.GreaterThanOrEqual.enabled` | Enable Comet acceleration for `GreaterThanOrEqual` | true |
 | `spark.comet.expression.Hex.enabled` | Enable Comet acceleration for `Hex` | true |
 | `spark.comet.expression.Hour.enabled` | Enable Comet acceleration for `Hour` | true |
+| `spark.comet.expression.Hours.enabled` | Enable Comet acceleration for `Hours` | true |
 | `spark.comet.expression.If.enabled` | Enable Comet acceleration for `If` | true |
 | `spark.comet.expression.In.enabled` | Enable Comet acceleration for `In` | true |
 | `spark.comet.expression.InSet.enabled` | Enable Comet acceleration for `InSet` | true |

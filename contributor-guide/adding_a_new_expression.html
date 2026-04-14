@@ -641,9 +641,7 @@ under the License.
 <section id="writing-a-sql-test-file">
 <h5>Writing a SQL test file<a class="headerlink" href="#writing-a-sql-test-file" title="Link to this heading">#</a></h5>
 <p>Create a <code class="docutils literal notranslate"><span class="pre">.sql</span></code> file under the appropriate subdirectory in <code class="docutils literal notranslate"><span class="pre">spark/src/test/resources/sql-tests/expressions/</span></code> (e.g., <code class="docutils literal notranslate"><span class="pre">string/</span></code>, <code class="docutils literal notranslate"><span class="pre">math/</span></code>, <code class="docutils literal notranslate"><span class="pre">array/</span></code>). The file should create a table with test data, then run queries that exercise the expression. Here is an example for the <code class="docutils literal notranslate"><span class="pre">unhex</span></code> expression:</p>
-<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="c1">-- ConfigMatrix: parquet.enable.dictionary=false,true</span>
-
-<span class="k">statement</span>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">statement</span>
 <span class="k">CREATE</span><span class="w"> </span><span class="k">TABLE</span><span class="w"> </span><span class="n">test_unhex</span><span class="p">(</span><span class="n">col</span><span class="w"> </span><span class="n">string</span><span class="p">)</span><span class="w"> </span><span class="k">USING</span><span class="w"> </span><span class="n">parquet</span>
 
 <span class="k">statement</span>

@@ -505,9 +505,7 @@ one or more ScalaTest test cases.</p>
 <h2>File format<a class="headerlink" href="#file-format" title="Link to this heading">#</a></h2>
 <p>A test file consists of SQL comments, directives, statements, and queries separated by blank
 lines. Here is a minimal example:</p>
-<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="c1">-- ConfigMatrix: parquet.enable.dictionary=false,true</span>
-
-<span class="k">statement</span>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">statement</span>
 <span class="k">CREATE</span><span class="w"> </span><span class="k">TABLE</span><span class="w"> </span><span class="n">test_abs</span><span class="p">(</span><span class="n">v</span><span class="w"> </span><span class="n">double</span><span class="p">)</span><span class="w"> </span><span class="k">USING</span><span class="w"> </span><span class="n">parquet</span>
 
 <span class="k">statement</span>
@@ -531,14 +529,16 @@ lines. Here is a minimal example:</p>
 <h4><code class="docutils literal notranslate"><span class="pre">ConfigMatrix</span></code><a class="headerlink" href="#configmatrix" title="Link to this heading">#</a></h4>
 <p>Runs the entire file once per combination of values. Multiple <code class="docutils literal notranslate"><span class="pre">ConfigMatrix</span></code> lines produce a
 cross product of all combinations.</p>
-<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="c1">-- ConfigMatrix: parquet.enable.dictionary=false,true</span>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="c1">-- ConfigMatrix: spark.sql.optimizer.inSetConversionThreshold=100,0</span>
 </pre></div>
 </div>
 <p>This generates two test cases:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">sql</span><span class="o">-</span><span class="n">file</span><span class="p">:</span> <span class="n">expressions</span><span class="o">/</span><span class="n">cast</span><span class="o">/</span><span class="n">cast</span><span class="o">.</span><span class="n">sql</span> <span class="p">[</span><span class="n">parquet</span><span class="o">.</span><span class="n">enable</span><span class="o">.</span><span class="n">dictionary</span><span class="o">=</span><span class="n">false</span><span class="p">]</span>
-<span class="n">sql</span><span class="o">-</span><span class="n">file</span><span class="p">:</span> <span class="n">expressions</span><span class="o">/</span><span class="n">cast</span><span class="o">/</span><span class="n">cast</span><span class="o">.</span><span class="n">sql</span> <span class="p">[</span><span class="n">parquet</span><span class="o">.</span><span class="n">enable</span><span class="o">.</span><span class="n">dictionary</span><span class="o">=</span><span class="n">true</span><span class="p">]</span>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">sql</span><span class="o">-</span><span class="n">file</span><span class="p">:</span> <span class="n">expressions</span><span class="o">/</span><span class="n">conditional</span><span class="o">/</span><span class="n">in_set</span><span class="o">.</span><span class="n">sql</span> <span class="p">[</span><span class="n">spark</span><span class="o">.</span><span class="n">sql</span><span class="o">.</span><span class="n">optimizer</span><span class="o">.</span><span class="n">inSetConversionThreshold</span><span class="o">=</span><span class="mi">100</span><span class="p">]</span>
+<span class="n">sql</span><span class="o">-</span><span class="n">file</span><span class="p">:</span> <span class="n">expressions</span><span class="o">/</span><span class="n">conditional</span><span class="o">/</span><span class="n">in_set</span><span class="o">.</span><span class="n">sql</span> <span class="p">[</span><span class="n">spark</span><span class="o">.</span><span class="n">sql</span><span class="o">.</span><span class="n">optimizer</span><span class="o">.</span><span class="n">inSetConversionThreshold</span><span class="o">=</span><span class="mi">0</span><span class="p">]</span>
 </pre></div>
 </div>
+<p>Only add a <code class="docutils literal notranslate"><span class="pre">ConfigMatrix</span></code> directive when there is a real reason to run the test under
+multiple configurations. Do not add <code class="docutils literal notranslate"><span class="pre">ConfigMatrix</span></code> directives speculatively.</p>
 </section>
 <section id="minsparkversion">
 <h4><code class="docutils literal notranslate"><span class="pre">MinSparkVersion</span></code><a class="headerlink" href="#minsparkversion" title="Link to this heading">#</a></h4>
@@ -640,12 +640,9 @@ for ANSI mode tests where invalid operations should throw errors.</p>
 <code class="docutils literal notranslate"><span class="pre">spark/src/test/resources/sql-tests/expressions/</span></code>. Create a new subdirectory if no
 existing category fits.</p></li>
 <li><p>Add the Apache license header as a SQL comment.</p></li>
-<li><p>Add a <code class="docutils literal notranslate"><span class="pre">ConfigMatrix</span></code> directive if the test should run with multiple Parquet configurations.
-Most expression tests use:</p>
-<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="c1">-- ConfigMatrix: parquet.enable.dictionary=false,true</span>
-</pre></div>
-</div>
-</li>
+<li><p>Add a <code class="docutils literal notranslate"><span class="pre">ConfigMatrix</span></code> directive only if the test needs to run under multiple configurations
+(e.g., testing behavior that varies with a specific Spark config). Do not add <code class="docutils literal notranslate"><span class="pre">ConfigMatrix</span></code>
+directives speculatively.</p></li>
 <li><p>Create tables and insert test data using <code class="docutils literal notranslate"><span class="pre">statement</span></code> blocks. Include edge cases such as
 <code class="docutils literal notranslate"><span class="pre">NULL</span></code>, boundary values, and negative numbers.</p></li>
 <li><p>Add <code class="docutils literal notranslate"><span class="pre">query</span></code> blocks for each expression or behavior to test. Use the default <code class="docutils literal notranslate"><span class="pre">query</span></code> mode

@@ -217,8 +217,6 @@ It is important to verify that the new expression is correctly recognized by the
 Create a `.sql` file under the appropriate subdirectory in `spark/src/test/resources/sql-tests/expressions/` (e.g., `string/`, `math/`, `array/`). The file should create a table with test data, then run queries that exercise the expression. Here is an example for the `unhex` expression:
 
 ```sql
--- ConfigMatrix: parquet.enable.dictionary=false,true
-
 statement
 CREATE TABLE test_unhex(col string) USING parquet
 
