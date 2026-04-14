@@ -19,7 +19,7 @@ statement
 CREATE TABLE test_date_from_unix_date(i int) USING parquet
 
 statement
-INSERT INTO test_date_from_unix_date VALUES (0), (1), (-1), (18993), (-25567), (2147483647), (-2147483648), (NULL)
+INSERT INTO test_date_from_unix_date VALUES (0), (1), (-1), (18993), (-25567), (-719162), (2932896), (NULL)
 
 query
 SELECT date_from_unix_date(i) FROM test_date_from_unix_date
