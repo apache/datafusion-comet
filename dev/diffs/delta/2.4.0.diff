@@ -1,5 +1,5 @@
 diff --git a/build.sbt b/build.sbt
-index 7082915..3773825 100644
+index 7082915..8b0e583 100644
 --- a/build.sbt
 +++ b/build.sbt
 @@ -18,6 +18,8 @@ import java.nio.file.Files
@@ -7,7 +7,7 @@ index 7082915..3773825 100644
  
  val sparkVersion = "3.4.0"
 +val cometVersion = "0.15.0-SNAPSHOT"
-+ThisBuild / resolvers += Resolver.mavenLocal
++ThisBuild / resolvers += "Local Maven" at ("file://" + sys.props("user.home") + "/.m2/repository")
  val scala212 = "2.12.15"
  val scala213 = "2.13.5"
  val default_scala_version = scala212
@@ -20,6 +20,27 @@ index 7082915..3773825 100644
  
        // Compiler plugins
        // -- Bump up the genjavadoc version explicitly to 0.18 to work with Scala 2.12
+@@ -98,7 +102,19 @@ lazy val core = (project in file("core"))
+       "-Dspark.sql.shuffle.partitions=5",
+       "-Ddelta.log.cacheSize=3",
+       "-Dspark.sql.sources.parallelPartitionDiscovery.parallelism=5",
+-      "-Xmx1024m"
++      "-Xmx1024m",
++      // Required to run Spark 3.4 on Java 17+ (for Comet regression testing)
++      "--add-opens=java.base/java.lang=ALL-UNNAMED",
++      "--add-opens=java.base/java.lang.invoke=ALL-UNNAMED",
++      "--add-opens=java.base/java.io=ALL-UNNAMED",
++      "--add-opens=java.base/java.net=ALL-UNNAMED",
++      "--add-opens=java.base/java.nio=ALL-UNNAMED",
++      "--add-opens=java.base/java.util=ALL-UNNAMED",
++      "--add-opens=java.base/java.util.concurrent=ALL-UNNAMED",
++      "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED",
++      "--add-opens=java.base/sun.nio.cs=ALL-UNNAMED",
++      "--add-opens=java.base/sun.security.action=ALL-UNNAMED",
++      "--add-opens=java.base/sun.util.calendar=ALL-UNNAMED"
+     ),
+ 
+     // Required for testing table features see https://github.com/delta-io/delta/issues/1602
 diff --git a/core/src/test/scala/org/apache/spark/sql/delta/CometSmokeTest.scala b/core/src/test/scala/org/apache/spark/sql/delta/CometSmokeTest.scala
 new file mode 100644
 index 0000000..35f9456
@@ -128,3 +149,13 @@ index b712972..97cbebc 100644
      session.conf.set(SQLConf.V2_SESSION_CATALOG_IMPLEMENTATION.key, classOf[DeltaCatalog].getName)
      session
    }
+diff --git a/project/build.properties b/project/build.properties
+index dfeb609..ee65853 100644
+--- a/project/build.properties
++++ b/project/build.properties
+@@ -33,4 +33,4 @@
+ #  limitations under the License.
+ #
+ 
+-sbt.version=1.5.5
++sbt.version=1.8.3

@@ -96,6 +96,15 @@ echo
 echo "[4/4] Running tests..."
 export SPARK_LOCAL_IP="${SPARK_LOCAL_IP:-localhost}"
 
+# DELTA_JAVA_HOME lets the caller run Delta's SBT under a different JDK from the one
+# that built Comet. Useful for Delta 2.4.0, whose pinned SBT 1.5.5 doesn't launch on
+# JDK 17+. Typical usage: `DELTA_JAVA_HOME=$(/usr/libexec/java_home -v 1.8)`.
+if [[ -n "${DELTA_JAVA_HOME:-}" ]]; then
+  echo "  Using DELTA_JAVA_HOME=$DELTA_JAVA_HOME for SBT"
+  export JAVA_HOME="$DELTA_JAVA_HOME"
+  export PATH="$DELTA_JAVA_HOME/bin:$PATH"
+fi
+
 case "$TEST_FILTER" in
   smoke)
     build/sbt "$SBT_MODULE/testOnly org.apache.spark.sql.delta.CometSmokeTest"
@@ -104,7 +113,7 @@ case "$TEST_FILTER" in
     build/sbt "$SBT_MODULE/test"
     ;;
   *)
-    # Treat as a test class / glob — pass through to sbt testOnly.
+    # Treat as a test class / glob - pass through to sbt testOnly.
     build/sbt "$SBT_MODULE/testOnly $TEST_FILTER"
     ;;
 esac
