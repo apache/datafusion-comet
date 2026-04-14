@@ -19,7 +19,7 @@ name: Check that all test suites are added to PR workflows
 
 on:
   pull_request:
-    types: [opened, edited, reopened]
+    types: [opened, synchronize, reopened]
 
 jobs:
   check-missing-suites:
