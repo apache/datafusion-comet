@@ -19,9 +19,6 @@
 -- If(IsNull(str), null, If(len <= 0, "", Substring(str, -len, len)))
 -- before Comet sees it. CometRight handles the serde, but the optimizer
 -- may replace it first. We use spark_answer_only to verify correctness.
-
--- ConfigMatrix: parquet.enable.dictionary=false,true
-
 statement
 CREATE TABLE test_str_right(s string, n int) USING parquet
 
