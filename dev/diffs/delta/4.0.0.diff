@@ -1,5 +1,5 @@
 diff --git a/build.sbt b/build.sbt
-index e89a99c..5647c6e 100644
+index e89a99c..e0137f3 100644
 --- a/build.sbt
 +++ b/build.sbt
 @@ -53,6 +53,8 @@ val default_scala_version = settingKey[String]("Default Scala version")
@@ -7,7 +7,7 @@ index e89a99c..5647c6e 100644
  
  val LATEST_RELEASED_SPARK_VERSION = "3.5.3"
 +val cometVersion = "0.15.0-SNAPSHOT"
-+ThisBuild / resolvers += "Local Maven" at ("file://" + sys.props("user.home") + "/.m2/repository")
++ThisBuild / resolvers += Resolver.mavenLocal
  val SPARK_MASTER_VERSION = "4.0.0"
  val sparkVersion = settingKey[String]("Spark version")
  spark / sparkVersion := getSparkVersion()

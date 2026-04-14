@@ -96,14 +96,24 @@ echo
 echo "[4/4] Running tests..."
 export SPARK_LOCAL_IP="${SPARK_LOCAL_IP:-localhost}"
 
-# DELTA_JAVA_HOME lets the caller run Delta's SBT under a different JDK from the one
-# that built Comet. Useful for Delta 2.4.0, whose pinned SBT 1.5.5 doesn't launch on
-# JDK 17+. Typical usage: `DELTA_JAVA_HOME=$(/usr/libexec/java_home -v 1.8)`.
+# DELTA_JAVA_HOME runs Delta's SBT under a different JDK than the one that built
+# Comet. Useful when Comet was built on JDK 19+ but Delta expects JDK 17.
+# Typical usage: `DELTA_JAVA_HOME=$(/usr/libexec/java_home -v 17)`.
 if [[ -n "${DELTA_JAVA_HOME:-}" ]]; then
   echo "  Using DELTA_JAVA_HOME=$DELTA_JAVA_HOME for SBT"
   export JAVA_HOME="$DELTA_JAVA_HOME"
   export PATH="$DELTA_JAVA_HOME/bin:$PATH"
 fi
+
+# Kill stale Gradle daemons and scrub its script cache before we run. A daemon
+# started with an older JDK sticks around and will be reused by Delta's `./gradlew`
+# inside `icebergShaded/assembly` regardless of the JDK the rest of our build is
+# using. Worse, Gradle's compiled-build-script cache under ~/.gradle/caches/<ver>
+# stores classfiles whose major version matches the JDK of the earlier run, so
+# switching JDKs (or Gradle versions) leaves the cache unreadable. Resetting both
+# is cheap and fixes "Unsupported class file major version NN" on rerun.
+pkill -f 'GradleDaemon' 2>/dev/null || true
+rm -rf ~/.gradle/caches/7.5.1/scripts ~/.gradle/caches/7.6.3/scripts 2>/dev/null || true
 
 case "$TEST_FILTER" in
   smoke)

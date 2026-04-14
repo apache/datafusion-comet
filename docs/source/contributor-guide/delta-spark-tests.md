@@ -94,6 +94,10 @@ dev/run-delta-regression.sh 3.3.2 full
 
 Set `DELTA_WORKDIR=/path/to/checkout` to reuse an existing Delta clone between runs.
 
+Set `DELTA_JAVA_HOME=$(/usr/libexec/java_home -v 17)` to run Delta's SBT on JDK 17
+while Comet was built on a newer JDK. Needed because Delta's `spark/test` triggers
+`icebergShaded/assembly`, which runs Gradle 7.5.1 (no JDK 19+ support) internally.
+
 To do the steps manually:
 
 1. Build and install Comet to the local Maven repository:

@@ -1,5 +1,5 @@
 diff --git a/build.sbt b/build.sbt
-index 7082915..8b0e583 100644
+index 7082915..8a19a6b 100644
 --- a/build.sbt
 +++ b/build.sbt
 @@ -18,6 +18,8 @@ import java.nio.file.Files
@@ -7,7 +7,7 @@ index 7082915..8b0e583 100644
  
  val sparkVersion = "3.4.0"
 +val cometVersion = "0.15.0-SNAPSHOT"
-+ThisBuild / resolvers += "Local Maven" at ("file://" + sys.props("user.home") + "/.m2/repository")
++ThisBuild / resolvers += Resolver.mavenLocal
  val scala212 = "2.12.15"
  val scala213 = "2.13.5"
  val default_scala_version = scala212
