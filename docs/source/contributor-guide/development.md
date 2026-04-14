@@ -474,8 +474,10 @@ Choose the group that best matches the area your test covers:
 | `expressions` | Expression evaluation, casts, and SQL file tests          |
 | `sql`         | SQL-level behavior tests                                  |
 
-**Important:** The suite lists in both workflow files must stay in sync. If a suite is missing from
-the CI matrix, it will not run in CI, even though it passes locally.
+**Important:** The suite lists in both workflow files must stay in sync. A separate CI check
+(`.github/workflows/pr_missing_suites.yml`) runs `dev/ci/check-suites.py` on every pull request.
+It scans for all `*Suite.scala` files in the repository and verifies that each one appears in both
+workflow files. If any suite is missing, this check will fail and block the PR.
 
 ### Pre-PR Summary
 
