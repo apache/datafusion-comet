@@ -154,6 +154,25 @@ partitioning keys. Columns that are not partitioning keys may contain complex ty
 Comet Columnar shuffle is JVM-based and supports `HashPartitioning`, `RoundRobinPartitioning`, `RangePartitioning`, and
 `SinglePartitioning`. This shuffle implementation supports complex data types as partitioning keys.
 
+### Shuffle Spill Tuning
+
+The native shuffle writer buffers input batches in memory and periodically spills them to disk. Two mechanisms
+control when spilling occurs:
+
+1. **Memory pressure**: When the memory pool rejects an allocation, the writer spills its buffered data to disk.
+   This is controlled by the overall Comet memory allocation (`spark.comet.memory.overhead.factor`).
+
+2. **Batch spill limit**: The writer also spills after buffering a fixed number of input batches, regardless of
+   memory availability. This prevents the writer from accumulating too much data, which can degrade throughput
+   due to poor cache locality during the final write phase.
+
+The batch spill limit is configured via `spark.comet.exec.shuffle.batchSpillLimit` (default: 100). Setting it
+to 0 disables this threshold, meaning spills only occur under memory pressure.
+
+In most cases, the default value of 100 provides good performance. If you observe that shuffle throughput
+decreases when more memory is available to Comet, try lowering this value. If you observe excessive spilling
+with small data, try increasing it or disabling it with 0.
+
 ### Shuffle Compression
 
 By default, Spark compresses shuffle files using LZ4 compression. Comet overrides this behavior with ZSTD compression.
