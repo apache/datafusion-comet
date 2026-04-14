@@ -1339,15 +1339,14 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       val ancientMicros = Seq(
         -59006361600000000L, // 0100-03-01
         -46374377400000000L, // 0500-06-15
-        -30610224001000000L) // 0999-12-31
+        -30610224001000000L
+      ) // 0999-12-31
       ancientMicros
         .toDF("micros")
         .selectExpr("CAST(micros AS TIMESTAMP) AS a")
         .createOrReplaceTempView("ancient_ts")
-      checkSparkAnswerAndOperator(
-        spark.sql("SELECT a, CAST(a AS STRING) FROM ancient_ts"))
-      checkSparkAnswerAndOperator(
-        spark.sql("SELECT a, CAST(a AS BIGINT) FROM ancient_ts"))
+      checkSparkAnswerAndOperator(spark.sql("SELECT a, CAST(a AS STRING) FROM ancient_ts"))
+      checkSparkAnswerAndOperator(spark.sql("SELECT a, CAST(a AS BIGINT) FROM ancient_ts"))
     }
   }
 
