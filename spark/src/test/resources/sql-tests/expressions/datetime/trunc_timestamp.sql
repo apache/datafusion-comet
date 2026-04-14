@@ -16,7 +16,6 @@
 -- under the License.
 
 -- Config: spark.comet.expression.TruncTimestamp.allowIncompatible=true
--- ConfigMatrix: parquet.enable.dictionary=false,true
 
 statement
 CREATE TABLE test_trunc_ts(ts timestamp) USING parquet
