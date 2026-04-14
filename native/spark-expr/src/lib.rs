@@ -72,8 +72,7 @@ pub use comet_scalar_funcs::{
 pub use csv_funcs::*;
 pub use datetime_funcs::{
     SparkDateDiff, SparkDateFromUnixDate, SparkDateTrunc, SparkHour, SparkHoursTransform,
-    SparkMakeDate, SparkMinute,
-    SparkSecond, SparkUnixTimestamp, TimestampTruncExpr,
+    SparkMakeDate, SparkMinute, SparkSecond, SparkUnixTimestamp, TimestampTruncExpr,
 };
 pub use error::{decimal_overflow_error, SparkError, SparkErrorWithContext, SparkResult};
 pub use hash_funcs::*;
