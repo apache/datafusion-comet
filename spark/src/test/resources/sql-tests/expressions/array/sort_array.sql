@@ -293,3 +293,6 @@ SELECT sort_array(
   array(
     array(named_struct('a', 2)),
     array(named_struct('a', 1))))
+
+query expect_error(BOOLEAN)
+SELECT sort_array(array(3, 1, 4, 1, 5), 1)
