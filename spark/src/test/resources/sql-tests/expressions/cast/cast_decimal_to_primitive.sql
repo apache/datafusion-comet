@@ -39,6 +39,14 @@ SELECT cast(d10 as float) FROM test_cast_decimal
 query
 SELECT cast(d10 as double) FROM test_cast_decimal
 
+-- decimal(10,2) column to INT
+query
+SELECT cast(d10 as int) FROM test_cast_decimal
+
+-- decimal(10,2) column to LONG
+query
+SELECT cast(d10 as long) FROM test_cast_decimal
+
 -- decimal(10,2) column to BOOLEAN
 query
 SELECT cast(d10 as boolean) FROM test_cast_decimal
@@ -50,6 +58,14 @@ SELECT cast(d5 as float) FROM test_cast_decimal
 -- decimal(5,0) column to DOUBLE
 query
 SELECT cast(d5 as double) FROM test_cast_decimal
+
+-- decimal(5,0) column to INT
+query
+SELECT cast(d5 as int) FROM test_cast_decimal
+
+-- decimal(5,0) column to LONG
+query
+SELECT cast(d5 as long) FROM test_cast_decimal
 
 -- decimal(5,0) column to BOOLEAN
 query
@@ -78,6 +94,14 @@ SELECT cast(d38 as float) FROM test_cast_decimal_high_precision
 query
 SELECT cast(d38 as double) FROM test_cast_decimal_high_precision
 
+-- decimal(38,18) column to INT
+query
+SELECT cast(d38 as int) FROM test_cast_decimal_high_precision
+
+-- decimal(38,18) column to LONG
+query
+SELECT cast(d38 as long) FROM test_cast_decimal_high_precision
+
 -- decimal(38,18) column to BOOLEAN
 query
 SELECT cast(d38 as boolean) FROM test_cast_decimal_high_precision
@@ -89,8 +113,21 @@ SELECT cast(cast(1.50 as decimal(10,2)) as float),
        cast(cast(-1.50 as decimal(10,2)) as float),
        cast(cast(NULL as decimal(10,2)) as float)
 
+-- literal casts: decimal(5,0) to float
+query
+SELECT cast(cast(123 as decimal(5,0)) as float),
+       cast(cast(0 as decimal(5,0)) as float),
+       cast(cast(-123 as decimal(5,0)) as float),
+       cast(cast(NULL as decimal(5,0)) as float)
+
 -- literal casts: decimal(10,2) to boolean
 query
 SELECT cast(cast(1.50 as decimal(10,2)) as boolean),
        cast(cast(0.00 as decimal(10,2)) as boolean),
        cast(cast(NULL as decimal(10,2)) as boolean)
+
+-- literal casts: decimal(5,0) to boolean
+query
+SELECT cast(cast(1 as decimal(5,0)) as boolean),
+       cast(cast(0 as decimal(5,0)) as boolean),
+       cast(cast(NULL as decimal(5,0)) as boolean)

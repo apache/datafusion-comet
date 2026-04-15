@@ -73,10 +73,10 @@ pub(crate) fn is_df_cast_from_decimal_spark_compatible(to_type: &DataType) -> bo
             | DataType::Decimal128(_, _)
             | DataType::Decimal256(_, _)
             | DataType::Utf8 // note that there can be formatting differences
-                             // Note: Boolean is intentionally absent. Decimal-to-boolean uses a dedicated
-                             // spark_cast_decimal_to_boolean function (in cast.rs) that checks the raw i128
-                             // value, bypassing the DataFusion cast kernel entirely.
     )
+    // Note: Boolean is intentionally absent. Decimal-to-boolean uses a dedicated
+    // spark_cast_decimal_to_boolean function (in cast.rs) that checks the raw i128
+    // value, bypassing the DataFusion cast kernel entirely.
 }
 
 macro_rules! cast_float_to_timestamp_impl {

@@ -639,14 +639,37 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("cast DecimalType(38,18) to FloatType") {
     castTest(generateDecimalsPrecision38Scale18(), DataTypes.FloatType)
+    // small fractions exercise the i128 / 10^scale precision path
+    castTest(
+      generateDecimalsPrecision38Scale18(
+        Seq(
+          BigDecimal("0.000000000000000001"),
+          BigDecimal("-0.000000000000000001"),
+          BigDecimal("1.500000000000000000"),
+          BigDecimal("123456789.123456789"))),
+      DataTypes.FloatType)
   }
 
   test("cast DecimalType(38,18) to DoubleType") {
     castTest(generateDecimalsPrecision38Scale18(), DataTypes.DoubleType)
+    // small fractions exercise the i128 / 10^scale precision path
+    castTest(
+      generateDecimalsPrecision38Scale18(
+        Seq(
+          BigDecimal("0.000000000000000001"),
+          BigDecimal("-0.000000000000000001"),
+          BigDecimal("1.500000000000000000"),
+          BigDecimal("123456789.123456789"))),
+      DataTypes.DoubleType)
   }
 
   test("cast DecimalType(38,18) to BooleanType") {
     castTest(generateDecimalsPrecision38Scale18(), DataTypes.BooleanType)
+    // tiny non-zero values must be true; only exact zero is false
+    castTest(
+      generateDecimalsPrecision38Scale18(
+        Seq(BigDecimal("0.000000000000000001"), BigDecimal("-0.000000000000000001"))),
+      DataTypes.BooleanType)
   }
 
   test("cast DecimalType(10,2) to StringType") {
