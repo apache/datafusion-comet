@@ -171,7 +171,7 @@
 - [ ] date_add
 - [ ] date_diff
 - [ ] date_format
-- [ ] date_from_unix_date
+- [x] date_from_unix_date
 - [x] date_part
 - [ ] date_sub
 - [ ] date_trunc
