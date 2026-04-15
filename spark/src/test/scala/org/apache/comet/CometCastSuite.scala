@@ -1798,8 +1798,9 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       values.toDF("str").select(col("str").cast(DataTypes.TimestampType).as("a")))
   }
 
-  private def generateTimestamps(): DataFrame = {
-    val values = Seq(
+
+  private def generateTimestampLiterals(): Seq[String] =
+    Seq(
       // post-epoch with microseconds
       "2024-01-01T12:34:56.123456",
       // UTC, no fractional seconds (output has no decimal point)
@@ -1822,6 +1823,9 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       // DST transition moments (America/New_York spring-forward / fall-back in UTC)
       "2024-03-10T07:00:00Z",
       "2024-11-03T06:00:00Z")
+
+  private def generateTimestamps(): DataFrame = {
+    val values = generateTimestampLiterals()
     withNulls(values)
       .toDF("str")
       .withColumn("a", col("str").cast(DataTypes.TimestampType))
