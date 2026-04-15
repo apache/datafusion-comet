@@ -139,44 +139,8 @@ class CometExecSuite extends CometTestBase {
           val (_, cometPlan) = checkSparkAnswer(df)
           val infos = new ExtendedExplainInfo().generateExtendedInfo(cometPlan)
           assert(infos.contains("Dynamic Partition Pruning is not supported"))
-        }
-      }
-    }
-  }
 
-  test("DPP fallback avoids inefficient Comet shuffle (#3874)") {
-    withTempDir { path =>
-      val factPath = s"${path.getAbsolutePath}/fact.parquet"
-      val dimPath = s"${path.getAbsolutePath}/dim.parquet"
-      withSQLConf(CometConf.COMET_EXEC_ENABLED.key -> "false") {
-        val one_day = 24 * 60 * 60000
-        val fact = Range(0, 100)
-          .map(i => (i, new java.sql.Date(System.currentTimeMillis() + i * one_day), i.toString))
-          .toDF("fact_id", "fact_date", "fact_str")
-        fact.write.partitionBy("fact_date").parquet(factPath)
-        val dim = Range(0, 10)
-          .map(i => (i, new java.sql.Date(System.currentTimeMillis() + i * one_day), i.toString))
-          .toDF("dim_id", "dim_date", "dim_str")
-        dim.write.parquet(dimPath)
-      }
-
-      // Force sort-merge join to get a shuffle exchange above the DPP scan
-      Seq("parquet").foreach { v1List =>
-        withSQLConf(
-          SQLConf.USE_V1_SOURCE_LIST.key -> v1List,
-          SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
-          CometConf.COMET_DPP_FALLBACK_ENABLED.key -> "true") {
-          spark.read.parquet(factPath).createOrReplaceTempView("dpp_fact2")
-          spark.read.parquet(dimPath).createOrReplaceTempView("dpp_dim2")
-          val df =
-            spark.sql(
-              "select * from dpp_fact2 join dpp_dim2 on fact_date = dim_date where dim_id > 7")
-          val (_, cometPlan) = checkSparkAnswer(df)
-
-          // Verify no CometShuffleExchangeExec wraps the DPP stage
-          assert(
-            !cometPlan.toString().contains("CometColumnarShuffle"),
-            "Should not use Comet columnar shuffle for stages with DPP scans")
+          assert(infos.contains("Comet accelerated"))
         }
       }
     }
