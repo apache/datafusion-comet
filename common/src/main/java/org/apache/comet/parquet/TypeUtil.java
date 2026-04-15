@@ -130,7 +130,8 @@ public class TypeUtil {
     PrimitiveType.PrimitiveTypeName typeName = descriptor.getPrimitiveType().getPrimitiveTypeName();
     LogicalTypeAnnotation logicalTypeAnnotation =
         descriptor.getPrimitiveType().getLogicalTypeAnnotation();
-    boolean allowTypePromotion = (boolean) CometConf.COMET_SCHEMA_EVOLUTION_ENABLED().get();
+    boolean allowTypePromotion =
+        isSpark40Plus() || (boolean) CometConf.COMET_SCHEMA_EVOLUTION_ENABLED().get();
 
     if (sparkType instanceof NullType) {
       return;

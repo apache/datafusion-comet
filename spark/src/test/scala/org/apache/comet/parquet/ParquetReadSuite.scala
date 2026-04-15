@@ -38,6 +38,7 @@ import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.comet.{CometNativeScanExec, CometScanExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException
 import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
@@ -1571,6 +1572,115 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
             assert(
               date.toLocalDate.getYear < 1582,
               s"Expected date before 1582 with $scanImpl, got $date")
+          }
+        }
+    }
+  }
+
+  test("SPARK-35640: read binary as timestamp should throw schema incompatible error") {
+    val data = (1 to 4).map(i => Tuple1(i.toString))
+    val readSchema = StructType(Seq(StructField("_1", TimestampType)))
+
+    withParquetDataFrame(data) { _ =>
+      withTempPath { dir =>
+        spark
+          .createDataFrame(
+            spark.sparkContext.parallelize(data.map(Row.fromTuple)),
+            StructType(Seq(StructField("_1", StringType))))
+          .write
+          .parquet(dir.getCanonicalPath)
+
+        val e = intercept[SparkException] {
+          spark.read.schema(readSchema).parquet(dir.getCanonicalPath).collect()
+        }
+        // Verify SchemaColumnConvertNotSupportedException is somewhere in the cause chain
+        var cause: Throwable = e
+        var found = false
+        while (cause != null && !found) {
+          if (cause.isInstanceOf[SchemaColumnConvertNotSupportedException]) {
+            found = true
+          }
+          cause = cause.getCause
+        }
+        assert(
+          found,
+          s"Expected SchemaColumnConvertNotSupportedException in cause chain, got: $e")
+      }
+    }
+  }
+
+  test("SPARK-45604: schema mismatch on timestamp_ntz to array<timestamp_ntz>") {
+    import org.apache.spark.sql.functions.lit
+    withTempPath { dir =>
+      val path = dir.getCanonicalPath
+      // Write a file with scalar timestamp_ntz column
+      val df1 = spark
+        .range(1)
+        .selectExpr("CAST(id AS INT) AS _1")
+        .withColumn("_2", lit("2024-01-01T00:00:00").cast(TimestampNTZType))
+      // Write another file with array<timestamp_ntz> column
+      val arraySchema = StructType(
+        Seq(StructField("_1", IntegerType), StructField("_2", ArrayType(TimestampNTZType))))
+      val df2Row = Row(2, Array(java.time.LocalDateTime.of(2024, 1, 1, 0, 0)))
+      val df2 = spark.createDataFrame(spark.sparkContext.parallelize(Seq(df2Row)), arraySchema)
+      df1.write.mode("overwrite").parquet(s"$path/parquet")
+      df2.write.mode("append").parquet(s"$path/parquet")
+
+      val e = intercept[SparkException] {
+        spark.read.schema(arraySchema).parquet(s"$path/parquet").collect()
+      }
+      var cause: Throwable = e
+      var found = false
+      while (cause != null && !found) {
+        if (cause.isInstanceOf[SchemaColumnConvertNotSupportedException]) {
+          found = true
+        }
+        cause = cause.getCause
+      }
+      assert(found, s"Expected SchemaColumnConvertNotSupportedException in cause chain, got: $e")
+    }
+  }
+
+  test("schema mismatch: Comet should match Spark behavior for incompatible type reads") {
+    // Spark 4 is more permissive than Spark 3 for some of these, so we verify Comet
+    // matches Spark rather than asserting a specific outcome.
+    val cases: Seq[(DataType, DataType, String)] = Seq(
+      (IntegerType, StringType, "int-as-string"),
+      (StringType, IntegerType, "string-as-int"),
+      (BooleanType, IntegerType, "boolean-as-int"),
+      (IntegerType, TimestampType, "int-as-timestamp"),
+      (DoubleType, IntegerType, "double-as-int"))
+
+    Seq(CometConf.SCAN_NATIVE_DATAFUSION, CometConf.SCAN_NATIVE_ICEBERG_COMPAT).foreach {
+      scanMode =>
+        withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> scanMode) {
+          cases.foreach { case (writeType, readType, desc) =>
+            withTempPath { path =>
+              val writeSchema = StructType(Seq(StructField("col", writeType, true)))
+              val rows = (0 until 10).map { i =>
+                val v: Any = writeType match {
+                  case IntegerType => i
+                  case StringType => s"str_$i"
+                  case BooleanType => i % 2 == 0
+                  case DoubleType => i.toDouble
+                }
+                Row(v)
+              }
+              spark
+                .createDataFrame(spark.sparkContext.parallelize(rows), writeSchema)
+                .write
+                .parquet(path.getCanonicalPath)
+
+              val readSchema = StructType(Seq(StructField("col", readType, true)))
+              readParquetFile(path.getCanonicalPath, Some(readSchema)) { df =>
+                val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
+                assert(
+                  sparkError.isDefined == cometError.isDefined,
+                  s"[$scanMode] $desc: Spark " +
+                    s"${if (sparkError.isDefined) "errored" else "succeeded"}" +
+                    s" but Comet ${if (cometError.isDefined) "errored" else "succeeded"}")
+              }
+            }
           }
         }
     }

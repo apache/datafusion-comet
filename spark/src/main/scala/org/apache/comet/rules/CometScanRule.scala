@@ -166,12 +166,14 @@ case class CometScanRule(session: SparkSession)
           return scanExec
         }
 
-        COMET_NATIVE_SCAN_IMPL.get() match {
+        val result = COMET_NATIVE_SCAN_IMPL.get() match {
           case SCAN_AUTO | SCAN_NATIVE_DATAFUSION =>
             nativeDataFusionScan(plan, session, scanExec, r, hadoopConf).getOrElse(scanExec)
           case SCAN_NATIVE_ICEBERG_COMPAT =>
             nativeIcebergCompatScan(session, scanExec, r, hadoopConf).getOrElse(scanExec)
         }
+
+        result
 
       case _ =>
         withInfo(scanExec, s"Unsupported relation ${scanExec.relation}")
