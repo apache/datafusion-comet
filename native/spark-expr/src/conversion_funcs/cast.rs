@@ -370,6 +370,8 @@ pub(crate) fn cast_array(
         )?),
         (List(_), Utf8) => Ok(cast_array_to_string(array.as_list(), cast_options)?),
         (List(_), List(to)) => {
+            // Cast list elements recursively so nested array casts follow Spark semantics
+            // instead of relying on Arrow's top-level cast support.
             let list_array = array.as_list::<i32>();
             let casted_values = match (list_array.values().data_type(), to.data_type()) {
                 // Spark legacy array casts produce null elements for array<Date> -> array<Int>.
