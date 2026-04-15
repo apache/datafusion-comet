@@ -20,8 +20,15 @@ under the License.
 # TPC-DS Benchmarking with spark-sql-perf
 
 This guide explains how to generate TPC-DS data and run TPC-DS benchmarks using the
-[databricks/spark-sql-perf](https://github.com/databricks/spark-sql-perf) framework, then run those benchmarks
+[KubedAI/spark-sql-perf](https://github.com/KubedAI/spark-sql-perf) framework (a fork of
+[databricks/spark-sql-perf](https://github.com/databricks/spark-sql-perf)), then run those benchmarks
 with the Comet benchmarking scripts.
+
+We use the KubedAI fork because it adds two features not present in the upstream Databricks repository:
+
+- **Apache Iceberg support** — allows generating and registering TPC-DS tables in Iceberg format, which is
+  needed for Comet Iceberg benchmarking.
+- **TPC-DS v4.0 queries** — adds the full set of TPC-DS v4.0 queries alongside the existing v1.4 and v2.4 sets.
 
 The spark-sql-perf approach uses the TPC-DS `dsdgen` tool to generate data directly through Spark, which handles
 partitioning and writing to Parquet format automatically.
@@ -75,8 +82,9 @@ ls -l dsdgen
 ## Step 2: Build spark-sql-perf
 
 ```shell
-git clone https://github.com/databricks/spark-sql-perf.git
+git clone https://github.com/KubedAI/spark-sql-perf.git
 cd spark-sql-perf
+git checkout support-iceberg-tpcds-v4.0
 sbt package
 ```
 
