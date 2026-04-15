@@ -103,7 +103,9 @@ private[spark] class CometExecRDD(
 
     // Only inject if we have per-partition planning data
     val actualPlan = if (commonByKey.nonEmpty) {
-      val basePlan = OperatorOuterClass.Operator.parseFrom(serializedPlan)
+      val input = com.google.protobuf.CodedInputStream.newInstance(serializedPlan)
+      input.setRecursionLimit(1000)
+      val basePlan = OperatorOuterClass.Operator.parseFrom(input)
       val injected =
         PlanDataInjector.injectPlanData(basePlan, commonByKey, partition.planDataByKey)
       PlanDataInjector.serializeOperator(injected)

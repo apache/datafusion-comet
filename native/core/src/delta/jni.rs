@@ -121,6 +121,17 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_planDeltaScan(
         let plan = plan_delta_scan_with_predicate(&url_str, &config, version, kernel_predicate)
             .map_err(|e| CometError::Internal(format!("delta_kernel log replay failed: {e}")))?;
 
+        // Under column mapping, kernel returns partition_values keyed by the
+        // PHYSICAL column name (e.g. `col-<uuid>`), but `partition_schema`
+        // (and therefore `build_delta_partitioned_files`'s lookup) uses the
+        // LOGICAL name. Build the inverse lookup so we can translate keys
+        // back to logical names on the wire.
+        let physical_to_logical: std::collections::HashMap<String, String> = plan
+            .column_mappings
+            .iter()
+            .map(|(logical, physical)| (physical.clone(), logical.clone()))
+            .collect();
+
         let tasks: Vec<DeltaScanTask> = plan
             .entries
             .into_iter()
@@ -129,22 +140,35 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_planDeltaScan(
                 file_size: entry.size as u64,
                 record_count: entry.num_records,
                 // Partition values are produced by kernel as an
-                // unordered `HashMap<String, String>` per file, and we
-                // keep that representation on the wire — the native side
-                // resorts them against `partition_schema` in
-                // `build_delta_partitioned_files`.
+                // unordered `HashMap<String, String>` per file. Translate
+                // physical -> logical when a column mapping is present so
+                // `build_delta_partitioned_files` can match by logical name.
                 partition_values: entry
                     .partition_values
                     .into_iter()
-                    .map(|(name, value)| DeltaPartitionValue {
-                        name,
-                        value: Some(value),
+                    .map(|(name, value)| {
+                        let logical_name = physical_to_logical
+                            .get(&name)
+                            .cloned()
+                            .unwrap_or(name);
+                        DeltaPartitionValue {
+                            name: logical_name,
+                            value: Some(value),
+                        }
                     })
                     .collect(),
                 // Phase 3: the DV is already materialized into a sorted
                 // `Vec<u64>` of deleted row indexes by `plan_delta_scan`
                 // (which calls `DvInfo::get_row_indexes` on the driver).
                 deleted_row_indexes: entry.deleted_row_indexes,
+                // Row tracking: kernel 0.19.x doesn't yet surface baseRowId /
+                // defaultRowCommitVersion on the ScanFile path (it's read during
+                // log replay but consumed internally for TransformSpec). Leave
+                // unset on the kernel plan path; the pre-materialised-index
+                // path on the Scala side fills these in from AddFile when
+                // rowTracking is enabled.
+                base_row_id: None,
+                default_row_commit_version: None,
             })
             .collect();
 
@@ -178,9 +202,11 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_planDeltaScan(
 /// `build_delta_partitioned_files` can feed straight into
 /// `object_store::path::Path::from_url_path`.
 fn resolve_file_path(table_root: &str, relative: &str) -> String {
-    // Fully-qualified paths (kernel surfaces these for some tables, e.g.
-    // after MERGE or REPLACE operations) pass through untouched.
-    if relative.contains("://") {
+    // Fully-qualified paths (kernel surfaces these for some tables, e.g. after
+    // MERGE, REPLACE, or SHALLOW CLONE) pass through untouched. Accept both
+    // `file:///abs` (authority form) and `file:/abs` (Hadoop `Path.toUri` form,
+    // which SHALLOW CLONE uses when it stores absolute paths in AddFile.path).
+    if has_uri_scheme(relative) {
         return relative.to_string();
     }
 
@@ -189,6 +215,26 @@ fn resolve_file_path(table_root: &str, relative: &str) -> String {
     } else {
         format!("{table_root}/{relative}")
     }
+}
+
+/// True if `s` starts with a URI scheme — `^[A-Za-z][A-Za-z0-9+.-]*:` per RFC 3986.
+/// We check the scheme only (not whether a `//` authority follows) because Hadoop's
+/// `Path.toUri.toString` emits `file:/abs` (single slash) for local absolute paths
+/// and Delta stores that form verbatim in AddFile.path for SHALLOW CLONE tables.
+fn has_uri_scheme(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    if bytes.is_empty() || !bytes[0].is_ascii_alphabetic() {
+        return false;
+    }
+    for (i, &b) in bytes.iter().enumerate().skip(1) {
+        if b == b':' {
+            return i >= 1;
+        }
+        if !(b.is_ascii_alphanumeric() || b == b'+' || b == b'-' || b == b'.') {
+            return false;
+        }
+    }
+    false
 }
 
 /// Walk a `java.util.Map<String, String>` of storage options into a
@@ -283,5 +329,30 @@ mod tests {
             resolve_file_path("file:///tmp/t/", "s3://bucket/data/part-0.parquet"),
             "s3://bucket/data/part-0.parquet"
         );
+    }
+
+    #[test]
+    fn resolve_file_path_passes_through_single_slash_file_uri() {
+        // SHALLOW CLONE stores paths as Hadoop `Path.toUri.toString` which uses
+        // single-slash form `file:/abs/...`. Must not be concat'd onto the clone root.
+        assert_eq!(
+            resolve_file_path(
+                "file:/tmp/clonetable/",
+                "file:/tmp/parquet_table/part-0.parquet"
+            ),
+            "file:/tmp/parquet_table/part-0.parquet"
+        );
+    }
+
+    #[test]
+    fn has_uri_scheme_matches_schemes() {
+        assert!(has_uri_scheme("file:/abs"));
+        assert!(has_uri_scheme("file:///abs"));
+        assert!(has_uri_scheme("s3://bucket/k"));
+        assert!(has_uri_scheme("hdfs://nn/path"));
+        assert!(!has_uri_scheme("part-0.parquet"));
+        assert!(!has_uri_scheme("/abs/path"));
+        assert!(!has_uri_scheme("1bad:/scheme")); // must start with letter
+        assert!(!has_uri_scheme(""));
     }
 }

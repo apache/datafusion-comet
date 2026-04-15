@@ -64,28 +64,49 @@ class CometSparkSessionExtensions
     extensions.injectOptimizerRule { session =>
       new org.apache.spark.sql.catalyst.rules.Rule[
         org.apache.spark.sql.catalyst.plans.logical.LogicalPlan] {
-        private val configLock = new Object()
-        @volatile private var configured = false
         override def apply(plan: org.apache.spark.sql.catalyst.plans.logical.LogicalPlan)
             : org.apache.spark.sql.catalyst.plans.logical.LogicalPlan = {
-          if (!configured) {
-            configLock.synchronized {
-              if (!configured) {
-                try {
-                  if (CometConf.COMET_DELTA_NATIVE_ENABLED.get(session.sessionState.conf)) {
-                    session.conf.set(
-                      "spark.databricks.delta.deletionVectors.useMetadataRowIndex",
-                      "false")
-                  }
-                } catch {
-                  case _: Throwable => // delta-spark not on classpath; ignore
-                }
-                configured = true
-              }
+          // Only flip the session config when this plan actually contains a Delta
+          // scan we would accelerate. A session-global sticky flip breaks Delta's
+          // own tests that deliberately set `useMetadataRowIndex=true` and expect
+          // it to stick (e.g. `DeltaParquetFileFormatWithPredicatePushdownSuite`).
+          //
+          // Skip plans that explicitly reference `__delta_internal_is_row_deleted`
+          // in their output — that's a raw DV-read test path where the user wants
+          // Delta's metadata-row-index strategy, and flipping would invalidate the
+          // constructor contract (`useMetadataRowIndex == optimizationsEnabled`).
+          try {
+            if (CometConf.COMET_DELTA_NATIVE_ENABLED.get(session.sessionState.conf) &&
+              planHasDeltaScan(plan) &&
+              !planReferencesIsRowDeleted(plan)) {
+              session.conf.set(
+                "spark.databricks.delta.deletionVectors.useMetadataRowIndex",
+                "false")
             }
+          } catch {
+            case _: Throwable => // delta-spark not on classpath; ignore
           }
           plan
         }
+
+        private def planHasDeltaScan(
+            plan: org.apache.spark.sql.catalyst.plans.logical.LogicalPlan): Boolean = {
+          import org.apache.spark.sql.execution.datasources.LogicalRelation
+          import org.apache.spark.sql.execution.datasources.HadoopFsRelation
+          plan.find {
+            case LogicalRelation(hfr: HadoopFsRelation, _, _, _) =>
+              org.apache.comet.delta.DeltaReflection.isDeltaFileFormat(hfr.fileFormat)
+            case _ => false
+          }.isDefined
+        }
+
+        private def planReferencesIsRowDeleted(
+            plan: org.apache.spark.sql.catalyst.plans.logical.LogicalPlan): Boolean = {
+          val name = org.apache.comet.delta.DeltaReflection.IsRowDeletedColumnName
+          plan.output.exists(_.name.equalsIgnoreCase(name)) ||
+          plan.find(_.output.exists(_.name.equalsIgnoreCase(name))).isDefined
+        }
+
         override val ruleName: String = "CometDeltaDvConfigRule"
       }
     }

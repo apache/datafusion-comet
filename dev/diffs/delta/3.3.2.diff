@@ -103,244 +103,12 @@ index 3bf4d21..bf4de4a 100644
          )
      }
  
-diff --git a/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/destination/_delta_log/.00000000000000000000.checkpoint.parquet.crc b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/destination/_delta_log/.00000000000000000000.checkpoint.parquet.crc
-new file mode 100644
-index 0000000..7b77a57
-Binary files /dev/null and b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/destination/_delta_log/.00000000000000000000.checkpoint.parquet.crc differ
-diff --git a/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/destination/_delta_log/.00000000000000000000.json.crc b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/destination/_delta_log/.00000000000000000000.json.crc
-new file mode 100644
-index 0000000..e64a4d7
-Binary files /dev/null and b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/destination/_delta_log/.00000000000000000000.json.crc differ
-diff --git a/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/destination/_delta_log/._last_checkpoint.crc b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/destination/_delta_log/._last_checkpoint.crc
-new file mode 100644
-index 0000000..328c8f8
-Binary files /dev/null and b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/destination/_delta_log/._last_checkpoint.crc differ
-diff --git a/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/destination/_delta_log/00000000000000000000.checkpoint.parquet b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/destination/_delta_log/00000000000000000000.checkpoint.parquet
-new file mode 100644
-index 0000000..5097146
-Binary files /dev/null and b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/destination/_delta_log/00000000000000000000.checkpoint.parquet differ
-diff --git a/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/destination/_delta_log/00000000000000000000.json b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/destination/_delta_log/00000000000000000000.json
-new file mode 100644
-index 0000000..9d6d42d
---- /dev/null
-+++ b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/destination/_delta_log/00000000000000000000.json
-@@ -0,0 +1,5 @@
-+{"commitInfo":{"timestamp":1776179274718,"operation":"CLONE","operationParameters":{"source":"delta.`file:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/delta-regression-3.3.2/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source`","sourceVersion":0},"readVersion":-1,"isolationLevel":"Serializable","isBlindAppend":false,"operationMetrics":{"removedFilesSize":"0","numRemovedFiles":"0","sourceTableSize":"909","numCopiedFiles":"0","copiedFilesSize":"0","sourceNumOfFiles":"2"},"engineInfo":"Apache-Spark/3.5.3 Delta-Lake/3.3.2","txnId":"7b8b5568-b663-4359-9b0d-c969894a0170"}}
-+{"metaData":{"id":"5b7b5877-5f19-4fc6-8549-45aead1e3c56","format":{"provider":"parquet","options":{}},"schemaString":"{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"integer\",\"nullable\":true,\"metadata\":{}}]}","partitionColumns":[],"configuration":{},"createdTime":1776179273172}}
-+{"add":{"path":"file:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/delta-regression-3.3.2/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/test%25file%25prefix-part-00000-3d79d037-a6a1-4ded-a48e-863c61d6cdb9-c000.snappy.parquet","partitionValues":{},"size":452,"modificationTime":1776179273269,"dataChange":true,"stats":"{\"numRecords\":1,\"minValues\":{\"id\":1},\"maxValues\":{\"id\":1},\"nullCount\":{\"id\":0}}"}}
-+{"add":{"path":"file:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/delta-regression-3.3.2/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/test%25file%25prefix-part-00001-bc4bbc82-d8c7-4df8-80f9-c9ba1150e08e-c000.snappy.parquet","partitionValues":{},"size":457,"modificationTime":1776179273269,"dataChange":true,"stats":"{\"numRecords\":2,\"minValues\":{\"id\":2},\"maxValues\":{\"id\":3},\"nullCount\":{\"id\":0}}"}}
-+{"protocol":{"minReaderVersion":1,"minWriterVersion":2}}
-diff --git a/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/destination/_delta_log/_last_checkpoint b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/destination/_delta_log/_last_checkpoint
-new file mode 100644
-index 0000000..f4d1f98
---- /dev/null
-+++ b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/destination/_delta_log/_last_checkpoint
-@@ -0,0 +1 @@
-+{"version":0,"size":4,"sizeInBytes":16442,"numOfAddFiles":2,"checkpointSchema":{"type":"struct","fields":[{"name":"txn","type":{"type":"struct","fields":[{"name":"appId","type":"string","nullable":true,"metadata":{}},{"name":"version","type":"long","nullable":true,"metadata":{}},{"name":"lastUpdated","type":"long","nullable":true,"metadata":{}}]},"nullable":true,"metadata":{}},{"name":"add","type":{"type":"struct","fields":[{"name":"path","type":"string","nullable":true,"metadata":{}},{"name":"partitionValues","type":{"type":"map","keyType":"string","valueType":"string","valueContainsNull":true},"nullable":true,"metadata":{}},{"name":"size","type":"long","nullable":true,"metadata":{}},{"name":"modificationTime","type":"long","nullable":true,"metadata":{}},{"name":"dataChange","type":"boolean","nullable":true,"metadata":{}},{"name":"tags","type":{"type":"map","keyType":"string","valueType":"string","valueContainsNull":true},"nullable":true,"metadata":{}},{"name":"deletionVector","type":{"type":"struct","fields":[{"name":"storageType","type":"string","nullable":true,"metadata":{}},{"name":"pathOrInlineDv","type":"string","nullable":true,"metadata":{}},{"name":"offset","type":"integer","nullable":true,"metadata":{}},{"name":"sizeInBytes","type":"integer","nullable":true,"metadata":{}},{"name":"cardinality","type":"long","nullable":true,"metadata":{}},{"name":"maxRowIndex","type":"long","nullable":true,"metadata":{}}]},"nullable":true,"metadata":{}},{"name":"baseRowId","type":"long","nullable":true,"metadata":{}},{"name":"defaultRowCommitVersion","type":"long","nullable":true,"metadata":{}},{"name":"clusteringProvider","type":"string","nullable":true,"metadata":{}},{"name":"stats","type":"string","nullable":true,"metadata":{}}]},"nullable":true,"metadata":{}},{"name":"remove","type":{"type":"struct","fields":[{"name":"path","type":"string","nullable":true,"metadata":{}},{"name":"deletionTimestamp","type":"long","nullable":true,"metadata":{}},{"name":"dataChange","type":"boolean","nullable":true,"metadata":{}},{"name":"extendedFileMetadata","type":"boolean","nullable":true,"metadata":{}},{"name":"partitionValues","type":{"type":"map","keyType":"string","valueType":"string","valueContainsNull":true},"nullable":true,"metadata":{}},{"name":"size","type":"long","nullable":true,"metadata":{}},{"name":"deletionVector","type":{"type":"struct","fields":[{"name":"storageType","type":"string","nullable":true,"metadata":{}},{"name":"pathOrInlineDv","type":"string","nullable":true,"metadata":{}},{"name":"offset","type":"integer","nullable":true,"metadata":{}},{"name":"sizeInBytes","type":"integer","nullable":true,"metadata":{}},{"name":"cardinality","type":"long","nullable":true,"metadata":{}},{"name":"maxRowIndex","type":"long","nullable":true,"metadata":{}}]},"nullable":true,"metadata":{}},{"name":"baseRowId","type":"long","nullable":true,"metadata":{}},{"name":"defaultRowCommitVersion","type":"long","nullable":true,"metadata":{}}]},"nullable":true,"metadata":{}},{"name":"metaData","type":{"type":"struct","fields":[{"name":"id","type":"string","nullable":true,"metadata":{}},{"name":"name","type":"string","nullable":true,"metadata":{}},{"name":"description","type":"string","nullable":true,"metadata":{}},{"name":"format","type":{"type":"struct","fields":[{"name":"provider","type":"string","nullable":true,"metadata":{}},{"name":"options","type":{"type":"map","keyType":"string","valueType":"string","valueContainsNull":true},"nullable":true,"metadata":{}}]},"nullable":true,"metadata":{}},{"name":"schemaString","type":"string","nullable":true,"metadata":{}},{"name":"partitionColumns","type":{"type":"array","elementType":"string","containsNull":true},"nullable":true,"metadata":{}},{"name":"configuration","type":{"type":"map","keyType":"string","valueType":"string","valueContainsNull":true},"nullable":true,"metadata":{}},{"name":"createdTime","type":"long","nullable":true,"metadata":{}}]},"nullable":true,"metadata":{}},{"name":"protocol","type":{"type":"struct","fields":[{"name":"minReaderVersion","type":"integer","nullable":true,"metadata":{}},{"name":"minWriterVersion","type":"integer","nullable":true,"metadata":{}},{"name":"readerFeatures","type":{"type":"array","elementType":"string","containsNull":true},"nullable":true,"metadata":{}},{"name":"writerFeatures","type":{"type":"array","elementType":"string","containsNull":true},"nullable":true,"metadata":{}}]},"nullable":true,"metadata":{}},{"name":"domainMetadata","type":{"type":"struct","fields":[{"name":"domain","type":"string","nullable":true,"metadata":{}},{"name":"configuration","type":"string","nullable":true,"metadata":{}},{"name":"removed","type":"boolean","nullable":true,"metadata":{}}]},"nullable":true,"metadata":{}}]},"checksum":"1267105e1968e879a90490a25dba4412"}
-diff --git a/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/.test%file%prefix-part-00000-3d79d037-a6a1-4ded-a48e-863c61d6cdb9-c000.snappy.parquet.crc b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/.test%file%prefix-part-00000-3d79d037-a6a1-4ded-a48e-863c61d6cdb9-c000.snappy.parquet.crc
-new file mode 100644
-index 0000000..c59f94f
-Binary files /dev/null and b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/.test%file%prefix-part-00000-3d79d037-a6a1-4ded-a48e-863c61d6cdb9-c000.snappy.parquet.crc differ
-diff --git a/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/.test%file%prefix-part-00000-62852a5f-e667-471c-9be6-86e72548cd33-c000.snappy.parquet.crc b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/.test%file%prefix-part-00000-62852a5f-e667-471c-9be6-86e72548cd33-c000.snappy.parquet.crc
-new file mode 100644
-index 0000000..403e1bf
-Binary files /dev/null and b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/.test%file%prefix-part-00000-62852a5f-e667-471c-9be6-86e72548cd33-c000.snappy.parquet.crc differ
-diff --git a/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/.test%file%prefix-part-00000-ce50fd45-48ad-41f7-b2ce-a77abb3ec777-c000.snappy.parquet.crc b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/.test%file%prefix-part-00000-ce50fd45-48ad-41f7-b2ce-a77abb3ec777-c000.snappy.parquet.crc
-new file mode 100644
-index 0000000..db1a849
-Binary files /dev/null and b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/.test%file%prefix-part-00000-ce50fd45-48ad-41f7-b2ce-a77abb3ec777-c000.snappy.parquet.crc differ
-diff --git a/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/.test%file%prefix-part-00001-9b66b905-575b-4dcd-8209-2c54a3f7a876-c000.snappy.parquet.crc b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/.test%file%prefix-part-00001-9b66b905-575b-4dcd-8209-2c54a3f7a876-c000.snappy.parquet.crc
-new file mode 100644
-index 0000000..86cb373
-Binary files /dev/null and b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/.test%file%prefix-part-00001-9b66b905-575b-4dcd-8209-2c54a3f7a876-c000.snappy.parquet.crc differ
-diff --git a/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/.test%file%prefix-part-00001-bc4bbc82-d8c7-4df8-80f9-c9ba1150e08e-c000.snappy.parquet.crc b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/.test%file%prefix-part-00001-bc4bbc82-d8c7-4df8-80f9-c9ba1150e08e-c000.snappy.parquet.crc
-new file mode 100644
-index 0000000..0122e81
-Binary files /dev/null and b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/.test%file%prefix-part-00001-bc4bbc82-d8c7-4df8-80f9-c9ba1150e08e-c000.snappy.parquet.crc differ
-diff --git a/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/.test%file%prefix-part-00001-f5b86ee6-5f3a-4d85-9922-c9dc9a2d1665-c000.snappy.parquet.crc b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/.test%file%prefix-part-00001-f5b86ee6-5f3a-4d85-9922-c9dc9a2d1665-c000.snappy.parquet.crc
-new file mode 100644
-index 0000000..17b8946
-Binary files /dev/null and b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/.test%file%prefix-part-00001-f5b86ee6-5f3a-4d85-9922-c9dc9a2d1665-c000.snappy.parquet.crc differ
-diff --git a/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/_delta_log/.00000000000000000000.crc.crc b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/_delta_log/.00000000000000000000.crc.crc
-new file mode 100644
-index 0000000..bc56627
-Binary files /dev/null and b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/_delta_log/.00000000000000000000.crc.crc differ
-diff --git a/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/_delta_log/.00000000000000000000.json.crc b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/_delta_log/.00000000000000000000.json.crc
-new file mode 100644
-index 0000000..6ea67ab
-Binary files /dev/null and b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/_delta_log/.00000000000000000000.json.crc differ
-diff --git a/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/_delta_log/.00000000000000000001.crc.crc b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/_delta_log/.00000000000000000001.crc.crc
-new file mode 100644
-index 0000000..3785950
-Binary files /dev/null and b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/_delta_log/.00000000000000000001.crc.crc differ
-diff --git a/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/_delta_log/.00000000000000000001.json.crc b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/_delta_log/.00000000000000000001.json.crc
-new file mode 100644
-index 0000000..94d7400
-Binary files /dev/null and b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/_delta_log/.00000000000000000001.json.crc differ
-diff --git a/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/_delta_log/.00000000000000000002.crc.crc b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/_delta_log/.00000000000000000002.crc.crc
-new file mode 100644
-index 0000000..36dd599
-Binary files /dev/null and b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/_delta_log/.00000000000000000002.crc.crc differ
-diff --git a/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/_delta_log/.00000000000000000002.json.crc b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/_delta_log/.00000000000000000002.json.crc
-new file mode 100644
-index 0000000..919a096
-Binary files /dev/null and b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/_delta_log/.00000000000000000002.json.crc differ
-diff --git a/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/_delta_log/00000000000000000000.crc b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/_delta_log/00000000000000000000.crc
-new file mode 100644
-index 0000000..c6109ee
---- /dev/null
-+++ b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/_delta_log/00000000000000000000.crc
-@@ -0,0 +1 @@
-+{"txnId":"6739c563-f844-44f3-bb9b-5f1f63fc457c","tableSizeBytes":909,"numFiles":2,"numMetadata":1,"numProtocol":1,"setTransactions":[],"domainMetadata":[],"metadata":{"id":"0c698c95-7d08-4c8e-a38e-2ae22fa1103f","format":{"provider":"parquet","options":{}},"schemaString":"{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"integer\",\"nullable\":true,\"metadata\":{}}]}","partitionColumns":[],"configuration":{},"createdTime":1776179273172},"protocol":{"minReaderVersion":1,"minWriterVersion":2},"allFiles":[{"path":"test%25file%25prefix-part-00000-3d79d037-a6a1-4ded-a48e-863c61d6cdb9-c000.snappy.parquet","partitionValues":{},"size":452,"modificationTime":1776179273269,"dataChange":false,"stats":"{\"numRecords\":1,\"minValues\":{\"id\":1},\"maxValues\":{\"id\":1},\"nullCount\":{\"id\":0}}"},{"path":"test%25file%25prefix-part-00001-bc4bbc82-d8c7-4df8-80f9-c9ba1150e08e-c000.snappy.parquet","partitionValues":{},"size":457,"modificationTime":1776179273269,"dataChange":false,"stats":"{\"numRecords\":2,\"minValues\":{\"id\":2},\"maxValues\":{\"id\":3},\"nullCount\":{\"id\":0}}"}]}
-diff --git a/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/_delta_log/00000000000000000000.json b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/_delta_log/00000000000000000000.json
-new file mode 100644
-index 0000000..02ac817
---- /dev/null
-+++ b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/_delta_log/00000000000000000000.json
-@@ -0,0 +1,5 @@
-+{"commitInfo":{"timestamp":1776179273272,"operation":"WRITE","operationParameters":{"mode":"ErrorIfExists","partitionBy":"[]"},"isolationLevel":"Serializable","isBlindAppend":true,"operationMetrics":{"numFiles":"2","numOutputRows":"3","numOutputBytes":"909"},"engineInfo":"Apache-Spark/3.5.3 Delta-Lake/3.3.2","txnId":"6739c563-f844-44f3-bb9b-5f1f63fc457c"}}
-+{"metaData":{"id":"0c698c95-7d08-4c8e-a38e-2ae22fa1103f","format":{"provider":"parquet","options":{}},"schemaString":"{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"integer\",\"nullable\":true,\"metadata\":{}}]}","partitionColumns":[],"configuration":{},"createdTime":1776179273172}}
-+{"protocol":{"minReaderVersion":1,"minWriterVersion":2}}
-+{"add":{"path":"test%25file%25prefix-part-00000-3d79d037-a6a1-4ded-a48e-863c61d6cdb9-c000.snappy.parquet","partitionValues":{},"size":452,"modificationTime":1776179273269,"dataChange":true,"stats":"{\"numRecords\":1,\"minValues\":{\"id\":1},\"maxValues\":{\"id\":1},\"nullCount\":{\"id\":0}}"}}
-+{"add":{"path":"test%25file%25prefix-part-00001-bc4bbc82-d8c7-4df8-80f9-c9ba1150e08e-c000.snappy.parquet","partitionValues":{},"size":457,"modificationTime":1776179273269,"dataChange":true,"stats":"{\"numRecords\":2,\"minValues\":{\"id\":2},\"maxValues\":{\"id\":3},\"nullCount\":{\"id\":0}}"}}
-diff --git a/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/_delta_log/00000000000000000001.crc b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/_delta_log/00000000000000000001.crc
-new file mode 100644
-index 0000000..dac50be
---- /dev/null
-+++ b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/_delta_log/00000000000000000001.crc
-@@ -0,0 +1 @@
-+{"txnId":"fe0a987a-43ed-45a2-a17e-41532af6891f","tableSizeBytes":1813,"numFiles":4,"numMetadata":1,"numProtocol":1,"setTransactions":[],"domainMetadata":[],"metadata":{"id":"0c698c95-7d08-4c8e-a38e-2ae22fa1103f","format":{"provider":"parquet","options":{}},"schemaString":"{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"integer\",\"nullable\":true,\"metadata\":{}}]}","partitionColumns":[],"configuration":{},"createdTime":1776179273172},"protocol":{"minReaderVersion":1,"minWriterVersion":2},"allFiles":[{"path":"test%25file%25prefix-part-00001-9b66b905-575b-4dcd-8209-2c54a3f7a876-c000.snappy.parquet","partitionValues":{},"size":452,"modificationTime":1776179273750,"dataChange":false,"stats":"{\"numRecords\":1,\"minValues\":{\"id\":5},\"maxValues\":{\"id\":5},\"nullCount\":{\"id\":0}}"},{"path":"test%25file%25prefix-part-00000-3d79d037-a6a1-4ded-a48e-863c61d6cdb9-c000.snappy.parquet","partitionValues":{},"size":452,"modificationTime":1776179273269,"dataChange":false,"stats":"{\"numRecords\":1,\"minValues\":{\"id\":1},\"maxValues\":{\"id\":1},\"nullCount\":{\"id\":0}}"},{"path":"test%25file%25prefix-part-00000-62852a5f-e667-471c-9be6-86e72548cd33-c000.snappy.parquet","partitionValues":{},"size":452,"modificationTime":1776179273750,"dataChange":false,"stats":"{\"numRecords\":1,\"minValues\":{\"id\":4},\"maxValues\":{\"id\":4},\"nullCount\":{\"id\":0}}"},{"path":"test%25file%25prefix-part-00001-bc4bbc82-d8c7-4df8-80f9-c9ba1150e08e-c000.snappy.parquet","partitionValues":{},"size":457,"modificationTime":1776179273269,"dataChange":false,"stats":"{\"numRecords\":2,\"minValues\":{\"id\":2},\"maxValues\":{\"id\":3},\"nullCount\":{\"id\":0}}"}]}
-diff --git a/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/_delta_log/00000000000000000001.json b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/_delta_log/00000000000000000001.json
-new file mode 100644
-index 0000000..422003c
---- /dev/null
-+++ b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/_delta_log/00000000000000000001.json
-@@ -0,0 +1,3 @@
-+{"commitInfo":{"timestamp":1776179273752,"operation":"WRITE","operationParameters":{"mode":"Append","partitionBy":"[]"},"readVersion":0,"isolationLevel":"Serializable","isBlindAppend":true,"operationMetrics":{"numFiles":"2","numOutputRows":"2","numOutputBytes":"904"},"engineInfo":"Apache-Spark/3.5.3 Delta-Lake/3.3.2","txnId":"fe0a987a-43ed-45a2-a17e-41532af6891f"}}
-+{"add":{"path":"test%25file%25prefix-part-00000-62852a5f-e667-471c-9be6-86e72548cd33-c000.snappy.parquet","partitionValues":{},"size":452,"modificationTime":1776179273750,"dataChange":true,"stats":"{\"numRecords\":1,\"minValues\":{\"id\":4},\"maxValues\":{\"id\":4},\"nullCount\":{\"id\":0}}"}}
-+{"add":{"path":"test%25file%25prefix-part-00001-9b66b905-575b-4dcd-8209-2c54a3f7a876-c000.snappy.parquet","partitionValues":{},"size":452,"modificationTime":1776179273750,"dataChange":true,"stats":"{\"numRecords\":1,\"minValues\":{\"id\":5},\"maxValues\":{\"id\":5},\"nullCount\":{\"id\":0}}"}}
-diff --git a/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/_delta_log/00000000000000000002.crc b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/_delta_log/00000000000000000002.crc
-new file mode 100644
-index 0000000..d382928
---- /dev/null
-+++ b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/_delta_log/00000000000000000002.crc
-@@ -0,0 +1 @@
-+{"txnId":"4e25a8d4-05ab-4349-9a01-c30ac2f5a85d","tableSizeBytes":2717,"numFiles":6,"numMetadata":1,"numProtocol":1,"setTransactions":[],"domainMetadata":[],"metadata":{"id":"0c698c95-7d08-4c8e-a38e-2ae22fa1103f","format":{"provider":"parquet","options":{}},"schemaString":"{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"integer\",\"nullable\":true,\"metadata\":{}}]}","partitionColumns":[],"configuration":{},"createdTime":1776179273172},"protocol":{"minReaderVersion":1,"minWriterVersion":2},"allFiles":[{"path":"test%25file%25prefix-part-00001-f5b86ee6-5f3a-4d85-9922-c9dc9a2d1665-c000.snappy.parquet","partitionValues":{},"size":452,"modificationTime":1776179274106,"dataChange":false,"stats":"{\"numRecords\":1,\"minValues\":{\"id\":7},\"maxValues\":{\"id\":7},\"nullCount\":{\"id\":0}}"},{"path":"test%25file%25prefix-part-00001-9b66b905-575b-4dcd-8209-2c54a3f7a876-c000.snappy.parquet","partitionValues":{},"size":452,"modificationTime":1776179273750,"dataChange":false,"stats":"{\"numRecords\":1,\"minValues\":{\"id\":5},\"maxValues\":{\"id\":5},\"nullCount\":{\"id\":0}}"},{"path":"test%25file%25prefix-part-00000-3d79d037-a6a1-4ded-a48e-863c61d6cdb9-c000.snappy.parquet","partitionValues":{},"size":452,"modificationTime":1776179273269,"dataChange":false,"stats":"{\"numRecords\":1,\"minValues\":{\"id\":1},\"maxValues\":{\"id\":1},\"nullCount\":{\"id\":0}}"},{"path":"test%25file%25prefix-part-00000-ce50fd45-48ad-41f7-b2ce-a77abb3ec777-c000.snappy.parquet","partitionValues":{},"size":452,"modificationTime":1776179274106,"dataChange":false,"stats":"{\"numRecords\":1,\"minValues\":{\"id\":6},\"maxValues\":{\"id\":6},\"nullCount\":{\"id\":0}}"},{"path":"test%25file%25prefix-part-00000-62852a5f-e667-471c-9be6-86e72548cd33-c000.snappy.parquet","partitionValues":{},"size":452,"modificationTime":1776179273750,"dataChange":false,"stats":"{\"numRecords\":1,\"minValues\":{\"id\":4},\"maxValues\":{\"id\":4},\"nullCount\":{\"id\":0}}"},{"path":"test%25file%25prefix-part-00001-bc4bbc82-d8c7-4df8-80f9-c9ba1150e08e-c000.snappy.parquet","partitionValues":{},"size":457,"modificationTime":1776179273269,"dataChange":false,"stats":"{\"numRecords\":2,\"minValues\":{\"id\":2},\"maxValues\":{\"id\":3},\"nullCount\":{\"id\":0}}"}]}
-diff --git a/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/_delta_log/00000000000000000002.json b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/_delta_log/00000000000000000002.json
-new file mode 100644
-index 0000000..89f0a9b
---- /dev/null
-+++ b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/_delta_log/00000000000000000002.json
-@@ -0,0 +1,3 @@
-+{"commitInfo":{"timestamp":1776179274107,"operation":"WRITE","operationParameters":{"mode":"Append","partitionBy":"[]"},"readVersion":1,"isolationLevel":"Serializable","isBlindAppend":true,"operationMetrics":{"numFiles":"2","numOutputRows":"2","numOutputBytes":"904"},"engineInfo":"Apache-Spark/3.5.3 Delta-Lake/3.3.2","txnId":"4e25a8d4-05ab-4349-9a01-c30ac2f5a85d"}}
-+{"add":{"path":"test%25file%25prefix-part-00000-ce50fd45-48ad-41f7-b2ce-a77abb3ec777-c000.snappy.parquet","partitionValues":{},"size":452,"modificationTime":1776179274106,"dataChange":true,"stats":"{\"numRecords\":1,\"minValues\":{\"id\":6},\"maxValues\":{\"id\":6},\"nullCount\":{\"id\":0}}"}}
-+{"add":{"path":"test%25file%25prefix-part-00001-f5b86ee6-5f3a-4d85-9922-c9dc9a2d1665-c000.snappy.parquet","partitionValues":{},"size":452,"modificationTime":1776179274106,"dataChange":true,"stats":"{\"numRecords\":1,\"minValues\":{\"id\":7},\"maxValues\":{\"id\":7},\"nullCount\":{\"id\":0}}"}}
-diff --git a/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/test%file%prefix-part-00000-3d79d037-a6a1-4ded-a48e-863c61d6cdb9-c000.snappy.parquet b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/test%file%prefix-part-00000-3d79d037-a6a1-4ded-a48e-863c61d6cdb9-c000.snappy.parquet
-new file mode 100644
-index 0000000..a832f18
-Binary files /dev/null and b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/test%file%prefix-part-00000-3d79d037-a6a1-4ded-a48e-863c61d6cdb9-c000.snappy.parquet differ
-diff --git a/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/test%file%prefix-part-00000-62852a5f-e667-471c-9be6-86e72548cd33-c000.snappy.parquet b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/test%file%prefix-part-00000-62852a5f-e667-471c-9be6-86e72548cd33-c000.snappy.parquet
-new file mode 100644
-index 0000000..9336eee
-Binary files /dev/null and b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/test%file%prefix-part-00000-62852a5f-e667-471c-9be6-86e72548cd33-c000.snappy.parquet differ
-diff --git a/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/test%file%prefix-part-00000-ce50fd45-48ad-41f7-b2ce-a77abb3ec777-c000.snappy.parquet b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/test%file%prefix-part-00000-ce50fd45-48ad-41f7-b2ce-a77abb3ec777-c000.snappy.parquet
-new file mode 100644
-index 0000000..60ffa6a
-Binary files /dev/null and b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/test%file%prefix-part-00000-ce50fd45-48ad-41f7-b2ce-a77abb3ec777-c000.snappy.parquet differ
-diff --git a/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/test%file%prefix-part-00001-9b66b905-575b-4dcd-8209-2c54a3f7a876-c000.snappy.parquet b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/test%file%prefix-part-00001-9b66b905-575b-4dcd-8209-2c54a3f7a876-c000.snappy.parquet
-new file mode 100644
-index 0000000..df47415
-Binary files /dev/null and b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/test%file%prefix-part-00001-9b66b905-575b-4dcd-8209-2c54a3f7a876-c000.snappy.parquet differ
-diff --git a/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/test%file%prefix-part-00001-bc4bbc82-d8c7-4df8-80f9-c9ba1150e08e-c000.snappy.parquet b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/test%file%prefix-part-00001-bc4bbc82-d8c7-4df8-80f9-c9ba1150e08e-c000.snappy.parquet
-new file mode 100644
-index 0000000..9a2d2ac
-Binary files /dev/null and b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/test%file%prefix-part-00001-bc4bbc82-d8c7-4df8-80f9-c9ba1150e08e-c000.snappy.parquet differ
-diff --git a/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/test%file%prefix-part-00001-f5b86ee6-5f3a-4d85-9922-c9dc9a2d1665-c000.snappy.parquet b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/test%file%prefix-part-00001-f5b86ee6-5f3a-4d85-9922-c9dc9a2d1665-c000.snappy.parquet
-new file mode 100644
-index 0000000..d933e46
-Binary files /dev/null and b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-84cfb38b-6660-43f3-a9a0-f8942b32f666/source/test%file%prefix-part-00001-f5b86ee6-5f3a-4d85-9922-c9dc9a2d1665-c000.snappy.parquet differ
-diff --git a/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-b6431ff2-3c48-45bd-ba9d-0cf080290204/destination/_delta_log/.00000000000000000000.checkpoint.parquet.crc b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-b6431ff2-3c48-45bd-ba9d-0cf080290204/destination/_delta_log/.00000000000000000000.checkpoint.parquet.crc
-new file mode 100644
-index 0000000..b730d07
-Binary files /dev/null and b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-b6431ff2-3c48-45bd-ba9d-0cf080290204/destination/_delta_log/.00000000000000000000.checkpoint.parquet.crc differ
-diff --git a/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-b6431ff2-3c48-45bd-ba9d-0cf080290204/destination/_delta_log/.00000000000000000000.json.crc b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-b6431ff2-3c48-45bd-ba9d-0cf080290204/destination/_delta_log/.00000000000000000000.json.crc
-new file mode 100644
-index 0000000..02e90b4
-Binary files /dev/null and b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-b6431ff2-3c48-45bd-ba9d-0cf080290204/destination/_delta_log/.00000000000000000000.json.crc differ
-diff --git a/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-b6431ff2-3c48-45bd-ba9d-0cf080290204/destination/_delta_log/._last_checkpoint.crc b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-b6431ff2-3c48-45bd-ba9d-0cf080290204/destination/_delta_log/._last_checkpoint.crc
-new file mode 100644
-index 0000000..e53df1a
-Binary files /dev/null and b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-b6431ff2-3c48-45bd-ba9d-0cf080290204/destination/_delta_log/._last_checkpoint.crc differ
-diff --git a/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-b6431ff2-3c48-45bd-ba9d-0cf080290204/destination/_delta_log/00000000000000000000.checkpoint.parquet b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-b6431ff2-3c48-45bd-ba9d-0cf080290204/destination/_delta_log/00000000000000000000.checkpoint.parquet
-new file mode 100644
-index 0000000..2dbe8d5
-Binary files /dev/null and b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-b6431ff2-3c48-45bd-ba9d-0cf080290204/destination/_delta_log/00000000000000000000.checkpoint.parquet differ
-diff --git a/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-b6431ff2-3c48-45bd-ba9d-0cf080290204/destination/_delta_log/00000000000000000000.json b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-b6431ff2-3c48-45bd-ba9d-0cf080290204/destination/_delta_log/00000000000000000000.json
-new file mode 100644
-index 0000000..241861b
---- /dev/null
-+++ b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-b6431ff2-3c48-45bd-ba9d-0cf080290204/destination/_delta_log/00000000000000000000.json
-@@ -0,0 +1,5 @@
-+{"commitInfo":{"timestamp":1776179272221,"operation":"CLONE","operationParameters":{"source":"delta.`file:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/delta-regression-3.3.2/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-b6431ff2-3c48-45bd-ba9d-0cf080290204/source`","sourceVersion":0},"readVersion":-1,"isolationLevel":"Serializable","isBlindAppend":false,"operationMetrics":{"removedFilesSize":"0","numRemovedFiles":"0","sourceTableSize":"1003","numCopiedFiles":"0","copiedFilesSize":"0","sourceNumOfFiles":"2"},"engineInfo":"Apache-Spark/3.5.3 Delta-Lake/3.3.2","txnId":"a2f86091-1e61-4a4e-aaa3-b20db99cd598"}}
-+{"metaData":{"id":"ecc7935f-5ede-426c-8cb9-e0a1b6eedc37","format":{"provider":"parquet","options":{}},"schemaString":"{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\",\"nullable\":true,\"metadata\":{}}]}","partitionColumns":[],"configuration":{},"createdTime":1776179271506}}
-+{"add":{"path":"file:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/delta-regression-3.3.2/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-b6431ff2-3c48-45bd-ba9d-0cf080290204/source/test%25file%25prefix-part-00000-8e5102a3-e100-4a44-a9df-5b4f52eaf7dd-c000.snappy.parquet","partitionValues":{},"size":500,"modificationTime":1776179271705,"dataChange":true,"stats":"{\"numRecords\":5,\"minValues\":{\"id\":0},\"maxValues\":{\"id\":4},\"nullCount\":{\"id\":0}}"}}
-+{"add":{"path":"file:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/delta-regression-3.3.2/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-b6431ff2-3c48-45bd-ba9d-0cf080290204/source/test%25file%25prefix-part-00001-937b8b2e-4df0-474c-8c04-f661e12a59a3-c000.snappy.parquet","partitionValues":{},"size":503,"modificationTime":1776179271705,"dataChange":true,"stats":"{\"numRecords\":5,\"minValues\":{\"id\":5},\"maxValues\":{\"id\":9},\"nullCount\":{\"id\":0}}"}}
-+{"protocol":{"minReaderVersion":1,"minWriterVersion":2}}
-diff --git a/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-b6431ff2-3c48-45bd-ba9d-0cf080290204/destination/_delta_log/_last_checkpoint b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-b6431ff2-3c48-45bd-ba9d-0cf080290204/destination/_delta_log/_last_checkpoint
-new file mode 100644
-index 0000000..c64b371
---- /dev/null
-+++ b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-b6431ff2-3c48-45bd-ba9d-0cf080290204/destination/_delta_log/_last_checkpoint
-@@ -0,0 +1 @@
-+{"version":0,"size":4,"sizeInBytes":16421,"numOfAddFiles":2,"checkpointSchema":{"type":"struct","fields":[{"name":"txn","type":{"type":"struct","fields":[{"name":"appId","type":"string","nullable":true,"metadata":{}},{"name":"version","type":"long","nullable":true,"metadata":{}},{"name":"lastUpdated","type":"long","nullable":true,"metadata":{}}]},"nullable":true,"metadata":{}},{"name":"add","type":{"type":"struct","fields":[{"name":"path","type":"string","nullable":true,"metadata":{}},{"name":"partitionValues","type":{"type":"map","keyType":"string","valueType":"string","valueContainsNull":true},"nullable":true,"metadata":{}},{"name":"size","type":"long","nullable":true,"metadata":{}},{"name":"modificationTime","type":"long","nullable":true,"metadata":{}},{"name":"dataChange","type":"boolean","nullable":true,"metadata":{}},{"name":"tags","type":{"type":"map","keyType":"string","valueType":"string","valueContainsNull":true},"nullable":true,"metadata":{}},{"name":"deletionVector","type":{"type":"struct","fields":[{"name":"storageType","type":"string","nullable":true,"metadata":{}},{"name":"pathOrInlineDv","type":"string","nullable":true,"metadata":{}},{"name":"offset","type":"integer","nullable":true,"metadata":{}},{"name":"sizeInBytes","type":"integer","nullable":true,"metadata":{}},{"name":"cardinality","type":"long","nullable":true,"metadata":{}},{"name":"maxRowIndex","type":"long","nullable":true,"metadata":{}}]},"nullable":true,"metadata":{}},{"name":"baseRowId","type":"long","nullable":true,"metadata":{}},{"name":"defaultRowCommitVersion","type":"long","nullable":true,"metadata":{}},{"name":"clusteringProvider","type":"string","nullable":true,"metadata":{}},{"name":"stats","type":"string","nullable":true,"metadata":{}}]},"nullable":true,"metadata":{}},{"name":"remove","type":{"type":"struct","fields":[{"name":"path","type":"string","nullable":true,"metadata":{}},{"name":"deletionTimestamp","type":"long","nullable":true,"metadata":{}},{"name":"dataChange","type":"boolean","nullable":true,"metadata":{}},{"name":"extendedFileMetadata","type":"boolean","nullable":true,"metadata":{}},{"name":"partitionValues","type":{"type":"map","keyType":"string","valueType":"string","valueContainsNull":true},"nullable":true,"metadata":{}},{"name":"size","type":"long","nullable":true,"metadata":{}},{"name":"deletionVector","type":{"type":"struct","fields":[{"name":"storageType","type":"string","nullable":true,"metadata":{}},{"name":"pathOrInlineDv","type":"string","nullable":true,"metadata":{}},{"name":"offset","type":"integer","nullable":true,"metadata":{}},{"name":"sizeInBytes","type":"integer","nullable":true,"metadata":{}},{"name":"cardinality","type":"long","nullable":true,"metadata":{}},{"name":"maxRowIndex","type":"long","nullable":true,"metadata":{}}]},"nullable":true,"metadata":{}},{"name":"baseRowId","type":"long","nullable":true,"metadata":{}},{"name":"defaultRowCommitVersion","type":"long","nullable":true,"metadata":{}}]},"nullable":true,"metadata":{}},{"name":"metaData","type":{"type":"struct","fields":[{"name":"id","type":"string","nullable":true,"metadata":{}},{"name":"name","type":"string","nullable":true,"metadata":{}},{"name":"description","type":"string","nullable":true,"metadata":{}},{"name":"format","type":{"type":"struct","fields":[{"name":"provider","type":"string","nullable":true,"metadata":{}},{"name":"options","type":{"type":"map","keyType":"string","valueType":"string","valueContainsNull":true},"nullable":true,"metadata":{}}]},"nullable":true,"metadata":{}},{"name":"schemaString","type":"string","nullable":true,"metadata":{}},{"name":"partitionColumns","type":{"type":"array","elementType":"string","containsNull":true},"nullable":true,"metadata":{}},{"name":"configuration","type":{"type":"map","keyType":"string","valueType":"string","valueContainsNull":true},"nullable":true,"metadata":{}},{"name":"createdTime","type":"long","nullable":true,"metadata":{}}]},"nullable":true,"metadata":{}},{"name":"protocol","type":{"type":"struct","fields":[{"name":"minReaderVersion","type":"integer","nullable":true,"metadata":{}},{"name":"minWriterVersion","type":"integer","nullable":true,"metadata":{}},{"name":"readerFeatures","type":{"type":"array","elementType":"string","containsNull":true},"nullable":true,"metadata":{}},{"name":"writerFeatures","type":{"type":"array","elementType":"string","containsNull":true},"nullable":true,"metadata":{}}]},"nullable":true,"metadata":{}},{"name":"domainMetadata","type":{"type":"struct","fields":[{"name":"domain","type":"string","nullable":true,"metadata":{}},{"name":"configuration","type":"string","nullable":true,"metadata":{}},{"name":"removed","type":"boolean","nullable":true,"metadata":{}}]},"nullable":true,"metadata":{}}]},"checksum":"693c0e15ac3e1dcdf79f8cf089c3b38d"}
-diff --git a/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-b6431ff2-3c48-45bd-ba9d-0cf080290204/source/.test%file%prefix-part-00000-8e5102a3-e100-4a44-a9df-5b4f52eaf7dd-c000.snappy.parquet.crc b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-b6431ff2-3c48-45bd-ba9d-0cf080290204/source/.test%file%prefix-part-00000-8e5102a3-e100-4a44-a9df-5b4f52eaf7dd-c000.snappy.parquet.crc
-new file mode 100644
-index 0000000..6de0bf5
-Binary files /dev/null and b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-b6431ff2-3c48-45bd-ba9d-0cf080290204/source/.test%file%prefix-part-00000-8e5102a3-e100-4a44-a9df-5b4f52eaf7dd-c000.snappy.parquet.crc differ
-diff --git a/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-b6431ff2-3c48-45bd-ba9d-0cf080290204/source/.test%file%prefix-part-00001-937b8b2e-4df0-474c-8c04-f661e12a59a3-c000.snappy.parquet.crc b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-b6431ff2-3c48-45bd-ba9d-0cf080290204/source/.test%file%prefix-part-00001-937b8b2e-4df0-474c-8c04-f661e12a59a3-c000.snappy.parquet.crc
-new file mode 100644
-index 0000000..cb90c4b
-Binary files /dev/null and b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-b6431ff2-3c48-45bd-ba9d-0cf080290204/source/.test%file%prefix-part-00001-937b8b2e-4df0-474c-8c04-f661e12a59a3-c000.snappy.parquet.crc differ
-diff --git a/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-b6431ff2-3c48-45bd-ba9d-0cf080290204/source/_delta_log/.00000000000000000000.crc.crc b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-b6431ff2-3c48-45bd-ba9d-0cf080290204/source/_delta_log/.00000000000000000000.crc.crc
-new file mode 100644
-index 0000000..cc78978
-Binary files /dev/null and b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-b6431ff2-3c48-45bd-ba9d-0cf080290204/source/_delta_log/.00000000000000000000.crc.crc differ
-diff --git a/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-b6431ff2-3c48-45bd-ba9d-0cf080290204/source/_delta_log/.00000000000000000000.json.crc b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-b6431ff2-3c48-45bd-ba9d-0cf080290204/source/_delta_log/.00000000000000000000.json.crc
-new file mode 100644
-index 0000000..a49430a
-Binary files /dev/null and b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-b6431ff2-3c48-45bd-ba9d-0cf080290204/source/_delta_log/.00000000000000000000.json.crc differ
-diff --git a/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-b6431ff2-3c48-45bd-ba9d-0cf080290204/source/_delta_log/00000000000000000000.crc b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-b6431ff2-3c48-45bd-ba9d-0cf080290204/source/_delta_log/00000000000000000000.crc
-new file mode 100644
-index 0000000..f9c5683
---- /dev/null
-+++ b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-b6431ff2-3c48-45bd-ba9d-0cf080290204/source/_delta_log/00000000000000000000.crc
-@@ -0,0 +1 @@
-+{"txnId":"fc7507ed-6c3c-4db8-b493-a0860f4a2259","tableSizeBytes":1003,"numFiles":2,"numMetadata":1,"numProtocol":1,"setTransactions":[],"domainMetadata":[],"metadata":{"id":"f92b0519-69e1-41a9-9ac5-477ac6158321","format":{"provider":"parquet","options":{}},"schemaString":"{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\",\"nullable\":true,\"metadata\":{}}]}","partitionColumns":[],"configuration":{},"createdTime":1776179271506},"protocol":{"minReaderVersion":1,"minWriterVersion":2},"allFiles":[{"path":"test%25file%25prefix-part-00000-8e5102a3-e100-4a44-a9df-5b4f52eaf7dd-c000.snappy.parquet","partitionValues":{},"size":500,"modificationTime":1776179271705,"dataChange":false,"stats":"{\"numRecords\":5,\"minValues\":{\"id\":0},\"maxValues\":{\"id\":4},\"nullCount\":{\"id\":0}}"},{"path":"test%25file%25prefix-part-00001-937b8b2e-4df0-474c-8c04-f661e12a59a3-c000.snappy.parquet","partitionValues":{},"size":503,"modificationTime":1776179271705,"dataChange":false,"stats":"{\"numRecords\":5,\"minValues\":{\"id\":5},\"maxValues\":{\"id\":9},\"nullCount\":{\"id\":0}}"}]}
-diff --git a/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-b6431ff2-3c48-45bd-ba9d-0cf080290204/source/_delta_log/00000000000000000000.json b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-b6431ff2-3c48-45bd-ba9d-0cf080290204/source/_delta_log/00000000000000000000.json
-new file mode 100644
-index 0000000..301b836
---- /dev/null
-+++ b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-b6431ff2-3c48-45bd-ba9d-0cf080290204/source/_delta_log/00000000000000000000.json
-@@ -0,0 +1,5 @@
-+{"commitInfo":{"timestamp":1776179271710,"operation":"WRITE","operationParameters":{"mode":"ErrorIfExists","partitionBy":"[]"},"isolationLevel":"Serializable","isBlindAppend":true,"operationMetrics":{"numFiles":"2","numOutputRows":"10","numOutputBytes":"1003"},"engineInfo":"Apache-Spark/3.5.3 Delta-Lake/3.3.2","txnId":"fc7507ed-6c3c-4db8-b493-a0860f4a2259"}}
-+{"metaData":{"id":"f92b0519-69e1-41a9-9ac5-477ac6158321","format":{"provider":"parquet","options":{}},"schemaString":"{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\",\"nullable\":true,\"metadata\":{}}]}","partitionColumns":[],"configuration":{},"createdTime":1776179271506}}
-+{"protocol":{"minReaderVersion":1,"minWriterVersion":2}}
-+{"add":{"path":"test%25file%25prefix-part-00000-8e5102a3-e100-4a44-a9df-5b4f52eaf7dd-c000.snappy.parquet","partitionValues":{},"size":500,"modificationTime":1776179271705,"dataChange":true,"stats":"{\"numRecords\":5,\"minValues\":{\"id\":0},\"maxValues\":{\"id\":4},\"nullCount\":{\"id\":0}}"}}
-+{"add":{"path":"test%25file%25prefix-part-00001-937b8b2e-4df0-474c-8c04-f661e12a59a3-c000.snappy.parquet","partitionValues":{},"size":503,"modificationTime":1776179271705,"dataChange":true,"stats":"{\"numRecords\":5,\"minValues\":{\"id\":5},\"maxValues\":{\"id\":9},\"nullCount\":{\"id\":0}}"}}
-diff --git a/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-b6431ff2-3c48-45bd-ba9d-0cf080290204/source/test%file%prefix-part-00000-8e5102a3-e100-4a44-a9df-5b4f52eaf7dd-c000.snappy.parquet b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-b6431ff2-3c48-45bd-ba9d-0cf080290204/source/test%file%prefix-part-00000-8e5102a3-e100-4a44-a9df-5b4f52eaf7dd-c000.snappy.parquet
-new file mode 100644
-index 0000000..1896a5a
-Binary files /dev/null and b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-b6431ff2-3c48-45bd-ba9d-0cf080290204/source/test%file%prefix-part-00000-8e5102a3-e100-4a44-a9df-5b4f52eaf7dd-c000.snappy.parquet differ
-diff --git a/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-b6431ff2-3c48-45bd-ba9d-0cf080290204/source/test%file%prefix-part-00001-937b8b2e-4df0-474c-8c04-f661e12a59a3-c000.snappy.parquet b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-b6431ff2-3c48-45bd-ba9d-0cf080290204/source/test%file%prefix-part-00001-937b8b2e-4df0-474c-8c04-f661e12a59a3-c000.snappy.parquet
-new file mode 100644
-index 0000000..674f43b
-Binary files /dev/null and b/spark/fake:/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/spark-b6431ff2-3c48-45bd-ba9d-0cf080290204/source/test%file%prefix-part-00001-937b8b2e-4df0-474c-8c04-f661e12a59a3-c000.snappy.parquet differ
 diff --git a/spark/src/test/scala/org/apache/spark/sql/delta/CometSmokeTest.scala b/spark/src/test/scala/org/apache/spark/sql/delta/CometSmokeTest.scala
 new file mode 100644
-index 0000000..35f9456
+index 0000000..b2d3ca4
 --- /dev/null
 +++ b/spark/src/test/scala/org/apache/spark/sql/delta/CometSmokeTest.scala
-@@ -0,0 +1,55 @@
+@@ -0,0 +1,82 @@
 +/*
 + * Copyright (2021) The Delta Lake Project Authors.
 + *
@@ -378,6 +146,33 @@ index 0000000..35f9456
 +    val plugins = spark.conf.get("spark.plugins")
 +    assert(plugins.contains("CometPlugin"),
 +      s"Comet plugin not registered. spark.plugins=$plugins")
++  }
++
++  test("Delta streaming source read returns the micro-batch AddFiles") {
++    // Regression guard for the pre-materialized FileIndex path: Delta's streaming
++    // micro-batch gives us an exact `TahoeBatchFileIndex` with the AddFiles for
++    // [startOffset, endOffset]. Comet's native Delta scan must honour that list
++    // instead of re-running kernel log replay against the snapshot root (which
++    // would return an empty or different set for a streaming batch).
++    val src = "comet_stream_src"
++    try {
++      spark.sql(s"CREATE TABLE $src (key INT, value INT) USING DELTA")
++      var collected: Seq[org.apache.spark.sql.Row] = Seq.empty
++      val sw = spark.readStream.table(src).writeStream
++        .format("console")
++        .foreachBatch { (df: org.apache.spark.sql.DataFrame, _: Long) =>
++          collected = df.collect().toSeq
++        }
++        .outputMode("append")
++        .start()
++      spark.sql(s"INSERT INTO $src(key, value) VALUES(0, 42)")
++      sw.processAllAvailable()
++      sw.stop()
++      assert(collected.nonEmpty, "Streaming Delta source produced no rows")
++      assert(collected.map(r => (r.getInt(0), r.getInt(1))) == Seq((0, 42)))
++    } finally {
++      spark.sql(s"DROP TABLE IF EXISTS $src")
++    }
 +  }
 +
 +  test("Comet operators appear in Delta query physical plan") {
@@ -470,3 +265,19 @@ index f759967..36eec37 100644
        case _ => None
      }
    }
+diff --git a/spark/src/test/scala/org/apache/spark/sql/delta/test/ScanReportHelper.scala b/spark/src/test/scala/org/apache/spark/sql/delta/test/ScanReportHelper.scala
+index 92aa9df..6a0f576 100644
+--- a/spark/src/test/scala/org/apache/spark/sql/delta/test/ScanReportHelper.scala
++++ b/spark/src/test/scala/org/apache/spark/sql/delta/test/ScanReportHelper.scala
+@@ -44,6 +44,11 @@ trait ScanReportHelper extends SharedSparkSession with AdaptiveSparkPlanHelper {
+     collectWithSubqueries(plan)({
+       case fs: FileSourceScanExec => Seq(fs)
+       case cached: InMemoryTableScanExec => collectScans(cached.relation.cacheBuilder.cachedPlan)
++      // Comet regression: Comet rewrites `FileSourceScanExec` into its own leaf
++      // variants. Tests that inspect scan metrics would otherwise see an empty
++      // list and fail with `MatchError: ArrayBuffer()`.
++      case c: org.apache.spark.sql.comet.CometScanExec => Seq(c.wrapped)
++      case c: org.apache.spark.sql.comet.CometDeltaNativeScanExec => Seq(c.originalPlan)
+     }).flatten
+   }
+ 

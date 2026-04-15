@@ -644,4 +644,75 @@ class CometDeltaNativeSuite extends CometDeltaTestBase {
       assertDeltaNativeMatches(tablePath, identity)
     }
   }
+
+  test("MERGE INSERT overflow throws under ANSI storeAssignmentPolicy") {
+    // Matches a failing-regression config: ansi.enabled=FALSE but
+    // storeAssignmentPolicy=ANSI, Comet in OFFHEAP mode (the regression diff
+    // uses offheap; CometTestBase runs onheap).
+    withSQLConf(
+      org.apache.spark.sql.internal.SQLConf.STORE_ASSIGNMENT_POLICY.key -> "ANSI",
+      org.apache.spark.sql.internal.SQLConf.ANSI_ENABLED.key -> "false",
+      CometConf.COMET_ONHEAP_ENABLED.key -> "false") {
+      withDeltaTable("merge-cast-overflow") { tablePath =>
+        spark.sql(s"CREATE TABLE delta.`$tablePath` (key INT, value TINYINT) USING DELTA")
+        spark.sql(s"CREATE OR REPLACE TEMP VIEW comet_src AS SELECT 0 AS key, 128 AS value")
+
+        val e = intercept[Throwable] {
+          spark.sql(s"""
+            MERGE INTO delta.`$tablePath` t
+            USING comet_src s
+            ON t.key = s.key
+            WHEN NOT MATCHED THEN INSERT (key, value) VALUES (s.key, s.value)
+          """)
+        }
+        assert(
+          Option(e.getMessage).exists(m =>
+            m.contains("CAST_OVERFLOW") || m.contains("DELTA_CAST_OVERFLOW_IN_TABLE_WRITE") ||
+              m.contains("out of range") || m.contains("128")),
+          s"Expected an overflow error, got: $e\nmessage: ${e.getMessage}")
+      }
+    }
+  }
+
+  test("Streaming MERGE INSERT overflow throws under ANSI storeAssignmentPolicy") {
+    import org.apache.spark.sql.DataFrame
+    withSQLConf(
+      org.apache.spark.sql.internal.SQLConf.STORE_ASSIGNMENT_POLICY.key -> "ANSI",
+      org.apache.spark.sql.internal.SQLConf.ANSI_ENABLED.key -> "true") {
+      withDeltaTable("stream-merge-overflow-src") { srcPath =>
+        withDeltaTable("stream-merge-overflow-tgt") { tgtPath =>
+          spark.sql(s"CREATE TABLE delta.`$srcPath` (key INT, value INT) USING DELTA")
+          spark.sql(s"CREATE TABLE delta.`$tgtPath` (key INT, value TINYINT) USING DELTA")
+          spark.sql(s"INSERT INTO delta.`$srcPath`(key, value) VALUES(0, 128)")
+
+          def upsertToDelta(batch: DataFrame, batchId: Long): Unit = {
+            batch.createOrReplaceTempView("mb")
+            batch.sparkSession.sql(s"""
+              MERGE INTO delta.`$tgtPath` t
+              USING mb s
+              ON s.key = t.key
+              WHEN NOT MATCHED THEN INSERT *
+            """)
+          }
+
+          val sourceStream = spark.readStream.format("delta").load(srcPath)
+          val sw = sourceStream.writeStream
+            .format("delta")
+            .foreachBatch(upsertToDelta _)
+            .outputMode("update")
+            .start()
+
+          val e = intercept[Throwable] {
+            sw.processAllAvailable()
+          }
+          sw.stop()
+          assert(
+            Option(e.getMessage).exists(m =>
+              m.contains("CAST_OVERFLOW") || m.contains("DELTA_CAST_OVERFLOW_IN_TABLE_WRITE") ||
+                m.contains("out of range") || m.contains("128")),
+            s"Expected overflow error, got:\n$e\nmessage=${e.getMessage}")
+        }
+      }
+    }
+  }
 }

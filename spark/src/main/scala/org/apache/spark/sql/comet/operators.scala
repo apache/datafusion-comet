@@ -674,7 +674,13 @@ abstract class CometNativeExec extends CometExec {
    * ShuffleScan vs Scan leaf nodes. Each Scan or ShuffleScan leaf consumes one input in order.
    */
   private def findShuffleScanIndices(planBytes: Array[Byte]): Set[Int] = {
-    val plan = OperatorOuterClass.Operator.parseFrom(planBytes)
+    // Delta's data-skipping pruning expressions produce deeply nested BinaryExpr
+    // trees that blow past protobuf's default 100-level recursion cap. Bump it
+    // to a level that covers reasonable expression depths without removing the
+    // safeguard entirely.
+    val input = com.google.protobuf.CodedInputStream.newInstance(planBytes)
+    input.setRecursionLimit(1000)
+    val plan = OperatorOuterClass.Operator.parseFrom(input)
     var scanIndex = 0
     val indices = mutable.Set.empty[Int]
     def walk(op: OperatorOuterClass.Operator): Unit = {

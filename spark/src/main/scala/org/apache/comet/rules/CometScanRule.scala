@@ -20,6 +20,7 @@
 package org.apache.comet.rules
 
 import java.net.URI
+import java.util.Locale
 
 import scala.collection.mutable
 import scala.collection.mutable.ListBuffer
@@ -218,18 +219,31 @@ case class CometScanRule(session: SparkSession)
   }
 
   /**
-   * Produce a new `FileSourceScanExec` whose `output`, `requiredSchema`, and
-   * `relation.dataSchema` no longer mention `__delta_internal_is_row_deleted`. The outputs are
-   * expected to be a superset of `userOutput` (minus the synthetic column) so we match by exprId;
-   * anything left over is appended untouched.
+   * Produce a new `FileSourceScanExec` whose output is exactly `userOutput` (the attributes of
+   * the outer `ProjectExec` we are replacing). Dropping the synthetic
+   * `__delta_internal_is_row_deleted` column is not enough: Delta's inner Project typically also
+   * introduces `_metadata` struct attributes that would otherwise leak into the stripped scan's
+   * output and make it wider than its Union siblings, which later explodes in
+   * `UnionExec.output.transpose`.
+   *
+   * We therefore anchor the rebuild on `userOutput` and require each attribute to be resolvable
+   * in the underlying scan (by exprId or name).
    */
   private def rebuildDeltaScanWithoutDvColumn(
       scan: FileSourceScanExec,
       userOutput: Seq[Attribute]): FileSourceScanExec = {
     val dvName = DeltaReflection.IsRowDeletedColumnName
-    val newOutput = scan.output.filterNot(_.name == dvName)
+    val scanByExprId = scan.output.map(a => a.exprId -> a).toMap
+    val scanByName = scan.output.map(a => a.name.toLowerCase(Locale.ROOT) -> a).toMap
+    val resolved = userOutput.map { u =>
+      scanByExprId
+        .get(u.exprId)
+        .orElse(scanByName.get(u.name.toLowerCase(Locale.ROOT)))
+        .getOrElse(u)
+    }
+    val newOutput = resolved.filterNot(_.name == dvName)
     val newRequiredSchema =
-      StructType(scan.requiredSchema.fields.filterNot(_.name == dvName))
+      StructType(newOutput.map(a => StructField(a.name, a.dataType, a.nullable)))
     val newDataSchema =
       StructType(scan.relation.dataSchema.fields.filterNot(_.name == dvName))
     val newRelation = scan.relation.copy(dataSchema = newDataSchema)(scan.relation.sparkSession)
@@ -398,6 +412,26 @@ case class CometScanRule(session: SparkSession)
       return None
     }
 
+    // All Delta pre-materialised file indexes are handled natively now:
+    //   - `TahoeBatchFileIndex`: MERGE/UPDATE/DELETE post-join rewrites.
+    //   - `TahoeChangeFileIndex`: CDC change-data-feed file reads.
+    //   - `CdcAddFileIndex` + `TahoeRemoveFileIndex`: CDC insert/delete
+    //     branches. Delta stashes the `_change_type` / `_commit_version` /
+    //     `_commit_timestamp` metadata columns into `AddFile.partitionValues`
+    //     (with a matching `partitionSchema`), so the native scan materialises
+    //     them via the standard partition-column path once we fetch the
+    //     augmented AddFile list through `matchingFiles(Seq.empty, Seq.empty)`.
+    //
+    // `TahoeLogFileIndexWithCloudFetch` is a variant we haven't validated yet.
+    val fileIndexClassName = r.location.getClass.getName
+    if (fileIndexClassName.endsWith(".TahoeLogFileIndexWithCloudFetch")) {
+      withInfo(
+        scanExec,
+        s"Native Delta scan has not validated the cloud-fetch variant " +
+          s"($fileIndexClassName).")
+      return None
+    }
+
     // Validate filesystem schemes from the scan's input files.
     val supportedSchemes =
       Set("file", "s3", "s3a", "gs", "gcs", "abfss", "abfs", "wasbs", "wasb", "oss")
@@ -421,7 +455,201 @@ case class CometScanRule(session: SparkSession)
       }
     }
 
-    Some(CometScanExec(scanExec, session, SCAN_NATIVE_DELTA_COMPAT))
+    // Row tracking: Delta's own analyzer leaves a plain `row_id` (and
+    // `row_commit_version`) attribute in the scan's requiredSchema when the
+    // query references `_metadata.row_id`, relying on `DeltaParquetFileFormat`'s
+    // reader to synthesise it. Once we swap the file format to
+    // `CometParquetFileFormat` that synthesis is gone, so the read fails with
+    // "Required column 'row_id' is missing in data file". For tables that have
+    // the column materialised (the common case after a MERGE / UPDATE / rowTracking
+    // backfill), rewrite the scan to read the physical materialised column and
+    // wrap the result in a projection that restores the logical name.
+    applyRowTrackingRewrite(scanExec, r, session).getOrElse {
+      Some(CometScanExec(scanExec, session, SCAN_NATIVE_DELTA_COMPAT))
+    }
+  }
+
+  /**
+   * Rewrite `scanExec` so any `row_id` / `row_commit_version` attributes in its output /
+   * requiredSchema refer to the physical (materialised) column names stored in the Delta table
+   * metadata. Returns `Some(Some(plan))` when a rewrite was applied, `Some(None)` when we
+   * detected a row-tracking column we can't translate (no materialised name available), and
+   * `None` when the scan has no row-tracking columns and should be processed normally.
+   */
+  private def applyRowTrackingRewrite(
+      scanExec: FileSourceScanExec,
+      r: HadoopFsRelation,
+      session: SparkSession): Option[Option[SparkPlan]] = {
+    // Short-circuit when the scan output has neither row-tracking column.
+    val RowIdName = "row_id"
+    val RowCommitVersionName = "row_commit_version"
+    val hasRowIdField = scanExec.requiredSchema.fieldNames.exists { n =>
+      n.equalsIgnoreCase(RowIdName) || n.equalsIgnoreCase(RowCommitVersionName)
+    }
+    if (!hasRowIdField) return None
+
+    val cfg = DeltaReflection.extractMetadataConfiguration(r).getOrElse(Map.empty)
+    val rowIdPhysical = cfg.get(DeltaReflection.MaterializedRowIdColumnProp)
+    val rowVerPhysical = cfg.get(DeltaReflection.MaterializedRowCommitVersionColumnProp)
+
+    // We only translate when the column is actually materialised. Without a physical
+    // name we would be guessing, so decline native acceleration and let Spark's
+    // reader handle the synthesis.
+    if (rowIdPhysical.isEmpty && rowVerPhysical.isEmpty) {
+      withInfo(
+        scanExec,
+        "Native Delta scan: row-tracking columns present but no materialised column " +
+          "names in Delta metadata; synthesis from baseRowId + row_index is Phase 3.")
+      return Some(None)
+    }
+
+    import org.apache.spark.sql.catalyst.expressions.{Add, Alias, AttributeReference, Coalesce}
+    // For each row-tracking field, rewrite the schemas to use the physical name and
+    // build the alias expressions the outer Project needs to rename back. Non-row-tracking
+    // fields are passed through unchanged.
+    val renames = scala.collection.mutable.ArrayBuffer.empty[(String, String)]
+    def physicalFor(logical: String): Option[String] =
+      if (logical.equalsIgnoreCase(RowIdName)) rowIdPhysical
+      else if (logical.equalsIgnoreCase(RowCommitVersionName)) rowVerPhysical
+      else None
+
+    // Materialised row-id / row-commit-version columns are nullable at the storage
+    // level even when the logical attribute is non-nullable: Delta stores null for
+    // rows that still need baseRowId + row_index synthesis (phase 3). Forcing the
+    // rewritten field to be nullable avoids the parquet reader rejecting
+    // legitimate nulls as a schema violation.
+    val newRequiredFields = scanExec.requiredSchema.fields.map { f =>
+      physicalFor(f.name) match {
+        case Some(phys) =>
+          renames += ((f.name, phys))
+          StructField(phys, f.dataType, nullable = true, f.metadata)
+        case None => f
+      }
+    }
+    val newDataFields = r.dataSchema.fields.map { f =>
+      physicalFor(f.name) match {
+        case Some(phys) => StructField(phys, f.dataType, nullable = true, f.metadata)
+        case None => f
+      }
+    }
+
+    if (renames.isEmpty) return None
+
+    // Phase 3: add the `_tmp_metadata_row_index` metadata column so Comet's
+    // `NativeBatchReader` generates per-row file-relative row indexes, and wrap
+    // the underlying FileIndex with `RowTrackingAugmentedFileIndex` so every
+    // PartitionedFile carries its `AddFile.baseRowId` as a synthetic partition
+    // value. The outer Project below then builds:
+    //     row_id = coalesce(materialized_row_id, __comet_base_row_id + row_index)
+    // which reproduces what Delta's own reader does internally.
+    import org.apache.spark.sql.types.LongType
+    val RowIndexColName = "_tmp_metadata_row_index"
+    val BaseRowIdColName = "__comet_base_row_id"
+    val includeRowIdSynth = renames.exists { case (logical, _) =>
+      logical.equalsIgnoreCase(RowIdName)
+    }
+
+    val DefaultRowCommitVersionColName = "__comet_default_row_commit_version"
+    val includeRowVerSynth = renames.exists { case (logical, _) =>
+      logical.equalsIgnoreCase(RowCommitVersionName)
+    }
+    val needSynth = includeRowIdSynth || includeRowVerSynth
+
+    val infoByFileName: Map[String, DeltaReflection.RowTrackingFileInfo] =
+      if (needSynth) DeltaReflection.extractRowTrackingInfoByFileName(r.location)
+      else Map.empty
+
+    val extraRequiredFields = scala.collection.mutable.ArrayBuffer.empty[StructField]
+    val extraDataFields = scala.collection.mutable.ArrayBuffer.empty[StructField]
+    if (includeRowIdSynth) {
+      val rowIndexField = StructField(RowIndexColName, LongType, nullable = true)
+      extraRequiredFields += rowIndexField
+      extraDataFields += rowIndexField
+    }
+
+    val finalRequiredSchema = StructType(newRequiredFields ++ extraRequiredFields)
+    val finalDataSchema = StructType(newDataFields ++ extraDataFields)
+    val finalLocation =
+      if (needSynth) {
+        new org.apache.comet.delta.RowTrackingAugmentedFileIndex(
+          r.location,
+          infoByFileName,
+          BaseRowIdColName,
+          DefaultRowCommitVersionColName)
+      } else {
+        r.location
+      }
+
+    // Build the scan output attributes with physical names. The outer Project restores
+    // the original exprId under the logical alias so nothing downstream cares about
+    // the renaming.
+    val origOutput = scanExec.output
+    val renameMap: Map[String, String] = renames.toMap
+    val baseNewOutput = origOutput.map { a =>
+      renameMap.get(a.name) match {
+        case Some(phys) =>
+          AttributeReference(phys, a.dataType, nullable = true, a.metadata)(qualifier =
+            a.qualifier)
+        case None => a
+      }
+    }
+    val rowIndexAttr =
+      AttributeReference(RowIndexColName, LongType, nullable = true)()
+    val baseRowIdAttr =
+      AttributeReference(BaseRowIdColName, LongType, nullable = true)()
+    val defaultVerAttr =
+      AttributeReference(DefaultRowCommitVersionColName, LongType, nullable = true)()
+    val extraOutputAttrs = scala.collection.mutable.ArrayBuffer.empty[AttributeReference]
+    if (includeRowIdSynth) extraOutputAttrs += rowIndexAttr
+    if (needSynth) {
+      extraOutputAttrs += baseRowIdAttr
+      extraOutputAttrs += defaultVerAttr
+    }
+    val newOutput: Seq[Attribute] =
+      if (extraOutputAttrs.isEmpty) baseNewOutput
+      else baseNewOutput ++ extraOutputAttrs
+
+    val newPartitionSchema =
+      if (needSynth) {
+        r.partitionSchema
+          .add(StructField(BaseRowIdColName, LongType, nullable = true))
+          .add(StructField(DefaultRowCommitVersionColName, LongType, nullable = true))
+      } else {
+        r.partitionSchema
+      }
+
+    val newRelation = r.copy(
+      location = finalLocation,
+      dataSchema = finalDataSchema,
+      partitionSchema = newPartitionSchema)(r.sparkSession)
+    val newScan = scanExec.copy(
+      relation = newRelation,
+      output = newOutput,
+      requiredSchema = finalRequiredSchema)
+    val cometScan = CometScanExec(newScan, session, SCAN_NATIVE_DELTA_COMPAT)
+
+    val projectExprs = origOutput.map { a =>
+      renameMap.get(a.name) match {
+        case Some(phys) if a.name.equalsIgnoreCase(RowIdName) && includeRowIdSynth =>
+          val physAttr = baseNewOutput.find(_.name == phys).get
+          // row_id = coalesce(materialized, base_row_id + row_index)
+          val synth = Add(baseRowIdAttr, rowIndexAttr)
+          Alias(Coalesce(Seq(physAttr, synth)), a.name)(
+            exprId = a.exprId,
+            qualifier = a.qualifier)
+        case Some(phys) if a.name.equalsIgnoreCase(RowCommitVersionName) && includeRowVerSynth =>
+          val physAttr = baseNewOutput.find(_.name == phys).get
+          // row_commit_version = coalesce(materialized, default_row_commit_version)
+          Alias(Coalesce(Seq(physAttr, defaultVerAttr)), a.name)(
+            exprId = a.exprId,
+            qualifier = a.qualifier)
+        case Some(phys) =>
+          val physAttr = baseNewOutput.find(_.name == phys).get
+          Alias(physAttr, a.name)(exprId = a.exprId, qualifier = a.qualifier)
+        case None => a
+      }
+    }
+    Some(Some(ProjectExec(projectExprs, cometScan)))
   }
 
   private def transformV2Scan(scanExec: BatchScanExec): SparkPlan = {

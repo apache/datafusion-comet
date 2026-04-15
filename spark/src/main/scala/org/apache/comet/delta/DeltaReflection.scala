@@ -129,6 +129,87 @@ object DeltaReflection extends Logging {
    */
   private val DeltaFileIndexVersionRegex = """^Delta\[version=(-?\d+),""".r
 
+  /**
+   * Extract the Delta table `Metadata` action's configuration map from a `HadoopFsRelation`'s
+   * `TahoeFileIndex`-derivative location via reflection. Returns `None` when the lookup fails
+   * (e.g. non-Delta relation, or an index type that does not expose `metadata`).
+   *
+   * The configuration carries user- and system-set table properties keyed by dotted names like
+   * `delta.rowTracking.materializedRowIdColumnName`. Used by the CometScanRule row-tracking
+   * support to discover the physical column name into which Delta has materialised `row_id`.
+   */
+  def extractMetadataConfiguration(relation: HadoopFsRelation): Option[Map[String, String]] = {
+    try {
+      val location: Any = relation.location
+      // TahoeFileIndex and variants expose `metadata: Metadata`. Some share a direct field;
+      // CdcAddFileIndex and similar re-expose via `snapshot.metadata`. Try both.
+      val metadataObj = findAccessor(location, Seq("metadata")).orElse {
+        findAccessor(location, Seq("snapshot")).flatMap(findAccessor(_, Seq("metadata")))
+      }
+      metadataObj.flatMap { m =>
+        findAccessor(m, Seq("configuration")).collect {
+          case scalaMap: Map[_, _] => scalaMap.asInstanceOf[Map[String, String]]
+          case javaMap: java.util.Map[_, _] =>
+            import scala.jdk.CollectionConverters._
+            javaMap.asInstanceOf[java.util.Map[String, String]].asScala.toMap
+        }
+      }
+    } catch {
+      case e: Exception =>
+        logWarning(s"Failed to extract Delta metadata configuration: ${e.getMessage}")
+        None
+    }
+  }
+
+  /** Property key for the physical column name Delta materialises row IDs into. */
+  val MaterializedRowIdColumnProp: String =
+    "delta.rowTracking.materializedRowIdColumnName"
+
+  /** Property key for the physical column name Delta materialises row-commit-versions into. */
+  val MaterializedRowCommitVersionColumnProp: String =
+    "delta.rowTracking.materializedRowCommitVersionColumnName"
+
+  /**
+   * Row-tracking fields extracted per file for phase-3 synthesis of `_row_id_` and
+   * `_row_commit_version_` when the materialised physical columns are null.
+   */
+  case class RowTrackingFileInfo(baseRowId: Option[Long], defaultRowCommitVersion: Option[Long])
+
+  /**
+   * Invoke `TahoeFileIndex.matchingFiles(partitionFilters = Nil, dataFilters = Nil)` on the given
+   * `location`, extract each returned `AddFile`'s `path`, `baseRowId`, and
+   * `defaultRowCommitVersion`, and return the resulting map keyed by file basename.
+   *
+   * Used by row-tracking Phase 3: we attach each file's starting row id and default commit
+   * version as per-file synthetic partition columns. Returns `Map.empty` on reflection failure.
+   */
+  def extractRowTrackingInfoByFileName(location: Any): Map[String, RowTrackingFileInfo] = {
+    if (location == null) return Map.empty
+    try {
+      val addFilesAny = callMatchingFiles(location).getOrElse(return Map.empty)
+      val seq = addFilesAny match {
+        case s: scala.collection.Seq[_] => s
+        case a: Array[_] => a.toSeq
+        case _ => return Map.empty
+      }
+      val result = scala.collection.mutable.Map.empty[String, RowTrackingFileInfo]
+      seq.foreach { addFile =>
+        val path = stringMember(addFile, "path")
+        val baseRowId = optionLongMember(addFile, "baseRowId")
+        val defaultVer = optionLongMember(addFile, "defaultRowCommitVersion")
+        path.foreach { p =>
+          if (baseRowId.isDefined || defaultVer.isDefined) {
+            val name = new org.apache.hadoop.fs.Path(p).getName
+            result.put(name, RowTrackingFileInfo(baseRowId, defaultVer))
+          }
+        }
+      }
+      result.toMap
+    } catch {
+      case _: Exception => Map.empty
+    }
+  }
+
   def extractSnapshotVersion(relation: HadoopFsRelation): Option[Long] = {
     try {
       val desc = relation.location.toString
@@ -143,6 +224,213 @@ object DeltaReflection extends Logging {
    * partition values as strings in add actions; this converts them to the correct type for
    * predicate evaluation.
    */
+  /**
+   * Normalized view of a single Delta `AddFile` extracted from a pre-materialized FileIndex
+   * (`TahoeBatchFileIndex` / `CdcAddFileIndex`). Used by the scan rule to build a
+   * kernel-independent `DeltaScanTask` list for streaming micro-batch reads and
+   * MERGE/UPDATE/DELETE post-join rewrites, both of which already have the exact AddFile list in
+   * hand and must NOT re-run kernel log replay (which would return a different file set).
+   */
+  case class ExtractedAddFile(
+      /** Path as stored in the AddFile action -- may be relative or absolute. */
+      path: String,
+      size: Long,
+      /** Raw partition values as Delta stores them, keyed by logical column name. */
+      partitionValues: Map[String, String],
+      /** Raw `stats` JSON string, or null. */
+      statsJson: String,
+      /** True if this AddFile has a non-null DeletionVectorDescriptor. */
+      hasDeletionVector: Boolean,
+      /**
+       * Delta row-tracking fields. `baseRowId` is the first logical row id covered by this file;
+       * `defaultRowCommitVersion` is the commit that last wrote it. Both are `None` for tables
+       * that don't have the rowTracking table feature enabled (or for pre-backfill files on a
+       * table where row tracking was just enabled).
+       */
+      baseRowId: Option[Long],
+      defaultRowCommitVersion: Option[Long])
+
+  /**
+   * Is this FileIndex a pre-materialized Delta index (batch or CDC)?
+   *
+   * CDC reads (`CdcAddFileIndex`, `TahoeRemoveFileIndex`, `TahoeChangeFileIndex`) all derive from
+   * `TahoeBatchFileIndex` (conceptually or concretely) and stash the CDC metadata
+   * (`_change_type`, `_commit_version`, `_commit_timestamp`) into `AddFile.partitionValues` with
+   * a matching `partitionSchema`, so the native scan can materialise them as partition columns
+   * without any special CDC-specific handling.
+   */
+  def isBatchFileIndex(location: Any): Boolean = {
+    val cls = location.getClass.getName
+    cls.contains("TahoeBatchFileIndex") ||
+    cls.contains("CdcAddFileIndex") ||
+    cls.contains("TahoeRemoveFileIndex") ||
+    cls.contains("TahoeChangeFileIndex")
+  }
+
+  /**
+   * Extract the AddFile list from a `TahoeBatchFileIndex`-like FileIndex via reflection (no
+   * compile-time dep on spark-delta). Returns `None` when:
+   *   - the FileIndex class doesn't expose an `addFiles: Seq[AddFile]` method
+   *   - reflection fails for any entry
+   *   - any AddFile's stats / fields can't be read
+   *
+   * Callers should fall back to Spark's Delta reader when this returns `None`.
+   *
+   * For CDC indexes (`CdcAddFileIndex`, `TahoeRemoveFileIndex`, `TahoeChangeFileIndex`) the raw
+   * `addFiles` field does NOT contain the CDC metadata columns (`_change_type`,
+   * `_commit_version`, `_commit_timestamp`); those are injected inside the index's
+   * `matchingFiles(partitionFilters, dataFilters)` override. We therefore prefer
+   * `matchingFiles(Seq.empty, Seq.empty)` when it's available, so the returned `partitionValues`
+   * maps already carry the CDC metadata.
+   */
+  def extractBatchAddFiles(location: Any): Option[Seq[ExtractedAddFile]] = {
+    try {
+      // Prefer matchingFiles(Seq.empty, Seq.empty) — it returns CDC-augmented
+      // AddFiles on CDC indexes and the plain list on TahoeBatchFileIndex.
+      // Fall back to the raw `addFiles`/`filesList` accessors for indexes that
+      // don't expose a no-arg-safe matchingFiles.
+      val addFilesOpt =
+        callMatchingFiles(location).orElse(findAccessor(location, Seq("addFiles", "filesList")))
+      addFilesOpt.flatMap { addFilesAny =>
+        val seq = addFilesAny match {
+          case s: scala.collection.Seq[_] => s
+          case a: Array[_] => a.toSeq
+          case _ => return None
+        }
+        val out = new scala.collection.mutable.ArrayBuffer[ExtractedAddFile](seq.size)
+        seq.foreach { addFile =>
+          val path = stringMember(addFile, "path").getOrElse(return None)
+          val size = longMember(addFile, "size").getOrElse(return None)
+          val rawPV = findAccessor(addFile, Seq("partitionValues")).getOrElse(return None)
+          val pv: Map[String, String] = rawPV match {
+            case m: Map[_, _] => m.asInstanceOf[Map[String, String]]
+            case m: java.util.Map[_, _] =>
+              import scala.jdk.CollectionConverters._
+              m.asInstanceOf[java.util.Map[String, String]].asScala.toMap
+            case _ => return None
+          }
+          val stats = stringMember(addFile, "stats").orNull
+          val dv = findAccessor(addFile, Seq("deletionVector")).orNull
+          val baseRowId = optionLongMember(addFile, "baseRowId")
+          val defaultRowCommitVersion = optionLongMember(addFile, "defaultRowCommitVersion")
+          out += ExtractedAddFile(
+            path,
+            size,
+            pv,
+            stats,
+            hasDeletionVector = dv != null,
+            baseRowId = baseRowId,
+            defaultRowCommitVersion = defaultRowCommitVersion)
+        }
+        Some(out.toSeq)
+      }
+    } catch {
+      case e: Exception =>
+        logWarning(
+          s"Failed to extract AddFiles from ${location.getClass.getName}: ${e.getMessage}")
+        None
+    }
+  }
+
+  /**
+   * Extract number-of-records from an AddFile's `stats` JSON. Returns `None` if stats is missing
+   * / malformed. The JSON structure is stable across Delta versions: `{"numRecords": N, ...}`.
+   */
+  def parseNumRecords(statsJson: String): Option[Long] = {
+    if (statsJson == null) return None
+    val idx = statsJson.indexOf("\"numRecords\"")
+    if (idx < 0) return None
+    // Find the colon after the key, then the first numeric sequence.
+    val colon = statsJson.indexOf(':', idx)
+    if (colon < 0) return None
+    var i = colon + 1
+    while (i < statsJson.length && !statsJson.charAt(i).isDigit && statsJson.charAt(i) != '-') {
+      i += 1
+    }
+    val start = i
+    while (i < statsJson.length && (statsJson.charAt(i).isDigit || statsJson.charAt(i) == '-')) {
+      i += 1
+    }
+    if (start == i) {
+      None
+    } else {
+      try Some(statsJson.substring(start, i).toLong)
+      catch { case _: NumberFormatException => None }
+    }
+  }
+
+  /**
+   * Invoke `FileIndex.matchingFiles(partitionFilters: Seq[Expression], dataFilters:
+   * Seq[Expression]): Seq[AddFile]` with empty filter sequences via reflection.
+   *
+   * Returns `None` if the method is missing or the invocation throws. Comet does not have a
+   * compile-time dep on spark-delta, so we reach for reflection here.
+   */
+  private def callMatchingFiles(location: Any): Option[AnyRef] = {
+    if (location == null) return None
+    try {
+      // Method.matchingFiles has two parameters of type `Seq[Expression]`; we
+      // can pass Nil for both. We find the method by name + arity to keep the
+      // lookup tolerant of Scala's generic-erasure bridging.
+      val candidate = location.getClass.getMethods.find { m =>
+        m.getName == "matchingFiles" && m.getParameterCount == 2
+      }
+      candidate.flatMap { m =>
+        val nil = scala.collection.immutable.Nil
+        try Option(m.invoke(location, nil, nil))
+        catch {
+          case _: Throwable => None
+        }
+      }
+    } catch {
+      case _: Throwable => None
+    }
+  }
+
+  private def findAccessor(obj: Any, names: Seq[String]): Option[AnyRef] = {
+    if (obj == null) return None
+    val cls = obj.getClass
+    names.foreach { n =>
+      try {
+        val m = cls.getMethod(n)
+        return Option(m.invoke(obj))
+      } catch {
+        case _: NoSuchMethodException => // try next
+      }
+    }
+    None
+  }
+
+  private def stringMember(obj: Any, name: String): Option[String] =
+    findAccessor(obj, Seq(name)).flatMap {
+      case s: String => Some(s)
+      case null => None
+      case _ => None
+    }
+
+  private def longMember(obj: Any, name: String): Option[Long] =
+    findAccessor(obj, Seq(name)).flatMap {
+      case l: java.lang.Long => Some(l)
+      case i: java.lang.Integer => Some(i.toLong)
+      case _ => None
+    }
+
+  /**
+   * Read a Scala `Option[Long]` (or `Option[java.lang.Long]`) field by name. Returns `None` for
+   * both `None` and a field that contains `Some(null)`. Used for optional Delta fields like
+   * `AddFile.baseRowId` that only exist when rowTracking is enabled on the table.
+   */
+  private def optionLongMember(obj: Any, name: String): Option[Long] =
+    findAccessor(obj, Seq(name)).flatMap {
+      case None => None
+      case Some(l: java.lang.Long) => Some(l)
+      case Some(i: java.lang.Integer) => Some(i.toLong)
+      case Some(l: Long) => Some(l)
+      case Some(null) | null => None
+      case l: java.lang.Long => Some(l) // defensive: caller extracted value already
+      case _ => None
+    }
+
   def castPartitionString(str: Option[String], dt: org.apache.spark.sql.types.DataType): Any = {
     import org.apache.spark.sql.catalyst.util.DateTimeUtils
     import org.apache.spark.sql.types._

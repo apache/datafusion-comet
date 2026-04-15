@@ -103,6 +103,16 @@ case class CometDeltaNativeScanExec(
 
   private def applyDppFilters(
       tasks: Seq[OperatorOuterClass.DeltaScanTask]): Seq[OperatorOuterClass.DeltaScanTask] = {
+    // If any DPP subquery is still a `SubqueryAdaptiveBroadcastExec` placeholder,
+    // AQE hasn't yet replaced it with the real broadcast plan. We can't execute
+    // it ourselves (that plan's `doExecute` throws), so skip pruning for this
+    // batch — the scan just reads all tasks, which is correct but slower.
+    val hasUnresolvedAdaptive = dppFilters.exists {
+      case DynamicPruningExpression(inSub: InSubqueryExec) =>
+        inSub.plan.isInstanceOf[org.apache.spark.sql.execution.SubqueryAdaptiveBroadcastExec]
+      case _ => false
+    }
+    if (hasUnresolvedAdaptive) return tasks
     dppFilters.foreach {
       case DynamicPruningExpression(inSub: InSubqueryExec) if inSub.values().isEmpty =>
         inSub.updateResult()

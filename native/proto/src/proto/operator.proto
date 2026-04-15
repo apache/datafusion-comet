@@ -286,6 +286,13 @@ message DeltaScanCommon {
   // Phase 4: logical-to-physical column name mapping from kernel's schema
   // metadata. Empty when column_mapping_mode is None.
   repeated DeltaColumnMapping column_mappings = 13;
+  // Row-tracking materialised-column names from Delta metadata, if the table
+  // has the rowTracking feature enabled and Delta has already materialised row
+  // IDs / commit versions into physical columns. Unset means the logical
+  // `_row_id_` / `_row_commit_version_` columns must be synthesised from the
+  // per-task `base_row_id` / `default_row_commit_version` fields instead.
+  optional string materialized_row_id_column_name = 14;
+  optional string materialized_row_commit_version_column_name = 15;
 }
 
 // Per-partition Delta scan: references common data plus the subset of file
@@ -312,9 +319,18 @@ message DeltaScanTask {
   // Empty means the file has no DV in use. Row indexes are 0-based into the file's
   // physical parquet row space (same semantics as `DvInfo::get_row_indexes`).
   repeated uint64 deleted_row_indexes = 5;
+  // Row-tracking metadata (Delta rowTracking table feature). `base_row_id` is the
+  // first logical row id covered by this file; `default_row_commit_version` is
+  // the commit that last wrote it. Unset on tables without row tracking enabled,
+  // or on pre-backfill files on a table where row tracking was just enabled.
+  // Used by the native scan to synthesise `_row_id_` = base_row_id + row_index
+  // (when not materialised into a physical column) and the constant
+  // `_row_commit_version_` column.
+  optional int64 base_row_id = 6;
+  optional int64 default_row_commit_version = 7;
   // Reserved for future use:
-  //   6: per-task residual predicate index (predicates kernel couldn't fully evaluate)
-  //   7: per-task physical schema index (for per-file schema evolution)
+  //   8: per-task residual predicate index (predicates kernel couldn't fully evaluate)
+  //   9: per-task physical schema index (for per-file schema evolution)
 }
 
 // Partition column value extracted from a Delta add action. Delta represents

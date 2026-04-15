@@ -161,19 +161,62 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometScanExec] with Loggi
     // attribute references by position in that schema.
     val columnNames: Array[String] = scan.output.map(_.name).toArray
 
-    // --- 1. Ask kernel for the active file list (with optional predicate for file pruning) ---
+    // --- 1. Get the active file list. ---
+    //
+    // Two code paths:
+    //   (a) Pre-materialized FileIndex (`TahoeBatchFileIndex`, `CdcAddFileIndex`):
+    //       Delta's streaming micro-batch reads AND MERGE / UPDATE / DELETE
+    //       post-join rewrites both carry an exact `addFiles: Seq[AddFile]` on
+    //       the FileIndex. Kernel log replay against the snapshot would return a
+    //       DIFFERENT file set (the whole snapshot, or a version's deltas), which
+    //       is a correctness hazard -- empty streaming batches, MERGE rewrites
+    //       that see the whole table instead of only touched files. Build the
+    //       DeltaScanTaskList proto directly from those AddFiles, skipping kernel.
+    //   (b) Regular scan against a snapshot: call kernel for log replay as before.
     val taskListBytes =
-      try {
-        nativeLib.planDeltaScan(
-          tableRoot,
-          snapshotVersion,
-          storageOptions,
-          predicateBytes,
-          columnNames)
-      } catch {
-        case e: Throwable =>
-          logWarning(s"CometDeltaNativeScan: delta-kernel-rs log replay failed for $tableRoot", e)
-          return None
+      if (DeltaReflection.isBatchFileIndex(relation.location)) {
+        DeltaReflection.extractBatchAddFiles(relation.location) match {
+          case Some(addFiles) if addFiles.forall(!_.hasDeletionVector) =>
+            buildTaskListFromAddFiles(
+              tableRoot,
+              snapshotVersion,
+              addFiles,
+              nativeOp = null,
+              columnNames).toByteArray
+          case Some(_) =>
+            // Phase 1 of the pre-materialized-index path: fall back when any
+            // AddFile carries a DeletionVectorDescriptor. Phase 2 can apply the
+            // DV inline via our DeltaDvFilterExec.
+            import org.apache.comet.CometSparkSessionExtensions.withInfo
+            withInfo(
+              scan,
+              "Native Delta scan falls back for pre-materialized FileIndex with " +
+                "deletion vectors (streaming/MERGE with DVs).")
+            return None
+          case None =>
+            // Reflection failed; fall back conservatively.
+            import org.apache.comet.CometSparkSessionExtensions.withInfo
+            withInfo(
+              scan,
+              s"Native Delta scan could not extract AddFiles from " +
+                s"${relation.location.getClass.getName}; falling back.")
+            return None
+        }
+      } else {
+        try {
+          nativeLib.planDeltaScan(
+            tableRoot,
+            snapshotVersion,
+            storageOptions,
+            predicateBytes,
+            columnNames)
+        } catch {
+          case e: Throwable =>
+            logWarning(
+              s"CometDeltaNativeScan: delta-kernel-rs log replay failed for $tableRoot",
+              e)
+            return None
+        }
       }
     val taskList = DeltaScanTaskList.parseFrom(taskListBytes)
 
@@ -239,16 +282,40 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometScanExec] with Loggi
     commonBuilder.addAllRequiredSchema(requiredSchema.toIterable.asJava)
     commonBuilder.addAllPartitionSchema(partitionSchema.toIterable.asJava)
 
-    // Projection vector maps output-schema positions to (file_data_schema ++
-    // partition_schema) indices. Same convention as CometNativeScan.convert: first the
-    // data-column indexes in file schema order, then ALL partition columns appended.
-    val dataSchemaIndexes = scan.requiredSchema.fields.map { field =>
+    // Projection vector maps output positions to (file_data_schema ++ partition_schema)
+    // indices. Spark's `FileSourceScanExec` splits its visible schema into
+    // `requiredSchema` (data-only columns that must be read from parquet) and an
+    // implicit partition tail that is materialised from `PartitionedFile.partition_values`.
+    // The scan's `output` is `requiredSchema ++ partitionSchema` in that order.
+    //
+    // We mirror that layout: first emit one index per required (data) field pointing
+    // into `fileDataSchemaFields`, then append one index per partition field pointing
+    // at `fileDataSchemaFields.length + partitionIdx` so the native side resolves those
+    // positions against `PartitionedFile.partition_values`.
+    //
+    // If `scan.requiredSchema` ever contains a partition column (some Delta code paths
+    // leak one in), we resolve it through the partition tail without re-reading from
+    // parquet.
+    val partitionNameToIndex: Map[String, Int] =
+      relation.partitionSchema.fields.zipWithIndex.map { case (f, i) =>
+        f.name.toLowerCase(Locale.ROOT) -> i
+      }.toMap
+    val requiredIndexes: Seq[Int] = scan.requiredSchema.fields.map { field =>
       val nameLower = field.name.toLowerCase(Locale.ROOT)
-      fileDataSchemaFields.indexWhere(_.name.toLowerCase(Locale.ROOT) == nameLower)
+      val dataIdx =
+        fileDataSchemaFields.indexWhere(_.name.toLowerCase(Locale.ROOT) == nameLower)
+      if (dataIdx >= 0) {
+        dataIdx
+      } else {
+        partitionNameToIndex
+          .get(nameLower)
+          .map(p => fileDataSchemaFields.length + p)
+          .getOrElse(-1)
+      }
     }
-    val partitionSchemaIndexes =
-      (0 until relation.partitionSchema.fields.length).map(i => fileDataSchemaFields.length + i)
-    val projectionVector = dataSchemaIndexes ++ partitionSchemaIndexes
+    val partitionTailIndexes: Seq[Int] =
+      relation.partitionSchema.fields.indices.map(i => fileDataSchemaFields.length + i)
+    val projectionVector: Seq[Int] = requiredIndexes ++ partitionTailIndexes
     commonBuilder.addAllProjectionVector(
       projectionVector.map(idx => idx.toLong.asInstanceOf[java.lang.Long]).toIterable.asJava)
 
@@ -362,6 +429,49 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometScanExec] with Loggi
 
   private def castPartitionString(str: Option[String], dt: DataType): Any =
     DeltaReflection.castPartitionString(str, dt)
+
+  /**
+   * Build a kernel-independent `DeltaScanTaskList` from a caller-provided AddFile list. Used when
+   * the Delta scan has a pre-materialized FileIndex (streaming micro-batch, MERGE/UPDATE/DELETE
+   * post-join) so we can honour its exact file list instead of re-running log replay (which would
+   * return a different set).
+   *
+   * Each AddFile becomes one `DeltaScanTask`. Absolute path resolution mirrors
+   * `DeltaFileOperations.absolutePath`: if `AddFile.path` is already absolute (has a URI scheme),
+   * keep it verbatim; otherwise join against `tableRoot`.
+   */
+  private def buildTaskListFromAddFiles(
+      tableRoot: String,
+      snapshotVersion: Long,
+      addFiles: Seq[DeltaReflection.ExtractedAddFile],
+      nativeOp: AnyRef,
+      columnNames: Array[String]): OperatorOuterClass.DeltaScanTaskList = {
+    val tlBuilder = OperatorOuterClass.DeltaScanTaskList.newBuilder()
+    tlBuilder.setTableRoot(tableRoot)
+    if (snapshotVersion >= 0) tlBuilder.setSnapshotVersion(snapshotVersion)
+
+    addFiles.foreach { af =>
+      val absPath =
+        if (af.path.contains(":/")) af.path
+        else {
+          val sep = if (tableRoot.endsWith("/")) "" else "/"
+          tableRoot + sep + af.path
+        }
+      val taskBuilder = OperatorOuterClass.DeltaScanTask.newBuilder()
+      taskBuilder.setFilePath(absPath)
+      taskBuilder.setFileSize(af.size)
+      DeltaReflection.parseNumRecords(af.statsJson).foreach(taskBuilder.setRecordCount)
+      af.partitionValues.foreach { case (k, v) =>
+        val pvBuilder = OperatorOuterClass.DeltaPartitionValue.newBuilder().setName(k)
+        if (v != null) pvBuilder.setValue(v)
+        taskBuilder.addPartitionValues(pvBuilder.build())
+      }
+      af.baseRowId.foreach(taskBuilder.setBaseRowId)
+      af.defaultRowCommitVersion.foreach(taskBuilder.setDefaultRowCommitVersion)
+      tlBuilder.addTasks(taskBuilder.build())
+    }
+    tlBuilder.build()
+  }
 
   override def createExec(nativeOp: Operator, op: CometScanExec): CometNativeExec = {
     val tableRoot = DeltaReflection.extractTableRoot(op.relation).getOrElse("unknown")

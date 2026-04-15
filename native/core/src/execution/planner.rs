@@ -2779,10 +2779,31 @@ impl PhysicalPlanner {
             .collect::<Result<Vec<_>, _>>()?;
 
         let fun_name = &expr.func;
-        let input_expr_types = args
+        let raw_input_expr_types = args
             .iter()
             .map(|x| x.data_type(input_schema.as_ref()))
             .collect::<Result<Vec<_>, _>>()?;
+
+        // `make_array` (and `array` alias) requires inputs to share EXACTLY the
+        // same Arrow type — field nullability included — because its inner
+        // `MutableArrayData::with_capacities` asserts field-equality. Widen each
+        // input to the element-wise nullability-promoted union so both the
+        // return-type derivation AND the runtime casts below see the widened
+        // shape. Delta's CDF `replaceWhere` path triggers this with a literal
+        // `named_struct` alongside a projected column.
+        let make_array_target: Option<DataType> = if matches!(
+            fun_name.as_ref(),
+            "make_array" | "array"
+        ) {
+            widen_nullability_across(&raw_input_expr_types)
+        } else {
+            None
+        };
+        let input_expr_types: Vec<DataType> = if let Some(target) = &make_array_target {
+            raw_input_expr_types.iter().map(|_| target.clone()).collect()
+        } else {
+            raw_input_expr_types.clone()
+        };
 
         let (data_type, coerced_input_types) =
             match expr.return_type.as_ref().map(to_arrow_datatype) {
@@ -2863,9 +2884,13 @@ impl PhysicalPlanner {
             Some(expr.fail_on_error),
         )?;
 
+        // For make_array/array we already widened `input_expr_types` above, so
+        // `coerced_input_types` already reflects the widened target. Use the
+        // pre-widen (`raw_input_expr_types`) for the cast gate so we insert a
+        // Cast when the actual arg's data type is narrower than the target.
         let args = args
             .into_iter()
-            .zip(input_expr_types.into_iter().zip(coerced_input_types))
+            .zip(raw_input_expr_types.into_iter().zip(coerced_input_types))
             .map(|(expr, (from_type, to_type))| {
                 if from_type != to_type {
                     Arc::new(CastExpr::new(
@@ -2929,6 +2954,71 @@ impl PhysicalPlanner {
             .with_distinct(false)
             .build()
             .map_err(|e| e.into())
+    }
+}
+
+/// Build a `DataType` that is the element-wise, nullability-widened union of
+/// `types`. Returns `Some(target)` only if any pairwise widening is actually
+/// needed — callers skip the cast when `None` is returned, preserving the
+/// existing `coerce_types` result.
+///
+/// This is only meaningful for compound types (Struct / List / Map) whose
+/// inner Fields carry per-position `nullable` flags that must agree at the
+/// Arrow level. For scalars the datatype already captures everything and we
+/// return `None`.
+fn widen_nullability_across(types: &[DataType]) -> Option<DataType> {
+    if types.len() < 2 {
+        return None;
+    }
+    let mut acc = types[0].clone();
+    let mut changed = false;
+    for t in &types[1..] {
+        match widen_nullability_pair(&acc, t) {
+            Some(widened) => {
+                if &widened != &acc || &widened != t {
+                    changed = true;
+                }
+                acc = widened;
+            }
+            None => return None, // incompatible shapes — let DF handle / error
+        }
+    }
+    if changed {
+        Some(acc)
+    } else {
+        None
+    }
+}
+
+fn widen_nullability_pair(a: &DataType, b: &DataType) -> Option<DataType> {
+    if a == b {
+        return Some(a.clone());
+    }
+    match (a, b) {
+        (DataType::Struct(af), DataType::Struct(bf)) if af.len() == bf.len() => {
+            let mut widened: Vec<Arc<Field>> = Vec::with_capacity(af.len());
+            for (fa, fb) in af.iter().zip(bf.iter()) {
+                if fa.name() != fb.name() {
+                    return None;
+                }
+                let child_type = widen_nullability_pair(fa.data_type(), fb.data_type())?;
+                widened.push(Arc::new(Field::new(
+                    fa.name(),
+                    child_type,
+                    fa.is_nullable() || fb.is_nullable(),
+                )));
+            }
+            Some(DataType::Struct(widened.into()))
+        }
+        (DataType::List(fa), DataType::List(fb)) => {
+            let child_type = widen_nullability_pair(fa.data_type(), fb.data_type())?;
+            Some(DataType::List(Arc::new(Field::new(
+                fa.name(),
+                child_type,
+                fa.is_nullable() || fb.is_nullable(),
+            ))))
+        }
+        _ => None, // only widen compound types; leave scalars to DF coercion
     }
 }
 
