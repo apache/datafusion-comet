@@ -19,8 +19,8 @@
 
 use crate::metrics::ShufflePartitionerMetrics;
 use crate::partitioners::{
-    EmptySchemaShufflePartitioner, MultiPartitionShuffleRepartitioner, ShufflePartitioner,
-    SinglePartitionShufflePartitioner,
+    EmptySchemaShufflePartitioner, ImmediateModePartitioner, MultiPartitionShuffleRepartitioner,
+    ShufflePartitioner, SinglePartitionShufflePartitioner,
 };
 use crate::{CometPartitioning, CompressionCodec};
 use async_trait::async_trait;
@@ -67,6 +67,8 @@ pub struct ShuffleWriterExec {
     tracing_enabled: bool,
     /// Size of the write buffer in bytes
     write_buffer_size: usize,
+    /// When true, use ImmediateModePartitioner instead of MultiPartitionShuffleRepartitioner
+    immediate_mode: bool,
 }
 
 impl ShuffleWriterExec {
@@ -80,6 +82,7 @@ impl ShuffleWriterExec {
         output_index_file: String,
         tracing_enabled: bool,
         write_buffer_size: usize,
+        immediate_mode: bool,
     ) -> Result<Self> {
         let cache = Arc::new(PlanProperties::new(
             EquivalenceProperties::new(Arc::clone(&input.schema())),
@@ -98,6 +101,7 @@ impl ShuffleWriterExec {
             codec,
             tracing_enabled,
             write_buffer_size,
+            immediate_mode,
         })
     }
 }
@@ -158,6 +162,7 @@ impl ExecutionPlan for ShuffleWriterExec {
                 self.output_index_file.clone(),
                 self.tracing_enabled,
                 self.write_buffer_size,
+                self.immediate_mode,
             )?)),
             _ => panic!("ShuffleWriterExec wrong number of children"),
         }
@@ -185,6 +190,7 @@ impl ExecutionPlan for ShuffleWriterExec {
                     self.codec.clone(),
                     self.tracing_enabled,
                     self.write_buffer_size,
+                    self.immediate_mode,
                 )
                 .map_err(|e| ArrowError::ExternalError(Box::new(e))),
             )
@@ -205,6 +211,7 @@ async fn external_shuffle(
     codec: CompressionCodec,
     tracing_enabled: bool,
     write_buffer_size: usize,
+    immediate_mode: bool,
 ) -> Result<SendableRecordBatchStream> {
     let schema = input.schema();
 
@@ -228,6 +235,17 @@ async fn external_shuffle(
             context.session_config().batch_size(),
             codec,
             write_buffer_size,
+        )?),
+        _ if immediate_mode => Box::new(ImmediateModePartitioner::try_new(
+            partition,
+            output_data_file,
+            output_index_file,
+            Arc::clone(&schema),
+            partitioning,
+            metrics,
+            context.runtime_env(),
+            context.session_config().batch_size(),
+            codec,
         )?),
         _ => Box::new(MultiPartitionShuffleRepartitioner::try_new(
             partition,
@@ -467,6 +485,7 @@ mod test {
                 "/tmp/index.out".to_string(),
                 false,
                 1024 * 1024, // write_buffer_size: 1MB default
+                false,       // immediate_mode
             )
             .unwrap();
 
@@ -526,6 +545,7 @@ mod test {
                 index_file.clone(),
                 false,
                 1024 * 1024,
+                false, // immediate_mode
             )
             .unwrap();
 
@@ -730,6 +750,7 @@ mod test {
             index_file.to_str().unwrap().to_string(),
             false,
             1024 * 1024,
+            false, // immediate_mode
         )
         .unwrap();
 
@@ -818,6 +839,7 @@ mod test {
             index_file.to_str().unwrap().to_string(),
             false,
             1024 * 1024,
+            false, // immediate_mode
         )
         .unwrap();
 
