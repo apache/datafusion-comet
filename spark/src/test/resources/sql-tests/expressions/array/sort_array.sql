@@ -163,6 +163,90 @@ query
 SELECT sort_array(arr, false) FROM test_sort_array_boolean
 
 statement
+CREATE TABLE test_sort_array_date(arr array<date>) USING parquet
+
+statement
+INSERT INTO test_sort_array_date VALUES
+  (array(DATE '2026-01-03', DATE '2026-01-01', DATE '2026-01-02')),
+  (array(DATE '2026-01-02', NULL, DATE '2026-01-01')),
+  (array()),
+  (NULL)
+
+query
+SELECT sort_array(arr) FROM test_sort_array_date
+
+query
+SELECT sort_array(arr, true) FROM test_sort_array_date
+
+query
+SELECT sort_array(arr, false) FROM test_sort_array_date
+
+statement
+CREATE TABLE test_sort_array_timestamp(arr array<timestamp>) USING parquet
+
+statement
+INSERT INTO test_sort_array_timestamp VALUES
+  (array(
+    TIMESTAMP '2026-01-03 01:00:00',
+    TIMESTAMP '2026-01-01 02:00:00',
+    TIMESTAMP '2026-01-02 03:00:00')),
+  (array(
+    TIMESTAMP '2026-01-02 00:00:00',
+    NULL,
+    TIMESTAMP '2026-01-01 00:00:00')),
+  (array()),
+  (NULL)
+
+query
+SELECT sort_array(arr) FROM test_sort_array_timestamp
+
+query
+SELECT sort_array(arr, true) FROM test_sort_array_timestamp
+
+query
+SELECT sort_array(arr, false) FROM test_sort_array_timestamp
+
+statement
+CREATE TABLE test_sort_array_binary(arr array<binary>) USING parquet
+
+statement
+INSERT INTO test_sort_array_binary VALUES
+  (array(unhex('FF'), unhex('00'), unhex('0A'))),
+  (array(unhex('0B'), NULL, unhex('01'))),
+  (array()),
+  (NULL)
+
+query
+SELECT
+  hex(element_at(sorted_arr, 1)),
+  hex(element_at(sorted_arr, 2)),
+  hex(element_at(sorted_arr, 3))
+FROM (
+  SELECT sort_array(arr) AS sorted_arr
+  FROM test_sort_array_binary
+)
+
+query
+SELECT
+  hex(element_at(sorted_arr, 1)),
+  hex(element_at(sorted_arr, 2)),
+  hex(element_at(sorted_arr, 3))
+FROM (
+  SELECT sort_array(arr, true) AS sorted_arr
+  FROM test_sort_array_binary
+)
+
+query
+SELECT
+  hex(element_at(sorted_arr, 1)),
+  hex(element_at(sorted_arr, 2)),
+  hex(element_at(sorted_arr, 3))
+FROM (
+  SELECT sort_array(arr, false) AS sorted_arr
+  FROM test_sort_array_binary
+)
+
+statement
 CREATE TABLE test_sort_array_struct(arr array<struct<a:int,b:string>>) USING parquet
 
 statement
@@ -278,6 +362,25 @@ SELECT
   sort_array(array(true, false, true, false)),
   sort_array(array(true, false, true, NULL, false)),
   sort_array(array(true, false, true, NULL, false), false),
+  sort_array(array(DATE '2026-01-03', DATE '2026-01-01', DATE '2026-01-02')),
+  sort_array(array(DATE '2026-01-02', NULL, DATE '2026-01-01'), false),
+  sort_array(
+    array(
+      TIMESTAMP '2026-01-03 01:00:00',
+      TIMESTAMP '2026-01-01 02:00:00',
+      TIMESTAMP '2026-01-02 03:00:00')),
+  sort_array(
+    array(
+      TIMESTAMP '2026-01-02 00:00:00',
+      NULL,
+      TIMESTAMP '2026-01-01 00:00:00'),
+    false),
+  hex(element_at(sort_array(array(unhex('FF'), unhex('00'), unhex('0A'))), 1)),
+  hex(element_at(sort_array(array(unhex('FF'), unhex('00'), unhex('0A'))), 2)),
+  hex(element_at(sort_array(array(unhex('FF'), unhex('00'), unhex('0A'))), 3)),
+  hex(element_at(sort_array(array(unhex('0B'), NULL, unhex('01')), false), 1)),
+  hex(element_at(sort_array(array(unhex('0B'), NULL, unhex('01')), false), 2)),
+  hex(element_at(sort_array(array(unhex('0B'), NULL, unhex('01')), false), 3)),
   sort_array(
     array(
       named_struct('a', 2, 'b', 'b'),
