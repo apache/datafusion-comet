@@ -123,8 +123,8 @@ use datafusion_comet_proto::{
 use datafusion_comet_spark_expr::{
     ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Correlation, Covariance, CreateNamedStruct,
     DecimalRescaleCheckOverflow, GetArrayStructFields, GetStructField, IfExpr, ListExtract,
-    NormalizeNaNAndZero, SparkCastOptions, Stddev, SumDecimal, ToJson, UnboundColumn, Variance,
-    WideDecimalBinaryExpr, WideDecimalOp,
+    NormalizeNaNAndZero, Percentile, SparkCastOptions, Stddev, SumDecimal, ToJson, UnboundColumn,
+    Variance, WideDecimalBinaryExpr, WideDecimalOp,
 };
 use itertools::Itertools;
 use jni::objects::{Global, JObject};
@@ -2265,6 +2265,55 @@ impl PhysicalPlanner {
                     datatype,
                 ));
                 Self::create_aggr_func_expr("bloom_filter_agg", schema, vec![child], func)
+            }
+            AggExprStruct::PercentileCont(expr) => {
+                let return_type = to_arrow_datatype(expr.datatype.as_ref().unwrap());
+                let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
+
+                // Cast input to Float64 for numeric types
+                let child =
+                    Arc::new(CastExpr::new(child, DataType::Float64, None)) as Arc<dyn PhysicalExpr>;
+
+                // Extract the literal percentile value
+                let percentile_expr =
+                    self.create_expr(expr.percentile.as_ref().unwrap(), Arc::clone(&schema))?;
+                let percentile_value = percentile_expr
+                    .as_any()
+                    .downcast_ref::<DataFusionLiteral>()
+                    .ok_or_else(|| {
+                        ExecutionError::GeneralError("percentile must be a literal".into())
+                    })?
+                    .value()
+                    .clone();
+
+                let percentile = match percentile_value {
+                    ScalarValue::Float64(Some(p)) => p,
+                    ScalarValue::Float32(Some(p)) => p as f64,
+                    ScalarValue::Int64(Some(p)) => p as f64,
+                    ScalarValue::Int32(Some(p)) => p as f64,
+                    _ => {
+                        return Err(ExecutionError::GeneralError(format!(
+                            "percentile must be a numeric literal, got {:?}",
+                            percentile_value
+                        )))
+                    }
+                };
+
+                // Custom Spark-compatible Percentile implementation
+                let func = AggregateUDF::new_from_impl(Percentile::new(
+                    "spark_percentile",
+                    percentile,
+                    expr.reverse,
+                    return_type,
+                ));
+
+                AggregateExprBuilder::new(Arc::new(func), vec![child])
+                    .schema(schema)
+                    .alias("spark_percentile")
+                    .with_ignore_nulls(false)
+                    .with_distinct(false)
+                    .build()
+                    .map_err(|e| ExecutionError::DataFusionError(e.to_string()))
             }
         }
     }

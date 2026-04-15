@@ -168,5 +168,11 @@ pub fn to_arrow_datatype(dt_value: &DataType) -> ArrowDataType {
             }
             _ => unreachable!(),
         },
+        DataTypeId::YearMonthInterval => {
+            ArrowDataType::Interval(arrow::datatypes::IntervalUnit::YearMonth)
+        }
+        DataTypeId::DayTimeInterval => {
+            ArrowDataType::Interval(arrow::datatypes::IntervalUnit::DayTime)
+        }
     }
 }

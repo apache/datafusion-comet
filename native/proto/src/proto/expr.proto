@@ -140,6 +140,7 @@ message AggExpr {
     Stddev stddev = 14;
     Correlation correlation = 15;
     BloomFilterAgg bloomFilterAgg = 16;
+    PercentileCont percentileCont = 17;
   }
 
   // Optional filter expression for SQL FILTER (WHERE ...) clause.
@@ -246,6 +247,13 @@ message BloomFilterAgg {
   Expr numItems = 2;
   Expr numBits = 3;
   DataType datatype = 4;
+}
+
+message PercentileCont {
+  Expr child = 1;           // The column to compute percentile on
+  Expr percentile = 2;      // The percentile value (0.0-1.0)
+  DataType datatype = 3;    // Return type
+  bool reverse = 4;         // True if ORDER BY DESC
 }
 
 enum EvalMode {
