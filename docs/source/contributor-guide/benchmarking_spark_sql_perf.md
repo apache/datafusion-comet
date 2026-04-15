@@ -21,8 +21,7 @@ under the License.
 
 This guide explains how to generate TPC-DS data and run TPC-DS benchmarks using the
 [KubedAI/spark-sql-perf](https://github.com/KubedAI/spark-sql-perf) framework (a fork of
-[databricks/spark-sql-perf](https://github.com/databricks/spark-sql-perf)), then run those benchmarks
-with the Comet benchmarking scripts.
+[databricks/spark-sql-perf](https://github.com/databricks/spark-sql-perf)).
 
 We use the KubedAI fork because it adds two features not present in the upstream Databricks repository:
 
@@ -143,8 +142,8 @@ tables.genData(
   location = dataDir,
   format = format,
   overwrite = true,
-  partitionTables = false,
-  clusterByPartitionColumns = false,
+  partitionTables = true,
+  clusterByPartitionColumns = true,
   filterOutNullPartitionValues = false,
   numPartitions = numPartitions
 )
@@ -171,44 +170,108 @@ Set the `TPCDS_DATA` environment variable:
 export TPCDS_DATA=/path/to/tpcds-data
 ```
 
-## Step 5: Run TPC-DS Benchmarks with Comet
+## Step 5: Run TPC-DS Benchmarks
 
-The Comet benchmarking scripts in `benchmarks/tpc/` can run TPC-DS queries against the generated data.
+### Register Tables
+
+Launch `spark-shell` with the spark-sql-perf JAR (same as Step 4) and register the generated data as tables:
+
+```scala
+import com.databricks.spark.sql.perf.tpcds.{TPCDS, TPCDSTables}
+
+val scaleFactor = "100"
+val dataDir = "/path/to/tpcds-data"
+val format = "parquet"
+val databaseName = "tpcds"
+
+// Create database and register tables
+sql(s"CREATE DATABASE IF NOT EXISTS $databaseName")
+val tables = new TPCDSTables(spark.sqlContext, dsdgenDir = "", scaleFactor = scaleFactor)
+tables.createExternalTables(
+  location = dataDir,
+  format = format,
+  databaseName = databaseName,
+  overwrite = true,
+  discoverPartitions = true
+)
+
+sql(s"USE $databaseName")
+```
 
 ### Run Spark Baseline
 
-```shell
-cd benchmarks/tpc
-sudo ./drop-caches.sh
-python3 run.py --engine spark --benchmark tpcds
+```scala
+val tpcds = new TPCDS(spark.sqlContext)
+
+// Choose a query set: tpcds1_4Queries, tpcds2_4Queries, or tpcds4_0Queries
+val queries = tpcds.tpcds2_4Queries
+
+val experiment = tpcds.runExperiment(
+  executionsToRun = queries,
+  iterations = 3,
+  resultLocation = "/path/to/results/spark",
+  tags = Map("engine" -> "spark", "scale_factor" -> "100"),
+  forkThread = true
+)
+
+experiment.waitForFinish(86400)
 ```
 
-### Run Comet
+Results are saved as JSON to the `resultLocation` path.
 
-Build Comet from source if you have not already:
+### Run with Comet
+
+Build Comet from source and launch `spark-shell` with both the Comet and spark-sql-perf JARs:
 
 ```shell
 make release
 export COMET_JAR=$(pwd)/spark/target/comet-spark-spark3.5_2.12-*.jar
+
+$SPARK_HOME/bin/spark-shell \
+    --master $SPARK_MASTER \
+    --jars /path/to/spark-sql-perf/target/scala-2.12/spark-sql-perf_2.12-0.5.1-SNAPSHOT.jar,$COMET_JAR \
+    --conf spark.driver.memory=8G \
+    --conf spark.executor.instances=1 \
+    --conf spark.executor.cores=8 \
+    --conf spark.executor.memory=8g \
+    --conf spark.memory.offHeap.enabled=true \
+    --conf spark.memory.offHeap.size=8g \
+    --conf spark.executor.extraClassPath=$COMET_JAR \
+    --conf spark.sql.extensions=org.apache.comet.CometSparkSessionExtensions \
+    --conf spark.comet.enabled=true \
+    --conf spark.comet.exec.enabled=true \
+    --conf spark.comet.exec.all.enabled=true \
+    --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
+    --conf spark.comet.exec.shuffle.enabled=true \
+    --conf spark.comet.columnar.shuffle.enabled=true
 ```
 
-Then run the benchmark:
+Then register tables and run the benchmark the same way as the Spark baseline, changing the tags and result
+location:
 
-```shell
-cd benchmarks/tpc
-sudo ./drop-caches.sh
-python3 run.py --engine comet --benchmark tpcds
+```scala
+val experiment = tpcds.runExperiment(
+  executionsToRun = queries,
+  iterations = 3,
+  resultLocation = "/path/to/results/comet",
+  tags = Map("engine" -> "comet", "scale_factor" -> "100"),
+  forkThread = true
+)
+
+experiment.waitForFinish(86400)
 ```
 
-### Compare Results
+### View Results
 
-Generate a comparison chart from the benchmark output JSON files:
+Results are saved as JSON under the `resultLocation`. You can query them directly in Spark:
 
-```shell
-python3 generate-comparison.py --benchmark tpcds \
-    --labels "Spark" "Comet" \
-    --title "TPC-DS @ 100 GB" \
-    spark-tpcds-*.json comet-tpcds-*.json
+```scala
+val results = spark.read.json("/path/to/results/spark")
+results.select("name", "parsingTime", "analysisTime", "optimizationTime", "planningTime", "executionTime")
+  .withColumn("totalTime", (col("parsingTime") + col("analysisTime") +
+    col("optimizationTime") + col("planningTime") + col("executionTime")) / 1000.0)
+  .orderBy("name")
+  .show(200, false)
 ```
 
 ## Alternative: Command-Line Data Generation
@@ -246,9 +309,3 @@ For large scale factors (SF1000+), increase executor memory and the number of pa
 ```
 
 And in the Spark shell, use a higher `numPartitions` value (e.g., 200+).
-
-### Schema mismatch with benchmark queries
-
-The Comet TPC-DS benchmark queries in `benchmarks/tpc/queries/tpcds/` expect table names matching the TPC-DS
-specification (e.g., `store_sales`, `date_dim`). The spark-sql-perf data generation produces directories with
-these exact names, so they should work with the benchmark scripts without modification.
