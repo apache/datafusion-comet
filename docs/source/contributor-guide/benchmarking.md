@@ -42,5 +42,6 @@ Available benchmarking guides:
 
 - [Benchmarking on macOS](benchmarking_macos.md)
 - [Benchmarking on AWS EC2](benchmarking_aws_ec2)
+- [TPC-DS Benchmarking with spark-sql-perf](benchmarking_spark_sql_perf.md)
 
 We also have many micro benchmarks that can be run from an IDE located [here](https://github.com/apache/datafusion-comet/tree/main/spark/src/test/scala/org/apache/spark/sql/benchmark).
