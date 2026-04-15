@@ -106,6 +106,48 @@ SELECT cast(d38 as long) FROM test_cast_decimal_high_precision
 query
 SELECT cast(d38 as boolean) FROM test_cast_decimal_high_precision
 
+-- additional precision/scale combinations: decimal(15,5) has fractional part with int overflow
+-- possible; decimal(20,0) has no fractional part with long overflow possible
+statement
+CREATE TABLE test_cast_decimal_extra(
+  d15_5 decimal(15,5),
+  d20_0 decimal(20,0)
+) USING parquet
+
+statement
+INSERT INTO test_cast_decimal_extra VALUES
+  (2147483648.12345, 9223372036854775808),    -- d15_5 overflows INT; d20_0 overflows LONG
+  (-2147483649.12345, -9223372036854775809),
+  (123.45678, 2147483648),                    -- fractional truncation; d20_0 overflows INT only
+  (0.00001, 1),
+  (-0.00001, -1),
+  (0.00000, 0),
+  (NULL, NULL)
+
+-- decimal(15,5) to INT (exercises fractional truncation and int overflow)
+query
+SELECT cast(d15_5 as int) FROM test_cast_decimal_extra
+
+-- decimal(15,5) to LONG
+query
+SELECT cast(d15_5 as long) FROM test_cast_decimal_extra
+
+-- decimal(15,5) to BOOLEAN
+query
+SELECT cast(d15_5 as boolean) FROM test_cast_decimal_extra
+
+-- decimal(20,0) to INT
+query
+SELECT cast(d20_0 as int) FROM test_cast_decimal_extra
+
+-- decimal(20,0) to LONG (exercises long overflow)
+query
+SELECT cast(d20_0 as long) FROM test_cast_decimal_extra
+
+-- decimal(20,0) to BOOLEAN
+query
+SELECT cast(d20_0 as boolean) FROM test_cast_decimal_extra
+
 -- literal casts: decimal(10,2) to float
 query
 SELECT cast(cast(1.50 as decimal(10,2)) as float),
