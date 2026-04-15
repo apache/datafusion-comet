@@ -60,10 +60,6 @@ the [Comet Supported Expressions Guide](expressions.md) for more information on 
 
 ### Array Expressions
 
-- **ArrayContains**: Returns null instead of false for empty arrays with literal values.
-  [#3346](https://github.com/apache/datafusion-comet/issues/3346)
-- **ArrayRemove**: Returns null when the element to remove is null, instead of removing null elements from the array.
-  [#3173](https://github.com/apache/datafusion-comet/issues/3173)
 - **ArraysOverlap**: Inconsistent behavior when arrays contain NULL values.
   [#3645](https://github.com/apache/datafusion-comet/issues/3645),
   [#2036](https://github.com/apache/datafusion-comet/issues/2036)
@@ -79,11 +75,6 @@ the [Comet Supported Expressions Guide](expressions.md) for more information on 
 - **TruncTimestamp (date_trunc)**: Produces incorrect results when used with non-UTC timezones. Compatible when
   timezone is UTC.
   [#2649](https://github.com/apache/datafusion-comet/issues/2649)
-
-### Math Expressions
-
-- **Tan**: `tan(-0.0)` produces `0.0` instead of `-0.0`.
-  [#1897](https://github.com/apache/datafusion-comet/issues/1897)
 
 ### Aggregate Expressions
 
@@ -144,6 +135,19 @@ Cast operations in Comet fall into three levels of support:
 - **U (Unsupported)**: Comet does not provide a native version of this cast expression and the query stage will fall back to
   Spark.
 - **N/A**: Spark does not support this cast.
+
+### String to Decimal
+
+Comet's native `CAST(string AS DECIMAL)` implementation matches Apache Spark's behavior,
+including:
+
+- Leading and trailing ASCII whitespace is trimmed before parsing.
+- Null bytes (`\u0000`) at the start or end of a string are trimmed, matching Spark's
+  `UTF8String` behavior. Null bytes embedded in the middle of a string produce `NULL`.
+- Fullwidth Unicode digits (U+FF10–U+FF19, e.g. `１２３.４５`) are treated as their ASCII
+  equivalents, so `CAST('１２３.４５' AS DECIMAL(10,2))` returns `123.45`.
+- Scientific notation (e.g. `1.23E+5`) is supported.
+- Special values (`inf`, `infinity`, `nan`) produce `NULL`.
 
 ### String to Timestamp
 
