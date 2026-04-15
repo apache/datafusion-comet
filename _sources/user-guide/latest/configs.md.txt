@@ -209,6 +209,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.Atan.enabled` | Enable Comet acceleration for `Atan` | true |
 | `spark.comet.expression.Atan2.enabled` | Enable Comet acceleration for `Atan2` | true |
 | `spark.comet.expression.AttributeReference.enabled` | Enable Comet acceleration for `AttributeReference` | true |
+| `spark.comet.expression.Bin.enabled` | Enable Comet acceleration for `Bin` | true |
 | `spark.comet.expression.BitLength.enabled` | Enable Comet acceleration for `BitLength` | true |
 | `spark.comet.expression.BitwiseAnd.enabled` | Enable Comet acceleration for `BitwiseAnd` | true |
 | `spark.comet.expression.BitwiseCount.enabled` | Enable Comet acceleration for `BitwiseCount` | true |
