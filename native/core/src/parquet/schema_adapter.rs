@@ -370,20 +370,28 @@ impl SparkPhysicalExprAdapter {
         .data()
     }
 
-    /// Replace CastColumnExpr (DataFusion's cast) with Spark's Cast expression.
+    /// Replace CastExpr (DataFusion's cast) with Spark's Cast expression.
     fn replace_with_spark_cast(
         &self,
         expr: Arc<dyn PhysicalExpr>,
     ) -> DataFusionResult<Transformed<Arc<dyn PhysicalExpr>>> {
-        // Check for CastColumnExpr and replace with spark_expr::Cast
-        // CastColumnExpr is in datafusion_physical_expr::expressions
+        // Check for CastExpr and replace with spark_expr::Cast
         if let Some(cast) = expr
             .as_any()
-            .downcast_ref::<datafusion::physical_expr::expressions::CastColumnExpr>()
+            .downcast_ref::<datafusion::physical_expr::expressions::CastExpr>()
         {
             let child = Arc::clone(cast.expr());
-            let physical_type = cast.input_field().data_type();
             let target_type = cast.target_field().data_type();
+
+            // Derive input field from the child Column expression and the physical schema
+            let input_field = if let Some(col) = child.as_any().downcast_ref::<Column>() {
+                Arc::new(self.physical_file_schema.field(col.index()).clone())
+            } else {
+                // Fallback: synthesize a field from the target field name and child data type
+                let child_type = cast.expr().data_type(&self.physical_file_schema)?;
+                Arc::new(Field::new(cast.target_field().name(), child_type, true))
+            };
+            let physical_type = input_field.data_type();
 
             // For complex nested types (Struct, List, Map), Timestamp timezone
             // mismatches, and Timestamp→Int64 (nanosAsLong), use CometCastColumnExpr
@@ -413,7 +421,7 @@ impl SparkPhysicalExprAdapter {
                 let comet_cast: Arc<dyn PhysicalExpr> = Arc::new(
                     CometCastColumnExpr::new(
                         child,
-                        Arc::clone(cast.input_field()),
+                        input_field,
                         Arc::clone(cast.target_field()),
                         None,
                     )
