@@ -125,7 +125,6 @@ class CometParquetFileFormat(session: SparkSession)
       CometParquetFileFormat.substituteGeneratedMetadataFields(requiredSchema)
     val substitutedDataSchema =
       CometParquetFileFormat.substituteGeneratedMetadataFields(dataSchema)
-
     (file: PartitionedFile) => {
       val sharedConf = broadcastedHadoopConf.value.value
       val footer = FooterReader.readFooter(sharedConf, file)
