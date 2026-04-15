@@ -216,7 +216,7 @@ case class CometBroadcastExchangeExec(
     relationFuture
   }
 
-  override protected def doExecute(): RDD[InternalRow] = {
+  override protected def doExecuteComet(): RDD[InternalRow] = {
     throw QueryExecutionErrors.executeCodePathUnsupportedError("CometBroadcastExchangeExec")
   }
 
@@ -227,7 +227,7 @@ case class CometBroadcastExchangeExec(
     ColumnarToRowExec(this).executeCollect()
 
   // This is basically for unit test only, called by `executeCollect` indirectly.
-  override protected def doExecuteColumnar(): RDD[ColumnarBatch] = {
+  override protected def doExecuteCometColumnar(): RDD[ColumnarBatch] = {
     val broadcasted = executeBroadcast[Array[ChunkedByteBuffer]]()
 
     new CometBatchRDD(sparkContext, getNumPartitions(), broadcasted)
@@ -245,7 +245,7 @@ case class CometBroadcastExchangeExec(
     new CometBatchRDD(sparkContext, numPartitions, broadcasted)
   }
 
-  override protected[sql] def doExecuteBroadcast[T](): broadcast.Broadcast[T] = {
+  override protected[sql] def doExecuteCometBroadcast[T](): broadcast.Broadcast[T] = {
     try {
       relationFuture.get(timeout, TimeUnit.SECONDS).asInstanceOf[broadcast.Broadcast[T]]
     } catch {

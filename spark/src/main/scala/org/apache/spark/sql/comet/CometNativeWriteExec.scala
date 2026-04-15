@@ -93,7 +93,7 @@ case class CometNativeWriteExec(
     "bytes_written" -> SQLMetrics.createSizeMetric(sparkContext, "written data"),
     "rows_written" -> SQLMetrics.createMetric(sparkContext, "number of written rows"))
 
-  override def doExecute(): RDD[InternalRow] = {
+  override def doExecuteComet(): RDD[InternalRow] = {
     // Setup job if committer is present
     committer.foreach { c =>
       val jobContext = createJobContext()
@@ -139,7 +139,7 @@ case class CometNativeWriteExec(
     sparkContext.emptyRDD[InternalRow]
   }
 
-  override def doExecuteColumnar(): RDD[ColumnarBatch] = {
+  override def doExecuteCometColumnar(): RDD[ColumnarBatch] = {
     // Get the input data from the child operator
     val childRDD = if (child.supportsColumnar) {
       child.executeColumnar()

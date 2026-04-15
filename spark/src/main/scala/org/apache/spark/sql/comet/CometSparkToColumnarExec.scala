@@ -46,11 +46,11 @@ case class CometSparkToColumnarExec(child: SparkPlan)
 
   override def outputOrdering: Seq[SortOrder] = child.outputOrdering
 
-  override protected def doExecute(): RDD[InternalRow] = {
+  override protected def doExecuteComet(): RDD[InternalRow] = {
     child.execute()
   }
 
-  override def doExecuteBroadcast[T](): Broadcast[T] = {
+  override def doExecuteCometBroadcast[T](): Broadcast[T] = {
     child.executeBroadcast()
   }
 
@@ -92,7 +92,7 @@ case class CometSparkToColumnarExec(child: SparkPlan)
     }
   }
 
-  override def doExecuteColumnar(): RDD[ColumnarBatch] = {
+  override def doExecuteCometColumnar(): RDD[ColumnarBatch] = {
     val numInputRows = longMetric("numInputRows")
     val numOutputBatches = longMetric("numOutputBatches")
     val conversionTime = longMetric("conversionTime")

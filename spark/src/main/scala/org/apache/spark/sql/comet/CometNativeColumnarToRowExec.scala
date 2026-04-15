@@ -155,7 +155,7 @@ case class CometNativeColumnarToRowExec(child: SparkPlan)
     }
   }
 
-  override def doExecuteBroadcast[T](): broadcast.Broadcast[T] = {
+  override def doExecuteCometBroadcast[T](): broadcast.Broadcast[T] = {
     if (cometBroadcastExchange.isEmpty) {
       throw new SparkException(
         "CometNativeColumnarToRowExec only supports doExecuteBroadcast when child contains a " +
@@ -184,7 +184,7 @@ case class CometNativeColumnarToRowExec(child: SparkPlan)
     }
   }
 
-  override def doExecute(): RDD[InternalRow] = {
+  override def doExecuteComet(): RDD[InternalRow] = {
     val numOutputRows = longMetric("numOutputRows")
     val numInputBatches = longMetric("numInputBatches")
     val convertTime = longMetric("convertTime")

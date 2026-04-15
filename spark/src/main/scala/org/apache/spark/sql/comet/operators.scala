@@ -246,7 +246,7 @@ abstract class CometExec extends CometPlan {
 
   override def output: Seq[Attribute] = originalPlan.output
 
-  override def doExecute(): RDD[InternalRow] =
+  override def doExecuteComet(): RDD[InternalRow] =
     ColumnarToRowExec(this).doExecute()
 
   override def executeCollect(): Array[InternalRow] =
@@ -418,7 +418,7 @@ abstract class CometNativeExec extends CometExec {
     runningSubqueries.clear()
   }
 
-  override def doExecuteColumnar(): RDD[ColumnarBatch] = {
+  override def doExecuteCometColumnar(): RDD[ColumnarBatch] = {
     serializedPlanOpt.plan match {
       case None =>
         // This is in the middle of a native execution, it should not be executed directly.
@@ -1317,7 +1317,7 @@ case class CometUnionExec(
     children: Seq[SparkPlan])
     extends CometExec {
 
-  override def doExecuteColumnar(): RDD[ColumnarBatch] = {
+  override def doExecuteCometColumnar(): RDD[ColumnarBatch] = {
     sparkContext.union(children.map(_.executeColumnar()))
   }
 

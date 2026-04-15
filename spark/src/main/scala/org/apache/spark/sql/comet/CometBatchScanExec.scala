@@ -54,7 +54,7 @@ case class CometBatchScanExec(
 
   override lazy val inputRDD: RDD[InternalRow] = wrappedScan.inputRDD
 
-  override def doExecuteColumnar(): RDD[ColumnarBatch] = {
+  override def doExecuteCometColumnar(): RDD[ColumnarBatch] = {
     val rdd = inputRDD.asInstanceOf[RDD[ColumnarBatch]]
 
     // These metrics are important for streaming solutions.
@@ -82,7 +82,7 @@ case class CometBatchScanExec(
   }
 
   // `ReusedSubqueryExec` in Spark only call non-columnar execute.
-  override def doExecute(): RDD[InternalRow] = {
+  override def doExecuteComet(): RDD[InternalRow] = {
     ColumnarToRowExec(this).doExecute()
   }
 

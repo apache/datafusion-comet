@@ -92,7 +92,7 @@ case class CometCollectLimitExec(
     if (offset > 0) rows.drop(offset) else rows
   }
 
-  protected override def doExecuteColumnar(): RDD[ColumnarBatch] = {
+  protected override def doExecuteCometColumnar(): RDD[ColumnarBatch] = {
     val childRDD = child.executeColumnar()
     if (childRDD.getNumPartitions == 0) {
       CometExecUtils.emptyRDDWithPartitions(sparkContext, 1)

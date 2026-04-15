@@ -169,7 +169,7 @@ case class CometShuffleExchangeExec(
         s"Unsupported shuffle type: ${shuffleType.getClass.getName}")
     }
 
-  protected override def doExecute(): RDD[InternalRow] = {
+  protected override def doExecuteComet(): RDD[InternalRow] = {
     ColumnarToRowExec(this).doExecute()
   }
 
@@ -186,7 +186,7 @@ case class CometShuffleExchangeExec(
   /**
    * Comet returns RDD[ColumnarBatch] for columnar execution.
    */
-  protected override def doExecuteColumnar(): RDD[ColumnarBatch] = {
+  protected override def doExecuteCometColumnar(): RDD[ColumnarBatch] = {
     // Returns the same CometShuffledBatchRDD if this plan is used by multiple plans.
     if (cachedShuffleRDD == null) {
       cachedShuffleRDD = new CometShuffledBatchRDD(shuffleDependency, readMetrics)

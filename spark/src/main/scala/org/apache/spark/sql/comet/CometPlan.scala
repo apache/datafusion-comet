@@ -19,9 +19,43 @@
 
 package org.apache.spark.sql.comet
 
+import org.apache.spark.broadcast.Broadcast
+import org.apache.spark.rdd.RDD
+import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.execution.SparkPlan
+import org.apache.spark.sql.vectorized.ColumnarBatch
 
 /**
  * The base trait for physical Comet operators.
+ *
+ * Wraps execution methods with error logging so that exceptions are logged with Comet-specific
+ * context before Spark can obscure them with generic INTERNAL_ERROR messages.
  */
-trait CometPlan extends SparkPlan
+trait CometPlan extends SparkPlan {
+
+  private def withErrorLogging[T](methodName: String)(body: => T): T = {
+    try { body }
+    catch {
+      case e: Throwable =>
+        logError(s"Error in Comet ${getClass.getSimpleName}.$methodName", e)
+        throw e
+    }
+  }
+
+  override def doExecuteColumnar(): RDD[ColumnarBatch] =
+    withErrorLogging("doExecuteColumnar") { doExecuteCometColumnar() }
+
+  override def doExecute(): RDD[InternalRow] =
+    withErrorLogging("doExecute") { doExecuteComet() }
+
+  override def doExecuteBroadcast[T](): Broadcast[T] =
+    withErrorLogging("doExecuteBroadcast") { doExecuteCometBroadcast() }
+
+  protected def doExecuteCometColumnar(): RDD[ColumnarBatch] =
+    super.doExecuteColumnar()
+
+  protected def doExecuteComet(): RDD[InternalRow]
+
+  protected def doExecuteCometBroadcast[T](): Broadcast[T] =
+    super.doExecuteBroadcast()
+}

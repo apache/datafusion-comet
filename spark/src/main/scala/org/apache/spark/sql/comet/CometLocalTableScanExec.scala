@@ -63,7 +63,7 @@ case class CometLocalTableScanExec(
     }
   }
 
-  override def doExecuteColumnar(): RDD[ColumnarBatch] = {
+  override def doExecuteCometColumnar(): RDD[ColumnarBatch] = {
     val numInputRows = longMetric("numOutputRows")
     val maxRecordsPerBatch = CometConf.COMET_BATCH_SIZE.get(conf)
     val timeZoneId = conf.sessionLocalTimeZone

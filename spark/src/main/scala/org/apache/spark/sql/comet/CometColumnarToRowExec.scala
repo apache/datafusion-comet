@@ -72,7 +72,7 @@ case class CometColumnarToRowExec(child: SparkPlan)
     "numOutputRows" -> SQLMetrics.createMetric(sparkContext, "number of output rows"),
     "numInputBatches" -> SQLMetrics.createMetric(sparkContext, "number of input batches"))
 
-  override def doExecute(): RDD[InternalRow] = {
+  override def doExecuteComet(): RDD[InternalRow] = {
     val numOutputRows = longMetric("numOutputRows")
     val numInputBatches = longMetric("numInputBatches")
     // This avoids calling `output` in the RDD closure, so that we don't need to include the entire
@@ -150,7 +150,7 @@ case class CometColumnarToRowExec(child: SparkPlan)
     }
   }
 
-  override def doExecuteBroadcast[T](): broadcast.Broadcast[T] = {
+  override def doExecuteCometBroadcast[T](): broadcast.Broadcast[T] = {
     if (cometBroadcastExchange.isEmpty) {
       throw new SparkException(
         "ColumnarToRowExec only supports doExecuteBroadcast when child contains a " +

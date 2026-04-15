@@ -287,11 +287,11 @@ case class CometScanExec(
       case _ => Map.empty
     })
 
-  protected override def doExecute(): RDD[InternalRow] = {
+  protected override def doExecuteComet(): RDD[InternalRow] = {
     ColumnarToRowExec(this).doExecute()
   }
 
-  protected override def doExecuteColumnar(): RDD[ColumnarBatch] = {
+  protected override def doExecuteCometColumnar(): RDD[ColumnarBatch] = {
     val rdd = inputRDD.asInstanceOf[RDD[ColumnarBatch]]
 
     // These metrics are important for streaming solutions.

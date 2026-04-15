@@ -293,7 +293,7 @@ case class CometIcebergNativeScanExec(
   }
 
   /** Executes using CometExecRDD - planning data is computed lazily on first access. */
-  override def doExecuteColumnar(): RDD[ColumnarBatch] = {
+  override def doExecuteCometColumnar(): RDD[ColumnarBatch] = {
     val nativeMetrics = CometMetricNode.fromCometPlan(this)
     val serializedPlan = CometExec.serializeNativePlan(nativeOp)
     CometExecRDD(
