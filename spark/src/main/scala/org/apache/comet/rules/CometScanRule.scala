@@ -422,7 +422,11 @@ case class CometScanRule(session: SparkSession)
     //     them via the standard partition-column path once we fetch the
     //     augmented AddFile list through `matchingFiles(Seq.empty, Seq.empty)`.
     //
-    // `TahoeLogFileIndexWithCloudFetch` is a variant we haven't validated yet.
+    // `TahoeLogFileIndexWithCloudFetch` does not appear in the OSS Delta
+    // releases our regression covers (2.4.x / 3.3.x / 4.0.x), so we cannot
+    // exercise it. It is reportedly a proprietary variant used inside the
+    // Databricks runtime. The rejection below is defensive for those users;
+    // if a future OSS Delta version ships it we can validate and remove.
     val fileIndexClassName = r.location.getClass.getName
     if (fileIndexClassName.endsWith(".TahoeLogFileIndexWithCloudFetch")) {
       withInfo(

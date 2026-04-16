@@ -85,6 +85,30 @@ The native Delta reader supports the following features:
 - Reads after `DELETE`, `UPDATE`, and `MERGE` operations that produce DVs
 - Both inline and on-disk deletion vectors
 - DV replacement across multiple commits
+- Comet disables Delta's `useMetadataRowIndex` DV read strategy on a
+  per-query basis (the rule fires only when the plan actually contains
+  a Delta scan we'd accelerate, so Delta's own DV-reader tests that
+  deliberately rely on `useMetadataRowIndex=true` stay unaffected).
+  Queries that legitimately need the metadata-row-index strategy are
+  not accelerated by Comet; the Spark+Delta path continues to handle
+  them.
+
+**Row tracking:**
+
+- Tables with `delta.enableRowTracking=true` read natively.
+- `_metadata.row_id` and `_metadata.row_commit_version` are synthesised
+  from Delta's materialised physical column when present, with a per-row
+  `baseRowId + parquet_row_index` / `defaultRowCommitVersion` fallback
+  for rows that still carry null in the materialised column.
+
+**Change Data Feed (CDF):**
+
+- `readChangeFeed` reads run natively. The CDC metadata columns
+  (`_change_type`, `_commit_version`, `_commit_timestamp`) are materialised
+  via the standard partition-column path from the augmented `AddFile`
+  partition values Delta's CDC file indexes already provide.
+- MERGE/UPDATE/DELETE post-join scans (via `TahoeBatchFileIndex`) are
+  accelerated natively.
 
 **Filter pushdown (two-level):**
 
@@ -124,8 +148,11 @@ The following scenarios will fall back to Spark's native Delta reader:
 
 - Delta writes (reads are accelerated, writes use Spark)
 - Tables with `typeWidening` enabled
-- Tables with `rowTracking` enabled
-- Change Data Feed (`readChangeFeed`) queries
-- The `_metadata.row_index` virtual column
+- `TahoeLogFileIndexWithCloudFetch` (Databricks-runtime-only file-index
+  variant; not exercised by OSS Delta)
+- User queries that set
+  `spark.databricks.delta.deletionVectors.useMetadataRowIndex=true`
+  (Comet prefers Delta's older DV-filter strategy, which it can
+  intercept)
 - Spark 3.4 uses Delta 2.4.x (DVs not supported in Delta 2.x; simpler feature set)
 - Spark 4.0 uses Delta 4.0.x (experimental)
