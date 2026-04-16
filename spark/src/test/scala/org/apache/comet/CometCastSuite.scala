@@ -1798,7 +1798,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       values.toDF("str").select(col("str").cast(DataTypes.TimestampType).as("a")))
   }
 
-
   private def generateTimestampLiterals(): Seq[String] =
     Seq(
       // post-epoch with microseconds
