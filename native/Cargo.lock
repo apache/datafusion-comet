@@ -1840,25 +1840,25 @@ dependencies = [
  "chrono",
  "datafusion-catalog",
  "datafusion-catalog-listing",
- "datafusion-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
+ "datafusion-common",
  "datafusion-common-runtime",
  "datafusion-datasource",
  "datafusion-datasource-arrow",
  "datafusion-datasource-csv",
  "datafusion-datasource-json",
  "datafusion-datasource-parquet",
- "datafusion-execution 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-expr 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-expr-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-functions 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-functions-aggregate 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-functions-nested 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
+ "datafusion-execution",
+ "datafusion-expr",
+ "datafusion-expr-common",
+ "datafusion-functions",
+ "datafusion-functions-aggregate",
+ "datafusion-functions-nested",
  "datafusion-functions-table",
  "datafusion-functions-window",
  "datafusion-optimizer",
- "datafusion-physical-expr 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
+ "datafusion-physical-expr",
  "datafusion-physical-expr-adapter",
- "datafusion-physical-expr-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
+ "datafusion-physical-expr-common",
  "datafusion-physical-optimizer",
  "datafusion-physical-plan",
  "datafusion-session",
@@ -1884,12 +1884,12 @@ dependencies = [
  "arrow",
  "async-trait",
  "dashmap",
- "datafusion-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
+ "datafusion-common",
  "datafusion-common-runtime",
  "datafusion-datasource",
- "datafusion-execution 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-expr 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-physical-expr 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
+ "datafusion-execution",
+ "datafusion-expr",
+ "datafusion-physical-expr",
  "datafusion-physical-plan",
  "datafusion-session",
  "futures",
@@ -1908,13 +1908,13 @@ dependencies = [
  "arrow",
  "async-trait",
  "datafusion-catalog",
- "datafusion-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
+ "datafusion-common",
  "datafusion-datasource",
- "datafusion-execution 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-expr 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-physical-expr 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
+ "datafusion-execution",
+ "datafusion-expr",
+ "datafusion-physical-expr",
  "datafusion-physical-expr-adapter",
- "datafusion-physical-expr-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
+ "datafusion-physical-expr-common",
  "datafusion-physical-plan",
  "futures",
  "itertools 0.14.0",
@@ -1941,7 +1941,7 @@ dependencies = [
  "datafusion-comet-shuffle",
  "datafusion-comet-spark-expr",
  "datafusion-datasource",
- "datafusion-functions-nested 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=0198302544)",
+ "datafusion-functions-nested",
  "datafusion-physical-expr-adapter",
  "datafusion-spark",
  "futures",
@@ -2096,27 +2096,6 @@ dependencies = [
 [[package]]
 name = "datafusion-common"
 version = "53.0.0"
-source = "git+https://github.com/mbutrovich/datafusion.git?rev=0198302544#01983025442464d834808a036564f709af58aaff"
-dependencies = [
- "arrow",
- "arrow-ipc",
- "arrow-schema",
- "chrono",
- "foldhash 0.2.0",
- "half",
- "hashbrown 0.17.0",
- "indexmap 2.14.0",
- "itertools 0.14.0",
- "libc",
- "log",
- "tokio",
- "uuid",
- "web-time",
-]
-
-[[package]]
-name = "datafusion-common"
-version = "53.0.0"
 source = "git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998#9598c96998eda71a3e4e0ba2e055c418ac4575f7"
 dependencies = [
  "arrow",
@@ -2160,13 +2139,13 @@ dependencies = [
  "bytes",
  "bzip2",
  "chrono",
- "datafusion-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
+ "datafusion-common",
  "datafusion-common-runtime",
- "datafusion-execution 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-expr 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-physical-expr 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
+ "datafusion-execution",
+ "datafusion-expr",
+ "datafusion-physical-expr",
  "datafusion-physical-expr-adapter",
- "datafusion-physical-expr-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
+ "datafusion-physical-expr-common",
  "datafusion-physical-plan",
  "datafusion-session",
  "flate2",
@@ -2192,12 +2171,12 @@ dependencies = [
  "arrow-ipc",
  "async-trait",
  "bytes",
- "datafusion-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
+ "datafusion-common",
  "datafusion-common-runtime",
  "datafusion-datasource",
- "datafusion-execution 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-expr 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-physical-expr-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
+ "datafusion-execution",
+ "datafusion-expr",
+ "datafusion-physical-expr-common",
  "datafusion-physical-plan",
  "datafusion-session",
  "futures",
@@ -2214,12 +2193,12 @@ dependencies = [
  "arrow",
  "async-trait",
  "bytes",
- "datafusion-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
+ "datafusion-common",
  "datafusion-common-runtime",
  "datafusion-datasource",
- "datafusion-execution 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-expr 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-physical-expr-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
+ "datafusion-execution",
+ "datafusion-expr",
+ "datafusion-physical-expr-common",
  "datafusion-physical-plan",
  "datafusion-session",
  "futures",
@@ -2236,12 +2215,12 @@ dependencies = [
  "arrow",
  "async-trait",
  "bytes",
- "datafusion-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
+ "datafusion-common",
  "datafusion-common-runtime",
  "datafusion-datasource",
- "datafusion-execution 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-expr 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-physical-expr-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
+ "datafusion-execution",
+ "datafusion-expr",
+ "datafusion-physical-expr-common",
  "datafusion-physical-plan",
  "datafusion-session",
  "futures",
@@ -2258,16 +2237,16 @@ dependencies = [
  "arrow",
  "async-trait",
  "bytes",
- "datafusion-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
+ "datafusion-common",
  "datafusion-common-runtime",
  "datafusion-datasource",
- "datafusion-execution 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-expr 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-functions 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-functions-aggregate-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-physical-expr 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
+ "datafusion-execution",
+ "datafusion-expr",
+ "datafusion-functions",
+ "datafusion-functions-aggregate-common",
+ "datafusion-physical-expr",
  "datafusion-physical-expr-adapter",
- "datafusion-physical-expr-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
+ "datafusion-physical-expr-common",
  "datafusion-physical-plan",
  "datafusion-pruning",
  "datafusion-session",
@@ -2283,33 +2262,7 @@ dependencies = [
 [[package]]
 name = "datafusion-doc"
 version = "53.0.0"
-source = "git+https://github.com/mbutrovich/datafusion.git?rev=0198302544#01983025442464d834808a036564f709af58aaff"
-
-[[package]]
-name = "datafusion-doc"
-version = "53.0.0"
 source = "git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998#9598c96998eda71a3e4e0ba2e055c418ac4575f7"
-
-[[package]]
-name = "datafusion-execution"
-version = "53.0.0"
-source = "git+https://github.com/mbutrovich/datafusion.git?rev=0198302544#01983025442464d834808a036564f709af58aaff"
-dependencies = [
- "arrow",
- "arrow-buffer",
- "async-trait",
- "dashmap",
- "datafusion-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=0198302544)",
- "datafusion-expr 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=0198302544)",
- "datafusion-physical-expr-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=0198302544)",
- "futures",
- "log",
- "object_store",
- "parking_lot",
- "rand 0.9.4",
- "tempfile",
- "url",
-]
 
 [[package]]
 name = "datafusion-execution"
@@ -2320,9 +2273,9 @@ dependencies = [
  "arrow-buffer",
  "async-trait",
  "dashmap",
- "datafusion-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-expr 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-physical-expr-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
+ "datafusion-common",
+ "datafusion-expr",
+ "datafusion-physical-expr-common",
  "futures",
  "log",
  "object_store",
@@ -2336,39 +2289,18 @@ dependencies = [
 [[package]]
 name = "datafusion-expr"
 version = "53.0.0"
-source = "git+https://github.com/mbutrovich/datafusion.git?rev=0198302544#01983025442464d834808a036564f709af58aaff"
-dependencies = [
- "arrow",
- "arrow-schema",
- "async-trait",
- "chrono",
- "datafusion-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=0198302544)",
- "datafusion-doc 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=0198302544)",
- "datafusion-expr-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=0198302544)",
- "datafusion-functions-aggregate-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=0198302544)",
- "datafusion-functions-window-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=0198302544)",
- "datafusion-physical-expr-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=0198302544)",
- "indexmap 2.14.0",
- "itertools 0.14.0",
- "serde_json",
- "sqlparser",
-]
-
-[[package]]
-name = "datafusion-expr"
-version = "53.0.0"
 source = "git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998#9598c96998eda71a3e4e0ba2e055c418ac4575f7"
 dependencies = [
  "arrow",
  "arrow-schema",
  "async-trait",
  "chrono",
- "datafusion-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-doc 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-expr-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-functions-aggregate-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-functions-window-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-physical-expr-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
+ "datafusion-common",
+ "datafusion-doc",
+ "datafusion-expr-common",
+ "datafusion-functions-aggregate-common",
+ "datafusion-functions-window-common",
+ "datafusion-physical-expr-common",
  "indexmap 2.14.0",
  "itertools 0.14.0",
  "serde_json",
@@ -2378,49 +2310,12 @@ dependencies = [
 [[package]]
 name = "datafusion-expr-common"
 version = "53.0.0"
-source = "git+https://github.com/mbutrovich/datafusion.git?rev=0198302544#01983025442464d834808a036564f709af58aaff"
-dependencies = [
- "arrow",
- "datafusion-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=0198302544)",
- "indexmap 2.14.0",
- "itertools 0.14.0",
-]
-
-[[package]]
-name = "datafusion-expr-common"
-version = "53.0.0"
 source = "git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998#9598c96998eda71a3e4e0ba2e055c418ac4575f7"
 dependencies = [
  "arrow",
- "datafusion-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
+ "datafusion-common",
  "indexmap 2.14.0",
  "itertools 0.14.0",
-]
-
-[[package]]
-name = "datafusion-functions"
-version = "53.0.0"
-source = "git+https://github.com/mbutrovich/datafusion.git?rev=0198302544#01983025442464d834808a036564f709af58aaff"
-dependencies = [
- "arrow",
- "arrow-buffer",
- "base64",
- "chrono",
- "chrono-tz",
- "datafusion-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=0198302544)",
- "datafusion-doc 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=0198302544)",
- "datafusion-execution 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=0198302544)",
- "datafusion-expr 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=0198302544)",
- "datafusion-expr-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=0198302544)",
- "datafusion-macros 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=0198302544)",
- "hex",
- "itertools 0.14.0",
- "log",
- "memchr",
- "num-traits",
- "rand 0.9.4",
- "regex",
- "uuid",
 ]
 
 [[package]]
@@ -2435,12 +2330,12 @@ dependencies = [
  "blake3",
  "chrono",
  "chrono-tz",
- "datafusion-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-doc 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-execution 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-expr 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-expr-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-macros 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
+ "datafusion-common",
+ "datafusion-doc",
+ "datafusion-execution",
+ "datafusion-expr",
+ "datafusion-expr-common",
+ "datafusion-macros",
  "hex",
  "itertools 0.14.0",
  "log",
@@ -2456,37 +2351,17 @@ dependencies = [
 [[package]]
 name = "datafusion-functions-aggregate"
 version = "53.0.0"
-source = "git+https://github.com/mbutrovich/datafusion.git?rev=0198302544#01983025442464d834808a036564f709af58aaff"
-dependencies = [
- "arrow",
- "datafusion-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=0198302544)",
- "datafusion-doc 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=0198302544)",
- "datafusion-execution 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=0198302544)",
- "datafusion-expr 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=0198302544)",
- "datafusion-functions-aggregate-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=0198302544)",
- "datafusion-macros 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=0198302544)",
- "datafusion-physical-expr 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=0198302544)",
- "datafusion-physical-expr-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=0198302544)",
- "foldhash 0.2.0",
- "half",
- "log",
- "num-traits",
-]
-
-[[package]]
-name = "datafusion-functions-aggregate"
-version = "53.0.0"
 source = "git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998#9598c96998eda71a3e4e0ba2e055c418ac4575f7"
 dependencies = [
  "arrow",
- "datafusion-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-doc 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-execution 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-expr 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-functions-aggregate-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-macros 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-physical-expr 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-physical-expr-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
+ "datafusion-common",
+ "datafusion-doc",
+ "datafusion-execution",
+ "datafusion-expr",
+ "datafusion-functions-aggregate-common",
+ "datafusion-macros",
+ "datafusion-physical-expr",
+ "datafusion-physical-expr-common",
  "foldhash 0.2.0",
  "half",
  "log",
@@ -2496,47 +2371,12 @@ dependencies = [
 [[package]]
 name = "datafusion-functions-aggregate-common"
 version = "53.0.0"
-source = "git+https://github.com/mbutrovich/datafusion.git?rev=0198302544#01983025442464d834808a036564f709af58aaff"
-dependencies = [
- "arrow",
- "datafusion-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=0198302544)",
- "datafusion-expr-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=0198302544)",
- "datafusion-physical-expr-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=0198302544)",
-]
-
-[[package]]
-name = "datafusion-functions-aggregate-common"
-version = "53.0.0"
 source = "git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998#9598c96998eda71a3e4e0ba2e055c418ac4575f7"
 dependencies = [
  "arrow",
- "datafusion-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-expr-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-physical-expr-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
-]
-
-[[package]]
-name = "datafusion-functions-nested"
-version = "53.0.0"
-source = "git+https://github.com/mbutrovich/datafusion.git?rev=0198302544#01983025442464d834808a036564f709af58aaff"
-dependencies = [
- "arrow",
- "arrow-ord",
- "datafusion-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=0198302544)",
- "datafusion-doc 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=0198302544)",
- "datafusion-execution 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=0198302544)",
- "datafusion-expr 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=0198302544)",
- "datafusion-expr-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=0198302544)",
- "datafusion-functions 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=0198302544)",
- "datafusion-functions-aggregate 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=0198302544)",
- "datafusion-functions-aggregate-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=0198302544)",
- "datafusion-macros 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=0198302544)",
- "datafusion-physical-expr-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=0198302544)",
- "hashbrown 0.17.0",
- "itertools 0.14.0",
- "itoa",
- "log",
- "memchr",
+ "datafusion-common",
+ "datafusion-expr-common",
+ "datafusion-physical-expr-common",
 ]
 
 [[package]]
@@ -2546,16 +2386,16 @@ source = "git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998#9598c9
 dependencies = [
  "arrow",
  "arrow-ord",
- "datafusion-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-doc 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-execution 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-expr 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-expr-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-functions 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-functions-aggregate 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-functions-aggregate-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-macros 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-physical-expr-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
+ "datafusion-common",
+ "datafusion-doc",
+ "datafusion-execution",
+ "datafusion-expr",
+ "datafusion-expr-common",
+ "datafusion-functions",
+ "datafusion-functions-aggregate",
+ "datafusion-functions-aggregate-common",
+ "datafusion-macros",
+ "datafusion-physical-expr-common",
  "hashbrown 0.17.0",
  "itertools 0.14.0",
  "itoa",
@@ -2571,8 +2411,8 @@ dependencies = [
  "arrow",
  "async-trait",
  "datafusion-catalog",
- "datafusion-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-expr 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
+ "datafusion-common",
+ "datafusion-expr",
  "datafusion-physical-plan",
  "parking_lot",
 ]
@@ -2583,42 +2423,23 @@ version = "53.0.0"
 source = "git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998#9598c96998eda71a3e4e0ba2e055c418ac4575f7"
 dependencies = [
  "arrow",
- "datafusion-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-doc 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-expr 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-functions-window-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-macros 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-physical-expr 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-physical-expr-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
+ "datafusion-common",
+ "datafusion-doc",
+ "datafusion-expr",
+ "datafusion-functions-window-common",
+ "datafusion-macros",
+ "datafusion-physical-expr",
+ "datafusion-physical-expr-common",
  "log",
 ]
 
 [[package]]
 name = "datafusion-functions-window-common"
 version = "53.0.0"
-source = "git+https://github.com/mbutrovich/datafusion.git?rev=0198302544#01983025442464d834808a036564f709af58aaff"
-dependencies = [
- "datafusion-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=0198302544)",
- "datafusion-physical-expr-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=0198302544)",
-]
-
-[[package]]
-name = "datafusion-functions-window-common"
-version = "53.0.0"
 source = "git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998#9598c96998eda71a3e4e0ba2e055c418ac4575f7"
 dependencies = [
- "datafusion-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-physical-expr-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
-]
-
-[[package]]
-name = "datafusion-macros"
-version = "53.0.0"
-source = "git+https://github.com/mbutrovich/datafusion.git?rev=0198302544#01983025442464d834808a036564f709af58aaff"
-dependencies = [
- "datafusion-doc 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=0198302544)",
- "quote",
- "syn 2.0.117",
+ "datafusion-common",
+ "datafusion-physical-expr-common",
 ]
 
 [[package]]
@@ -2626,7 +2447,7 @@ name = "datafusion-macros"
 version = "53.0.0"
 source = "git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998#9598c96998eda71a3e4e0ba2e055c418ac4575f7"
 dependencies = [
- "datafusion-doc 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
+ "datafusion-doc",
  "quote",
  "syn 2.0.117",
 ]
@@ -2638,10 +2459,10 @@ source = "git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998#9598c9
 dependencies = [
  "arrow",
  "chrono",
- "datafusion-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-expr 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-expr-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-physical-expr 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
+ "datafusion-common",
+ "datafusion-expr",
+ "datafusion-expr-common",
+ "datafusion-physical-expr",
  "indexmap 2.14.0",
  "itertools 0.14.0",
  "log",
@@ -2652,34 +2473,14 @@ dependencies = [
 [[package]]
 name = "datafusion-physical-expr"
 version = "53.0.0"
-source = "git+https://github.com/mbutrovich/datafusion.git?rev=0198302544#01983025442464d834808a036564f709af58aaff"
-dependencies = [
- "arrow",
- "datafusion-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=0198302544)",
- "datafusion-expr 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=0198302544)",
- "datafusion-expr-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=0198302544)",
- "datafusion-functions-aggregate-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=0198302544)",
- "datafusion-physical-expr-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=0198302544)",
- "half",
- "hashbrown 0.17.0",
- "indexmap 2.14.0",
- "itertools 0.14.0",
- "parking_lot",
- "petgraph",
- "tokio",
-]
-
-[[package]]
-name = "datafusion-physical-expr"
-version = "53.0.0"
 source = "git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998#9598c96998eda71a3e4e0ba2e055c418ac4575f7"
 dependencies = [
  "arrow",
- "datafusion-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-expr 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-expr-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-functions-aggregate-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-physical-expr-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
+ "datafusion-common",
+ "datafusion-expr",
+ "datafusion-expr-common",
+ "datafusion-functions-aggregate-common",
+ "datafusion-physical-expr-common",
  "half",
  "hashbrown 0.17.0",
  "indexmap 2.14.0",
@@ -2695,27 +2496,12 @@ version = "53.0.0"
 source = "git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998#9598c96998eda71a3e4e0ba2e055c418ac4575f7"
 dependencies = [
  "arrow",
- "datafusion-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-expr 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-functions 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-physical-expr 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-physical-expr-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
+ "datafusion-common",
+ "datafusion-expr",
+ "datafusion-functions",
+ "datafusion-physical-expr",
+ "datafusion-physical-expr-common",
  "itertools 0.14.0",
-]
-
-[[package]]
-name = "datafusion-physical-expr-common"
-version = "53.0.0"
-source = "git+https://github.com/mbutrovich/datafusion.git?rev=0198302544#01983025442464d834808a036564f709af58aaff"
-dependencies = [
- "arrow",
- "chrono",
- "datafusion-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=0198302544)",
- "datafusion-expr-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=0198302544)",
- "hashbrown 0.17.0",
- "indexmap 2.14.0",
- "itertools 0.14.0",
- "parking_lot",
 ]
 
 [[package]]
@@ -2725,8 +2511,8 @@ source = "git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998#9598c9
 dependencies = [
  "arrow",
  "chrono",
- "datafusion-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-expr-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
+ "datafusion-common",
+ "datafusion-expr-common",
  "hashbrown 0.17.0",
  "indexmap 2.14.0",
  "itertools 0.14.0",
@@ -2739,12 +2525,12 @@ version = "53.0.0"
 source = "git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998#9598c96998eda71a3e4e0ba2e055c418ac4575f7"
 dependencies = [
  "arrow",
- "datafusion-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-execution 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-expr 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-expr-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-physical-expr 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-physical-expr-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
+ "datafusion-common",
+ "datafusion-execution",
+ "datafusion-expr",
+ "datafusion-expr-common",
+ "datafusion-physical-expr",
+ "datafusion-physical-expr-common",
  "datafusion-physical-plan",
  "datafusion-pruning",
  "itertools 0.14.0",
@@ -2759,15 +2545,15 @@ dependencies = [
  "arrow-ord",
  "arrow-schema",
  "async-trait",
- "datafusion-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
+ "datafusion-common",
  "datafusion-common-runtime",
- "datafusion-execution 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-expr 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-functions 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-functions-aggregate-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-functions-window-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-physical-expr 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-physical-expr-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
+ "datafusion-execution",
+ "datafusion-expr",
+ "datafusion-functions",
+ "datafusion-functions-aggregate-common",
+ "datafusion-functions-window-common",
+ "datafusion-physical-expr",
+ "datafusion-physical-expr-common",
  "futures",
  "half",
  "hashbrown 0.17.0",
@@ -2786,11 +2572,11 @@ version = "53.0.0"
 source = "git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998#9598c96998eda71a3e4e0ba2e055c418ac4575f7"
 dependencies = [
  "arrow",
- "datafusion-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
+ "datafusion-common",
  "datafusion-datasource",
- "datafusion-expr-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-physical-expr 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-physical-expr-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
+ "datafusion-expr-common",
+ "datafusion-physical-expr",
+ "datafusion-physical-expr-common",
  "datafusion-physical-plan",
  "log",
 ]
@@ -2801,9 +2587,9 @@ version = "53.0.0"
 source = "git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998#9598c96998eda71a3e4e0ba2e055c418ac4575f7"
 dependencies = [
  "async-trait",
- "datafusion-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-execution 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-expr 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
+ "datafusion-common",
+ "datafusion-execution",
+ "datafusion-expr",
  "datafusion-physical-plan",
  "parking_lot",
 ]
@@ -2819,12 +2605,12 @@ dependencies = [
  "crc32fast",
  "datafusion",
  "datafusion-catalog",
- "datafusion-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-execution 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-expr 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-functions 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-functions-aggregate 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-functions-nested 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
+ "datafusion-common",
+ "datafusion-execution",
+ "datafusion-expr",
+ "datafusion-functions",
+ "datafusion-functions-aggregate",
+ "datafusion-functions-nested",
  "log",
  "num-traits",
  "percent-encoding",
@@ -2843,9 +2629,9 @@ dependencies = [
  "arrow",
  "bigdecimal",
  "chrono",
- "datafusion-common 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-expr 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
- "datafusion-functions-nested 53.0.0 (git+https://github.com/mbutrovich/datafusion.git?rev=9598c96998)",
+ "datafusion-common",
+ "datafusion-expr",
+ "datafusion-functions-nested",
  "indexmap 2.14.0",
  "log",
  "regex",
