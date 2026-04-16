@@ -465,8 +465,8 @@ helpful to have a roadmap for some of the major items that require coordination 
 <h2>Major Initiatives<a class="headerlink" href="#major-initiatives" title="Link to this heading">#</a></h2>
 <section id="iceberg-integration">
 <h3>Iceberg Integration<a class="headerlink" href="#iceberg-integration" title="Link to this heading">#</a></h3>
-<p>Iceberg tables reads are now fully native, powered by a scan operator backed by Iceberg-rust (<a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2528">#2528</a>). We anticipate
-major improvements expected in the next few releases, including bringing Iceberg table format V3 features (<em>e.g.</em>,
+<p>Reads of Iceberg tables with Parquet data files are fully native and enabled by default, powered by a scan operator
+backed by Iceberg-rust (<a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2528">#2528</a>). We anticipate major improvements in the next few releases, including bringing Iceberg table format V3 features (<em>e.g.</em>,
 encryption) to the reader.</p>
 </section>
 <section id="spark-4-0-support">
