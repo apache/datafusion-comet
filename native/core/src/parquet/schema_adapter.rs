@@ -216,7 +216,7 @@ impl PhysicalExprAdapter for SparkPhysicalExprAdapter {
             // Walk the expression tree to find Column references
             let mut duplicate_err: Option<DataFusionError> = None;
             let _ = Arc::<dyn PhysicalExpr>::clone(&expr).transform(|e| {
-                if let Some(col) = e.as_any().downcast_ref::<Column>() {
+                if let Some(col) = e.downcast_ref::<Column>() {
                     if let Some((req, matched)) = check_column_duplicate(col.name(), orig_physical)
                     {
                         duplicate_err = Some(DataFusionError::External(Box::new(
@@ -266,7 +266,7 @@ impl PhysicalExprAdapter for SparkPhysicalExprAdapter {
         // the actual parquet stream schema, which uses the original physical names.
         let expr = if let Some(name_map) = &self.logical_to_physical_names {
             expr.transform(|e| {
-                if let Some(col) = e.as_any().downcast_ref::<Column>() {
+                if let Some(col) = e.downcast_ref::<Column>() {
                     if let Some(physical_name) = name_map.get(col.name()) {
                         return Ok(Transformed::yes(Arc::new(Column::new(
                             physical_name,
@@ -295,7 +295,7 @@ impl SparkPhysicalExprAdapter {
         expr: Arc<dyn PhysicalExpr>,
     ) -> DataFusionResult<Arc<dyn PhysicalExpr>> {
         expr.transform(|e| {
-            if let Some(column) = e.as_any().downcast_ref::<Column>() {
+            if let Some(column) = e.downcast_ref::<Column>() {
                 let col_name = column.name();
 
                 // Resolve fields by name because this is the fallback path
@@ -376,15 +376,13 @@ impl SparkPhysicalExprAdapter {
         expr: Arc<dyn PhysicalExpr>,
     ) -> DataFusionResult<Transformed<Arc<dyn PhysicalExpr>>> {
         // Check for CastExpr and replace with spark_expr::Cast
-        if let Some(cast) = expr
-            .as_any()
-            .downcast_ref::<datafusion::physical_expr::expressions::CastExpr>()
+        if let Some(cast) = expr.downcast_ref::<datafusion::physical_expr::expressions::CastExpr>()
         {
             let child = Arc::clone(cast.expr());
             let target_type = cast.target_field().data_type();
 
             // Derive input field from the child Column expression and the physical schema
-            let input_field = if let Some(col) = child.as_any().downcast_ref::<Column>() {
+            let input_field = if let Some(col) = child.downcast_ref::<Column>() {
                 Arc::new(self.physical_file_schema.field(col.index()).clone())
             } else {
                 // Fallback: synthesize a field from the target field name and child data type
