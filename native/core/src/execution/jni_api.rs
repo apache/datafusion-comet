@@ -76,6 +76,7 @@ use jni::{
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use std::{sync::Arc, task::Poll};
 use tokio::runtime::Runtime;
@@ -235,7 +236,7 @@ fn collect_op_names<'a>(op: &'a Operator, names: &mut std::collections::BTreeSet
 }
 
 /// Comet native execution context. Kept alive across JNI calls.
-struct ExecutionContext {
+pub(crate) struct ExecutionContext {
     /// The id of the execution context.
     pub id: i64,
     /// Task attempt id
@@ -282,6 +283,12 @@ struct ExecutionContext {
     pub tracing_memory_metric_name: String,
     /// Pre-computed tracing event name for executePlan calls
     pub tracing_event_name: String,
+    /// Per-context batch stash for passing RecordBatch values between native execution
+    /// contexts via opaque u64 handles, without Arrow FFI serialization. Cleaned up
+    /// automatically when this context is dropped in releasePlan.
+    pub batch_stash: HashMap<u64, RecordBatch>,
+    /// Counter for generating unique batch stash handles within this context.
+    pub next_stash_handle: AtomicU64,
 }
 
 /// Accept serialized query plan and return the address of the native query plan.
@@ -455,6 +462,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                     "thread_{rust_thread_id}_comet_memory_reserved"
                 ),
                 tracing_event_name,
+                batch_stash: HashMap::new(),
+                next_stash_handle: AtomicU64::new(1),
             });
 
             Ok(Box::into_raw(exec_context) as i64)
@@ -617,9 +626,15 @@ fn prepare_output(
     Ok(num_rows as jlong)
 }
 
-/// Stash the output RecordBatch in the BatchStash and return the handle.
-fn stash_output(output_batch: RecordBatch) -> CometResult<jlong> {
-    let handle = crate::execution::batch_stash::stash(output_batch);
+/// Stash the output RecordBatch in this context's batch stash and return the handle.
+fn stash_output(
+    exec_context: &mut ExecutionContext,
+    output_batch: RecordBatch,
+) -> CometResult<jlong> {
+    let handle = exec_context
+        .next_stash_handle
+        .fetch_add(1, Ordering::Relaxed);
+    exec_context.batch_stash.insert(handle, output_batch);
     Ok(handle as jlong)
 }
 
@@ -631,8 +646,13 @@ enum OutputMode<'a> {
         schema_addrs: JLongArray<'a>,
         validate: bool,
     },
-    /// Stash in BatchStash and return handle.
-    Stash,
+    /// Stash in the producing ExecutionContext's batch stash and return handle.
+    /// Uses a raw pointer because exec_context is already mutably borrowed by the
+    /// caller; the pointer is valid for the duration of the JNI call (same safety
+    /// invariant as `get_execution_context`).
+    Stash {
+        exec_context_ptr: *mut ExecutionContext,
+    },
 }
 
 impl OutputMode<'_> {
@@ -650,7 +670,11 @@ impl OutputMode<'_> {
                 let schema_addrs = unsafe { JLongArray::from_raw(env, schema_addrs.as_raw()) };
                 prepare_output(env, array_addrs, schema_addrs, batch, *validate)
             }
-            OutputMode::Stash => stash_output(batch),
+            OutputMode::Stash { exec_context_ptr } => {
+                // Safety: the pointer is valid for the duration of the JNI call.
+                let ctx = unsafe { &mut **exec_context_ptr };
+                stash_output(ctx, batch)
+            }
         }
     }
 }
@@ -869,7 +893,10 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlanBatchHandl
 ) -> jlong {
     try_unwrap_or_throw(&e, |env| {
         let exec_context = get_execution_context(exec_context);
-        execute_plan_impl(env, stage_id, partition, exec_context, &OutputMode::Stash)
+        let output_mode = OutputMode::Stash {
+            exec_context_ptr: exec_context as *mut ExecutionContext,
+        };
+        execute_plan_impl(env, stage_id, partition, exec_context, &output_mode)
     })
 }
 

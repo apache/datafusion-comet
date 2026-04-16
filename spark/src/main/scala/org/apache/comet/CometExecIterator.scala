@@ -263,6 +263,12 @@ class CometExecIterator(
   }
 
   /**
+   * Return the native execution context pointer. Used by CometHandleBatchIterator so the
+   * consuming native plan can access the producer's batch stash.
+   */
+  def getNativePlan(): Long = plan
+
+  /**
    * In stash mode, advance the native plan and return the batch handle. Returns a positive
    * handle, or -1 for EOF.
    */

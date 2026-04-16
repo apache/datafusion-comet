@@ -30,6 +30,8 @@ pub struct CometHandleBatchIterator<'a> {
     pub class: JClass<'a>,
     pub method_next_handle: JMethodID,
     pub method_next_handle_ret: ReturnType,
+    pub method_get_source_native_plan: JMethodID,
+    pub method_get_source_native_plan_ret: ReturnType,
 }
 
 impl<'a> CometHandleBatchIterator<'a> {
@@ -46,6 +48,12 @@ impl<'a> CometHandleBatchIterator<'a> {
                 jni::jni_sig!("()J"),
             )?,
             method_next_handle_ret: ReturnType::Primitive(Primitive::Long),
+            method_get_source_native_plan: env.get_method_id(
+                JNIString::new(Self::JVM_CLASS),
+                jni::jni_str!("getSourceNativePlan"),
+                jni::jni_sig!("()J"),
+            )?,
+            method_get_source_native_plan_ret: ReturnType::Primitive(Primitive::Long),
         })
     }
 }

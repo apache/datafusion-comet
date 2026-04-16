@@ -269,6 +269,9 @@ impl ScanExec {
     }
 
     /// Pull next input batch from a CometHandleBatchIterator via batch stash handle.
+    ///
+    /// Retrieves the producer's execution context pointer via JNI, then takes the
+    /// batch from the producer's per-context batch stash using the handle.
     fn get_next_handle(exec_context_id: i64, iter: &JObject) -> Result<InputBatch, CometError> {
         if exec_context_id == TEST_EXEC_CONTEXT_ID {
             return Ok(InputBatch::EOF);
@@ -281,6 +284,12 @@ impl ScanExec {
         }
 
         JVMClasses::with_env(|env| {
+            // Get the producer's native execution context pointer
+            let producer_plan: i64 = unsafe {
+                jni_call!(env,
+                    comet_handle_batch_iterator(iter).get_source_native_plan() -> i64)?
+            };
+
             let handle: i64 = unsafe {
                 jni_call!(env,
                     comet_handle_batch_iterator(iter).next_handle() -> i64)?
@@ -290,10 +299,22 @@ impl ScanExec {
                 return Ok(InputBatch::EOF);
             }
 
-            match crate::execution::batch_stash::take(handle as u64) {
+            // Safety: the producer's execution context is valid while this consumer
+            // is running (Spark guarantees the producer outlives the consumer).
+            let producer_ctx = unsafe {
+                (producer_plan as *mut crate::execution::jni_api::ExecutionContext)
+                    .as_mut()
+                    .ok_or_else(|| {
+                        CometError::from(ExecutionError::GeneralError(
+                            "Null producer execution context".to_string(),
+                        ))
+                    })?
+            };
+
+            match producer_ctx.batch_stash.remove(&(handle as u64)) {
                 Some(batch) => Ok(InputBatch::Complete(batch)),
                 None => Err(CometError::from(ExecutionError::GeneralError(format!(
-                    "Batch stash handle {handle} not found"
+                    "Batch stash handle {handle} not found in producer context"
                 )))),
             }
         })

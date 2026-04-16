@@ -41,4 +41,14 @@ public class CometHandleBatchIterator {
   public long nextHandle() {
     return source.nextHandle();
   }
+
+  /**
+   * Get the native execution context pointer for the source (producer) plan. The consuming native
+   * plan uses this to access the producer's batch stash.
+   *
+   * @return the native plan handle (execution context pointer) of the producer.
+   */
+  public long getSourceNativePlan() {
+    return source.getNativePlan();
+  }
 }

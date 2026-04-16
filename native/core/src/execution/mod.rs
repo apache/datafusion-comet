@@ -16,7 +16,6 @@
 // under the License.
 
 //! PoC of vectorization execution through JNI to Rust.
-pub(crate) mod batch_stash;
 pub mod columnar_to_row;
 pub mod expressions;
 pub mod jni_api;
