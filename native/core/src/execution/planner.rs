@@ -123,7 +123,7 @@ use datafusion_comet_proto::{
 use datafusion_comet_spark_expr::{
     ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Correlation, Covariance, CreateNamedStruct,
     DecimalRescaleCheckOverflow, GetArrayStructFields, GetStructField, IfExpr, ListExtract,
-    NormalizeNaNAndZero, SparkCastOptions, Stddev, SumDecimal, ToJson, UnboundColumn, Variance,
+    NormalizeNaNAndZero, SparkCastOptions, MaxMinBy, MaxMinByKind, Stddev, SumDecimal, ToJson, UnboundColumn, Variance,
     WideDecimalBinaryExpr, WideDecimalOp,
 };
 use itertools::Itertools;
@@ -2138,6 +2138,38 @@ impl PhysicalPlanner {
                     .with_distinct(false)
                     .build()
                     .map_err(|e| e.into())
+            }
+            AggExprStruct::MaxBy(expr) => {
+                let value = self.create_expr(expr.value.as_ref().unwrap(), Arc::clone(&schema))?;
+                let ordering =
+                    self.create_expr(expr.ordering.as_ref().unwrap(), Arc::clone(&schema))?;
+                let value_datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
+                let order_datatype = ordering.data_type(schema.as_ref())?;
+
+                let func = AggregateUDF::new_from_impl(MaxMinBy::new(
+                    "max_by",
+                    value_datatype,
+                    order_datatype,
+                    MaxMinByKind::Max,
+                ));
+
+                Self::create_aggr_func_expr("max_by", schema, vec![value, ordering], func)
+            }
+            AggExprStruct::MinBy(expr) => {
+                let value = self.create_expr(expr.value.as_ref().unwrap(), Arc::clone(&schema))?;
+                let ordering =
+                    self.create_expr(expr.ordering.as_ref().unwrap(), Arc::clone(&schema))?;
+                let value_datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
+                let order_datatype = ordering.data_type(schema.as_ref())?;
+
+                let func = AggregateUDF::new_from_impl(MaxMinBy::new(
+                    "min_by",
+                    value_datatype,
+                    order_datatype,
+                    MaxMinByKind::Min,
+                ));
+
+                Self::create_aggr_func_expr("min_by", schema, vec![value, ordering], func)
             }
             AggExprStruct::Covariance(expr) => {
                 let child1 =

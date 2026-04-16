@@ -140,6 +140,8 @@ message AggExpr {
     Stddev stddev = 14;
     Correlation correlation = 15;
     BloomFilterAgg bloomFilterAgg = 16;
+    MaxBy max_by = 17;
+    MinBy min_by = 18;
   }
 
   // Optional filter expression for SQL FILTER (WHERE ...) clause.
@@ -246,6 +248,18 @@ message BloomFilterAgg {
   Expr numItems = 2;
   Expr numBits = 3;
   DataType datatype = 4;
+}
+
+message MaxBy {
+  Expr value = 1;
+  Expr ordering = 2;
+  DataType datatype = 3;
+}
+
+message MinBy {
+  Expr value = 1;
+  Expr ordering = 2;
+  DataType datatype = 3;
 }
 
 enum EvalMode {
