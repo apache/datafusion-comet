@@ -184,8 +184,8 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometScanExec] with Loggi
             // metadata) so `buildTaskListFromAddFiles` can translate keys
             // before they reach the proto.
             val physToLogical = relation.partitionSchema.fields.flatMap { f =>
-              if (f.metadata.contains("delta.columnMapping.physicalName")) {
-                Some(f.metadata.getString("delta.columnMapping.physicalName") -> f.name)
+              if (f.metadata.contains(DeltaReflection.PhysicalNameMetadataKey)) {
+                Some(f.metadata.getString(DeltaReflection.PhysicalNameMetadataKey) -> f.name)
               } else {
                 None
               }
@@ -225,7 +225,7 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometScanExec] with Loggi
             predicateBytes,
             columnNames)
         } catch {
-          case e: Throwable =>
+          case scala.util.control.NonFatal(e) =>
             logWarning(
               s"CometDeltaNativeScan: delta-kernel-rs log replay failed for $tableRoot",
               e)
@@ -246,8 +246,8 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometScanExec] with Loggi
       } else {
         val allFields = relation.dataSchema.fields ++ relation.partitionSchema.fields
         val logicalToPhysical = allFields.flatMap { f =>
-          if (f.metadata.contains("delta.columnMapping.physicalName")) {
-            Some(f.name -> f.metadata.getString("delta.columnMapping.physicalName"))
+          if (f.metadata.contains(DeltaReflection.PhysicalNameMetadataKey)) {
+            Some(f.name -> f.metadata.getString(DeltaReflection.PhysicalNameMetadataKey))
           } else {
             None
           }

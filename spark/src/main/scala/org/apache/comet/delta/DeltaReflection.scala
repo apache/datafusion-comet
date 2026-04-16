@@ -161,6 +161,9 @@ object DeltaReflection extends Logging {
     }
   }
 
+  /** StructField metadata key under which Delta stores the column-mapping physical name. */
+  val PhysicalNameMetadataKey: String = "delta.columnMapping.physicalName"
+
   /** Property key for the physical column name Delta materialises row IDs into. */
   val MaterializedRowIdColumnProp: String =
     "delta.rowTracking.materializedRowIdColumnName"
@@ -379,11 +382,11 @@ object DeltaReflection extends Logging {
         val nil = scala.collection.immutable.Nil
         try Option(m.invoke(location, nil, nil))
         catch {
-          case _: Throwable => None
+          case scala.util.control.NonFatal(_) => None
         }
       }
     } catch {
-      case _: Throwable => None
+      case scala.util.control.NonFatal(_) => None
     }
   }
 

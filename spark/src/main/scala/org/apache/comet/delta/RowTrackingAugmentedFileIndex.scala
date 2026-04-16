@@ -70,6 +70,13 @@ class RowTrackingAugmentedFileIndex(
    * Delegates listing to the underlying FileIndex, then splits each returned `PartitionDirectory`
    * into one-per-file directories, each carrying the original partition values PLUS the per-file
    * baseRowId and defaultRowCommitVersion.
+   *
+   * The per-file split is unavoidable for correctness: `AddFile.baseRowId` is unique per file, so
+   * two files that share a Delta partition cannot share a `PartitionDirectory` once we inject the
+   * per-file synthetic columns. Scheduling parallelism is unaffected -- `FileSourceScanExec`
+   * flattens all PDs' files into `PartitionedFile`s and bin-packs them by `maxSplitBytes`, so PD
+   * granularity only governs how partition values get serialised with each file, not the number
+   * of tasks.
    */
   override def listFiles(
       partitionFilters: scala.collection.Seq[Expression],
@@ -80,7 +87,11 @@ class RowTrackingAugmentedFileIndex(
         val info = infoByFileName.getOrElse(
           fileStatus.getPath.getName,
           DeltaReflection.RowTrackingFileInfo(None, None))
-        PartitionDirectory(augmentPartitionValues(pd.values, info), Seq(fileStatus))
+        // Use `pd.copy(...)` rather than `PartitionDirectory.apply(...)` so this
+        // compiles against both Spark 3.x (files: Seq[FileStatus]) and Spark 4.0
+        // (files: Seq[FileStatusWithMetadata]) without a per-version shim -- we
+        // round-trip the same element type we got from `pd.files`.
+        pd.copy(values = augmentPartitionValues(pd.values, info), files = Seq(fileStatus))
       }
     }
   }

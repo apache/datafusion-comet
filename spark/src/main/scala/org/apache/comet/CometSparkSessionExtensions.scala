@@ -84,7 +84,7 @@ class CometSparkSessionExtensions
                 "false")
             }
           } catch {
-            case _: Throwable => // delta-spark not on classpath; ignore
+            case scala.util.control.NonFatal(_) => // delta-spark not on classpath; ignore
           }
           plan
         }

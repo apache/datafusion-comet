@@ -26,7 +26,8 @@
 # target/delta-regression-logs/test-<timestamp>.log (relative to this repo).
 set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-DELTA_DIR="/private/var/folders/80/_42csh0j4gqgbny139xqwpym0000gn/T/delta-regression-3.3.2"
+DELTA_VERSION="${DELTA_VERSION:-3.3.2}"
+DELTA_DIR="${DELTA_DIR:-${DELTA_WORKDIR:-${TMPDIR:-/tmp}/delta-regression-${DELTA_VERSION}}}"
 export JAVA_HOME="${JAVA_HOME:-$HOME/jdks/jdk-17.0.18+8/Contents/Home}"
 export SPARK_LOCAL_IP=127.0.0.1
 export RUST_BACKTRACE=1

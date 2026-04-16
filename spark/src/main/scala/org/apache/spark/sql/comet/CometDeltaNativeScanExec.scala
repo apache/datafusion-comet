@@ -76,30 +76,40 @@ case class CometDeltaNativeScanExec(
     super.doPrepare()
   }
 
-  @transient private lazy val serializedPartitionData: (Array[Byte], Array[Array[Byte]]) = {
-    val commonBytes = nativeOp.getDeltaScan.getCommon.toByteArray
+  @transient private lazy val commonBytes: Array[Byte] =
+    nativeOp.getDeltaScan.getCommon.toByteArray
 
-    val taskList = OperatorOuterClass.DeltaScanTaskList.parseFrom(taskListBytes)
-    var allTasks = taskList.getTasksList.asScala.toSeq
+  @transient private lazy val allTasks: Seq[OperatorOuterClass.DeltaScanTask] =
+    OperatorOuterClass.DeltaScanTaskList.parseFrom(taskListBytes).getTasksList.asScala.toSeq
 
-    if (dppFilters.nonEmpty && partitionSchema.nonEmpty) {
-      allTasks = applyDppFilters(allTasks)
-    }
-
-    val perPartitionBytes = if (allTasks.isEmpty) {
+  /**
+   * Build per-partition bytes from the current DPP-pruned task list. DPP filters that are still
+   * `SubqueryAdaptiveBroadcastExec` placeholders at planning time materialise lazily once AQE
+   * runs the broadcast; by recomputing this at `doExecuteColumnar` (rather than memoising the
+   * result in a lazy val) we pick up the resolved values and actually skip partitions, instead of
+   * reading the full table every time AQE is in the loop.
+   */
+  private def buildPerPartitionBytes(): Array[Array[Byte]] = {
+    val tasks =
+      if (dppFilters.nonEmpty && partitionSchema.nonEmpty) applyDppFilters(allTasks)
+      else allTasks
+    if (tasks.isEmpty) {
       Array.empty[Array[Byte]]
     } else {
-      allTasks.map { task =>
-        val partScan = OperatorOuterClass.DeltaScan
+      tasks.map { task =>
+        OperatorOuterClass.DeltaScan
           .newBuilder()
           .addTasks(task)
           .build()
-        partScan.toByteArray
+          .toByteArray
       }.toArray
     }
-
-    (commonBytes, perPartitionBytes)
   }
+
+  // Planning-time snapshot used by metrics, sourceKey derivations, and `numPartitions`.
+  // Execution-time recomputation happens inside `doExecuteColumnar`.
+  @transient private lazy val planningPerPartitionBytes: Array[Array[Byte]] =
+    buildPerPartitionBytes()
 
   private def applyDppFilters(
       tasks: Seq[OperatorOuterClass.DeltaScanTask]): Seq[OperatorOuterClass.DeltaScanTask] = {
@@ -151,8 +161,8 @@ case class CometDeltaNativeScanExec(
   private def castPartitionString(str: Option[String], dt: DataType): Any =
     org.apache.comet.delta.DeltaReflection.castPartitionString(str, dt)
 
-  def commonData: Array[Byte] = serializedPartitionData._1
-  def perPartitionData: Array[Array[Byte]] = serializedPartitionData._2
+  def commonData: Array[Byte] = commonBytes
+  def perPartitionData: Array[Array[Byte]] = planningPerPartitionBytes
 
   /**
    * Unique key for matching this scan's common/per-partition data to its operator in the native
@@ -210,13 +220,17 @@ case class CometDeltaNativeScanExec(
   override def doExecuteColumnar(): RDD[ColumnarBatch] = {
     val nativeMetrics = CometMetricNode.fromCometPlan(this)
     val serializedPlan = CometExec.serializeNativePlan(nativeOp)
+    // Recompute DPP pruning at execution time so we pick up broadcast results AQE has now
+    // materialised (the lazy `planningPerPartitionBytes` was computed before AQE ran). When DPP
+    // is absent or was already resolved at planning time, the two arrays are identical.
+    val execPerPartitionBytes = buildPerPartitionBytes()
     val baseRDD = CometExecRDD(
       sparkContext,
       inputRDDs = Seq.empty,
       commonByKey = Map(sourceKey -> commonData),
-      perPartitionByKey = Map(sourceKey -> perPartitionData),
+      perPartitionByKey = Map(sourceKey -> execPerPartitionBytes),
       serializedPlan = serializedPlan,
-      numPartitions = perPartitionData.length,
+      numPartitions = execPerPartitionBytes.length,
       numOutputCols = output.length,
       nativeMetrics = nativeMetrics,
       subqueries = Seq.empty)

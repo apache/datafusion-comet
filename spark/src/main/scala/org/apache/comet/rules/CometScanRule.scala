@@ -404,8 +404,15 @@ case class CometScanRule(session: SparkSession)
     }
     val hadoopConf = Option(hadoopConfOrNull).getOrElse(
       r.sparkSession.sessionState.newHadoopConfWithOptions(r.options))
-    if (encryptionEnabled(hadoopConf) && !isEncryptionConfigSupported(hadoopConf)) {
-      withInfo(scanExec, s"Native Delta scan does not support encryption")
+    // Parquet encryption: the Delta native scan path does not currently thread
+    // `broadcastedHadoopConfForEncryption` / `encryptedFilePaths` through to
+    // `CometExecRDD` the way `CometNativeScanExec` does, so any encrypted read
+    // would fail at decrypt time. Fall back to Spark+Delta whenever encryption
+    // is enabled, regardless of whether the config is otherwise supported.
+    if (encryptionEnabled(hadoopConf)) {
+      withInfo(
+        scanExec,
+        "Native Delta scan does not yet wire Parquet encryption through to executors")
       return None
     }
     if (!isSchemaSupported(scanExec, SCAN_NATIVE_DELTA_COMPAT, r)) {
@@ -493,6 +500,16 @@ case class CometScanRule(session: SparkSession)
     if (!hasRowIdField) return None
 
     val cfg = DeltaReflection.extractMetadataConfiguration(r).getOrElse(Map.empty)
+    // If the table explicitly has row tracking disabled, there is nothing to rewrite -- the
+    // scan references `row_id` / `row_commit_version` but the table isn't producing them.
+    // Fall back rather than spending reflection effort on per-file baseRowId lookups.
+    if (cfg.get("delta.enableRowTracking").exists(_.equalsIgnoreCase("false"))) {
+      withInfo(
+        scanExec,
+        "Native Delta scan: row-tracking columns requested but table has " +
+          "delta.enableRowTracking=false; falling back.")
+      return Some(None)
+    }
     val rowIdPhysical = cfg.get(DeltaReflection.MaterializedRowIdColumnProp)
     val rowVerPhysical = cfg.get(DeltaReflection.MaterializedRowCommitVersionColumnProp)
 
@@ -558,6 +575,27 @@ case class CometScanRule(session: SparkSession)
       logical.equalsIgnoreCase(RowCommitVersionName)
     }
     val needSynth = includeRowIdSynth || includeRowVerSynth
+
+    // Guard against collisions: if the underlying table already has columns named
+    // the same as any synthetic we are about to introduce, decline native
+    // acceleration rather than silently shadow the user's data.
+    if (needSynth) {
+      import java.util.Locale
+      val existingNames =
+        (r.dataSchema.fieldNames ++ r.partitionSchema.fieldNames)
+          .map(_.toLowerCase(Locale.ROOT))
+          .toSet
+      val syntheticNames = Seq(RowIndexColName, BaseRowIdColName, DefaultRowCommitVersionColName)
+      val collisions =
+        syntheticNames.filter(n => existingNames.contains(n.toLowerCase(Locale.ROOT)))
+      if (collisions.nonEmpty) {
+        withInfo(
+          scanExec,
+          s"Native Delta scan: table has columns that collide with Comet row-tracking " +
+            s"synthetic columns (${collisions.mkString(", ")}); falling back.")
+        return Some(None)
+      }
+    }
 
     val infoByFileName: Map[String, DeltaReflection.RowTrackingFileInfo] =
       if (needSynth) DeltaReflection.extractRowTrackingInfoByFileName(r.location)
@@ -633,22 +671,18 @@ case class CometScanRule(session: SparkSession)
     val cometScan = CometScanExec(newScan, session, SCAN_NATIVE_DELTA_COMPAT)
 
     val projectExprs = origOutput.map { a =>
-      renameMap.get(a.name) match {
-        case Some(phys) if a.name.equalsIgnoreCase(RowIdName) && includeRowIdSynth =>
-          val physAttr = baseNewOutput.find(_.name == phys).get
-          // row_id = coalesce(materialized, base_row_id + row_index)
+      renameMap.get(a.name).flatMap(phys => baseNewOutput.find(_.name == phys)) match {
+        case Some(physAttr) if a.name.equalsIgnoreCase(RowIdName) && includeRowIdSynth =>
           val synth = Add(baseRowIdAttr, rowIndexAttr)
           Alias(Coalesce(Seq(physAttr, synth)), a.name)(
             exprId = a.exprId,
             qualifier = a.qualifier)
-        case Some(phys) if a.name.equalsIgnoreCase(RowCommitVersionName) && includeRowVerSynth =>
-          val physAttr = baseNewOutput.find(_.name == phys).get
-          // row_commit_version = coalesce(materialized, default_row_commit_version)
+        case Some(physAttr)
+            if a.name.equalsIgnoreCase(RowCommitVersionName) && includeRowVerSynth =>
           Alias(Coalesce(Seq(physAttr, defaultVerAttr)), a.name)(
             exprId = a.exprId,
             qualifier = a.qualifier)
-        case Some(phys) =>
-          val physAttr = baseNewOutput.find(_.name == phys).get
+        case Some(physAttr) =>
           Alias(physAttr, a.name)(exprId = a.exprId, qualifier = a.qualifier)
         case None => a
       }
