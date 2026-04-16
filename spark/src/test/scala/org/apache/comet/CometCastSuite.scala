@@ -29,9 +29,9 @@ import org.apache.spark.sql.{CometTestBase, DataFrame, Row, SaveMode}
 import org.apache.spark.sql.catalyst.expressions.Cast
 import org.apache.spark.sql.catalyst.parser.ParseException
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
-import org.apache.spark.sql.functions.col
+import org.apache.spark.sql.functions.{col, monotonically_increasing_id}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, BooleanType, ByteType, DataType, DataTypes, DecimalType, IntegerType, LongType, ShortType, StringType, StructField, StructType}
+import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DataTypes, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, ShortType, StringType, StructField, StructType, TimestampType}
 
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.rules.CometScanTypeChecker
@@ -767,102 +767,119 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
 //  This is to pass the first `all cast combinations are covered`
-  ignore("cast StringType to DecimalType(10,2)") {
+  test("cast StringType to DecimalType(10,2)") {
     val values = gen.generateStrings(dataSize, numericPattern, 12).toDF("a")
     castTest(values, DataTypes.createDecimalType(10, 2), testAnsi = false)
   }
 
-  test("cast StringType to DecimalType(10,2) (does not support fullwidth unicode digits)") {
-    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true") {
-      val values = gen.generateStrings(dataSize, numericPattern, 12).toDF("a")
-      Seq(true, false).foreach(ansiEnabled =>
-        castTest(values, DataTypes.createDecimalType(10, 2), testAnsi = ansiEnabled))
-    }
+  test("cast StringType to DecimalType(10,2) fuzz") {
+    val values = gen.generateStrings(dataSize, numericPattern, 12).toDF("a")
+    Seq(true, false).foreach(ansiEnabled =>
+      castTest(values, DataTypes.createDecimalType(10, 2), testAnsi = ansiEnabled))
   }
 
   test("cast StringType to DecimalType(2,2)") {
-    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true") {
-      val values = gen.generateStrings(dataSize, numericPattern, 12).toDF("a")
-      Seq(true, false).foreach(ansiEnabled =>
-        castTest(values, DataTypes.createDecimalType(2, 2), testAnsi = ansiEnabled))
-    }
+    val values = gen.generateStrings(dataSize, numericPattern, 12).toDF("a")
+    Seq(true, false).foreach(ansiEnabled =>
+      castTest(values, DataTypes.createDecimalType(2, 2), testAnsi = ansiEnabled))
   }
 
   test("cast StringType to DecimalType check if right exception message is thrown") {
-    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true") {
-      val values = Seq("d11307\n").toDF("a")
-      Seq(true, false).foreach(ansiEnabled =>
-        castTest(values, DataTypes.createDecimalType(2, 2), testAnsi = ansiEnabled))
-    }
+    val values = Seq("d11307\n").toDF("a")
+    Seq(true, false).foreach(ansiEnabled =>
+      castTest(values, DataTypes.createDecimalType(2, 2), testAnsi = ansiEnabled))
   }
 
   test("cast StringType to DecimalType(2,2) check if right exception is being thrown") {
-    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true") {
-      val values = gen.generateInts(10000).map("    " + _).toDF("a")
-      Seq(true, false).foreach(ansiEnabled =>
-        castTest(values, DataTypes.createDecimalType(2, 2), testAnsi = ansiEnabled))
-    }
+    val values = gen.generateInts(10000).map("    " + _).toDF("a")
+    Seq(true, false).foreach(ansiEnabled =>
+      castTest(values, DataTypes.createDecimalType(2, 2), testAnsi = ansiEnabled))
   }
 
   test("cast StringType to DecimalType(38,10) high precision - check 0 mantissa") {
-    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true") {
-      val values = Seq("0e31", "000e3375", "0e40", "0E+695", "0e5887677").toDF("a")
-      Seq(true, false).foreach(ansiEnabled =>
-        castTest(values, DataTypes.createDecimalType(38, 10), testAnsi = ansiEnabled))
-    }
+    val values = Seq("0e31", "000e3375", "0e40", "0E+695", "0e5887677").toDF("a")
+    Seq(true, false).foreach(ansiEnabled =>
+      castTest(values, DataTypes.createDecimalType(38, 10), testAnsi = ansiEnabled))
   }
 
   test("cast StringType to DecimalType(38,10) high precision") {
-    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true") {
-      val values = gen.generateStrings(dataSize, numericPattern, 38).toDF("a")
-      Seq(true, false).foreach(ansiEnabled =>
-        castTest(values, DataTypes.createDecimalType(38, 10), testAnsi = ansiEnabled))
-    }
+    val values = gen.generateStrings(dataSize, numericPattern, 38).toDF("a")
+    Seq(true, false).foreach(ansiEnabled =>
+      castTest(values, DataTypes.createDecimalType(38, 10), testAnsi = ansiEnabled))
+  }
+
+  test("cast StringType to DecimalType - null bytes and fullwidth digits") {
+    // Spark trims null bytes (\u0000) from both ends of a string before parsing,
+    // matching its whitespace-trim behavior. Null bytes in the middle produce NULL.
+    // Fullwidth digits (U+FF10-U+FF19) are treated as numeric equivalents to ASCII digits.
+    val values = Seq(
+      // null byte positions
+      "123\u0000",
+      "\u0000123",
+      "12\u00003",
+      "1\u00002\u00003",
+      "\u0000",
+      // null byte with decimal point
+      "12\u0000.45",
+      "12.\u000045",
+      // fullwidth digits (U+FF10-U+FF19)
+      "１２３.４５", // "123.45" in fullwidth
+      "１２３",
+      "-１２３.４５",
+      "+１２３.４５",
+      "１２３.４５E２",
+      // mixed fullwidth and ASCII
+      "1２3.4５",
+      null).toDF("a")
+    castTest(values, DataTypes.createDecimalType(10, 2))
   }
 
   test("cast StringType to DecimalType(10,2) basic values") {
-    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true") {
-      val values = Seq(
-        "123.45",
-        "-67.89",
-        "-67.89",
-        "-67.895",
-        "67.895",
-        "0.001",
-        "999.99",
-        "123.456",
-        "123.45D",
-        ".5",
-        "5.",
-        "+123.45",
-        "  123.45  ",
-        "inf",
-        "",
-        "abc",
-        null).toDF("a")
-      Seq(true, false).foreach(ansiEnabled =>
-        castTest(values, DataTypes.createDecimalType(10, 2), testAnsi = ansiEnabled))
-    }
+    val values = Seq(
+      "123.45",
+      "-67.89",
+      "-67.89",
+      "-67.895",
+      "67.895",
+      "0.001",
+      "999.99",
+      "123.456",
+      "123.45D",
+      ".5",
+      "5.",
+      "+123.45",
+      "  123.45  ",
+      "inf",
+      "",
+      "abc",
+      // values from https://github.com/apache/datafusion-comet/issues/325
+      "0",
+      "1",
+      "+1.0",
+      ".34",
+      "-10.0",
+      "4e7",
+      null).toDF("a")
+    Seq(true, false).foreach(ansiEnabled =>
+      castTest(values, DataTypes.createDecimalType(10, 2), testAnsi = ansiEnabled))
   }
 
   test("cast StringType to Decimal type scientific notation") {
-    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true") {
-      val values = Seq(
-        "1.23E-5",
-        "1.23e10",
-        "1.23E+10",
-        "-1.23e-5",
-        "1e5",
-        "1E-2",
-        "-1.5e3",
-        "1.23E0",
-        "0e0",
-        "1.23e",
-        "e5",
-        null).toDF("a")
-      Seq(true, false).foreach(ansiEnabled =>
-        castTest(values, DataTypes.createDecimalType(23, 8), testAnsi = ansiEnabled))
-    }
+    val values = Seq(
+      "1.23E-5",
+      "1.23e10",
+      "1.23E+10",
+      "-1.23e-5",
+      "1e5",
+      "1E-2",
+      "-1.5e3",
+      "1.23E0",
+      "0e0",
+      "1.23e",
+      "e5",
+      null).toDF("a")
+    Seq(true, false).foreach(ansiEnabled =>
+      castTest(values, DataTypes.createDecimalType(23, 8), testAnsi = ansiEnabled))
   }
 
   test("cast StringType to BinaryType") {
@@ -1310,6 +1327,19 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateDecimalsPrecision10Scale2(), DataTypes.createDecimalType(10, 4))
   }
 
+  test("cast StringType to DecimalType with negative scale (allowNegativeScaleOfDecimal)") {
+    // With allowNegativeScaleOfDecimal=true, Spark allows DECIMAL(p, s) where s < 0.
+    // The value is rounded to the nearest 10^|s| — e.g. DECIMAL(10,-4) rounds to
+    // the nearest 10000. This requires the legacy SQL parser config to be enabled.
+    withSQLConf("spark.sql.legacy.allowNegativeScaleOfDecimal" -> "true") {
+      val values =
+        Seq("12500", "15000", "99990000", "-12500", "0", "0.001", "abc", null).toDF("a")
+      // testTry=false: try_cast uses SQL string interpolation (toType.sql → "DECIMAL(10,-4)")
+      // which the SQL parser rejects regardless of allowNegativeScaleOfDecimal.
+      castTest(values, DataTypes.createDecimalType(10, -4), testTry = false)
+    }
+  }
+
   test("cast between decimals with negative precision") {
     // cast to negative scale
     checkSparkAnswerMaybeThrows(
@@ -1354,12 +1384,96 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("cast ArrayType to ArrayType") {
+    val types = Seq(
+      BooleanType,
+      StringType,
+      ByteType,
+      IntegerType,
+      LongType,
+      ShortType,
+      FloatType,
+      DoubleType,
+      DecimalType(10, 2),
+      DecimalType(38, 18),
+      DateType,
+      TimestampType,
+      BinaryType)
+    testArrayCastMatrix(types, ArrayType(_), generateArrays(100, _))
+  }
+
+  // https://github.com/apache/datafusion-comet/issues/3906
+  ignore("cast nested ArrayType to nested ArrayType") {
+    val types = Seq(
+      BooleanType,
+      StringType,
+      ByteType,
+      IntegerType,
+      LongType,
+      ShortType,
+      FloatType,
+      DoubleType,
+      DecimalType(10, 2),
+      DecimalType(38, 18),
+      DateType,
+      TimestampType,
+      BinaryType)
+    testArrayCastMatrix(
+      types,
+      dt => ArrayType(ArrayType(dt)),
+      dt => generateArrays(100, ArrayType(dt)))
+  }
+
+  private def testArrayCastMatrix(
+      elementTypes: Seq[DataType],
+      wrapType: DataType => DataType,
+      generateInput: DataType => DataFrame): Unit = {
+    for (fromType <- elementTypes) {
+      val input = generateInput(fromType)
+      for (toType <- elementTypes) {
+        val name = s"cast $fromType to $toType"
+        val fromWrappedType = wrapType(fromType)
+        val toWrappedType = wrapType(toType)
+        if (fromType != toType &&
+          testNames.contains(name) &&
+          !tags
+            .get(name)
+            .exists(s => s.contains("org.scalatest.Ignore")) &&
+          Cast.canCast(fromWrappedType, toWrappedType) &&
+          isCompatible(fromWrappedType, toWrappedType, CometEvalMode.LEGACY)) {
+          val ansiSupported =
+            isCompatible(fromWrappedType, toWrappedType, CometEvalMode.ANSI)
+          val trySupported =
+            isCompatible(fromWrappedType, toWrappedType, CometEvalMode.TRY)
+          castTest(input, toWrappedType, testAnsi = ansiSupported, testTry = trySupported)
+        }
+      }
+    }
+  }
+
+  private def isCompatible(
+      fromType: DataType,
+      toType: DataType,
+      evalMode: CometEvalMode.Value): Boolean =
+    CometCast.isSupported(fromType, toType, None, evalMode) match {
+      case Compatible(_) => true
+      case _ => false
+    }
+
   private def generateFloats(): DataFrame = {
     withNulls(gen.generateFloats(dataSize)).toDF("a")
   }
 
+  private def generateSafeFloatValues(): Seq[Float] = {
+    Seq(-123456.75f, -1.0f, 0.0f, 1.0f, 123456.75f)
+  }
+
   private def generateDoubles(): DataFrame = {
     withNulls(gen.generateDoubles(dataSize)).toDF("a")
+  }
+
+  private def generateSafeDoubleValues(): Seq[Double] = {
+    Seq(-123456.75d, -1.0d, 0.0d, 1.0d, 123456.75d)
   }
 
   private def generateBools(): DataFrame = {
@@ -1382,10 +1496,63 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     withNulls(gen.generateLongs(dataSize)).toDF("a")
   }
 
-  private def generateArrays(rowSize: Int, elementType: DataType): DataFrame = {
+  private def generateSafeLongValues(): Seq[Long] = {
+    Seq(-123456789L, -1L, 0L, 1L, 123456789L)
+  }
+
+  private def generateArrays(rowNum: Int, elementType: DataType): DataFrame = {
     import scala.collection.JavaConverters._
     val schema = StructType(Seq(StructField("a", ArrayType(elementType), true)))
-    spark.createDataFrame(gen.generateRows(rowSize, schema).asJava, schema)
+    def buildRows(values: Seq[Any]): Seq[Row] = {
+      Range(0, rowNum).map { i =>
+        Row(
+          Seq[Any](
+            values(i % values.length),
+            if (i % 3 == 0) null else values((i + 1) % values.length),
+            values((i + 2) % values.length)))
+      }
+    }
+
+    def withEdgeCaseRows(generatedRows: Seq[Row]): Seq[Row] = {
+      val sampleValue =
+        generatedRows.find(_.get(0) != null).flatMap(_.getSeq[Any](0).headOption).orNull
+      Seq(Row(Seq(sampleValue, null, sampleValue)), Row(Seq.empty[Any]), Row(null)) ++
+        generatedRows
+    }
+
+    elementType match {
+      case DateType =>
+        val stringSchema = StructType(Seq(StructField("a", ArrayType(StringType), true)))
+        spark
+          .createDataFrame(
+            withEdgeCaseRows(buildRows(generateDateLiterals())).asJava,
+            stringSchema)
+          .select(col("a").cast(ArrayType(DateType)).as("a"))
+      case TimestampType =>
+        val stringSchema = StructType(Seq(StructField("a", ArrayType(StringType), true)))
+        spark
+          .createDataFrame(
+            withEdgeCaseRows(buildRows(generateTimestampLiterals())).asJava,
+            stringSchema)
+          .select(col("a").cast(ArrayType(TimestampType)).as("a"))
+      case FloatType =>
+        spark.createDataFrame(
+          withEdgeCaseRows(buildRows(generateSafeFloatValues())).asJava,
+          schema)
+      case DoubleType =>
+        spark.createDataFrame(
+          withEdgeCaseRows(buildRows(generateSafeDoubleValues())).asJava,
+          schema)
+      case LongType =>
+        spark.createDataFrame(
+          withEdgeCaseRows(buildRows(generateSafeLongValues())).asJava,
+          schema)
+      case BinaryType =>
+        val values = generateBinary().collect().map(_.getAs[Array[Byte]]("a")).toSeq
+        spark.createDataFrame(withEdgeCaseRows(buildRows(values)).asJava, schema)
+      case _ =>
+        spark.createDataFrame(withEdgeCaseRows(gen.generateRows(rowNum, schema)).asJava, schema)
+    }
   }
 
   // https://github.com/apache/datafusion-comet/issues/2038
@@ -1450,7 +1617,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     withNulls(values).toDF("a")
   }
 
-  private def generateDates(): DataFrame = {
+  private def generateDateLiterals(): Seq[String] = {
     // add 1st, 10th, 20th of each month from epoch to 2027
     val sampledDates = (1970 to 2027).flatMap { year =>
       (1 to 12).flatMap { month =>
@@ -1507,7 +1674,11 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
     // Edge cases
     val edgeCases = Seq("1969-12-31", "2000-02-29", "999-01-01", "12345-01-01")
-    val values = (sampledDates ++ dstDates ++ edgeCases).distinct
+    (sampledDates ++ dstDates ++ edgeCases).distinct
+  }
+
+  private def generateDates(): DataFrame = {
+    val values = generateDateLiterals()
     withNulls(values).toDF("b").withColumn("a", col("b").cast(DataTypes.DateType)).drop("b")
   }
 
@@ -1519,13 +1690,15 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       values.toDF("str").select(col("str").cast(DataTypes.TimestampType).as("a")))
   }
 
+  private def generateTimestampLiterals(): Seq[String] =
+    Seq(
+      "2024-01-01T12:34:56.123456",
+      "2024-01-01T01:00:00Z",
+      "9999-12-31T01:00:00-02:00",
+      "2024-12-31T01:00:00+02:00")
+
   private def generateTimestamps(): DataFrame = {
-    val values =
-      Seq(
-        "2024-01-01T12:34:56.123456",
-        "2024-01-01T01:00:00Z",
-        "9999-12-31T01:00:00-02:00",
-        "2024-12-31T01:00:00+02:00")
+    val values = generateTimestampLiterals()
     withNulls(values)
       .toDF("str")
       .withColumn("a", col("str").cast(DataTypes.TimestampType))
@@ -1630,10 +1803,14 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
     withTempPath { dir =>
       val data = roundtripParquet(input, dir).coalesce(1)
+      val dataWithRowId = data.withColumn("__row_id", monotonically_increasing_id())
 
       withSQLConf((SQLConf.ANSI_ENABLED.key, "false")) {
         // cast() should return null for invalid inputs when ansi mode is disabled
-        val df = data.select(col("a"), col("a").cast(toType)).orderBy(col("a"))
+        val df = dataWithRowId
+          .select(col("__row_id"), col("a"), col("a").cast(toType).as("casted"))
+          .orderBy(col("__row_id"))
+          .drop("__row_id")
         if (useDataFrameDiff) {
           assertDataFrameEqualsWithExceptions(df, assertCometNative = !hasIncompatibleType)
         } else {
@@ -1645,10 +1822,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         }
 
         if (testTry) {
-          data.createOrReplaceTempView("t")
-          // try_cast() should always return null for invalid inputs
-          // not using spark DSL since it `try_cast` is only available from Spark 4x
-          val df2 = spark.sql(s"select a, try_cast(a as ${toType.sql}) from t order by a")
+          val df2 = tryCastWithRowId(dataWithRowId, toType)
           if (hasIncompatibleType) {
             checkSparkAnswer(df2)
           } else {
@@ -1668,7 +1842,10 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true") {
 
           // cast() should throw exception on invalid inputs when ansi mode is enabled
-          val df = data.withColumn("converted", col("a").cast(toType))
+          val df = dataWithRowId
+            .select(col("__row_id"), col("a"), col("a").cast(toType).as("converted"))
+            .orderBy(col("__row_id"))
+            .drop("__row_id")
           val res = if (useDataFrameDiff) {
             assertDataFrameEqualsWithExceptions(df, assertCometNative = !hasIncompatibleType)
           } else {
@@ -1713,10 +1890,8 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           }
         }
 
-        // try_cast() should always return null for invalid inputs
         if (testTry) {
-          data.createOrReplaceTempView("t")
-          val df2 = spark.sql(s"select a, try_cast(a as ${toType.sql}) from t order by a")
+          val df2 = tryCastWithRowId(dataWithRowId, toType)
           if (useDataFrameDiff) {
             assertDataFrameEqualsWithExceptions(df2, assertCometNative = !hasIncompatibleType)
           } else {
@@ -1729,6 +1904,15 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         }
       }
     }
+  }
+
+  private def tryCastWithRowId(dataWithRowId: DataFrame, toType: DataType): DataFrame = {
+    dataWithRowId.createOrReplaceTempView("t")
+    // try_cast() should always return null for invalid inputs
+    // not using spark DSL since `try_cast` is only available from Spark 4.x
+    spark
+      .sql(s"select __row_id, a, try_cast(a as ${toType.sql}) as casted from t order by __row_id")
+      .drop("__row_id")
   }
 
   private def roundtripParquet(df: DataFrame, tempDir: File): DataFrame = {

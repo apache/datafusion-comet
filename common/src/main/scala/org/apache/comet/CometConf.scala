@@ -378,8 +378,10 @@ object CometConf extends ShimCometConf {
   val COMET_REPLACE_SMJ: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.replaceSortMergeJoin")
       .category(CATEGORY_EXEC)
-      .doc("Experimental feature to force Spark to replace SortMergeJoin with ShuffledHashJoin " +
-        s"for improved performance. This feature is not stable yet. $TUNING_GUIDE.")
+      .doc(
+        "When enabled, Comet will replace sort-merge joins with hash joins, where possible. " +
+          "This can result in better performance but there is no spilling support, so this can " +
+          s"cause OOMs. $TUNING_GUIDE.")
       .booleanConf
       .createWithDefault(false)
 

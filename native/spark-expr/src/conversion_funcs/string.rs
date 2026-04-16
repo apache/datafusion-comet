@@ -438,6 +438,40 @@ fn cast_string_to_decimal256_impl(
     ))
 }
 
+/// Normalize fullwidth Unicode digits (U+FF10–U+FF19) to their ASCII equivalents.
+///
+/// Spark's UTF8String parser treats fullwidth digits as numerically equivalent to
+/// ASCII digits, e.g. "１２３.４５" parses as 123.45. Each fullwidth digit encodes
+/// to exactly three UTF-8 bytes: [0xEF, 0xBC, 0x90+n] for digit n. The ASCII
+/// equivalent is 0x30+n, so the conversion is: third_byte - 0x60.
+///
+/// All other bytes (ASCII or other multi-byte sequences) are passed through
+/// unchanged, so the output is valid UTF-8 whenever the input is.
+fn normalize_fullwidth_digits(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(s.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if i + 2 < bytes.len()
+            && bytes[i] == 0xEF
+            && bytes[i + 1] == 0xBC
+            && bytes[i + 2] >= 0x90
+            && bytes[i + 2] <= 0x99
+        {
+            // e.g. 0x91 - 0x60 = 0x31 = b'1'
+            out.push(bytes[i + 2] - 0x60);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    // SAFETY: we only replace valid 3-byte UTF-8 sequences [EF BC 9X] with a
+    // single ASCII byte; all other bytes are copied unchanged, preserving the
+    // UTF-8 invariant of the input.
+    unsafe { String::from_utf8_unchecked(out) }
+}
+
 /// Parse a decimal string into mantissa and scale
 /// e.g., "123.45" -> (12345, 2), "-0.001" -> (-1, 3) , 0e50 -> (0,50) etc
 /// Parse a string to decimal following Spark's behavior
@@ -446,15 +480,29 @@ fn parse_string_to_decimal(input_str: &str, precision: u8, scale: i8) -> SparkRe
     let mut start = 0;
     let mut end = string_bytes.len();
 
-    // trim whitespaces
-    while start < end && string_bytes[start].is_ascii_whitespace() {
+    // Trim ASCII whitespace and null bytes from both ends. Spark's UTF8String
+    // trims null bytes the same way it trims whitespace: "123\u0000" and
+    // "\u0000123" both parse as 123. Null bytes in the middle are not trimmed
+    // and will fail the digit validation in parse_decimal_str, producing NULL.
+    while start < end && (string_bytes[start].is_ascii_whitespace() || string_bytes[start] == 0) {
         start += 1;
     }
-    while end > start && string_bytes[end - 1].is_ascii_whitespace() {
+    while end > start && (string_bytes[end - 1].is_ascii_whitespace() || string_bytes[end - 1] == 0)
+    {
         end -= 1;
     }
 
     let trimmed = &input_str[start..end];
+
+    // Normalize fullwidth digits to ASCII. Fast path skips the allocation for
+    // pure-ASCII strings, which is the common case.
+    let normalized;
+    let trimmed = if trimmed.bytes().any(|b| b > 0x7F) {
+        normalized = normalize_fullwidth_digits(trimmed);
+        normalized.as_str()
+    } else {
+        trimmed
+    };
 
     if trimmed.is_empty() {
         return Ok(None);

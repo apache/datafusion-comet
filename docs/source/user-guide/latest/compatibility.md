@@ -76,11 +76,6 @@ the [Comet Supported Expressions Guide](expressions.md) for more information on 
   timezone is UTC.
   [#2649](https://github.com/apache/datafusion-comet/issues/2649)
 
-### Aggregate Expressions
-
-- **Corr**: Returns null instead of NaN in some edge cases.
-  [#2646](https://github.com/apache/datafusion-comet/issues/2646)
-
 ### Struct Expressions
 
 - **StructsToJson (to_json)**: Does not support `+Infinity` and `-Infinity` for numeric types (float, double).
@@ -135,6 +130,19 @@ Cast operations in Comet fall into three levels of support:
 - **U (Unsupported)**: Comet does not provide a native version of this cast expression and the query stage will fall back to
   Spark.
 - **N/A**: Spark does not support this cast.
+
+### String to Decimal
+
+Comet's native `CAST(string AS DECIMAL)` implementation matches Apache Spark's behavior,
+including:
+
+- Leading and trailing ASCII whitespace is trimmed before parsing.
+- Null bytes (`\u0000`) at the start or end of a string are trimmed, matching Spark's
+  `UTF8String` behavior. Null bytes embedded in the middle of a string produce `NULL`.
+- Fullwidth Unicode digits (U+FF10–U+FF19, e.g. `１２３.４５`) are treated as their ASCII
+  equivalents, so `CAST('１２３.４５' AS DECIMAL(10,2))` returns `123.45`.
+- Scientific notation (e.g. `1.23E+5`) is supported.
+- Special values (`inf`, `infinity`, `nan`) produce `NULL`.
 
 ### String to Timestamp
 
