@@ -82,11 +82,8 @@ private[comet] trait PlanDataInjector {
 private[comet] object PlanDataInjector {
 
   // Registry of injectors for different operator types
-  private val injectors: Seq[PlanDataInjector] = Seq(
-    IcebergPlanDataInjector,
-    NativeScanPlanDataInjector
-    // Future: DeltaPlanDataInjector, HudiPlanDataInjector, etc.
-  )
+  private val injectors: Seq[PlanDataInjector] =
+    Seq(IcebergPlanDataInjector, NativeScanPlanDataInjector, DeltaPlanDataInjector)
 
   /**
    * Injects planning data into an Operator tree by finding nodes that need injection and applying
@@ -230,6 +227,53 @@ private[comet] object NativeScanPlanDataInjector extends PlanDataInjector {
     scanBuilder.setFilePartition(partitionOnly.getFilePartition)
 
     op.toBuilder.setNativeScan(scanBuilder).build()
+  }
+}
+
+/**
+ * Injector for DeltaScan operators (Phase 5 split-mode serialization).
+ */
+private[comet] object DeltaPlanDataInjector extends PlanDataInjector {
+  import java.nio.ByteBuffer
+  import java.util.{LinkedHashMap, Map => JMap}
+
+  private final val maxCacheEntries = 16
+
+  private val commonCache = java.util.Collections.synchronizedMap(
+    new LinkedHashMap[ByteBuffer, OperatorOuterClass.DeltaScanCommon](4, 0.75f, true) {
+      override def removeEldestEntry(
+          eldest: JMap.Entry[ByteBuffer, OperatorOuterClass.DeltaScanCommon]): Boolean = {
+        size() > maxCacheEntries
+      }
+    })
+
+  override def canInject(op: Operator): Boolean =
+    op.hasDeltaScan &&
+      op.getDeltaScan.getTasksCount == 0 &&
+      op.getDeltaScan.hasCommon
+
+  override def getKey(op: Operator): Option[String] =
+    Some(CometDeltaNativeScanExec.computeSourceKey(op))
+
+  override def inject(
+      op: Operator,
+      commonBytes: Array[Byte],
+      partitionBytes: Array[Byte]): Operator = {
+    val cacheKey = ByteBuffer.wrap(commonBytes)
+    val common = commonCache.synchronized {
+      Option(commonCache.get(cacheKey)).getOrElse {
+        val parsed = OperatorOuterClass.DeltaScanCommon.parseFrom(commonBytes)
+        commonCache.put(cacheKey, parsed)
+        parsed
+      }
+    }
+    val tasksOnly = OperatorOuterClass.DeltaScan.parseFrom(partitionBytes)
+
+    val scanBuilder = op.getDeltaScan.toBuilder
+    scanBuilder.setCommon(common)
+    scanBuilder.addAllTasks(tasksOnly.getTasksList)
+
+    op.toBuilder.setDeltaScan(scanBuilder).build()
   }
 }
 
@@ -611,11 +655,11 @@ abstract class CometNativeExec extends CometExec {
   def foreachUntilCometInput(plan: SparkPlan)(func: SparkPlan => Unit): Unit = {
     plan match {
       case _: CometNativeScanExec | _: CometScanExec | _: CometBatchScanExec |
-          _: CometIcebergNativeScanExec | _: CometCsvNativeScanExec | _: ShuffleQueryStageExec |
-          _: AQEShuffleReadExec | _: CometShuffleExchangeExec | _: CometUnionExec |
-          _: CometTakeOrderedAndProjectExec | _: CometCoalesceExec | _: ReusedExchangeExec |
-          _: CometBroadcastExchangeExec | _: BroadcastQueryStageExec |
-          _: CometSparkToColumnarExec | _: CometLocalTableScanExec =>
+          _: CometIcebergNativeScanExec | _: CometDeltaNativeScanExec |
+          _: CometCsvNativeScanExec | _: ShuffleQueryStageExec | _: AQEShuffleReadExec |
+          _: CometShuffleExchangeExec | _: CometUnionExec | _: CometTakeOrderedAndProjectExec |
+          _: CometCoalesceExec | _: ReusedExchangeExec | _: CometBroadcastExchangeExec |
+          _: BroadcastQueryStageExec | _: CometSparkToColumnarExec | _: CometLocalTableScanExec =>
         func(plan)
       case _: CometPlan =>
         // Other Comet operators, continue to traverse the tree.
@@ -630,7 +674,13 @@ abstract class CometNativeExec extends CometExec {
    * ShuffleScan vs Scan leaf nodes. Each Scan or ShuffleScan leaf consumes one input in order.
    */
   private def findShuffleScanIndices(planBytes: Array[Byte]): Set[Int] = {
-    val plan = OperatorOuterClass.Operator.parseFrom(planBytes)
+    // Delta's data-skipping pruning expressions produce deeply nested BinaryExpr
+    // trees that blow past protobuf's default 100-level recursion cap. Bump it
+    // to a level that covers reasonable expression depths without removing the
+    // safeguard entirely.
+    val input = com.google.protobuf.CodedInputStream.newInstance(planBytes)
+    input.setRecursionLimit(1000)
+    val plan = OperatorOuterClass.Operator.parseFrom(input)
     var scanIndex = 0
     val indices = mutable.Set.empty[Int]
     def walk(op: OperatorOuterClass.Operator): Unit = {
@@ -676,6 +726,15 @@ abstract class CometNativeExec extends CometExec {
         (
           Map(nativeScan.sourceKey -> nativeScan.commonData),
           Map(nativeScan.sourceKey -> nativeScan.perPartitionData))
+
+      // Found a Delta scan with planning data. Keyed by `sourceKey` (not `tableRoot`) so
+      // two scans of the same table at different snapshot versions don't collide when
+      // `.toMap` below flattens results from multiple children.
+      case deltaScan: CometDeltaNativeScanExec
+          if deltaScan.commonData != null && deltaScan.perPartitionData != null =>
+        (
+          Map(deltaScan.sourceKey -> deltaScan.commonData),
+          Map(deltaScan.sourceKey -> deltaScan.perPartitionData))
 
       // Broadcast stages are boundaries - don't collect per-partition data from inside them.
       // After DPP filtering, broadcast scans may have different partition counts than the

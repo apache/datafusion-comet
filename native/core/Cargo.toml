@@ -75,6 +75,10 @@ hdfs-sys = {version = "0.3", optional = true, features = ["hdfs_3_3"]}
 opendal = { git = "https://github.com/apache/opendal", rev = "173feb6", optional = true, features = ["services-hdfs"] }
 iceberg = { workspace = true }
 iceberg-storage-opendal = { workspace = true }
+delta_kernel = { workspace = true }
+object_store_kernel = { workspace = true }
+roaring = { workspace = true }
+thiserror = { workspace = true }
 serde_json = "1.0"
 uuid = "1.23.0"
 

@@ -221,6 +221,19 @@ trait CometBenchmarkBase
     saveAsEncryptedParquetV1Table(testDf, dir.getCanonicalPath + "/parquetV1")
   }
 
+  protected def prepareDeltaTable(
+      dir: File,
+      df: DataFrame,
+      tableName: String = "deltaTable"): Unit = {
+    val deltaDir = new File(dir, "delta-table")
+
+    df.write
+      .format("delta")
+      .save(deltaDir.getAbsolutePath)
+
+    spark.read.format("delta").load(deltaDir.getAbsolutePath).createOrReplaceTempView(tableName)
+  }
+
   protected def prepareIcebergTable(
       dir: File,
       df: DataFrame,

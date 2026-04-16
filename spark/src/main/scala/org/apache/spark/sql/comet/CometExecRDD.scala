@@ -103,13 +103,27 @@ private[spark] class CometExecRDD(
 
     // Only inject if we have per-partition planning data
     val actualPlan = if (commonByKey.nonEmpty) {
-      val basePlan = OperatorOuterClass.Operator.parseFrom(serializedPlan)
+      val input = com.google.protobuf.CodedInputStream.newInstance(serializedPlan)
+      input.setRecursionLimit(1000)
+      val basePlan = OperatorOuterClass.Operator.parseFrom(input)
       val injected =
         PlanDataInjector.injectPlanData(basePlan, commonByKey, partition.planDataByKey)
       PlanDataInjector.serializeOperator(injected)
     } else {
       serializedPlan
     }
+
+    // Populate Spark's InputFileBlockHolder for this partition if the native plan tree
+    // contains a DeltaScan. Delta's MERGE / UPDATE / DELETE commands evaluate
+    // `input_file_name()` on rows produced by the scan to track which files were
+    // touched; without this, the thread-local is empty and Delta throws
+    // DELTA_FILE_TO_OVERWRITE_NOT_FOUND when it later looks the file up in the
+    // snapshot's AddFile map.
+    //
+    // Mirrors what Spark's FileScanRDD does for its own scans. Each of our Delta
+    // partitions reads exactly one file, so setting once at partition start is
+    // sufficient. For non-Delta native plans this is a no-op.
+    setInputFileForDeltaScan(partition, context)
 
     // Create shuffle block iterators for inputs that are CometShuffledBatchRDD
     val shuffleBlockIters = shuffleScanIndices.flatMap { idx =>
@@ -159,6 +173,38 @@ private[spark] class CometExecRDD(
   override def clearDependencies(): Unit = {
     super.clearDependencies()
     inputRDDs = null
+  }
+
+  /**
+   * If this partition's plan-data map contains a `DeltaScan` task list, populate Spark's
+   * `InputFileBlockHolder` with the file's path. No-op otherwise.
+   */
+  private def setInputFileForDeltaScan(
+      partition: CometExecPartition,
+      context: TaskContext): Unit = {
+    if (partition.planDataByKey.isEmpty) return
+    partition.planDataByKey.values.view
+      .flatMap { bytes =>
+        try {
+          val scan = OperatorOuterClass.DeltaScan.parseFrom(bytes)
+          if (scan.getTasksCount > 0) {
+            val t = scan.getTasks(0)
+            Some((t.getFilePath, t.getFileSize))
+          } else {
+            None
+          }
+        } catch {
+          case _: Throwable => None
+        }
+      }
+      .headOption
+      .foreach { case (filePath, fileSize) =>
+        org.apache.spark.rdd.InputFileBlockHolder.set(filePath, 0L, fileSize)
+        Option(context).foreach {
+          _.addTaskCompletionListener[Unit](_ =>
+            org.apache.spark.rdd.InputFileBlockHolder.unset())
+        }
+      }
   }
 }
 

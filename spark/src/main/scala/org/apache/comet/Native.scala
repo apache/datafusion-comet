@@ -180,6 +180,33 @@ class Native extends NativeBase {
       tracingEnabled: Boolean): Long
 
   /**
+   * Driver-side entry point: replay a Delta Lake transaction log via `delta-kernel-rs` and return
+   * the list of active parquet files for a given snapshot version.
+   *
+   * The native implementation serializes a `Vec<DeltaScanTask>` as a protobuf message (the
+   * `tasks` repeated field of a `DeltaScan` message, self-delimited) and returns it as a Java
+   * byte array. The caller is responsible for slotting those tasks into a per-Spark-partition
+   * `DeltaScan` proto before sending down to the executors.
+   *
+   * @param tableUrl
+   *   Absolute table URL (`file://...`, `s3://...`, `s3a://...`, `az://...`, etc.) or a bare
+   *   local filesystem path.
+   * @param snapshotVersion
+   *   Delta snapshot version to read. Pass `-1` for the latest.
+   * @param storageOptions
+   *   Cloud-storage credentials / endpoint configuration. Keys match Comet's usual
+   *   object_store_options layout.
+   * @return
+   *   Protobuf-encoded `Array[Byte]` containing a `DeltaScanTask` list.
+   */
+  @native def planDeltaScan(
+      tableUrl: String,
+      snapshotVersion: Long,
+      storageOptions: java.util.Map[String, String],
+      predicateBytes: Array[Byte],
+      columnNames: Array[String]): Array[Byte]
+
+  /**
    * Log the beginning of an event.
    * @param name
    *   The name of the event.

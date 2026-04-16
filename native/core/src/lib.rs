@@ -67,6 +67,7 @@ use errors::{try_unwrap_or_throw, CometError, CometResult};
 
 #[macro_use]
 pub mod common;
+pub mod delta;
 pub mod execution;
 pub mod parquet;
 

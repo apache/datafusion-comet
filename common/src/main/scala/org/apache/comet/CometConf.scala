@@ -116,6 +116,7 @@ object CometConf extends ShimCometConf {
 
   val SCAN_NATIVE_DATAFUSION = "native_datafusion"
   val SCAN_NATIVE_ICEBERG_COMPAT = "native_iceberg_compat"
+  val SCAN_NATIVE_DELTA_COMPAT = "native_delta_compat"
   val SCAN_AUTO = "auto"
 
   val COMET_NATIVE_SCAN_IMPL: ConfigEntry[String] = conf("spark.comet.scan.impl")
@@ -152,6 +153,38 @@ object CometConf extends ShimCometConf {
       .intConf
       .checkValue(v => v > 0, "Data file concurrency limit must be positive")
       .createWithDefault(1)
+
+  val COMET_DELTA_NATIVE_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.scan.deltaNative.enabled")
+      .category(CATEGORY_SCAN)
+      .doc(
+        "Whether to enable native Delta Lake table scan using delta-kernel-rs. When " +
+          "enabled, Delta tables are read through Comet's native Parquet reader, with " +
+          "the transaction log replayed by delta-kernel-rs on the driver. Bypasses " +
+          "Spark's DataSource V1/V2 paths for better performance.")
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_DELTA_DATA_FILE_CONCURRENCY_LIMIT: ConfigEntry[Int] =
+    conf("spark.comet.scan.deltaNative.dataFileConcurrencyLimit")
+      .category(CATEGORY_SCAN)
+      .doc(
+        "The number of Delta data files to read concurrently within a single task. " +
+          "Higher values improve throughput for tables with many small files by overlapping " +
+          "I/O latency, but increase memory usage. Values between 2 and 8 are suggested.")
+      .intConf
+      .checkValue(v => v > 0, "Data file concurrency limit must be positive")
+      .createWithDefault(1)
+
+  val COMET_DELTA_FALLBACK_ON_UNSUPPORTED_FEATURE: ConfigEntry[Boolean] =
+    conf("spark.comet.scan.deltaNative.fallbackOnUnsupportedFeature")
+      .category(CATEGORY_SCAN)
+      .doc(
+        "When true, Delta tables declaring a reader feature that Comet does not yet " +
+          "support (e.g. rowTracking, variantType) are tagged for fallback to Spark's " +
+          "regular path rather than failing the query. Turn off only for testing.")
+      .booleanConf
+      .createWithDefault(true)
 
   val COMET_CSV_V2_NATIVE_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.scan.csv.v2.enabled")

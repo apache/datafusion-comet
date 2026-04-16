@@ -34,6 +34,14 @@ Comet accelerates Iceberg scans of Parquet files. See the [Iceberg Guide] for mo
 
 [Iceberg Guide]: iceberg.md
 
+### Delta Lake
+
+Comet accelerates Delta Lake scans of Parquet files using
+[delta-kernel-rs](https://github.com/delta-io/delta-kernel-rs) for transaction log replay.
+See the [Delta Guide] for more information.
+
+[Delta Guide]: delta.md
+
 ### CSV
 
 Comet provides experimental native CSV scan support. When `spark.comet.scan.csv.v2.enabled` is enabled, CSV files

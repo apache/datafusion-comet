@@ -171,6 +171,11 @@ jobs:
               org.apache.spark.sql.comet.ParquetEncryptionITCase
               org.apache.comet.exec.CometNativeReaderSuite
               org.apache.comet.CometIcebergNativeSuite
+              org.apache.comet.CometDeltaNativeSuite
+              org.apache.comet.CometDeltaColumnMappingSuite
+              org.apache.comet.CometDeltaAdvancedSuite
+              org.apache.comet.CometDeltaRowTrackingSuite
+              org.apache.comet.CometFuzzDeltaSuite
           - name: "csv"
             value: |
               org.apache.comet.csv.CometCsvNativeReadSuite

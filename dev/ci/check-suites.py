@@ -35,6 +35,7 @@ if __name__ == "__main__":
         "org.apache.comet.parquet.ParquetReadSuite", # abstract
         "org.apache.comet.parquet.ParquetReadFromS3Suite", # manual test suite
         "org.apache.comet.IcebergReadFromS3Suite", # manual test suite
+        "org.apache.comet.DeltaReadFromS3Suite", # manual test suite
         "org.apache.spark.sql.comet.CometPlanStabilitySuite", # abstract
         "org.apache.spark.sql.comet.ParquetDatetimeRebaseSuite", # abstract
         "org.apache.comet.exec.CometColumnarShuffleSuite" # abstract

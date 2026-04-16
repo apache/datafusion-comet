@@ -218,6 +218,30 @@ under the License.
           <version>9.4.53.v20231009</version>
           <scope>test</scope>
         </dependency>
+        <!-- Delta 2.4.x targets Spark 3.4.x. Note: artifact renamed from delta-core to
+             delta-spark starting at Delta 3.0; 2.4.0 still uses delta-core. -->
+        <dependency>
+          <groupId>io.delta</groupId>
+          <artifactId>delta-core_${scala.binary.version}</artifactId>
+          <version>2.4.0</version>
+          <scope>test</scope>
+          <exclusions>
+            <exclusion>
+              <groupId>org.apache.spark</groupId>
+              <artifactId>*</artifactId>
+            </exclusion>
+            <exclusion>
+              <groupId>org.apache.hadoop</groupId>
+              <artifactId>*</artifactId>
+            </exclusion>
+          </exclusions>
+        </dependency>
+        <dependency>
+          <groupId>com.google.guava</groupId>
+          <artifactId>failureaccess</artifactId>
+          <version>1.0.2</version>
+          <scope>test</scope>
+        </dependency>
       </dependencies>
     </profile>
 
@@ -246,6 +270,34 @@ under the License.
           <version>9.4.53.v20231009</version>
           <scope>test</scope>
         </dependency>
+        <!-- Delta Lake, for writing test tables in CometDeltaNativeSuite. -->
+        <!-- Delta 3.3.x targets Spark 3.5.x. Exclusions keep Comet's pinned -->
+        <!-- Spark/Hadoop jars in charge of the actual runtime versions. -->
+        <dependency>
+          <groupId>io.delta</groupId>
+          <artifactId>delta-spark_${scala.binary.version}</artifactId>
+          <version>3.3.2</version>
+          <scope>test</scope>
+          <exclusions>
+            <exclusion>
+              <groupId>org.apache.spark</groupId>
+              <artifactId>*</artifactId>
+            </exclusion>
+            <exclusion>
+              <groupId>org.apache.hadoop</groupId>
+              <artifactId>*</artifactId>
+            </exclusion>
+          </exclusions>
+        </dependency>
+        <!-- delta-spark's Guava transitively needs `failureaccess` as a  -->
+        <!-- companion artifact. Spark pins an older Guava that doesn't    -->
+        <!-- ship it, so we have to provide it explicitly for Delta tests. -->
+        <dependency>
+          <groupId>com.google.guava</groupId>
+          <artifactId>failureaccess</artifactId>
+          <version>1.0.2</version>
+          <scope>test</scope>
+        </dependency>
       </dependencies>
     </profile>
 
@@ -269,6 +321,29 @@ under the License.
           <groupId>org.eclipse.jetty</groupId>
           <artifactId>jetty-servlet</artifactId>
           <version>11.0.24</version>
+          <scope>test</scope>
+        </dependency>
+        <!-- Delta 4.0.x targets Spark 4.0.x -->
+        <dependency>
+          <groupId>io.delta</groupId>
+          <artifactId>delta-spark_${scala.binary.version}</artifactId>
+          <version>4.0.0</version>
+          <scope>test</scope>
+          <exclusions>
+            <exclusion>
+              <groupId>org.apache.spark</groupId>
+              <artifactId>*</artifactId>
+            </exclusion>
+            <exclusion>
+              <groupId>org.apache.hadoop</groupId>
+              <artifactId>*</artifactId>
+            </exclusion>
+          </exclusions>
+        </dependency>
+        <dependency>
+          <groupId>com.google.guava</groupId>
+          <artifactId>failureaccess</artifactId>
+          <version>1.0.2</version>
           <scope>test</scope>
         </dependency>
       </dependencies>
