@@ -31,7 +31,7 @@ use datafusion::logical_expr::ColumnarValue;
 use datafusion::physical_expr::PhysicalExpr;
 use std::fmt::{Display, Formatter};
 use std::hash::Hash;
-use std::{any::Any, sync::Arc};
+use std::sync::Arc;
 
 /// The arithmetic operation to perform.
 #[derive(Debug, Hash, PartialEq, Eq, Clone, Copy)]

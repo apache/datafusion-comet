@@ -24,7 +24,7 @@ use datafusion::logical_expr::ColumnarValue;
 use datafusion::physical_expr::{expressions::CaseExpr, PhysicalExpr};
 use std::fmt::{Display, Formatter};
 use std::hash::Hash;
-use std::{any::Any, sync::Arc};
+use std::sync::Arc;
 
 /// IfExpr is a wrapper around CaseExpr, because `IF(a, b, c)` is semantically equivalent to
 /// `CASE WHEN a THEN b ELSE c END`.
@@ -83,8 +83,6 @@ impl IfExpr {
 }
 
 impl PhysicalExpr for IfExpr {
-    /// Return a reference to Any that can be used for down-casting
-
     fn fmt_sql(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         Display::fmt(self, f)
     }

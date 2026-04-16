@@ -26,7 +26,6 @@ use datafusion::logical_expr::ColumnarValue;
 use datafusion::physical_expr::PhysicalExpr;
 use std::hash::Hash;
 use std::{
-    any::Any,
     fmt::{Display, Formatter},
     sync::Arc,
 };

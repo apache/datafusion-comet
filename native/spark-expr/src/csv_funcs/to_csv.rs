@@ -23,7 +23,6 @@ use arrow::datatypes::{DataType, Schema};
 use datafusion::common::Result;
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::physical_expr::PhysicalExpr;
-use std::any::Any;
 use std::fmt::{Display, Formatter};
 use std::hash::Hash;
 use std::sync::Arc;

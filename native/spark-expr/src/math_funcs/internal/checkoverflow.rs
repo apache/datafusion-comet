@@ -28,7 +28,6 @@ use std::hash::Hash;
 
 use crate::SparkError;
 use std::{
-    any::Any,
     fmt::{Display, Formatter},
     sync::Arc,
 };

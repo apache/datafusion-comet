@@ -22,7 +22,6 @@ use datafusion::common::Result as DataFusionResult;
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::physical_expr::PhysicalExpr;
 use std::{
-    any::Any,
     fmt::{Display, Formatter},
     hash::Hash,
     sync::Arc,

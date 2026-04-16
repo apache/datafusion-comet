@@ -59,8 +59,6 @@ impl std::fmt::Display for UnboundColumn {
 }
 
 impl PhysicalExpr for UnboundColumn {
-    /// Return a reference to Any that can be used for downcasting
-
     fn fmt_sql(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         Display::fmt(self, f)
     }

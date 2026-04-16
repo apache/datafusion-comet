@@ -62,7 +62,6 @@ use datafusion::common::{internal_err, DataFusionError, Result as DataFusionResu
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ColumnarValue;
 use std::{
-    any::Any,
     fmt::{Debug, Display, Formatter},
     hash::Hash,
     sync::Arc,
