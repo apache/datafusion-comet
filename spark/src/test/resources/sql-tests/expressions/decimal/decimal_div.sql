@@ -150,6 +150,9 @@ INSERT INTO test_decimal_mixed VALUES
   (-123456.789012, 0.01),
   (NULL, NULL)
 
+-- spark_answer_only: mixed-precision division can trigger the precision-loss path in Spark's
+-- decimal arithmetic which Comet does not yet handle natively; see
+-- https://github.com/apache/datafusion-comet/issues/1526
 query spark_answer_only
 SELECT a / b FROM test_decimal_mixed
 
@@ -181,6 +184,9 @@ SELECT a5_2 / b5_2 FROM test_decimal_prec
 query
 SELECT a5_2 div b5_2 FROM test_decimal_prec
 
+-- spark_answer_only: decimal(38,4) / decimal(38,4) produces a result type that exceeds
+-- Decimal(38,x) precision, triggering a precision-loss path Comet does not yet handle natively;
+-- see https://github.com/apache/datafusion-comet/issues/1526
 query spark_answer_only
 SELECT a38_4 / b38_4 FROM test_decimal_prec
 

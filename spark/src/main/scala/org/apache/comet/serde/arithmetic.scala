@@ -180,7 +180,8 @@ object CometDivide extends CometExpressionSerde[Divide] with MathBase {
     // throws NUMERIC_VALUE_OUT_OF_RANGE; in legacy/try mode it returns null.  The Rust
     // spark_decimal_div_internal uses i128::MAX as a sentinel for overflow, so without this
     // wrapper an ANSI overflow would silently return a garbage value instead of throwing.
-    if (divideExpr.isDefined && expr.dataType.isInstanceOf[DecimalType]) {
+    if (divideExpr.isDefined && expr.dataType.isInstanceOf[DecimalType] &&
+        serializeDataType(expr.dataType).isDefined) {
       val builder = ExprOuterClass.CheckOverflow.newBuilder()
       builder.setChild(divideExpr.get)
       builder.setFailOnError(expr.evalMode == EvalMode.ANSI)
