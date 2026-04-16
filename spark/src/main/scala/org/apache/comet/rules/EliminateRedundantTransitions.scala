@@ -57,6 +57,7 @@ case class EliminateRedundantTransitions(session: SparkSession) extends Rule[Spa
 
   override def apply(plan: SparkPlan): SparkPlan = {
     val newPlan = _apply(plan)
+    checkTransitionInvariant(newPlan)
     if (showTransformations && !newPlan.fastEquals(plan)) {
       logInfo(s"""
            |=== Applying Rule $ruleName ===
@@ -64,6 +65,29 @@ case class EliminateRedundantTransitions(session: SparkSession) extends Rule[Spa
            |""".stripMargin)
     }
     newPlan
+  }
+
+  // Diagnostic only: every columnar-to-row transition must have a columnar child.
+  // Intended to surface the bad-plan shape reported after #3879 as a loud
+  // driver-side failure instead of a runtime symptom. Remove once root cause
+  // is identified.
+  private def checkTransitionInvariant(plan: SparkPlan): Unit = {
+    plan.foreach {
+      case c: ColumnarToRowExec if !c.child.supportsColumnar =>
+        val cls = c.child.getClass.getName
+        throw new IllegalStateException(
+          s"ColumnarToRowExec wraps non-columnar child ($cls):\n" + plan.treeString)
+      case c: CometColumnarToRowExec if !c.child.supportsColumnar =>
+        val cls = c.child.getClass.getName
+        throw new IllegalStateException(
+          s"CometColumnarToRowExec wraps non-columnar child ($cls):\n" + plan.treeString)
+      case c: CometNativeColumnarToRowExec if !c.child.supportsColumnar =>
+        val cls = c.child.getClass.getName
+        throw new IllegalStateException(
+          s"CometNativeColumnarToRowExec wraps non-columnar child ($cls):\n" +
+            plan.treeString)
+      case _ =>
+    }
   }
 
   private def _apply(plan: SparkPlan): SparkPlan = {
