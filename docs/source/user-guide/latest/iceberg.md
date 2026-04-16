@@ -21,8 +21,7 @@
 
 ## Native Reader
 
-Comet's fully-native Iceberg integration does not require modifying Iceberg source
-code. Instead, Comet relies on reflection to extract `FileScanTask`s from Iceberg, which are
+Comet's native Iceberg reader relies on reflection to extract `FileScanTask`s from Iceberg, which are
 then serialized to Comet's native execution engine (see
 [PR #2528](https://github.com/apache/datafusion-comet/pull/2528)).
 
