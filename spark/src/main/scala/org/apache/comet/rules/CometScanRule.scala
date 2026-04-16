@@ -432,19 +432,19 @@ case class CometScanRule(session: SparkSession)
       return None
     }
 
-    // Validate filesystem schemes from the scan's input files.
+    // Validate filesystem schemes from the scan's root paths. We used to call
+    // `location.inputFiles` here to enumerate every file, but for Delta's
+    // `TahoeLogFileIndex` that forces `Snapshot.cachedState` -- which flips
+    // `stateReconstructionTriggered = true` on the snapshot and breaks Delta
+    // tests that assert it stays false (e.g. `ChecksumSuite` "Incremental
+    // checksums: post commit snapshot should have a checksum without
+    // triggering state reconstruction"). `rootPaths` is cheap and, for Delta
+    // tables, always shares the scheme of every file under it.
     val supportedSchemes =
       Set("file", "s3", "s3a", "gs", "gcs", "abfss", "abfs", "wasbs", "wasb", "oss")
-    val inputFiles = scanExec.relation.location.inputFiles
-    if (inputFiles.nonEmpty) {
-      // Use Hadoop Path to safely handle paths containing characters that are
-      // invalid in a raw URI (e.g. unescaped '%' in Delta's test-only filename
-      // prefixes). Parsing them with `new URI(f)` directly throws
-      // URISyntaxException on such paths.
-      val schemes = inputFiles
-        .map(f => new Path(f).toUri.getScheme)
-        .filter(_ != null)
-        .toSet
+    val rootPaths = scanExec.relation.location.rootPaths
+    if (rootPaths.nonEmpty) {
+      val schemes = rootPaths.map(p => p.toUri.getScheme).filter(_ != null).toSet
       val unsupported = schemes -- supportedSchemes
       if (unsupported.nonEmpty) {
         withInfo(

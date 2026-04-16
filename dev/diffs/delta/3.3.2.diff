@@ -1,5 +1,5 @@
 diff --git a/build.sbt b/build.sbt
-index 280efcc..5302d2a 100644
+index 280efcc..ffd0785 100644
 --- a/build.sbt
 +++ b/build.sbt
 @@ -53,6 +53,8 @@ val default_scala_version = settingKey[String]("Default Scala version")
@@ -20,7 +20,7 @@ index 280efcc..5302d2a 100644
      ),
      Compile / packageBin / mappings := (Compile / packageBin / mappings).value ++
          listPythonFiles(baseDirectory.value.getParentFile / "python"),
-@@ -459,7 +463,19 @@ lazy val spark = (project in file("spark"))
+@@ -459,7 +463,25 @@ lazy val spark = (project in file("spark"))
        "-Ddelta.log.cacheSize=3",
        "-Dspark.databricks.delta.delta.log.cacheSize=3",
        "-Dspark.sql.sources.parallelPartitionDiscovery.parallelism=5",
@@ -37,7 +37,13 @@ index 280efcc..5302d2a 100644
 +      "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED",
 +      "--add-opens=java.base/sun.nio.cs=ALL-UNNAMED",
 +      "--add-opens=java.base/sun.security.action=ALL-UNNAMED",
-+      "--add-opens=java.base/sun.util.calendar=ALL-UNNAMED"
++      "--add-opens=java.base/sun.util.calendar=ALL-UNNAMED",
++      // Match stock Delta CI: run on UTC so Delta's own force-verify-all-files-in-CRC
++      // path (triggered by non-UTC user.timezone) stays disabled. Otherwise
++      // `ChecksumSuite.Incremental checksums ... without triggering state reconstruction`
++      // and any test that calls `setTimeZone("UTC")` fail on dev machines because
++      // `TimeZone.setDefault(UTC)` doesn't update `System.getProperty("user.timezone")`.
++      "-Duser.timezone=UTC"
      ),
  
      // Required for testing table features see https://github.com/delta-io/delta/issues/1602
