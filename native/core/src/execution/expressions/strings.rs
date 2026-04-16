@@ -91,7 +91,7 @@ impl ExpressionBuilder for RlikeBuilder {
         let left = planner.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
         let right = planner.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
 
-        match right.as_any().downcast_ref::<Literal>().unwrap().value() {
+        match right.downcast_ref::<Literal>().unwrap().value() {
             ScalarValue::Utf8(Some(pattern)) => Ok(Arc::new(RLike::try_new(left, pattern)?)),
             _ => Err(ExecutionError::GeneralError(
                 "RLike only supports scalar patterns".to_string(),

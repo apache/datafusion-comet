@@ -17,7 +17,7 @@
 
 use arrow::compute::{and, filter, is_not_null};
 
-use std::{any::Any, sync::Arc};
+use std::sync::Arc;
 
 use crate::agg_funcs::covariance::CovarianceAccumulator;
 use crate::agg_funcs::stddev::StddevAccumulator;
@@ -58,11 +58,6 @@ impl Correlation {
 }
 
 impl AggregateUDFImpl for Correlation {
-    /// Return a reference to Any that can be used for downcasting
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn name(&self) -> &str {
         &self.name
     }

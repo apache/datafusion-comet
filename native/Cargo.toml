@@ -38,10 +38,10 @@ arrow = { version = "58.1.0", features = ["prettyprint", "ffi", "chrono-tz"] }
 async-trait = { version = "0.1" }
 bytes = { version = "1.11.1" }
 parquet = { version = "58.1.0", default-features = false, features = ["experimental"] }
-datafusion = { version = "53.0.0", default-features = false, features = ["unicode_expressions", "crypto_expressions", "nested_expressions", "parquet"] }
-datafusion-datasource = { version = "53.0.0" }
-datafusion-physical-expr-adapter = { version = "53.0.0" }
-datafusion-spark = { version = "53.0.0", features = ["core"] }
+datafusion = { git = "https://github.com/apache/datafusion.git", rev = "93ae1b8", default-features = false, features = ["unicode_expressions", "crypto_expressions", "nested_expressions", "parquet"] }
+datafusion-datasource = { git = "https://github.com/apache/datafusion.git", rev = "93ae1b8" }
+datafusion-physical-expr-adapter = { git = "https://github.com/apache/datafusion.git", rev = "93ae1b8" }
+datafusion-spark = { git = "https://github.com/apache/datafusion.git", rev = "93ae1b8", features = ["core"] }
 datafusion-comet-spark-expr = { path = "spark-expr" }
 datafusion-comet-common = { path = "common" }
 datafusion-comet-jni-bridge = { path = "jni-bridge" }

@@ -20,7 +20,6 @@ use arrow::datatypes::{DataType, Schema};
 use datafusion::common::Result;
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::physical_expr::PhysicalExpr;
-use std::any::Any;
 use std::fmt::{Debug, Display, Formatter};
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -66,10 +65,6 @@ impl Hash for MonotonicallyIncreasingId {
 }
 
 impl PhysicalExpr for MonotonicallyIncreasingId {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn evaluate(&self, batch: &RecordBatch) -> Result<ColumnarValue> {
         let start = self
             .current_offset

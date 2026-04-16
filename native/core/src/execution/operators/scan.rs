@@ -28,6 +28,7 @@ use arrow::compute::{cast_with_options, take, CastOptions};
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use arrow::ffi::FFI_ArrowArray;
 use arrow::ffi::FFI_ArrowSchema;
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{arrow_datafusion_err, DataFusionError, Result as DataFusionResult};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::metrics::{
@@ -43,7 +44,6 @@ use itertools::Itertools;
 use jni::objects::{Global, JObject, JValue};
 use std::rc::Rc;
 use std::{
-    any::Any,
     pin::Pin,
     sync::{Arc, Mutex},
     task::{Context, Poll},
@@ -383,8 +383,11 @@ fn schema_from_data_types(data_types: &[DataType]) -> SchemaRef {
 }
 
 impl ExecutionPlan for ScanExec {
-    fn as_any(&self) -> &dyn Any {
-        self
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&dyn PhysicalExpr) -> DataFusionResult<TreeNodeRecursion>,
+    ) -> DataFusionResult<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
     }
 
     fn schema(&self) -> SchemaRef {
