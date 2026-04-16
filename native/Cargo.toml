@@ -38,10 +38,10 @@ arrow = { version = "58.1.0", features = ["prettyprint", "ffi", "chrono-tz"] }
 async-trait = { version = "0.1" }
 bytes = { version = "1.11.1" }
 parquet = { version = "58.1.0", default-features = false, features = ["experimental"] }
-datafusion = { git = "https://github.com/apache/datafusion.git", rev = "83f949e762", default-features = false, features = ["unicode_expressions", "crypto_expressions", "nested_expressions", "parquet"] }
-datafusion-datasource = { git = "https://github.com/apache/datafusion.git", rev = "83f949e762" }
-datafusion-physical-expr-adapter = { git = "https://github.com/apache/datafusion.git", rev = "83f949e762" }
-datafusion-spark = { git = "https://github.com/apache/datafusion.git", rev = "83f949e762", features = ["core"] }
+datafusion = { git = "https://github.com/apache/datafusion.git", rev = "aa64ae65ce", default-features = false, features = ["unicode_expressions", "crypto_expressions", "nested_expressions", "parquet"] }
+datafusion-datasource = { git = "https://github.com/apache/datafusion.git", rev = "aa64ae65ce" }
+datafusion-physical-expr-adapter = { git = "https://github.com/apache/datafusion.git", rev = "aa64ae65ce" }
+datafusion-spark = { git = "https://github.com/apache/datafusion.git", rev = "aa64ae65ce", features = ["core"] }
 datafusion-comet-spark-expr = { path = "spark-expr" }
 datafusion-comet-common = { path = "common" }
 datafusion-comet-jni-bridge = { path = "jni-bridge" }
