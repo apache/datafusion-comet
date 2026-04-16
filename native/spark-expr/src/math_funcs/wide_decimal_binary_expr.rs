@@ -165,10 +165,6 @@ fn max_for_precision(precision: u8) -> i256 {
 }
 
 impl PhysicalExpr for WideDecimalBinaryExpr {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn data_type(&self, _input_schema: &Schema) -> Result<DataType> {
         Ok(DataType::Decimal128(
             self.output_precision,

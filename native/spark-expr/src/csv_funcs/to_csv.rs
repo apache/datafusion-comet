@@ -77,10 +77,6 @@ impl Display for ToCsv {
 }
 
 impl PhysicalExpr for ToCsv {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn data_type(&self, _: &Schema) -> Result<DataType> {
         Ok(DataType::Utf8)
     }

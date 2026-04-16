@@ -131,10 +131,6 @@ impl Hash for RandnExpr {
 }
 
 impl PhysicalExpr for RandnExpr {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn data_type(&self, _input_schema: &Schema) -> datafusion::common::Result<DataType> {
         Ok(DataType::Float64)
     }

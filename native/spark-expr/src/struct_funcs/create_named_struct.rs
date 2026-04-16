@@ -53,10 +53,6 @@ impl CreateNamedStruct {
 }
 
 impl PhysicalExpr for CreateNamedStruct {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn fmt_sql(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         Display::fmt(self, f)
     }

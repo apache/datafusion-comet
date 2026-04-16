@@ -120,10 +120,6 @@ impl Hash for RandExpr {
 }
 
 impl PhysicalExpr for RandExpr {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn data_type(&self, _input_schema: &Schema) -> Result<DataType> {
         Ok(DataType::Float64)
     }

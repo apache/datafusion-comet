@@ -41,7 +41,7 @@ pub struct BloomFilterAgg {
 
 #[inline]
 fn extract_i32_from_literal(expr: Arc<dyn PhysicalExpr>) -> i32 {
-    match expr.as_any().downcast_ref::<Literal>().unwrap().value() {
+    match (*expr).downcast_ref::<Literal>().unwrap().value() {
         ScalarValue::Int64(scalar_value) => scalar_value.unwrap() as i32,
         _ => {
             unreachable!()

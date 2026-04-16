@@ -66,10 +66,6 @@ impl Hash for MonotonicallyIncreasingId {
 }
 
 impl PhysicalExpr for MonotonicallyIncreasingId {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn evaluate(&self, batch: &RecordBatch) -> Result<ColumnarValue> {
         let start = self
             .current_offset

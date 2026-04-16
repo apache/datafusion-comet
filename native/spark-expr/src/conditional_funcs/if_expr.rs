@@ -84,9 +84,6 @@ impl IfExpr {
 
 impl PhysicalExpr for IfExpr {
     /// Return a reference to Any that can be used for down-casting
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 
     fn fmt_sql(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         Display::fmt(self, f)

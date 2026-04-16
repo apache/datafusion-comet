@@ -102,10 +102,6 @@ impl Display for RLike {
 }
 
 impl PhysicalExpr for RLike {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn data_type(&self, _input_schema: &Schema) -> Result<DataType> {
         Ok(DataType::Boolean)
     }
