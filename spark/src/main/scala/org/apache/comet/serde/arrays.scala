@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import scala.annotation.tailrec
 
-import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayFilter, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayRemove, ArrayRepeat, ArraysOverlap, ArrayUnion, Attribute, CreateArray, ElementAt, Expression, Flatten, GetArrayItem, IsNotNull, Literal, Reverse, Size}
+import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayFilter, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayRemove, ArrayRepeat, ArraysOverlap, ArrayUnion, Attribute, CreateArray, ElementAt, Expression, Flatten, GetArrayItem, IsNotNull, Literal, Reverse, Size, SortArray}
 import org.apache.spark.sql.catalyst.util.GenericArrayData
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
@@ -175,6 +175,34 @@ object CometArrayMin extends CometExpressionSerde[ArrayMin] {
 
     val arrayMinScalarExpr = scalarFunctionExprToProto("array_min", arrayExprProto)
     optExprWithInfo(arrayMinScalarExpr, expr)
+  }
+}
+
+object CometSortArray extends CometExpressionSerde[SortArray] {
+
+  override def convert(
+      expr: SortArray,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val ascending = expr.ascendingOrder match {
+      case Literal(v: Boolean, BooleanType) => v
+      case _ =>
+        withInfo(expr, "ascending order must be a boolean literal")
+        return None
+    }
+
+    val arrayExprProto = exprToProto(expr.base, inputs, binding)
+    val (desc, nullsFirst) = if (ascending) {
+      ("ASC", "NULLS FIRST")
+    } else {
+      ("DESC", "NULLS LAST")
+    }
+    val descExprProto = exprToProtoInternal(Literal(desc), inputs, binding)
+    val nullsFirstExprProto = exprToProtoInternal(Literal(nullsFirst), inputs, binding)
+
+    val sortArrayScalarExpr =
+      scalarFunctionExprToProto("array_sort", arrayExprProto, descExprProto, nullsFirstExprProto)
+    optExprWithInfo(sortArrayScalarExpr, expr, expr.children: _*)
   }
 }
 
