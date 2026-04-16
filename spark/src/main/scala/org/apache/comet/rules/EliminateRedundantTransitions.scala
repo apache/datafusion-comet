@@ -54,10 +54,14 @@ import org.apache.comet.CometConf
 case class EliminateRedundantTransitions(session: SparkSession) extends Rule[SparkPlan] {
 
   private lazy val showTransformations = CometConf.COMET_EXPLAIN_TRANSFORMATIONS.get()
+  private lazy val assertValidPlanTransitions =
+    CometConf.COMET_ASSERT_VALID_PLAN_TRANSITIONS.get()
 
   override def apply(plan: SparkPlan): SparkPlan = {
     val newPlan = _apply(plan)
-    checkTransitionInvariant(newPlan)
+    if (assertValidPlanTransitions) {
+      checkTransitionInvariant(newPlan)
+    }
     if (showTransformations && !newPlan.fastEquals(plan)) {
       logInfo(s"""
            |=== Applying Rule $ruleName ===
@@ -67,10 +71,9 @@ case class EliminateRedundantTransitions(session: SparkSession) extends Rule[Spa
     newPlan
   }
 
-  // Diagnostic only: every columnar-to-row transition must have a columnar child.
-  // Intended to surface the bad-plan shape reported after #3879 as a loud
-  // driver-side failure instead of a runtime symptom. Remove once root cause
-  // is identified.
+  // Gated by spark.comet.assertValidPlanTransitions.enabled.
+  // Every columnar-to-row transition must have a columnar child; violations
+  // indicate a bad plan produced by an earlier rule.
   private def checkTransitionInvariant(plan: SparkPlan): Unit = {
     plan.foreach {
       case c: ColumnarToRowExec if !c.child.supportsColumnar =>

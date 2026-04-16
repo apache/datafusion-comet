@@ -618,6 +618,16 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_ASSERT_VALID_PLAN_TRANSITIONS: ConfigEntry[Boolean] =
+    conf("spark.comet.assertValidPlanTransitions.enabled")
+      .category(CATEGORY_EXEC_EXPLAIN)
+      .doc(
+        "When enabled, Comet asserts that every columnar-to-row transition in the " +
+          "post-rule plan has a columnar child. Intended for debugging intermittent " +
+          "bad-plan shapes; off by default.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_LOG_FALLBACK_REASONS: ConfigEntry[Boolean] =
     conf("spark.comet.logFallbackReasons.enabled")
       .category(CATEGORY_EXEC_EXPLAIN)
