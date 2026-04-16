@@ -177,12 +177,26 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometScanExec] with Loggi
       if (DeltaReflection.isBatchFileIndex(relation.location)) {
         DeltaReflection.extractBatchAddFiles(relation.location) match {
           case Some(addFiles) if addFiles.forall(!_.hasDeletionVector) =>
+            // Under column mapping, Delta stores partition values in AddFile
+            // keyed by the physical column name. Build the physical->logical
+            // map from the relation's partition schema (Delta stashes
+            // `delta.columnMapping.physicalName` in each StructField's
+            // metadata) so `buildTaskListFromAddFiles` can translate keys
+            // before they reach the proto.
+            val physToLogical = relation.partitionSchema.fields.flatMap { f =>
+              if (f.metadata.contains("delta.columnMapping.physicalName")) {
+                Some(f.metadata.getString("delta.columnMapping.physicalName") -> f.name)
+              } else {
+                None
+              }
+            }.toMap
             buildTaskListFromAddFiles(
               tableRoot,
               snapshotVersion,
               addFiles,
               nativeOp = null,
-              columnNames).toByteArray
+              columnNames,
+              physicalToLogicalPartitionNames = physToLogical).toByteArray
           case Some(_) =>
             // Phase 1 of the pre-materialized-index path: fall back when any
             // AddFile carries a DeletionVectorDescriptor. Phase 2 can apply the
@@ -218,7 +232,41 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometScanExec] with Loggi
             return None
         }
       }
-    val taskList = DeltaScanTaskList.parseFrom(taskListBytes)
+    val taskList0 = DeltaScanTaskList.parseFrom(taskListBytes)
+    // The kernel path populates `column_mappings` from kernel's schema metadata.
+    // The pre-materialised-index path (`buildTaskListFromAddFiles`) doesn't have
+    // that information yet, so re-derive the mapping from the relation's data
+    // + partition schema -- each StructField carries
+    // `delta.columnMapping.physicalName` in its metadata when the table uses
+    // column mapping. Without this the native scan can't translate logical
+    // column references to physical parquet column names and returns nulls.
+    val taskList =
+      if (!taskList0.getColumnMappingsList.isEmpty) {
+        taskList0
+      } else {
+        val allFields = relation.dataSchema.fields ++ relation.partitionSchema.fields
+        val logicalToPhysical = allFields.flatMap { f =>
+          if (f.metadata.contains("delta.columnMapping.physicalName")) {
+            Some(f.name -> f.metadata.getString("delta.columnMapping.physicalName"))
+          } else {
+            None
+          }
+        }
+        if (logicalToPhysical.isEmpty) {
+          taskList0
+        } else {
+          val b = DeltaScanTaskList.newBuilder(taskList0)
+          logicalToPhysical.foreach { case (logical, physical) =>
+            b.addColumnMappings(
+              OperatorOuterClass.DeltaColumnMapping
+                .newBuilder()
+                .setLogicalName(logical)
+                .setPhysicalName(physical)
+                .build())
+          }
+          b.build()
+        }
+      }
 
     // Phase 6 reader-feature gate. Kernel reports any Delta reader features that
     // are currently in use in this snapshot and that Comet's native path does NOT
@@ -445,7 +493,9 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometScanExec] with Loggi
       snapshotVersion: Long,
       addFiles: Seq[DeltaReflection.ExtractedAddFile],
       nativeOp: AnyRef,
-      columnNames: Array[String]): OperatorOuterClass.DeltaScanTaskList = {
+      columnNames: Array[String],
+      physicalToLogicalPartitionNames: Map[String, String] = Map.empty)
+      : OperatorOuterClass.DeltaScanTaskList = {
     val tlBuilder = OperatorOuterClass.DeltaScanTaskList.newBuilder()
     tlBuilder.setTableRoot(tableRoot)
     if (snapshotVersion >= 0) tlBuilder.setSnapshotVersion(snapshotVersion)
@@ -462,7 +512,15 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometScanExec] with Loggi
       taskBuilder.setFileSize(af.size)
       DeltaReflection.parseNumRecords(af.statsJson).foreach(taskBuilder.setRecordCount)
       af.partitionValues.foreach { case (k, v) =>
-        val pvBuilder = OperatorOuterClass.DeltaPartitionValue.newBuilder().setName(k)
+        // Under column mapping, Delta stores partition values keyed by the
+        // PHYSICAL column name (e.g. `col-<uuid>-part`). Our partition_schema
+        // on the wire uses LOGICAL names, and `build_delta_partitioned_files`
+        // native-side matches by name. Translate when we have a physical
+        // ->logical map (the kernel-path jni.rs already performs the same
+        // translation for its own extraction).
+        val logicalName = physicalToLogicalPartitionNames.getOrElse(k, k)
+        val pvBuilder =
+          OperatorOuterClass.DeltaPartitionValue.newBuilder().setName(logicalName)
         if (v != null) pvBuilder.setValue(v)
         taskBuilder.addPartitionValues(pvBuilder.build())
       }
