@@ -225,8 +225,7 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_TESTING)
       .doc(
         "When enabled, data from Spark (non-native) Parquet v1 and v2 scans will be converted to " +
-          "Arrow format.  This is an experimental feature and has known issues with " +
-          "non-UTC timezones.")
+          "Arrow format.")
       .booleanConf
       .createWithDefault(false)
 
@@ -235,8 +234,7 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_TESTING)
       .doc(
         "When enabled, data from Spark (non-native) JSON v1 and v2 scans will be converted to " +
-          "Arrow format. This is an experimental feature and has known issues with " +
-          "non-UTC timezones.")
+          "Arrow format.")
       .booleanConf
       .createWithDefault(false)
 
@@ -245,8 +243,7 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_TESTING)
       .doc(
         "When enabled, data from Spark (non-native) CSV v1 and v2 scans will be converted to " +
-          "Arrow format. This is an experimental feature and has known issues with " +
-          "non-UTC timezones.")
+          "Arrow format.")
       .booleanConf
       .createWithDefault(false)
 
@@ -381,8 +378,10 @@ object CometConf extends ShimCometConf {
   val COMET_REPLACE_SMJ: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.replaceSortMergeJoin")
       .category(CATEGORY_EXEC)
-      .doc("Experimental feature to force Spark to replace SortMergeJoin with ShuffledHashJoin " +
-        s"for improved performance. This feature is not stable yet. $TUNING_GUIDE.")
+      .doc(
+        "When enabled, Comet will replace sort-merge joins with hash joins, where possible. " +
+          "This can result in better performance but there is no spilling support, so this can " +
+          s"cause OOMs. $TUNING_GUIDE.")
       .booleanConf
       .createWithDefault(false)
 
@@ -747,7 +746,7 @@ object CometConf extends ShimCometConf {
       .doc("Whether to enable Spark to Arrow columnar conversion. When this is turned on, " +
         "Comet will convert operators in " +
         "`spark.comet.sparkToColumnar.supportedOperatorList` into Arrow columnar format before " +
-        "processing. This is an experimental feature and has known issues with non-UTC timezones.")
+        "processing.")
       .booleanConf
       .createWithDefault(false)
 
