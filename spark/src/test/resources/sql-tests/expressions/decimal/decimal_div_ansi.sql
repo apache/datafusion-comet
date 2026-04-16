@@ -16,7 +16,8 @@
 -- under the License.
 
 -- Decimal division (/) and integral division (div) in ANSI mode.
--- Divide-by-zero and overflow must throw; try_divide still returns NULL.
+-- Divide-by-zero throws for both operators; try_divide still returns NULL.
+-- Overflow throws NUMERIC_VALUE_OUT_OF_RANGE for both / and div.
 -- See decimal_div.sql for legacy-mode and try_divide tests.
 
 -- Config: spark.sql.ansi.enabled=true
@@ -112,20 +113,18 @@ query expect_error(NUMERIC_VALUE_OUT_OF_RANGE)
 SELECT a div b FROM test_ansi_overflow
 
 -- ============================================================================
--- ANSI mode: decimal / overflow produces null (Divide uses nullable output
--- type for overflow; only ANSI integral-divide uses CheckOverflow that throws)
+-- ANSI mode: decimal / (regular divide) overflow throws NUMERIC_VALUE_OUT_OF_RANGE
+-- The result type of decimal(38,0) / decimal(2,2) is decimal(38,0) which cannot
+-- hold values as large as 10^38 / 0.01 = 10^40.
 -- ============================================================================
 
 statement
-CREATE TABLE test_ansi_div_overflow(a decimal(38,0)) USING parquet
+CREATE TABLE test_ansi_div_overflow(a decimal(38,0), b decimal(2,2)) USING parquet
 
 statement
 INSERT INTO test_ansi_div_overflow VALUES
-  (99999999999999999999999999999999999999)
+  ( 99999999999999999999999999999999999999,  0.01),
+  (-99999999999999999999999999999999999999,  0.01)
 
--- Dividing max decimal(38,0) by 0.01 overflows the output type.
--- In ANSI mode Divide still returns null for overflow (not an error),
--- matching Spark's behaviour where Divide.failOnError governs only
--- divide-by-zero, not precision overflow.
-query
-SELECT a / cast(0.01 as decimal(10,2)) FROM test_ansi_div_overflow
+query expect_error(NUMERIC_VALUE_OUT_OF_RANGE)
+SELECT a / b FROM test_ansi_div_overflow
