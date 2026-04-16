@@ -18,9 +18,9 @@
 use crate::{
     errors::CometError,
     execution::{
-        operators::ExecutionError, planner::TEST_EXEC_CONTEXT_ID, shuffle::ipc::read_ipc_compressed,
+        operators::ExecutionError, planner::TEST_EXEC_CONTEXT_ID, shuffle::ShuffleStreamReader,
     },
-    jvm_bridge::{jni_call, JVMClasses},
+    jvm_bridge::JVMClasses,
 };
 use arrow::array::ArrayRef;
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
@@ -35,7 +35,7 @@ use datafusion::{
     physical_plan::{ExecutionPlan, *},
 };
 use futures::Stream;
-use jni::objects::{Global, JByteBuffer, JObject};
+use jni::objects::{Global, JObject};
 use std::{
     any::Any,
     pin::Pin,
@@ -45,14 +45,13 @@ use std::{
 
 use super::scan::InputBatch;
 
-/// ShuffleScanExec reads compressed shuffle blocks from JVM via JNI and decodes them natively.
-/// Unlike ScanExec which receives Arrow arrays via FFI, ShuffleScanExec receives raw compressed
-/// bytes from CometShuffleBlockIterator and decodes them using read_ipc_compressed().
-#[derive(Debug, Clone)]
+/// ShuffleScanExec reads Arrow IPC streams from JVM via JNI and decodes them natively.
+/// Unlike ScanExec which receives Arrow arrays via FFI, ShuffleScanExec receives a raw
+/// InputStream from JVM and reads Arrow IPC streams using ShuffleStreamReader.
 pub struct ShuffleScanExec {
     /// The ID of the execution context that owns this subquery.
     pub exec_context_id: i64,
-    /// The input source: a global reference to a JVM CometShuffleBlockIterator object.
+    /// The input source: a global reference to a JVM InputStream object.
     pub input_source: Option<Arc<Global<JObject<'static>>>>,
     /// The data types of columns in the shuffle output.
     pub data_types: Vec<DataType>,
@@ -60,14 +59,46 @@ pub struct ShuffleScanExec {
     pub schema: SchemaRef,
     /// The current input batch, populated by get_next_batch() before poll_next().
     pub batch: Arc<Mutex<Option<InputBatch>>>,
+    /// Cached ShuffleStreamReader, created lazily on first get_next call.
+    stream_reader: Option<ShuffleStreamReader>,
     /// Cache of plan properties.
     cache: Arc<PlanProperties>,
     /// Metrics collector.
     metrics: ExecutionPlanMetricsSet,
     /// Baseline metrics.
     baseline_metrics: BaselineMetrics,
-    /// Time spent decoding compressed shuffle blocks.
+    /// Time spent decoding shuffle batches.
     decode_time: Time,
+}
+
+impl std::fmt::Debug for ShuffleScanExec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ShuffleScanExec")
+            .field("exec_context_id", &self.exec_context_id)
+            .field("data_types", &self.data_types)
+            .field("schema", &self.schema)
+            .field("stream_reader", &self.stream_reader.is_some())
+            .finish()
+    }
+}
+
+impl Clone for ShuffleScanExec {
+    fn clone(&self) -> Self {
+        Self {
+            exec_context_id: self.exec_context_id,
+            input_source: self.input_source.clone(),
+            data_types: self.data_types.clone(),
+            schema: Arc::clone(&self.schema),
+            batch: Arc::clone(&self.batch),
+            // stream_reader is not cloneable; cloned instances start without one
+            // and will lazily create their own if needed.
+            stream_reader: None,
+            cache: Arc::clone(&self.cache),
+            metrics: self.metrics.clone(),
+            baseline_metrics: self.baseline_metrics.clone(),
+            decode_time: self.decode_time.clone(),
+        }
+    }
 }
 
 impl ShuffleScanExec {
@@ -94,6 +125,7 @@ impl ShuffleScanExec {
             input_source,
             data_types,
             batch: Arc::new(Mutex::new(None)),
+            stream_reader: None,
             cache,
             metrics: metrics_set,
             baseline_metrics,
@@ -114,90 +146,87 @@ impl ShuffleScanExec {
             // Unit test mode - no JNI calls needed.
             return Ok(());
         }
-        let mut timer = self.baseline_metrics.elapsed_compute().timer();
 
-        let mut current_batch = self.batch.try_lock().unwrap();
-        if current_batch.is_none() {
-            let next_batch = Self::get_next(
-                self.exec_context_id,
-                self.input_source.as_ref().unwrap().as_obj(),
-                &self.data_types,
-                &self.decode_time,
-            )?;
+        // Check if a batch is already pending without holding the lock during get_next
+        let needs_batch = {
+            let current_batch = self.batch.try_lock().unwrap();
+            current_batch.is_none()
+        };
+
+        if needs_batch {
+            let start = std::time::Instant::now();
+            let next_batch = self.get_next()?;
+            self.baseline_metrics
+                .elapsed_compute()
+                .add_duration(start.elapsed());
+            let mut current_batch = self.batch.try_lock().unwrap();
             *current_batch = Some(next_batch);
         }
-
-        timer.stop();
 
         Ok(())
     }
 
-    /// Invokes JNI calls to get the next compressed shuffle block and decode it.
-    fn get_next(
-        exec_context_id: i64,
-        iter: &JObject,
-        data_types: &[DataType],
-        decode_time: &Time,
-    ) -> Result<InputBatch, CometError> {
-        if exec_context_id == TEST_EXEC_CONTEXT_ID {
+    /// Reads the next batch from the ShuffleStreamReader, creating it lazily on first call.
+    fn get_next(&mut self) -> Result<InputBatch, CometError> {
+        if self.exec_context_id == TEST_EXEC_CONTEXT_ID {
             return Ok(InputBatch::EOF);
         }
 
-        if iter.is_null() {
-            return Err(CometError::from(ExecutionError::GeneralError(format!(
-                "Null shuffle block iterator object. Plan id: {exec_context_id}"
-            ))));
+        // Lazily create the ShuffleStreamReader on first call
+        if self.stream_reader.is_none() {
+            let input_source = self.input_source.as_ref().ok_or_else(|| {
+                CometError::from(ExecutionError::GeneralError(format!(
+                    "Null shuffle input source. Plan id: {}",
+                    self.exec_context_id
+                )))
+            })?;
+            let input_source = Arc::clone(input_source);
+            let reader = JVMClasses::with_env(|env| {
+                ShuffleStreamReader::new(env, input_source.as_obj()).map_err(|e| {
+                    CometError::from(ExecutionError::GeneralError(format!(
+                        "Failed to create ShuffleStreamReader: {e}"
+                    )))
+                })
+            })?;
+            self.stream_reader = Some(reader);
         }
 
-        JVMClasses::with_env(|env| {
-            // has_next() reads the next block and returns its length, or -1 if EOF
-            let block_length: i32 = unsafe {
-                jni_call!(env,
-                    comet_shuffle_block_iterator(iter).has_next() -> i32)?
-            };
+        let reader = self.stream_reader.as_mut().unwrap();
 
-            if block_length == -1 {
-                return Ok(InputBatch::EOF);
+        let mut decode_timer = self.decode_time.timer();
+        let batch_opt = reader.next_batch().map_err(|e| {
+            CometError::from(ExecutionError::GeneralError(format!(
+                "Failed to read shuffle batch: {e}"
+            )))
+        })?;
+        decode_timer.stop();
+
+        match batch_opt {
+            None => Ok(InputBatch::EOF),
+            Some(batch) => {
+                let num_rows = batch.num_rows();
+
+                // Extract column arrays, unpacking any dictionary-encoded columns.
+                // Native shuffle may dictionary-encode string/binary columns for efficiency,
+                // but downstream DataFusion operators expect the value types declared in the
+                // schema (e.g. Utf8, not Dictionary<Int32, Utf8>).
+                let columns: Vec<ArrayRef> = batch
+                    .columns()
+                    .iter()
+                    .map(|col| unpack_dictionary(col))
+                    .collect();
+
+                debug_assert_eq!(
+                    columns.len(),
+                    self.data_types.len(),
+                    "Shuffle block column count mismatch: got {} but expected {}",
+                    columns.len(),
+                    self.data_types.len()
+                );
+
+                Ok(InputBatch::new(columns, Some(num_rows)))
             }
-
-            // Get the DirectByteBuffer containing the compressed shuffle block
-            let buffer: JObject = unsafe {
-                jni_call!(env,
-                    comet_shuffle_block_iterator(iter).get_buffer() -> JObject)?
-            };
-
-            let byte_buffer = unsafe { JByteBuffer::from_raw(env, buffer.into_raw()) };
-            let raw_pointer = env.get_direct_buffer_address(&byte_buffer)?;
-            let length = block_length as usize;
-            let slice: &[u8] = unsafe { std::slice::from_raw_parts(raw_pointer, length) };
-
-            // Decode the compressed IPC data
-            let mut timer = decode_time.timer();
-            let batch = read_ipc_compressed(slice)?;
-            timer.stop();
-
-            let num_rows = batch.num_rows();
-
-            // Extract column arrays, unpacking any dictionary-encoded columns.
-            // Native shuffle may dictionary-encode string/binary columns for efficiency,
-            // but downstream DataFusion operators expect the value types declared in the
-            // schema (e.g. Utf8, not Dictionary<Int32, Utf8>).
-            let columns: Vec<ArrayRef> = batch
-                .columns()
-                .iter()
-                .map(|col| unpack_dictionary(col))
-                .collect();
-
-            debug_assert_eq!(
-                columns.len(),
-                data_types.len(),
-                "Shuffle block column count mismatch: got {} but expected {}",
-                columns.len(),
-                data_types.len()
-            );
-
-            Ok(InputBatch::new(columns, Some(num_rows)))
-        })
+        }
     }
 }
 
@@ -351,15 +380,14 @@ impl RecordBatchStream for ShuffleScanStream {
 
 #[cfg(test)]
 mod tests {
-    use crate::execution::shuffle::{CompressionCodec, ShuffleBlockWriter};
+    use crate::execution::shuffle::CompressionCodec;
     use arrow::array::{Int32Array, StringArray};
     use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::ipc::reader::StreamReader;
+    use arrow::ipc::writer::StreamWriter;
     use arrow::record_batch::RecordBatch;
-    use datafusion::physical_plan::metrics::Time;
     use std::io::Cursor;
     use std::sync::Arc;
-
-    use crate::execution::shuffle::ipc::read_ipc_compressed;
 
     #[test]
     #[cfg_attr(miri, ignore)] // Miri cannot call FFI functions (zstd)
@@ -377,18 +405,18 @@ mod tests {
         )
         .unwrap();
 
-        // Write as compressed IPC
-        let writer =
-            ShuffleBlockWriter::try_new(&batch.schema(), CompressionCodec::Zstd(1)).unwrap();
-        let mut buf = Cursor::new(Vec::new());
-        let ipc_time = Time::new();
-        writer.write_batch(&batch, &mut buf, &ipc_time).unwrap();
+        // Write as Arrow IPC stream with compression
+        let write_options = CompressionCodec::Zstd(1).ipc_write_options().unwrap();
+        let mut buf = Vec::new();
+        let mut writer =
+            StreamWriter::try_new_with_options(&mut buf, &batch.schema(), write_options).unwrap();
+        writer.write(&batch).unwrap();
+        writer.finish().unwrap();
 
-        // Read back (skip 16-byte header: 8 compressed_length + 8 field_count)
-        let bytes = buf.into_inner();
-        let body = &bytes[16..];
-
-        let decoded = read_ipc_compressed(body).unwrap();
+        // Read back using standard StreamReader
+        let cursor = Cursor::new(&buf);
+        let mut reader = StreamReader::try_new(cursor, None).unwrap();
+        let decoded = reader.next().unwrap().unwrap();
         assert_eq!(decoded.num_rows(), 3);
         assert_eq!(decoded.num_columns(), 2);
 
@@ -404,9 +432,6 @@ mod tests {
     }
 
     /// Tests that ShuffleScanExec correctly unpacks dictionary-encoded columns.
-    /// Native shuffle may dictionary-encode string/binary columns, but the schema
-    /// declares value types (e.g. Utf8). Without unpacking, RecordBatch creation
-    /// fails with a schema mismatch.
     #[test]
     #[cfg_attr(miri, ignore)]
     fn test_dictionary_encoded_shuffle_block_is_unpacked() {
@@ -416,15 +441,12 @@ mod tests {
         use datafusion::physical_plan::ExecutionPlan;
         use futures::StreamExt;
 
-        // Build a batch with a dictionary-encoded string column (simulating what
-        // the native shuffle writer produces for string columns).
         let mut dict_builder = StringDictionaryBuilder::<Int32Type>::new();
         dict_builder.append_value("hello");
         dict_builder.append_value("world");
-        dict_builder.append_value("hello"); // repeated value, good for dictionary
+        dict_builder.append_value("hello");
         let dict_array = dict_builder.finish();
 
-        // The IPC schema includes the dictionary type
         let dict_schema = Arc::new(Schema::new(vec![
             Field::new("id", DataType::Int32, false),
             Field::new(
@@ -442,19 +464,19 @@ mod tests {
         )
         .unwrap();
 
-        // Write as compressed IPC (preserves dictionary encoding)
-        let writer =
-            ShuffleBlockWriter::try_new(&dict_batch.schema(), CompressionCodec::Zstd(1)).unwrap();
-        let mut buf = Cursor::new(Vec::new());
-        let ipc_time = Time::new();
-        writer
-            .write_batch(&dict_batch, &mut buf, &ipc_time)
-            .unwrap();
-        let bytes = buf.into_inner();
-        let body = &bytes[16..];
+        // Write as Arrow IPC stream with compression
+        let write_options = CompressionCodec::Zstd(1).ipc_write_options().unwrap();
+        let mut buf = Vec::new();
+        let mut writer =
+            StreamWriter::try_new_with_options(&mut buf, &dict_batch.schema(), write_options)
+                .unwrap();
+        writer.write(&dict_batch).unwrap();
+        writer.finish().unwrap();
 
-        // Confirm that read_ipc_compressed returns dictionary-encoded arrays
-        let decoded = read_ipc_compressed(body).unwrap();
+        // Read back using standard StreamReader
+        let cursor = Cursor::new(&buf);
+        let mut reader = StreamReader::try_new(cursor, None).unwrap();
+        let decoded = reader.next().unwrap().unwrap();
         assert!(
             matches!(decoded.column(1).data_type(), DataType::Dictionary(_, _)),
             "Expected dictionary-encoded column from IPC, got {:?}",

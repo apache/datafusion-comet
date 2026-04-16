@@ -17,9 +17,9 @@
 
 use crate::metrics::ShufflePartitionerMetrics;
 use crate::partitioners::ShufflePartitioner;
-use crate::ShuffleBlockWriter;
 use arrow::array::RecordBatch;
 use arrow::datatypes::SchemaRef;
+use arrow::ipc::writer::{IpcWriteOptions, StreamWriter};
 use datafusion::common::DataFusionError;
 use std::fs::OpenOptions;
 use std::io::{BufWriter, Seek, Write};
@@ -33,7 +33,7 @@ pub(crate) struct EmptySchemaShufflePartitioner {
     output_data_file: String,
     output_index_file: String,
     schema: SchemaRef,
-    shuffle_block_writer: ShuffleBlockWriter,
+    write_options: IpcWriteOptions,
     num_output_partitions: usize,
     total_rows: usize,
     metrics: ShufflePartitionerMetrics,
@@ -52,12 +52,12 @@ impl EmptySchemaShufflePartitioner {
             schema.fields().is_empty(),
             "EmptySchemaShufflePartitioner requires a zero-column schema"
         );
-        let shuffle_block_writer = ShuffleBlockWriter::try_new(schema.as_ref(), codec)?;
+        let write_options = codec.ipc_write_options()?;
         Ok(Self {
             output_data_file,
             output_index_file,
             schema,
-            shuffle_block_writer,
+            write_options,
             num_output_partitions,
             total_rows: 0,
             metrics,
@@ -100,11 +100,15 @@ impl ShufflePartitioner for EmptySchemaShufflePartitioner {
                 vec![],
                 &arrow::array::RecordBatchOptions::new().with_row_count(Some(self.total_rows)),
             )?;
-            self.shuffle_block_writer.write_batch(
-                &batch,
+            let mut encode_timer = self.metrics.encode_time.timer();
+            let mut writer = StreamWriter::try_new_with_options(
                 &mut output_data,
-                &self.metrics.encode_time,
+                &self.schema,
+                self.write_options.clone(),
             )?;
+            writer.write(&batch)?;
+            writer.finish()?;
+            encode_timer.stop();
         }
 
         let mut write_timer = self.metrics.write_time.timer();

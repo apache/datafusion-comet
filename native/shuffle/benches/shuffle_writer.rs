@@ -18,22 +18,19 @@
 use arrow::array::builder::{Date32Builder, Decimal128Builder, Int32Builder};
 use arrow::array::{builder::StringBuilder, Array, Int32Array, RecordBatch};
 use arrow::datatypes::{DataType, Field, Schema};
+use arrow::ipc::writer::StreamWriter;
 use arrow::row::{RowConverter, SortField};
 use criterion::{criterion_group, criterion_main, Criterion};
 use datafusion::datasource::memory::MemorySourceConfig;
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::physical_expr::expressions::{col, Column};
 use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
-use datafusion::physical_plan::metrics::Time;
 use datafusion::{
     physical_plan::{common::collect, ExecutionPlan},
     prelude::SessionContext,
 };
-use datafusion_comet_shuffle::{
-    CometPartitioning, CompressionCodec, ShuffleBlockWriter, ShuffleWriterExec,
-};
+use datafusion_comet_shuffle::{CometPartitioning, CompressionCodec, ShuffleWriterExec};
 use itertools::Itertools;
-use std::io::Cursor;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
 
@@ -43,20 +40,22 @@ fn criterion_benchmark(c: &mut Criterion) {
     for compression_codec in &[
         CompressionCodec::None,
         CompressionCodec::Lz4Frame,
-        CompressionCodec::Snappy,
         CompressionCodec::Zstd(1),
         CompressionCodec::Zstd(6),
     ] {
         let name = format!("shuffle_writer: write encoded (compression={compression_codec:?})");
         group.bench_function(name, |b| {
-            let mut buffer = vec![];
-            let ipc_time = Time::default();
-            let w =
-                ShuffleBlockWriter::try_new(&batch.schema(), compression_codec.clone()).unwrap();
+            let write_options = compression_codec.ipc_write_options().unwrap();
             b.iter(|| {
-                buffer.clear();
-                let mut cursor = Cursor::new(&mut buffer);
-                w.write_batch(&batch, &mut cursor, &ipc_time).unwrap();
+                let mut buffer = Vec::new();
+                let mut writer = StreamWriter::try_new_with_options(
+                    &mut buffer,
+                    &batch.schema(),
+                    write_options.clone(),
+                )
+                .unwrap();
+                writer.write(&batch).unwrap();
+                writer.finish().unwrap();
             });
         });
     }
@@ -64,7 +63,6 @@ fn criterion_benchmark(c: &mut Criterion) {
     for compression_codec in [
         CompressionCodec::None,
         CompressionCodec::Lz4Frame,
-        CompressionCodec::Snappy,
         CompressionCodec::Zstd(1),
         CompressionCodec::Zstd(6),
     ] {

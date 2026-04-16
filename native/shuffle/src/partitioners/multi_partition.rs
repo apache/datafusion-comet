@@ -21,9 +21,10 @@ use crate::partitioners::partitioned_batch_iterator::{
 };
 use crate::partitioners::ShufflePartitioner;
 use crate::writers::{BufBatchWriter, PartitionWriter};
-use crate::{comet_partitioning, CometPartitioning, CompressionCodec, ShuffleBlockWriter};
+use crate::{comet_partitioning, CometPartitioning, CompressionCodec};
 use arrow::array::{ArrayRef, RecordBatch};
 use arrow::datatypes::SchemaRef;
+use arrow::ipc::writer::IpcWriteOptions;
 use datafusion::common::utils::proxy::VecAllocExt;
 use datafusion::common::DataFusionError;
 use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
@@ -111,7 +112,10 @@ pub(crate) struct MultiPartitionShuffleRepartitioner {
     buffered_batches: Vec<RecordBatch>,
     partition_indices: Vec<Vec<(u32, u32)>>,
     partition_writers: Vec<PartitionWriter>,
-    shuffle_block_writer: ShuffleBlockWriter,
+    /// Schema of the input data
+    schema: SchemaRef,
+    /// IPC write options (includes compression settings)
+    write_options: IpcWriteOptions,
     /// Partitioning scheme to use
     partitioning: CometPartitioning,
     runtime: Arc<RuntimeEnv>,
@@ -123,7 +127,6 @@ pub(crate) struct MultiPartitionShuffleRepartitioner {
     /// Reservation for repartitioning
     reservation: MemoryReservation,
     tracing_enabled: bool,
-    /// Size of the write buffer in bytes
     write_buffer_size: usize,
 }
 
@@ -165,10 +168,10 @@ impl MultiPartitionShuffleRepartitioner {
             partition_starts: vec![0; num_output_partitions + 1],
         };
 
-        let shuffle_block_writer = ShuffleBlockWriter::try_new(schema.as_ref(), codec.clone())?;
+        let write_options = codec.ipc_write_options()?;
 
         let partition_writers = (0..num_output_partitions)
-            .map(|_| PartitionWriter::try_new(shuffle_block_writer.clone()))
+            .map(|_| PartitionWriter::try_new(Arc::clone(&schema), write_options.clone()))
             .collect::<datafusion::common::Result<Vec<_>>>()?;
 
         let reservation = MemoryConsumer::new(format!("ShuffleRepartitioner[{partition}]"))
@@ -181,7 +184,8 @@ impl MultiPartitionShuffleRepartitioner {
             buffered_batches: vec![],
             partition_indices: vec![vec![]; num_output_partitions],
             partition_writers,
-            shuffle_block_writer,
+            schema: Arc::clone(&schema),
+            write_options,
             partitioning,
             runtime,
             metrics,
@@ -436,24 +440,31 @@ impl MultiPartitionShuffleRepartitioner {
 
     fn shuffle_write_partition(
         partition_iter: &mut PartitionedBatchIterator,
-        shuffle_block_writer: &mut ShuffleBlockWriter,
+        schema: &SchemaRef,
+        write_options: &IpcWriteOptions,
         output_data: &mut BufWriter<File>,
         encode_time: &Time,
-        write_time: &Time,
-        write_buffer_size: usize,
         batch_size: usize,
     ) -> datafusion::common::Result<()> {
-        let mut buf_batch_writer = BufBatchWriter::new(
-            shuffle_block_writer,
+        // Only create the IPC stream writer when there's data to write.
+        // Empty partitions must have zero bytes so that Spark's MapOutputTracker
+        // reports zero-size blocks, which affects coalesce partition grouping.
+        let first_batch = match partition_iter.next() {
+            Some(batch) => batch?,
+            None => return Ok(()),
+        };
+        let mut buf_batch_writer = BufBatchWriter::try_new(
             output_data,
-            write_buffer_size,
+            Arc::clone(schema),
+            write_options.clone(),
             batch_size,
-        );
+        )?;
+        buf_batch_writer.write(&first_batch, encode_time)?;
         for batch in partition_iter {
             let batch = batch?;
-            buf_batch_writer.write(&batch, encode_time, write_time)?;
+            buf_batch_writer.write(&batch, encode_time)?;
         }
-        buf_batch_writer.flush(encode_time, write_time)?;
+        buf_batch_writer.flush(encode_time)?;
         Ok(())
     }
 
@@ -507,13 +518,7 @@ impl MultiPartitionShuffleRepartitioner {
             for partition_id in 0..num_output_partitions {
                 let partition_writer = &mut self.partition_writers[partition_id];
                 let mut iter = partitioned_batches.produce(partition_id);
-                spilled_bytes += partition_writer.spill(
-                    &mut iter,
-                    &self.runtime,
-                    &self.metrics,
-                    self.write_buffer_size,
-                    self.batch_size,
-                )?;
+                spilled_bytes += partition_writer.spill(&mut iter, &self.runtime, &self.metrics)?;
             }
 
             self.reservation.free();
@@ -573,7 +578,7 @@ impl ShufflePartitioner for MultiPartitionShuffleRepartitioner {
                 .open(data_file)
                 .map_err(|e| DataFusionError::Execution(format!("shuffle write error: {e:?}")))?;
 
-            let mut output_data = BufWriter::new(output_data);
+            let mut output_data = BufWriter::with_capacity(self.write_buffer_size, output_data);
 
             #[allow(clippy::needless_range_loop)]
             for i in 0..num_output_partitions {
@@ -594,11 +599,10 @@ impl ShufflePartitioner for MultiPartitionShuffleRepartitioner {
                 let mut partition_iter = partitioned_batches.produce(i);
                 Self::shuffle_write_partition(
                     &mut partition_iter,
-                    &mut self.shuffle_block_writer,
+                    &self.schema,
+                    &self.write_options,
                     &mut output_data,
                     &self.metrics.encode_time,
-                    &self.metrics.write_time,
-                    self.write_buffer_size,
                     self.batch_size,
                 )?;
             }
