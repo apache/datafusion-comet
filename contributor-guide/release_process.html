@@ -716,8 +716,12 @@ Creating<span class="w"> </span>Nexus<span class="w"> </span>staging<span class=
 </div>
 <p>In the Nexus repository UI (https://repository.apache.org/) locate and verify the artifacts in
 staging (https://central.sonatype.org/publish/release/#locate-and-examine-your-staging-repository).</p>
-<p>If the artifacts appear to be correct, then close and release the repository so it is made visible (this should
-actually happen automatically when running the script).</p>
+<p>The script closes the staging repository but does not release it. Releasing to Maven Central is a manual step
+performed only after the vote passes (see <a class="reference internal" href="#publishing-maven-artifacts">Publishing Maven Artifacts</a> below).</p>
+<p>Note that the Maven artifacts are always published under the final release version (e.g. <code class="docutils literal notranslate"><span class="pre">0.13.0</span></code>), not the RC
+version — the <code class="docutils literal notranslate"><span class="pre">-rc1</span></code> / <code class="docutils literal notranslate"><span class="pre">-rc2</span></code> suffix only appears in the git tag and the source tarball in SVN. Because the script
+creates a new staging repository on each run, re-staging the same version for a subsequent RC is supported as long
+as no staging repository for that version has been released to Maven Central.</p>
 </section>
 </section>
 </section>
@@ -757,6 +761,12 @@ Voters can also use the <code class="docutils literal notranslate"><span class="
 <p>If the vote does not pass, address the issues raised, increment the release candidate number, and repeat from
 the <a class="reference internal" href="#tag-the-release-candidate">Tag the Release Candidate</a> step. For example, the next attempt would be tagged
 <code class="docutils literal notranslate"><span class="pre">0.13.0-rc2</span></code>.</p>
+<p>Before staging the next RC, drop the previous RC’s staging repository in the
+<a class="reference external" href="https://repository.apache.org/#stagingRepositories">Nexus UI</a> by selecting it and clicking “Drop”. This avoids
+leaving multiple closed staging repositories for the same version and prevents accidentally releasing the wrong
+one when the vote eventually passes. The Maven version (e.g. <code class="docutils literal notranslate"><span class="pre">0.13.0</span></code>) is shared across all RCs, so each run of
+<code class="docutils literal notranslate"><span class="pre">publish-to-maven.sh</span></code> creates a new staging repository for the same GAV — only one of them should ever be
+released to Maven Central.</p>
 </section>
 </section>
 <section id="publishing-binary-releases">
