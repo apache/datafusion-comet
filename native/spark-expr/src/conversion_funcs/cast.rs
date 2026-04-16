@@ -41,9 +41,9 @@ use crate::{cast_whole_num_to_binary, BinaryOutputStyle};
 use crate::{EvalMode, SparkError};
 use arrow::array::builder::StringBuilder;
 use arrow::array::{
-    BinaryBuilder, DictionaryArray, GenericByteArray, ListArray, MapArray, StringArray, StructArray,
+    new_null_array, BinaryBuilder, DictionaryArray, GenericByteArray, ListArray, MapArray,
+    StringArray, StructArray,
 };
-use arrow::compute::can_cast_types;
 use arrow::datatypes::{ArrowDictionaryKeyType, ArrowNativeType, DataType, Schema};
 use arrow::datatypes::{Field, Fields, GenericBinaryType};
 use arrow::error::ArrowError;
@@ -131,6 +131,9 @@ pub struct SparkCastOptions {
     pub timezone: String,
     /// Allow casts that are supported but not guaranteed to be 100% compatible
     pub allow_incompat: bool,
+    /// True when running against Spark 4.0+. Enables version-specific cast behaviour
+    /// such as the handling of leading whitespace before T-prefixed time-only strings.
+    pub is_spark4_plus: bool,
     /// Support casting unsigned ints to signed ints (used by Parquet SchemaAdapter)
     pub allow_cast_unsigned_ints: bool,
     /// We also use the cast logic for adapting Parquet schemas, so this flag is used
@@ -148,6 +151,7 @@ impl SparkCastOptions {
             eval_mode,
             timezone: timezone.to_string(),
             allow_incompat,
+            is_spark4_plus: false,
             allow_cast_unsigned_ints: false,
             is_adapting_schema: false,
             null_string: "null".to_string(),
@@ -160,10 +164,23 @@ impl SparkCastOptions {
             eval_mode,
             timezone: "".to_string(),
             allow_incompat,
+            is_spark4_plus: false,
             allow_cast_unsigned_ints: false,
             is_adapting_schema: false,
             null_string: "null".to_string(),
             binary_output_style: None,
+        }
+    }
+
+    pub fn new_with_version(
+        eval_mode: EvalMode,
+        timezone: &str,
+        allow_incompat: bool,
+        is_spark4_plus: bool,
+    ) -> Self {
+        Self {
+            is_spark4_plus,
+            ..Self::new(eval_mode, timezone, allow_incompat)
         }
     }
 }
@@ -294,11 +311,18 @@ pub(crate) fn cast_array(
     };
 
     let cast_result = match (&from_type, to_type) {
+        // Null arrays carry no concrete values, so Arrow's native cast can change only the
+        // logical type while preserving length and nullness.
+        (Null, _) => Ok(cast_with_options(&array, to_type, &native_cast_options)?),
         (Utf8, Boolean) => spark_cast_utf8_to_boolean::<i32>(&array, eval_mode),
         (LargeUtf8, Boolean) => spark_cast_utf8_to_boolean::<i64>(&array, eval_mode),
-        (Utf8, Timestamp(_, _)) => {
-            cast_string_to_timestamp(&array, to_type, eval_mode, &cast_options.timezone)
-        }
+        (Utf8, Timestamp(_, _)) => cast_string_to_timestamp(
+            &array,
+            to_type,
+            eval_mode,
+            &cast_options.timezone,
+            cast_options.is_spark4_plus,
+        ),
         (Utf8, Date32) => cast_string_to_date(&array, to_type, eval_mode),
         (Date32, Int32) => {
             // Date32 is stored as days since epoch (i32), so this is a simple reinterpret cast
@@ -366,8 +390,25 @@ pub(crate) fn cast_array(
             cast_options,
         )?),
         (List(_), Utf8) => Ok(cast_array_to_string(array.as_list(), cast_options)?),
-        (List(_), List(_)) if can_cast_types(&from_type, to_type) => {
-            Ok(cast_with_options(&array, to_type, &CAST_OPTIONS)?)
+        (List(_), List(to)) => {
+            // Cast list elements recursively so nested array casts follow Spark semantics
+            // instead of relying on Arrow's top-level cast support.
+            let list_array = array.as_list::<i32>();
+            let casted_values = match (list_array.values().data_type(), to.data_type()) {
+                // Spark legacy array casts produce null elements for array<Date> -> array<Int>.
+                (Date32, Int32) => new_null_array(to.data_type(), list_array.values().len()),
+                _ => cast_array(
+                    Arc::clone(list_array.values()),
+                    to.data_type(),
+                    cast_options,
+                )?,
+            };
+            Ok(Arc::new(ListArray::new(
+                Arc::clone(to),
+                list_array.offsets().clone(),
+                casted_values,
+                list_array.nulls().cloned(),
+            )) as ArrayRef)
         }
         (Map(_, _), Map(_, _)) => Ok(cast_map_to_map(&array, &from_type, to_type, cast_options)?),
         (UInt8 | UInt16 | UInt32 | UInt64, Int8 | Int16 | Int32 | Int64)
@@ -803,7 +844,8 @@ fn cast_binary_formatter(value: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::StringArray;
+    use arrow::array::{ListArray, NullArray, StringArray};
+    use arrow::buffer::OffsetBuffer;
     use arrow::datatypes::TimestampMicrosecondType;
     use arrow::datatypes::{Field, Fields};
     #[test]
@@ -929,8 +971,6 @@ mod tests {
 
     #[test]
     fn test_cast_string_array_to_string() {
-        use arrow::array::ListArray;
-        use arrow::buffer::OffsetBuffer;
         let values_array =
             StringArray::from(vec![Some("a"), Some("b"), Some("c"), Some("a"), None, None]);
         let offsets_buffer = OffsetBuffer::<i32>::new(vec![0, 3, 5, 6, 6].into());
@@ -955,8 +995,6 @@ mod tests {
 
     #[test]
     fn test_cast_i32_array_to_string() {
-        use arrow::array::ListArray;
-        use arrow::buffer::OffsetBuffer;
         let values_array = Int32Array::from(vec![Some(1), Some(2), Some(3), Some(1), None, None]);
         let offsets_buffer = OffsetBuffer::<i32>::new(vec![0, 3, 5, 6, 6].into());
         let item_field = Arc::new(Field::new("item", DataType::Int32, true));
@@ -976,5 +1014,34 @@ mod tests {
         assert_eq!(r#"[1, null]"#, string_array.value(1));
         assert_eq!(r#"[null]"#, string_array.value(2));
         assert_eq!(r#"[]"#, string_array.value(3));
+    }
+
+    #[test]
+    fn test_cast_array_of_nulls_to_array() {
+        let offsets_buffer = OffsetBuffer::<i32>::new(vec![0, 2, 3, 3].into());
+        let from_item_field = Arc::new(Field::new("item", DataType::Null, true));
+        let from_array: ArrayRef = Arc::new(ListArray::new(
+            from_item_field,
+            offsets_buffer,
+            Arc::new(NullArray::new(3)),
+            None,
+        ));
+
+        let to_type = DataType::List(Arc::new(Field::new("item", DataType::Int32, true)));
+        let to_array = cast_array(
+            from_array,
+            &to_type,
+            &SparkCastOptions::new(EvalMode::Legacy, "UTC", false),
+        )
+        .unwrap();
+
+        let result = to_array.as_list::<i32>();
+        assert_eq!(3, result.len());
+        assert_eq!(result.value_offsets(), &[0, 2, 3, 3]);
+
+        let values = result.values().as_primitive::<Int32Type>();
+        assert_eq!(3, values.len());
+        assert_eq!(3, values.null_count());
+        assert!(values.iter().all(|value| value.is_none()));
     }
 }

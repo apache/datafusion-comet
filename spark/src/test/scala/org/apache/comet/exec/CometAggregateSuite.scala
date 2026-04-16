@@ -24,7 +24,6 @@ import scala.util.Random
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.Cast
-import org.apache.spark.sql.catalyst.expressions.aggregate.Corr
 import org.apache.spark.sql.catalyst.optimizer.EliminateSorts
 import org.apache.spark.sql.comet.CometHashAggregateExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
@@ -624,8 +623,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  // TODO re-enable once https://github.com/apache/datafusion-comet/issues/1646 is implemented
-  ignore("single group-by column + aggregate column, multiple batches, no null") {
+  test("single group-by column + aggregate column, multiple batches, no null") {
     val numValues = 10000
 
     Seq(1, 100, 10000).foreach { numGroups =>
@@ -640,9 +638,10 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               dictionaryEnabled) {
               withView("v") {
                 sql("CREATE TEMP VIEW v AS SELECT _1, _2 FROM tbl ORDER BY _1")
-                checkSparkAnswerAndOperator(
+                checkSparkAnswerAndFallbackReason(
                   "SELECT _2, SUM(_1), SUM(DISTINCT _1), MIN(_1), MAX(_1), COUNT(_1)," +
-                    " COUNT(DISTINCT _1), AVG(_1), FIRST(_1), LAST(_1) FROM v GROUP BY _2")
+                    " COUNT(DISTINCT _1), AVG(_1), FIRST(_1), LAST(_1) FROM v GROUP BY _2",
+                  "Unsupported aggregation mode PartialMerge")
               }
             }
           }
@@ -651,8 +650,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  // TODO re-enable once https://github.com/apache/datafusion-comet/issues/1646 is implemented
-  ignore("multiple group-by columns + single aggregate column (first/last), with nulls") {
+  test("multiple group-by columns + single aggregate column (first/last), with nulls") {
     val numValues = 10000
 
     Seq(1, 100, numValues).foreach { numGroups =>
@@ -727,8 +725,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  // TODO re-enable once https://github.com/apache/datafusion-comet/issues/1646 is implemented
-  ignore("multiple group-by columns + multiple aggregate column (first/last), with nulls") {
+  test("multiple group-by columns + multiple aggregate column (first/last), with nulls") {
     val numValues = 10000
 
     Seq(1, 100, numValues).foreach { numGroups =>
@@ -790,8 +787,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  // TODO re-enable once https://github.com/apache/datafusion-comet/issues/1646 is implemented
-  ignore("all types first/last, with nulls") {
+  test("all types first/last, with nulls") {
     val numValues = 2048
 
     Seq(1, 100, numValues).foreach { numGroups =>
@@ -803,7 +799,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             Seq(128, numValues + 100).foreach { batchSize =>
               withSQLConf(
                 CometConf.COMET_BATCH_SIZE.key -> batchSize.toString,
-                CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "false") {
+                CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
 
                 // Test all combinations of different aggregation & group-by types
                 (1 to 14).foreach { gCol =>
@@ -1168,8 +1164,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  // TODO re-enable once https://github.com/apache/datafusion-comet/issues/1646 is implemented
-  ignore("first/last") {
+  test("first/last") {
     withSQLConf(
       SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "true",
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
@@ -1185,31 +1180,21 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             withView("t") {
               sql("CREATE VIEW t AS SELECT col1, col3 FROM test ORDER BY col1")
 
-              var expectedNumOfCometAggregates = 2
-              checkSparkAnswerAndNumOfAggregates(
-                "SELECT FIRST(col1), LAST(col1) FROM t",
-                expectedNumOfCometAggregates)
+              checkSparkAnswerAndOperator("SELECT FIRST(col1), LAST(col1) FROM t")
 
-              checkSparkAnswerAndNumOfAggregates(
-                "SELECT FIRST(col1), LAST(col1), MIN(col1), COUNT(col1) FROM t",
-                expectedNumOfCometAggregates)
+              checkSparkAnswerAndOperator(
+                "SELECT FIRST(col1), LAST(col1), MIN(col1), COUNT(col1) FROM t")
 
-              checkSparkAnswerAndNumOfAggregates(
-                "SELECT FIRST(col1), LAST(col1), col3 FROM t GROUP BY col3",
-                expectedNumOfCometAggregates)
+              checkSparkAnswerAndOperator(
+                "SELECT FIRST(col1), LAST(col1), col3 FROM t GROUP BY col3")
 
-              checkSparkAnswerAndNumOfAggregates(
-                "SELECT FIRST(col1), LAST(col1), MIN(col1), COUNT(col1), col3 FROM t GROUP BY col3",
-                expectedNumOfCometAggregates)
+              checkSparkAnswerAndOperator(
+                "SELECT FIRST(col1), LAST(col1), MIN(col1), COUNT(col1), col3 FROM t GROUP BY col3")
 
-              expectedNumOfCometAggregates = 0
-              checkSparkAnswerAndNumOfAggregates(
-                "SELECT FIRST(col1, true), LAST(col1) FROM t",
-                expectedNumOfCometAggregates)
+              checkSparkAnswerAndOperator("SELECT FIRST(col1, true), LAST(col1) FROM t")
 
-              checkSparkAnswerAndNumOfAggregates(
-                "SELECT FIRST(col1), LAST(col1, true), col3 FROM t GROUP BY col3",
-                expectedNumOfCometAggregates)
+              checkSparkAnswerAndOperator(
+                "SELECT FIRST(col1), LAST(col1, true), col3 FROM t GROUP BY col3")
             }
           }
         }
@@ -1320,9 +1305,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("covariance & correlation") {
-    withSQLConf(
-      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-      CometConf.getExprAllowIncompatConfigKey(classOf[Corr]) -> "true") {
+    withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
       Seq("jvm", "native").foreach { cometShuffleMode =>
         withSQLConf(CometConf.COMET_SHUFFLE_MODE.key -> cometShuffleMode) {
           Seq(true, false).foreach { dictionary =>
@@ -1388,6 +1371,31 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               }
             }
           }
+        }
+      }
+    }
+  }
+
+  test("corr - nan/null") {
+    Seq(true, false).foreach { nullOnDivideByZero =>
+      withSQLConf("spark.sql.legacy.statisticalAggregate" -> nullOnDivideByZero.toString) {
+        withTable("t") {
+          sql("""create table t using parquet as
+              select cast(null as float) f1, CAST('NaN' AS float) f2, cast(null as double) d1, CAST('NaN' AS double) d2
+              from range(1)
+            """)
+
+          checkSparkAnswerAndOperator("""
+              |select
+              | corr(f1, f2) c1,
+              | corr(f1, f1) c2,
+              | corr(f2, f1) c3,
+              | corr(f2, f2) c4,
+              | corr(d1, d2) c5,
+              | corr(d1, d1) c6,
+              | corr(d2, d1) c7,
+              | corr(d2, d2) c8
+              | FROM t""".stripMargin)
         }
       }
     }

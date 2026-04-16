@@ -17,7 +17,6 @@
 
 -- Test RLIKE with regexp allowIncompatible enabled (happy path)
 -- Config: spark.comet.expression.regexp.allowIncompatible=true
--- ConfigMatrix: parquet.enable.dictionary=false,true
 
 statement
 CREATE TABLE test_rlike_enabled(s string) USING parquet

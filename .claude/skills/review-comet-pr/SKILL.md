@@ -149,8 +149,6 @@ Categories include: `aggregate/`, `array/`, `string/`, `math/`, `struct/`, `map/
 **SQL file structure:**
 
 ```sql
--- ConfigMatrix: parquet.enable.dictionary=false,true
-
 -- Create test data
 statement
 CREATE TABLE test_crc32(col string, a int, b float) USING parquet

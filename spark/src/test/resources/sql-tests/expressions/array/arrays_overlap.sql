@@ -16,7 +16,6 @@
 -- under the License.
 
 -- Config: spark.comet.expression.ArraysOverlap.allowIncompatible=true
--- ConfigMatrix: parquet.enable.dictionary=false,true
 
 statement
 CREATE TABLE test_arrays_overlap(a array<int>, b array<int>) USING parquet

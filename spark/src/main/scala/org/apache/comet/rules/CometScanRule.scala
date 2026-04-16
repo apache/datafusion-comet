@@ -167,11 +167,7 @@ case class CometScanRule(session: SparkSession)
         }
 
         COMET_NATIVE_SCAN_IMPL.get() match {
-          case SCAN_AUTO =>
-            // TODO add support for native_datafusion in the future
-            nativeIcebergCompatScan(session, scanExec, r, hadoopConf)
-              .getOrElse(scanExec)
-          case SCAN_NATIVE_DATAFUSION =>
+          case SCAN_AUTO | SCAN_NATIVE_DATAFUSION =>
             nativeDataFusionScan(plan, session, scanExec, r, hadoopConf).getOrElse(scanExec)
           case SCAN_NATIVE_ICEBERG_COMPAT =>
             nativeIcebergCompatScan(session, scanExec, r, hadoopConf).getOrElse(scanExec)
@@ -188,6 +184,12 @@ case class CometScanRule(session: SparkSession)
       scanExec: FileSourceScanExec,
       r: HadoopFsRelation,
       hadoopConf: Configuration): Option[SparkPlan] = {
+    if (!COMET_EXEC_ENABLED.get()) {
+      withInfo(
+        scanExec,
+        s"$SCAN_NATIVE_DATAFUSION scan requires ${COMET_EXEC_ENABLED.key} to be enabled")
+      return None
+    }
     if (!CometNativeScan.isSupported(scanExec)) {
       return None
     }
@@ -221,22 +223,6 @@ case class CometScanRule(session: SparkSession)
       ParquetUtils.hasFieldIds(scanExec.requiredSchema)) {
       withInfo(scanExec, "Native DataFusion scan does not support Parquet field ID matching")
       return None
-    }
-    // Case-insensitive mode with duplicate field names produces different errors
-    // in DataFusion vs Spark, so fall back to avoid incompatible error messages
-    if (!session.sessionState.conf.caseSensitiveAnalysis) {
-      val schemas = Seq(scanExec.requiredSchema, r.dataSchema)
-      for (schema <- schemas) {
-        val fieldNames =
-          schema.fieldNames.map(_.toLowerCase(java.util.Locale.ROOT))
-        if (fieldNames.length != fieldNames.distinct.length) {
-          withInfo(
-            scanExec,
-            "Native DataFusion scan does not support " +
-              "duplicate field names in case-insensitive mode")
-          return None
-        }
-      }
     }
     if (!isSchemaSupported(scanExec, SCAN_NATIVE_DATAFUSION, r)) {
       return None

@@ -25,7 +25,7 @@ use datafusion::common::{internal_err, ScalarValue};
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::physical_expr::PhysicalExpr;
 use jni::{
-    objects::JByteArray,
+    objects::{JByteArray, JString},
     sys::{jboolean, jbyte, jint, jlong, jshort},
 };
 use std::{
@@ -80,14 +80,12 @@ impl PhysicalExpr for Subquery {
     }
 
     fn evaluate(&self, _: &RecordBatch) -> datafusion::common::Result<ColumnarValue> {
-        let mut env = JVMClasses::get_env()?;
-
-        unsafe {
-            let is_null = jni_static_call!(&mut env,
+        JVMClasses::with_env(|env| unsafe {
+            let is_null = jni_static_call!(env,
                 comet_exec.is_null(self.exec_context_id, self.id) -> jboolean
             )?;
 
-            if is_null > 0 {
+            if is_null {
                 return Ok(ColumnarValue::Scalar(ScalarValue::try_from(
                     &self.data_type,
                 )?));
@@ -95,53 +93,53 @@ impl PhysicalExpr for Subquery {
 
             match &self.data_type {
                 DataType::Boolean => {
-                    let r = jni_static_call!(&mut env,
+                    let r = jni_static_call!(env,
                         comet_exec.get_bool(self.exec_context_id, self.id) -> jboolean
                     )?;
-                    Ok(ColumnarValue::Scalar(ScalarValue::Boolean(Some(r > 0))))
+                    Ok(ColumnarValue::Scalar(ScalarValue::Boolean(Some(r))))
                 }
                 DataType::Int8 => {
-                    let r = jni_static_call!(&mut env,
+                    let r = jni_static_call!(env,
                         comet_exec.get_byte(self.exec_context_id, self.id) -> jbyte
                     )?;
                     Ok(ColumnarValue::Scalar(ScalarValue::Int8(Some(r))))
                 }
                 DataType::Int16 => {
-                    let r = jni_static_call!(&mut env,
+                    let r = jni_static_call!(env,
                         comet_exec.get_short(self.exec_context_id, self.id) -> jshort
                     )?;
                     Ok(ColumnarValue::Scalar(ScalarValue::Int16(Some(r))))
                 }
                 DataType::Int32 => {
-                    let r = jni_static_call!(&mut env,
+                    let r = jni_static_call!(env,
                         comet_exec.get_int(self.exec_context_id, self.id) -> jint
                     )?;
                     Ok(ColumnarValue::Scalar(ScalarValue::Int32(Some(r))))
                 }
                 DataType::Int64 => {
-                    let r = jni_static_call!(&mut env,
+                    let r = jni_static_call!(env,
                         comet_exec.get_long(self.exec_context_id, self.id) -> jlong
                     )?;
                     Ok(ColumnarValue::Scalar(ScalarValue::Int64(Some(r))))
                 }
                 DataType::Float32 => {
-                    let r = jni_static_call!(&mut env,
+                    let r = jni_static_call!(env,
                         comet_exec.get_float(self.exec_context_id, self.id) -> f32
                     )?;
                     Ok(ColumnarValue::Scalar(ScalarValue::Float32(Some(r))))
                 }
                 DataType::Float64 => {
-                    let r = jni_static_call!(&mut env,
+                    let r = jni_static_call!(env,
                         comet_exec.get_double(self.exec_context_id, self.id) -> f64
                     )?;
 
                     Ok(ColumnarValue::Scalar(ScalarValue::Float64(Some(r))))
                 }
                 DataType::Decimal128(p, s) => {
-                    let bytes = jni_static_call!(&mut env,
+                    let bytes = jni_static_call!(env,
                         comet_exec.get_decimal(self.exec_context_id, self.id) -> BinaryWrapper
                     )?;
-                    let bytes: &JByteArray = bytes.get().into();
+                    let bytes = JByteArray::from_raw(env, bytes.get().as_raw());
                     let slice = env.convert_byte_array(bytes).unwrap();
 
                     Ok(ColumnarValue::Scalar(ScalarValue::Decimal128(
@@ -151,14 +149,14 @@ impl PhysicalExpr for Subquery {
                     )))
                 }
                 DataType::Date32 => {
-                    let r = jni_static_call!(&mut env,
+                    let r = jni_static_call!(env,
                         comet_exec.get_int(self.exec_context_id, self.id) -> jint
                     )?;
 
                     Ok(ColumnarValue::Scalar(ScalarValue::Date32(Some(r))))
                 }
                 DataType::Timestamp(TimeUnit::Microsecond, timezone) => {
-                    let r = jni_static_call!(&mut env,
+                    let r = jni_static_call!(env,
                         comet_exec.get_long(self.exec_context_id, self.id) -> jlong
                     )?;
 
@@ -168,25 +166,27 @@ impl PhysicalExpr for Subquery {
                     )))
                 }
                 DataType::Utf8 => {
-                    let string = jni_static_call!(&mut env,
+                    let string = jni_static_call!(env,
                         comet_exec.get_string(self.exec_context_id, self.id) -> StringWrapper
                     )?;
 
-                    let string = env.get_string(string.get()).unwrap().into();
+                    let string = JString::from_raw(env, string.get().as_raw())
+                        .try_to_string(env)
+                        .unwrap();
                     Ok(ColumnarValue::Scalar(ScalarValue::Utf8(Some(string))))
                 }
                 DataType::Binary => {
-                    let bytes = jni_static_call!(&mut env,
+                    let bytes = jni_static_call!(env,
                         comet_exec.get_binary(self.exec_context_id, self.id) -> BinaryWrapper
                     )?;
-                    let bytes: &JByteArray = bytes.get().into();
+                    let bytes = JByteArray::from_raw(env, bytes.get().as_raw());
                     let slice = env.convert_byte_array(bytes).unwrap();
 
                     Ok(ColumnarValue::Scalar(ScalarValue::Binary(Some(slice))))
                 }
                 _ => internal_err!("Unsupported scalar subquery data type {:?}", self.data_type),
             }
-        }
+        })
     }
 
     fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {

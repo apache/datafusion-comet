@@ -15,8 +15,6 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- ConfigMatrix: parquet.enable.dictionary=false,true
-
 statement
 CREATE TABLE test_from_unix_time(t long) USING parquet
 

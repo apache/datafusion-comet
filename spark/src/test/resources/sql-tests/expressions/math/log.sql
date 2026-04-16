@@ -15,13 +15,11 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- ConfigMatrix: parquet.enable.dictionary=false,true
-
 statement
 CREATE TABLE test_log(d double) USING parquet
 
 statement
-INSERT INTO test_log VALUES (1.0), (2.718281828459045), (10.0), (0.5), (NULL), (cast('NaN' as double)), (cast('Infinity' as double))
+INSERT INTO test_log VALUES (1.0), (2.718281828459045), (10.0), (0.5), (NULL), (cast('NaN' as double)), (cast('Infinity' as double)), (0.0), (-1.0)
 
 query tolerance=1e-6
 SELECT ln(d) FROM test_log
@@ -40,3 +38,11 @@ SELECT ln(1.0), ln(2.718281828459045), ln(10.0), ln(NULL)
 -- literal + literal (2-arg form)
 query tolerance=1e-6
 SELECT log(10.0, 100.0), log(2.0, 8.0), log(10.0, 1.0), log(NULL, 10.0)
+
+-- edge cases: base or value <= 0 should return null
+query tolerance=1e-6
+SELECT log(0.0, 10.0), log(-1.0, 10.0), log(10.0, 0.0), log(10.0, -1.0), log(0.0, 0.0), log(-1.0, -1.0)
+
+-- edge case: log(1, 1) produces NaN (0/0) which Spark preserves as NaN
+query tolerance=1e-6
+SELECT log(1.0, 1.0)

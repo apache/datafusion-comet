@@ -19,7 +19,8 @@ use jni::{
     errors::Result as JniResult,
     objects::{JClass, JMethodID},
     signature::{Primitive, ReturnType},
-    JNIEnv,
+    strings::JNIString,
+    Env,
 };
 
 /// A wrapper which delegate acquire/release memory calls to the
@@ -38,20 +39,20 @@ pub struct CometTaskMemoryManager<'a> {
 impl<'a> CometTaskMemoryManager<'a> {
     pub const JVM_CLASS: &'static str = "org/apache/spark/CometTaskMemoryManager";
 
-    pub fn new(env: &mut JNIEnv<'a>) -> JniResult<CometTaskMemoryManager<'a>> {
-        let class = env.find_class(Self::JVM_CLASS)?;
+    pub fn new(env: &mut Env<'a>) -> JniResult<CometTaskMemoryManager<'a>> {
+        let class = env.find_class(JNIString::new(Self::JVM_CLASS))?;
 
         let result = CometTaskMemoryManager {
             class,
             method_acquire_memory: env.get_method_id(
-                Self::JVM_CLASS,
-                "acquireMemory",
-                "(J)J".to_string(),
+                JNIString::new(Self::JVM_CLASS),
+                jni::jni_str!("acquireMemory"),
+                jni::jni_sig!("(J)J"),
             )?,
             method_release_memory: env.get_method_id(
-                Self::JVM_CLASS,
-                "releaseMemory",
-                "(J)V".to_string(),
+                JNIString::new(Self::JVM_CLASS),
+                jni::jni_str!("releaseMemory"),
+                jni::jni_sig!("(J)V"),
             )?,
             method_acquire_memory_ret: ReturnType::Primitive(Primitive::Long),
             method_release_memory_ret: ReturnType::Primitive(Primitive::Void),
