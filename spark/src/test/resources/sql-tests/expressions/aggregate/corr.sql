@@ -15,7 +15,6 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Config: spark.comet.expression.Corr.allowIncompatible=true
 
 statement
 CREATE TABLE test_corr(x double, y double, grp string) USING parquet
@@ -28,3 +27,13 @@ SELECT corr(x, y) FROM test_corr
 
 query tolerance=1e-6
 SELECT grp, corr(x, y) FROM test_corr GROUP BY grp ORDER BY grp
+
+-- Test permutations of NULL and NaN
+statement
+CREATE TABLE test_corr_nan(x double, y double, grp string) USING parquet
+
+statement
+INSERT INTO test_corr_nan VALUES (cast('NaN' as double), cast('NaN' as double), 'both_nan'), (cast('NaN' as double), 1.0, 'nan_val'), (1.0, cast('NaN' as double), 'val_nan'), (NULL, cast('NaN' as double), 'null_nan'), (cast('NaN' as double), NULL, 'nan_null'), (NULL, NULL, 'both_null'), (NULL, 1.0, 'null_val'), (1.0, NULL, 'val_null'), (cast('NaN' as double), cast('NaN' as double), 'mixed'), (1.0, 2.0, 'mixed'), (3.0, 4.0, 'mixed'), (cast('NaN' as double), cast('NaN' as double), 'multi_nan'), (cast('NaN' as double), cast('NaN' as double), 'multi_nan'), (cast('NaN' as double), cast('NaN' as double), 'multi_nan')
+
+query tolerance=1e-6
+SELECT grp, corr(x, y) FROM test_corr_nan GROUP BY grp ORDER BY grp

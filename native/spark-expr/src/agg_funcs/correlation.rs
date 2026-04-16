@@ -216,19 +216,22 @@ impl Accumulator for CorrelationAccumulator {
         let stddev1 = self.stddev1.evaluate()?;
         let stddev2 = self.stddev2.evaluate()?;
 
+        if self.covar.get_count() == 0.0 {
+            return Ok(ScalarValue::Float64(None));
+        } else if self.covar.get_count() == 1.0 {
+            if self.null_on_divide_by_zero {
+                return Ok(ScalarValue::Float64(None));
+            } else {
+                return Ok(ScalarValue::Float64(Some(f64::NAN)));
+            }
+        }
         match (covar, stddev1, stddev2) {
             (
                 ScalarValue::Float64(Some(c)),
                 ScalarValue::Float64(Some(s1)),
                 ScalarValue::Float64(Some(s2)),
             ) if s1 != 0.0 && s2 != 0.0 => Ok(ScalarValue::Float64(Some(c / (s1 * s2)))),
-            _ if self.null_on_divide_by_zero => Ok(ScalarValue::Float64(None)),
-            _ => {
-                if self.covar.get_count() == 1.0 {
-                    return Ok(ScalarValue::Float64(Some(f64::NAN)));
-                }
-                Ok(ScalarValue::Float64(None))
-            }
+            _ => Ok(ScalarValue::Float64(None)),
         }
     }
 
