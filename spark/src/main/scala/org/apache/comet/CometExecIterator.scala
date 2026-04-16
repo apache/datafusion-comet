@@ -68,7 +68,8 @@ class CometExecIterator(
     partitionIndex: Int,
     broadcastedHadoopConfForEncryption: Option[Broadcast[SerializableConfiguration]] = None,
     encryptedFilePaths: Seq[String] = Seq.empty,
-    shuffleBlockIterators: Map[Int, CometShuffleBlockIterator] = Map.empty)
+    shuffleBlockIterators: Map[Int, CometShuffleBlockIterator] = Map.empty,
+    handleInputs: Array[Object] = Array.empty)
     extends Iterator[ColumnarBatch]
     with Logging {
 
@@ -79,14 +80,22 @@ class CometExecIterator(
   private val taskAttemptId = TaskContext.get().taskAttemptId
   private val taskCPUs = TaskContext.get().cpus()
   private val cometTaskMemoryManager = new CometTaskMemoryManager(id, taskAttemptId)
+  // When true, executePlan stashes output batches natively and returns handles
+  // instead of exporting via Arrow FFI. Used when output feeds a native ShuffleWriter.
+  private var stashMode: Boolean = false
+  private var pendingHandle: Long = -1L
   // Build a mixed array of iterators: CometShuffleBlockIterator for shuffle
   // scan indices, CometBatchIterator for regular scan indices.
-  private val inputIterators: Array[Object] = inputs.zipWithIndex.map {
-    case (_, idx) if shuffleBlockIterators.contains(idx) =>
-      shuffleBlockIterators(idx).asInstanceOf[Object]
-    case (iterator, _) =>
-      new CometBatchIterator(iterator, nativeUtil).asInstanceOf[Object]
-  }.toArray
+  private val inputIterators: Array[Object] = if (handleInputs.nonEmpty) {
+    handleInputs
+  } else {
+    inputs.zipWithIndex.map {
+      case (_, idx) if shuffleBlockIterators.contains(idx) =>
+        shuffleBlockIterators(idx).asInstanceOf[Object]
+      case (iterator, _) =>
+        new CometBatchIterator(iterator, nativeUtil).asInstanceOf[Object]
+    }.toArray
+  }
 
   private val plan = {
     val conf = SparkEnv.get.conf
@@ -189,31 +198,49 @@ class CometExecIterator(
   override def hasNext: Boolean = {
     if (closed) return false
 
-    if (nextBatch.isDefined) {
-      return true
-    }
-
-    // Close previous batch if any.
-    // This is to guarantee safety at the native side before we overwrite the buffer memory
-    // shared across batches in the native side.
-    if (prevBatch != null) {
-      prevBatch.close()
-      prevBatch = null
-    }
-
-    nextBatch = getNextBatch
-
-    logTrace(s"Task $taskAttemptId memory pool usage is ${cometTaskMemoryManager.getUsed} bytes")
-
-    if (nextBatch.isEmpty) {
-      close()
-      false
+    if (stashMode) {
+      if (pendingHandle >= 0) return true
+      val ctx = TaskContext.get()
+      pendingHandle = nativeLib.executePlanBatchHandle(ctx.stageId(), partitionIndex, plan)
+      if (pendingHandle == -1L) {
+        close()
+        false
+      } else {
+        true
+      }
     } else {
-      true
+      if (nextBatch.isDefined) {
+        return true
+      }
+
+      // Close previous batch if any.
+      // This is to guarantee safety at the native side before we overwrite the buffer memory
+      // shared across batches in the native side.
+      if (prevBatch != null) {
+        prevBatch.close()
+        prevBatch = null
+      }
+
+      nextBatch = getNextBatch
+
+      logTrace(
+        s"Task $taskAttemptId memory pool usage is ${cometTaskMemoryManager.getUsed} bytes")
+
+      if (nextBatch.isEmpty) {
+        close()
+        false
+      } else {
+        true
+      }
     }
   }
 
   override def next(): ColumnarBatch = {
+    if (stashMode) {
+      throw new UnsupportedOperationException(
+        "next() should not be called in stash mode. Use nextHandle() instead.")
+    }
+
     if (currentBatch != null) {
       // Eagerly release Arrow Arrays in the previous batch
       currentBatch.close()
@@ -228,6 +255,38 @@ class CometExecIterator(
     prevBatch = currentBatch
     nextBatch = None
     currentBatch
+  }
+
+  /** Enable stash mode. Must be called before iteration begins. */
+  def enableStashMode(): Unit = {
+    stashMode = true
+  }
+
+  /**
+   * Return the native execution context pointer. Used by CometHandleBatchIterator so the
+   * consuming native plan can access the producer's batch stash.
+   */
+  def getNativePlan(): Long = plan
+
+  /**
+   * In stash mode, advance the native plan and return the batch handle. Returns a positive
+   * handle, or -1 for EOF.
+   */
+  def nextHandle(): Long = {
+    if (closed) return -1L
+
+    if (pendingHandle >= 0) {
+      val h = pendingHandle
+      pendingHandle = -1L
+      return h
+    }
+
+    val ctx = TaskContext.get()
+    val handle = nativeLib.executePlanBatchHandle(ctx.stageId(), partitionIndex, plan)
+    if (handle == -1L) {
+      close()
+    }
+    handle
   }
 
   def close(): Unit = synchronized {

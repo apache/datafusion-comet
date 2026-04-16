@@ -1295,14 +1295,20 @@ impl PhysicalPlanner {
                         Some(inputs.remove(0))
                     };
 
+                let use_batch_stash = scan.batch_stash_handle;
+
                 // The `ScanExec` operator will take actual arrays from Spark during execution
-                let scan = ScanExec::new(
+                let mut scan = ScanExec::new(
                     self.exec_context_id,
                     input_source,
                     &scan.source,
                     data_types,
                     scan.arrow_ffi_safe,
                 )?;
+
+                if use_batch_stash {
+                    scan.handle_mode = true;
+                }
 
                 Ok((
                     vec![scan.clone()],
@@ -3772,6 +3778,7 @@ mod tests {
                 }],
                 source: "".to_string(),
                 arrow_ffi_safe: false,
+                batch_stash_handle: false,
             })),
         };
 
@@ -3838,6 +3845,7 @@ mod tests {
                 }],
                 source: "".to_string(),
                 arrow_ffi_safe: false,
+                batch_stash_handle: false,
             })),
         };
 
@@ -4047,6 +4055,7 @@ mod tests {
                 fields: vec![create_proto_datatype()],
                 source: "".to_string(),
                 arrow_ffi_safe: false,
+                batch_stash_handle: false,
             })),
         }
     }
@@ -4090,6 +4099,7 @@ mod tests {
                 ],
                 source: "".to_string(),
                 arrow_ffi_safe: false,
+                batch_stash_handle: false,
             })),
         };
 
@@ -4213,6 +4223,7 @@ mod tests {
                 ],
                 source: "".to_string(),
                 arrow_ffi_safe: false,
+                batch_stash_handle: false,
             })),
         };
 
@@ -4696,6 +4707,7 @@ mod tests {
                 ],
                 source: "".to_string(),
                 arrow_ffi_safe: false,
+                batch_stash_handle: false,
             })),
         };
 

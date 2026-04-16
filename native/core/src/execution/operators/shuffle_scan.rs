@@ -311,8 +311,7 @@ impl Stream for ShuffleScanStream {
         let mut timer = self.baseline_metrics.elapsed_compute().timer();
         let mut scan_batch = self.shuffle_scan.batch.try_lock().unwrap();
 
-        let input_batch = &*scan_batch;
-        let input_batch = if let Some(batch) = input_batch {
+        let input_batch = if let Some(batch) = scan_batch.take() {
             batch
         } else {
             timer.stop();
@@ -321,10 +320,10 @@ impl Stream for ShuffleScanStream {
 
         let result = match input_batch {
             InputBatch::EOF => Poll::Ready(None),
-            InputBatch::Batch(columns, num_rows) => {
-                self.baseline_metrics.record_output(*num_rows);
+            InputBatch::Batch(ref columns, num_rows) => {
+                self.baseline_metrics.record_output(num_rows);
                 let options =
-                    arrow::array::RecordBatchOptions::new().with_row_count(Some(*num_rows));
+                    arrow::array::RecordBatchOptions::new().with_row_count(Some(num_rows));
                 let maybe_batch = arrow::array::RecordBatch::try_new_with_options(
                     self.shuffle_scan.schema(),
                     columns.clone(),
@@ -333,9 +332,11 @@ impl Stream for ShuffleScanStream {
                 .map_err(|e| arrow_datafusion_err!(e));
                 Poll::Ready(Some(maybe_batch))
             }
+            InputBatch::Complete(batch) => {
+                self.baseline_metrics.record_output(batch.num_rows());
+                Poll::Ready(Some(Ok(batch)))
+            }
         };
-
-        *scan_batch = None;
 
         timer.stop();
 

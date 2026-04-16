@@ -77,6 +77,9 @@ pub struct ScanExec {
     baseline_metrics: BaselineMetrics,
     /// Whether native code can assume ownership of batches that it receives
     arrow_ffi_safe: bool,
+    /// When true, input comes from a CometHandleBatchIterator and batches are
+    /// retrieved from the BatchStash instead of via Arrow FFI import.
+    pub handle_mode: bool,
 }
 
 impl ScanExec {
@@ -113,6 +116,7 @@ impl ScanExec {
             baseline_metrics,
             schema,
             arrow_ffi_safe,
+            handle_mode: false,
         })
     }
 
@@ -141,12 +145,19 @@ impl ScanExec {
 
         let mut current_batch = self.batch.try_lock().unwrap();
         if current_batch.is_none() {
-            let next_batch = ScanExec::get_next(
-                self.exec_context_id,
-                self.input_source.as_ref().unwrap().as_obj(),
-                self.data_types.len(),
-                self.arrow_ffi_safe,
-            )?;
+            let next_batch = if self.handle_mode {
+                ScanExec::get_next_handle(
+                    self.exec_context_id,
+                    self.input_source.as_ref().unwrap().as_obj(),
+                )?
+            } else {
+                ScanExec::get_next(
+                    self.exec_context_id,
+                    self.input_source.as_ref().unwrap().as_obj(),
+                    self.data_types.len(),
+                    self.arrow_ffi_safe,
+                )?
+            };
             *current_batch = Some(next_batch);
         }
 
@@ -254,6 +265,58 @@ impl ScanExec {
             };
 
             Ok(InputBatch::new(inputs, Some(actual_num_rows)))
+        })
+    }
+
+    /// Pull next input batch from a CometHandleBatchIterator via batch stash handle.
+    ///
+    /// Retrieves the producer's execution context pointer via JNI, then takes the
+    /// batch from the producer's per-context batch stash using the handle.
+    fn get_next_handle(exec_context_id: i64, iter: &JObject) -> Result<InputBatch, CometError> {
+        if exec_context_id == TEST_EXEC_CONTEXT_ID {
+            return Ok(InputBatch::EOF);
+        }
+
+        if iter.is_null() {
+            return Err(CometError::from(ExecutionError::GeneralError(format!(
+                "Null handle batch iterator object. Plan id: {exec_context_id}"
+            ))));
+        }
+
+        JVMClasses::with_env(|env| {
+            // Get the producer's native execution context pointer
+            let producer_plan: i64 = unsafe {
+                jni_call!(env,
+                    comet_handle_batch_iterator(iter).get_source_native_plan() -> i64)?
+            };
+
+            let handle: i64 = unsafe {
+                jni_call!(env,
+                    comet_handle_batch_iterator(iter).next_handle() -> i64)?
+            };
+
+            if handle == -1 {
+                return Ok(InputBatch::EOF);
+            }
+
+            // Safety: the producer's execution context is valid while this consumer
+            // is running (Spark guarantees the producer outlives the consumer).
+            let producer_ctx = unsafe {
+                (producer_plan as *mut crate::execution::jni_api::ExecutionContext)
+                    .as_mut()
+                    .ok_or_else(|| {
+                        CometError::from(ExecutionError::GeneralError(
+                            "Null producer execution context".to_string(),
+                        ))
+                    })?
+            };
+
+            match producer_ctx.batch_stash.remove(&(handle as u64)) {
+                Some(batch) => Ok(InputBatch::Complete(batch)),
+                None => Err(CometError::from(ExecutionError::GeneralError(format!(
+                    "Batch stash handle {handle} not found in producer context"
+                )))),
+            }
         })
     }
 
@@ -517,8 +580,7 @@ impl Stream for ScanStream<'_> {
         let mut timer = self.baseline_metrics.elapsed_compute().timer();
         let mut scan_batch = self.scan.batch.try_lock().unwrap();
 
-        let input_batch = &*scan_batch;
-        let input_batch = if let Some(batch) = input_batch {
+        let input_batch = if let Some(batch) = scan_batch.take() {
             batch
         } else {
             timer.stop();
@@ -527,14 +589,27 @@ impl Stream for ScanStream<'_> {
 
         let result = match input_batch {
             InputBatch::EOF => Poll::Ready(None),
-            InputBatch::Batch(columns, num_rows) => {
-                self.baseline_metrics.record_output(*num_rows);
-                let maybe_batch = self.build_record_batch(columns, *num_rows);
+            InputBatch::Batch(ref columns, num_rows) => {
+                self.baseline_metrics.record_output(num_rows);
+                let maybe_batch = self.build_record_batch(columns, num_rows);
                 Poll::Ready(Some(maybe_batch))
             }
+            InputBatch::Complete(batch) => {
+                self.baseline_metrics.record_output(batch.num_rows());
+                let columns = batch.columns();
+                let num_rows = batch.num_rows();
+                if columns.len() == self.schema.fields().len() {
+                    // Column counts match. Use build_record_batch to handle any
+                    // type differences (e.g., timestamp timezone casting).
+                    let maybe_batch = self.build_record_batch(columns, num_rows);
+                    Poll::Ready(Some(maybe_batch))
+                } else {
+                    // Column count mismatch (e.g., empty schema scan).
+                    // Return the stashed batch as-is since it's already valid.
+                    Poll::Ready(Some(Ok(batch)))
+                }
+            }
         };
-
-        *scan_batch = None;
 
         timer.stop();
 
@@ -558,6 +633,11 @@ pub enum InputBatch {
     /// It is possible to have a zero-column batch with a non-zero number of rows,
     /// i.e. reading empty schema from scan.
     Batch(Vec<ArrayRef>, usize),
+
+    /// A complete RecordBatch retrieved from the BatchStash. May still
+    /// go through `build_record_batch` for schema reconciliation (e.g.,
+    /// timestamp timezone casting) when column counts match.
+    Complete(RecordBatch),
 }
 
 impl InputBatch {

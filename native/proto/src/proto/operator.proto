@@ -84,6 +84,9 @@ message Scan {
   string source = 2;
   // Whether native code can assume ownership of batches that it receives
   bool arrow_ffi_safe = 3;
+  // When true, the input is a CometHandleBatchIterator and batches should be
+  // retrieved from the BatchStash instead of via Arrow FFI import.
+  bool batch_stash_handle = 4;
 }
 
 message ShuffleScan {
