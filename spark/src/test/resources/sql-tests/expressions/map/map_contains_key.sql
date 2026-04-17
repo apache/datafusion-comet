@@ -16,7 +16,6 @@
 -- under the License.
 
 -- Config: spark.comet.expression.ArrayContains.allowIncompatible=true
--- ConfigMatrix: parquet.enable.dictionary=false,true
 
 -- TODO: replace map_from_arrays with map whenever map is supported in Comet
 

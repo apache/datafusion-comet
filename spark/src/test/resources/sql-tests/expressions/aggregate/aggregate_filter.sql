@@ -83,4 +83,3 @@ SELECT AVG(d) FILTER (WHERE flag = true) FROM test_agg_filter
 
 query spark_answer_only
 SELECT grp, AVG(d) FILTER (WHERE flag = true) FROM test_agg_filter GROUP BY grp ORDER BY grp
-
