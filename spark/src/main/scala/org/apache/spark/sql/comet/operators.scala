@@ -2130,7 +2130,7 @@ object CometSortMergeJoinExec extends CometOperatorSerde[SortMergeJoinExec] {
     }
 
     if (errorMsgs.nonEmpty) {
-      withInfo(join, errorMsgs.flatten.mkString("\n"))
+      withInfo(join, errorMsgs.mkString("\n"))
       return None
     }
 
