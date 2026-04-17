@@ -336,6 +336,46 @@ Then write a similar test file for the `reverse` function, covering column argum
 literal arguments, NULLs, empty strings, and multibyte characters.
 ```
 
+## Capturing per-query output
+
+Set the system property `comet.sqlFileTest.verboseOutput` to a file path to
+have the suite append a markdown-formatted record of every query it runs,
+including the SQL, mode, source file and line, and Spark's actual result or
+error. This is useful for documenting Spark behavior across versions or for
+cross-checking results against another engine.
+
+```shell
+rm -f /tmp/sql-file-tests.md
+ARGS="-ea -Xmx4g -Xss4m -XX:+IgnoreUnrecognizedVMOptions \
+  --add-opens=java.base/java.lang=ALL-UNNAMED \
+  --add-opens=java.base/java.lang.invoke=ALL-UNNAMED \
+  --add-opens=java.base/java.lang.reflect=ALL-UNNAMED \
+  --add-opens=java.base/java.io=ALL-UNNAMED \
+  --add-opens=java.base/java.net=ALL-UNNAMED \
+  --add-opens=java.base/java.nio=ALL-UNNAMED \
+  --add-opens=java.base/java.util=ALL-UNNAMED \
+  --add-opens=java.base/java.util.concurrent=ALL-UNNAMED \
+  --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED \
+  --add-opens=java.base/jdk.internal.ref=ALL-UNNAMED \
+  --add-opens=java.base/sun.nio.ch=ALL-UNNAMED \
+  --add-opens=java.base/sun.nio.cs=ALL-UNNAMED \
+  --add-opens=java.base/sun.security.action=ALL-UNNAMED \
+  --add-opens=java.base/sun.util.calendar=ALL-UNNAMED \
+  -Djdk.reflect.useDirectMethodHandle=false \
+  -Dcomet.sqlFileTest.verboseOutput=/tmp/sql-file-tests.md"
+
+./mvnw test -Dsuites="org.apache.comet.CometSqlFileTestSuite encode" \
+  -Dtest=none -DargLine="$ARGS"
+```
+
+The JDK 17 `--add-opens` flags are copied from the pom's default
+`extraJavaTestArgs`. Overriding `argLine` replaces that default entirely, so
+all the module-opens entries must be reproduced alongside the new property.
+
+Skipped files (e.g. those gated by `MinSparkVersion`) do not appear in the
+output. Queries marked `ignore(...)` are not executed, so they are also
+absent.
+
 ## Handling test failures
 
 When a query fails due to a known Comet bug:
