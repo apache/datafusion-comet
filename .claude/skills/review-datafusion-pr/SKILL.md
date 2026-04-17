@@ -177,6 +177,19 @@ Verify the test file against the `datafusion-spark` testing guide in `datafusion
 
 If the behavior diverges from Spark, flag it. The PR should either fix the divergence or call it out explicitly in a comment, in the function docstring, or as a follow-up issue. `datafusion-spark` is a best-effort compatibility layer, not a strict re-implementation, but undocumented divergences are bugs.
 
+**When flagging an incompatibility, include concrete Spark evidence in the suggested review comment.** Many DataFusion maintainers do not have a Spark install handy and will not re-verify your claim themselves. Quote the exact Spark version you tested against, paste the query, and paste the output or error. A table with a DataFusion column and a Spark column makes the divergence obvious at a glance. For example:
+
+> Tested against Spark 4.1.1:
+>
+> ```sql
+> spark-sql> SELECT hex(encode('A', 'UTF-32'));
+> 00000041
+> ```
+>
+> The PR returns `0000FEFF00000041` (with a leading BOM). Could we drop the BOM for `UTF-32` to match?
+
+This format gives the author a reproducible test case, tells reviewers which Spark version the claim applies to, and makes it easy to copy the example into the `.slt` as a regression test once the fix lands.
+
 #### 2.5 Running the `.slt` tests locally
 
 ```bash
