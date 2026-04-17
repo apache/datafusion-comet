@@ -3340,8 +3340,20 @@ fn parse_delta_partition_scalar(
             // Delta pattern variants we have to support:
             //   - naive: "yyyy-MM-dd HH:mm:ss[.S]" (written in session TZ)
             //   - with offset: "yyyy-MM-dd HH:mm:ss[.S] +HHMM" (CDC metadata columns)
-            let micros = if let Ok(dt_with_tz) = DateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S%.f %z")
-                .or_else(|_| DateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S %z"))
+            // Supported shapes, in order of most-specific first:
+            //   * "YYYY-MM-DDTHH:MM:SS[.f][Z|±HHMM]"    ISO 8601 (Delta UTC-normalised form,
+            //                                           e.g. "2024-06-14T20:00:00.000000Z")
+            //   * "YYYY-MM-DD HH:MM:SS[.f] ±HHMM"       space-separated with offset
+            //                                           (CDC `_commit_timestamp`)
+            //   * "YYYY-MM-DD HH:MM:SS[.f]"             naive, parsed in session TZ (Delta's
+            //                                           default TIMESTAMP partition format)
+            let micros = if let Ok(dt_with_tz) = DateTime::parse_from_rfc3339(s) {
+                dt_with_tz.timestamp_micros()
+            } else if let Ok(dt_with_tz) = DateTime::parse_from_str(
+                s,
+                "%Y-%m-%d %H:%M:%S%.f %z",
+            )
+            .or_else(|_| DateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S %z"))
             {
                 dt_with_tz.timestamp_micros()
             } else {
@@ -3349,27 +3361,62 @@ fn parse_delta_partition_scalar(
                     .or_else(|_| NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S"))
                     .map_err(|e| format!("cannot parse timestamp '{s}': {e}"))?;
                 // Interpret in the session TZ, then normalise to epoch micros (UTC).
-                let tz: Tz = session_tz
-                    .parse()
-                    .map_err(|e| format!("invalid session TZ '{session_tz}': {e}"))?;
-                // DST edge cases:
-                //   - Ambiguous (fall-back): pick the earliest instant, matching Spark's
-                //     `DateTimeUtils.stringToTimestamp(..., zoneId)` behaviour which uses
-                //     `ZonedDateTime.of(naive, tz)` → picks the earlier offset.
-                //   - None (spring-forward gap): the local datetime doesn't exist. Spark
-                //     shifts forward to the start of the post-DST wallclock. We match that
-                //     by converting through UTC and letting chrono handle the skip.
-                use chrono::LocalResult;
-                let micros = match tz.from_local_datetime(&naive) {
-                    LocalResult::Single(dt) => dt.timestamp_micros(),
-                    LocalResult::Ambiguous(earlier, _later) => earlier.timestamp_micros(),
-                    LocalResult::None => {
-                        // Naive instant falls in a DST gap. Interpret as if it were in UTC
-                        // then let the offset apply; this mirrors Spark's fallback and
-                        // avoids returning a bogus "ambiguous" error to the user.
-                        let utc_dt = chrono::Utc.from_utc_datetime(&naive);
-                        utc_dt.timestamp_micros()
+                // Spark accepts several session-TZ shapes that chrono-tz's IANA parser
+                // doesn't recognise directly -- specifically fixed-offset identifiers
+                // like "GMT-08:00" or "UTC+05:00" (emitted by java.util.TimeZone). Fall
+                // back to a fixed-offset FixedOffset when the IANA lookup fails.
+                use chrono::{FixedOffset, LocalResult};
+                fn parse_fixed_offset(s: &str) -> Option<FixedOffset> {
+                    // Accept "GMT±HH:MM", "UTC±HH:MM", "Z", plus bare "±HH:MM" / "±HHMM".
+                    let trimmed = s.trim();
+                    let body = trimmed
+                        .strip_prefix("GMT")
+                        .or_else(|| trimmed.strip_prefix("UTC"))
+                        .unwrap_or(trimmed);
+                    if body.is_empty() || body.eq_ignore_ascii_case("Z") {
+                        return Some(FixedOffset::east_opt(0).unwrap());
                     }
+                    let (sign, rest) = match body.chars().next()? {
+                        '+' => (1, &body[1..]),
+                        '-' => (-1, &body[1..]),
+                        _ => return None,
+                    };
+                    let secs = if rest.contains(':') {
+                        let mut parts = rest.splitn(2, ':');
+                        let h: i32 = parts.next()?.parse().ok()?;
+                        let m: i32 = parts.next()?.parse().ok()?;
+                        h * 3600 + m * 60
+                    } else if rest.len() == 4 {
+                        let h: i32 = rest[..2].parse().ok()?;
+                        let m: i32 = rest[2..].parse().ok()?;
+                        h * 3600 + m * 60
+                    } else {
+                        let h: i32 = rest.parse().ok()?;
+                        h * 3600
+                    };
+                    FixedOffset::east_opt(sign * secs)
+                }
+
+                // Prefer the IANA path (correct DST), fall back to fixed offset.
+                let micros = if let Ok(tz) = session_tz.parse::<Tz>() {
+                    // DST edge cases:
+                    //   - Ambiguous (fall-back): pick the earliest instant, matching Spark's
+                    //     `DateTimeUtils.stringToTimestamp(..., zoneId)` behaviour which uses
+                    //     `ZonedDateTime.of(naive, tz)` -> picks the earlier offset.
+                    //   - None (spring-forward gap): Spark shifts forward; we match that by
+                    //     interpreting the naive instant as UTC.
+                    match tz.from_local_datetime(&naive) {
+                        LocalResult::Single(dt) => dt.timestamp_micros(),
+                        LocalResult::Ambiguous(earlier, _later) => earlier.timestamp_micros(),
+                        LocalResult::None => chrono::Utc.from_utc_datetime(&naive).timestamp_micros(),
+                    }
+                } else if let Some(off) = parse_fixed_offset(session_tz) {
+                    match off.from_local_datetime(&naive) {
+                        LocalResult::Single(dt) => dt.timestamp_micros(),
+                        _ => chrono::Utc.from_utc_datetime(&naive).timestamp_micros(),
+                    }
+                } else {
+                    return Err(format!("invalid session TZ '{session_tz}'"));
                 };
                 micros
             };

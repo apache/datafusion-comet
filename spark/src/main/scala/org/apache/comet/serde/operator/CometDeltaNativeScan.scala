@@ -26,7 +26,7 @@ import scala.jdk.CollectionConverters._
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{And, BoundReference, InterpretedPredicate}
+import org.apache.spark.sql.catalyst.expressions.{And, BoundReference, Expression, InterpretedPredicate}
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.comet.{CometDeltaNativeScanExec, CometNativeExec, CometScanExec}
 import org.apache.spark.sql.internal.SQLConf
@@ -431,13 +431,31 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometScanExec] with Loggi
 
     // Pushed-down data filters. Gated by Spark's parquet filter pushdown config, same as
     // CometNativeScan, so we behave consistently across scan implementations.
+    //
+    // Filters referencing nested (struct/array/map) columns aren't safe to push into
+    // `ParquetSource`: DataFusion currently produces "Invalid comparison operation: Utf8 <=
+    // Int32" (or similar) when the filter references an array element through
+    // `GetArrayItem`/`GetStructField`/`GetMapValue`, because the expression tree is walked
+    // against the file schema where the child types don't match the literal. The filter is
+    // still evaluated correctly by Spark post-scan, so dropping it from pushdown keeps the
+    // scan results correct at the cost of some row-group-level pruning.
+    def referencesNestedAccess(e: Expression): Boolean = e.exists {
+      case _: org.apache.spark.sql.catalyst.expressions.GetArrayItem => true
+      case _: org.apache.spark.sql.catalyst.expressions.GetArrayStructFields => true
+      case _: org.apache.spark.sql.catalyst.expressions.GetMapValue => true
+      case _ => false
+    }
     if (scan.conf.getConf(SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED) &&
       CometConf.COMET_RESPECT_PARQUET_FILTER_PUSHDOWN.get(scan.conf)) {
       val dataFilters = new ListBuffer[Expr]()
       scan.supportedDataFilters.foreach { filter =>
-        exprToProto(filter, scan.output) match {
-          case Some(proto) => dataFilters += proto
-          case _ => logWarning(s"CometDeltaNativeScan: unsupported data filter $filter")
+        if (referencesNestedAccess(filter)) {
+          logInfo(s"CometDeltaNativeScan: skipping pushdown of nested-access filter $filter")
+        } else {
+          exprToProto(filter, scan.output) match {
+            case Some(proto) => dataFilters += proto
+            case _ => logWarning(s"CometDeltaNativeScan: unsupported data filter $filter")
+          }
         }
       }
       commonBuilder.addAllDataFilters(dataFilters.asJava)
