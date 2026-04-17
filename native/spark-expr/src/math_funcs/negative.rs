@@ -158,25 +158,17 @@ impl PhysicalExpr for NegativeExpr {
             ColumnarValue::Scalar(scalar) => {
                 if self.fail_on_error {
                     match scalar {
-                        ScalarValue::Int8(value) => {
-                            if value == Some(i8::MIN) {
-                                return Err(arithmetic_overflow_error(" caused").into());
-                            }
+                        ScalarValue::Int8(value) if value == Some(i8::MIN) => {
+                            return Err(arithmetic_overflow_error(" caused").into());
                         }
-                        ScalarValue::Int16(value) => {
-                            if value == Some(i16::MIN) {
-                                return Err(arithmetic_overflow_error(" caused").into());
-                            }
+                        ScalarValue::Int16(value) if value == Some(i16::MIN) => {
+                            return Err(arithmetic_overflow_error(" caused").into());
                         }
-                        ScalarValue::Int32(value) => {
-                            if value == Some(i32::MIN) {
-                                return Err(arithmetic_overflow_error("integer").into());
-                            }
+                        ScalarValue::Int32(value) if value == Some(i32::MIN) => {
+                            return Err(arithmetic_overflow_error("integer").into());
                         }
-                        ScalarValue::Int64(value) => {
-                            if value == Some(i64::MIN) {
-                                return Err(arithmetic_overflow_error("long").into());
-                            }
+                        ScalarValue::Int64(value) if value == Some(i64::MIN) => {
+                            return Err(arithmetic_overflow_error("long").into());
                         }
                         ScalarValue::IntervalDayTime(value) => {
                             let (days, ms) =
@@ -185,10 +177,8 @@ impl PhysicalExpr for NegativeExpr {
                                 return Err(arithmetic_overflow_error("interval").into());
                             }
                         }
-                        ScalarValue::IntervalYearMonth(value) => {
-                            if value == Some(i32::MIN) {
-                                return Err(arithmetic_overflow_error("interval").into());
-                            }
+                        ScalarValue::IntervalYearMonth(value) if value == Some(i32::MIN) => {
+                            return Err(arithmetic_overflow_error("interval").into());
                         }
                         _ => {
                             // Overflow checks are not supported for other datatypes
