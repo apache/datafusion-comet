@@ -140,6 +140,7 @@ message AggExpr {
     Stddev stddev = 14;
     Correlation correlation = 15;
     BloomFilterAgg bloomFilterAgg = 16;
+    Mode mode = 17;
   }
 
   // Optional filter expression for SQL FILTER (WHERE ...) clause.
@@ -246,6 +247,11 @@ message BloomFilterAgg {
   Expr numItems = 2;
   Expr numBits = 3;
   DataType datatype = 4;
+}
+
+message Mode {
+  Expr child = 1;
+  DataType datatype = 2;
 }
 
 enum EvalMode {
