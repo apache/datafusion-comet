@@ -684,7 +684,9 @@ impl PhysicalPlanner {
             }
             ExprStruct::ArraysZip(expr) => {
                 if expr.values.is_empty() {
-                    return Err(GeneralError("arrays_zip requires at least one argument".to_string()));
+                    return Err(GeneralError(
+                        "arrays_zip requires at least one argument".to_string(),
+                    ));
                 }
 
                 let children = expr
