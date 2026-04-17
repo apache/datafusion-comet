@@ -1516,7 +1516,12 @@ fn extract_offset_suffix(value: &str) -> Option<(&str, timezone::Tz)> {
 
 type TimestampParsePattern<T> = (&'static Regex, fn(&str, &T) -> SparkResult<Option<i64>>);
 
-static RE_YEAR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^-?\d{4,7}$").unwrap());
+// RE_YEAR allows only 4-6 digits (not 7) because a bare 7-digit string like "0119704"
+// is ambiguous and Spark rejects it. The other patterns (RE_MONTH, RE_DAY, etc.) keep
+// \d{4,7} because the `-` separator disambiguates the year portion, so "0002020-01-01"
+// is validly year 2020 with leading zeros. date_parser's is_valid_digits also allows up
+// to 7 year digits for the same reason.
+static RE_YEAR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^-?\d{4,6}$").unwrap());
 static RE_MONTH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^-?\d{4,7}-\d{2}$").unwrap());
 static RE_DAY: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^-?\d{4,7}-\d{2}-\d{2}$").unwrap());
 static RE_HOUR: LazyLock<Regex> =
@@ -1802,6 +1807,9 @@ mod tests {
             Some("T2"),
             Some("0100-01-01T12:34:56.123456"),
             Some("10000-01-01T12:34:56.123456"),
+            // 7-digit year-only strings must return null (Spark returns null for these)
+            Some("0119704"),
+            Some("2024001"),
         ]));
         let tz = &timezone::Tz::from_str("UTC").unwrap();
 
@@ -1826,7 +1834,10 @@ mod tests {
             result.data_type(),
             &DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()))
         );
-        assert_eq!(result.len(), 4);
+        assert_eq!(result.len(), 6);
+        // 7-digit year-only strings must be null
+        assert!(result.is_null(4), "0119704 should be null");
+        assert!(result.is_null(5), "2024001 should be null");
     }
 
     #[test]
