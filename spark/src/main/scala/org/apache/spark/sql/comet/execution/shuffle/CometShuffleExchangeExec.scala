@@ -50,7 +50,7 @@ import com.google.common.base.Objects
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometConf.{COMET_EXEC_SHUFFLE_ENABLED, COMET_SHUFFLE_MODE}
-import org.apache.comet.CometSparkSessionExtensions.{isCometShuffleManagerEnabled, withInfo}
+import org.apache.comet.CometSparkSessionExtensions.{hasExplainInfo, isCometShuffleManagerEnabled, withInfo}
 import org.apache.comet.serde.{Compatible, OperatorOuterClass, QueryPlanSerde, SupportLevel, Unsupported}
 import org.apache.comet.serde.operator.CometSink
 import org.apache.comet.shims.ShimCometShuffleExchangeExec
@@ -328,6 +328,11 @@ object CometShuffleExchangeExec
         false
     }
 
+    // Preserve any prior-pass fallback decision (see comment in columnarShuffleSupported).
+    if (hasExplainInfo(s)) {
+      return false
+    }
+
     if (!isCometShuffleEnabledWithInfo(s)) {
       return false
     }
@@ -448,6 +453,16 @@ object CometShuffleExchangeExec
         supportedSerializableDataType(keyType) && supportedSerializableDataType(valueType)
       case _ =>
         false
+    }
+
+    // If this shuffle already carries fallback reasons from a prior rule pass, preserve that
+    // decision instead of re-deriving it from the current plan shape. Under AQE, a completed
+    // child stage gets wrapped in a ShuffleQueryStageExec whose `children` is empty, and a
+    // naive re-evaluation can flip its answer (e.g., `stageContainsDPPScan` stops seeing the
+    // DPP scan and returns false). Sticking with the original decision avoids those plan-shape
+    // inconsistencies across planning passes. Mirrors CometNativeScan.isSupported.
+    if (hasExplainInfo(s)) {
+      return false
     }
 
     if (!isCometShuffleEnabledWithInfo(s)) {
