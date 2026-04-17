@@ -109,6 +109,35 @@ class CometJoinSuite extends CometTestBase {
     }
   }
 
+  test("SortMergeJoin with composite (string, timestamp) key runs natively") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.PREFER_SORTMERGEJOIN.key -> "true") {
+      withTable("t1", "t2") {
+        sql("CREATE TABLE t1(name STRING, time TIMESTAMP) USING PARQUET")
+        sql(
+          "INSERT OVERWRITE t1 VALUES " +
+            "('a', timestamp'2019-01-01 11:11:11'), " +
+            "('b', timestamp'2019-01-01 11:11:11'), " +
+            "('a', timestamp'2020-05-05 05:05:05')")
+
+        sql("CREATE TABLE t2(name STRING, time TIMESTAMP) USING PARQUET")
+        sql(
+          "INSERT OVERWRITE t2 VALUES " +
+            "('a', timestamp'2019-01-01 11:11:11'), " +
+            "('b', timestamp'2020-05-05 05:05:05'), " +
+            "('a', timestamp'2020-05-05 05:05:05')")
+
+        checkSparkAnswerAndOperator(
+          sql(
+            "SELECT * FROM t1 JOIN t2 " +
+              "ON t1.name = t2.name AND t1.time = t2.time"),
+          Seq(classOf[CometSortMergeJoinExec]))
+      }
+    }
+  }
+
   test("Broadcast HashJoin without join filter") {
     withSQLConf(
       CometConf.COMET_BATCH_SIZE.key -> "100",
