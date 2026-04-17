@@ -21,7 +21,7 @@ use crate::{EvalMode, SparkError, SparkResult};
 use arrow::array::{
     Array, ArrayRef, AsArray, BooleanBuilder, Decimal128Array, Decimal128Builder, Float32Array,
     Float64Array, GenericStringArray, Int16Array, Int32Array, Int64Array, Int8Array,
-    OffsetSizeTrait, PrimitiveArray, StringArray, TimestampMicrosecondBuilder,
+    OffsetSizeTrait, PrimitiveArray, StringBuilder, TimestampMicrosecondBuilder,
 };
 use arrow::datatypes::{
     i256, is_validate_decimal_precision, ArrowPrimitiveType, DataType, Decimal128Type, Float32Type,
@@ -584,19 +584,29 @@ pub(crate) fn cast_decimal128_to_utf8(array: &ArrayRef, scale: i8) -> SparkResul
         .as_any()
         .downcast_ref::<Decimal128Array>()
         .expect("Expected a Decimal128Array");
-    let output: StringArray = decimal_array
-        .iter()
-        .map(|opt_val| opt_val.map(|unscaled| decimal128_to_java_string(unscaled, scale)))
-        .collect();
-    Ok(Arc::new(output))
+    let mut builder = StringBuilder::with_capacity(decimal_array.len(), decimal_array.len() * 16);
+    // Reuse a single String buffer across rows to avoid one allocation per value.
+    let mut buf = String::with_capacity(40);
+    for opt_val in decimal_array.iter() {
+        match opt_val {
+            None => builder.append_null(),
+            Some(unscaled) => {
+                buf.clear();
+                decimal128_to_java_string(unscaled, scale, &mut buf);
+                builder.append_value(&buf);
+            }
+        }
+    }
+    Ok(Arc::new(builder.finish()))
 }
 
-/// Formats a Decimal128 unscaled value as a string matching Java's BigDecimal.toString():
+/// Formats a Decimal128 unscaled value into `out` matching Java's BigDecimal.toString():
 /// - Plain notation when scale >= 0 and adjusted_exponent >= -6
 /// - Scientific notation otherwise
 ///
 /// adjusted_exponent = -scale + (numDigits - 1)
-fn decimal128_to_java_string(unscaled: i128, scale: i8) -> String {
+fn decimal128_to_java_string(unscaled: i128, scale: i8, out: &mut String) {
+    use std::fmt::Write;
     let negative = unscaled < 0;
     let sign = if negative { "-" } else { "" };
     let coeff = unscaled.unsigned_abs().to_string();
@@ -607,24 +617,24 @@ fn decimal128_to_java_string(unscaled: i128, scale: i8) -> String {
         let scale_u = scale as usize;
         let num_digits_u = num_digits as usize;
         if scale_u == 0 {
-            format!("{sign}{coeff}")
+            write!(out, "{sign}{coeff}").unwrap();
         } else if num_digits_u > scale_u {
             let (int_part, frac_part) = coeff.split_at(num_digits_u - scale_u);
-            format!("{sign}{int_part}.{frac_part}")
+            write!(out, "{sign}{int_part}.{frac_part}").unwrap();
         } else {
             let leading = scale_u - num_digits_u;
-            format!("{sign}0.{}{coeff}", "0".repeat(leading))
+            write!(out, "{sign}0.{}{coeff}", "0".repeat(leading)).unwrap();
         }
     } else {
-        let mantissa = if num_digits == 1 {
-            coeff.clone()
+        if num_digits > 1 {
+            write!(out, "{sign}{}.{}", &coeff[..1], &coeff[1..]).unwrap();
         } else {
-            format!("{}.{}", &coeff[..1], &coeff[1..])
-        };
+            write!(out, "{sign}{coeff}").unwrap();
+        }
         if adj_exp > 0 {
-            format!("{sign}{mantissa}E+{adj_exp}")
+            write!(out, "E+{adj_exp}").unwrap();
         } else {
-            format!("{sign}{mantissa}E{adj_exp}")
+            write!(out, "E{adj_exp}").unwrap();
         }
     }
 }
@@ -1373,26 +1383,31 @@ mod tests {
 
     #[test]
     fn test_decimal128_to_java_string() {
+        fn fmt(unscaled: i128, scale: i8) -> String {
+            let mut buf = String::new();
+            decimal128_to_java_string(unscaled, scale, &mut buf);
+            buf
+        }
         // scale >= 0, adj_exp >= -6 → plain notation
-        assert_eq!(decimal128_to_java_string(0, 0), "0");
-        assert_eq!(decimal128_to_java_string(0, 2), "0.00");
-        assert_eq!(decimal128_to_java_string(12345, 2), "123.45");
-        assert_eq!(decimal128_to_java_string(-12345, 2), "-123.45");
-        assert_eq!(decimal128_to_java_string(1, 2), "0.01");
-        assert_eq!(decimal128_to_java_string(42, 0), "42");
-        assert_eq!(decimal128_to_java_string(-42, 0), "-42");
-        assert_eq!(decimal128_to_java_string(1, 6), "0.000001"); // adj_exp = -6 (boundary)
+        assert_eq!(fmt(0, 0), "0");
+        assert_eq!(fmt(0, 2), "0.00");
+        assert_eq!(fmt(12345, 2), "123.45");
+        assert_eq!(fmt(-12345, 2), "-123.45");
+        assert_eq!(fmt(1, 2), "0.01");
+        assert_eq!(fmt(42, 0), "42");
+        assert_eq!(fmt(-42, 0), "-42");
+        assert_eq!(fmt(1, 6), "0.000001"); // adj_exp = -6 (boundary)
 
         // scale >= 0, adj_exp < -6 → scientific notation (Spark LEGACY mode)
-        assert_eq!(decimal128_to_java_string(0, 18), "0E-18"); // adj_exp = -18
-        assert_eq!(decimal128_to_java_string(0, 7), "0E-7"); // adj_exp = -7
-        assert_eq!(decimal128_to_java_string(1, 7), "1E-7");
-        assert_eq!(decimal128_to_java_string(1, 18), "1E-18");
+        assert_eq!(fmt(0, 18), "0E-18"); // adj_exp = -18
+        assert_eq!(fmt(0, 7), "0E-7"); // adj_exp = -7
+        assert_eq!(fmt(1, 7), "1E-7");
+        assert_eq!(fmt(1, 18), "1E-18");
 
         // scale < 0 → scientific notation
-        assert_eq!(decimal128_to_java_string(0, -2), "0E+2");
-        assert_eq!(decimal128_to_java_string(1, -2), "1E+2");
-        assert_eq!(decimal128_to_java_string(123, -2), "1.23E+4");
-        assert_eq!(decimal128_to_java_string(-123, -2), "-1.23E+4");
+        assert_eq!(fmt(0, -2), "0E+2");
+        assert_eq!(fmt(1, -2), "1E+2");
+        assert_eq!(fmt(123, -2), "1.23E+4");
+        assert_eq!(fmt(-123, -2), "-1.23E+4");
     }
 }

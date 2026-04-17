@@ -253,6 +253,9 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
           .toBoolean
         if (allowNegativeScale) Compatible() else Incompatible()
       case _: DecimalType =>
+        // Compatible across all eval modes: LEGACY uses cast_decimal128_to_utf8 which
+        // replicates Java BigDecimal.toString() (scientific notation when adj_exp < -6);
+        // TRY and ANSI fall through to DataFusion's plain-notation cast, which matches Spark.
         Compatible()
       case DataTypes.BinaryType =>
         Compatible()
