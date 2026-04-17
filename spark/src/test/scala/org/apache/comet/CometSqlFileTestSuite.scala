@@ -20,12 +20,71 @@
 package org.apache.comet
 
 import java.io.File
+import java.nio.charset.StandardCharsets
+import java.nio.file.{Files, Path, Paths, StandardOpenOption}
+import java.util.concurrent.atomic.AtomicBoolean
 
 import org.scalactic.source.Position
 import org.scalatest.Tag
 
-import org.apache.spark.sql.CometTestBase
+import org.apache.spark.SPARK_VERSION
+import org.apache.spark.sql.{CometTestBase, DataFrame}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+
+/**
+ * Writes per-query output to a markdown file when the system property
+ * `comet.sqlFileTest.verboseOutput` is set to a file path. Useful for capturing Spark's actual
+ * result for each query in the SQL test corpus, e.g. to document behavior across Spark versions
+ * or to cross-check against a different engine.
+ */
+private object VerboseOutput {
+  private val outputPath: Option[Path] =
+    sys.props.get("comet.sqlFileTest.verboseOutput").map(Paths.get(_))
+  private val initialized = new AtomicBoolean(false)
+
+  def enabled: Boolean = outputPath.isDefined
+
+  private def ensureInitialized(): Unit = {
+    outputPath.foreach { path =>
+      if (initialized.compareAndSet(false, true)) {
+        val header =
+          s"""# SQL file test output
+             |
+             |Spark version: **$SPARK_VERSION**
+             |
+             |Each section below is one query from a SQL test file, showing
+             |the SQL, the mode under which it ran, and Spark's actual output
+             |or error.
+             |
+             |""".stripMargin
+        Option(path.getParent).foreach(Files.createDirectories(_))
+        Files.write(path, header.getBytes(StandardCharsets.UTF_8))
+      }
+    }
+  }
+
+  def append(content: String): Unit = {
+    outputPath.foreach { path =>
+      ensureInitialized()
+      Files.write(path, content.getBytes(StandardCharsets.UTF_8), StandardOpenOption.APPEND)
+    }
+  }
+
+  def formatResult(df: DataFrame): String = {
+    val rows = df.collect()
+    if (rows.isEmpty) "(no rows)"
+    else
+      rows
+        .map(r => r.toSeq.map(v => if (v == null) "NULL" else v.toString).mkString(" | "))
+        .mkString("\n")
+  }
+
+  def formatError(t: Throwable): String = {
+    val cls = t.getClass.getName
+    val msg = Option(t.getMessage).getOrElse("").takeWhile(_ != '\n')
+    s"$cls: $msg"
+  }
+}
 
 class CometSqlFileTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
@@ -79,6 +138,15 @@ class CometSqlFileTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   private def runTestFile(relativePath: String, file: SqlTestFile): Unit = {
     val allConfigs = file.configs ++ constantFoldingExcluded
+    if (VerboseOutput.enabled) {
+      val configDesc =
+        if (file.configs.isEmpty) ""
+        else
+          file.configs
+            .map { case (k, v) => s"  - `$k` = `$v`" }
+            .mkString("\nConfigs:\n", "\n", "\n")
+      VerboseOutput.append(s"\n## `$relativePath`\n$configDesc\n")
+    }
     withSQLConf(allConfigs: _*) {
       withTable(file.tables: _*) {
         file.records.foreach {
@@ -93,6 +161,35 @@ class CometSqlFileTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                 throw new RuntimeException(s"Error executing SQL '$sql' ${e.getMessage}", e)
             }
           case SqlQuery(sql, mode, line) =>
+            if (VerboseOutput.enabled) {
+              val modeLabel = mode match {
+                case CheckCoverageAndAnswer => "query"
+                case SparkAnswerOnly => "query spark_answer_only"
+                case WithTolerance(t) => s"query tolerance=$t"
+                case ExpectFallback(r) => s"query expect_fallback($r)"
+                case Ignore(r) => s"query ignore($r)"
+                case ExpectError(p) => s"query expect_error($p)"
+              }
+              val body =
+                try {
+                  VerboseOutput.formatResult(spark.sql(sql))
+                } catch {
+                  case e: Throwable => s"ERROR: ${VerboseOutput.formatError(e)}"
+                }
+              VerboseOutput.append(s"""### `$modeLabel`
+                   |
+                   |`$relativePath:$line`
+                   |
+                   |```sql
+                   |$sql
+                   |```
+                   |
+                   |```
+                   |$body
+                   |```
+                   |
+                   |""".stripMargin)
+            }
             try {
               val location = if (line > 0) s"$relativePath:$line" else relativePath
               withClue(s"In SQL file $location, executing query:\n$sql\n") {
