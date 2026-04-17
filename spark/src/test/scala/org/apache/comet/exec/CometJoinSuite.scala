@@ -80,6 +80,35 @@ class CometJoinSuite extends CometTestBase {
     }
   }
 
+  test("SortMergeJoin with TimestampType key supports outer joins") {
+    withSQLConf(
+      SQLConf.SESSION_LOCAL_TIMEZONE.key -> "Asia/Kathmandu",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.PREFER_SORTMERGEJOIN.key -> "true") {
+      withTable("t1", "t2") {
+        sql("CREATE TABLE t1(id INT, time TIMESTAMP) USING PARQUET")
+        sql(
+          "INSERT OVERWRITE t1 VALUES " +
+            "(1, timestamp'2019-01-01 11:11:11'), " +
+            "(2, timestamp'2020-05-05 05:05:05'), " +
+            "(3, timestamp'2021-07-07 07:07:07')")
+
+        sql("CREATE TABLE t2(id INT, time TIMESTAMP) USING PARQUET")
+        sql(
+          "INSERT OVERWRITE t2 VALUES " +
+            "(10, timestamp'2019-01-01 11:11:11'), " +
+            "(20, timestamp'2022-02-02 02:02:02')")
+
+        for (joinType <- Seq("LEFT OUTER", "RIGHT OUTER", "FULL OUTER")) {
+          checkSparkAnswerAndOperator(
+            sql(s"SELECT * FROM t1 $joinType JOIN t2 ON t1.time = t2.time"),
+            Seq(classOf[CometSortMergeJoinExec]))
+        }
+      }
+    }
+  }
+
   test("Broadcast HashJoin without join filter") {
     withSQLConf(
       CometConf.COMET_BATCH_SIZE.key -> "100",
