@@ -626,7 +626,7 @@ object CometConf extends ShimCometConf {
           "post-rule plan has a columnar child. Intended for debugging intermittent " +
           "bad-plan shapes; off by default.")
       .booleanConf
-      .createWithDefault(false)
+      .createWithDefault(true)
 
   val COMET_LOG_FALLBACK_REASONS: ConfigEntry[Boolean] =
     conf("spark.comet.logFallbackReasons.enabled")
