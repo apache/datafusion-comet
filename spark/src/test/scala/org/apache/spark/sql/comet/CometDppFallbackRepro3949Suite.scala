@@ -150,7 +150,7 @@ class CometDppFallbackRepro3949Suite extends CometTestBase {
         }
 
         // scalastyle:off println
-        println(s"=== mechanism check ===")
+        println("=== mechanism check ===")
         println(s"initialDppVisible=$initialDppVisible initialDecision=$initialDecision")
         println(s"postAqeDppVisible=$postAqeDppVisible postAqeDecision=$postAqeDecision")
         // scalastyle:on println
@@ -358,7 +358,7 @@ class CometDppFallbackRepro3949Suite extends CometTestBase {
               suspicious += ((
                 variantName,
                 idx,
-                s"Comet shuffle tagged with DPP fallback reason but not fallen back " +
+                "Comet shuffle tagged with DPP fallback reason but not fallen back " +
                   s"(${taggedFallback.size}). Plan:\n${executedPlan.treeString}"))
             }
             if (inconsistent.nonEmpty) {
@@ -381,7 +381,7 @@ class CometDppFallbackRepro3949Suite extends CometTestBase {
       }
 
       // scalastyle:off println
-      println(s"=== end-to-end summary ===")
+      println("=== end-to-end summary ===")
       println(s"failures (collect threw): ${failures.size}")
       failures.foreach { case (v, i, msg, cls) =>
         println(s"  $v/q$i: $cls")
@@ -407,11 +407,11 @@ class CometDppFallbackRepro3949Suite extends CometTestBase {
       val summary = new StringBuilder
       summary.append(s"#3949 reproduced: ${failures.size} collect failure(s) and ")
       summary.append(s"${suspicious.size} plan-shape inconsistencies\n")
-      summary.append(s"---- failures ----\n")
+      summary.append("---- failures ----\n")
       failures.foreach { case (v, i, msg, cls) =>
         summary.append(s"$v/q$i ($cls):\n").append(msg.take(4000)).append("\n")
       }
-      summary.append(s"---- suspicious ----\n")
+      summary.append("---- suspicious ----\n")
       suspicious.foreach { case (v, i, note) =>
         summary.append(s"$v/q$i: ${note.take(1500)}\n")
       }
