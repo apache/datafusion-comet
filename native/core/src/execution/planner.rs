@@ -1527,12 +1527,23 @@ impl PhysicalPlanner {
                 // when it tries to evaluate a filter/group-by against the physical-named batch.
                 let scan_out = final_exec.schema();
                 let needs_rename = has_column_mapping
+                    && required_schema.fields().len() == scan_out.fields().len()
                     && required_schema
                         .fields()
                         .iter()
                         .zip(scan_out.fields().iter())
                         .any(|(req, phys)| req.name() != phys.name());
                 let with_rename: Arc<dyn ExecutionPlan> = if needs_rename {
+                    // Look up logical names by physical name so schema-length differences
+                    // between required_schema and scan_out don't silently emit physical
+                    // names (positional indexing would fall back to the physical name
+                    // when required_schema is shorter).
+                    let phys_to_logical: HashMap<&str, &str> = scan_out
+                        .fields()
+                        .iter()
+                        .zip(required_schema.fields().iter())
+                        .map(|(phys, req)| (phys.name().as_str(), req.name().as_str()))
+                        .collect();
                     let projections: Vec<(Arc<dyn PhysicalExpr>, String)> = scan_out
                         .fields()
                         .iter()
@@ -1540,10 +1551,9 @@ impl PhysicalPlanner {
                         .map(|(idx, phys_field)| {
                             let col: Arc<dyn PhysicalExpr> =
                                 Arc::new(Column::new(phys_field.name(), idx));
-                            let alias = required_schema
-                                .fields()
-                                .get(idx)
-                                .map(|f| f.name().clone())
+                            let alias = phys_to_logical
+                                .get(phys_field.name().as_str())
+                                .map(|s| s.to_string())
                                 .unwrap_or_else(|| phys_field.name().clone());
                             (col, alias)
                         })
@@ -3342,11 +3352,26 @@ fn parse_delta_partition_scalar(
                 let tz: Tz = session_tz
                     .parse()
                     .map_err(|e| format!("invalid session TZ '{session_tz}': {e}"))?;
-                let dt_local = tz
-                    .from_local_datetime(&naive)
-                    .earliest()
-                    .ok_or_else(|| format!("ambiguous local datetime for '{s}'"))?;
-                dt_local.timestamp_micros()
+                // DST edge cases:
+                //   - Ambiguous (fall-back): pick the earliest instant, matching Spark's
+                //     `DateTimeUtils.stringToTimestamp(..., zoneId)` behaviour which uses
+                //     `ZonedDateTime.of(naive, tz)` → picks the earlier offset.
+                //   - None (spring-forward gap): the local datetime doesn't exist. Spark
+                //     shifts forward to the start of the post-DST wallclock. We match that
+                //     by converting through UTC and letting chrono handle the skip.
+                use chrono::LocalResult;
+                let micros = match tz.from_local_datetime(&naive) {
+                    LocalResult::Single(dt) => dt.timestamp_micros(),
+                    LocalResult::Ambiguous(earlier, _later) => earlier.timestamp_micros(),
+                    LocalResult::None => {
+                        // Naive instant falls in a DST gap. Interpret as if it were in UTC
+                        // then let the offset apply; this mirrors Spark's fallback and
+                        // avoids returning a bogus "ambiguous" error to the user.
+                        let utc_dt = chrono::Utc.from_utc_datetime(&naive);
+                        utc_dt.timestamp_micros()
+                    }
+                };
+                micros
             };
             match unit {
                 arrow::datatypes::TimeUnit::Microsecond => {

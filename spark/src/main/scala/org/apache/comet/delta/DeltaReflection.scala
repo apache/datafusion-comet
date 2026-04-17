@@ -310,27 +310,6 @@ object DeltaReflection extends Logging {
   }
 
   /**
-   * True when the relation's FileIndex is a `PreparedDeltaFileIndex` -- Delta's analyzer has
-   * pre-resolved the file list at scan creation.
-   */
-  def isPreparedDeltaFileIndex(location: Any): Boolean =
-    location.getClass.getName.contains("PreparedDeltaFileIndex")
-
-  /**
-   * Extract the pre-resolved `AddFile` list from a `PreparedDeltaFileIndex.preparedScan.files`
-   * via reflection. Returns `None` if the index isn't a PreparedDeltaFileIndex or the access
-   * fails. Used for vacuum/purge scenarios where kernel's log replay can return stale physical
-   * files -- Delta's own resolved `preparedScan.files` reflects the current live AddFile set.
-   */
-  def extractPreparedScanFiles(location: Any): Option[AnyRef] = {
-    try {
-      findAccessor(location, Seq("preparedScan")).flatMap(findAccessor(_, Seq("files")))
-    } catch {
-      case scala.util.control.NonFatal(_) => None
-    }
-  }
-
-  /**
    * Extract the AddFile list from a `TahoeBatchFileIndex`-like FileIndex via reflection (no
    * compile-time dep on spark-delta). Returns `None` when:
    *   - the FileIndex class doesn't expose an `addFiles: Seq[AddFile]` method

@@ -147,8 +147,7 @@ case class CometDeltaNativeScanExec(
     val predicate = InterpretedPredicate(bound)
     predicate.initialize(0)
 
-    val sessionZoneId =
-      java.time.ZoneId.of(SQLConf.get.getConfString("spark.sql.session.timeZone"))
+    val sessionZoneId = java.time.ZoneId.of(SQLConf.get.sessionLocalTimeZone)
     tasks.filter { task =>
       val row = InternalRow.fromSeq(partitionSchema.fields.toSeq.map { field =>
         val proto = task.getPartitionValuesList.asScala.find(_.getName == field.name)
