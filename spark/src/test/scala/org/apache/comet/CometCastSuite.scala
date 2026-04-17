@@ -712,7 +712,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     // Negative-scale decimals are a legacy Spark feature gated on
     // spark.sql.legacy.allowNegativeScaleOfDecimal=true. Spark LEGACY cast uses Java's
     // BigDecimal.toString() which produces scientific notation for negative-scale values
-    // (e.g. 12300 stored as Decimal(7,-2) with unscaled=123 → "1.23E+4").
+    // (e.g. 12300 stored as Decimal(7,-2) with unscaled=123 -> "1.23E+4").
     // CometCast.canCastToString checks the
     // config and returns Incompatible when it is false.
     //

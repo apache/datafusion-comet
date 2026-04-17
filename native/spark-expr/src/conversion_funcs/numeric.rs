@@ -72,7 +72,7 @@ pub(crate) fn is_df_cast_from_decimal_spark_compatible(to_type: &DataType) -> bo
                                 // / floatValue for all tested values
             | DataType::Decimal128(_, _)
             | DataType::Decimal256(_, _)
-            // DataFusion's Decimal128→Utf8 cast uses plain notation (toPlainString semantics),
+            // DataFusion's Decimal128->Utf8 cast uses plain notation (toPlainString semantics),
             // matching Spark's TRY and ANSI modes. LEGACY mode is handled by a separate match
             // arm in cast_array that applies Java BigDecimal.toString() (scientific notation
             // for values where adjusted_exponent < -6, e.g. "0E-18" for zero with scale=18).
@@ -1392,7 +1392,7 @@ mod tests {
             decimal128_to_java_string(unscaled, scale, &mut buf);
             buf
         }
-        // scale >= 0, adj_exp >= -6 → plain notation
+        // scale >= 0, adj_exp >= -6 -> plain notation
         assert_eq!(fmt(0, 0), "0");
         assert_eq!(fmt(0, 2), "0.00");
         assert_eq!(fmt(12345, 2), "123.45");
@@ -1402,13 +1402,13 @@ mod tests {
         assert_eq!(fmt(-42, 0), "-42");
         assert_eq!(fmt(1, 6), "0.000001"); // adj_exp = -6 (boundary)
 
-        // scale >= 0, adj_exp < -6 → scientific notation (Spark LEGACY mode)
+        // scale >= 0, adj_exp < -6 -> scientific notation (Spark LEGACY mode)
         assert_eq!(fmt(0, 18), "0E-18"); // adj_exp = -18
         assert_eq!(fmt(0, 7), "0E-7"); // adj_exp = -7
         assert_eq!(fmt(1, 7), "1E-7");
         assert_eq!(fmt(1, 18), "1E-18");
 
-        // scale < 0 → scientific notation
+        // scale < 0 -> scientific notation
         assert_eq!(fmt(0, -2), "0E+2");
         assert_eq!(fmt(1, -2), "1E+2");
         assert_eq!(fmt(123, -2), "1.23E+4");
