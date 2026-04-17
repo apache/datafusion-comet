@@ -100,6 +100,7 @@ For PRs that add or modify a `datafusion-spark` function, correctness means **ma
 Location: `datafusion/spark/src/function/<category>/<name>.rs`
 
 Check:
+
 - Null handling propagates correctly
 - Overflow and underflow return `Err` when Spark would throw under ANSI mode, return the Spark-defined value otherwise
 - Type dispatch covers all types that Spark supports for this function
