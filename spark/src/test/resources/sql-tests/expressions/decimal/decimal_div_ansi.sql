@@ -81,6 +81,7 @@ SELECT cast(10 as decimal(18,0)) div cast(0.000000 as decimal(18,6))
 
 -- ============================================================================
 -- TRY mode: try_divide returns NULL even when ANSI is enabled globally
+-- (divide-by-zero, overflow, and NULL inputs all produce NULL)
 -- ============================================================================
 
 -- try_divide by zero -> null (TRY semantics override ANSI)
@@ -95,6 +96,19 @@ SELECT try_divide(a, b) FROM test_ansi_decimal
 query
 SELECT try_divide(NULL, cast(3.000000 as decimal(18,6))),
        try_divide(cast(10.000000 as decimal(18,6)), NULL)
+
+-- try_divide overflow -> null (TRY semantics override ANSI even for overflow)
+-- Uses the same overflowing values as the ANSI overflow table below.
+statement
+CREATE TABLE test_try_div_overflow(a decimal(38,0), b decimal(2,2)) USING parquet
+
+statement
+INSERT INTO test_try_div_overflow VALUES
+  ( 99999999999999999999999999999999999999,  0.01),
+  (-99999999999999999999999999999999999999,  0.01)
+
+query
+SELECT try_divide(a, b) FROM test_try_div_overflow
 
 -- ============================================================================
 -- ANSI mode: decimal div overflow throws NUMERIC_VALUE_OUT_OF_RANGE
