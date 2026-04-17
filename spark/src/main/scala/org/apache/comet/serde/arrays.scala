@@ -646,7 +646,7 @@ object CometArraysZip extends CometExpressionSerde[ArraysZip] {
     // mimic Spark's ArraysZip behavior: returns NULL if any argument is NULL
     val combinedNullCheck = expr.children.map(child => IsNotNull(child)).reduce(And)
     val isNotNullExpr = exprToProtoInternal(combinedNullCheck, inputs, binding)
-    val nullLiteralProto = exprToProto(Literal(null, BooleanType), Seq.empty)
+    val nullLiteralProto = exprToProto(Literal(null, expr.dataType), Seq.empty)
 
     if (exprChildren.forall(
         _.isDefined) && isNotNullExpr.isDefined && nullLiteralProto.isDefined) {
