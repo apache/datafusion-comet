@@ -1509,14 +1509,47 @@ impl PhysicalPlanner {
                         delta_exec
                     };
 
-                // No rename projection needed: required_schema already uses
-                // logical names, and DataFusion's schema adapter handles the
-                // physical→logical mapping internally via data_schema.
+                // When column mapping is active, the scan's output schema carries PHYSICAL
+                // column names (those names come from data_schema which is what
+                // `init_datasource_exec` gives to ParquetSource). Upstream operators in the
+                // plan reference columns by LOGICAL name (the `required_schema` names), so we
+                // add a ProjectionExec that aliases each physical column back to its logical
+                // name. Without this rename, MERGE's aggregation codegen (and similar
+                // DataFusion expression paths) fails with
+                //   "Unable to get field named 'logical_name'"
+                // when it tries to evaluate a filter/group-by against the physical-named batch.
+                let scan_out = final_exec.schema();
+                let needs_rename = has_column_mapping
+                    && required_schema
+                        .fields()
+                        .iter()
+                        .zip(scan_out.fields().iter())
+                        .any(|(req, phys)| req.name() != phys.name());
+                let with_rename: Arc<dyn ExecutionPlan> = if needs_rename {
+                    let projections: Vec<(Arc<dyn PhysicalExpr>, String)> = scan_out
+                        .fields()
+                        .iter()
+                        .enumerate()
+                        .map(|(idx, phys_field)| {
+                            let col: Arc<dyn PhysicalExpr> =
+                                Arc::new(Column::new(phys_field.name(), idx));
+                            let alias = required_schema
+                                .fields()
+                                .get(idx)
+                                .map(|f| f.name().clone())
+                                .unwrap_or_else(|| phys_field.name().clone());
+                            (col, alias)
+                        })
+                        .collect();
+                    Arc::new(ProjectionExec::try_new(projections, final_exec)?)
+                } else {
+                    final_exec
+                };
 
                 Ok((
                     vec![],
                     vec![],
-                    Arc::new(SparkPlan::new(spark_plan.plan_id, final_exec, vec![])),
+                    Arc::new(SparkPlan::new(spark_plan.plan_id, with_rename, vec![])),
                 ))
             }
             OpStruct::ShuffleWriter(writer) => {

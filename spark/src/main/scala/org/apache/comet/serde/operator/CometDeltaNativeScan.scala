@@ -240,11 +240,22 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometScanExec] with Loggi
     // `delta.columnMapping.physicalName` in its metadata when the table uses
     // column mapping. Without this the native scan can't translate logical
     // column references to physical parquet column names and returns nulls.
+    // Fetch the Snapshot-level schema via reflection once here; used both to populate column
+    // mappings from the data-schema side (metadata on relation.dataSchema is stripped) and
+    // later to physicalise nested field names before serialisation.
+    val snapshotSchemaEarly: Option[StructType] = DeltaReflection.extractSnapshotSchema(relation)
     val taskList =
       if (!taskList0.getColumnMappingsList.isEmpty) {
         taskList0
       } else {
-        val allFields = relation.dataSchema.fields ++ relation.partitionSchema.fields
+        // `relation.dataSchema.fields[*].metadata` is stripped of Delta's column-mapping
+        // metadata by HadoopFsRelation, so the lookup here nearly always returns empty.
+        // Use the Snapshot schema we extracted (which preserves physical names at every
+        // level) for the data-column mappings, and `relation.partitionSchema` only for
+        // partition columns (whose metadata isn't stripped).
+        val dataFieldsSource: Array[StructField] =
+          snapshotSchemaEarly.map(_.fields).getOrElse(relation.dataSchema.fields)
+        val allFields = dataFieldsSource ++ relation.partitionSchema.fields
         val logicalToPhysical = allFields.flatMap { f =>
           if (f.metadata.contains(DeltaReflection.PhysicalNameMetadataKey)) {
             Some(f.name -> f.metadata.getString(DeltaReflection.PhysicalNameMetadataKey))
@@ -335,11 +346,10 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometScanExec] with Loggi
       relation.dataSchema.fields.exists(
         _.metadata.contains(DeltaReflection.PhysicalNameMetadataKey))
     // `relation.dataSchema` has its StructField metadata stripped by Spark's HadoopFsRelation
-    // construction, so nested physical names are invisible. Fetch the full metadata-bearing
-    // schema from the Delta snapshot via reflection for use by the recursive physicaliser.
+    // construction, so nested physical names are invisible. Reuse the snapshot schema fetched
+    // above (or None when column mapping isn't active).
     val snapshotSchema: Option[StructType] =
-      if (columnMappingActive) DeltaReflection.extractSnapshotSchema(relation)
-      else None
+      if (columnMappingActive) snapshotSchemaEarly else None
     val physicalByLogicalName: Map[String, StructField] =
       snapshotSchema.map(_.fields.map(f => f.name -> f).toMap).getOrElse(Map.empty)
     // Preserve the top-level LOGICAL name and substitute only NESTED (struct/map/array) inner
