@@ -464,15 +464,15 @@ appropriate group. For example, if you add a new expression test suite, add it t
 
 Choose the group that best matches the area your test covers:
 
-| Group         | Covers                                                    |
-| ------------- | --------------------------------------------------------- |
-| `fuzz`        | Fuzz testing and data generation                          |
-| `shuffle`     | Shuffle operators and related exchange behavior           |
-| `parquet`     | Parquet read/write and native reader tests                |
-| `csv`         | CSV native read tests                                     |
-| `exec`        | Execution operators, joins, aggregates, plan rules, TPC-* |
-| `expressions` | Expression evaluation, casts, and SQL file tests          |
-| `sql`         | SQL-level behavior tests                                  |
+| Group         | Covers                                                     |
+| ------------- | ---------------------------------------------------------- |
+| `fuzz`        | Fuzz testing and data generation                           |
+| `shuffle`     | Shuffle operators and related exchange behavior            |
+| `parquet`     | Parquet read/write and native reader tests                 |
+| `csv`         | CSV native read tests                                      |
+| `exec`        | Execution operators, joins, aggregates, plan rules, TPC-\* |
+| `expressions` | Expression evaluation, casts, and SQL file tests           |
+| `sql`         | SQL-level behavior tests                                   |
 
 **Important:** The suite lists in both workflow files must stay in sync. A separate CI check
 (`.github/workflows/pr_missing_suites.yml`) runs `dev/ci/check-suites.py` on every pull request.
