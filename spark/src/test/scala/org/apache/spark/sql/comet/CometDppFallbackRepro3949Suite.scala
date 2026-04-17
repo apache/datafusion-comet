@@ -149,12 +149,6 @@ class CometDppFallbackRepro3949Suite extends CometTestBase {
           case _ => false
         }
 
-        // scalastyle:off println
-        println("=== mechanism check ===")
-        println(s"initialDppVisible=$initialDppVisible initialDecision=$initialDecision")
-        println(s"postAqeDppVisible=$postAqeDppVisible postAqeDecision=$postAqeDecision")
-        // scalastyle:on println
-
         assert(initialDppVisible, "initial child tree should expose DPP scan")
         assert(!postAqeDppVisible, "stage-wrapped child should hide DPP scan")
         assert(!initialDecision, s"expected fall back initially, got $initialDecision")
@@ -379,19 +373,6 @@ class CometDppFallbackRepro3949Suite extends CometTestBase {
             failures += ((variantName, idx, detail, c.getClass.getName))
         }
       }
-
-      // scalastyle:off println
-      println("=== end-to-end summary ===")
-      println(s"failures (collect threw): ${failures.size}")
-      failures.foreach { case (v, i, msg, cls) =>
-        println(s"  $v/q$i: $cls")
-        println(msg)
-      }
-      println(s"suspicious (plan-shape inconsistency): ${suspicious.size}")
-      suspicious.foreach { case (v, i, note) =>
-        println(s"  $v/q$i: ${note.take(800)}")
-      }
-      // scalastyle:on println
 
       // Demonstrate-the-bug assertion: if EITHER an #3949-shaped crash or a plan inconsistency
       // was observed, the bug is reproduced. The 3949 signature is an AssertionError whose
