@@ -782,11 +782,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
   def supportedScalarSortElementType(dt: DataType): Boolean = {
     dt match {
       case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
-          _: DoubleType | _: DecimalType =>
-        true
-      case _: DateType | _: TimestampType | _: TimestampNTZType =>
-        true
-      case _: BooleanType | _: BinaryType | _: StringType =>
+          _: DoubleType | _: DecimalType | _: DateType | _: TimestampType | _: TimestampNTZType |
+          _: BooleanType | _: BinaryType | _: StringType =>
         true
       case _ =>
         false
