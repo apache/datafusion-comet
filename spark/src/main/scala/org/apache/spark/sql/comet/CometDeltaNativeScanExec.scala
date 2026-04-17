@@ -196,8 +196,17 @@ case class CometDeltaNativeScanExec(
         null
       }
 
+    // Key these under both the Comet-native-side name (`output_rows`, used by the metric
+    // collector on the native side) and the Spark streaming ProgressReporter name
+    // (`numOutputRows`, read by `extractSourceToNumInputRows` to populate
+    // `q.recentProgress.numInputRows`). Without the `numOutputRows` alias, streaming
+    // workloads that this scan feeds report 0 input rows per batch even when data flows
+    // correctly -- DeltaSourceSuiteBase.CheckProgress then fails with
+    // "Execute: 0 did not equal N Expected batches don't match".
+    val outputRowsMetric = SQLMetrics.createMetric(sparkContext, "number of output rows")
     val baseMetrics = Map(
-      "output_rows" -> SQLMetrics.createMetric(sparkContext, "number of output rows"),
+      "output_rows" -> outputRowsMetric,
+      "numOutputRows" -> outputRowsMetric,
       "num_splits" -> SQLMetrics.createMetric(sparkContext, "number of file splits processed"))
 
     val planningMetrics = if (taskList != null) {
