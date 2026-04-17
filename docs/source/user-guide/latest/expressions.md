@@ -195,27 +195,27 @@ Expressions that are not Spark-compatible will fall back to Spark by default and
 
 ## Aggregate Expressions
 
-| Expression    | SQL        | Spark-Compatible?         | Compatibility Notes                                                                                              |
-| ------------- | ---------- | ------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| Average       |            | Yes, except for ANSI mode |                                                                                                                  |
-| BitAndAgg     |            | Yes                       |                                                                                                                  |
-| BitOrAgg      |            | Yes                       |                                                                                                                  |
-| BitXorAgg     |            | Yes                       |                                                                                                                  |
-| BoolAnd       | `bool_and` | Yes                       |                                                                                                                  |
-| BoolOr        | `bool_or`  | Yes                       |                                                                                                                  |
-| Corr          |            | No                        | Returns null instead of NaN in some edge cases ([#2646](https://github.com/apache/datafusion-comet/issues/2646)) |
-| Count         |            | Yes                       |                                                                                                                  |
-| CovPopulation |            | Yes                       |                                                                                                                  |
-| CovSample     |            | Yes                       |                                                                                                                  |
-| First         |            | No                        | This function is not deterministic. Results may not match Spark.                                                 |
-| Last          |            | No                        | This function is not deterministic. Results may not match Spark.                                                 |
-| Max           |            | Yes                       |                                                                                                                  |
-| Min           |            | Yes                       |                                                                                                                  |
-| StddevPop     |            | Yes                       |                                                                                                                  |
-| StddevSamp    |            | Yes                       |                                                                                                                  |
-| Sum           |            | Yes, except for ANSI mode |                                                                                                                  |
-| VariancePop   |            | Yes                       |                                                                                                                  |
-| VarianceSamp  |            | Yes                       |                                                                                                                  |
+| Expression    | SQL        | Spark-Compatible?         | Compatibility Notes                                              |
+| ------------- | ---------- | ------------------------- | ---------------------------------------------------------------- |
+| Average       |            | Yes, except for ANSI mode |                                                                  |
+| BitAndAgg     |            | Yes                       |                                                                  |
+| BitOrAgg      |            | Yes                       |                                                                  |
+| BitXorAgg     |            | Yes                       |                                                                  |
+| BoolAnd       | `bool_and` | Yes                       |                                                                  |
+| BoolOr        | `bool_or`  | Yes                       |                                                                  |
+| Corr          |            | Yes                       |                                                                  |
+| Count         |            | Yes                       |                                                                  |
+| CovPopulation |            | Yes                       |                                                                  |
+| CovSample     |            | Yes                       |                                                                  |
+| First         |            | No                        | This function is not deterministic. Results may not match Spark. |
+| Last          |            | No                        | This function is not deterministic. Results may not match Spark. |
+| Max           |            | Yes                       |                                                                  |
+| Min           |            | Yes                       |                                                                  |
+| StddevPop     |            | Yes                       |                                                                  |
+| StddevSamp    |            | Yes                       |                                                                  |
+| Sum           |            | Yes, except for ANSI mode |                                                                  |
+| VariancePop   |            | Yes                       |                                                                  |
+| VarianceSamp  |            | Yes                       |                                                                  |
 
 ## Window Functions
 

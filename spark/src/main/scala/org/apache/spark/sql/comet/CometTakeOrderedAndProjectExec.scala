@@ -174,7 +174,6 @@ case class CometTakeOrderedAndProjectExec(
 
         Option(TaskContext.get()).foreach { context =>
           context.addTaskCompletionListener[Unit] { _ =>
-            it.close()
             cleanSubqueries(it.id, this)
           }
         }

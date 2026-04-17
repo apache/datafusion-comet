@@ -26,6 +26,8 @@ use crate::{
     },
     jvm_bridge::JVMClasses,
 };
+use std::collections::HashSet;
+
 use arrow::array::{Array, RecordBatch, UInt32Array};
 use arrow::compute::{take, TakeOptions};
 use arrow::datatypes::DataType as ArrowDataType;
@@ -141,7 +143,14 @@ fn unregister_and_total(thread_id: u64, context_id: i64) -> usize {
             map.remove(&thread_id);
             return 0;
         }
-        return pools.values().map(|p| p.reserved()).sum::<usize>();
+        let mut seen = HashSet::new();
+        return pools
+            .values()
+            .filter_map(|p| {
+                let ptr = Arc::as_ptr(p) as *const ();
+                seen.insert(ptr).then(|| p.reserved())
+            })
+            .sum::<usize>();
     }
     0
 }
@@ -149,7 +158,18 @@ fn unregister_and_total(thread_id: u64, context_id: i64) -> usize {
 fn total_reserved_for_thread(thread_id: u64) -> usize {
     let map = get_thread_memory_pools().lock();
     map.get(&thread_id)
-        .map(|pools| pools.values().map(|p| p.reserved()).sum::<usize>())
+        .map(|pools| {
+            // Deduplicate pools that share the same underlying allocation
+            // (e.g. task-shared pools registered by multiple execution contexts)
+            let mut seen = HashSet::new();
+            pools
+                .values()
+                .filter_map(|p| {
+                    let ptr = Arc::as_ptr(p) as *const ();
+                    seen.insert(ptr).then(|| p.reserved())
+                })
+                .sum::<usize>()
+        })
         .unwrap_or(0)
 }
 
@@ -544,6 +564,7 @@ fn register_datafusion_spark_function(session_ctx: &SessionContext) {
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSpace::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitCount::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkArrayContains::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBin::default()));
 }
 
 /// Prepares arrow arrays for output.
@@ -1114,6 +1135,7 @@ pub extern "system" fn Java_org_apache_comet_Native_getRustThreadId(
 
 use crate::execution::columnar_to_row::ColumnarToRowContext;
 use arrow::ffi::{from_ffi, FFI_ArrowArray, FFI_ArrowSchema};
+use datafusion_spark::function::math::bin::SparkBin;
 
 /// Initialize a native columnar to row converter.
 ///
