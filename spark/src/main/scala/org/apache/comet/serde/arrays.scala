@@ -20,8 +20,9 @@
 package org.apache.comet.serde
 
 import scala.annotation.tailrec
+import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayFilter, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayRemove, ArrayRepeat, ArraysOverlap, ArrayUnion, Attribute, CreateArray, ElementAt, Expression, Flatten, GetArrayItem, IsNotNull, Literal, Reverse, Size, SortArray}
+import org.apache.spark.sql.catalyst.expressions.{And, ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayFilter, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayRemove, ArrayRepeat, ArraysOverlap, ArraysZip, ArrayUnion, Attribute, CreateArray, ElementAt, EmptyRow, Expression, Flatten, GetArrayItem, IsNotNull, Literal, Reverse, Size, SortArray}
 import org.apache.spark.sql.catalyst.util.GenericArrayData
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
@@ -696,6 +697,58 @@ object CometSize extends CometExpressionSerde[Size] {
     exprToProto(Literal(value, IntegerType), Seq.empty)
   }
 
+}
+
+object CometArraysZip extends CometExpressionSerde[ArraysZip] with ArraysBase {
+  override def getSupportLevel(expr: ArraysZip): SupportLevel = {
+    val inputTypes = expr.children.map(_.dataType).toSet
+    for (dt <- inputTypes) {
+      if (!isTypeSupported(dt)) {
+        Unsupported(Some(s"Unsupported child data type: $dt"))
+      }
+    }
+    Compatible()
+  }
+
+  override def convert(
+      expr: ArraysZip,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+
+    val exprChildren: Seq[Option[ExprOuterClass.Expr]] =
+      expr.children.map(exprToProtoInternal(_, inputs, binding))
+    val names: Seq[Any] = expr.names.map(_.eval(EmptyRow))
+
+    // mimic Spark's ArraysZip behavior: returns NULL if any argument is NULL
+    val combinedNullCheck = expr.children.map(child => IsNotNull(child)).reduce(And)
+    val isNotNullExpr = exprToProtoInternal(combinedNullCheck, inputs, binding)
+    val nullLiteralProto = exprToProto(Literal(null, expr.dataType), Seq.empty)
+
+    if (exprChildren.forall(
+        _.isDefined) && isNotNullExpr.isDefined && nullLiteralProto.isDefined) {
+      val arraysZip: ExprOuterClass.ArraysZip = ExprOuterClass.ArraysZip
+        .newBuilder()
+        .addAllValues(exprChildren.map(_.get).asJava)
+        .addAllNames(names.map(_.toString).asJava)
+        .build()
+
+      val caseWhenExpr = ExprOuterClass.CaseWhen
+        .newBuilder()
+        .addWhen(isNotNullExpr.get)
+        .addThen(ExprOuterClass.Expr.newBuilder().setArraysZip(arraysZip).build())
+        .setElseExpr(nullLiteralProto.get)
+        .build()
+      Some(
+        ExprOuterClass.Expr
+          .newBuilder()
+          .setCaseWhen(caseWhenExpr)
+          .build())
+
+    } else {
+      withInfo(expr, "unsupported arguments for ArraysZip", expr.children ++ expr.names: _*)
+      None
+    }
+  }
 }
 
 trait ArraysBase {
