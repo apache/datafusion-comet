@@ -48,7 +48,7 @@ import org.apache.spark.util.random.XORShiftRandom
 
 import com.google.common.base.Objects
 
-import org.apache.comet.CometConf
+import org.apache.comet.{CometConf, FuzzFallback}
 import org.apache.comet.CometConf.{COMET_EXEC_SHUFFLE_ENABLED, COMET_SHUFFLE_MODE}
 import org.apache.comet.CometSparkSessionExtensions.{isCometShuffleManagerEnabled, withInfo}
 import org.apache.comet.serde.{Compatible, OperatorOuterClass, QueryPlanSerde, SupportLevel, Unsupported}
@@ -342,6 +342,11 @@ object CometShuffleExchangeExec
       return false
     }
 
+    if (FuzzFallback.shouldVetoShuffle(s)) {
+      withInfo(s, "Fuzz fallback vetoed native shuffle")
+      return false
+    }
+
     val inputs = s.child.output
 
     for (input <- inputs) {
@@ -456,6 +461,11 @@ object CometShuffleExchangeExec
 
     if (CometConf.COMET_DPP_FALLBACK_ENABLED.get() && stageContainsDPPScan(s)) {
       withInfo(s, "Stage contains a scan with Dynamic Partition Pruning")
+      return false
+    }
+
+    if (FuzzFallback.shouldVetoShuffle(s)) {
+      withInfo(s, "Fuzz fallback vetoed columnar shuffle")
       return false
     }
 

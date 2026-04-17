@@ -561,6 +561,47 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(true)
 
+  val COMET_FUZZ_FALLBACK_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.fuzz.fallback.enabled")
+      .category(CATEGORY_TESTING)
+      .doc(
+        "Diagnostic: when enabled, Comet randomly vetoes converting shuffles/operators to " +
+          "Comet equivalents so the rule pipeline produces irregular Spark/Comet boundaries. " +
+          "Used to surface plan-shape bugs that are hard to trigger via normal queries. " +
+          "Decisions are deterministic given `spark.comet.fuzz.fallback.seed`.")
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_FUZZ_FALLBACK_SEED: ConfigEntry[Long] =
+    conf("spark.comet.fuzz.fallback.seed")
+      .category(CATEGORY_TESTING)
+      .doc("Seed for the fuzz fallback RNG. Same seed + same query reproduces the same pattern " +
+        "of forced fallbacks. Only used when `spark.comet.fuzz.fallback.enabled=true`.")
+      .longConf
+      .createWithDefault(0L)
+
+  val COMET_FUZZ_FALLBACK_SHUFFLE_VETO_PROBABILITY: ConfigEntry[Double] =
+    conf("spark.comet.fuzz.fallback.shuffleVetoProbability")
+      .category(CATEGORY_TESTING)
+      .doc(
+        "Probability in [0.0, 1.0] that the fuzz fallback vetoes converting a given " +
+          "ShuffleExchangeExec to a CometShuffleExchangeExec. Only used when " +
+          "`spark.comet.fuzz.fallback.enabled=true`.")
+      .doubleConf
+      .checkValue(v => v >= 0.0 && v <= 1.0, "Probability must be in [0.0, 1.0]")
+      .createWithDefault(0.5)
+
+  val COMET_FUZZ_FALLBACK_EXEC_VETO_PROBABILITY: ConfigEntry[Double] =
+    conf("spark.comet.fuzz.fallback.execVetoProbability")
+      .category(CATEGORY_TESTING)
+      .doc(
+        "Probability in [0.0, 1.0] that the fuzz fallback vetoes converting a given " +
+          "Spark operator (aggregate, join, project, etc.) to its Comet equivalent. " +
+          "Only used when `spark.comet.fuzz.fallback.enabled=true`.")
+      .doubleConf
+      .checkValue(v => v >= 0.0 && v <= 1.0, "Probability must be in [0.0, 1.0]")
+      .createWithDefault(0.0)
+
   val COMET_DEBUG_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.debug.enabled")
       .category(CATEGORY_EXEC)
