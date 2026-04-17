@@ -22,6 +22,7 @@ package org.apache.comet.delta
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.connector.read.{Scan => V2Scan}
 import org.apache.spark.sql.execution.datasources.{FileFormat, HadoopFsRelation}
+import org.apache.spark.sql.types.StructType
 
 /**
  * Class-name-based probes for Delta Lake plan nodes.
@@ -163,6 +164,44 @@ object DeltaReflection extends Logging {
 
   /** StructField metadata key under which Delta stores the column-mapping physical name. */
   val PhysicalNameMetadataKey: String = "delta.columnMapping.physicalName"
+
+  /**
+   * Extract the Delta table's Snapshot-level schema (`Metadata.schema()` in Delta terms) via
+   * reflection. Unlike the `relation.dataSchema` we get from Spark -- which has its StructField
+   * metadata stripped by HadoopFsRelation construction -- the Snapshot's schema preserves the
+   * `delta.columnMapping.physicalName` and `delta.columnMapping.id` metadata on every StructField
+   * at every level of nesting. This is the authoritative source for building a "physical schema"
+   * to hand to the native parquet reader.
+   */
+  def extractSnapshotSchema(relation: HadoopFsRelation): Option[StructType] = {
+    try {
+      val location: Any = relation.location
+      val metadataObj = findAccessor(location, Seq("metadata")).orElse {
+        findAccessor(location, Seq("snapshot")).flatMap(findAccessor(_, Seq("metadata")))
+      }
+      metadataObj.flatMap { m =>
+        // Delta's Metadata exposes a `schema(): StructType` method that parses its stored JSON
+        // schema string. The returned StructType has full metadata preserved at every level.
+        val schema = invokeNoArg(m, "schema").orElse(findAccessor(m, Seq("schema")))
+        schema.collect { case s: StructType => s }
+      }
+    } catch {
+      case scala.util.control.NonFatal(e) =>
+        logWarning(s"Failed to extract Delta snapshot schema: ${e.getMessage}")
+        None
+    }
+  }
+
+  private def invokeNoArg(obj: Any, methodName: String): Option[AnyRef] = {
+    if (obj == null) return None
+    try {
+      val m =
+        obj.getClass.getMethods.find(x => x.getName == methodName && x.getParameterCount == 0)
+      m.flatMap(mm => Option(mm.invoke(obj)))
+    } catch {
+      case scala.util.control.NonFatal(_) => None
+    }
+  }
 
   /** Property key for the physical column name Delta materialises row IDs into. */
   val MaterializedRowIdColumnProp: String =
@@ -434,7 +473,10 @@ object DeltaReflection extends Logging {
       case _ => None
     }
 
-  def castPartitionString(str: Option[String], dt: org.apache.spark.sql.types.DataType): Any = {
+  def castPartitionString(
+      str: Option[String],
+      dt: org.apache.spark.sql.types.DataType,
+      sessionZoneId: java.time.ZoneId = java.time.ZoneOffset.UTC): Any = {
     import org.apache.spark.sql.catalyst.util.DateTimeUtils
     import org.apache.spark.sql.types._
     import org.apache.spark.unsafe.types.UTF8String
@@ -456,8 +498,15 @@ object DeltaReflection extends Logging {
                 .stringToDate(UTF8String.fromString(s))
                 .getOrElse(null)
             case _: TimestampType =>
+              // Delta serializes TIMESTAMP partition values in the session TZ at write time, so
+              // parse them in the session TZ at read time to round-trip correctly (defaults to
+              // UTC when the caller hasn't plumbed the session TZ through).
               DateTimeUtils
-                .stringToTimestamp(UTF8String.fromString(s), java.time.ZoneOffset.UTC)
+                .stringToTimestamp(UTF8String.fromString(s), sessionZoneId)
+                .getOrElse(null)
+            case _: TimestampNTZType =>
+              DateTimeUtils
+                .stringToTimestampWithoutTimeZone(UTF8String.fromString(s))
                 .getOrElse(null)
             case d: DecimalType =>
               val dec =

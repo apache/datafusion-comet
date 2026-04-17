@@ -147,19 +147,19 @@ case class CometDeltaNativeScanExec(
     val predicate = InterpretedPredicate(bound)
     predicate.initialize(0)
 
+    val sessionZoneId =
+      java.time.ZoneId.of(SQLConf.get.getConfString("spark.sql.session.timeZone"))
     tasks.filter { task =>
       val row = InternalRow.fromSeq(partitionSchema.fields.toSeq.map { field =>
         val proto = task.getPartitionValuesList.asScala.find(_.getName == field.name)
         val strValue =
           if (proto.exists(_.hasValue)) Some(proto.get.getValue) else None
-        castPartitionString(strValue, field.dataType)
+        org.apache.comet.delta.DeltaReflection
+          .castPartitionString(strValue, field.dataType, sessionZoneId)
       })
       predicate.eval(row)
     }
   }
-
-  private def castPartitionString(str: Option[String], dt: DataType): Any =
-    org.apache.comet.delta.DeltaReflection.castPartitionString(str, dt)
 
   def commonData: Array[Byte] = commonBytes
   def perPartitionData: Array[Array[Byte]] = planningPerPartitionBytes

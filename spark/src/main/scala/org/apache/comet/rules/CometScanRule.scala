@@ -282,6 +282,21 @@ case class CometScanRule(session: SparkSession)
         if (!CometScanExec.isFileFormatSupported(r.fileFormat)) {
           return withInfo(scanExec, s"Unsupported file format ${r.fileFormat}")
         }
+        // Delta reads its own transaction log checkpoint files via the regular parquet reader.
+        // When those reads fail (broken checkpoint), Delta's own error path produces specific
+        // diagnostics that tests assert on (e.g. "0001.checkpoint" substring). Comet's native
+        // scan wraps the error in a generic "Data read failed", losing that context. Decline
+        // acceleration for any parquet scan rooted under a Delta `_delta_log/` directory so
+        // the original error semantics are preserved.
+        val readsDeltaLog = scanExec.relation.location.rootPaths.exists { p =>
+          val s = p.toUri.getPath
+          s.contains("/_delta_log/") || s.endsWith("/_delta_log")
+        }
+        if (readsDeltaLog) {
+          return withInfo(
+            scanExec,
+            "Parquet read of Delta _delta_log files skipped so Delta error semantics stay intact")
+        }
         val hadoopConf = r.sparkSession.sessionState.newHadoopConfWithOptions(r.options)
 
         // TODO is this restriction valid for all native scan types?

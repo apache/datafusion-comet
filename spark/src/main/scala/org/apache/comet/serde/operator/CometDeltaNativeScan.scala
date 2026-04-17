@@ -323,7 +323,46 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometScanExec] with Loggi
       relation.dataSchema.fields.filterNot(f =>
         partitionNames.contains(f.name.toLowerCase(Locale.ROOT)))
 
-    val dataSchema = schema2Proto(fileDataSchemaFields)
+    // When column mapping (id or name) is active, Delta writes parquet files using physical
+    // names at EVERY level of nesting -- struct inner fields, array elements, map keys/values.
+    // `schema2Proto` otherwise serialises the Spark StructField tree with logical names, so the
+    // native parquet reader would look for e.g. `b1` and its inner `c` but the file has
+    // `col-<uuid1>` and `col-<uuid2>`, yielding a null-struct read. Substitute physical names
+    // recursively before serialising so the proto schema matches the on-disk names at every
+    // level. The `column_mappings` proto carries only top-level logical->physical so that
+    // filter column references (expressed with logical names) still translate correctly.
+    val columnMappingActive = taskList.getColumnMappingsList.asScala.nonEmpty ||
+      relation.dataSchema.fields.exists(
+        _.metadata.contains(DeltaReflection.PhysicalNameMetadataKey))
+    // `relation.dataSchema` has its StructField metadata stripped by Spark's HadoopFsRelation
+    // construction, so nested physical names are invisible. Fetch the full metadata-bearing
+    // schema from the Delta snapshot via reflection for use by the recursive physicaliser.
+    val snapshotSchema: Option[StructType] =
+      if (columnMappingActive) DeltaReflection.extractSnapshotSchema(relation)
+      else None
+    val physicalByLogicalName: Map[String, StructField] =
+      snapshotSchema.map(_.fields.map(f => f.name -> f).toMap).getOrElse(Map.empty)
+    // Preserve the top-level LOGICAL name and substitute only NESTED (struct/map/array) inner
+    // field names with their physical equivalents. The native planner (planner.rs ~1383)
+    // already handles top-level logical->physical substitution using the flat `column_mappings`
+    // proto. Fields not present in the snapshot (e.g. synthetic `_tmp_metadata_row_index`) are
+    // passed through untouched.
+    def physicaliseTopField(f: StructField): StructField =
+      physicalByLogicalName.get(f.name) match {
+        case Some(metaField) =>
+          StructField(f.name, physicaliseDataType(metaField.dataType), f.nullable, f.metadata)
+        case None => f
+      }
+    // Only `data_schema` (the on-disk parquet schema) takes physical names; keep
+    // `required_schema` in logical names because the planner's `ColumnMappingFilterRewriter`
+    // + schema-adapter chain uses the name delta between the two to produce physical reads and
+    // logical-named outputs. Physicalising required_schema would break downstream operators
+    // that reference the output by logical name (aggregations, joins, etc.).
+    val physicalFileDataSchemaFields =
+      if (columnMappingActive) fileDataSchemaFields.map(physicaliseTopField)
+      else fileDataSchemaFields
+
+    val dataSchema = schema2Proto(physicalFileDataSchemaFields)
     val requiredSchema = schema2Proto(scan.requiredSchema.fields)
     val partitionSchema = schema2Proto(relation.partitionSchema.fields)
     commonBuilder.addAllDataSchema(dataSchema.toIterable.asJava)
@@ -431,6 +470,34 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometScanExec] with Loggi
    * `InterpretedPredicate`. Only values for fields actually referenced by the predicate need
    * parsing, but we do the full row for simplicity.
    */
+  /**
+   * Recursively rewrite a `StructField` and its `DataType` so every field name at every level of
+   * nesting reflects the column-mapping physical name stored in its metadata. For fields without
+   * the physical-name metadata (e.g. partition columns, or inner struct fields on a
+   * non-column-mapped table), the logical name is retained. Used to produce the schema we send to
+   * the native parquet reader when column mapping is active.
+   */
+  private def physicaliseStructField(f: StructField): StructField = {
+    val physName =
+      if (f.metadata.contains(DeltaReflection.PhysicalNameMetadataKey)) {
+        f.metadata.getString(DeltaReflection.PhysicalNameMetadataKey)
+      } else {
+        f.name
+      }
+    StructField(physName, physicaliseDataType(f.dataType), f.nullable, f.metadata)
+  }
+
+  private def physicaliseDataType(dt: DataType): DataType = dt match {
+    case s: StructType => StructType(s.fields.map(physicaliseStructField))
+    case a: ArrayType => ArrayType(physicaliseDataType(a.elementType), a.containsNull)
+    case m: MapType =>
+      MapType(
+        physicaliseDataType(m.keyType),
+        physicaliseDataType(m.valueType),
+        m.valueContainsNull)
+    case other => other
+  }
+
   private def prunePartitions(
       tasks: Seq[OperatorOuterClass.DeltaScanTask],
       scan: CometScanExec,
@@ -464,19 +531,17 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometScanExec] with Loggi
     val predicate = InterpretedPredicate(bound)
     predicate.initialize(0)
 
+    val sessionZoneId = java.time.ZoneId.of(scan.conf.getConfString("spark.sql.session.timeZone"))
     tasks.filter { task =>
       val row = InternalRow.fromSeq(partitionSchema.fields.toSeq.map { field =>
         val proto = task.getPartitionValuesList.asScala.find(_.getName == field.name)
         val strValue =
           if (proto.exists(_.hasValue)) Some(proto.get.getValue) else None
-        castPartitionString(strValue, field.dataType)
+        DeltaReflection.castPartitionString(strValue, field.dataType, sessionZoneId)
       })
       predicate.eval(row)
     }
   }
-
-  private def castPartitionString(str: Option[String], dt: DataType): Any =
-    DeltaReflection.castPartitionString(str, dt)
 
   /**
    * Build a kernel-independent `DeltaScanTaskList` from a caller-provided AddFile list. Used when
