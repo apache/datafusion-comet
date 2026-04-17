@@ -82,7 +82,7 @@ impl PhysicalExpr for SparkArraysZipFunc {
         let fields = self.fields(input_schema)?;
         Ok(List(Arc::new(Field::new_list_field(
             DataType::Struct(Fields::from(fields)),
-            true,
+            false,
         ))))
     }
 
