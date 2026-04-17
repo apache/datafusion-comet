@@ -29,13 +29,12 @@ import org.apache.spark.sql.execution.{LeafExecNode, SparkPlan}
 import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
 import org.apache.spark.sql.internal.SQLConf
 
-import org.apache.comet.{CometConf, CometExplainInfo}
-import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.{CometConf, CometFallback}
 
 /**
  * Pins the sticky-fallback invariant for Comet shuffle decisions: `nativeShuffleSupported` /
- * `columnarShuffleSupported` must return `false` whenever the shuffle already carries a Comet
- * fallback tag from a prior rule pass.
+ * `columnarShuffleSupported` must return `false` whenever the shuffle already carries a
+ * `CometFallback` marker from a prior rule pass.
  *
  * Without this behavior, AQE's stage-prep rule re-evaluation can flip the decision — e.g.,
  * `stageContainsDPPScan` walks the shuffle's child tree with `.exists`, but a materialized child
@@ -44,25 +43,36 @@ import org.apache.comet.CometSparkSessionExtensions.withInfo
  * at initial planning and then convert to Comet at stage prep, producing plan-shape
  * inconsistencies across the two passes (suspected mechanism behind #3949).
  *
- * The fix mirrors `CometNativeScan.isSupported`: if the node already has any fallback reason
- * tagged by a prior pass, preserve that decision rather than re-deriving it.
+ * Fallback decisions that must survive AQE replanning use `CometFallback.markForFallback`. The
+ * shuffle-support predicates check `isMarkedForFallback` at the top and short-circuit.
  */
 class CometShuffleFallbackStickinessSuite extends CometTestBase {
 
-  test("columnarShuffleSupported returns false when shuffle already carries a fallback tag") {
+  test("both support predicates fall back when the shuffle carries a CometFallback marker") {
     val shuffle = ShuffleExchangeExec(SinglePartition, SyntheticLeaf(Nil))
-    // Simulate an earlier rule pass having tagged this shuffle with a DPP fallback reason.
-    withInfo(shuffle, "Stage contains a scan with Dynamic Partition Pruning")
-    assert(shuffle.getTagValue(CometExplainInfo.EXTENSION_INFO).exists(_.nonEmpty))
+    CometFallback.markForFallback(shuffle, "pretend prior pass decided Spark fallback")
 
     withSQLConf(CometConf.COMET_DPP_FALLBACK_ENABLED.key -> "true") {
       assert(
         !CometShuffleExchangeExec.columnarShuffleSupported(shuffle),
-        "tagged shuffle must preserve its prior-pass fallback decision")
+        "marked shuffle must preserve its prior-pass fallback decision (columnar path)")
       assert(
         !CometShuffleExchangeExec.nativeShuffleSupported(shuffle),
-        "tagged shuffle must preserve its prior-pass fallback decision in native path too")
+        "marked shuffle must preserve its prior-pass fallback decision (native path)")
     }
+  }
+
+  test("informational explain-info alone does NOT force fallback") {
+    // A shuffle can accumulate explain info (e.g. 'Comet native shuffle not enabled') as
+    // informational output from earlier checks without being a full-fallback signal. That
+    // info must not cause the columnar path to decline.
+    val shuffle = ShuffleExchangeExec(SinglePartition, SyntheticLeaf(Nil))
+    // Note: withInfo, not markForFallback.
+    org.apache.comet.CometSparkSessionExtensions
+      .withInfo(shuffle, "Comet native shuffle not enabled")
+    assert(
+      !CometFallback.isMarkedForFallback(shuffle),
+      "explain info alone must not imply a sticky fallback marker")
   }
 
   test(
@@ -110,16 +120,16 @@ class CometShuffleFallbackStickinessSuite extends CometTestBase {
             .collectFirst { case s: ShuffleExchangeExec => s }
             .getOrElse(fail(s"no shuffle found:\n${initial.treeString}"))
 
-        // Pass 1: real DPP subtree visible. Returns false AND tags the shuffle.
+        // Pass 1: real DPP subtree visible. Returns false AND marks the shuffle.
         val first = CometShuffleExchangeExec.columnarShuffleSupported(shuffle)
         assert(!first, "initial pass must fall back (DPP visible)")
         assert(
-          shuffle.getTagValue(CometExplainInfo.EXTENSION_INFO).exists(_.nonEmpty),
-          "fallback reason must be tagged onto the shuffle")
+          CometFallback.isMarkedForFallback(shuffle),
+          "fallback marker must be placed on the shuffle")
 
         // Pass 2 simulates AQE stage-prep: replace the child with an opaque leaf that hides
         // the DPP subtree from tree walks. A naive `.exists`-based check would flip to true
-        // here; the tag-first short-circuit must keep the decision stable.
+        // here; the sticky marker must keep the decision stable.
         val reshapedShuffle =
           shuffle
             .withNewChildren(Seq(SyntheticLeaf(shuffle.child.output)))
