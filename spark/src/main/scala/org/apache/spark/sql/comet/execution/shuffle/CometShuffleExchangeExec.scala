@@ -36,7 +36,7 @@ import org.apache.spark.sql.catalyst.plans.logical.Statistics
 import org.apache.spark.sql.catalyst.plans.physical._
 import org.apache.spark.sql.comet.{CometMetricNode, CometNativeExec, CometPlan, CometSinkPlaceHolder}
 import org.apache.spark.sql.execution._
-import org.apache.spark.sql.execution.adaptive.ShuffleQueryStageExec
+import org.apache.spark.sql.execution.adaptive.{QueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.exchange.{ENSURE_REQUIREMENTS, ShuffleExchangeExec, ShuffleExchangeLike, ShuffleOrigin}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics, SQLShuffleReadMetricsReporter, SQLShuffleWriteMetricsReporter}
 import org.apache.spark.sql.internal.SQLConf
@@ -555,16 +555,27 @@ object CometShuffleExchangeExec
    * Returns true if the stage (the subtree rooted at this shuffle) contains a scan with Dynamic
    * Partition Pruning (DPP). When DPP is present, the scan falls back to Spark, and wrapping the
    * stage with Comet shuffle creates inefficient row-to-columnar transitions.
+   *
+   * The walk explicitly descends into `QueryStageExec.plan`. Under AQE, a child subtree that has
+   * already materialized is wrapped in a `ShuffleQueryStageExec` (a `LeafExecNode`), so a plain
+   * `.exists` stops at the wrapper. That would cause the same shuffle to return a different
+   * answer here during initial planning (DPP visible, fall back to Spark) vs. AQE stage prep (DPP
+   * hidden, convert to Comet) and produce plan-shape inconsistencies across the two passes.
    */
   private def stageContainsDPPScan(s: ShuffleExchangeExec): Boolean = {
     def isDynamicPruningFilter(e: Expression): Boolean =
       e.exists(_.isInstanceOf[PlanExpression[_]])
 
-    s.child.exists {
+    def containsDpp(plan: SparkPlan): Boolean = plan match {
       case scan: FileSourceScanExec =>
         scan.partitionFilters.exists(isDynamicPruningFilter)
-      case _ => false
+      case stage: QueryStageExec =>
+        containsDpp(stage.plan)
+      case other =>
+        other.children.exists(containsDpp)
     }
+
+    containsDpp(s.child)
   }
 
   def isCometShuffleEnabledWithInfo(op: SparkPlan): Boolean = {
