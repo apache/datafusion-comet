@@ -96,8 +96,14 @@ case class CometScanRule(session: SparkSession)
     // Gated on COMET_DELTA_NATIVE_ENABLED: if the user has turned off Comet's
     // Delta path, we must leave Delta's own plan rewrite intact so vanilla
     // Spark+Delta applies the DV via DeltaParquetFileFormat at read time.
+    // Scans we must LEAVE AS-IS because a Delta DV filter above them is load-bearing
+    // (Comet's native path cannot produce the synthetic `__delta_internal_is_row_deleted`
+    // column, so stripping the filter here and converting the scan below would silently
+    // emit deleted rows). Populated during `stripDeltaDvWrappers`; consulted by
+    // `transformScan` so both halves of the decision stay in sync.
+    val dvProtectedScans = scala.collection.mutable.Set.empty[FileSourceScanExec]
     val stripped = if (CometConf.COMET_DELTA_NATIVE_ENABLED.get(conf)) {
-      stripDeltaDvWrappers(plan)
+      stripDeltaDvWrappers(plan, dvProtectedScans)
     } else {
       plan
     }
@@ -145,6 +151,15 @@ case class CometScanRule(session: SparkSession)
       case scan if hasMetadataCol(scan) =>
         withInfo(scan, "Metadata column is not supported")
 
+      // DV-protected: an outer Delta `__delta_internal_is_row_deleted` filter is load-bearing
+      // and Comet's scan path can't produce that column. Leaving the scan as Spark's native
+      // FileSourceScanExec lets Delta's reader supply the column and the filter apply DVs
+      // correctly (see `stripDeltaDvWrappers`).
+      case scanExec: FileSourceScanExec if dvProtectedScans.contains(scanExec) =>
+        withInfo(
+          scanExec,
+          "Leaving scan to Delta so its DV filter above can apply deletion vectors")
+
       // data source V1
       case scanExec: FileSourceScanExec =>
         transformV1Scan(fullPlan, scanExec)
@@ -175,13 +190,55 @@ case class CometScanRule(session: SparkSession)
    * + output no longer mention the synthetic column. Kernel provides the actual DV row indexes on
    * the driver side, and `DeltaDvFilterExec` applies them at execution time.
    */
-  private def stripDeltaDvWrappers(plan: SparkPlan): SparkPlan = {
+  private def stripDeltaDvWrappers(
+      plan: SparkPlan,
+      dvProtectedScans: scala.collection.mutable.Set[FileSourceScanExec]): SparkPlan = {
     plan.transformUp {
       case proj @ ProjectExec(projectList, FilterExec(cond, inner))
           if isDeltaDvFilterPattern(cond) =>
         val userOutput = projectList.map(_.toAttribute)
-        findAndStripDeltaScanBelow(inner, userOutput).getOrElse(proj)
+        if (scanBelowFallsBackForDvs(inner)) {
+          // Register the inner scan so `transformScan` won't convert it to a CometScanExec.
+          // If we stripped the filter but then Comet converted the scan, the resulting plan
+          // would read raw parquet (all rows, including deleted ones) -- PURGE/REORG would
+          // then rewrite files without filtering anything out. Leaving both the wrapper and
+          // the original FileSourceScanExec in place lets Delta's own reader apply the DV.
+          collectDeltaScanBelow(inner).foreach(dvProtectedScans.add)
+          proj
+        } else {
+          findAndStripDeltaScanBelow(inner, userOutput).getOrElse(proj)
+        }
     }
+  }
+
+  private def collectDeltaScanBelow(plan: SparkPlan): Option[FileSourceScanExec] = plan match {
+    case scan: FileSourceScanExec
+        if DeltaReflection.isDeltaFileFormat(scan.relation.fileFormat) =>
+      Some(scan)
+    case other if other.children.size == 1 => collectDeltaScanBelow(other.children.head)
+    case _ => None
+  }
+
+  /**
+   * True when the child subtree contains a Delta `FileSourceScanExec` whose FileIndex is a
+   * pre-materialised `TahoeBatchFileIndex`-family index AND at least one AddFile carries a
+   * non-null DeletionVectorDescriptor. That is the exact shape `CometDeltaNativeScan.convert`
+   * bails out on (Phase-1 DV fallback), so Comet's native path will not apply the DV. The DV
+   * wrapper Delta injected above must stay in place for correctness.
+   */
+  private def scanBelowFallsBackForDvs(plan: SparkPlan): Boolean = {
+    def check(p: SparkPlan): Boolean = p match {
+      case scan: FileSourceScanExec
+          if DeltaReflection.isDeltaFileFormat(scan.relation.fileFormat)
+            && DeltaReflection.isBatchFileIndex(scan.relation.location) =>
+        DeltaReflection.extractBatchAddFiles(scan.relation.location) match {
+          case Some(addFiles) => addFiles.exists(_.hasDeletionVector)
+          case None => false
+        }
+      case other if other.children.size == 1 => check(other.children.head)
+      case _ => false
+    }
+    check(plan)
   }
 
   /** Matches `__delta_internal_is_row_deleted = 0` (the filter Delta injects). */

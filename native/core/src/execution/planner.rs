@@ -3325,21 +3325,29 @@ fn parse_delta_partition_scalar(
 ) -> Result<ScalarValue, String> {
     match dt {
         DataType::Timestamp(unit, tz_opt) => {
-            use chrono::{NaiveDateTime, TimeZone};
+            use chrono::{DateTime, NaiveDateTime, TimeZone};
             use chrono_tz::Tz;
-            // Delta pattern: "yyyy-MM-dd HH:mm:ss" with optional fractional seconds.
-            let naive = NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S%.f")
-                .or_else(|_| NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S"))
-                .map_err(|e| format!("cannot parse timestamp '{s}': {e}"))?;
-            // Interpret in the session TZ, then normalise to epoch micros (UTC).
-            let tz: Tz = session_tz
-                .parse()
-                .map_err(|e| format!("invalid session TZ '{session_tz}': {e}"))?;
-            let dt_local = tz
-                .from_local_datetime(&naive)
-                .earliest()
-                .ok_or_else(|| format!("ambiguous local datetime for '{s}'"))?;
-            let micros = dt_local.timestamp_micros();
+            // Delta pattern variants we have to support:
+            //   - naive: "yyyy-MM-dd HH:mm:ss[.S]" (written in session TZ)
+            //   - with offset: "yyyy-MM-dd HH:mm:ss[.S] +HHMM" (CDC metadata columns)
+            let micros = if let Ok(dt_with_tz) = DateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S%.f %z")
+                .or_else(|_| DateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S %z"))
+            {
+                dt_with_tz.timestamp_micros()
+            } else {
+                let naive = NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S%.f")
+                    .or_else(|_| NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S"))
+                    .map_err(|e| format!("cannot parse timestamp '{s}': {e}"))?;
+                // Interpret in the session TZ, then normalise to epoch micros (UTC).
+                let tz: Tz = session_tz
+                    .parse()
+                    .map_err(|e| format!("invalid session TZ '{session_tz}': {e}"))?;
+                let dt_local = tz
+                    .from_local_datetime(&naive)
+                    .earliest()
+                    .ok_or_else(|| format!("ambiguous local datetime for '{s}'"))?;
+                dt_local.timestamp_micros()
+            };
             match unit {
                 arrow::datatypes::TimeUnit::Microsecond => {
                     Ok(ScalarValue::TimestampMicrosecond(Some(micros), tz_opt.clone()))
