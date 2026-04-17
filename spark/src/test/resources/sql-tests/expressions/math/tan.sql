@@ -15,7 +15,6 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- ConfigMatrix: parquet.enable.dictionary=false,true
 -- Config: spark.comet.expression.Tan.allowIncompatible=true
 
 statement

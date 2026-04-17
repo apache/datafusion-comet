@@ -16,14 +16,15 @@
 -- under the License.
 
 statement
-CREATE TABLE test_acos(d double) USING parquet
+CREATE TABLE test_date_from_unix_date(i int) USING parquet
 
+-- -719162 = 0001-01-01 (Spark min date), 2932896 = 9999-12-31 (Spark max date)
 statement
-INSERT INTO test_acos VALUES (0.0), (1.0), (-1.0), (0.5), (NULL), (cast('NaN' as double)), (2.0), (-2.0)
+INSERT INTO test_date_from_unix_date VALUES (0), (1), (-1), (18993), (-25567), (-719162), (2932896), (NULL)
 
-query tolerance=1e-6
-SELECT acos(d) FROM test_acos
+query
+SELECT date_from_unix_date(i) FROM test_date_from_unix_date
 
 -- literal arguments
-query tolerance=1e-6
-SELECT acos(0.5), acos(1.0), acos(-1.0), acos(NULL)
+query
+SELECT date_from_unix_date(0), date_from_unix_date(1), date_from_unix_date(-1), date_from_unix_date(18993), date_from_unix_date(NULL)
