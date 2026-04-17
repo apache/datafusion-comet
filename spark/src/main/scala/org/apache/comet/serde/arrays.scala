@@ -624,14 +624,15 @@ object CometSize extends CometExpressionSerde[Size] {
 
 }
 
-object CometArraysZip extends CometExpressionSerde[ArraysZip] {
+object CometArraysZip extends CometExpressionSerde[ArraysZip] with ArraysBase {
   override def getSupportLevel(expr: ArraysZip): SupportLevel = {
-    expr.dataType match {
-      case _: ArrayType => Compatible()
-      case other =>
-        // this should be unreachable because Spark only supports array inputs
-        Unsupported(Some(s"Unsupported child data type: $other"))
+    val inputTypes = expr.children.map(_.dataType).toSet
+    for (dt <- inputTypes) {
+      if (!isTypeSupported(dt)) {
+        Unsupported(Some(s"Unsupported child data type: $dt"))
+      }
     }
+    Compatible()
   }
 
   override def convert(
