@@ -35,7 +35,7 @@ import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType,
 
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.rules.CometScanTypeChecker
-import org.apache.comet.serde.Compatible
+import org.apache.comet.serde.{Compatible, Incompatible}
 
 class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
@@ -641,6 +641,73 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateDecimalsPrecision10Scale2(), DataTypes.StringType)
   }
 
+  test("cast DecimalType(38,18) to StringType") {
+    castTest(generateDecimalsPrecision38Scale18(), DataTypes.StringType)
+  }
+
+  test("cast DecimalType with negative scale to StringType") {
+    // Negative-scale decimals are a legacy Spark feature gated on
+    // spark.sql.legacy.allowNegativeScaleOfDecimal=true. Spark LEGACY cast uses Java's
+    // BigDecimal.toString() which produces scientific notation for negative-scale values
+    // (e.g. 12300 stored as Decimal(7,-2) with unscaled=123 → "1.23E+4").
+    // CometCast.canCastToString checks the
+    // config and returns Incompatible when it is false.
+    //
+    // Parquet does not support negative-scale decimals so we use checkSparkAnswer directly
+    // (no parquet round-trip) to avoid schema coercion.
+
+    // With config enabled, enable localTableScan so Comet can take over the full plan
+    // and execute the cast natively. Parquet does not support negative-scale decimals so
+    // the data is kept in-memory; localTableScan.enabled bridges that gap.
+    withSQLConf(
+      "spark.sql.legacy.allowNegativeScaleOfDecimal" -> "true",
+      "spark.comet.exec.localTableScan.enabled" -> "true") {
+      val dfNeg2 = Seq(
+        Some(BigDecimal("0")),
+        Some(BigDecimal("100")),
+        Some(BigDecimal("12300")),
+        Some(BigDecimal("-99900")),
+        Some(BigDecimal("9999900")),
+        None)
+        .toDF("b")
+        .withColumn("a", col("b").cast(DecimalType(7, -2)))
+        .drop("b")
+        .select(col("a").cast(DataTypes.StringType).as("result"))
+      checkSparkAnswerAndOperator(dfNeg2)
+
+      val dfNeg4 = Seq(
+        Some(BigDecimal("0")),
+        Some(BigDecimal("10000")),
+        Some(BigDecimal("120000")),
+        Some(BigDecimal("-9990000")),
+        None)
+        .toDF("b")
+        .withColumn("a", col("b").cast(DecimalType(7, -4)))
+        .drop("b")
+        .select(col("a").cast(DataTypes.StringType).as("result"))
+      checkSparkAnswerAndOperator(dfNeg4)
+    }
+
+    // With config disabled (default): the SQL parser rejects negative scale, so
+    // negative-scale decimals cannot be created through normal SQL paths.
+    // CometCast.isSupported returns Incompatible for this case, ensuring Comet does
+    // not attempt native execution if such a value ever reaches the planner.
+    // Note: DecimalType(7, -2) must be constructed while config=true, because the
+    // constructor itself checks the config and throws if negative scale is disallowed.
+    var negScaleType: DecimalType = null
+    withSQLConf("spark.sql.legacy.allowNegativeScaleOfDecimal" -> "true") {
+      negScaleType = DecimalType(7, -2)
+    }
+    withSQLConf("spark.sql.legacy.allowNegativeScaleOfDecimal" -> "false") {
+      assert(
+        CometCast.isSupported(
+          negScaleType,
+          DataTypes.StringType,
+          None,
+          CometEvalMode.LEGACY) == Incompatible())
+    }
+  }
+
   test("cast DecimalType(10,2) to TimestampType") {
     castTest(generateDecimalsPrecision10Scale2(), DataTypes.TimestampType)
   }
@@ -1173,6 +1240,9 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast DateType to StringType") {
+    // generateDates() covers: 1970-2027 sampled monthly, DST transition dates, and edge
+    // cases including "999-01-01" (year < 1000, zero-padded to "0999-01-01") and
+    // "12345-01-01" (year > 9999, no truncation). Date→String is timezone-independent.
     castTest(generateDates(), DataTypes.StringType)
   }
 
@@ -1602,6 +1672,10 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       BigDecimal("-2147483647.123123123"),
       BigDecimal("-123456.789"),
       BigDecimal("0.00000000000"),
+      // Small-magnitude non-zero: adj_exp = -9 + 0 = -9 < -6, so LEGACY produces
+      // scientific notation "1E-9" / "1.000000000E-9" rather than plain "0.000000001".
+      BigDecimal("0.000000001"),
+      BigDecimal("-0.000000001"),
       BigDecimal("123456.789"),
       // Int Max
       BigDecimal("2147483647.123123123"),
