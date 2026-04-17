@@ -70,9 +70,9 @@ aws-credential-types = { workspace = true }
 parking_lot = "0.12.5"
 datafusion-comet-objectstore-hdfs = { path = "../hdfs", optional = true, default-features = false, features = ["hdfs"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "http2"] }
-object_store_opendal = { git = "https://github.com/apache/opendal", rev = "173feb6", package = "object_store_opendal", optional = true}
+object_store_opendal = { git = "https://github.com/apache/opendal", rev = "6909efcdfd12b3b2ac3a76f654c35ee576811512", package = "object_store_opendal", optional = true}
 hdfs-sys = {version = "0.3", optional = true, features = ["hdfs_3_3"]}
-opendal = { git = "https://github.com/apache/opendal", rev = "173feb6", optional = true, features = ["services-hdfs"] }
+opendal = { git = "https://github.com/apache/opendal", rev = "6909efcdfd12b3b2ac3a76f654c35ee576811512", optional = true, features = ["services-hdfs"] }
 iceberg = { workspace = true }
 iceberg-storage-opendal = { workspace = true }
 serde_json = "1.0"

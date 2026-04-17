@@ -135,6 +135,12 @@ class CometExecIterator(
   private var currentBatch: ColumnarBatch = null
   private var closed: Boolean = false
 
+  // Register a task completion listener to ensure native resources are released
+  // when the task is done.
+  TaskContext.get().addTaskCompletionListener[Unit] { _ =>
+    this.close()
+  }
+
   private def getNextBatch: Option[ColumnarBatch] = {
     assert(partitionIndex >= 0 && partitionIndex < numParts)
 

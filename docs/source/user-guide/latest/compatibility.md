@@ -76,11 +76,6 @@ the [Comet Supported Expressions Guide](expressions.md) for more information on 
   timezone is UTC.
   [#2649](https://github.com/apache/datafusion-comet/issues/2649)
 
-### Aggregate Expressions
-
-- **Corr**: Returns null instead of NaN in some edge cases.
-  [#2646](https://github.com/apache/datafusion-comet/issues/2646)
-
 ### Struct Expressions
 
 - **StructsToJson (to_json)**: Does not support `+Infinity` and `-Infinity` for numeric types (float, double).

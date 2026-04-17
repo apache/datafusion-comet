@@ -26,8 +26,8 @@ helpful to have a roadmap for some of the major items that require coordination 
 
 ### Iceberg Integration
 
-Iceberg tables reads are now fully native, powered by a scan operator backed by Iceberg-rust ([#2528]). We anticipate
-major improvements expected in the next few releases, including bringing Iceberg table format V3 features (_e.g._,
+Reads of Iceberg tables with Parquet data files are fully native and enabled by default, powered by a scan operator
+backed by Iceberg-rust ([#2528]). We anticipate major improvements in the next few releases, including bringing Iceberg table format V3 features (_e.g._,
 encryption) to the reader.
 
 [#2528]: https://github.com/apache/datafusion-comet/pull/2528
