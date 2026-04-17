@@ -77,6 +77,8 @@ iceberg = { workspace = true }
 iceberg-storage-opendal = { workspace = true }
 delta_kernel = { workspace = true }
 object_store_kernel = { workspace = true }
+chrono = { workspace = true }
+chrono-tz = { workspace = true }
 roaring = { workspace = true }
 thiserror = { workspace = true }
 serde_json = "1.0"

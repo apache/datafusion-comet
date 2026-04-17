@@ -19,7 +19,6 @@ use super::list::SparkUnsafeArray;
 use super::map::SparkUnsafeMap;
 use super::row::SparkUnsafeRow;
 use datafusion_comet_common::bytes_to_i128;
-use std::str::from_utf8;
 
 const MAX_LONG_DIGITS: u8 = 18;
 
@@ -75,11 +74,17 @@ pub trait SparkUnsafeObject {
     }
 
     /// Returns string value at the given index of the object.
-    fn get_string(&self, index: usize) -> &str {
+    ///
+    /// Returns a `Cow<str>`: borrowed when the bytes are valid UTF-8 (the common case),
+    /// owned with U+FFFD replacements when they aren't. Z-order OPTIMIZE interleaves raw
+    /// binary into what Spark types as `StringType`, so a strict `from_utf8` would panic
+    /// mid-shuffle for compaction workloads. Using `from_utf8_lossy` keeps the function
+    /// safe (no `unsafe`) while making the rare invalid-byte path produce a well-formed
+    /// (if substituted) string rather than aborting the task.
+    fn get_string(&self, index: usize) -> std::borrow::Cow<'_, str> {
         let (offset, len) = self.get_offset_and_len(index);
         let addr = self.get_row_addr() + offset as i64;
-        // SAFETY: addr points to valid UTF-8 string data within the variable-length region.
-        // Offset and length are read from the fixed-length portion of the row/array.
+        // SAFETY: addr points to bytes within the variable-length region of a valid UnsafeRow.
         debug_assert!(addr != 0, "get_string: null address at index {index}");
         debug_assert!(
             len >= 0,
@@ -87,7 +92,7 @@ pub trait SparkUnsafeObject {
         );
         let slice: &[u8] = unsafe { std::slice::from_raw_parts(addr as *const u8, len as usize) };
 
-        from_utf8(slice).unwrap()
+        String::from_utf8_lossy(slice)
     }
 
     /// Returns binary value at the given index of the object.

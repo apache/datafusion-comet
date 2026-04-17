@@ -1438,8 +1438,15 @@ impl PhysicalPlanner {
 
                 // Build PartitionedFiles from our DeltaScanTasks. Kernel has already
                 // resolved each file path to an absolute URL on the driver, so we
-                // can thread them straight through.
-                let files = build_delta_partitioned_files(&scan.tasks, partition_schema.as_ref())?;
+                // can thread them straight through. Delta stores TIMESTAMP partition
+                // values in the JVM default time zone at write time; pass the session
+                // TZ so partition-value parsing produces the correct instant at read
+                // time (DataFusion's default string->timestamp parse assumes UTC).
+                let files = build_delta_partitioned_files(
+                    &scan.tasks,
+                    partition_schema.as_ref(),
+                    common.session_timezone.as_str(),
+                )?;
 
                 // Split files by DV presence. Each DV'd file becomes its own
                 // FileGroup so the DeltaDvFilterExec's per-partition mapping is
@@ -3254,6 +3261,7 @@ fn convert_spark_types_to_arrow_schema(
 fn build_delta_partitioned_files(
     tasks: &[spark_operator::DeltaScanTask],
     partition_schema: &Schema,
+    session_tz: &str,
 ) -> Result<Vec<PartitionedFile>, ExecutionError> {
     let mut files = Vec::with_capacity(tasks.len());
     for task in tasks {
@@ -3281,12 +3289,13 @@ fn build_delta_partitioned_files(
                 .find(|p| p.name == *field.name());
 
             let scalar = match proto_value.and_then(|p| p.value.clone()) {
-                Some(s) => ScalarValue::try_from_string(s, field.data_type()).map_err(|e| {
-                    GeneralError(format!(
-                        "Failed to parse Delta partition value for column '{}': {e}",
-                        field.name()
-                    ))
-                })?,
+                Some(s) => parse_delta_partition_scalar(&s, field.data_type(), session_tz)
+                    .map_err(|e| {
+                        GeneralError(format!(
+                            "Failed to parse Delta partition value for column '{}': {e}",
+                            field.name()
+                        ))
+                    })?,
                 None => ScalarValue::try_from(field.data_type()).map_err(|e| {
                     GeneralError(format!(
                         "Failed to build null partition value for column '{}': {e}",
@@ -3301,6 +3310,56 @@ fn build_delta_partitioned_files(
         files.push(partitioned_file);
     }
     Ok(files)
+}
+
+/// Parse a Delta partition value string into a `ScalarValue`, honouring the session
+/// time zone for `Timestamp` columns. Delta writes TIMESTAMP partition values in the
+/// JVM default TZ (yyyy-MM-dd HH:mm:ss[.S]). DataFusion's default `try_from_string`
+/// interprets those as UTC which is wrong for non-UTC sessions, leaving a fixed
+/// offset off for every row (8h for PST/PDT, etc.). Delegate non-TIMESTAMP types to
+/// DataFusion's normal parser.
+fn parse_delta_partition_scalar(
+    s: &str,
+    dt: &DataType,
+    session_tz: &str,
+) -> Result<ScalarValue, String> {
+    match dt {
+        DataType::Timestamp(unit, tz_opt) => {
+            use chrono::{NaiveDateTime, TimeZone};
+            use chrono_tz::Tz;
+            // Delta pattern: "yyyy-MM-dd HH:mm:ss" with optional fractional seconds.
+            let naive = NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S%.f")
+                .or_else(|_| NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S"))
+                .map_err(|e| format!("cannot parse timestamp '{s}': {e}"))?;
+            // Interpret in the session TZ, then normalise to epoch micros (UTC).
+            let tz: Tz = session_tz
+                .parse()
+                .map_err(|e| format!("invalid session TZ '{session_tz}': {e}"))?;
+            let dt_local = tz
+                .from_local_datetime(&naive)
+                .earliest()
+                .ok_or_else(|| format!("ambiguous local datetime for '{s}'"))?;
+            let micros = dt_local.timestamp_micros();
+            match unit {
+                arrow::datatypes::TimeUnit::Microsecond => {
+                    Ok(ScalarValue::TimestampMicrosecond(Some(micros), tz_opt.clone()))
+                }
+                arrow::datatypes::TimeUnit::Millisecond => Ok(ScalarValue::TimestampMillisecond(
+                    Some(micros / 1000),
+                    tz_opt.clone(),
+                )),
+                arrow::datatypes::TimeUnit::Nanosecond => Ok(ScalarValue::TimestampNanosecond(
+                    Some(micros * 1000),
+                    tz_opt.clone(),
+                )),
+                arrow::datatypes::TimeUnit::Second => {
+                    Ok(ScalarValue::TimestampSecond(Some(micros / 1_000_000), tz_opt.clone()))
+                }
+            }
+        }
+        _ => ScalarValue::try_from_string(s.to_string(), dt)
+            .map_err(|e| format!("{e}")),
+    }
 }
 
 /// Converts a protobuf PartitionValue to an iceberg Literal.
