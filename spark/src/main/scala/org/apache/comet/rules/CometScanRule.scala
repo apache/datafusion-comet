@@ -560,6 +560,46 @@ case class CometScanRule(session: SparkSession)
       }
     }
 
+    // Column-mapping metadata (`delta.columnMapping.physicalName`) on every StructField is
+    // what Comet's parquet reader needs to correctly map logical column references to the
+    // parquet file's physical column names. `HadoopFsRelation.dataSchema` strips that
+    // metadata during construction, so we re-attach it here by fetching the authoritative
+    // schema from the Delta Snapshot via reflection. Nothing happens for non-mapped tables
+    // (the merge is a no-op when the snapshot schema has no physical-name entries).
+    val scanWithMappedSchema = withDeltaColumnMappingMetadata(scanExec)
+
+    // Targeted fallback: when the table is column-mapped AND the scan's required schema
+    // contains complex (Array/Map/Struct) columns, decline Comet acceleration. The
+    // metadata-attach path above covers most column-mapped reads, but the CometScanExec
+    // [native_delta_compat] fallback route that `CometDeltaNativeScan.convert` leaves in
+    // place when it bails out doesn't consistently thread nested-type physical names
+    // through to `CometParquetFileFormat`. For scalar-only column-mapped reads the
+    // CometDeltaNativeScan serde handles them correctly; for complex-type reads the
+    // fallback produces "Invalid comparison operation: Utf8 <= Int32" downstream.
+    // Fixes DeltaDropColumnSuite "drop column with constraints" (struct / array access
+    // through CHECK constraints on a column-mapped table).
+    val isColumnMapped = DeltaReflection
+      .extractMetadataConfiguration(r)
+      .flatMap(_.get("delta.columnMapping.mode"))
+      .exists(m => m != null && !m.equalsIgnoreCase("none"))
+    if (isColumnMapped) {
+      def isComplex(dt: DataType): Boolean = dt match {
+        case _: ArrayType | _: MapType | _: StructType => true
+        case _ => false
+      }
+      val requiredComplex =
+        scanWithMappedSchema.requiredSchema.fields.exists(f => isComplex(f.dataType))
+      val outputComplex = scanWithMappedSchema.output.exists(a => isComplex(a.dataType))
+      if (requiredComplex || outputComplex) {
+        withInfo(
+          scanExec,
+          "Native Delta scan declines column-mapped tables with complex (Array/Map/Struct) " +
+            "columns in the scan output -- fallback reader path doesn't consistently " +
+            "remap physical names through to the native expression evaluator.")
+        return None
+      }
+    }
+
     // Row tracking: Delta's own analyzer leaves a plain `row_id` (and
     // `row_commit_version`) attribute in the scan's requiredSchema when the
     // query references `_metadata.row_id`, relying on `DeltaParquetFileFormat`'s
@@ -569,9 +609,65 @@ case class CometScanRule(session: SparkSession)
     // the column materialised (the common case after a MERGE / UPDATE / rowTracking
     // backfill), rewrite the scan to read the physical materialised column and
     // wrap the result in a projection that restores the logical name.
-    applyRowTrackingRewrite(scanExec, r, session).getOrElse {
-      Some(CometScanExec(scanExec, session, SCAN_NATIVE_DELTA_COMPAT))
+    applyRowTrackingRewrite(scanWithMappedSchema, r, session).getOrElse {
+      Some(CometScanExec(scanWithMappedSchema, session, SCAN_NATIVE_DELTA_COMPAT))
     }
+  }
+
+  /**
+   * When the Delta table uses column mapping, rebuild the scan's relation / schemas so each
+   * StructField carries the `delta.columnMapping.physicalName` metadata (which is stripped by
+   * `HadoopFsRelation` on construction but still lives on the Delta Snapshot's schema).
+   * `CometParquetFileFormat.substituteGeneratedMetadataFields` then picks up the physical names
+   * and rewrites the schemas into physical form before the native reader opens files.
+   * Non-column-mapped tables are returned unchanged.
+   */
+  private def withDeltaColumnMappingMetadata(scanExec: FileSourceScanExec): FileSourceScanExec = {
+    val r = scanExec.relation
+    val snapshotSchemaOpt = DeltaReflection.extractSnapshotSchema(r)
+    if (snapshotSchemaOpt.isEmpty) return scanExec
+    val snapshotByName: Map[String, StructField] =
+      snapshotSchemaOpt.get.fields.map(f => f.name -> f).toMap
+    def attach(f: StructField): StructField =
+      snapshotByName.get(f.name) match {
+        case Some(meta) =>
+          StructField(
+            f.name,
+            attachDataType(f.dataType, meta.dataType),
+            f.nullable,
+            meta.metadata)
+        case None => f
+      }
+    def attachDataType(child: DataType, withMeta: DataType): DataType = (child, withMeta) match {
+      case (cs: StructType, ms: StructType) =>
+        val metaByName = ms.fields.map(f => f.name -> f).toMap
+        StructType(cs.fields.map { f =>
+          metaByName.get(f.name) match {
+            case Some(mf) =>
+              StructField(
+                f.name,
+                attachDataType(f.dataType, mf.dataType),
+                f.nullable,
+                mf.metadata)
+            case None => f
+          }
+        })
+      case (ca: ArrayType, ma: ArrayType) =>
+        ArrayType(attachDataType(ca.elementType, ma.elementType), ca.containsNull)
+      case (cm: MapType, mm: MapType) =>
+        MapType(
+          attachDataType(cm.keyType, mm.keyType),
+          attachDataType(cm.valueType, mm.valueType),
+          cm.valueContainsNull)
+      case _ => child
+    }
+    val newDataFields = r.dataSchema.fields.map(attach)
+    val newRequiredFields = scanExec.requiredSchema.fields.map(attach)
+    val anyChange = !newDataFields.sameElements(r.dataSchema.fields) ||
+      !newRequiredFields.sameElements(scanExec.requiredSchema.fields)
+    if (!anyChange) return scanExec
+    val newRelation = r.copy(dataSchema = StructType(newDataFields))(r.sparkSession)
+    scanExec.copy(relation = newRelation, requiredSchema = StructType(newRequiredFields))
   }
 
   /**

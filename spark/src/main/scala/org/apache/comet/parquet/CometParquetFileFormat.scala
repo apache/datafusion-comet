@@ -40,7 +40,7 @@ import org.apache.spark.sql.execution.datasources.parquet.ParquetOptions
 import org.apache.spark.sql.execution.datasources.parquet.ParquetReadSupport
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.sources.Filter
-import org.apache.spark.sql.types.{DateType, StructField, StructType, TimestampType}
+import org.apache.spark.sql.types.{ArrayType, DataType, DateType, MapType, StructField, StructType, TimestampType}
 import org.apache.spark.util.SerializableConfiguration
 
 import org.apache.comet.CometConf
@@ -199,24 +199,48 @@ class CometParquetFileFormat(session: SparkSession)
 object CometParquetFileFormat extends Logging with ShimSQLConf {
 
   /**
-   * Rewrite any `FileSourceGeneratedMetadataStructField`-marked fields in `schema` so they use
-   * the PHYSICAL column name stored in the parquet file (carried in the field's metadata) instead
-   * of the LOGICAL attribute name. Fields that don't have the marker are returned unchanged.
+   * Rewrite any fields in `schema` so they use the PHYSICAL column name stored in the parquet
+   * file instead of the LOGICAL attribute name. Fields without a known physical-name marker are
+   * returned unchanged. Handles two mechanisms:
    *
-   * Delta's row-tracking feature emits fields like `row_id` / `row_commit_version` this way: the
-   * attribute surfaced to callers uses the logical name while the parquet file stores the column
-   * under a materialised name like `_metadata.row_id` or a generated UUID. The stock
-   * `ParquetFileFormat` handles this substitution inside `ParquetReadSupport`, but Comet's
-   * `NativeBatchReader` reads the schema as-is -- without the substitution, the read fails with
-   * "Required column 'row_id' is missing in data file".
+   *   - `FileSourceGeneratedMetadataStructField` (Spark-generated columns, e.g. Delta's
+   *     row-tracking `row_id` / `row_commit_version`). The stock `ParquetFileFormat` does this
+   *     substitution inside `ParquetReadSupport`, but Comet's `NativeBatchReader` reads the
+   *     schema as-is -- without the substitution, the read fails with "Required column 'row_id'
+   *     is missing in data file".
+   *
+   *   - `delta.columnMapping.physicalName` (Delta column-mapping `id` / `name` modes). For `name`
+   *     mode the physical name is what the parquet reader must use because there's no field-ID
+   *     fallback. Applies recursively to nested struct fields so every level of a
+   *     struct/array/map tree gets its physical name. Iceberg's equivalent mechanism
+   *     (`parquet.field.id`) is already handled by the native reader's `useFieldId` path; this
+   *     covers Delta (and any other Spark-side reader that carries the same metadata key).
    */
   def substituteGeneratedMetadataFields(schema: StructType): StructType = {
-    val fields = schema.fields.map { f =>
-      FileSourceGeneratedMetadataStructField
-        .getInternalNameIfValid(f.dataType, f.metadata)
-        .map(physical => StructField(physical, f.dataType, f.nullable, f.metadata))
-        .getOrElse(f)
+    // Keep in sync with DeltaReflection.PhysicalNameMetadataKey. Hard-coded here so the
+    // parquet module has no compile-time dependency on the delta module.
+    val PhysicalNameKey = "delta.columnMapping.physicalName"
+
+    def deltaPhysical(f: StructField): Option[String] =
+      if (f.metadata.contains(PhysicalNameKey)) Some(f.metadata.getString(PhysicalNameKey))
+      else None
+
+    def rewriteDataType(dt: DataType): DataType = dt match {
+      case s: StructType => StructType(s.fields.map(rewriteField))
+      case a: ArrayType => ArrayType(rewriteDataType(a.elementType), a.containsNull)
+      case m: MapType =>
+        MapType(rewriteDataType(m.keyType), rewriteDataType(m.valueType), m.valueContainsNull)
+      case other => other
     }
+
+    def rewriteField(f: StructField): StructField = {
+      val generatedPhysical = FileSourceGeneratedMetadataStructField
+        .getInternalNameIfValid(f.dataType, f.metadata)
+      val newName = generatedPhysical.orElse(deltaPhysical(f)).getOrElse(f.name)
+      StructField(newName, rewriteDataType(f.dataType), f.nullable, f.metadata)
+    }
+
+    val fields = schema.fields.map(rewriteField)
     if (fields.sameElements(schema.fields)) schema else StructType(fields)
   }
 
