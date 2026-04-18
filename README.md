@@ -53,30 +53,32 @@ version, Java, and Scala compatibility matrix.
 Comet replaces Spark operators and expressions with native Rust implementations that run on Apache DataFusion.
 It uses Apache Arrow for zero-copy data transfer between the JVM and native code.
 
-- **Parquet scans** — native Parquet reader integrated with Spark's query planner
-- **Apache Iceberg** — accelerated Parquet scans when reading Iceberg tables from Spark
+- **Parquet scans**: native Parquet reader integrated with Spark's query planner
+- **Apache Iceberg**: accelerated Parquet scans when reading Iceberg tables from Spark
   (see the [Iceberg guide](https://datafusion.apache.org/comet/user-guide/iceberg.html))
-- **Shuffle** — native columnar shuffle with support for hash and range partitioning
-- **Expressions** — hundreds of supported Spark expressions across math, string, datetime, array,
+- **Shuffle**: native columnar shuffle with support for hash and range partitioning
+- **Expressions**: hundreds of supported Spark expressions across math, string, datetime, array,
   map, JSON, hash, and predicate categories
-- **Aggregations** — hash aggregate with support for `FILTER (WHERE ...)` clauses
-- **Joins** — hash join, sort-merge join, and broadcast join
+- **Aggregations**: hash aggregate with support for `FILTER (WHERE ...)` clauses
+- **Joins**: hash join, sort-merge join, and broadcast join
 
 For the authoritative lists, see the [supported expressions](https://datafusion.apache.org/comet/user-guide/expressions.html)
 and [supported operators](https://datafusion.apache.org/comet/user-guide/operators.html) pages.
 
 ## Benefits of Using Comet
 
-### Run Spark Queries at DataFusion Speeds
+### Reduce Your Spark Compute Costs
 
-Comet delivers a significant performance speedup for many queries, enabling faster data processing and shorter
-time-to-insights.
+Comet's performance improvements translate directly into infrastructure savings. In many cases, jobs that previously
+required a given cluster size can run on roughly half the compute with Comet, producing meaningful cost reductions on
+cloud bills, on-prem hardware, and energy usage, with no changes to your existing Spark SQL, DataFrame, or
+PySpark code.
 
-### Use Commodity Hardware
+### Do More with Commodity Hardware
 
-Comet leverages commodity hardware, eliminating the need for costly hardware upgrades or
-specialized hardware accelerators, such as GPUs or FPGAs. By maximizing the utilization of commodity hardware, Comet
-ensures cost-effectiveness and scalability for your Spark deployments.
+Comet runs on the hardware you already have. There is no requirement for GPUs, FPGAs, or other specialized
+accelerators, so the savings above come from better utilization of the same commodity infrastructure rather than
+from hardware upgrades.
 
 ### Spark Compatibility
 
