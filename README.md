@@ -42,6 +42,27 @@ Spark ecosystem without requiring any code changes.
 
 [Apache DataFusion]: https://datafusion.apache.org
 
+## Benefits of Using Comet
+
+### Reduce Your Spark Compute Costs
+
+Comet's performance improvements translate directly into infrastructure savings. In many cases, jobs that previously
+required a given cluster size can run on roughly half the compute with Comet, producing meaningful cost reductions on
+cloud bills, on-prem hardware, and energy usage, with no changes to your existing Spark SQL, DataFrame, or
+PySpark code.
+
+### Do More with Commodity Hardware
+
+Comet runs on the hardware you already have. There is no requirement for GPUs, FPGAs, or other specialized
+accelerators, so the savings above come from better utilization of the same commodity infrastructure rather than
+from hardware upgrades.
+
+### Spark Compatibility
+
+Comet aims for 100% compatibility with all supported versions of Apache Spark, allowing you to integrate Comet into
+your existing Spark deployments and workflows seamlessly. With no code changes required, you can immediately harness
+the benefits of Comet's acceleration capabilities without disrupting your Spark applications.
+
 ## Supported Spark Versions
 
 Comet supports Apache Spark 3.4 and 3.5, and provides experimental support for Spark 4.0. See the
@@ -64,27 +85,6 @@ It uses Apache Arrow for zero-copy data transfer between the JVM and native code
 
 For the authoritative lists, see the [supported expressions](https://datafusion.apache.org/comet/user-guide/expressions.html)
 and [supported operators](https://datafusion.apache.org/comet/user-guide/operators.html) pages.
-
-## Benefits of Using Comet
-
-### Reduce Your Spark Compute Costs
-
-Comet's performance improvements translate directly into infrastructure savings. In many cases, jobs that previously
-required a given cluster size can run on roughly half the compute with Comet, producing meaningful cost reductions on
-cloud bills, on-prem hardware, and energy usage, with no changes to your existing Spark SQL, DataFrame, or
-PySpark code.
-
-### Do More with Commodity Hardware
-
-Comet runs on the hardware you already have. There is no requirement for GPUs, FPGAs, or other specialized
-accelerators, so the savings above come from better utilization of the same commodity infrastructure rather than
-from hardware upgrades.
-
-### Spark Compatibility
-
-Comet aims for 100% compatibility with all supported versions of Apache Spark, allowing you to integrate Comet into
-your existing Spark deployments and workflows seamlessly. With no code changes required, you can immediately harness
-the benefits of Comet's acceleration capabilities without disrupting your Spark applications.
 
 ## Getting Started
 
