@@ -220,21 +220,41 @@ case class CometScanRule(session: SparkSession)
   }
 
   /**
-   * True when the child subtree contains a Delta `FileSourceScanExec` whose FileIndex is a
-   * pre-materialised `TahoeBatchFileIndex`-family index AND at least one AddFile carries a
-   * non-null DeletionVectorDescriptor. That is the exact shape `CometDeltaNativeScan.convert`
-   * bails out on (Phase-1 DV fallback), so Comet's native path will not apply the DV. The DV
-   * wrapper Delta injected above must stay in place for correctness.
+   * True when the child subtree contains a Delta `FileSourceScanExec` that Comet's native path
+   * will not apply the DV on. In that case the DV filter wrapper Delta injected above must stay
+   * in place so Delta's own reader supplies the synthetic `__delta_internal_is_row_deleted`
+   * column and the filter drops deleted rows.
+   *
+   * Covers two shapes that both fall back:
+   *   1. `TahoeBatchFileIndex` + AddFile with DeletionVectorDescriptor (Phase-1 fallback in
+   *      `CometDeltaNativeScan.convert` - commented "falls back for pre-materialized FileIndex
+   *      with deletion vectors"). 2. `PreparedDeltaFileIndex` whose scan required-schema already
+   *      carries `__delta_internal_is_row_deleted`. Delta's PreprocessTableWithDVs strategy
+   *      injects this column into the scan's output before we see it.
+   *      CometDeltaNativeScan.convert's own `IsRowDeletedColumnName` gate returns None, so the
+   *      scan stays as a CometScanExec[native_delta_compat] which uses Comet's parquet reader and
+   *      skips DV application.
    */
   private def scanBelowFallsBackForDvs(plan: SparkPlan): Boolean = {
     def check(p: SparkPlan): Boolean = p match {
       case scan: FileSourceScanExec
-          if DeltaReflection.isDeltaFileFormat(scan.relation.fileFormat)
-            && DeltaReflection.isBatchFileIndex(scan.relation.location) =>
-        DeltaReflection.extractBatchAddFiles(scan.relation.location) match {
-          case Some(addFiles) => addFiles.exists(_.hasDeletionVector)
-          case None => false
-        }
+          if DeltaReflection.isDeltaFileFormat(scan.relation.fileFormat) =>
+        // Shape 1: TahoeBatchFileIndex family with DV-bearing AddFiles.
+        val batchFallback =
+          DeltaReflection.isBatchFileIndex(scan.relation.location) &&
+            DeltaReflection
+              .extractBatchAddFiles(scan.relation.location)
+              .exists(_.exists(_.hasDeletionVector))
+        // Shape 2: PreparedDeltaFileIndex whose required schema still has is_row_deleted.
+        // (If Delta's wrapper is present above the scan, the inner scan may or may not
+        // already have the column in its output; peek at the schema to detect.)
+        val preparedDvFallback =
+          scan.relation.location.getClass.getName
+            .contains("PreparedDeltaFileIndex") && (scan.output.exists(
+            _.name.equalsIgnoreCase(DeltaReflection.IsRowDeletedColumnName)) ||
+            scan.requiredSchema.fieldNames.exists(
+              _.equalsIgnoreCase(DeltaReflection.IsRowDeletedColumnName)))
+        batchFallback || preparedDvFallback
       case other if other.children.size == 1 => check(other.children.head)
       case _ => false
     }
