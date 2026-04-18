@@ -109,7 +109,10 @@ fn generic_array_position<O: OffsetSizeTrait>(
 }
 
 /// Compute the combined null buffer from list array and element nulls.
-fn combined_nulls(list_array_nulls: Option<&NullBuffer>, element_nulls: Option<&NullBuffer>) -> Option<NullBuffer> {
+fn combined_nulls(
+    list_array_nulls: Option<&NullBuffer>,
+    element_nulls: Option<&NullBuffer>,
+) -> Option<NullBuffer> {
     match (list_array_nulls, element_nulls) {
         (Some(a), Some(b)) => NullBuffer::union(Some(a), Some(b)),
         (Some(a), None) => Some(a.clone()),
@@ -197,9 +200,13 @@ fn position_boolean<O: OffsetSizeTrait>(
     values: &ArrayRef,
     element: &ArrayRef,
 ) -> Result<ArrayRef, DataFusionError> {
-    let values_typed = values.as_any().downcast_ref::<BooleanArray>()
+    let values_typed = values
+        .as_any()
+        .downcast_ref::<BooleanArray>()
         .ok_or_else(|| DataFusionError::Internal("expected boolean array".into()))?;
-    let element_typed = element.as_any().downcast_ref::<BooleanArray>()
+    let element_typed = element
+        .as_any()
+        .downcast_ref::<BooleanArray>()
         .ok_or_else(|| DataFusionError::Internal("expected boolean array".into()))?;
     let num_rows = list_array.len();
     let nulls = combined_nulls(list_array.nulls(), element.nulls());
