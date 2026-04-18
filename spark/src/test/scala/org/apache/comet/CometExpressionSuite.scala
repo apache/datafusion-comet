@@ -2887,25 +2887,38 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("test integral divide overflow for decimal") {
-    if (isSpark40Plus) {
-      Seq(true, false)
-    } else
-      {
-        // ansi mode only supported in Spark 4.0+
-        Seq(false)
-      }.foreach { ansiMode =>
-        withSQLConf(SQLConf.ANSI_ENABLED.key -> ansiMode.toString) {
-          withTable("t1") {
-            sql("create table t1(a decimal(38,0), b decimal(2,2)) using parquet")
-            sql(
-              "insert into t1 values(-62672277069777110394022909049981876593,-0.40)," +
-                " (-68299431870253176399167726913574455270,-0.22), (-77532633078952291817347741106477071062,0.36)," +
-                " (-79918484954351746825313746420585672848,0.44), (54400354300704342908577384819323710194,0.18)," +
-                " (78585488402645143056239590008272527352,-0.51)")
+    // All inserted values produce a quotient > Decimal(38,0).max (~1e38), so they overflow
+    // the intermediate decimal result type.  In legacy/try mode both Spark and Comet return
+    // null; in ANSI mode both must throw NUMERIC_VALUE_OUT_OF_RANGE.
+    Seq(true, false).foreach { ansiMode =>
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> ansiMode.toString) {
+        withTable("t1") {
+          sql("create table t1(a decimal(38,0), b decimal(2,2)) using parquet")
+          sql(
+            "insert into t1 values(-62672277069777110394022909049981876593,-0.40)," +
+              " (-68299431870253176399167726913574455270,-0.22), (-77532633078952291817347741106477071062,0.36)," +
+              " (-79918484954351746825313746420585672848,0.44), (54400354300704342908577384819323710194,0.18)," +
+              " (78585488402645143056239590008272527352,-0.51)")
+          if (ansiMode) {
+            // In ANSI mode the overflow must surface as an exception in both Spark and Comet.
+            checkSparkAnswerMaybeThrows(sql("select a div b from t1")) match {
+              case (Some(_), Some(_)) => // expected: both throw
+              case (None, None) =>
+                fail(
+                  "Expected both Spark and Comet to throw for decimal integral divide overflow " +
+                    "in ANSI mode, but neither threw")
+              case (Some(sparkExc), None) =>
+                fail("Spark threw but Comet did not. Spark exception: " + sparkExc.getMessage)
+              case (None, Some(cometExc)) =>
+                fail("Comet threw but Spark did not. Comet exception: " + cometExc.getMessage)
+            }
+          } else {
+            // In legacy mode overflow produces null; results must match Spark exactly.
             checkSparkAnswerAndOperator("select a div b from t1")
           }
         }
       }
+    }
   }
 
   private def testOnShuffledRangeWithRandomParameters(testLogic: DataFrame => Unit): Unit = {
