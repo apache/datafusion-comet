@@ -26,12 +26,14 @@ from typing import Dict, Type, List
 
 from .base import Benchmark
 from .shuffle import ShuffleHashBenchmark, ShuffleRoundRobinBenchmark
+from .shuffle_size import ShuffleSizeBenchmark
 
 
 # Registry of all available benchmarks
 _BENCHMARK_REGISTRY: Dict[str, Type[Benchmark]] = {
     ShuffleHashBenchmark.name(): ShuffleHashBenchmark,
     ShuffleRoundRobinBenchmark.name(): ShuffleRoundRobinBenchmark,
+    ShuffleSizeBenchmark.name(): ShuffleSizeBenchmark,
 }
 
 
@@ -76,4 +78,5 @@ __all__ = [
     'list_benchmarks',
     'ShuffleHashBenchmark',
     'ShuffleRoundRobinBenchmark',
+    'ShuffleSizeBenchmark',
 ]
