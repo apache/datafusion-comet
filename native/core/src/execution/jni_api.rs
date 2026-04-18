@@ -526,13 +526,6 @@ fn prepare_datafusion_session_context(
         }
     }
 
-    // Map specific Spark SQL confs onto their DataFusion equivalents so that
-    // Spark-compatible UDFs honor them at execution time.
-    if let Some(policy) = spark_config.get("spark.sql.mapKeyDedupPolicy") {
-        session_config =
-            session_config.set_str("datafusion.execution.map_key_dedup_policy", policy);
-    }
-
     let runtime = rt_config.build()?;
 
     let mut session_ctx = SessionContext::new_with_config_rt(session_config, Arc::new(runtime));

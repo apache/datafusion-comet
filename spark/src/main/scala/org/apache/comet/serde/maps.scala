@@ -20,6 +20,7 @@
 package org.apache.comet.serde
 
 import org.apache.spark.sql.catalyst.expressions._
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
@@ -136,6 +137,8 @@ object CometMapContainsKey extends CometExpressionSerde[MapContainsKey] {
 object CometMapFromEntries extends CometScalarFunction[MapFromEntries]("map_from_entries") {
   val keyUnsupportedReason = "Using BinaryType as Map keys is not allowed in map_from_entries"
   val valueUnsupportedReason = "Using BinaryType as Map values is not allowed in map_from_entries"
+  val lastWinUnsupportedReason =
+    "spark.sql.mapKeyDedupPolicy=LAST_WIN is not yet supported natively for map_from_entries"
 
   private def containsBinary(dataType: DataType): Boolean = {
     dataType match {
@@ -153,8 +156,11 @@ object CometMapFromEntries extends CometScalarFunction[MapFromEntries]("map_from
     if (containsBinary(expr.dataType.valueType)) {
       return Incompatible(Some(valueUnsupportedReason))
     }
-    // spark.sql.mapKeyDedupPolicy is forwarded to the native side and honored by the
-    // datafusion-spark map_from_entries UDF, so both EXCEPTION and LAST_WIN run natively.
+    // Only the default EXCEPTION policy is supported natively; fall back otherwise.
+    if (!SQLConf.get.getConfString("spark.sql.mapKeyDedupPolicy", "EXCEPTION")
+        .equalsIgnoreCase("EXCEPTION")) {
+      return Incompatible(Some(lastWinUnsupportedReason))
+    }
     Compatible(None)
   }
 }
