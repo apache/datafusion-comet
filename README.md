@@ -61,8 +61,6 @@ It uses Apache Arrow for zero-copy data transfer between the JVM and native code
   map, JSON, hash, and predicate categories
 - **Aggregations** — hash aggregate with support for `FILTER (WHERE ...)` clauses
 - **Joins** — hash join, sort-merge join, and broadcast join
-- **Window functions** — including `LEAD`/`LAG` with `IGNORE NULLS`
-- **Metrics** — Comet metrics are exposed through Spark's external monitoring system
 
 For the authoritative lists, see the [supported expressions](https://datafusion.apache.org/comet/user-guide/expressions.html)
 and [supported operators](https://datafusion.apache.org/comet/user-guide/operators.html) pages.
@@ -73,33 +71,6 @@ and [supported operators](https://datafusion.apache.org/comet/user-guide/operato
 
 Comet delivers a significant performance speedup for many queries, enabling faster data processing and shorter
 time-to-insights.
-
-The following chart shows the time it takes to run the 22 TPC-H queries against 100 GB of data in Parquet format
-using a single executor with 8 cores. See the [Comet Benchmarking Guide](https://datafusion.apache.org/comet/contributor-guide/benchmarking.html)
-for details of the environment used for these benchmarks.
-
-![](docs/source/_static/images/benchmark-results/0.11.0/tpch_allqueries.png)
-
-Here is a breakdown showing relative performance of Spark and Comet for each TPC-H query.
-
-![](docs/source/_static/images/benchmark-results/0.11.0/tpch_queries_compare.png)
-
-The following charts show how much Comet currently accelerates each query from the benchmark.
-
-#### Relative speedup
-
-![](docs/source/_static/images/benchmark-results/0.11.0/tpch_queries_speedup_rel.png)
-
-#### Absolute speedup
-
-![](docs/source/_static/images/benchmark-results/0.11.0/tpch_queries_speedup_abs.png)
-
-Results for our benchmark derived from TPC-DS are available in the
-[benchmarking guide](https://datafusion.apache.org/comet/contributor-guide/benchmark-results/tpc-ds.html).
-
-These benchmarks can be reproduced in any environment using the documentation in the
-[Comet Benchmarking Guide](https://datafusion.apache.org/comet/contributor-guide/benchmarking.html). We encourage
-you to run your own benchmarks.
 
 ### Use Commodity Hardware
 
@@ -112,12 +83,6 @@ ensures cost-effectiveness and scalability for your Spark deployments.
 Comet aims for 100% compatibility with all supported versions of Apache Spark, allowing you to integrate Comet into
 your existing Spark deployments and workflows seamlessly. With no code changes required, you can immediately harness
 the benefits of Comet's acceleration capabilities without disrupting your Spark applications.
-
-### Tight Integration with Apache DataFusion
-
-Comet tightly integrates with the core Apache DataFusion project, leveraging its powerful execution engine. With
-seamless interoperability between Comet and DataFusion, you can achieve optimal performance and efficiency in your
-Spark workloads.
 
 ## Getting Started
 
