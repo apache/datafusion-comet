@@ -183,13 +183,20 @@ fn arrays_overlap_list<OffsetSize: OffsetSizeTrait>(
         let mut found_overlap = false;
         let mut has_null = false;
 
-        for pi in 0..left_values.len() {
-            if left_values.is_null(pi) {
+        // Put smaller array on the probe side: fewer find_in_array calls means
+        // fewer kernel dispatches and allocations in the flat vectorized path.
+        let (probe, search) = if left_values.len() <= right_values.len() {
+            (&left_values, &right_values)
+        } else {
+            (&right_values, &left_values)
+        };
+
+        for pi in 0..probe.len() {
+            if probe.is_null(pi) {
                 has_null = true;
                 continue;
             }
-            let (found, null_eq) =
-                find_in_array(&left_values, pi, &right_values)?;
+            let (found, null_eq) = find_in_array(probe, pi, search)?;
             if null_eq {
                 has_null = true;
             }
