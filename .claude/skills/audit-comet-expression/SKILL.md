@@ -330,18 +330,18 @@ also flip `implemented: false` to `true` if the audit itself added the implement
 Example of a completed entry:
 
 ```yaml
-  - name: array_insert
-    category: array_funcs
-    implemented: true
-    audits:
-      - spark_versions: ["3.4.3", "3.5.8", "4.0.1"]
-        date: 2026-04-02
-        findings: >
-          No behavioral differences across Spark versions. Fixed `nullable()`
-          metadata bug (did not account for `pos_expr`). Added SQL tests for
-          multiple types, literal arguments, null handling, negative indices,
-          and multibyte UTF-8. Known incompatibility: pos=0 error message
-          differs from Spark's `INVALID_INDEX_OF_ZERO`.
+- name: array_insert
+  category: array_funcs
+  implemented: true
+  audits:
+    - spark_versions: ["3.4.3", "3.5.8", "4.0.1"]
+      date: 2026-04-02
+      findings: >
+        No behavioral differences across Spark versions. Fixed `nullable()`
+        metadata bug (did not account for `pos_expr`). Added SQL tests for
+        multiple types, literal arguments, null handling, negative indices,
+        and multibyte UTF-8. Known incompatibility: pos=0 error message
+        differs from Spark's `INVALID_INDEX_OF_ZERO`.
 ```
 
 Verify the file still parses by running:
