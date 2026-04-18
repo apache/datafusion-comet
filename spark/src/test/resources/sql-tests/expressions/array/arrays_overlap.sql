@@ -15,8 +15,6 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- ConfigMatrix: parquet.enable.dictionary=false,true
-
 statement
 CREATE TABLE test_arrays_overlap(a array<int>, b array<int>) USING parquet
 

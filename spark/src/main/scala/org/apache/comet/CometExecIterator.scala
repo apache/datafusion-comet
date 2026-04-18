@@ -135,17 +135,19 @@ class CometExecIterator(
   private var currentBatch: ColumnarBatch = null
   private var closed: Boolean = false
 
+  // Register a task completion listener to ensure native resources are released
+  // when the task is done.
+  TaskContext.get().addTaskCompletionListener[Unit] { _ =>
+    this.close()
+  }
+
   private def getNextBatch: Option[ColumnarBatch] = {
     assert(partitionIndex >= 0 && partitionIndex < numParts)
-
-    if (tracingEnabled) {
-      traceMemoryUsage()
-    }
 
     val ctx = TaskContext.get()
 
     try {
-      withTrace(
+      val result = withTrace(
         s"getNextBatch[JVM] stage=${ctx.stageId()}",
         tracingEnabled, {
           nativeUtil.getNextBatch(
@@ -154,6 +156,12 @@ class CometExecIterator(
               nativeLib.executePlan(ctx.stageId(), partitionIndex, plan, arrayAddrs, schemaAddrs)
             })
         })
+
+      if (tracingEnabled) {
+        traceMemoryUsage()
+      }
+
+      result
     } catch {
       // Handle CometQueryExecutionException with JSON payload first
       case e: CometQueryExecutionException =>
@@ -252,13 +260,7 @@ class CometExecIterator(
   }
 
   private def traceMemoryUsage(): Unit = {
-    nativeLib.logMemoryUsage("jvm_heapUsed", memoryMXBean.getHeapMemoryUsage.getUsed)
-    val totalTaskMemory = cometTaskMemoryManager.internal.getMemoryConsumptionForThisTask
-    val cometTaskMemory = cometTaskMemoryManager.getUsed
-    val sparkTaskMemory = totalTaskMemory - cometTaskMemory
-    val threadId = Thread.currentThread().getId
-    nativeLib.logMemoryUsage(s"task_memory_comet_$threadId", cometTaskMemory)
-    nativeLib.logMemoryUsage(s"task_memory_spark_$threadId", sparkTaskMemory)
+    nativeLib.logMemoryUsage("jvm_heap_used", memoryMXBean.getHeapMemoryUsage.getUsed)
   }
 }
 

@@ -90,6 +90,12 @@ Expressions that are not Spark-compatible will fall back to Spark by default and
 | Substring       | Yes               |                                                                                                            |
 | Upper           | No                | Results can vary depending on locale and character set. Requires `spark.comet.caseConversion.enabled=true` |
 
+## JSON Functions
+
+| Expression    | Spark-Compatible? | Compatibility Notes                                                                           |
+| ------------- | ----------------- | --------------------------------------------------------------------------------------------- |
+| GetJsonObject | No                | Spark allows single-quoted JSON and unescaped control characters which Comet does not support |
+
 ## Date/Time Functions
 
 | Expression     | SQL                          | Spark-Compatible? | Compatibility Notes                                                                                                              |
@@ -121,48 +127,48 @@ Expressions that are not Spark-compatible will fall back to Spark by default and
 
 ## Math Expressions
 
-| Expression     | SQL       | Spark-Compatible? | Compatibility Notes                                                                                   |
-| -------------- | --------- | ----------------- | ----------------------------------------------------------------------------------------------------- |
-| Abs            | `abs`     | Yes               |                                                                                                       |
-| Acos           | `acos`    | Yes               |                                                                                                       |
-| Add            | `+`       | Yes               |                                                                                                       |
-| Asin           | `asin`    | Yes               |                                                                                                       |
-| Atan           | `atan`    | Yes               |                                                                                                       |
-| Atan2          | `atan2`   | Yes               |                                                                                                       |
-| BRound         | `bround`  | Yes               |                                                                                                       |
-| Ceil           | `ceil`    | Yes               |                                                                                                       |
-| Cos            | `cos`     | Yes               |                                                                                                       |
-| Cosh           | `cosh`    | Yes               |                                                                                                       |
-| Cot            | `cot`     | Yes               |                                                                                                       |
-| Divide         | `/`       | Yes               |                                                                                                       |
-| Exp            | `exp`     | Yes               |                                                                                                       |
-| Expm1          | `expm1`   | Yes               |                                                                                                       |
-| Floor          | `floor`   | Yes               |                                                                                                       |
-| Hex            | `hex`     | Yes               |                                                                                                       |
-| IntegralDivide | `div`     | Yes               |                                                                                                       |
-| IsNaN          | `isnan`   | Yes               |                                                                                                       |
-| Log            | `log`     | Yes               |                                                                                                       |
-| Log2           | `log2`    | Yes               |                                                                                                       |
-| Log10          | `log10`   | Yes               |                                                                                                       |
-| Multiply       | `*`       | Yes               |                                                                                                       |
-| Pow            | `power`   | Yes               |                                                                                                       |
-| Rand           | `rand`    | Yes               |                                                                                                       |
-| Randn          | `randn`   | Yes               |                                                                                                       |
-| Remainder      | `%`       | Yes               |                                                                                                       |
-| Round          | `round`   | Yes               |                                                                                                       |
-| Signum         | `signum`  | Yes               |                                                                                                       |
-| Sin            | `sin`     | Yes               |                                                                                                       |
-| Sinh           | `sinh`    | Yes               |                                                                                                       |
-| Sqrt           | `sqrt`    | Yes               |                                                                                                       |
-| Subtract       | `-`       | Yes               |                                                                                                       |
-| Tan            | `tan`     | No                | tan(-0.0) produces incorrect result ([#1897](https://github.com/apache/datafusion-comet/issues/1897)) |
-| Tanh           | `tanh`    | Yes               |                                                                                                       |
-| TryAdd         | `try_add` | Yes               | Only integer inputs are supported                                                                     |
-| TryDivide      | `try_div` | Yes               | Only integer inputs are supported                                                                     |
-| TryMultiply    | `try_mul` | Yes               | Only integer inputs are supported                                                                     |
-| TrySubtract    | `try_sub` | Yes               | Only integer inputs are supported                                                                     |
-| UnaryMinus     | `-`       | Yes               |                                                                                                       |
-| Unhex          | `unhex`   | Yes               |                                                                                                       |
+| Expression     | SQL       | Spark-Compatible? | Compatibility Notes               |
+| -------------- | --------- | ----------------- | --------------------------------- |
+| Abs            | `abs`     | Yes               |                                   |
+| Acos           | `acos`    | Yes               |                                   |
+| Add            | `+`       | Yes               |                                   |
+| Asin           | `asin`    | Yes               |                                   |
+| Atan           | `atan`    | Yes               |                                   |
+| Atan2          | `atan2`   | Yes               |                                   |
+| BRound         | `bround`  | Yes               |                                   |
+| Ceil           | `ceil`    | Yes               |                                   |
+| Cos            | `cos`     | Yes               |                                   |
+| Cosh           | `cosh`    | Yes               |                                   |
+| Cot            | `cot`     | Yes               |                                   |
+| Divide         | `/`       | Yes               |                                   |
+| Exp            | `exp`     | Yes               |                                   |
+| Expm1          | `expm1`   | Yes               |                                   |
+| Floor          | `floor`   | Yes               |                                   |
+| Hex            | `hex`     | Yes               |                                   |
+| IntegralDivide | `div`     | Yes               |                                   |
+| IsNaN          | `isnan`   | Yes               |                                   |
+| Log            | `log`     | Yes               |                                   |
+| Log2           | `log2`    | Yes               |                                   |
+| Log10          | `log10`   | Yes               |                                   |
+| Multiply       | `*`       | Yes               |                                   |
+| Pow            | `power`   | Yes               |                                   |
+| Rand           | `rand`    | Yes               |                                   |
+| Randn          | `randn`   | Yes               |                                   |
+| Remainder      | `%`       | Yes               |                                   |
+| Round          | `round`   | Yes               |                                   |
+| Signum         | `signum`  | Yes               |                                   |
+| Sin            | `sin`     | Yes               |                                   |
+| Sinh           | `sinh`    | Yes               |                                   |
+| Sqrt           | `sqrt`    | Yes               |                                   |
+| Subtract       | `-`       | Yes               |                                   |
+| Tan            | `tan`     | Yes               |                                   |
+| Tanh           | `tanh`    | Yes               |                                   |
+| TryAdd         | `try_add` | Yes               | Only integer inputs are supported |
+| TryDivide      | `try_div` | Yes               | Only integer inputs are supported |
+| TryMultiply    | `try_mul` | Yes               | Only integer inputs are supported |
+| TrySubtract    | `try_sub` | Yes               | Only integer inputs are supported |
+| UnaryMinus     | `-`       | Yes               |                                   |
+| Unhex          | `unhex`   | Yes               |                                   |
 
 ## Hashing Functions
 
@@ -189,27 +195,27 @@ Expressions that are not Spark-compatible will fall back to Spark by default and
 
 ## Aggregate Expressions
 
-| Expression    | SQL        | Spark-Compatible?         | Compatibility Notes                                                                                              |
-| ------------- | ---------- | ------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| Average       |            | Yes, except for ANSI mode |                                                                                                                  |
-| BitAndAgg     |            | Yes                       |                                                                                                                  |
-| BitOrAgg      |            | Yes                       |                                                                                                                  |
-| BitXorAgg     |            | Yes                       |                                                                                                                  |
-| BoolAnd       | `bool_and` | Yes                       |                                                                                                                  |
-| BoolOr        | `bool_or`  | Yes                       |                                                                                                                  |
-| Corr          |            | No                        | Returns null instead of NaN in some edge cases ([#2646](https://github.com/apache/datafusion-comet/issues/2646)) |
-| Count         |            | Yes                       |                                                                                                                  |
-| CovPopulation |            | Yes                       |                                                                                                                  |
-| CovSample     |            | Yes                       |                                                                                                                  |
-| First         |            | No                        | This function is not deterministic. Results may not match Spark.                                                 |
-| Last          |            | No                        | This function is not deterministic. Results may not match Spark.                                                 |
-| Max           |            | Yes                       |                                                                                                                  |
-| Min           |            | Yes                       |                                                                                                                  |
-| StddevPop     |            | Yes                       |                                                                                                                  |
-| StddevSamp    |            | Yes                       |                                                                                                                  |
-| Sum           |            | Yes, except for ANSI mode |                                                                                                                  |
-| VariancePop   |            | Yes                       |                                                                                                                  |
-| VarianceSamp  |            | Yes                       |                                                                                                                  |
+| Expression    | SQL        | Spark-Compatible?         | Compatibility Notes                                              |
+| ------------- | ---------- | ------------------------- | ---------------------------------------------------------------- |
+| Average       |            | Yes, except for ANSI mode |                                                                  |
+| BitAndAgg     |            | Yes                       |                                                                  |
+| BitOrAgg      |            | Yes                       |                                                                  |
+| BitXorAgg     |            | Yes                       |                                                                  |
+| BoolAnd       | `bool_and` | Yes                       |                                                                  |
+| BoolOr        | `bool_or`  | Yes                       |                                                                  |
+| Corr          |            | Yes                       |                                                                  |
+| Count         |            | Yes                       |                                                                  |
+| CovPopulation |            | Yes                       |                                                                  |
+| CovSample     |            | Yes                       |                                                                  |
+| First         |            | No                        | This function is not deterministic. Results may not match Spark. |
+| Last          |            | No                        | This function is not deterministic. Results may not match Spark. |
+| Max           |            | Yes                       |                                                                  |
+| Min           |            | Yes                       |                                                                  |
+| StddevPop     |            | Yes                       |                                                                  |
+| StddevSamp    |            | Yes                       |                                                                  |
+| Sum           |            | Yes, except for ANSI mode |                                                                  |
+| VariancePop   |            | Yes                       |                                                                  |
+| VarianceSamp  |            | Yes                       |                                                                  |
 
 ## Window Functions
 

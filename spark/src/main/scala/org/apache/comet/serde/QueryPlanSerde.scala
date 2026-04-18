@@ -60,6 +60,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[ArrayMin] -> CometArrayMin,
     classOf[ArrayRemove] -> CometArrayRemove,
     classOf[ArrayRepeat] -> CometArrayRepeat,
+    classOf[SortArray] -> CometSortArray,
     classOf[ArraysOverlap] -> CometArraysOverlap,
     classOf[ArrayUnion] -> CometArrayUnion,
     classOf[CreateArray] -> CometCreateArray,
@@ -117,12 +118,13 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[Sinh] -> CometScalarFunction("sinh"),
     classOf[Sqrt] -> CometScalarFunction("sqrt"),
     classOf[Subtract] -> CometSubtract,
-    classOf[Tan] -> CometTan,
+    classOf[Tan] -> CometScalarFunction("tan"),
     classOf[Tanh] -> CometScalarFunction("tanh"),
     classOf[Cot] -> CometScalarFunction("cot"),
     classOf[UnaryMinus] -> CometUnaryMinus,
     classOf[Unhex] -> CometUnhex,
-    classOf[Abs] -> CometAbs)
+    classOf[Abs] -> CometAbs,
+    classOf[Bin] -> CometScalarFunction("bin"))
 
   private val mapExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     classOf[GetMapValue] -> CometMapExtract,
@@ -157,6 +159,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[Concat] -> CometConcat,
     classOf[Contains] -> CometScalarFunction("contains"),
     classOf[EndsWith] -> CometScalarFunction("ends_with"),
+    classOf[GetJsonObject] -> CometGetJsonObject,
     classOf[InitCap] -> CometInitCap,
     classOf[Length] -> CometLength,
     classOf[Like] -> CometLike,
@@ -197,7 +200,9 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[DateAdd] -> CometDateAdd,
     classOf[DateDiff] -> CometDateDiff,
     classOf[DateFormatClass] -> CometDateFormat,
+    classOf[DateFromUnixDate] -> CometDateFromUnixDate,
     classOf[Days] -> CometDays,
+    classOf[Hours] -> CometHours,
     classOf[DateSub] -> CometDateSub,
     classOf[UnixDate] -> CometUnixDate,
     classOf[FromUnixTime] -> CometFromUnixTime,
@@ -792,30 +797,23 @@ object QueryPlanSerde extends Logging with CometExprShim {
    * TODO: Include SparkSQL's [[YearMonthIntervalType]] and [[DayTimeIntervalType]]
    */
   // scalastyle:on
-  def supportedSortType(op: SparkPlan, sortOrder: Seq[SortOrder]): Boolean = {
-    def canRank(dt: DataType): Boolean = {
-      dt match {
-        case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
-            _: DoubleType | _: DecimalType =>
-          true
-        case _: DateType | _: TimestampType | _: TimestampNTZType =>
-          true
-        case _: BooleanType | _: BinaryType | _: StringType => true
-        case _ => false
-      }
+  def supportedScalarSortElementType(dt: DataType): Boolean = {
+    dt match {
+      case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
+          _: DoubleType | _: DecimalType | _: DateType | _: TimestampType | _: TimestampNTZType |
+          _: BooleanType | _: BinaryType | _: StringType =>
+        true
+      case _ =>
+        false
     }
+  }
 
+  def supportedSortType(op: SparkPlan, sortOrder: Seq[SortOrder]): Boolean = {
     if (sortOrder.length == 1) {
       val canSort = sortOrder.head.dataType match {
-        case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
-            _: DoubleType | _: DecimalType =>
-          true
-        case _: DateType | _: TimestampType | _: TimestampNTZType =>
-          true
-        case _: BooleanType | _: BinaryType | _: StringType => true
-        case ArrayType(elementType, _) => canRank(elementType)
-        case MapType(_, valueType, _) => canRank(valueType)
-        case _ => false
+        case ArrayType(elementType, _) => supportedScalarSortElementType(elementType)
+        case MapType(_, valueType, _) => supportedScalarSortElementType(valueType)
+        case _ => supportedScalarSortElementType(sortOrder.head.dataType)
       }
       if (!canSort) {
         withInfo(op, s"Sort on single column of type ${sortOrder.head.dataType} is not supported")

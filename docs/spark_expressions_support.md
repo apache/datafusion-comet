@@ -105,7 +105,7 @@
 - [ ] sequence
 - [ ] shuffle
 - [ ] slice
-- [ ] sort_array
+- [x] sort_array
 
 ### bitwise_funcs
 
@@ -171,7 +171,7 @@
 - [ ] date_add
 - [ ] date_diff
 - [ ] date_format
-- [ ] date_from_unix_date
+- [x] date_from_unix_date
 - [x] date_part
 - [ ] date_sub
 - [ ] date_trunc
@@ -245,7 +245,7 @@
 ### json_funcs
 
 - [ ] from_json
-- [ ] get_json_object
+- [x] get_json_object
 - [ ] json_array_length
 - [ ] json_object_keys
 - [ ] json_tuple
@@ -296,7 +296,7 @@
 - [x] atan
 - [x] atan2
 - [ ] atanh
-- [ ] bin
+- [x] bin
 - [ ] bround
 - [ ] cbrt
 - [x] ceil
