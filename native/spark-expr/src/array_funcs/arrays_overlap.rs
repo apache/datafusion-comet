@@ -25,15 +25,17 @@
 //!   - null  if no definite overlap but either array contains null elements
 //!   - false if no overlap and neither array contains null elements
 
-use arrow::array::{Array, ArrayRef, BooleanArray, GenericListArray, OffsetSizeTrait, Scalar};
-use arrow::compute::kernels::cmp::eq;
-use arrow::datatypes::{DataType, FieldRef};
+use arrow::array::{Array, ArrayRef, BooleanArray, GenericListArray, OffsetSizeTrait};
+use arrow::datatypes::{DataType, Field, FieldRef};
 use datafusion::common::{exec_err, utils::take_function_args, Result, ScalarValue};
+use datafusion::functions_nested::array_has::ArrayHasAny;
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, TypeSignature, Volatility,
 };
 use std::any::Any;
 use std::sync::Arc;
+
+use super::SparkArrayCompact;
 
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub struct SparkArraysOverlap {
@@ -144,15 +146,48 @@ impl ScalarUDFImpl for SparkArraysOverlap {
 
 /// Spark-compatible arrays_overlap with SQL three-valued null logic.
 ///
-/// For each row, compares elements of two list arrays and returns:
-/// - null if either array is null
-/// - true if any non-null element appears in both arrays
-/// - null if no definite overlap but either array contains null elements
-/// - false otherwise
+/// Strategy:
+/// 1. Compact both arrays (remove null elements) using SparkArrayCompact
+/// 2. Call DataFusion's array_has_any on the compacted arrays (no null elements = no RowConverter bug)
+/// 3. Combine: if array_has_any says true → true; if false and either original had nulls → null; else false
 fn arrays_overlap_list<OffsetSize: OffsetSizeTrait>(
     left: &GenericListArray<OffsetSize>,
     right: &GenericListArray<OffsetSize>,
 ) -> Result<ArrayRef> {
+    let left_arr: ArrayRef = Arc::new(left.clone());
+    let right_arr: ArrayRef = Arc::new(right.clone());
+
+    // Step 1: Compact both arrays to remove null elements
+    let compact = SparkArrayCompact::new();
+    let compacted_left = compact.invoke_with_args(ScalarFunctionArgs {
+        args: vec![ColumnarValue::Array(Arc::clone(&left_arr))],
+        number_rows: left.len(),
+        return_field: Arc::new(Field::new("", left_arr.data_type().clone(), true)),
+        arg_fields: vec![],
+        config_options: Arc::new(datafusion::common::config::ConfigOptions::default()),
+    })?;
+    let compacted_right = compact.invoke_with_args(ScalarFunctionArgs {
+        args: vec![ColumnarValue::Array(Arc::clone(&right_arr))],
+        number_rows: right.len(),
+        return_field: Arc::new(Field::new("", right_arr.data_type().clone(), true)),
+        arg_fields: vec![],
+        config_options: Arc::new(datafusion::common::config::ConfigOptions::default()),
+    })?;
+
+    // Step 2: Call DataFusion's array_has_any on compacted (null-free) arrays.
+    // No RowConverter NULL=NULL bug since null elements have been removed.
+    let array_has_any = ArrayHasAny::new();
+    let has_any_result = array_has_any.invoke_with_args(ScalarFunctionArgs {
+        args: vec![compacted_left, compacted_right],
+        number_rows: left.len(),
+        return_field: Arc::new(Field::new("", DataType::Boolean, true)),
+        arg_fields: vec![],
+        config_options: Arc::new(datafusion::common::config::ConfigOptions::default()),
+    })?;
+    let has_any_arr = has_any_result.into_array(left.len())?;
+    let has_any = has_any_arr.as_any().downcast_ref::<BooleanArray>().unwrap();
+
+    // Step 3: Combine array_has_any result with null logic
     let len = left.len();
     let mut builder = BooleanArray::builder(len);
 
@@ -165,44 +200,15 @@ fn arrays_overlap_list<OffsetSize: OffsetSizeTrait>(
         let left_values = left.value(i);
         let right_values = right.value(i);
 
-        // Empty array cannot overlap
         if left_values.is_empty() || right_values.is_empty() {
+            // Empty array cannot overlap
             builder.append_value(false);
-            continue;
-        }
-
-        // DataFusion's make_array(NULL) produces a List<Null> with NullArray values.
-        // NullArray means all elements are null by definition.
-        if left_values.data_type() == &DataType::Null || right_values.data_type() == &DataType::Null
+        } else if left_values.data_type() == &DataType::Null
+            || right_values.data_type() == &DataType::Null
         {
+            // DataFusion's make_array(NULL) produces List<Null> with NullArray values
             builder.append_null();
-            continue;
-        }
-
-        let mut found_overlap = false;
-
-        // Ensure smaller array is on the probe side for fewer broadcast eq calls
-        let (probe, search) = if left_values.len() <= right_values.len() {
-            (&left_values, &right_values)
-        } else {
-            (&right_values, &left_values)
-        };
-
-        // For each non-null element in probe, broadcast eq against the full search array.
-        // One kernel call per probe element: O(p * s) total work but with vectorized inner loop.
-        for pi in 0..probe.len() {
-            if probe.is_null(pi) {
-                continue;
-            }
-            let scalar = Scalar::new(probe.slice(pi, 1));
-            let eq_result = eq(search, &scalar)?;
-            if eq_result.true_count() > 0 {
-                found_overlap = true;
-                break;
-            }
-        }
-
-        if found_overlap {
+        } else if has_any.is_valid(i) && has_any.value(i) {
             builder.append_value(true);
         } else if left_values.null_count() > 0 || right_values.null_count() > 0 {
             builder.append_null();
