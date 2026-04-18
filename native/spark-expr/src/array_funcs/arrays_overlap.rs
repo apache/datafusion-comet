@@ -168,14 +168,12 @@ fn arrays_overlap_list<OffsetSize: OffsetSizeTrait>(
         let left_values = left.value(i);
         let right_values = right.value(i);
 
-        // Empty array cannot overlap
         if left_values.is_empty() || right_values.is_empty() {
             builder.append_value(false);
             continue;
         }
 
         // DataFusion's make_array(NULL) produces a List<Null> with NullArray values.
-        // NullArray means all elements are null by definition.
         if left_values.data_type() == &DataType::Null || right_values.data_type() == &DataType::Null
         {
             builder.append_null();
@@ -183,7 +181,7 @@ fn arrays_overlap_list<OffsetSize: OffsetSizeTrait>(
         }
 
         let mut found_overlap = false;
-        let mut has_null_eq = false;
+        let mut has_null = false;
 
         // Ensure smaller array is on the probe side for fewer comparisons
         let (probe, search) = if left_values.len() <= right_values.len() {
@@ -192,56 +190,30 @@ fn arrays_overlap_list<OffsetSize: OffsetSizeTrait>(
             (&right_values, &left_values)
         };
 
-        // Arrow's eq kernel does not support nested types (List, Struct, etc.).
-        // Use element-by-element recursive comparison for those, and the fast
-        // vectorized eq kernel for everything else.
-        let is_nested = needs_recursive_eq(left_values.data_type());
-
-        if is_nested {
-            // Element-by-element comparison for nested types where Arrow's eq kernel
-            // does not support direct comparison.
-            'outer: for pi in 0..probe.len() {
-                if probe.is_null(pi) {
-                    has_null_eq = true;
-                    continue;
-                }
-                for si in 0..search.len() {
-                    if search.is_null(si) {
-                        has_null_eq = true;
-                        continue;
-                    }
-                    match three_valued_eq(probe.as_ref(), pi, search.as_ref(), si)? {
-                        Some(true) => {
-                            found_overlap = true;
-                            break 'outer;
-                        }
-                        None => has_null_eq = true,
-                        Some(false) => {}
-                    }
-                }
+        'outer: for pi in 0..probe.len() {
+            if probe.is_null(pi) {
+                has_null = true;
+                continue;
             }
-        } else {
-            // Vectorized comparison for flat types using Arrow's eq kernel.
-            // One kernel call per probe element: O(p * s) total work with vectorized inner loop.
-            for pi in 0..probe.len() {
-                if probe.is_null(pi) {
+            for si in 0..search.len() {
+                if search.is_null(si) {
+                    has_null = true;
                     continue;
                 }
-                let scalar = Scalar::new(probe.slice(pi, 1));
-                let eq_result = eq(search, &scalar)?;
-                if eq_result.true_count() > 0 {
-                    found_overlap = true;
-                    break;
-                }
-                if eq_result.null_count() > 0 {
-                    has_null_eq = true;
+                match three_valued_eq(probe.as_ref(), pi, search.as_ref(), si)? {
+                    Some(true) => {
+                        found_overlap = true;
+                        break 'outer;
+                    }
+                    None => has_null = true,
+                    Some(false) => {}
                 }
             }
         }
 
         if found_overlap {
             builder.append_value(true);
-        } else if has_null_eq || left_values.null_count() > 0 || right_values.null_count() > 0 {
+        } else if has_null {
             builder.append_null();
         } else {
             builder.append_value(false);
@@ -249,19 +221,6 @@ fn arrays_overlap_list<OffsetSize: OffsetSizeTrait>(
     }
 
     Ok(Arc::new(builder.finish()))
-}
-
-/// Returns true for types where Arrow's `eq` kernel does not work
-/// and we must use recursive element-by-element comparison.
-fn needs_recursive_eq(dt: &DataType) -> bool {
-    matches!(
-        dt,
-        DataType::List(_)
-            | DataType::LargeList(_)
-            | DataType::FixedSizeList(_, _)
-            | DataType::Struct(_)
-            | DataType::Map(_, _)
-    )
 }
 
 /// SQL three-valued equality for array elements at given indices.
