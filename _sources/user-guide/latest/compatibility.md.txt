@@ -174,7 +174,6 @@ suffixes (e.g. `Europe/Moscow`), and the full Spark timestamp year range
 | timestamp | N/A | U | U | C | U | U | U | U | C | U | C | - |
 
 **Notes:**
-- **decimal -> string**: There can be formatting differences in some case due to Spark using scientific notation where Comet does not
 - **double -> decimal**: There can be rounding differences
 - **double -> string**: There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45
 - **float -> decimal**: There can be rounding differences
@@ -203,7 +202,6 @@ suffixes (e.g. `Europe/Moscow`), and the full Spark timestamp year range
 | timestamp | N/A | U | U | C | U | U | U | U | C | U | C | - |
 
 **Notes:**
-- **decimal -> string**: There can be formatting differences in some case due to Spark using scientific notation where Comet does not
 - **double -> decimal**: There can be rounding differences
 - **double -> string**: There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45
 - **float -> decimal**: There can be rounding differences
@@ -232,7 +230,6 @@ suffixes (e.g. `Europe/Moscow`), and the full Spark timestamp year range
 | timestamp | N/A | U | U | C | U | U | U | U | C | U | C | - |
 
 **Notes:**
-- **decimal -> string**: There can be formatting differences in some case due to Spark using scientific notation where Comet does not
 - **double -> decimal**: There can be rounding differences
 - **double -> string**: There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45
 - **float -> decimal**: There can be rounding differences

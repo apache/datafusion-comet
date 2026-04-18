@@ -883,6 +883,64 @@ make<span class="w"> </span>test-jvm
 </pre></div>
 </div>
 </section>
+<section id="register-new-test-suites-in-ci">
+<h3>5. Register New Test Suites in CI<a class="headerlink" href="#register-new-test-suites-in-ci" title="Link to this heading">#</a></h3>
+<p>Comet’s CI does not automatically discover test suites. Instead, test suites are explicitly listed
+in the GitHub Actions workflow files so they can be grouped by category and run as separate parallel
+jobs. This reduces overall CI time.</p>
+<p>If you add a new Scala test suite, you must add it to the <code class="docutils literal notranslate"><span class="pre">suite</span></code> matrix in <strong>both</strong> workflow files:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">.github/workflows/pr_build_linux.yml</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">.github/workflows/pr_build_macos.yml</span></code></p></li>
+</ul>
+<p>Each file contains a <code class="docutils literal notranslate"><span class="pre">suite</span></code> matrix with named groups such as <code class="docutils literal notranslate"><span class="pre">fuzz</span></code>, <code class="docutils literal notranslate"><span class="pre">shuffle</span></code>, <code class="docutils literal notranslate"><span class="pre">parquet</span></code>, <code class="docutils literal notranslate"><span class="pre">csv</span></code>,
+<code class="docutils literal notranslate"><span class="pre">exec</span></code>, <code class="docutils literal notranslate"><span class="pre">expressions</span></code>, and <code class="docutils literal notranslate"><span class="pre">sql</span></code>. Add your new suite’s fully qualified class name to the
+appropriate group. For example, if you add a new expression test suite, add it to the
+<code class="docutils literal notranslate"><span class="pre">expressions</span></code> group:</p>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;expressions&quot;</span>
+<span class="w">  </span><span class="nt">value</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">|</span>
+<span class="w">    </span><span class="no">org.apache.comet.CometExpressionSuite</span>
+<span class="w">    </span><span class="no"># ... existing suites ...</span>
+<span class="w">    </span><span class="no">org.apache.comet.YourNewExpressionSuite  # &lt;-- add here</span>
+</pre></div>
+</div>
+<p>Choose the group that best matches the area your test covers:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Group</p></th>
+<th class="head"><p>Covers</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">fuzz</span></code></p></td>
+<td><p>Fuzz testing and data generation</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">shuffle</span></code></p></td>
+<td><p>Shuffle operators and related exchange behavior</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">parquet</span></code></p></td>
+<td><p>Parquet read/write and native reader tests</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">csv</span></code></p></td>
+<td><p>CSV native read tests</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">exec</span></code></p></td>
+<td><p>Execution operators, joins, aggregates, plan rules, TPC-*</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">expressions</span></code></p></td>
+<td><p>Expression evaluation, casts, and SQL file tests</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">sql</span></code></p></td>
+<td><p>SQL-level behavior tests</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><strong>Important:</strong> The suite lists in both workflow files must stay in sync. A separate CI check
+(<code class="docutils literal notranslate"><span class="pre">.github/workflows/pr_missing_suites.yml</span></code>) runs <code class="docutils literal notranslate"><span class="pre">dev/ci/check-suites.py</span></code> on every pull request.
+It scans for all <code class="docutils literal notranslate"><span class="pre">*Suite.scala</span></code> files in the repository and verifies that each one appears in both
+workflow files. If any suite is missing, this check will fail and block the PR.</p>
+</section>
 <section id="pre-pr-summary">
 <h3>Pre-PR Summary<a class="headerlink" href="#pre-pr-summary" title="Link to this heading">#</a></h3>
 <div class="highlight-sh notranslate"><div class="highlight"><pre><span></span>make<span class="w"> </span>format<span class="w">   </span><span class="c1"># Format code</span>
