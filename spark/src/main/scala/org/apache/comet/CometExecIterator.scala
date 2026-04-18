@@ -285,6 +285,13 @@ object CometExecIterator extends Logging {
     val executorCores = numDriverOrExecutorCores(SparkEnv.get.conf)
     builder.putEntries("spark.executor.cores", executorCores.toString)
 
+    // Forward Spark SQL confs that the native Spark-compatible UDFs honor.
+    // Kept as an explicit allowlist so we don't leak arbitrary user configs across JNI.
+    val sqlConfsToForward = Seq("spark.sql.mapKeyDedupPolicy")
+    sqlConfsToForward.foreach { key =>
+      Option(SQLConf.get.getConfString(key, null)).foreach(builder.putEntries(key, _))
+    }
+
     builder.build().toByteArray
   }
 

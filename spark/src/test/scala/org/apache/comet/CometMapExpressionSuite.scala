@@ -22,6 +22,7 @@ package org.apache.comet
 import scala.util.Random
 
 import org.apache.hadoop.fs.Path
+import org.apache.spark.SparkException
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
@@ -234,6 +235,47 @@ class CometMapExpressionSuite extends CometTestBase {
         sql(s"select map_from_entries(array(struct(0, c1))) from $table"),
         fallbackReason(CometMapFromEntries.valueUnsupportedReason))
     }
+  }
+
+  test("map_from_entries - native LAST_WIN policy matches Spark") {
+    withSQLConf("spark.sql.mapKeyDedupPolicy" -> "LAST_WIN") {
+      checkSparkAnswerAndOperator(
+        sql("select map_from_entries(array(struct(1, 'a'), struct(1, 'b')))"))
+    }
+  }
+
+  test("map_from_entries - duplicate keys throw under default EXCEPTION policy") {
+    val df = sql("select map_from_entries(array(struct(1, 'a'), struct(1, 'b')))")
+    val ex = intercept[SparkException] {
+      df.collect()
+    }
+    // Spark raises error class DUPLICATED_MAP_KEY. The native implementation mirrors
+    // the bracketed prefix in its message so both engines surface the same class.
+    assert(
+      ex.getMessage.contains("DUPLICATED_MAP_KEY"),
+      s"expected DUPLICATED_MAP_KEY error class, got: ${ex.getMessage}")
+  }
+
+  test("map_from_entries - null struct entry throws") {
+    val df = sql(
+      "select map_from_entries(array(struct(1, 'a'), cast(null as struct<a:int,b:string>)))")
+    val ex = intercept[SparkException] {
+      df.collect()
+    }
+    assert(
+      ex.getMessage.contains("NULL_MAP_KEY"),
+      s"expected NULL_MAP_KEY error class, got: ${ex.getMessage}")
+  }
+
+  test("map_from_entries - null key throws") {
+    val df =
+      sql("select map_from_entries(array(struct(cast(null as int), 'a'), struct(1, 'b')))")
+    val ex = intercept[SparkException] {
+      df.collect()
+    }
+    assert(
+      ex.getMessage.contains("NULL_MAP_KEY"),
+      s"expected NULL_MAP_KEY error class, got: ${ex.getMessage}")
   }
 
 }

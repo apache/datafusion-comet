@@ -153,6 +153,8 @@ object CometMapFromEntries extends CometScalarFunction[MapFromEntries]("map_from
     if (containsBinary(expr.dataType.valueType)) {
       return Incompatible(Some(valueUnsupportedReason))
     }
+    // spark.sql.mapKeyDedupPolicy is forwarded to the native side and honored by the
+    // datafusion-spark map_from_entries UDF, so both EXCEPTION and LAST_WIN run natively.
     Compatible(None)
   }
 }
