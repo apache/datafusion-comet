@@ -183,24 +183,17 @@ fn arrays_overlap_list<OffsetSize: OffsetSizeTrait>(
         let mut found_overlap = false;
         let mut has_null = false;
 
-        // Ensure smaller array is on the probe side for fewer comparisons
-        let (probe, search) = if left_values.len() <= right_values.len() {
-            (&left_values, &right_values)
-        } else {
-            (&right_values, &left_values)
-        };
-
-        'outer: for pi in 0..probe.len() {
-            if probe.is_null(pi) {
+        'outer: for pi in 0..left_values.len() {
+            if left_values.is_null(pi) {
                 has_null = true;
                 continue;
             }
-            for si in 0..search.len() {
-                if search.is_null(si) {
+            for si in 0..right_values.len() {
+                if right_values.is_null(si) {
                     has_null = true;
                     continue;
                 }
-                match three_valued_eq(probe.as_ref(), pi, search.as_ref(), si)? {
+                match three_valued_eq(left_values.as_ref(), pi, right_values.as_ref(), si)? {
                     Some(true) => {
                         found_overlap = true;
                         break 'outer;
