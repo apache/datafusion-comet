@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import scala.annotation.tailrec
 
-import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayFilter, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayRemove, ArrayRepeat, ArraysOverlap, ArrayUnion, Attribute, CreateArray, ElementAt, Expression, Flatten, GetArrayItem, IsNotNull, Literal, Reverse, Size, SortArray}
+import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayContains, ArrayExcept, ArrayFilter, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayRemove, ArrayRepeat, ArraysOverlap, ArrayUnion, Attribute, CreateArray, ElementAt, Expression, Flatten, GetArrayItem, IsNotNull, Literal, Reverse, Size, SortArray}
 import org.apache.spark.sql.catalyst.util.GenericArrayData
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
@@ -117,23 +117,6 @@ object CometArrayContains extends CometExpressionSerde[ArrayContains] {
     val keyExprProto = exprToProto(expr.children(1), inputs, binding)
 
     scalarFunctionExprToProto("array_contains", arrayExprProto, keyExprProto)
-  }
-}
-
-object CometArrayDistinct extends CometExpressionSerde[ArrayDistinct] {
-
-  override def getSupportLevel(expr: ArrayDistinct): SupportLevel =
-    Incompatible(Some("Output elements are sorted rather than preserving insertion order"))
-
-  override def convert(
-      expr: ArrayDistinct,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val arrayExprProto = exprToProto(expr.children.head, inputs, binding)
-
-    val arrayDistinctScalarExpr =
-      scalarFunctionExprToProto("array_distinct", arrayExprProto)
-    optExprWithInfo(arrayDistinctScalarExpr, expr)
   }
 }
 
