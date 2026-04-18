@@ -438,6 +438,47 @@ make test-rust
 make test-jvm
 ```
 
+### 5. Register New Test Suites in CI
+
+Comet's CI does not automatically discover test suites. Instead, test suites are explicitly listed
+in the GitHub Actions workflow files so they can be grouped by category and run as separate parallel
+jobs. This reduces overall CI time.
+
+If you add a new Scala test suite, you must add it to the `suite` matrix in **both** workflow files:
+
+- `.github/workflows/pr_build_linux.yml`
+- `.github/workflows/pr_build_macos.yml`
+
+Each file contains a `suite` matrix with named groups such as `fuzz`, `shuffle`, `parquet`, `csv`,
+`exec`, `expressions`, and `sql`. Add your new suite's fully qualified class name to the
+appropriate group. For example, if you add a new expression test suite, add it to the
+`expressions` group:
+
+```yaml
+- name: "expressions"
+  value: |
+    org.apache.comet.CometExpressionSuite
+    # ... existing suites ...
+    org.apache.comet.YourNewExpressionSuite  # <-- add here
+```
+
+Choose the group that best matches the area your test covers:
+
+| Group         | Covers                                                     |
+| ------------- | ---------------------------------------------------------- |
+| `fuzz`        | Fuzz testing and data generation                           |
+| `shuffle`     | Shuffle operators and related exchange behavior            |
+| `parquet`     | Parquet read/write and native reader tests                 |
+| `csv`         | CSV native read tests                                      |
+| `exec`        | Execution operators, joins, aggregates, plan rules, TPC-\* |
+| `expressions` | Expression evaluation, casts, and SQL file tests           |
+| `sql`         | SQL-level behavior tests                                   |
+
+**Important:** The suite lists in both workflow files must stay in sync. A separate CI check
+(`.github/workflows/pr_missing_suites.yml`) runs `dev/ci/check-suites.py` on every pull request.
+It scans for all `*Suite.scala` files in the repository and verifies that each one appears in both
+workflow files. If any suite is missing, this check will fail and block the PR.
+
 ### Pre-PR Summary
 
 ```sh
