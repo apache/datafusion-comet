@@ -183,24 +183,19 @@ fn arrays_overlap_list<OffsetSize: OffsetSizeTrait>(
         let mut found_overlap = false;
         let mut has_null = false;
 
-        'outer: for pi in 0..left_values.len() {
+        for pi in 0..left_values.len() {
             if left_values.is_null(pi) {
                 has_null = true;
                 continue;
             }
-            for si in 0..right_values.len() {
-                if right_values.is_null(si) {
-                    has_null = true;
-                    continue;
-                }
-                match three_valued_eq(left_values.as_ref(), pi, right_values.as_ref(), si)? {
-                    Some(true) => {
-                        found_overlap = true;
-                        break 'outer;
-                    }
-                    None => has_null = true,
-                    Some(false) => {}
-                }
+            let (found, null_eq) =
+                find_in_array(&left_values, pi, &right_values)?;
+            if null_eq {
+                has_null = true;
+            }
+            if found {
+                found_overlap = true;
+                break;
             }
         }
 
@@ -214,6 +209,46 @@ fn arrays_overlap_list<OffsetSize: OffsetSizeTrait>(
     }
 
     Ok(Arc::new(builder.finish()))
+}
+
+/// Check if the element at `probe[pi]` exists in `search`.
+/// Returns (found_match, encountered_null).
+///
+/// For flat types, uses Arrow's vectorized `eq` kernel (one call compares the
+/// probe element against all search elements via SIMD). For nested types that
+/// the `eq` kernel does not support, falls back to element-by-element comparison.
+fn find_in_array(probe: &ArrayRef, pi: usize, search: &ArrayRef) -> Result<(bool, bool)> {
+    if !needs_recursive_eq(probe.data_type()) {
+        let scalar = Scalar::new(probe.slice(pi, 1));
+        let eq_result = eq(search, &scalar)
+            .map_err(|e| datafusion::error::DataFusionError::ArrowError(Box::new(e), None))?;
+        return Ok((eq_result.true_count() > 0, eq_result.null_count() > 0));
+    }
+
+    let mut has_null = false;
+    for si in 0..search.len() {
+        if search.is_null(si) {
+            has_null = true;
+            continue;
+        }
+        match three_valued_eq(probe.as_ref(), pi, search.as_ref(), si)? {
+            Some(true) => return Ok((true, has_null)),
+            None => has_null = true,
+            Some(false) => {}
+        }
+    }
+    Ok((false, has_null))
+}
+
+fn needs_recursive_eq(dt: &DataType) -> bool {
+    matches!(
+        dt,
+        DataType::List(_)
+            | DataType::LargeList(_)
+            | DataType::FixedSizeList(_, _)
+            | DataType::Struct(_)
+            | DataType::Map(_, _)
+    )
 }
 
 /// SQL three-valued equality for array elements at given indices.
@@ -279,7 +314,8 @@ fn three_valued_eq(
         _ => {
             let l = Scalar::new(left.slice(li, 1));
             let r = Scalar::new(right.slice(ri, 1));
-            let result = eq(&l, &r)?;
+            let result = eq(&l, &r)
+                .map_err(|e| datafusion::error::DataFusionError::ArrowError(Box::new(e), None))?;
             Ok(if result.is_null(0) {
                 None
             } else {
