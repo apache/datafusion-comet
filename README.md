@@ -57,7 +57,7 @@ Comet runs on the hardware you already have. There is no requirement for GPUs, F
 accelerators, so the savings above come from better utilization of the same commodity infrastructure rather than
 from hardware upgrades.
 
-### Spark Compatibility
+### Drop-In Integration
 
 Comet aims for 100% compatibility with all supported versions of Apache Spark, allowing you to integrate Comet into
 your existing Spark deployments and workflows seamlessly. With no code changes required, you can immediately harness
@@ -92,7 +92,7 @@ Install Comet by adding the jar for your Spark and Scala version to the Spark cl
 A typical configuration looks like:
 
 ```shell
-export COMET_JAR=/path/to/comet-spark-spark3.5_2.12-<verison>.jar
+export COMET_JAR=/path/to/comet-spark-spark3.5_2.12-<version>.jar
 
 $SPARK_HOME/bin/spark-shell \
     --jars $COMET_JAR \
