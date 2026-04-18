@@ -15,7 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::{Array, Float32Array, Float64Array, Int32Array, Int64Array, TimestampMicrosecondArray};
+use arrow::array::{
+    Array, Float32Array, Float64Array, Int32Array, Int64Array, TimestampMicrosecondArray,
+};
 use arrow::compute::try_unary;
 use arrow::datatypes::{DataType, TimeUnit};
 use datafusion::common::{utils::take_function_args, DataFusionError, Result, ScalarValue};
@@ -82,9 +84,8 @@ impl ScalarUDFImpl for SparkSecondsToTimestamp {
             ColumnarValue::Array(arr) => {
                 // Handle Int32 input — no overflow possible since i32 * 1_000_000 fits in i64
                 if let Some(int_array) = arr.as_any().downcast_ref::<Int32Array>() {
-                    let result: TimestampMicrosecondArray = try_unary(int_array, |s| {
-                        Ok((s as i64) * MICROS_PER_SECOND)
-                    })?;
+                    let result: TimestampMicrosecondArray =
+                        try_unary(int_array, |s| Ok((s as i64) * MICROS_PER_SECOND))?;
                     return Ok(ColumnarValue::Array(Arc::new(result)));
                 }
 
