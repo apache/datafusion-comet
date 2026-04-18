@@ -66,6 +66,7 @@ the [Comet Supported Expressions Guide](expressions.md) for more information on 
 - **ArrayUnion**: Sorts input arrays before performing the union, while Spark preserves the order of the first array
   and appends unique elements from the second.
   [#3644](https://github.com/apache/datafusion-comet/issues/3644)
+- **SortArray**: Nested arrays with `Struct` or `Null` child values are not supported natively and will fall back to Spark.
 
 ### Date/Time Expressions
 
@@ -75,11 +76,6 @@ the [Comet Supported Expressions Guide](expressions.md) for more information on 
 - **TruncTimestamp (date_trunc)**: Produces incorrect results when used with non-UTC timezones. Compatible when
   timezone is UTC.
   [#2649](https://github.com/apache/datafusion-comet/issues/2649)
-
-### Aggregate Expressions
-
-- **Corr**: Returns null instead of NaN in some edge cases.
-  [#2646](https://github.com/apache/datafusion-comet/issues/2646)
 
 ### Struct Expressions
 

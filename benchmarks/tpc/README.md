@@ -179,8 +179,8 @@ sudo ./drop-caches.sh
 python3 run.py --engine comet-iceberg --benchmark tpch
 ```
 
-The benchmark uses `spark.comet.scan.icebergNative.enabled=true` to enable Comet's native iceberg-rust
-integration. Verify native scanning is active by checking for `CometIcebergNativeScanExec` in the
+The benchmark uses Comet's native iceberg-rust integration, which is enabled by default.
+Verify native scanning is active by checking for `CometIcebergNativeScanExec` in the
 physical plan output.
 
 ### create-iceberg-tables.py options
