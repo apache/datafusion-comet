@@ -22,7 +22,7 @@ package org.apache.comet.serde
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.catalyst.expressions.Attribute
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, Corr, Count, Covariance, CovPopulation, CovSample, First, Last, Max, Min, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, Corr, Count, Covariance, CovPopulation, CovSample, First, Last, Max, MaxBy, Min, MinBy, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ByteType, DataTypes, DecimalType, IntegerType, LongType, ShortType, StringType}
 
@@ -473,6 +473,64 @@ object CometCovPopulation extends CometAggregateExpressionSerde[CovPopulation] w
       inputs,
       binding,
       conf: SQLConf)
+  }
+}
+
+object CometMaxBy extends CometAggregateExpressionSerde[MaxBy] {
+  override def convert(
+      aggExpr: AggregateExpression,
+      maxBy: MaxBy,
+      inputs: Seq[Attribute],
+      binding: Boolean,
+      conf: SQLConf): Option[ExprOuterClass.AggExpr] = {
+    val valueExpr = exprToProto(maxBy.valueExpr, inputs, binding)
+    val orderingExpr = exprToProto(maxBy.orderingExpr, inputs, binding)
+    val dataType = serializeDataType(maxBy.dataType)
+
+    if (valueExpr.isDefined && orderingExpr.isDefined && dataType.isDefined) {
+      val builder = ExprOuterClass.MaxBy.newBuilder()
+      builder.setValue(valueExpr.get)
+      builder.setOrdering(orderingExpr.get)
+      builder.setDatatype(dataType.get)
+
+      Some(
+        ExprOuterClass.AggExpr
+          .newBuilder()
+          .setMaxBy(builder)
+          .build())
+    } else {
+      withInfo(aggExpr, maxBy)
+      None
+    }
+  }
+}
+
+object CometMinBy extends CometAggregateExpressionSerde[MinBy] {
+  override def convert(
+      aggExpr: AggregateExpression,
+      minBy: MinBy,
+      inputs: Seq[Attribute],
+      binding: Boolean,
+      conf: SQLConf): Option[ExprOuterClass.AggExpr] = {
+    val valueExpr = exprToProto(minBy.valueExpr, inputs, binding)
+    val orderingExpr = exprToProto(minBy.orderingExpr, inputs, binding)
+    val dataType = serializeDataType(minBy.dataType)
+
+    if (valueExpr.isDefined && orderingExpr.isDefined && dataType.isDefined) {
+      val builder = ExprOuterClass.MinBy.newBuilder()
+      builder.setValue(valueExpr.get)
+      builder.setOrdering(orderingExpr.get)
+      builder.setDatatype(dataType.get)
+
+      Some(
+        ExprOuterClass.AggExpr
+          .newBuilder()
+          .setMinBy(builder)
+          .build())
+    } else {
+      withInfo(aggExpr, minBy)
+      None
+    }
   }
 }
 

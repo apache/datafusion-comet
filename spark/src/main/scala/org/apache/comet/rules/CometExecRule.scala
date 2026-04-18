@@ -31,7 +31,7 @@ import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, Comet
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, BroadcastQueryStageExec, ShuffleQueryStageExec}
-import org.apache.spark.sql.execution.aggregate.{HashAggregateExec, ObjectHashAggregateExec}
+import org.apache.spark.sql.execution.aggregate.{HashAggregateExec, ObjectHashAggregateExec, SortAggregateExec}
 import org.apache.spark.sql.execution.command.{DataWritingCommandExec, ExecutedCommandExec}
 import org.apache.spark.sql.execution.datasources.WriteFilesExec
 import org.apache.spark.sql.execution.datasources.csv.CSVFileFormat
@@ -68,6 +68,7 @@ object CometExecRule {
       classOf[ExpandExec] -> CometExpandExec,
       classOf[GenerateExec] -> CometExplodeExec,
       classOf[HashAggregateExec] -> CometHashAggregateExec,
+      classOf[SortAggregateExec] -> CometSortAggregateExec,
       classOf[ObjectHashAggregateExec] -> CometObjectHashAggregateExec,
       classOf[BroadcastHashJoinExec] -> CometBroadcastHashJoinExec,
       classOf[ShuffledHashJoinExec] -> CometHashJoinExec,

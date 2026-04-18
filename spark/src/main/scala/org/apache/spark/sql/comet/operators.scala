@@ -38,7 +38,7 @@ import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, BroadcastQueryStageExec, ShuffleQueryStageExec}
-import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
+import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec, SortAggregateExec}
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
@@ -1498,18 +1498,105 @@ trait CometBaseAggregate {
    * Find the first Comet partial aggregate in the plan. If it reaches a Spark HashAggregate with
    * partial mode, it will return None.
    */
-  private def findCometPartialAgg(plan: SparkPlan): Option[CometHashAggregateExec] = {
+  private def findCometPartialAgg(plan: SparkPlan): Option[CometUnaryExec] = {
     plan.collectFirst {
       case agg: CometHashAggregateExec if agg.aggregateExpressions.forall(_.mode == Partial) =>
         Some(agg)
       case agg: HashAggregateExec if agg.aggregateExpressions.forall(_.mode == Partial) => None
       case agg: ObjectHashAggregateExec if agg.aggregateExpressions.forall(_.mode == Partial) =>
         None
+      case agg: CometSortAggregateExec if agg.aggregateExpressions.forall(_.mode == Partial) =>
+        Some(agg)
+      case agg: SortAggregateExec if agg.aggregateExpressions.forall(_.mode == Partial) =>
+        None
       case a: AQEShuffleReadExec => findCometPartialAgg(a.child)
       case s: ShuffleQueryStageExec => findCometPartialAgg(s.plan)
     }.flatten
   }
 
+}
+
+object CometSortAggregateExec
+    extends CometOperatorSerde[SortAggregateExec]
+    with CometBaseAggregate {
+
+  override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
+    CometConf.COMET_EXEC_AGGREGATE_ENABLED)
+
+  override def convert(
+      aggregate: SortAggregateExec,
+      builder: Operator.Builder,
+      childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
+    doConvert(aggregate, builder, childOp: _*)
+  }
+
+  override def createExec(nativeOp: Operator, op: SortAggregateExec): CometNativeExec = {
+    CometSortAggregateExec(
+      nativeOp,
+      op,
+      op.output,
+      op.groupingExpressions,
+      op.aggregateExpressions,
+      op.resultExpressions,
+      op.child.output,
+      op.child,
+      SerializedPlan(None))
+  }
+}
+
+case class CometSortAggregateExec(
+    override val nativeOp: Operator,
+    override val originalPlan: SparkPlan,
+    override val output: Seq[Attribute],
+    groupingExpressions: Seq[NamedExpression],
+    aggregateExpressions: Seq[AggregateExpression],
+    resultExpressions: Seq[NamedExpression],
+    input: Seq[Attribute],
+    child: SparkPlan,
+    override val serializedPlanOpt: SerializedPlan)
+    extends CometUnaryExec
+    with PartitioningPreservingUnaryExecNode {
+
+  val modes: Seq[AggregateMode] = aggregateExpressions.map(_.mode).distinct
+  assert(modes.length == 1 || modes.isEmpty)
+  val mode = modes.headOption
+
+  override def producedAttributes: AttributeSet = outputSet ++ AttributeSet(resultExpressions)
+
+  override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =
+    this.copy(child = newChild)
+
+  override def verboseStringWithOperatorId(): String = {
+    s"""
+       |$formattedNodeName
+       |${ExplainUtils.generateFieldString("Input", child.output)}
+       |${ExplainUtils.generateFieldString("Keys", groupingExpressions)}
+       |${ExplainUtils.generateFieldString("Functions", aggregateExpressions)}
+       |""".stripMargin
+  }
+
+  override def stringArgs: Iterator[Any] =
+    Iterator(input, mode, groupingExpressions, aggregateExpressions, child)
+
+  override def equals(obj: Any): Boolean = {
+    obj match {
+      case other: CometSortAggregateExec =>
+        this.output == other.output &&
+        this.groupingExpressions == other.groupingExpressions &&
+        this.aggregateExpressions == other.aggregateExpressions &&
+        this.input == other.input &&
+        this.mode == other.mode &&
+        this.child == other.child &&
+        this.serializedPlanOpt == other.serializedPlanOpt
+      case _ =>
+        false
+    }
+  }
+
+  override def hashCode(): Int =
+    Objects.hashCode(output, groupingExpressions, aggregateExpressions, input, mode, child)
+
+  override protected def outputExpressions: Seq[NamedExpression] = resultExpressions
 }
 
 object CometHashAggregateExec
