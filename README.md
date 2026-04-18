@@ -89,13 +89,18 @@ the benefits of Comet's acceleration capabilities without disrupting your Spark 
 Install Comet by adding the jar for your Spark and Scala version to the Spark classpath and enabling the plugin.
 A typical configuration looks like:
 
-```
---jars /path/to/comet-spark-spark3.5_2.12-<version>.jar \
---conf spark.plugins=org.apache.spark.CometPlugin \
---conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
---conf spark.comet.enabled=true \
---conf spark.comet.exec.enabled=true \
---conf spark.comet.exec.shuffle.enabled=true
+```shell
+export COMET_JAR=/path/to/comet-spark-spark3.5_2.12-<verison>.jar
+
+$SPARK_HOME/bin/spark-shell \
+    --jars $COMET_JAR \
+    --conf spark.driver.extraClassPath=$COMET_JAR \
+    --conf spark.executor.extraClassPath=$COMET_JAR \
+    --conf spark.plugins=org.apache.spark.CometPlugin \
+    --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
+    --conf spark.comet.explainFallback.enabled=true \
+    --conf spark.memory.offHeap.enabled=true \
+    --conf spark.memory.offHeap.size=4g
 ```
 
 For full installation instructions, published jar downloads, and configuration reference, see the
