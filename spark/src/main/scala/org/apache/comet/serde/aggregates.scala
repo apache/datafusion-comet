@@ -665,6 +665,21 @@ object CometBloomFilterAggregate extends CometAggregateExpressionSerde[BloomFilt
 }
 
 object CometCollectSet extends CometAggregateExpressionSerde[CollectSet] {
+
+  override def getSupportLevel(expr: CollectSet): SupportLevel = {
+    if (COMET_EXEC_STRICT_FLOATING_POINT.get() &&
+      SupportLevel.containsFloatingPoint(expr.children.head.dataType)) {
+      Incompatible(
+        Some(
+          "collect_set on floating-point types is not 100% compatible with Spark " +
+            "(Comet deduplicates NaN values while Spark treats each NaN as distinct), " +
+            s"and Comet is running with ${COMET_EXEC_STRICT_FLOATING_POINT.key}=true. " +
+            s"${CometConf.COMPAT_GUIDE}"))
+    } else {
+      Compatible()
+    }
+  }
+
   override def convert(
       aggExpr: AggregateExpression,
       expr: CollectSet,
