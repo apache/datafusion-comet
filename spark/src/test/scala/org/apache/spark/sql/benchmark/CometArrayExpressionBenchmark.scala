@@ -19,6 +19,9 @@
 
 package org.apache.spark.sql.benchmark
 
+import org.apache.comet.CometConf
+
+// spotless:off
 /**
  * Benchmark to measure performance of Comet array expressions. To run this benchmark:
  * {{{
@@ -26,6 +29,7 @@ package org.apache.spark.sql.benchmark
  * }}}
  * Results will be written to "spark/benchmarks/CometArrayExpressionBenchmark-**results.txt".
  */
+// spotless:on
 object CometArrayExpressionBenchmark extends CometBenchmarkBase {
 
   private def buildWideIntArrayExpr(width: Int, modulus: Int): String = {
@@ -86,6 +90,72 @@ object CometArrayExpressionBenchmark extends CometBenchmarkBase {
     }
   }
 
+  def arrayPositionBenchmark(values: Int): Unit = {
+    withTempPath { dir =>
+      withTempTable("parquetV1Table") {
+        // Create a table with int arrays of size 10 and a search value
+        prepareTable(
+          dir,
+          spark.sql(s"""SELECT
+               |  array(
+               |    cast(value % 100 as int),
+               |    cast((value + 1) % 100 as int),
+               |    cast((value + 2) % 100 as int),
+               |    cast((value + 3) % 100 as int),
+               |    cast((value + 4) % 100 as int),
+               |    cast((value + 5) % 100 as int),
+               |    cast((value + 6) % 100 as int),
+               |    cast((value + 7) % 100 as int),
+               |    cast((value + 8) % 100 as int),
+               |    cast((value + 9) % 100 as int)
+               |  ) as int_arr,
+               |  cast((value + 5) % 100 as int) as search_val
+               |FROM $tbl""".stripMargin))
+
+        val nativeScanConfig =
+          Map(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION)
+
+        runExpressionBenchmark(
+          "array_position - int array",
+          values,
+          "SELECT array_position(int_arr, search_val) FROM parquetV1Table",
+          nativeScanConfig)
+      }
+    }
+
+    withTempPath { dir =>
+      withTempTable("parquetV1Table") {
+        // Create a table with string arrays of size 10 and a search value
+        prepareTable(
+          dir,
+          spark.sql(s"""SELECT
+               |  array(
+               |    cast(value % 100 as string),
+               |    cast((value + 1) % 100 as string),
+               |    cast((value + 2) % 100 as string),
+               |    cast((value + 3) % 100 as string),
+               |    cast((value + 4) % 100 as string),
+               |    cast((value + 5) % 100 as string),
+               |    cast((value + 6) % 100 as string),
+               |    cast((value + 7) % 100 as string),
+               |    cast((value + 8) % 100 as string),
+               |    cast((value + 9) % 100 as string)
+               |  ) as str_arr,
+               |  cast((value + 5) % 100 as string) as search_val
+               |FROM $tbl""".stripMargin))
+
+        val nativeScanConfig =
+          Map(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION)
+
+        runExpressionBenchmark(
+          "array_position - string array",
+          values,
+          "SELECT array_position(str_arr, search_val) FROM parquetV1Table",
+          nativeScanConfig)
+      }
+    }
+  }
+
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
     val values = 4 * 1024 * 1024
 
@@ -103,6 +173,10 @@ object CometArrayExpressionBenchmark extends CometBenchmarkBase {
 
     runBenchmarkWithTable("sortArrayIntAscFirstElement", values) { v =>
       sortArrayIntAscFirstElementBenchmark(v, width = 32)
+    }
+
+    runBenchmarkWithTable("ArrayPosition", values) { v =>
+      arrayPositionBenchmark(v)
     }
   }
 }
