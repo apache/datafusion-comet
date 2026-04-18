@@ -483,7 +483,7 @@ under the License.
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.scan.icebergNative.enabled</span></code></p></td>
 <td><p>Whether to enable native Iceberg table scan using iceberg-rust. When enabled, Iceberg tables are read directly through native execution, bypassing Spark’s DataSource V2 API for better performance.</p></td>
-<td><p>false</p></td>
+<td><p>true</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.scan.unsignedSmallIntSafetyCheck</span></code></p></td>
 <td><p>Parquet files may contain unsigned 8-bit integers (UINT_8) which Spark maps to ShortType. When this config is true (default), Comet falls back to Spark for ShortType columns because we cannot distinguish signed INT16 (safe) from unsigned UINT_8 (may produce different results). Set to false to allow native execution of ShortType columns if you know your data does not contain unsigned UINT_8 columns from improperly encoded Parquet files. For more information, refer to the <a class="reference external" href="https://datafusion.apache.org/comet/user-guide/compatibility.html">Comet Compatibility Guide</a>.</p></td>
