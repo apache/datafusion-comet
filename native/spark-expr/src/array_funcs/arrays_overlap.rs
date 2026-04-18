@@ -180,31 +180,65 @@ fn arrays_overlap_list<OffsetSize: OffsetSizeTrait>(
         }
 
         let mut found_overlap = false;
+        let mut has_null_eq = false;
 
-        // Ensure smaller array is on the probe side for fewer broadcast eq calls
+        // Ensure smaller array is on the probe side for fewer comparisons
         let (probe, search) = if left_values.len() <= right_values.len() {
             (&left_values, &right_values)
         } else {
             (&right_values, &left_values)
         };
 
-        // For each non-null element in probe, broadcast eq against the full search array.
-        // One kernel call per probe element: O(p * s) total work but with vectorized inner loop.
-        for pi in 0..probe.len() {
-            if probe.is_null(pi) {
-                continue;
+        let is_nested = matches!(
+            left_values.data_type(),
+            DataType::List(_) | DataType::LargeList(_)
+        );
+
+        if is_nested {
+            // Element-by-element comparison for nested types where Arrow's eq kernel
+            // does not support direct comparison.
+            'outer: for pi in 0..probe.len() {
+                if probe.is_null(pi) {
+                    has_null_eq = true;
+                    continue;
+                }
+                for si in 0..search.len() {
+                    if search.is_null(si) {
+                        has_null_eq = true;
+                        continue;
+                    }
+                    match three_valued_eq(probe.as_ref(), pi, search.as_ref(), si)? {
+                        Some(true) => {
+                            found_overlap = true;
+                            break 'outer;
+                        }
+                        None => has_null_eq = true,
+                        Some(false) => {}
+                    }
+                }
             }
-            let scalar = Scalar::new(probe.slice(pi, 1));
-            let eq_result = eq(search, &scalar)?;
-            if eq_result.true_count() > 0 {
-                found_overlap = true;
-                break;
+        } else {
+            // Vectorized comparison for flat types using Arrow's eq kernel.
+            // One kernel call per probe element: O(p * s) total work with vectorized inner loop.
+            for pi in 0..probe.len() {
+                if probe.is_null(pi) {
+                    continue;
+                }
+                let scalar = Scalar::new(probe.slice(pi, 1));
+                let eq_result = eq(search, &scalar)?;
+                if eq_result.true_count() > 0 {
+                    found_overlap = true;
+                    break;
+                }
+                if eq_result.null_count() > 0 {
+                    has_null_eq = true;
+                }
             }
         }
 
         if found_overlap {
             builder.append_value(true);
-        } else if left_values.null_count() > 0 || right_values.null_count() > 0 {
+        } else if has_null_eq || left_values.null_count() > 0 || right_values.null_count() > 0 {
             builder.append_null();
         } else {
             builder.append_value(false);
@@ -212,6 +246,53 @@ fn arrays_overlap_list<OffsetSize: OffsetSizeTrait>(
     }
 
     Ok(Arc::new(builder.finish()))
+}
+
+/// SQL three-valued equality for array elements at given indices.
+/// Returns Some(true) if equal, Some(false) if not equal, None if indeterminate (null).
+fn three_valued_eq(left: &dyn Array, li: usize, right: &dyn Array, ri: usize) -> Result<Option<bool>> {
+    if left.is_null(li) || right.is_null(ri) {
+        return Ok(None);
+    }
+
+    match left.data_type() {
+        DataType::List(_) => {
+            let ll = left.as_any().downcast_ref::<GenericListArray<i32>>().unwrap();
+            let rl = right.as_any().downcast_ref::<GenericListArray<i32>>().unwrap();
+            list_values_eq(&ll.value(li), &rl.value(ri))
+        }
+        DataType::LargeList(_) => {
+            let ll = left.as_any().downcast_ref::<GenericListArray<i64>>().unwrap();
+            let rl = right.as_any().downcast_ref::<GenericListArray<i64>>().unwrap();
+            list_values_eq(&ll.value(li), &rl.value(ri))
+        }
+        _ => {
+            let l = Scalar::new(left.slice(li, 1));
+            let r = Scalar::new(right.slice(ri, 1));
+            let result = eq(&l, &r)?;
+            Ok(if result.is_null(0) {
+                None
+            } else {
+                Some(result.value(0))
+            })
+        }
+    }
+}
+
+/// Three-valued element-wise equality for two array values.
+fn list_values_eq(left: &ArrayRef, right: &ArrayRef) -> Result<Option<bool>> {
+    if left.len() != right.len() {
+        return Ok(Some(false));
+    }
+    let mut has_null = false;
+    for k in 0..left.len() {
+        match three_valued_eq(left.as_ref(), k, right.as_ref(), k)? {
+            Some(false) => return Ok(Some(false)),
+            None => has_null = true,
+            Some(true) => {}
+        }
+    }
+    Ok(if has_null { None } else { Some(true) })
 }
 
 #[cfg(test)]
@@ -369,6 +450,110 @@ mod tests {
         let result = arrays_overlap_list::<i32>(&left, &right)?;
         let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
         assert!(result.is_null(0));
+        Ok(())
+    }
+
+    /// Build a single-row ListArray of nested lists: List<List<Int32>>
+    fn make_nested_list(elements: Vec<Option<Vec<Option<i32>>>>) -> ListArray {
+        use arrow::array::{Int32Builder, ListBuilder};
+
+        let inner_builder = ListBuilder::new(Int32Builder::new());
+        let mut outer_builder = ListBuilder::new(inner_builder);
+
+        for elem in &elements {
+            match elem {
+                Some(inner) => {
+                    let inner_list_builder = outer_builder.values();
+                    for val in inner {
+                        match val {
+                            Some(v) => inner_list_builder.values().append_value(*v),
+                            None => inner_list_builder.values().append_null(),
+                        }
+                    }
+                    inner_list_builder.append(true);
+                }
+                None => {
+                    outer_builder.values().append(false);
+                }
+            }
+        }
+        outer_builder.append(true);
+        outer_builder.finish()
+    }
+
+    #[test]
+    fn test_nested_array_basic_overlap() -> Result<()> {
+        // [[1,2], [3,4]] vs [[3,4], [5,6]] => true
+        let left = make_nested_list(vec![Some(vec![Some(1), Some(2)]), Some(vec![Some(3), Some(4)])]);
+        let right =
+            make_nested_list(vec![Some(vec![Some(3), Some(4)]), Some(vec![Some(5), Some(6)])]);
+
+        let result = arrays_overlap_list::<i32>(&left, &right)?;
+        let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
+        assert!(result.is_valid(0));
+        assert!(result.value(0));
+        Ok(())
+    }
+
+    #[test]
+    fn test_nested_array_no_overlap() -> Result<()> {
+        // [[1,2]] vs [[3,4]] => false
+        let left = make_nested_list(vec![Some(vec![Some(1), Some(2)])]);
+        let right = make_nested_list(vec![Some(vec![Some(3), Some(4)])]);
+
+        let result = arrays_overlap_list::<i32>(&left, &right)?;
+        let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
+        assert!(result.is_valid(0));
+        assert!(!result.value(0));
+        Ok(())
+    }
+
+    #[test]
+    fn test_nested_array_inner_nulls_indeterminate() -> Result<()> {
+        // [[1,NULL]] vs [[1,NULL]] => null (indeterminate due to inner nulls)
+        let left = make_nested_list(vec![Some(vec![Some(1), None])]);
+        let right = make_nested_list(vec![Some(vec![Some(1), None])]);
+
+        let result = arrays_overlap_list::<i32>(&left, &right)?;
+        let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
+        assert!(
+            result.is_null(0),
+            "Expected null for [[1,NULL]] vs [[1,NULL]], got {:?}",
+            result
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_nested_array_inner_nulls_no_match() -> Result<()> {
+        // [[1,NULL]] vs [[1,2], [3,4]] => null (eq([1,NULL],[1,2]) is null, no definite match)
+        let left = make_nested_list(vec![Some(vec![Some(1), None])]);
+        let right =
+            make_nested_list(vec![Some(vec![Some(1), Some(2)]), Some(vec![Some(3), Some(4)])]);
+
+        let result = arrays_overlap_list::<i32>(&left, &right)?;
+        let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
+        assert!(
+            result.is_null(0),
+            "Expected null for [[1,NULL]] vs [[1,2],[3,4]], got {:?}",
+            result
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_nested_array_definite_match_despite_inner_nulls() -> Result<()> {
+        // [[1,2], [1,NULL]] vs [[1,2]] => true (definite match on [1,2])
+        let left = make_nested_list(vec![
+            Some(vec![Some(1), Some(2)]),
+            Some(vec![Some(1), None]),
+        ]);
+        let right = make_nested_list(vec![Some(vec![Some(1), Some(2)])]);
+
+        let result = arrays_overlap_list::<i32>(&left, &right)?;
+        let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
+        assert!(result.is_valid(0));
+        assert!(result.value(0));
         Ok(())
     }
 }
