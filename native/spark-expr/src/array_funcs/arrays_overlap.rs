@@ -25,7 +25,10 @@
 //!   - null  if no definite overlap but either array contains null elements
 //!   - false if no overlap and neither array contains null elements
 
-use arrow::array::{Array, ArrayRef, BooleanArray, GenericListArray, OffsetSizeTrait, Scalar};
+use arrow::array::{
+    Array, ArrayRef, BooleanArray, FixedSizeListArray, GenericListArray, OffsetSizeTrait, Scalar,
+    StructArray,
+};
 use arrow::compute::kernels::cmp::eq;
 use arrow::datatypes::{DataType, FieldRef};
 use datafusion::common::{exec_err, utils::take_function_args, Result, ScalarValue};
@@ -189,10 +192,10 @@ fn arrays_overlap_list<OffsetSize: OffsetSizeTrait>(
             (&right_values, &left_values)
         };
 
-        let is_nested = matches!(
-            left_values.data_type(),
-            DataType::List(_) | DataType::LargeList(_)
-        );
+        // Arrow's eq kernel does not support nested types (List, Struct, etc.).
+        // Use element-by-element recursive comparison for those, and the fast
+        // vectorized eq kernel for everything else.
+        let is_nested = needs_recursive_eq(left_values.data_type());
 
         if is_nested {
             // Element-by-element comparison for nested types where Arrow's eq kernel
@@ -248,22 +251,77 @@ fn arrays_overlap_list<OffsetSize: OffsetSizeTrait>(
     Ok(Arc::new(builder.finish()))
 }
 
+/// Returns true for types where Arrow's `eq` kernel does not work
+/// and we must use recursive element-by-element comparison.
+fn needs_recursive_eq(dt: &DataType) -> bool {
+    matches!(
+        dt,
+        DataType::List(_)
+            | DataType::LargeList(_)
+            | DataType::FixedSizeList(_, _)
+            | DataType::Struct(_)
+            | DataType::Map(_, _)
+    )
+}
+
 /// SQL three-valued equality for array elements at given indices.
 /// Returns Some(true) if equal, Some(false) if not equal, None if indeterminate (null).
-fn three_valued_eq(left: &dyn Array, li: usize, right: &dyn Array, ri: usize) -> Result<Option<bool>> {
+fn three_valued_eq(
+    left: &dyn Array,
+    li: usize,
+    right: &dyn Array,
+    ri: usize,
+) -> Result<Option<bool>> {
     if left.is_null(li) || right.is_null(ri) {
         return Ok(None);
     }
 
     match left.data_type() {
         DataType::List(_) => {
-            let ll = left.as_any().downcast_ref::<GenericListArray<i32>>().unwrap();
-            let rl = right.as_any().downcast_ref::<GenericListArray<i32>>().unwrap();
+            let ll = left
+                .as_any()
+                .downcast_ref::<GenericListArray<i32>>()
+                .unwrap();
+            let rl = right
+                .as_any()
+                .downcast_ref::<GenericListArray<i32>>()
+                .unwrap();
             list_values_eq(&ll.value(li), &rl.value(ri))
         }
         DataType::LargeList(_) => {
-            let ll = left.as_any().downcast_ref::<GenericListArray<i64>>().unwrap();
-            let rl = right.as_any().downcast_ref::<GenericListArray<i64>>().unwrap();
+            let ll = left
+                .as_any()
+                .downcast_ref::<GenericListArray<i64>>()
+                .unwrap();
+            let rl = right
+                .as_any()
+                .downcast_ref::<GenericListArray<i64>>()
+                .unwrap();
+            list_values_eq(&ll.value(li), &rl.value(ri))
+        }
+        DataType::FixedSizeList(_, _) => {
+            let ll = left.as_any().downcast_ref::<FixedSizeListArray>().unwrap();
+            let rl = right
+                .as_any()
+                .downcast_ref::<FixedSizeListArray>()
+                .unwrap();
+            list_values_eq(&ll.value(li), &rl.value(ri))
+        }
+        DataType::Struct(_) => {
+            let ls = left.as_any().downcast_ref::<StructArray>().unwrap();
+            let rs = right.as_any().downcast_ref::<StructArray>().unwrap();
+            struct_values_eq(ls, li, rs, ri)
+        }
+        DataType::Map(_, _) => {
+            // Map is stored as List<Struct<key, value>>. Compare as lists.
+            let ll = left
+                .as_any()
+                .downcast_ref::<GenericListArray<i32>>()
+                .unwrap();
+            let rl = right
+                .as_any()
+                .downcast_ref::<GenericListArray<i32>>()
+                .unwrap();
             list_values_eq(&ll.value(li), &rl.value(ri))
         }
         _ => {
@@ -295,10 +353,28 @@ fn list_values_eq(left: &ArrayRef, right: &ArrayRef) -> Result<Option<bool>> {
     Ok(if has_null { None } else { Some(true) })
 }
 
+/// Three-valued field-wise equality for two struct elements.
+fn struct_values_eq(
+    left: &StructArray,
+    li: usize,
+    right: &StructArray,
+    ri: usize,
+) -> Result<Option<bool>> {
+    let mut has_null = false;
+    for (lc, rc) in left.columns().iter().zip(right.columns().iter()) {
+        match three_valued_eq(lc.as_ref(), li, rc.as_ref(), ri)? {
+            Some(false) => return Ok(Some(false)),
+            None => has_null = true,
+            Some(true) => {}
+        }
+    }
+    Ok(if has_null { None } else { Some(true) })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{Int32Array, ListArray};
+    use arrow::array::{Int32Array, Int32Builder, ListArray, ListBuilder, StructBuilder};
     use arrow::buffer::{NullBuffer, OffsetBuffer};
     use arrow::datatypes::Field;
 
@@ -455,8 +531,6 @@ mod tests {
 
     /// Build a single-row ListArray of nested lists: List<List<Int32>>
     fn make_nested_list(elements: Vec<Option<Vec<Option<i32>>>>) -> ListArray {
-        use arrow::array::{Int32Builder, ListBuilder};
-
         let inner_builder = ListBuilder::new(Int32Builder::new());
         let mut outer_builder = ListBuilder::new(inner_builder);
 
@@ -554,6 +628,122 @@ mod tests {
         let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
         assert!(result.is_valid(0));
         assert!(result.value(0));
+        Ok(())
+    }
+
+    /// Build a single-row ListArray of structs: List<Struct<a: Int32, b: Int32>>
+    fn make_struct_list(
+        elements: Vec<Option<(Option<i32>, Option<i32>)>>,
+    ) -> ListArray {
+        let fields = vec![
+            Arc::new(Field::new("a", DataType::Int32, true)),
+            Arc::new(Field::new("b", DataType::Int32, true)),
+        ];
+        let struct_builder = StructBuilder::new(
+            fields.clone(),
+            vec![
+                Box::new(Int32Builder::new()),
+                Box::new(Int32Builder::new()),
+            ],
+        );
+        let mut list_builder = ListBuilder::new(struct_builder);
+
+        for elem in &elements {
+            let sb = list_builder.values();
+            match elem {
+                Some((a, b)) => {
+                    sb.field_builder::<Int32Builder>(0)
+                        .unwrap()
+                        .append_option(*a);
+                    sb.field_builder::<Int32Builder>(1)
+                        .unwrap()
+                        .append_option(*b);
+                    sb.append(true);
+                }
+                None => {
+                    sb.field_builder::<Int32Builder>(0).unwrap().append_null();
+                    sb.field_builder::<Int32Builder>(1).unwrap().append_null();
+                    sb.append(false);
+                }
+            }
+        }
+        list_builder.append(true);
+        list_builder.finish()
+    }
+
+    #[test]
+    fn test_struct_basic_overlap() -> Result<()> {
+        // [{1,2}, {3,4}] vs [{3,4}, {5,6}] => true
+        let left = make_struct_list(vec![
+            Some((Some(1), Some(2))),
+            Some((Some(3), Some(4))),
+        ]);
+        let right = make_struct_list(vec![
+            Some((Some(3), Some(4))),
+            Some((Some(5), Some(6))),
+        ]);
+
+        let result = arrays_overlap_list::<i32>(&left, &right)?;
+        let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
+        assert!(result.is_valid(0));
+        assert!(result.value(0));
+        Ok(())
+    }
+
+    #[test]
+    fn test_struct_no_overlap() -> Result<()> {
+        // [{1,2}] vs [{3,4}] => false
+        let left = make_struct_list(vec![Some((Some(1), Some(2)))]);
+        let right = make_struct_list(vec![Some((Some(3), Some(4)))]);
+
+        let result = arrays_overlap_list::<i32>(&left, &right)?;
+        let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
+        assert!(result.is_valid(0));
+        assert!(!result.value(0));
+        Ok(())
+    }
+
+    #[test]
+    fn test_struct_with_null_field_indeterminate() -> Result<()> {
+        // [{1,NULL}] vs [{1,NULL}] => null (indeterminate due to null field)
+        let left = make_struct_list(vec![Some((Some(1), None))]);
+        let right = make_struct_list(vec![Some((Some(1), None))]);
+
+        let result = arrays_overlap_list::<i32>(&left, &right)?;
+        let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
+        assert!(
+            result.is_null(0),
+            "Expected null for [{{1,NULL}}] vs [{{1,NULL}}], got {:?}",
+            result
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_struct_definite_match_with_null_field() -> Result<()> {
+        // [{1,2}, {1,NULL}] vs [{1,2}] => true (definite match on {1,2})
+        let left = make_struct_list(vec![
+            Some((Some(1), Some(2))),
+            Some((Some(1), None)),
+        ]);
+        let right = make_struct_list(vec![Some((Some(1), Some(2)))]);
+
+        let result = arrays_overlap_list::<i32>(&left, &right)?;
+        let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
+        assert!(result.is_valid(0));
+        assert!(result.value(0));
+        Ok(())
+    }
+
+    #[test]
+    fn test_struct_null_element() -> Result<()> {
+        // [NULL] vs [{1,2}] => null (null outer element)
+        let left = make_struct_list(vec![None]);
+        let right = make_struct_list(vec![Some((Some(1), Some(2)))]);
+
+        let result = arrays_overlap_list::<i32>(&left, &right)?;
+        let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
+        assert!(result.is_null(0));
         Ok(())
     }
 }
