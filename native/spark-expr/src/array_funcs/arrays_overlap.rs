@@ -598,6 +598,25 @@ mod tests {
     }
 
     #[test]
+    fn test_nested_array_all_null_elements_match() -> Result<()> {
+        // [[NULL]] vs [[NULL]] => true (structural equality: [NULL] == [NULL])
+        let left = make_nested_list(vec![Some(vec![None])]);
+        let right = make_nested_list(vec![Some(vec![None])]);
+
+        let result = arrays_overlap_list::<i32>(&left, &right)?;
+        let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
+        assert!(
+            result.is_valid(0),
+            "Expected true for [[NULL]] vs [[NULL]], got null"
+        );
+        assert!(
+            result.value(0),
+            "Expected true for [[NULL]] vs [[NULL]], got false"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn test_nested_array_definite_match_despite_inner_nulls() -> Result<()> {
         // [[1,2], [1,NULL]] vs [[1,2]] => true (definite match on [1,2])
         let left = make_nested_list(vec![
