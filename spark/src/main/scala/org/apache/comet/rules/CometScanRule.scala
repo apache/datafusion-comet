@@ -560,6 +560,35 @@ case class CometScanRule(session: SparkSession)
       }
     }
 
+    // Shallow clone across filesystems: the clone's AddFile paths reference the SOURCE
+    // (on a different filesystem) via absolute URIs. Delta's test harness can mint
+    // malformed test-only URIs like `s3:/path` (single slash -- real s3 URLs are
+    // `s3://bucket/key`) that our native reader can't open. Probe a couple of input files
+    // from PreparedDeltaFileIndex (clones' materialised list -- no state reconstruction
+    // risk) and decline on malformed scheme.
+    if (r.location.getClass.getName.contains("PreparedDeltaFileIndex")) {
+      try {
+        val sample = r.location.inputFiles.take(2)
+        sample.foreach { p =>
+          val colonSlash = p.indexOf(":/")
+          if (colonSlash >= 0) {
+            val afterColon = p.substring(colonSlash + 1)
+            val scheme = p.substring(0, colonSlash)
+            if (!afterColon.startsWith("//") && scheme != "file") {
+              withInfo(
+                scanExec,
+                s"Native Delta scan declines: file path '$p' uses malformed URL form " +
+                  s"'$scheme:/...' (real URLs are 'scheme://...'); likely a test-only " +
+                  s"shallow-clone mock or cross-filesystem clone our reader can't open.")
+              return None
+            }
+          }
+        }
+      } catch {
+        case scala.util.control.NonFatal(_) => // best-effort; fall through
+      }
+    }
+
     // Column-mapping metadata (`delta.columnMapping.physicalName`) on every StructField is
     // what Comet's parquet reader needs to correctly map logical column references to the
     // parquet file's physical column names. `HadoopFsRelation.dataSchema` strips that
@@ -578,10 +607,14 @@ case class CometScanRule(session: SparkSession)
     // fallback produces "Invalid comparison operation: Utf8 <= Int32" downstream.
     // Fixes DeltaDropColumnSuite "drop column with constraints" (struct / array access
     // through CHECK constraints on a column-mapped table).
-    val isColumnMapped = DeltaReflection
-      .extractMetadataConfiguration(r)
-      .flatMap(_.get("delta.columnMapping.mode"))
+    val metadataConfig = DeltaReflection.extractMetadataConfiguration(r).getOrElse(Map.empty)
+    val isColumnMapped = metadataConfig
+      .get("delta.columnMapping.mode")
       .exists(m => m != null && !m.equalsIgnoreCase("none"))
+    val dvsEnabled = metadataConfig
+      .get("delta.enableDeletionVectors")
+      .exists(_.equalsIgnoreCase("true"))
+
     if (isColumnMapped) {
       def isComplex(dt: DataType): Boolean = dt match {
         case _: ArrayType | _: MapType | _: StructType => true
@@ -598,6 +631,26 @@ case class CometScanRule(session: SparkSession)
             "remap physical names through to the native expression evaluator.")
         return None
       }
+    }
+
+    // DV-enabled UPDATE/DELETE/MERGE internal reads: when the scan's output already carries
+    // the `__delta_internal_is_row_deleted` column, Delta's PreprocessTableWithDVs has
+    // already wrapped the scan with a DV filter. The normal CometDeltaNativeScan path
+    // (kernel + DeltaDvFilterExec) applies DVs correctly for standalone SELECTs, but write
+    // commands' plans bypass our scan rule's stripDeltaDvWrappers and construct an internal
+    // DataFrame plan where Comet's native filter would have to produce the is_row_deleted
+    // column itself -- which Comet can't do. Decline so vanilla Spark+Delta handles the DV
+    // bookkeeping correctly. Observed failures: UpdateSQLWithDeletionVectorsSuite repeated
+    // UPDATE produces deletion vectors, SC-12276, different variations of column references.
+    val hasIsRowDeletedCol =
+      scanExec.output.exists(_.name.equalsIgnoreCase(DeltaReflection.IsRowDeletedColumnName))
+    if (dvsEnabled && hasIsRowDeletedCol) {
+      withInfo(
+        scanExec,
+        "Native Delta scan declines DV-enabled table scan that already carries " +
+          "__delta_internal_is_row_deleted in its output (write command's internal read) -- " +
+          "vanilla Spark+Delta applies the DV filter correctly.")
+      return None
     }
 
     // Row tracking: Delta's own analyzer leaves a plain `row_id` (and

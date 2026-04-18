@@ -177,14 +177,19 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometScanExec] with Loggi
       if (DeltaReflection.isBatchFileIndex(relation.location)) {
         DeltaReflection.extractBatchAddFiles(relation.location) match {
           case Some(addFiles) if addFiles.forall(!_.hasDeletionVector) =>
-            // Under column mapping, Delta stores partition values in AddFile
-            // keyed by the physical column name. Build the physical->logical
-            // map from the relation's partition schema (Delta stashes
-            // `delta.columnMapping.physicalName` in each StructField's
-            // metadata) so `buildTaskListFromAddFiles` can translate keys
-            // before they reach the proto.
-            val physToLogical = relation.partitionSchema.fields.flatMap { f =>
-              if (f.metadata.contains(DeltaReflection.PhysicalNameMetadataKey)) {
+            // Under column mapping, Delta stores partition values in AddFile keyed by the
+            // PHYSICAL column name. `relation.partitionSchema.fields[*].metadata` has had
+            // Delta's columnMapping metadata stripped by HadoopFsRelation, so look in the
+            // authoritative Snapshot schema (via reflection) and restrict to fields that
+            // appear in the relation's partition schema.
+            val partitionNames = relation.partitionSchema.fields.map(_.name).toSet
+            val snapshotFields = DeltaReflection
+              .extractSnapshotSchema(relation)
+              .map(_.fields)
+              .getOrElse(Array.empty[StructField])
+            val physToLogical = snapshotFields.flatMap { f =>
+              if (partitionNames.contains(f.name) &&
+                f.metadata.contains(DeltaReflection.PhysicalNameMetadataKey)) {
                 Some(f.metadata.getString(DeltaReflection.PhysicalNameMetadataKey) -> f.name)
               } else {
                 None
