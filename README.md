@@ -107,9 +107,6 @@ For full installation instructions, published jar downloads, and configuration r
 [installation guide](https://datafusion.apache.org/comet/user-guide/installation.html) and the
 [configuration reference](https://datafusion.apache.org/comet/user-guide/configs.html).
 
-Follow the [Apache DataFusion Comet Overview](https://datafusion.apache.org/comet/about/index.html#comet-overview)
-for more detailed information.
-
 ## Community
 
 Join the [DataFusion Slack and Discord channels](https://datafusion.apache.org/contributor-guide/communication.html)
