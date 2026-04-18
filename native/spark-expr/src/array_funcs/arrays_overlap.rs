@@ -263,6 +263,11 @@ fn needs_recursive_eq(dt: &DataType) -> bool {
 /// This matches Spark's `ordering.equiv` used inside `arrays_overlap`.
 /// Three-valued null logic only applies to outer-level null elements (handled by the caller).
 fn structural_eq(left: &dyn Array, li: usize, right: &dyn Array, ri: usize) -> Result<bool> {
+    // NullArray::is_null() returns false (no null buffer), so check data type first.
+    if left.data_type() == &DataType::Null && right.data_type() == &DataType::Null {
+        return Ok(true);
+    }
+
     if left.is_null(li) && right.is_null(ri) {
         return Ok(true);
     }
