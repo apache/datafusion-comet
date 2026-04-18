@@ -295,10 +295,7 @@ fn three_valued_eq(
         }
         DataType::FixedSizeList(_, _) => {
             let ll = left.as_any().downcast_ref::<FixedSizeListArray>().unwrap();
-            let rl = right
-                .as_any()
-                .downcast_ref::<FixedSizeListArray>()
-                .unwrap();
+            let rl = right.as_any().downcast_ref::<FixedSizeListArray>().unwrap();
             list_values_eq(&ll.value(li), &rl.value(ri))
         }
         DataType::Struct(_) => {
@@ -553,9 +550,14 @@ mod tests {
     #[test]
     fn test_nested_array_basic_overlap() -> Result<()> {
         // [[1,2], [3,4]] vs [[3,4], [5,6]] => true
-        let left = make_nested_list(vec![Some(vec![Some(1), Some(2)]), Some(vec![Some(3), Some(4)])]);
-        let right =
-            make_nested_list(vec![Some(vec![Some(3), Some(4)]), Some(vec![Some(5), Some(6)])]);
+        let left = make_nested_list(vec![
+            Some(vec![Some(1), Some(2)]),
+            Some(vec![Some(3), Some(4)]),
+        ]);
+        let right = make_nested_list(vec![
+            Some(vec![Some(3), Some(4)]),
+            Some(vec![Some(5), Some(6)]),
+        ]);
 
         let result = arrays_overlap_list::<i32>(&left, &right)?;
         let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
@@ -597,8 +599,10 @@ mod tests {
     fn test_nested_array_inner_nulls_no_match() -> Result<()> {
         // [[1,NULL]] vs [[1,2], [3,4]] => null (eq([1,NULL],[1,2]) is null, no definite match)
         let left = make_nested_list(vec![Some(vec![Some(1), None])]);
-        let right =
-            make_nested_list(vec![Some(vec![Some(1), Some(2)]), Some(vec![Some(3), Some(4)])]);
+        let right = make_nested_list(vec![
+            Some(vec![Some(1), Some(2)]),
+            Some(vec![Some(3), Some(4)]),
+        ]);
 
         let result = arrays_overlap_list::<i32>(&left, &right)?;
         let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
@@ -627,19 +631,14 @@ mod tests {
     }
 
     /// Build a single-row ListArray of structs: List<Struct<a: Int32, b: Int32>>
-    fn make_struct_list(
-        elements: Vec<Option<(Option<i32>, Option<i32>)>>,
-    ) -> ListArray {
+    fn make_struct_list(elements: Vec<Option<(Option<i32>, Option<i32>)>>) -> ListArray {
         let fields = vec![
             Arc::new(Field::new("a", DataType::Int32, true)),
             Arc::new(Field::new("b", DataType::Int32, true)),
         ];
         let struct_builder = StructBuilder::new(
             fields.clone(),
-            vec![
-                Box::new(Int32Builder::new()),
-                Box::new(Int32Builder::new()),
-            ],
+            vec![Box::new(Int32Builder::new()), Box::new(Int32Builder::new())],
         );
         let mut list_builder = ListBuilder::new(struct_builder);
 
@@ -669,14 +668,8 @@ mod tests {
     #[test]
     fn test_struct_basic_overlap() -> Result<()> {
         // [{1,2}, {3,4}] vs [{3,4}, {5,6}] => true
-        let left = make_struct_list(vec![
-            Some((Some(1), Some(2))),
-            Some((Some(3), Some(4))),
-        ]);
-        let right = make_struct_list(vec![
-            Some((Some(3), Some(4))),
-            Some((Some(5), Some(6))),
-        ]);
+        let left = make_struct_list(vec![Some((Some(1), Some(2))), Some((Some(3), Some(4)))]);
+        let right = make_struct_list(vec![Some((Some(3), Some(4))), Some((Some(5), Some(6)))]);
 
         let result = arrays_overlap_list::<i32>(&left, &right)?;
         let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
@@ -717,10 +710,7 @@ mod tests {
     #[test]
     fn test_struct_definite_match_with_null_field() -> Result<()> {
         // [{1,2}, {1,NULL}] vs [{1,2}] => true (definite match on {1,2})
-        let left = make_struct_list(vec![
-            Some((Some(1), Some(2))),
-            Some((Some(1), None)),
-        ]);
+        let left = make_struct_list(vec![Some((Some(1), Some(2))), Some((Some(1), None))]);
         let right = make_struct_list(vec![Some((Some(1), Some(2)))]);
 
         let result = arrays_overlap_list::<i32>(&left, &right)?;
