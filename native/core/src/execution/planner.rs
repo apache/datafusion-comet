@@ -1649,22 +1649,18 @@ impl PhysicalPlanner {
                 let left = Arc::clone(&join_params.left.native_plan);
                 let right = Arc::clone(&join_params.right.native_plan);
 
-                // DataFusion's SortMergeJoin comparator only supports
-                // `Timestamp(_, None)`, but Spark's TimestampType serializes as
-                // `Timestamp(µs, "UTC")`. Strip the timezone from any join keys of
-                // that type via an order-preserving metadata-only cast so SMJ's
-                // sort-order assumption remains valid.
                 let left_schema = left.schema();
                 let right_schema = right.schema();
                 let join_on = join_params
                     .join_on
                     .into_iter()
                     .map(|(l, r)| {
-                        let l = strip_timestamp_tz(l, left_schema.as_ref())?;
-                        let r = strip_timestamp_tz(r, right_schema.as_ref())?;
-                        Ok::<_, ExecutionError>((l, r))
+                        Ok((
+                            strip_timestamp_tz(l, left_schema.as_ref())?,
+                            strip_timestamp_tz(r, right_schema.as_ref())?,
+                        ))
                     })
-                    .collect::<Result<Vec<_>, _>>()?;
+                    .collect::<Result<Vec<_>, ExecutionError>>()?;
 
                 let join = Arc::new(SortMergeJoinExec::try_new(
                     Arc::clone(&left),
