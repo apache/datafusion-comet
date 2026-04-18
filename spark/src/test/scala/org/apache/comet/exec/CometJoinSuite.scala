@@ -25,7 +25,7 @@ import org.scalatest.Tag
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.analysis.UnresolvedRelation
-import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec}
+import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometSortMergeJoinExec}
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
@@ -54,21 +54,119 @@ class CometJoinSuite extends CometTestBase {
         .toSeq)
   }
 
-  test("SortMergeJoin with unsupported key type should fall back to Spark") {
+  test("SortMergeJoin with TimestampType key runs natively") {
     withSQLConf(
       SQLConf.SESSION_LOCAL_TIMEZONE.key -> "Asia/Kathmandu",
       SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
-      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.PREFER_SORTMERGEJOIN.key -> "true") {
       withTable("t1", "t2") {
         sql("CREATE TABLE t1(name STRING, time TIMESTAMP) USING PARQUET")
-        sql("INSERT OVERWRITE t1 VALUES('a', timestamp'2019-01-01 11:11:11')")
+        sql(
+          "INSERT OVERWRITE t1 VALUES " +
+            "('a', timestamp'2019-01-01 11:11:11'), " +
+            "('b', timestamp'2020-05-05 05:05:05')")
 
         sql("CREATE TABLE t2(name STRING, time TIMESTAMP) USING PARQUET")
-        sql("INSERT OVERWRITE t2 VALUES('a', timestamp'2019-01-01 11:11:11')")
+        sql(
+          "INSERT OVERWRITE t2 VALUES " +
+            "('a', timestamp'2019-01-01 11:11:11'), " +
+            "('c', timestamp'2021-07-07 07:07:07')")
 
-        val df = sql("SELECT * FROM t1 JOIN t2 ON t1.time = t2.time")
-        val (sparkPlan, cometPlan) = checkSparkAnswer(df)
-        assert(sparkPlan.canonicalized === cometPlan.canonicalized)
+        checkSparkAnswerAndOperator(
+          sql("SELECT * FROM t1 JOIN t2 ON t1.time = t2.time"),
+          Seq(classOf[CometSortMergeJoinExec]))
+      }
+    }
+  }
+
+  test("SortMergeJoin with TimestampType key supports outer joins") {
+    withSQLConf(
+      SQLConf.SESSION_LOCAL_TIMEZONE.key -> "Asia/Kathmandu",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.PREFER_SORTMERGEJOIN.key -> "true") {
+      withTable("t1", "t2") {
+        sql("CREATE TABLE t1(id INT, time TIMESTAMP) USING PARQUET")
+        sql(
+          "INSERT OVERWRITE t1 VALUES " +
+            "(1, timestamp'2019-01-01 11:11:11'), " +
+            "(2, timestamp'2020-05-05 05:05:05'), " +
+            "(3, timestamp'2021-07-07 07:07:07')")
+
+        sql("CREATE TABLE t2(id INT, time TIMESTAMP) USING PARQUET")
+        sql(
+          "INSERT OVERWRITE t2 VALUES " +
+            "(10, timestamp'2019-01-01 11:11:11'), " +
+            "(20, timestamp'2022-02-02 02:02:02')")
+
+        for (joinType <- Seq("LEFT OUTER", "RIGHT OUTER", "FULL OUTER")) {
+          checkSparkAnswerAndOperator(
+            sql(s"SELECT * FROM t1 $joinType JOIN t2 ON t1.time = t2.time"),
+            Seq(classOf[CometSortMergeJoinExec]))
+        }
+      }
+    }
+  }
+
+  test("SortMergeJoin with composite (string, timestamp) key runs natively") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.PREFER_SORTMERGEJOIN.key -> "true") {
+      withTable("t1", "t2") {
+        sql("CREATE TABLE t1(name STRING, time TIMESTAMP) USING PARQUET")
+        sql(
+          "INSERT OVERWRITE t1 VALUES " +
+            "('a', timestamp'2019-01-01 11:11:11'), " +
+            "('b', timestamp'2019-01-01 11:11:11'), " +
+            "('a', timestamp'2020-05-05 05:05:05')")
+
+        sql("CREATE TABLE t2(name STRING, time TIMESTAMP) USING PARQUET")
+        sql(
+          "INSERT OVERWRITE t2 VALUES " +
+            "('a', timestamp'2019-01-01 11:11:11'), " +
+            "('b', timestamp'2020-05-05 05:05:05'), " +
+            "('a', timestamp'2020-05-05 05:05:05')")
+
+        checkSparkAnswerAndOperator(
+          sql(
+            "SELECT * FROM t1 JOIN t2 " +
+              "ON t1.name = t2.name AND t1.time = t2.time"),
+          Seq(classOf[CometSortMergeJoinExec]))
+      }
+    }
+  }
+
+  test("SortMergeJoin with nullable TimestampType key runs natively") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.PREFER_SORTMERGEJOIN.key -> "true") {
+      withTable("t1", "t2") {
+        sql("CREATE TABLE t1(id INT, time TIMESTAMP) USING PARQUET")
+        sql(
+          "INSERT OVERWRITE t1 VALUES " +
+            "(1, timestamp'2019-01-01 11:11:11'), " +
+            "(2, CAST(NULL AS TIMESTAMP)), " +
+            "(3, timestamp'2020-05-05 05:05:05')")
+
+        sql("CREATE TABLE t2(id INT, time TIMESTAMP) USING PARQUET")
+        sql(
+          "INSERT OVERWRITE t2 VALUES " +
+            "(10, timestamp'2019-01-01 11:11:11'), " +
+            "(20, CAST(NULL AS TIMESTAMP)), " +
+            "(30, timestamp'2022-02-02 02:02:02')")
+
+        // Inner join: NULL = NULL must not match in Spark semantics.
+        checkSparkAnswerAndOperator(
+          sql("SELECT * FROM t1 JOIN t2 ON t1.time = t2.time"),
+          Seq(classOf[CometSortMergeJoinExec]))
+
+        // Full outer join: NULL-keyed rows from both sides surface as unmatched.
+        checkSparkAnswerAndOperator(
+          sql("SELECT * FROM t1 FULL OUTER JOIN t2 ON t1.time = t2.time"),
+          Seq(classOf[CometSortMergeJoinExec]))
       }
     }
   }
