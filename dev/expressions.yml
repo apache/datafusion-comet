@@ -1,0 +1,1289 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+# Source of truth for Spark expression coverage and audit status in Comet.
+# Phase 1: manually maintained. A future generator will consume this file.
+#
+# Fields:
+#   name         Spark SQL function name (lowercase, as in Spark FunctionRegistry)
+#   category     Spark FunctionRegistry category (agg_funcs, array_funcs, ...)
+#   implemented  true if the expression has a serde registered in Comet, else false
+#   audits       (optional) list of audit records, oldest first:
+#     spark_versions  list of Spark version strings audited against
+#     date            ISO date (YYYY-MM-DD) the audit was completed
+#     findings        free-text summary (may contain Markdown)
+
+expressions:
+  - name: any
+    category: agg_funcs
+    implemented: true
+  - name: any_value
+    category: agg_funcs
+    implemented: true
+  - name: approx_count_distinct
+    category: agg_funcs
+    implemented: false
+  - name: approx_percentile
+    category: agg_funcs
+    implemented: false
+  - name: array_agg
+    category: agg_funcs
+    implemented: false
+  - name: avg
+    category: agg_funcs
+    implemented: true
+  - name: bit_and
+    category: agg_funcs
+    implemented: true
+  - name: bit_or
+    category: agg_funcs
+    implemented: true
+  - name: bit_xor
+    category: agg_funcs
+    implemented: true
+  - name: bool_and
+    category: agg_funcs
+    implemented: true
+  - name: bool_or
+    category: agg_funcs
+    implemented: true
+  - name: collect_list
+    category: agg_funcs
+    implemented: false
+  - name: collect_set
+    category: agg_funcs
+    implemented: false
+  - name: corr
+    category: agg_funcs
+    implemented: false
+  - name: count
+    category: agg_funcs
+    implemented: true
+  - name: count_if
+    category: agg_funcs
+    implemented: true
+  - name: count_min_sketch
+    category: agg_funcs
+    implemented: false
+  - name: covar_pop
+    category: agg_funcs
+    implemented: true
+  - name: covar_samp
+    category: agg_funcs
+    implemented: true
+  - name: every
+    category: agg_funcs
+    implemented: true
+  - name: first
+    category: agg_funcs
+    implemented: true
+  - name: first_value
+    category: agg_funcs
+    implemented: true
+  - name: grouping
+    category: agg_funcs
+    implemented: false
+  - name: grouping_id
+    category: agg_funcs
+    implemented: false
+  - name: histogram_numeric
+    category: agg_funcs
+    implemented: false
+  - name: kurtosis
+    category: agg_funcs
+    implemented: false
+  - name: last
+    category: agg_funcs
+    implemented: true
+  - name: last_value
+    category: agg_funcs
+    implemented: true
+  - name: max
+    category: agg_funcs
+    implemented: true
+  - name: max_by
+    category: agg_funcs
+    implemented: false
+  - name: mean
+    category: agg_funcs
+    implemented: true
+  - name: median
+    category: agg_funcs
+    implemented: false
+  - name: min
+    category: agg_funcs
+    implemented: true
+  - name: min_by
+    category: agg_funcs
+    implemented: false
+  - name: mode
+    category: agg_funcs
+    implemented: false
+  - name: percentile
+    category: agg_funcs
+    implemented: false
+  - name: percentile_approx
+    category: agg_funcs
+    implemented: false
+  - name: regr_avgx
+    category: agg_funcs
+    implemented: true
+  - name: regr_avgy
+    category: agg_funcs
+    implemented: true
+  - name: regr_count
+    category: agg_funcs
+    implemented: true
+  - name: regr_intercept
+    category: agg_funcs
+    implemented: false
+  - name: regr_r2
+    category: agg_funcs
+    implemented: false
+  - name: regr_slope
+    category: agg_funcs
+    implemented: false
+  - name: regr_sxx
+    category: agg_funcs
+    implemented: false
+  - name: regr_sxy
+    category: agg_funcs
+    implemented: false
+  - name: regr_syy
+    category: agg_funcs
+    implemented: false
+  - name: skewness
+    category: agg_funcs
+    implemented: false
+  - name: some
+    category: agg_funcs
+    implemented: true
+  - name: std
+    category: agg_funcs
+    implemented: true
+  - name: stddev
+    category: agg_funcs
+    implemented: true
+  - name: stddev_pop
+    category: agg_funcs
+    implemented: true
+  - name: stddev_samp
+    category: agg_funcs
+    implemented: true
+  - name: sum
+    category: agg_funcs
+    implemented: true
+  - name: try_avg
+    category: agg_funcs
+    implemented: false
+  - name: try_sum
+    category: agg_funcs
+    implemented: false
+  - name: var_pop
+    category: agg_funcs
+    implemented: true
+  - name: var_samp
+    category: agg_funcs
+    implemented: true
+  - name: variance
+    category: agg_funcs
+    implemented: true
+  - name: array
+    category: array_funcs
+    implemented: true
+  - name: array_append
+    category: array_funcs
+    implemented: true
+  - name: array_compact
+    category: array_funcs
+    implemented: true
+  - name: array_contains
+    category: array_funcs
+    implemented: true
+  - name: array_distinct
+    category: array_funcs
+    implemented: true
+  - name: array_except
+    category: array_funcs
+    implemented: true
+  - name: array_insert
+    category: array_funcs
+    implemented: true
+    audits:
+      - spark_versions: ["3.4.3", "3.5.8", "4.0.1"]
+        date: 2026-04-02
+        findings: >
+          No behavioral differences across Spark versions. Fixed `nullable()`
+          metadata bug (did not account for `pos_expr`). Added SQL tests for
+          multiple types (string, boolean, double, float, long, short, byte),
+          literal arguments, null handling, negative indices, out-of-bounds
+          padding, special float values (NaN, Infinity), multibyte UTF-8, and
+          legacy negative index mode. Known incompatibility: pos=0 error
+          message differs from Spark's `INVALID_INDEX_OF_ZERO`.
+  - name: array_intersect
+    category: array_funcs
+    implemented: true
+  - name: array_join
+    category: array_funcs
+    implemented: true
+  - name: array_max
+    category: array_funcs
+    implemented: true
+  - name: array_min
+    category: array_funcs
+    implemented: false
+  - name: array_position
+    category: array_funcs
+    implemented: false
+  - name: array_remove
+    category: array_funcs
+    implemented: true
+  - name: array_repeat
+    category: array_funcs
+    implemented: true
+  - name: array_union
+    category: array_funcs
+    implemented: true
+  - name: arrays_overlap
+    category: array_funcs
+    implemented: true
+  - name: arrays_zip
+    category: array_funcs
+    implemented: false
+  - name: element_at
+    category: array_funcs
+    implemented: true
+  - name: flatten
+    category: array_funcs
+    implemented: false
+  - name: get
+    category: array_funcs
+    implemented: true
+  - name: sequence
+    category: array_funcs
+    implemented: false
+  - name: shuffle
+    category: array_funcs
+    implemented: false
+  - name: slice
+    category: array_funcs
+    implemented: false
+  - name: sort_array
+    category: array_funcs
+    implemented: true
+  - name: "&"
+    category: bitwise_funcs
+    implemented: true
+  - name: "^"
+    category: bitwise_funcs
+    implemented: true
+  - name: bit_count
+    category: bitwise_funcs
+    implemented: false
+  - name: bit_get
+    category: bitwise_funcs
+    implemented: false
+  - name: getbit
+    category: bitwise_funcs
+    implemented: false
+  - name: shiftright
+    category: bitwise_funcs
+    implemented: true
+  - name: shiftrightunsigned
+    category: bitwise_funcs
+    implemented: false
+  - name: "|"
+    category: bitwise_funcs
+    implemented: true
+  - name: "~"
+    category: bitwise_funcs
+    implemented: true
+  - name: array_size
+    category: collection_funcs
+    implemented: false
+  - name: cardinality
+    category: collection_funcs
+    implemented: false
+  - name: concat
+    category: collection_funcs
+    implemented: false
+  - name: reverse
+    category: collection_funcs
+    implemented: true
+  - name: size
+    category: collection_funcs
+    implemented: false
+  - name: coalesce
+    category: conditional_funcs
+    implemented: true
+  - name: if
+    category: conditional_funcs
+    implemented: true
+  - name: ifnull
+    category: conditional_funcs
+    implemented: true
+  - name: nanvl
+    category: conditional_funcs
+    implemented: false
+  - name: nullif
+    category: conditional_funcs
+    implemented: true
+  - name: nvl
+    category: conditional_funcs
+    implemented: true
+  - name: nvl2
+    category: conditional_funcs
+    implemented: true
+  - name: when
+    category: conditional_funcs
+    implemented: false
+  - name: bigint
+    category: conversion_funcs
+    implemented: false
+  - name: binary
+    category: conversion_funcs
+    implemented: false
+  - name: boolean
+    category: conversion_funcs
+    implemented: false
+  - name: cast
+    category: conversion_funcs
+    implemented: false
+  - name: date
+    category: conversion_funcs
+    implemented: false
+  - name: decimal
+    category: conversion_funcs
+    implemented: false
+  - name: double
+    category: conversion_funcs
+    implemented: false
+  - name: float
+    category: conversion_funcs
+    implemented: false
+  - name: int
+    category: conversion_funcs
+    implemented: false
+  - name: smallint
+    category: conversion_funcs
+    implemented: false
+  - name: string
+    category: conversion_funcs
+    implemented: false
+  - name: timestamp
+    category: conversion_funcs
+    implemented: false
+  - name: tinyint
+    category: conversion_funcs
+    implemented: false
+  - name: from_csv
+    category: csv_funcs
+    implemented: false
+  - name: schema_of_csv
+    category: csv_funcs
+    implemented: false
+  - name: to_csv
+    category: csv_funcs
+    implemented: false
+  - name: add_months
+    category: datetime_funcs
+    implemented: false
+  - name: convert_timezone
+    category: datetime_funcs
+    implemented: false
+  - name: curdate
+    category: datetime_funcs
+    implemented: true
+  - name: current_date
+    category: datetime_funcs
+    implemented: true
+  - name: current_timestamp
+    category: datetime_funcs
+    implemented: false
+  - name: current_timezone
+    category: datetime_funcs
+    implemented: true
+  - name: date_add
+    category: datetime_funcs
+    implemented: false
+  - name: date_diff
+    category: datetime_funcs
+    implemented: false
+  - name: date_format
+    category: datetime_funcs
+    implemented: false
+  - name: date_from_unix_date
+    category: datetime_funcs
+    implemented: true
+  - name: date_part
+    category: datetime_funcs
+    implemented: true
+  - name: date_sub
+    category: datetime_funcs
+    implemented: false
+  - name: date_trunc
+    category: datetime_funcs
+    implemented: false
+  - name: dateadd
+    category: datetime_funcs
+    implemented: false
+  - name: datediff
+    category: datetime_funcs
+    implemented: false
+  - name: datepart
+    category: datetime_funcs
+    implemented: true
+  - name: day
+    category: datetime_funcs
+    implemented: false
+  - name: dayofmonth
+    category: datetime_funcs
+    implemented: false
+  - name: dayofweek
+    category: datetime_funcs
+    implemented: false
+  - name: dayofyear
+    category: datetime_funcs
+    implemented: false
+  - name: extract
+    category: datetime_funcs
+    implemented: true
+  - name: from_unixtime
+    category: datetime_funcs
+    implemented: true
+  - name: from_utc_timestamp
+    category: datetime_funcs
+    implemented: false
+  - name: hour
+    category: datetime_funcs
+    implemented: false
+  - name: last_day
+    category: datetime_funcs
+    implemented: false
+  - name: localtimestamp
+    category: datetime_funcs
+    implemented: false
+  - name: make_date
+    category: datetime_funcs
+    implemented: false
+  - name: make_dt_interval
+    category: datetime_funcs
+    implemented: false
+  - name: make_interval
+    category: datetime_funcs
+    implemented: false
+  - name: make_timestamp
+    category: datetime_funcs
+    implemented: false
+  - name: make_timestamp_ltz
+    category: datetime_funcs
+    implemented: false
+  - name: make_timestamp_ntz
+    category: datetime_funcs
+    implemented: false
+  - name: make_ym_interval
+    category: datetime_funcs
+    implemented: false
+  - name: minute
+    category: datetime_funcs
+    implemented: false
+  - name: month
+    category: datetime_funcs
+    implemented: false
+  - name: months_between
+    category: datetime_funcs
+    implemented: false
+  - name: next_day
+    category: datetime_funcs
+    implemented: false
+  - name: now
+    category: datetime_funcs
+    implemented: false
+  - name: quarter
+    category: datetime_funcs
+    implemented: false
+  - name: second
+    category: datetime_funcs
+    implemented: false
+  - name: timestamp_micros
+    category: datetime_funcs
+    implemented: false
+  - name: timestamp_millis
+    category: datetime_funcs
+    implemented: false
+  - name: timestamp_seconds
+    category: datetime_funcs
+    implemented: false
+  - name: to_date
+    category: datetime_funcs
+    implemented: false
+  - name: to_timestamp
+    category: datetime_funcs
+    implemented: false
+  - name: to_timestamp_ltz
+    category: datetime_funcs
+    implemented: false
+  - name: to_timestamp_ntz
+    category: datetime_funcs
+    implemented: false
+  - name: to_unix_timestamp
+    category: datetime_funcs
+    implemented: false
+  - name: to_utc_timestamp
+    category: datetime_funcs
+    implemented: false
+  - name: trunc
+    category: datetime_funcs
+    implemented: false
+  - name: try_to_timestamp
+    category: datetime_funcs
+    implemented: false
+  - name: unix_date
+    category: datetime_funcs
+    implemented: false
+  - name: unix_micros
+    category: datetime_funcs
+    implemented: false
+  - name: unix_millis
+    category: datetime_funcs
+    implemented: false
+  - name: unix_seconds
+    category: datetime_funcs
+    implemented: false
+  - name: unix_timestamp
+    category: datetime_funcs
+    implemented: true
+  - name: weekday
+    category: datetime_funcs
+    implemented: false
+  - name: weekofyear
+    category: datetime_funcs
+    implemented: false
+  - name: year
+    category: datetime_funcs
+    implemented: false
+  - name: explode
+    category: generator_funcs
+    implemented: false
+  - name: explode_outer
+    category: generator_funcs
+    implemented: false
+  - name: inline
+    category: generator_funcs
+    implemented: false
+  - name: inline_outer
+    category: generator_funcs
+    implemented: false
+  - name: posexplode
+    category: generator_funcs
+    implemented: false
+  - name: posexplode_outer
+    category: generator_funcs
+    implemented: false
+  - name: stack
+    category: generator_funcs
+    implemented: false
+  - name: crc32
+    category: hash_funcs
+    implemented: true
+  - name: hash
+    category: hash_funcs
+    implemented: false
+  - name: md5
+    category: hash_funcs
+    implemented: true
+  - name: sha
+    category: hash_funcs
+    implemented: false
+  - name: sha1
+    category: hash_funcs
+    implemented: false
+  - name: sha2
+    category: hash_funcs
+    implemented: false
+  - name: xxhash64
+    category: hash_funcs
+    implemented: false
+  - name: from_json
+    category: json_funcs
+    implemented: false
+  - name: get_json_object
+    category: json_funcs
+    implemented: true
+  - name: json_array_length
+    category: json_funcs
+    implemented: false
+  - name: json_object_keys
+    category: json_funcs
+    implemented: false
+  - name: json_tuple
+    category: json_funcs
+    implemented: false
+  - name: schema_of_json
+    category: json_funcs
+    implemented: false
+  - name: to_json
+    category: json_funcs
+    implemented: false
+  - name: aggregate
+    category: lambda_funcs
+    implemented: false
+  - name: array_sort
+    category: lambda_funcs
+    implemented: false
+  - name: exists
+    category: lambda_funcs
+    implemented: false
+  - name: filter
+    category: lambda_funcs
+    implemented: false
+  - name: forall
+    category: lambda_funcs
+    implemented: false
+  - name: map_filter
+    category: lambda_funcs
+    implemented: false
+  - name: map_zip_with
+    category: lambda_funcs
+    implemented: false
+  - name: reduce
+    category: lambda_funcs
+    implemented: false
+  - name: transform
+    category: lambda_funcs
+    implemented: false
+  - name: transform_keys
+    category: lambda_funcs
+    implemented: false
+  - name: transform_values
+    category: lambda_funcs
+    implemented: false
+  - name: zip_with
+    category: lambda_funcs
+    implemented: false
+  - name: element_at
+    category: map_funcs
+    implemented: false
+  - name: map
+    category: map_funcs
+    implemented: false
+  - name: map_concat
+    category: map_funcs
+    implemented: false
+  - name: map_contains_key
+    category: map_funcs
+    implemented: true
+  - name: map_entries
+    category: map_funcs
+    implemented: false
+  - name: map_from_arrays
+    category: map_funcs
+    implemented: false
+  - name: map_from_entries
+    category: map_funcs
+    implemented: false
+  - name: map_keys
+    category: map_funcs
+    implemented: true
+  - name: map_values
+    category: map_funcs
+    implemented: false
+  - name: str_to_map
+    category: map_funcs
+    implemented: false
+  - name: try_element_at
+    category: map_funcs
+    implemented: false
+  - name: "%"
+    category: math_funcs
+    implemented: true
+  - name: "-"
+    category: math_funcs
+    implemented: true
+  - name: "-"
+    category: math_funcs
+    implemented: true
+  - name: "-"
+    category: math_funcs
+    implemented: true
+  - name: "/"
+    category: math_funcs
+    implemented: true
+  - name: abs
+    category: math_funcs
+    implemented: true
+  - name: acos
+    category: math_funcs
+    implemented: true
+  - name: acosh
+    category: math_funcs
+    implemented: false
+  - name: asin
+    category: math_funcs
+    implemented: true
+  - name: asinh
+    category: math_funcs
+    implemented: false
+  - name: atan
+    category: math_funcs
+    implemented: true
+  - name: atan2
+    category: math_funcs
+    implemented: true
+  - name: atanh
+    category: math_funcs
+    implemented: false
+  - name: bin
+    category: math_funcs
+    implemented: true
+  - name: bround
+    category: math_funcs
+    implemented: false
+  - name: cbrt
+    category: math_funcs
+    implemented: false
+  - name: ceil
+    category: math_funcs
+    implemented: true
+  - name: ceiling
+    category: math_funcs
+    implemented: true
+  - name: conv
+    category: math_funcs
+    implemented: false
+  - name: cos
+    category: math_funcs
+    implemented: true
+  - name: cosh
+    category: math_funcs
+    implemented: false
+  - name: cot
+    category: math_funcs
+    implemented: false
+  - name: csc
+    category: math_funcs
+    implemented: false
+  - name: degrees
+    category: math_funcs
+    implemented: false
+  - name: div
+    category: math_funcs
+    implemented: false
+  - name: e
+    category: math_funcs
+    implemented: false
+  - name: exp
+    category: math_funcs
+    implemented: true
+  - name: expm1
+    category: math_funcs
+    implemented: false
+  - name: factorial
+    category: math_funcs
+    implemented: false
+  - name: floor
+    category: math_funcs
+    implemented: true
+  - name: greatest
+    category: math_funcs
+    implemented: false
+  - name: hex
+    category: math_funcs
+    implemented: false
+  - name: hypot
+    category: math_funcs
+    implemented: false
+  - name: least
+    category: math_funcs
+    implemented: false
+  - name: ln
+    category: math_funcs
+    implemented: true
+  - name: log
+    category: math_funcs
+    implemented: false
+  - name: log10
+    category: math_funcs
+    implemented: true
+  - name: log1p
+    category: math_funcs
+    implemented: false
+  - name: log2
+    category: math_funcs
+    implemented: true
+  - name: mod
+    category: math_funcs
+    implemented: true
+  - name: negative
+    category: math_funcs
+    implemented: true
+  - name: pi
+    category: math_funcs
+    implemented: false
+  - name: pmod
+    category: math_funcs
+    implemented: false
+  - name: positive
+    category: math_funcs
+    implemented: true
+  - name: pow
+    category: math_funcs
+    implemented: true
+  - name: power
+    category: math_funcs
+    implemented: true
+  - name: radians
+    category: math_funcs
+    implemented: false
+  - name: rand
+    category: math_funcs
+    implemented: false
+  - name: randn
+    category: math_funcs
+    implemented: false
+  - name: random
+    category: math_funcs
+    implemented: false
+  - name: rint
+    category: math_funcs
+    implemented: false
+  - name: round
+    category: math_funcs
+    implemented: true
+  - name: sec
+    category: math_funcs
+    implemented: false
+  - name: shiftleft
+    category: math_funcs
+    implemented: true
+  - name: sign
+    category: math_funcs
+    implemented: true
+  - name: signum
+    category: math_funcs
+    implemented: true
+  - name: sin
+    category: math_funcs
+    implemented: true
+  - name: sinh
+    category: math_funcs
+    implemented: false
+  - name: sqrt
+    category: math_funcs
+    implemented: true
+  - name: tan
+    category: math_funcs
+    implemented: true
+  - name: tanh
+    category: math_funcs
+    implemented: false
+  - name: try_add
+    category: math_funcs
+    implemented: true
+  - name: try_divide
+    category: math_funcs
+    implemented: true
+  - name: try_multiply
+    category: math_funcs
+    implemented: true
+  - name: try_subtract
+    category: math_funcs
+    implemented: true
+  - name: unhex
+    category: math_funcs
+    implemented: true
+  - name: width_bucket
+    category: math_funcs
+    implemented: true
+  - name: aes_decrypt
+    category: misc_funcs
+    implemented: false
+  - name: aes_encrypt
+    category: misc_funcs
+    implemented: false
+  - name: assert_true
+    category: misc_funcs
+    implemented: false
+  - name: current_catalog
+    category: misc_funcs
+    implemented: true
+  - name: current_database
+    category: misc_funcs
+    implemented: true
+  - name: current_schema
+    category: misc_funcs
+    implemented: true
+  - name: current_user
+    category: misc_funcs
+    implemented: true
+  - name: equal_null
+    category: misc_funcs
+    implemented: true
+  - name: input_file_block_length
+    category: misc_funcs
+    implemented: false
+  - name: input_file_block_start
+    category: misc_funcs
+    implemented: false
+  - name: input_file_name
+    category: misc_funcs
+    implemented: false
+  - name: monotonically_increasing_id
+    category: misc_funcs
+    implemented: true
+  - name: raise_error
+    category: misc_funcs
+    implemented: false
+  - name: rand
+    category: misc_funcs
+    implemented: true
+  - name: randn
+    category: misc_funcs
+    implemented: true
+  - name: spark_partition_id
+    category: misc_funcs
+    implemented: true
+  - name: typeof
+    category: misc_funcs
+    implemented: false
+  - name: user
+    category: misc_funcs
+    implemented: true
+  - name: uuid
+    category: misc_funcs
+    implemented: false
+  - name: version
+    category: misc_funcs
+    implemented: false
+  - name: "!"
+    category: predicate_funcs
+    implemented: true
+  - name: "<"
+    category: predicate_funcs
+    implemented: true
+  - name: "<="
+    category: predicate_funcs
+    implemented: true
+  - name: "<=>"
+    category: predicate_funcs
+    implemented: true
+  - name: "="
+    category: predicate_funcs
+    implemented: true
+  - name: "=="
+    category: predicate_funcs
+    implemented: true
+  - name: ">"
+    category: predicate_funcs
+    implemented: true
+  - name: "> ="
+    category: predicate_funcs
+    implemented: true
+  - name: and
+    category: predicate_funcs
+    implemented: true
+  - name: ilike
+    category: predicate_funcs
+    implemented: true
+  - name: in
+    category: predicate_funcs
+    implemented: true
+  - name: isnan
+    category: predicate_funcs
+    implemented: false
+  - name: isnotnull
+    category: predicate_funcs
+    implemented: true
+  - name: isnull
+    category: predicate_funcs
+    implemented: true
+  - name: like
+    category: predicate_funcs
+    implemented: true
+  - name: not
+    category: predicate_funcs
+    implemented: true
+  - name: or
+    category: predicate_funcs
+    implemented: true
+  - name: regexp
+    category: predicate_funcs
+    implemented: false
+  - name: regexp_like
+    category: predicate_funcs
+    implemented: false
+  - name: rlike
+    category: predicate_funcs
+    implemented: false
+  - name: ascii
+    category: string_funcs
+    implemented: true
+  - name: base64
+    category: string_funcs
+    implemented: false
+  - name: bit_length
+    category: string_funcs
+    implemented: true
+  - name: btrim
+    category: string_funcs
+    implemented: true
+  - name: char
+    category: string_funcs
+    implemented: true
+  - name: char_length
+    category: string_funcs
+    implemented: true
+  - name: character_length
+    category: string_funcs
+    implemented: true
+  - name: chr
+    category: string_funcs
+    implemented: true
+  - name: concat_ws
+    category: string_funcs
+    implemented: true
+  - name: contains
+    category: string_funcs
+    implemented: true
+  - name: decode
+    category: string_funcs
+    implemented: false
+  - name: elt
+    category: string_funcs
+    implemented: false
+  - name: encode
+    category: string_funcs
+    implemented: false
+  - name: endswith
+    category: string_funcs
+    implemented: true
+  - name: find_in_set
+    category: string_funcs
+    implemented: false
+  - name: format_number
+    category: string_funcs
+    implemented: false
+  - name: format_string
+    category: string_funcs
+    implemented: false
+  - name: initcap
+    category: string_funcs
+    implemented: true
+  - name: instr
+    category: string_funcs
+    implemented: true
+  - name: lcase
+    category: string_funcs
+    implemented: true
+  - name: left
+    category: string_funcs
+    implemented: false
+  - name: len
+    category: string_funcs
+    implemented: true
+  - name: length
+    category: string_funcs
+    implemented: true
+  - name: levenshtein
+    category: string_funcs
+    implemented: false
+  - name: locate
+    category: string_funcs
+    implemented: false
+  - name: lower
+    category: string_funcs
+    implemented: true
+  - name: lpad
+    category: string_funcs
+    implemented: true
+  - name: ltrim
+    category: string_funcs
+    implemented: true
+  - name: mask
+    category: string_funcs
+    implemented: false
+  - name: octet_length
+    category: string_funcs
+    implemented: true
+  - name: overlay
+    category: string_funcs
+    implemented: false
+  - name: position
+    category: string_funcs
+    implemented: false
+  - name: printf
+    category: string_funcs
+    implemented: false
+  - name: regexp_count
+    category: string_funcs
+    implemented: false
+  - name: regexp_extract
+    category: string_funcs
+    implemented: false
+  - name: regexp_extract_all
+    category: string_funcs
+    implemented: false
+  - name: regexp_instr
+    category: string_funcs
+    implemented: false
+  - name: regexp_replace
+    category: string_funcs
+    implemented: false
+  - name: regexp_substr
+    category: string_funcs
+    implemented: false
+  - name: repeat
+    category: string_funcs
+    implemented: true
+  - name: replace
+    category: string_funcs
+    implemented: true
+  - name: right
+    category: string_funcs
+    implemented: false
+  - name: rpad
+    category: string_funcs
+    implemented: true
+  - name: rtrim
+    category: string_funcs
+    implemented: true
+  - name: sentences
+    category: string_funcs
+    implemented: false
+  - name: soundex
+    category: string_funcs
+    implemented: false
+  - name: space
+    category: string_funcs
+    implemented: true
+  - name: split
+    category: string_funcs
+    implemented: false
+  - name: split_part
+    category: string_funcs
+    implemented: false
+  - name: startswith
+    category: string_funcs
+    implemented: true
+  - name: substr
+    category: string_funcs
+    implemented: false
+  - name: substring
+    category: string_funcs
+    implemented: false
+  - name: substring_index
+    category: string_funcs
+    implemented: false
+  - name: to_binary
+    category: string_funcs
+    implemented: false
+  - name: to_char
+    category: string_funcs
+    implemented: false
+  - name: to_number
+    category: string_funcs
+    implemented: false
+  - name: translate
+    category: string_funcs
+    implemented: true
+  - name: trim
+    category: string_funcs
+    implemented: true
+  - name: try_to_binary
+    category: string_funcs
+    implemented: false
+  - name: try_to_number
+    category: string_funcs
+    implemented: false
+  - name: ucase
+    category: string_funcs
+    implemented: true
+  - name: unbase64
+    category: string_funcs
+    implemented: false
+  - name: upper
+    category: string_funcs
+    implemented: true
+  - name: named_struct
+    category: struct_funcs
+    implemented: false
+  - name: struct
+    category: struct_funcs
+    implemented: false
+  - name: parse_url
+    category: url_funcs
+    implemented: false
+  - name: url_decode
+    category: url_funcs
+    implemented: false
+  - name: url_encode
+    category: url_funcs
+    implemented: false
+  - name: cume_dist
+    category: window_funcs
+    implemented: false
+  - name: dense_rank
+    category: window_funcs
+    implemented: false
+  - name: lag
+    category: window_funcs
+    implemented: false
+  - name: lead
+    category: window_funcs
+    implemented: false
+  - name: nth_value
+    category: window_funcs
+    implemented: false
+  - name: ntile
+    category: window_funcs
+    implemented: false
+  - name: percent_rank
+    category: window_funcs
+    implemented: false
+  - name: rank
+    category: window_funcs
+    implemented: false
+  - name: row_number
+    category: window_funcs
+    implemented: false
+  - name: xpath
+    category: xml_funcs
+    implemented: false
+  - name: xpath_boolean
+    category: xml_funcs
+    implemented: false
+  - name: xpath_double
+    category: xml_funcs
+    implemented: false
+  - name: xpath_float
+    category: xml_funcs
+    implemented: false
+  - name: xpath_int
+    category: xml_funcs
+    implemented: false
+  - name: xpath_long
+    category: xml_funcs
+    implemented: false
+  - name: xpath_number
+    category: xml_funcs
+    implemented: false
+  - name: xpath_short
+    category: xml_funcs
+    implemented: false
+  - name: xpath_string
+    category: xml_funcs
+    implemented: false

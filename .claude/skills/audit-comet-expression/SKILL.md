@@ -311,17 +311,44 @@ After implementing tests, tell the user how to run them:
 
 ---
 
-## Step 8: Update the Expression Audit Log
+## Step 8: Update the Expression Manifest
 
-After completing the audit (whether or not tests were added), append a row to the audit log at
-`docs/source/contributor-guide/expression-audit-log.md`.
+After completing the audit (whether or not tests were added), append an audit record to the
+matching expression in `dev/expressions.yml`.
 
-The row should include:
+Locate the entry whose `name` matches the Spark SQL name for `$ARGUMENTS`. If the entry has no
+`audits:` key yet, add one. Append a new list item under `audits:` with:
 
-- Expression name
-- Spark versions checked (e.g. 3.4.3, 3.5.8, 4.0.1)
-- Today's date
-- A brief summary of findings (behavioral differences, bugs found/fixed, tests added, known incompatibilities)
+- `spark_versions` — the Spark versions checked, as a list of strings (e.g. `["3.4.3", "3.5.8", "4.0.1"]`)
+- `date` — today's date in `YYYY-MM-DD` format
+- `findings` — a folded block scalar (`>`) containing a brief summary: behavioral differences,
+  bugs found/fixed, tests added, known incompatibilities
+
+Audit records are ordered oldest-first within the list. If this is the expression's first audit,
+also flip `implemented: false` to `true` if the audit itself added the implementation.
+
+Example of a completed entry:
+
+```yaml
+  - name: array_insert
+    category: array_funcs
+    implemented: true
+    audits:
+      - spark_versions: ["3.4.3", "3.5.8", "4.0.1"]
+        date: 2026-04-02
+        findings: >
+          No behavioral differences across Spark versions. Fixed `nullable()`
+          metadata bug (did not account for `pos_expr`). Added SQL tests for
+          multiple types, literal arguments, null handling, negative indices,
+          and multibyte UTF-8. Known incompatibility: pos=0 error message
+          differs from Spark's `INVALID_INDEX_OF_ZERO`.
+```
+
+Verify the file still parses by running:
+
+```bash
+python3 -c "import yaml; yaml.safe_load(open('dev/expressions.yml'))"
+```
 
 ---
 
