@@ -618,6 +618,53 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
+  test("arrays_overlap - struct element null handling behavior verification") {
+    withSQLConf(
+      "spark.sql.optimizer.excludedRules" -> "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+      withTable("t") {
+        sql(
+          "create table t using parquet as select CAST(NULL as array<struct<a:int,b:int>>) a1 from range(1)")
+        val data = Seq(
+          "array(named_struct('a', 1, 'b', 2), named_struct('a', 3, 'b', 4))",
+          "array(named_struct('a', 1, 'b', 2))",
+          "array(named_struct('a', 3, 'b', 4))",
+          "array(named_struct('a', 1, 'b', CAST(NULL as int)))",
+          "array(named_struct('a', CAST(NULL as int), 'b', 2))",
+          "array(named_struct('a', CAST(NULL as int), 'b', CAST(NULL as int)))",
+          "array(CAST(NULL as struct<a:int,b:int>))",
+          "array(named_struct('a', 1, 'b', 2), CAST(NULL as struct<a:int,b:int>))",
+          "array()",
+          "a1")
+        for (y <- data; x <- data) {
+          checkSparkAnswerAndOperator(sql(s"SELECT arrays_overlap($y, $x) from t"))
+        }
+      }
+    }
+  }
+
+  test("arrays_overlap - map element null handling behavior verification") {
+    withSQLConf(
+      "spark.sql.optimizer.excludedRules" -> "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+      withTable("t") {
+        sql(
+          "create table t using parquet as select CAST(NULL as array<map<string,int>>) a1 from range(1)")
+        val data = Seq(
+          "array(map('a', 1, 'b', 2), map('c', 3))",
+          "array(map('a', 1, 'b', 2))",
+          "array(map('c', 3))",
+          "array(map('a', 1, 'b', CAST(NULL as int)))",
+          "array(map('a', CAST(NULL as int)))",
+          "array(CAST(NULL as map<string,int>))",
+          "array(map('a', 1), CAST(NULL as map<string,int>))",
+          "array()",
+          "a1")
+        for (y <- data; x <- data) {
+          checkSparkAnswerAndOperator(sql(s"SELECT arrays_overlap($y, $x) from t"))
+        }
+      }
+    }
+  }
+
   test("array_compact") {
     // TODO fix for Spark 4.0.0
     assume(!isSpark40Plus)
