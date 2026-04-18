@@ -15,12 +15,16 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Spark-compatible `arrays_overlap` with correct SQL three-valued null logic.
+//! Spark-compatible `arrays_overlap` with correct null handling.
 //!
 //! DataFusion's `array_has_any` uses `RowConverter` for element comparison, which
-//! treats NULL == NULL as true (grouping semantics). Spark's `arrays_overlap` uses
-//! SQL equality where NULL == NULL is unknown (null). This implementation correctly
-//! returns:
+//! treats NULL == NULL as true (grouping semantics). For outer-level null elements,
+//! Spark's `arrays_overlap` uses three-valued logic: NULL elements are skipped but
+//! cause the result to be null if no definite overlap is found. For comparing
+//! non-null elements (including nested types), Spark uses structural equality via
+//! `ordering.equiv` where NULL == NULL is true.
+//!
+//! This implementation returns:
 //!   - true  if any non-null element appears in both arrays
 //!   - null  if no definite overlap but either array contains null elements
 //!   - false if no overlap and neither array contains null elements
@@ -238,10 +242,8 @@ fn find_in_array(probe: &ArrayRef, pi: usize, search: &ArrayRef) -> Result<(bool
             has_null = true;
             continue;
         }
-        match three_valued_eq(probe.as_ref(), pi, search.as_ref(), si)? {
-            Some(true) => return Ok((true, has_null)),
-            None => has_null = true,
-            Some(false) => {}
+        if structural_eq(probe.as_ref(), pi, search.as_ref(), si)? {
+            return Ok((true, has_null));
         }
     }
     Ok((false, has_null))
@@ -258,16 +260,20 @@ fn needs_recursive_eq(dt: &DataType) -> bool {
     )
 }
 
-/// SQL three-valued equality for array elements at given indices.
-/// Returns Some(true) if equal, Some(false) if not equal, None if indeterminate (null).
-fn three_valued_eq(
+/// Structural equality for array elements (grouping semantics: NULL == NULL is true).
+/// This matches Spark's `ordering.equiv` used inside `arrays_overlap`.
+/// Three-valued null logic only applies to outer-level null elements (handled by the caller).
+fn structural_eq(
     left: &dyn Array,
     li: usize,
     right: &dyn Array,
     ri: usize,
-) -> Result<Option<bool>> {
+) -> Result<bool> {
+    if left.is_null(li) && right.is_null(ri) {
+        return Ok(true);
+    }
     if left.is_null(li) || right.is_null(ri) {
-        return Ok(None);
+        return Ok(false);
     }
 
     match left.data_type() {
@@ -280,7 +286,7 @@ fn three_valued_eq(
                 .as_any()
                 .downcast_ref::<GenericListArray<i32>>()
                 .unwrap();
-            list_values_eq(&ll.value(li), &rl.value(ri))
+            list_structural_eq(&ll.value(li), &rl.value(ri))
         }
         DataType::LargeList(_) => {
             let ll = left
@@ -291,20 +297,19 @@ fn three_valued_eq(
                 .as_any()
                 .downcast_ref::<GenericListArray<i64>>()
                 .unwrap();
-            list_values_eq(&ll.value(li), &rl.value(ri))
+            list_structural_eq(&ll.value(li), &rl.value(ri))
         }
         DataType::FixedSizeList(_, _) => {
             let ll = left.as_any().downcast_ref::<FixedSizeListArray>().unwrap();
             let rl = right.as_any().downcast_ref::<FixedSizeListArray>().unwrap();
-            list_values_eq(&ll.value(li), &rl.value(ri))
+            list_structural_eq(&ll.value(li), &rl.value(ri))
         }
         DataType::Struct(_) => {
             let ls = left.as_any().downcast_ref::<StructArray>().unwrap();
             let rs = right.as_any().downcast_ref::<StructArray>().unwrap();
-            struct_values_eq(ls, li, rs, ri)
+            struct_structural_eq(ls, li, rs, ri)
         }
         DataType::Map(_, _) => {
-            // Map is stored as List<Struct<key, value>>. Compare as lists.
             let ll = left
                 .as_any()
                 .downcast_ref::<GenericListArray<i32>>()
@@ -313,54 +318,43 @@ fn three_valued_eq(
                 .as_any()
                 .downcast_ref::<GenericListArray<i32>>()
                 .unwrap();
-            list_values_eq(&ll.value(li), &rl.value(ri))
+            list_structural_eq(&ll.value(li), &rl.value(ri))
         }
         _ => {
+            // Both non-null at this point; eq on two non-null scalars is definitive.
             let l = Scalar::new(left.slice(li, 1));
             let r = Scalar::new(right.slice(ri, 1));
             let result = eq(&l, &r)
                 .map_err(|e| datafusion::error::DataFusionError::ArrowError(Box::new(e), None))?;
-            Ok(if result.is_null(0) {
-                None
-            } else {
-                Some(result.value(0))
-            })
+            Ok(result.value(0))
         }
     }
 }
 
-/// Three-valued element-wise equality for two array values.
-fn list_values_eq(left: &ArrayRef, right: &ArrayRef) -> Result<Option<bool>> {
+fn list_structural_eq(left: &ArrayRef, right: &ArrayRef) -> Result<bool> {
     if left.len() != right.len() {
-        return Ok(Some(false));
+        return Ok(false);
     }
-    let mut has_null = false;
     for k in 0..left.len() {
-        match three_valued_eq(left.as_ref(), k, right.as_ref(), k)? {
-            Some(false) => return Ok(Some(false)),
-            None => has_null = true,
-            Some(true) => {}
+        if !structural_eq(left.as_ref(), k, right.as_ref(), k)? {
+            return Ok(false);
         }
     }
-    Ok(if has_null { None } else { Some(true) })
+    Ok(true)
 }
 
-/// Three-valued field-wise equality for two struct elements.
-fn struct_values_eq(
+fn struct_structural_eq(
     left: &StructArray,
     li: usize,
     right: &StructArray,
     ri: usize,
-) -> Result<Option<bool>> {
-    let mut has_null = false;
+) -> Result<bool> {
     for (lc, rc) in left.columns().iter().zip(right.columns().iter()) {
-        match three_valued_eq(lc.as_ref(), li, rc.as_ref(), ri)? {
-            Some(false) => return Ok(Some(false)),
-            None => has_null = true,
-            Some(true) => {}
+        if !structural_eq(lc.as_ref(), li, rc.as_ref(), ri)? {
+            return Ok(false);
         }
     }
-    Ok(if has_null { None } else { Some(true) })
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -580,24 +574,21 @@ mod tests {
     }
 
     #[test]
-    fn test_nested_array_inner_nulls_indeterminate() -> Result<()> {
-        // [[1,NULL]] vs [[1,NULL]] => null (indeterminate due to inner nulls)
+    fn test_nested_array_inner_nulls_match() -> Result<()> {
+        // [[1,NULL]] vs [[1,NULL]] => true (structural equality: NULL == NULL)
         let left = make_nested_list(vec![Some(vec![Some(1), None])]);
         let right = make_nested_list(vec![Some(vec![Some(1), None])]);
 
         let result = arrays_overlap_list::<i32>(&left, &right)?;
         let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
-        assert!(
-            result.is_null(0),
-            "Expected null for [[1,NULL]] vs [[1,NULL]], got {:?}",
-            result
-        );
+        assert!(result.is_valid(0));
+        assert!(result.value(0));
         Ok(())
     }
 
     #[test]
     fn test_nested_array_inner_nulls_no_match() -> Result<()> {
-        // [[1,NULL]] vs [[1,2], [3,4]] => null (eq([1,NULL],[1,2]) is null, no definite match)
+        // [[1,NULL]] vs [[1,2], [3,4]] => false (structural: [1,NULL] != [1,2], [1,NULL] != [3,4])
         let left = make_nested_list(vec![Some(vec![Some(1), None])]);
         let right = make_nested_list(vec![
             Some(vec![Some(1), Some(2)]),
@@ -606,11 +597,8 @@ mod tests {
 
         let result = arrays_overlap_list::<i32>(&left, &right)?;
         let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
-        assert!(
-            result.is_null(0),
-            "Expected null for [[1,NULL]] vs [[1,2],[3,4]], got {:?}",
-            result
-        );
+        assert!(result.is_valid(0));
+        assert!(!result.value(0));
         Ok(())
     }
 
@@ -692,18 +680,15 @@ mod tests {
     }
 
     #[test]
-    fn test_struct_with_null_field_indeterminate() -> Result<()> {
-        // [{1,NULL}] vs [{1,NULL}] => null (indeterminate due to null field)
+    fn test_struct_with_null_field_match() -> Result<()> {
+        // [{1,NULL}] vs [{1,NULL}] => true (structural equality: NULL == NULL)
         let left = make_struct_list(vec![Some((Some(1), None))]);
         let right = make_struct_list(vec![Some((Some(1), None))]);
 
         let result = arrays_overlap_list::<i32>(&left, &right)?;
         let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
-        assert!(
-            result.is_null(0),
-            "Expected null for [{{1,NULL}}] vs [{{1,NULL}}], got {:?}",
-            result
-        );
+        assert!(result.is_valid(0));
+        assert!(result.value(0));
         Ok(())
     }
 
