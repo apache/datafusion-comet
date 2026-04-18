@@ -666,8 +666,6 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   }
 
   test("array_compact") {
-    // TODO fix for Spark 4.0.0
-    assume(!isSpark40Plus)
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
         withTempView("t1") {
