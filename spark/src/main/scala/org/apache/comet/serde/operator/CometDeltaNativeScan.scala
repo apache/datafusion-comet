@@ -217,6 +217,31 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometScanExec] with Loggi
             return None
         }
       } else {
+        // Conservative DV guard for non-batch indexes (TahoeLogFileIndex,
+        // PreparedDeltaFileIndex, ...). Kernel path does apply DVs at read time via
+        // DeltaDvFilterExec, which is correct for standalone SELECTs. But when an
+        // UPDATE / DELETE / MERGE command's INTERNAL read runs through Comet for a
+        // DV-enabled table and Delta's post-read logic expects to see ALL rows (to
+        // then apply its own DV mechanism), our DV-applying read silently skips
+        // rows the command expected -- producing wrong final table state.
+        //
+        // `matchingFiles(Nil, Nil)` is cheap for the PreparedDeltaFileIndex case
+        // because the scan result is already materialised. For TahoeLogFileIndex we
+        // prefer not to probe (expensive); relying on the Delta-PreprocessTableWithDVs
+        // wrapper being detected upstream in CometScanRule.scanBelowFallsBackForDvs.
+        val preparedHasDv =
+          relation.location.getClass.getName.contains("PreparedDeltaFileIndex") &&
+            DeltaReflection
+              .extractBatchAddFiles(relation.location)
+              .exists(_.exists(_.hasDeletionVector))
+        if (preparedHasDv) {
+          import org.apache.comet.CometSparkSessionExtensions.withInfo
+          withInfo(
+            scan,
+            "Native Delta scan falls back for PreparedDeltaFileIndex with " +
+              "deletion vectors (Delta's DV-aware internal reads need vanilla Spark).")
+          return None
+        }
         try {
           nativeLib.planDeltaScan(
             tableRoot,

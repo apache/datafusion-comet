@@ -245,16 +245,18 @@ case class CometScanRule(session: SparkSession)
             DeltaReflection
               .extractBatchAddFiles(scan.relation.location)
               .exists(_.exists(_.hasDeletionVector))
-        // Shape 2: PreparedDeltaFileIndex whose required schema still has is_row_deleted.
-        // (If Delta's wrapper is present above the scan, the inner scan may or may not
-        // already have the column in its output; peek at the schema to detect.)
-        val preparedDvFallback =
-          scan.relation.location.getClass.getName
-            .contains("PreparedDeltaFileIndex") && (scan.output.exists(
-            _.name.equalsIgnoreCase(DeltaReflection.IsRowDeletedColumnName)) ||
+        // Shape 2: ANY Delta scan whose output/required schema already contains the
+        // synthetic `__delta_internal_is_row_deleted` column. That column is produced
+        // only by Delta's own DeltaParquetFileFormat reader -- Comet's parquet reader
+        // can't synthesize it -- so whichever Comet path takes over, the outer filter
+        // will end up with an unresolved column. Covers PreparedDeltaFileIndex,
+        // TahoeLogFileIndex (UPDATE/DELETE internal reads), and any other Delta index
+        // that Delta's PreprocessTableWithDVs strategy has already injected into.
+        val outputHasIsRowDeleted =
+          scan.output.exists(_.name.equalsIgnoreCase(DeltaReflection.IsRowDeletedColumnName)) ||
             scan.requiredSchema.fieldNames.exists(
-              _.equalsIgnoreCase(DeltaReflection.IsRowDeletedColumnName)))
-        batchFallback || preparedDvFallback
+              _.equalsIgnoreCase(DeltaReflection.IsRowDeletedColumnName))
+        batchFallback || outputHasIsRowDeleted
       case other if other.children.size == 1 => check(other.children.head)
       case _ => false
     }
