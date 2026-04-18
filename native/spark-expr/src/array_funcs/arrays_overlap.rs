@@ -256,7 +256,6 @@ fn needs_recursive_eq(dt: &DataType) -> bool {
             | DataType::LargeList(_)
             | DataType::FixedSizeList(_, _)
             | DataType::Struct(_)
-            | DataType::Map(_, _)
     )
 }
 
@@ -303,17 +302,6 @@ fn structural_eq(left: &dyn Array, li: usize, right: &dyn Array, ri: usize) -> R
             let ls = left.as_any().downcast_ref::<StructArray>().unwrap();
             let rs = right.as_any().downcast_ref::<StructArray>().unwrap();
             struct_structural_eq(ls, li, rs, ri)
-        }
-        DataType::Map(_, _) => {
-            let ll = left
-                .as_any()
-                .downcast_ref::<GenericListArray<i32>>()
-                .unwrap();
-            let rl = right
-                .as_any()
-                .downcast_ref::<GenericListArray<i32>>()
-                .unwrap();
-            list_structural_eq(&ll.value(li), &rl.value(ri))
         }
         _ => {
             // Both non-null at this point; eq on two non-null scalars is definitive.
