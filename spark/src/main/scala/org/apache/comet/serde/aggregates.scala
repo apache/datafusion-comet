@@ -22,7 +22,7 @@ package org.apache.comet.serde
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.catalyst.expressions.Attribute
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, Corr, Count, Covariance, CovPopulation, CovSample, First, Last, Max, Min, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, Corr, Count, Covariance, CovPopulation, CovSample, First, Last, Max, Min, Mode, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ByteType, DataTypes, DecimalType, IntegerType, LongType, ShortType, StringType}
 
@@ -473,6 +473,42 @@ object CometCovPopulation extends CometAggregateExpressionSerde[CovPopulation] w
       inputs,
       binding,
       conf: SQLConf)
+  }
+}
+
+object CometMode extends CometAggregateExpressionSerde[Mode] {
+  override def convert(
+      aggExpr: AggregateExpression,
+      mode: Mode,
+      inputs: Seq[Attribute],
+      binding: Boolean,
+      conf: SQLConf): Option[ExprOuterClass.AggExpr] = {
+
+    if (!QueryPlanSerde.supportedDataType(mode.dataType)) {
+      withInfo(aggExpr, s"Unsupported data type: ${mode.dataType}")
+      return None
+    }
+
+    val childExpr = exprToProto(mode.child, inputs, binding)
+    val dataType = serializeDataType(mode.dataType)
+
+    if (childExpr.isDefined && dataType.isDefined) {
+      val builder = ExprOuterClass.Mode.newBuilder()
+      builder.setChild(childExpr.get)
+      builder.setDatatype(dataType.get)
+
+      Some(
+        ExprOuterClass.AggExpr
+          .newBuilder()
+          .setMode(builder)
+          .build())
+    } else if (dataType.isEmpty) {
+      withInfo(aggExpr, s"datatype ${mode.dataType} is not supported", mode.child)
+      None
+    } else {
+      withInfo(aggExpr, mode.child)
+      None
+    }
   }
 }
 

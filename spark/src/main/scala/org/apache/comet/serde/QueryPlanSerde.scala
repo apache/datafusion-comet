@@ -270,6 +270,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[Last] -> CometLast,
     classOf[Max] -> CometMax,
     classOf[Min] -> CometMin,
+    classOf[Mode] -> CometMode,
     classOf[StddevPop] -> CometStddevPop,
     classOf[StddevSamp] -> CometStddevSamp,
     classOf[Sum] -> CometSum,

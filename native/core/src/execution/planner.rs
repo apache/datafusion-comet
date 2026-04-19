@@ -123,7 +123,7 @@ use datafusion_comet_proto::{
 use datafusion_comet_spark_expr::{
     ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Correlation, Covariance, CreateNamedStruct,
     DecimalRescaleCheckOverflow, GetArrayStructFields, GetStructField, IfExpr, ListExtract,
-    NormalizeNaNAndZero, SparkCastOptions, Stddev, SumDecimal, ToJson, UnboundColumn, Variance,
+    Mode, NormalizeNaNAndZero, SparkCastOptions, Stddev, SumDecimal, ToJson, UnboundColumn, Variance,
     WideDecimalBinaryExpr, WideDecimalOp,
 };
 use itertools::Itertools;
@@ -2010,6 +2010,14 @@ impl PhysicalPlanner {
                     .with_distinct(false)
                     .build()
                     .map_err(|e| ExecutionError::DataFusionError(e.to_string()))
+            }
+            AggExprStruct::Mode(expr) => {
+                let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
+                let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
+
+                let func = AggregateUDF::new_from_impl(Mode::new("mode", datatype));
+
+                Self::create_aggr_func_expr("mode", schema, vec![child], func)
             }
             AggExprStruct::Sum(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
