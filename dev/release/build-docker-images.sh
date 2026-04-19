@@ -157,9 +157,12 @@ if ! grep -q '^linux/amd64$' <<<"$builder_platforms" \
   exit 2
 fi
 
-if [[ "$DRY_RUN" -eq 0 ]] && ! grep -q '"auths"' "${HOME}/.docker/config.json" 2>/dev/null; then
-  echo "Warning: no docker credentials found in ~/.docker/config.json." >&2
-  echo "  Run 'docker login' if push fails." >&2
+if [[ "$DRY_RUN" -eq 0 ]]; then
+  config="${HOME}/.docker/config.json"
+  if ! grep -Eq '"(auths|credsStore|credHelpers)"' "$config" 2>/dev/null; then
+    echo "Warning: no docker credentials found in $config." >&2
+    echo "  Run 'docker login' if push fails." >&2
+  fi
 fi
 
 BUILD_CONTEXTS=()
