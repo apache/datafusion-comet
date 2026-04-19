@@ -15,8 +15,6 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- ConfigMatrix: parquet.enable.dictionary=false,true
-
 -- ===== INT arrays =====
 
 statement
@@ -34,23 +32,23 @@ INSERT INTO test_array_distinct_int VALUES
   (array(0, -1, -1, 0, 1))
 
 -- column argument
-query spark_answer_only
+query
 SELECT array_distinct(arr) FROM test_array_distinct_int
 
 -- literal arguments
-query spark_answer_only
+query
 SELECT array_distinct(array(1, 2, 2, 3, 3))
 
 -- all NULLs
-query spark_answer_only
+query
 SELECT array_distinct(array(CAST(NULL AS INT), CAST(NULL AS INT)))
 
 -- NULL input
-query spark_answer_only
+query
 SELECT array_distinct(CAST(NULL AS array<int>))
 
 -- boundary values
-query spark_answer_only
+query
 SELECT array_distinct(array(-2147483648, 2147483647, -2147483648, 2147483647, 0))
 
 -- ===== LONG arrays =====
@@ -65,11 +63,11 @@ INSERT INTO test_array_distinct_long VALUES
   (array(NULL, 1, NULL, 2)),
   (array(-9223372036854775808, 9223372036854775807, -9223372036854775808))
 
-query spark_answer_only
+query
 SELECT array_distinct(arr) FROM test_array_distinct_long
 
 -- boundary values
-query spark_answer_only
+query
 SELECT array_distinct(array(CAST(-9223372036854775808 AS BIGINT), CAST(9223372036854775807 AS BIGINT), CAST(-9223372036854775808 AS BIGINT)))
 
 -- ===== STRING arrays =====
@@ -86,11 +84,11 @@ INSERT INTO test_array_distinct_string VALUES
   (array('', '', NULL, '')),
   (array('hello', 'world', 'hello'))
 
-query spark_answer_only
+query
 SELECT array_distinct(arr) FROM test_array_distinct_string
 
 -- empty string and NULL distinction
-query spark_answer_only
+query
 SELECT array_distinct(array('', NULL, '', NULL, 'a'))
 
 -- ===== BOOLEAN arrays =====
@@ -105,7 +103,7 @@ INSERT INTO test_array_distinct_bool VALUES
   (NULL),
   (array(NULL, true, NULL, false))
 
-query spark_answer_only
+query
 SELECT array_distinct(arr) FROM test_array_distinct_bool
 
 -- ===== DOUBLE arrays =====
@@ -119,23 +117,23 @@ INSERT INTO test_array_distinct_double VALUES
   (NULL),
   (array(NULL, 1.0, NULL, 2.0))
 
-query spark_answer_only
+query
 SELECT array_distinct(arr) FROM test_array_distinct_double
 
 -- NaN deduplication
-query spark_answer_only
+query
 SELECT array_distinct(array(CAST('NaN' AS DOUBLE), CAST('NaN' AS DOUBLE), 1.0, 1.0))
 
 -- NaN with NULL
-query spark_answer_only
+query
 SELECT array_distinct(array(CAST('NaN' AS DOUBLE), NULL, CAST('NaN' AS DOUBLE), NULL, 1.0))
 
 -- Infinity
-query spark_answer_only
+query
 SELECT array_distinct(array(CAST('Infinity' AS DOUBLE), CAST('-Infinity' AS DOUBLE), CAST('Infinity' AS DOUBLE), 0.0))
 
 -- negative zero
-query spark_answer_only
+query
 SELECT array_distinct(array(0.0, -0.0, 1.0))
 
 -- ===== FLOAT arrays =====
@@ -149,11 +147,11 @@ INSERT INTO test_array_distinct_float VALUES
   (NULL),
   (array(CAST(NULL AS FLOAT), CAST(1.0 AS FLOAT), CAST(NULL AS FLOAT)))
 
-query spark_answer_only
+query
 SELECT array_distinct(arr) FROM test_array_distinct_float
 
 -- Float NaN deduplication
-query spark_answer_only
+query
 SELECT array_distinct(array(CAST('NaN' AS FLOAT), CAST('NaN' AS FLOAT), CAST(1.0 AS FLOAT)))
 
 -- ===== DECIMAL arrays =====
@@ -167,13 +165,13 @@ INSERT INTO test_array_distinct_decimal VALUES
   (NULL),
   (array(NULL, 1.10, NULL, 1.10))
 
-query spark_answer_only
+query
 SELECT array_distinct(arr) FROM test_array_distinct_decimal
 
 -- ===== Nested array (array of arrays) =====
 
-query spark_answer_only
+query
 SELECT array_distinct(array(array(1, 2), array(3, 4), array(1, 2), array(3, 4)))
 
-query spark_answer_only
+query
 SELECT array_distinct(array(array(1, 2), CAST(NULL AS array<int>), array(1, 2), CAST(NULL AS array<int>)))
