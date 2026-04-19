@@ -33,5 +33,5 @@ USER root
 COPY ${COMET_JAR} $SPARK_HOME/jars/
 
 # Restore the non-root user set by the apache/spark base image.
-ARG spark_uid
+ARG spark_uid=185
 USER ${spark_uid}
