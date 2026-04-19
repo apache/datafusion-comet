@@ -148,7 +148,7 @@ if ! docker buildx version >/dev/null 2>&1; then
   exit 2
 fi
 
-builder_platforms=$(docker buildx inspect --bootstrap 2>/dev/null | awk '/Platforms:/{print $2}' | tr ',' '\n' | tr -d ' ')
+builder_platforms=$(docker buildx inspect --bootstrap 2>/dev/null | sed -n 's/^[[:space:]]*Platforms:[[:space:]]*//p' | tr ',' '\n' | tr -d ' ')
 if ! grep -q '^linux/amd64$' <<<"$builder_platforms" \
    || ! grep -q '^linux/arm64$' <<<"$builder_platforms"; then
   echo "Error: active buildx builder does not support both linux/amd64 and linux/arm64" >&2
@@ -232,7 +232,7 @@ done
 echo
 echo "=== Summary ==="
 if [[ "$DRY_RUN" -eq 1 ]]; then
-  echo "Dry run — nothing was pushed. Would have pushed:"
+  echo "Dry run - nothing was pushed. Would have pushed:"
 else
   echo "Pushed tags:"
 fi
