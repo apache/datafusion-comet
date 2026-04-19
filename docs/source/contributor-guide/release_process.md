@@ -37,6 +37,7 @@ instructions on each step.
 - [ ] Cherry-pick the change log commit into the release branch
 - [ ] Build the jars
 - [ ] Tag the release candidate
+- [ ] Publish Docker images to Docker Hub (release candidate)
 - [ ] Update documentation for the new release
 - [ ] Publish Maven artifacts to staging
 - [ ] Create the release candidate tarball
@@ -46,6 +47,7 @@ instructions on each step.
   - [ ] Create GitHub release
   - [ ] Promote Maven artifacts to production
   - [ ] Push the release tag
+  - [ ] Publish Docker images to Docker Hub
   - [ ] Close the vote and announce the release
 - [ ] Post release:
   - [ ] Register the release with Apache Reporter
