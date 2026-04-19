@@ -219,8 +219,7 @@ git tag 0.13.0-rc1
 git push apache 0.13.0-rc1
 ```
 
-Note that pushing a release candidate tag will trigger a GitHub workflow that will build a Docker image and publish
-it to GitHub Container Registry at https://github.com/apache/datafusion-comet/pkgs/container/datafusion-comet
+After pushing the tag, publish the multi-arch Docker images to Docker Hub using `dev/release/build-docker-images.sh` (see the "Publish Docker images to Docker Hub" section below).
 
 ### Publishing Documentation
 
@@ -390,8 +389,7 @@ git tag 0.13.0
 git push apache 0.13.0
 ```
 
-Note that pushing a release tag will trigger a GitHub workflow that will build a Docker image and publish
-it to GitHub Container Registry at https://github.com/apache/datafusion-comet/pkgs/container/datafusion-comet
+After pushing the tag, publish the multi-arch Docker images to Docker Hub using `dev/release/build-docker-images.sh` (see the "Publish Docker images to Docker Hub" section below).
 
 Reply to the vote thread to close the vote and announce the release. The announcement email should include:
 
@@ -450,3 +448,52 @@ Writing a blog post about the release is a great way to generate more interest i
 Google document where the community can collaborate on a blog post. Once the content is agreed then a PR can be
 created against the [datafusion-site](https://github.com/apache/datafusion-site) repository to add the blog post. Any
 contributor can drive this process.
+
+## Publish Docker images to Docker Hub
+
+After running `build-release-comet.sh` and pushing the release (or release
+candidate) tag, publish the multi-arch Docker images to Docker Hub.
+
+Prerequisites:
+
+1. The `LOCAL_REPO` path printed by `build-release-comet.sh`, e.g.
+   `/tmp/comet-staging-repo-XXXXX`. The uber-jars produced by that script
+   already bundle `linux/amd64` and `linux/aarch64` native libraries, so a
+   single jar works for both container architectures.
+
+2. Log in to Docker Hub with an account that has write access to
+   `apache/datafusion-comet`:
+
+   ```shell
+   docker login
+   ```
+
+3. A `docker buildx` builder that supports both `linux/amd64` and
+   `linux/arm64`. One-time setup:
+
+   ```shell
+   docker buildx create --use --name multiarch
+   docker buildx inspect --bootstrap
+   ```
+
+Run the publish script:
+
+```shell
+./dev/release/build-docker-images.sh \
+  --version 0.10.0 \
+  --maven-repo /tmp/comet-staging-repo-XXXXX
+```
+
+The script builds and pushes five multi-arch manifests:
+
+- `apache/datafusion-comet:<version>-spark3.4.3-scala2.12-java17`
+- `apache/datafusion-comet:<version>-spark3.4.3-scala2.13-java17`
+- `apache/datafusion-comet:<version>-spark3.5.8-scala2.12-java17`
+- `apache/datafusion-comet:<version>-spark3.5.8-scala2.13-java17`
+- `apache/datafusion-comet:<version>-spark4.0.1-scala2.13-java17`
+
+Use `--dry-run` to preview the commands without pushing.
+
+For release candidates, pass the full candidate version (e.g.
+`--version 0.10.0-rc1`). The same script is used for both RCs and final
+releases.
