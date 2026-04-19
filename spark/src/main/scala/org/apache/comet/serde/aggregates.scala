@@ -584,13 +584,6 @@ object CometStddevPop extends CometAggregateExpressionSerde[StddevPop] with Come
 }
 
 object CometCorr extends CometAggregateExpressionSerde[Corr] {
-
-  override def getSupportLevel(expr: Corr): SupportLevel =
-    Incompatible(
-      Some(
-        "Returns null instead of NaN in some edge cases" +
-          " (https://github.com/apache/datafusion-comet/issues/2646)"))
-
   override def convert(
       aggExpr: AggregateExpression,
       corr: Corr,
