@@ -286,4 +286,22 @@ index 92aa9df..6a0f576 100644
 +      case c: org.apache.spark.sql.comet.CometDeltaNativeScanExec => Seq(c.originalPlan)
      }).flatten
    }
+
+diff --git a/spark/src/test/scala/org/apache/spark/sql/delta/perf/OptimizeGeneratedColumnSuite.scala b/spark/src/test/scala/org/apache/spark/sql/delta/perf/OptimizeGeneratedColumnSuite.scala
+--- a/spark/src/test/scala/org/apache/spark/sql/delta/perf/OptimizeGeneratedColumnSuite.scala
++++ b/spark/src/test/scala/org/apache/spark/sql/delta/perf/OptimizeGeneratedColumnSuite.scala
+@@ -46,5 +46,13 @@
+   private def getPushedPartitionFilters(queryExecution: QueryExecution): Seq[Expression] = {
+     queryExecution.executedPlan.collectFirst {
+       case scan: FileSourceScanExec => scan.partitionFilters
++      // Comet regression: Comet's planner rewrites `FileSourceScanExec` into
++      // `CometScanExec` / `CometDeltaNativeScanExec`. Without unwrapping we'd
++      // find no scan and every partition-filter assertion would see an empty
++      // list instead of the pushed predicate.
++      case c: org.apache.spark.sql.comet.CometScanExec =>
++        c.wrapped.partitionFilters
++      case c: org.apache.spark.sql.comet.CometDeltaNativeScanExec =>
++        c.originalPlan.partitionFilters
+     }.getOrElse(Nil)
+   }
  
