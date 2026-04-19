@@ -133,7 +133,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[MapValues] -> CometMapValues,
     classOf[MapFromArrays] -> CometMapFromArrays,
     classOf[MapContainsKey] -> CometMapContainsKey,
-    classOf[MapFromEntries] -> CometMapFromEntries)
+    classOf[MapFromEntries] -> CometMapFromEntries,
+    classOf[StringToMap] -> CometStrToMap)
 
   private val structExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     classOf[CreateNamedStruct] -> CometCreateNamedStruct,
