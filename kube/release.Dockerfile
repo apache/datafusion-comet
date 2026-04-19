@@ -31,3 +31,7 @@ ARG COMET_JAR
 USER root
 
 COPY ${COMET_JAR} $SPARK_HOME/jars/
+
+# Restore the non-root user set by the apache/spark base image.
+ARG spark_uid
+USER ${spark_uid}
