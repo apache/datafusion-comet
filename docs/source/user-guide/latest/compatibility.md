@@ -157,16 +157,78 @@ suffixes (e.g. `Europe/Moscow`), and the full Spark timestamp year range
 ### Legacy Mode
 
 <!--BEGIN:CAST_LEGACY_TABLE-->
-<!--END:CAST_LEGACY_TABLE-->
+<!-- prettier-ignore-start -->
 
-### Try Mode
+|           | binary | boolean | byte | date | decimal | double | float | integer | long | short | string | timestamp |
+| --------- | ------ | ------- | ---- | ---- | ------- | ------ | ----- | ------- | ---- | ----- | ------ | --------- |
+| binary    | -      | N/A     | N/A  | N/A  | N/A     | N/A    | N/A   | N/A     | N/A  | N/A   | C      | N/A       |
+| boolean   | N/A    | -       | C    | N/A  | C       | C      | C     | C       | C    | C     | C      | C         |
+| byte      | C      | C       | -    | N/A  | C       | C      | C     | C       | C    | C     | C      | C         |
+| date      | N/A    | C       | C    | -    | C       | C      | C     | C       | C    | C     | C      | C         |
+| decimal   | N/A    | C       | C    | N/A  | -       | C      | C     | C       | C    | C     | C      | C         |
+| double    | N/A    | C       | C    | N/A  | I       | -      | C     | C       | C    | C     | C      | C         |
+| float     | N/A    | C       | C    | N/A  | I       | C      | -     | C       | C    | C     | C      | C         |
+| integer   | C      | C       | C    | N/A  | C       | C      | C     | -       | C    | C     | C      | C         |
+| long      | C      | C       | C    | N/A  | C       | C      | C     | C       | -    | C     | C      | C         |
+| short     | C      | C       | C    | N/A  | C       | C      | C     | C       | C    | -     | C      | C         |
+| string    | C      | C       | C    | C    | C       | C      | C     | C       | C    | C     | -      | C         |
+| timestamp | N/A    | U       | U    | C    | U       | U      | U     | U       | C    | U     | C      | -         |
 
-<!--BEGIN:CAST_TRY_TABLE-->
-<!--END:CAST_TRY_TABLE-->
+**Notes:**
 
-### ANSI Mode
+- **double -> decimal**: There can be rounding differences
+- **double -> string**: There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45
+- **float -> decimal**: There can be rounding differences
+- **float -> string**: There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45
+- **string -> date**: Only supports years between 262143 BC and 262142 AD
+  <!-- prettier-ignore-end -->
+  <!--BEGIN:CAST_TRY_TABLE-->
+  <!-- prettier-ignore-start -->
+  |           | binary | boolean | byte | date | decimal | double | float | integer | long | short | string | timestamp |
+  | --------- | ------ | ------- | ---- | ---- | ------- | ------ | ----- | ------- | ---- | ----- | ------ | --------- |
+  | binary    | -      | N/A     | N/A  | N/A  | N/A     | N/A    | N/A   | N/A     | N/A  | N/A   | C      | N/A       |
+  | boolean   | N/A    | -       | C    | N/A  | C       | C      | C     | C       | C    | C     | C      | U         |
+  | byte      | U      | C       | -    | N/A  | C       | C      | C     | C       | C    | C     | C      | C         |
+  | date      | N/A    | U       | U    | -    | U       | U      | U     | U       | U    | U     | C      | C         |
+  | decimal   | N/A    | C       | C    | N/A  | -       | C      | C     | C       | C    | C     | C      | C         |
+  | double    | N/A    | C       | C    | N/A  | I       | -      | C     | C       | C    | C     | C      | C         |
+  | float     | N/A    | C       | C    | N/A  | I       | C      | -     | C       | C    | C     | C      | C         |
+  | integer   | U      | C       | C    | N/A  | C       | C      | C     | -       | C    | C     | C      | C         |
+  | long      | U      | C       | C    | N/A  | C       | C      | C     | C       | -    | C     | C      | C         |
+  | short     | U      | C       | C    | N/A  | C       | C      | C     | C       | C    | -     | C      | C         |
+  | string    | C      | C       | C    | C    | C       | C      | C     | C       | C    | C     | -      | C         |
+  | timestamp | N/A    | U       | U    | C    | U       | U      | U     | U       | C    | U     | C      | -         |
 
-<!--BEGIN:CAST_ANSI_TABLE-->
-<!--END:CAST_ANSI_TABLE-->
+**Notes:**
 
-See the [tracking issue](https://github.com/apache/datafusion-comet/issues/286) for more details.
+- **double -> decimal**: There can be rounding differences
+- **double -> string**: There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45
+- **float -> decimal**: There can be rounding differences
+- **float -> string**: There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45
+- **string -> date**: Only supports years between 262143 BC and 262142 AD
+  <!-- prettier-ignore-end -->
+  <!--BEGIN:CAST_ANSI_TABLE-->
+  <!-- prettier-ignore-start -->
+  |           | binary | boolean | byte | date | decimal | double | float | integer | long | short | string | timestamp |
+  | --------- | ------ | ------- | ---- | ---- | ------- | ------ | ----- | ------- | ---- | ----- | ------ | --------- |
+  | binary    | -      | N/A     | N/A  | N/A  | N/A     | N/A    | N/A   | N/A     | N/A  | N/A   | C      | N/A       |
+  | boolean   | N/A    | -       | C    | N/A  | C       | C      | C     | C       | C    | C     | C      | U         |
+  | byte      | U      | C       | -    | N/A  | C       | C      | C     | C       | C    | C     | C      | C         |
+  | date      | N/A    | U       | U    | -    | U       | U      | U     | U       | U    | U     | C      | C         |
+  | decimal   | N/A    | C       | C    | N/A  | -       | C      | C     | C       | C    | C     | C      | C         |
+  | double    | N/A    | C       | C    | N/A  | I       | -      | C     | C       | C    | C     | C      | C         |
+  | float     | N/A    | C       | C    | N/A  | I       | C      | -     | C       | C    | C     | C      | C         |
+  | integer   | U      | C       | C    | N/A  | C       | C      | C     | -       | C    | C     | C      | C         |
+  | long      | U      | C       | C    | N/A  | C       | C      | C     | C       | -    | C     | C      | C         |
+  | short     | U      | C       | C    | N/A  | C       | C      | C     | C       | C    | -     | C      | C         |
+  | string    | C      | C       | C    | C    | C       | C      | C     | C       | C    | C     | -      | C         |
+  | timestamp | N/A    | U       | U    | C    | U       | U      | U     | U       | C    | U     | C      | -         |
+
+**Notes:**
+
+- **double -> decimal**: There can be rounding differences
+- **double -> string**: There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45
+- **float -> decimal**: There can be rounding differences
+- **float -> string**: There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45
+- **string -> date**: Only supports years between 262143 BC and 262142 AD
+<!-- prettier-ignore-end -->
