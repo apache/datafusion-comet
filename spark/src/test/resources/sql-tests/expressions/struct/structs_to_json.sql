@@ -16,14 +16,22 @@
 -- under the License.
 
 statement
-CREATE TABLE test_to_json(a int, b string) USING parquet
+CREATE TABLE test_to_json(a int, b string, f float, d double) USING parquet
 
 statement
-INSERT INTO test_to_json VALUES (1, 'hello'), (NULL, NULL), (0, '')
+INSERT INTO test_to_json VALUES (1, 'hello', cast('NaN' as float), cast('Infinity' as double)), (NULL, NULL, NULL, NULL), (0, '', 0.0, 0.0)
 
 query spark_answer_only
-SELECT to_json(named_struct('a', a, 'b', b)) FROM test_to_json
+SELECT to_json(named_struct('a', a, 'b', b, 'f', f, 'd', d)) FROM test_to_json
 
 -- literal arguments
 query spark_answer_only
 SELECT to_json(named_struct('a', 1, 'b', 'hello'))
+
+-- query expect_fallback(StructsToJson with options is not supported)
+query ignore("Need support Spark 4.0.0")
+SELECT to_json(named_struct('a', a, 'b', b), map('timestampFormat', 'dd/MM/yyyy'))
+
+-- query expect_fallback(Struct type: StructType(StructField(a,ArrayType(IntegerType,false),false)) contains unsupported types)
+query ignore("Need support Spark 4.0.0")
+SELECT to_json(named_struct(a, array(b)))
