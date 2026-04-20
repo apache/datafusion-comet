@@ -100,6 +100,32 @@ case class CometExecRule(session: SparkSession)
 
   private lazy val showTransformations = CometConf.COMET_EXPLAIN_TRANSFORMATIONS.get()
 
+  /**
+   * Revert any `CometShuffleExchangeExec` with `CometColumnarShuffle` that is sandwiched between
+   * two non-Comet operators back to the original Spark `ShuffleExchangeExec`. Columnar shuffle
+   * converts row-based input to Arrow batches for the shuffle read side; if neither the parent
+   * nor the child is a Comet plan that can consume columnar output, that conversion is pure
+   * overhead (row->arrow->shuffle->arrow->row vs. row->shuffle->row).
+   */
+  private def revertRedundantColumnarShuffle(plan: SparkPlan): SparkPlan = {
+    def isRedundantShuffle(child: SparkPlan): Boolean = child match {
+      case s: CometShuffleExchangeExec =>
+        s.shuffleType == CometColumnarShuffle && !s.child.isInstanceOf[CometPlan]
+      case _ => false
+    }
+
+    plan.transform {
+      case op if !op.isInstanceOf[CometPlan] && op.children.exists(isRedundantShuffle) =>
+        val newChildren = op.children.map {
+          case s: CometShuffleExchangeExec
+              if s.shuffleType == CometColumnarShuffle && !s.child.isInstanceOf[CometPlan] =>
+            s.originalPlan.withNewChildren(Seq(s.child)).asInstanceOf[SparkPlan]
+          case other => other
+        }
+        op.withNewChildren(newChildren)
+    }
+  }
+
   private def applyCometShuffle(plan: SparkPlan): SparkPlan = {
     plan.transformUp { case s: ShuffleExchangeExec =>
       CometShuffleExchangeExec.shuffleSupported(s) match {
@@ -463,6 +489,12 @@ case class CometExecRule(session: SparkSession)
         case CometSinkPlaceHolder(_, _, s) => s
         case CometScanWrapper(_, s) => s
       }
+
+      // Revert CometColumnarShuffle to Spark's ShuffleExchangeExec when both the parent and
+      // the child are non-Comet (JVM) operators. In that case the Comet shuffle only adds
+      // row->arrow->arrow->row conversion overhead with no Comet operator on either side to
+      // benefit from columnar output. See https://github.com/apache/datafusion-comet/issues/4004.
+      newPlan = revertRedundantColumnarShuffle(newPlan)
 
       // Set up logical links
       newPlan = newPlan.transform {

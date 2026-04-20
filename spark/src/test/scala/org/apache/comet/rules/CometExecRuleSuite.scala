@@ -229,4 +229,37 @@ class CometExecRuleSuite extends CometTestBase {
     }
   }
 
+  test("CometExecRule should not wrap shuffle in CometColumnarShuffle when both sides are JVM") {
+    withTempView("test_data") {
+      createTestDataFrame.createOrReplaceTempView("test_data")
+
+      val sparkPlan =
+        createSparkPlan(spark, "SELECT COUNT(*), SUM(id) FROM test_data GROUP BY (id % 3)")
+
+      val originalShuffleExchangeCount = countOperators(sparkPlan, classOf[ShuffleExchangeExec])
+      assert(originalShuffleExchangeCount == 1)
+      assert(countOperators(sparkPlan, classOf[HashAggregateExec]) == 2)
+
+      // Disable partial aggregate so both aggregates fall back to Spark JVM. The shuffle between
+      // them would otherwise be wrapped with CometColumnarShuffle, which adds unnecessary
+      // row<->arrow conversion overhead when neither side can consume columnar output.
+      // See https://github.com/apache/datafusion-comet/issues/4004.
+      withSQLConf(
+        CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE.key -> "false",
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        val transformedPlan = applyCometExecRule(sparkPlan)
+
+        // Both aggregates should remain JVM
+        assert(countOperators(transformedPlan, classOf[HashAggregateExec]) == 2)
+        assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 0)
+
+        // The shuffle should remain a Spark ShuffleExchangeExec (not wrapped in Comet)
+        assert(countOperators(transformedPlan, classOf[CometShuffleExchangeExec]) == 0)
+        assert(
+          countOperators(transformedPlan, classOf[ShuffleExchangeExec]) ==
+            originalShuffleExchangeCount)
+      }
+    }
+  }
+
 }
