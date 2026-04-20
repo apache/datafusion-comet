@@ -238,11 +238,7 @@ fn find_in_array_flat(probe: &ArrayRef, pi: usize, search: &ArrayRef) -> Result<
 }
 
 /// Element-by-element search using structural equality for nested types.
-fn find_in_array_nested(
-    probe: &ArrayRef,
-    pi: usize,
-    search: &ArrayRef,
-) -> Result<(bool, bool)> {
+fn find_in_array_nested(probe: &ArrayRef, pi: usize, search: &ArrayRef) -> Result<(bool, bool)> {
     let mut has_null = false;
     for si in 0..search.len() {
         if search.is_null(si) {
