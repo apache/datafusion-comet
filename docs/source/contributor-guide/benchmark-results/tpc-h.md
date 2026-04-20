@@ -19,31 +19,24 @@ under the License.
 
 # Apache DataFusion Comet: Benchmarks Derived From TPC-H
 
-The following benchmarks were performed on a Linux workstation with PCIe 5, AMD 7950X CPU (16 cores), 128 GB RAM, and
-data stored locally in Parquet format on NVMe storage. Performance characteristics will vary in different environments
-and we encourage you to run these benchmarks in your own environments.
+The following benchmarks were performed on an EKS cluster with data stored in S3.
 
-The operating system is Ubuntu 22.04.5 LTS.
+## Configuration
 
-The tracking issue for improving TPC-H performance is [#391](https://github.com/apache/datafusion-comet/issues/391).
+TBD
 
-![](../../_static/images/benchmark-results/0.11.0/tpch_allqueries.png)
+## Benchmark Results
+
+![](../../_static/images/benchmark-results/0.15.0/tpch_allqueries.png)
 
 Here is a breakdown showing relative performance of Spark and Comet for each query.
 
-![](../../_static/images/benchmark-results/0.11.0/tpch_queries_compare.png)
+![](../../_static/images/benchmark-results/0.15.0/tpch_queries_compare.png)
 
 The following chart shows how much Comet currently accelerates each query from the benchmark in relative terms.
 
-![](../../_static/images/benchmark-results/0.11.0/tpch_queries_speedup_rel.png)
+![](../../_static/images/benchmark-results/0.15.0/tpch_queries_speedup_rel.png)
 
 The following chart shows how much Comet currently accelerates each query from the benchmark in absolute terms.
 
-![](../../_static/images/benchmark-results/0.11.0/tpch_queries_speedup_abs.png)
-
-The raw results of these benchmarks in JSON format is available here:
-
-- [Spark](spark-3.5.3-tpch.json)
-- [Comet](comet-0.11.0-tpch.json)
-
-The scripts that were used to generate these results can be found [here](https://github.com/apache/datafusion-comet/tree/main/benchmarks/tpc).
+![](../../_static/images/benchmark-results/0.15.0/tpch_queries_speedup_abs.png)
