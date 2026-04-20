@@ -203,6 +203,7 @@ Expressions that are not Spark-compatible will fall back to Spark by default and
 | BitXorAgg     |            | Yes                       |                                                                  |
 | BoolAnd       | `bool_and` | Yes                       |                                                                  |
 | BoolOr        | `bool_or`  | Yes                       |                                                                  |
+| CollectSet    |            | No                        | NaN dedup differs from Spark. See compatibility guide.           |
 | Corr          |            | Yes                       |                                                                  |
 | Count         |            | Yes                       |                                                                  |
 | CovPopulation |            | Yes                       |                                                                  |

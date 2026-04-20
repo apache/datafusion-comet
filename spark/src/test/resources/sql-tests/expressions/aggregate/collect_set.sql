@@ -282,3 +282,19 @@ INSERT INTO cs_src_multi VALUES
 query
 SELECT grp, sort_array(collect_set(a)), sort_array(collect_set(b))
 FROM cs_src_multi GROUP BY grp ORDER BY grp
+
+-- ============================================================
+-- DISTINCT: semantically redundant but exercises a different
+-- planner path (distinct aggregate handling)
+-- ============================================================
+
+query
+SELECT grp, sort_array(collect_set(DISTINCT i)) FROM cs_src_int GROUP BY grp ORDER BY grp
+
+-- ============================================================
+-- HAVING clause with collect_set
+-- ============================================================
+
+query
+SELECT grp, sort_array(collect_set(i))
+FROM cs_src_int GROUP BY grp HAVING size(collect_set(i)) > 1 ORDER BY grp

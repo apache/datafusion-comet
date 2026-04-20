@@ -1595,8 +1595,12 @@ object CometObjectHashAggregateExec
    * binary). However, the native Comet aggregate produces the actual state type (e.g.,
    * ArrayType(elementType) for CollectSet). This method corrects the output schema to match the
    * native state types so the shuffle exchange schema is consistent with the actual data.
+   *
+   * NOTE: If a new TypedImperativeAggregate function (e.g., CollectList) is added natively, add a
+   * case branch here mapping it to the native state type.
    */
   private def adjustOutputForNativeState(op: ObjectHashAggregateExec): Seq[Attribute] = {
+    // CometBaseAggregate.doConvert guarantees all expressions share the same mode.
     val modes = op.aggregateExpressions.map(_.mode).distinct
     if (modes != Seq(Partial)) {
       return op.output
@@ -1611,7 +1615,6 @@ object CometObjectHashAggregateExec
       val bufferAttrs = aggFunc.aggBufferAttributes
       aggFunc match {
         case cs: CollectSet =>
-          // Native SparkCollectSet state is List<elementType>, not Binary
           val elementType = cs.children.head.dataType
           val nativeStateType = ArrayType(elementType, containsNull = true)
           output(bufferIdx) = output(bufferIdx).withDataType(nativeStateType)
