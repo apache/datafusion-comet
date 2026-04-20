@@ -196,6 +196,8 @@ jobs:
               org.apache.spark.sql.comet.CometTPCDSV1_4_PlanStabilitySuite
               org.apache.spark.sql.comet.CometTPCDSV2_7_PlanStabilitySuite
               org.apache.spark.sql.comet.CometTaskMetricsSuite
+              org.apache.spark.sql.comet.CometDppFallbackRepro3949Suite
+              org.apache.spark.sql.comet.CometShuffleFallbackStickinessSuite
               org.apache.comet.objectstore.NativeConfigSuite
           - name: "expressions"
             value: |
