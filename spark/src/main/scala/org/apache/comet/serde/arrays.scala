@@ -699,12 +699,26 @@ object CometSize extends CometExpressionSerde[Size] {
 
 }
 
-object CometArraysZip extends CometExpressionSerde[ArraysZip] with ArraysBase {
+object CometArraysZip extends CometExpressionSerde[ArraysZip] {
+
+  private def isTypeSupported(dt: DataType): Boolean = {
+    import DataTypes._
+    dt match {
+      case BooleanType | ByteType | ShortType | IntegerType | LongType | FloatType | DoubleType |
+          _: DecimalType | DateType | TimestampType | TimestampNTZType | StringType | NullType |
+          BinaryType =>
+        true
+      case ArrayType(elementType, _) => isTypeSupported(elementType)
+      case StructType(fields) => fields.forall(f => isTypeSupported(f.dataType))
+      case _ => false
+    }
+  }
+
   override def getSupportLevel(expr: ArraysZip): SupportLevel = {
     val inputTypes = expr.children.map(_.dataType).toSet
     for (dt <- inputTypes) {
       if (!isTypeSupported(dt)) {
-        Unsupported(Some(s"Unsupported child data type: $dt"))
+        return Unsupported(Some(s"Unsupported child data type: $dt"))
       }
     }
     Compatible()

@@ -25,9 +25,9 @@ SELECT arrays_zip(array(1, 2, 3), array(2, 3, 4));
 query
 SELECT arrays_zip(array(1, 2, 3), array('a', 'b'));
 
--- With null values
+-- With floating points
 query
-SELECT arrays_zip(array(1, null, 3), array('x', 'y', 'z'));
+SELECT arrays_zip(array(-.1234567E+2BD, CAST('-Infinity' AS DOUBLE), CAST('NaN' AS DOUBLE)), array(CAST('Infinity' AS FLOAT), -0.0, -0.1234567f, CAST('NaN' AS FLOAT)));
 
 -- basic: two integer arrays of equal length
 query
@@ -96,6 +96,7 @@ SELECT arrays_zip(null)
 query
 select arrays_zip(cast(NULL AS array<int>));
 
+-- NullType
 query
 select arrays_zip(array());
 
@@ -114,13 +115,15 @@ select arrays_zip(array(1, 2), cast(NULL AS array<int>));
 statement
 CREATE TABLE test_arrays_zip(a array<int>, b array<int>) USING parquet
 
-statement
 -- column-level test with multiple rows
+statement
 INSERT INTO test_arrays_zip VALUES (array(1, 2), array(10, 20)), (array(3, 4, 5), array(30)), (array(6), array(60, 70))
 
 -- column-level test with NULL rows
+statement
 INSERT INTO test_arrays_zip VALUES (array(1, 2), array(10, 20)), (cast(NULL AS array<int>), array(30, 40)), (array(5, 6), cast(NULL AS array<int>))
 
+statement
 INSERT INTO test_arrays_zip VALUES (array(1), array(10, 20)), (array(2, 3), array(30))
 
 query
@@ -145,3 +148,64 @@ SELECT arrays_zip(a) FROM (SELECT array(1, 2, 3) as a, null as b)
 
 query
 SELECT arrays_zip(b) FROM (SELECT array(1, 2, 3) as a, null as b)
+
+-- Arrays of arrays
+-- +----------------------------------------------------------------------------------+
+-- |arrays_zip(array(array(1, 1), array(2, 3)), array(array(3, 4), array(NULL, NULL)))|
+-- +----------------------------------------------------------------------------------+
+-- |[{[1, 1], [3, 4]}, {[2, 3], [NULL, NULL]}]                                        |
+-- +----------------------------------------------------------------------------------+
+query
+SELECT arrays_zip(array(array(1, 1), array(2, 3)), array(array(3, 4), array(null, null)));
+
+-- Arrays of arrays - single argument
+-- +-----------------------------------------------+
+-- |arrays_zip(array(array(NULL)), array(array(1)))|
+-- +-----------------------------------------------+
+-- |[{[NULL], [1]}]                                |
+-- +-----------------------------------------------+
+query
+SELECT arrays_zip(array(array(null)), array(array(1)));
+
+-- Arrays of arrays - different lengths
+-- +---------------------------------------------------------------+
+-- |arrays_zip(array(array(a, b), array(b, NULL)), array(array(1)))|
+-- +---------------------------------------------------------------+
+-- |[{[a, b], [1]}, {[b, NULL], NULL}]                             |
+-- +---------------------------------------------------------------+
+query
+SELECT arrays_zip(array(array('a', 'b'), array('b', null)), array(array(1)));
+
+-- Arrays of Dates / Timestamp / TimestampNTZ
+query
+SELECT arrays_zip(array(DATE '1997', DATE '1998', NULL), array(TIMESTAMP '1997-01-31 09:26:56.123', TIMESTAMP '1997-01-31 09:26:56.66666666UTC+08:00'));
+
+-- Arrays of binary
+query
+SELECT arrays_zip(array(X'123456', X'123', null), array(array(X'789', X'1', null, null)))
+
+-- Arrays of Time (supported bySpark 4.1.0: https://spark.apache.org/docs/latest/api/java/org/apache/spark/sql/types/TimeType.html)
+-- SELECT arrays_zip(array(TIME '23:59:59.999999', TIME '2:0:3'));
+
+-- Arrays of structs
+query
+SELECT arrays_zip(array(struct(1, 2, 3), struct(2, 3, 4)));
+
+-- FIXME: COMET: Cast from NullType to IntegerType is not supported, unsupported arguments for CreateArray, unsupported arguments for ArraysZip
+-- +-----------------------------------------------------------------------------+
+-- |arrays_zip(array(struct(1, 2, 3), struct(2, 3, 4), struct(NULL, NULL, NULL)))|
+-- +-----------------------------------------------------------------------------+
+-- |[{{1, 2, 3}}, {{2, 3, 4}}, {{NULL, NULL, NULL}}]                             |
+-- +-----------------------------------------------------------------------------+
+-- query
+-- SELECT arrays_zip(array(struct(1, 2, 3), struct(2, 3, 4), struct(null, null, null)));
+
+-- Arrays of maps
+-- FIXME: COMET: map is not supported, unsupported arguments for CreateArray, unsupported arguments for ArraysZip
+-- +------------------------------------------------------------------+
+-- |arrays_zip(array(map(1.0, 2, 3.0, 4)), array(map(1.0, 2, 3.0, 4)))|
+-- +------------------------------------------------------------------+
+-- |[{{1.0 -> 2, 3.0 -> 4}, {1.0 -> 2, 3.0 -> 4}}]                    |
+-- +------------------------------------------------------------------+
+-- query
+-- SELECT arrays_zip(array(map(1.0, '2', 3.0, '4')), array(map(1.0, '2', 3.0, '4')));
