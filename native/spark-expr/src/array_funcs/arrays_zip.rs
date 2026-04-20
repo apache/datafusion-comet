@@ -330,7 +330,7 @@ pub fn arrays_zip_inner(args: &[ArrayRef], names: Vec<String>) -> Result<ArrayRe
     let result = ListArray::try_new(
         Arc::new(Field::new_list_field(
             struct_array.data_type().clone(),
-            true,
+            false,
         )),
         OffsetBuffer::new(offsets.into()),
         Arc::new(struct_array),
