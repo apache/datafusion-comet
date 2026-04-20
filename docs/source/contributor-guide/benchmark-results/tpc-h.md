@@ -30,6 +30,12 @@ spark.executor.instances=32
 spark.executor.cores=16
 spark.memory.fraction=0.6
 spark.memory.storageFraction=0.2
+# Kubernetes CPU constraints
+spark.kubernetes.executor.request.cores=8
+spark.kubernetes.executor.limit.cores=8
+spark.kubernetes.driver.request.cores=32
+spark.kubernetes.driver.limit.cores=32
+spark.driver.memory=128G
 ```
 
 Spark:
@@ -37,6 +43,7 @@ Spark:
 ```properties
 spark.executor.memory=64G
 spark.executor.memoryOverhead=10G
+# K8s executor pod memory limit: 74G (64G heap + 10G overhead)
 ```
 
 Comet:
@@ -46,6 +53,7 @@ spark.executor.memory=32G
 spark.executor.memoryOverhead=10G
 spark.memory.offHeap.enabled=true
 spark.memory.offHeap.size=32G
+# K8s executor pod memory limit: 74G (32G heap + 10G overhead + 32G off-heap)
 spark.comet.memoryPool.fraction=0.7
 ```
 
@@ -56,6 +64,9 @@ spark.executor.memory=32G
 spark.executor.memoryOverhead=10G
 spark.memory.offHeap.enabled=true
 spark.memory.offHeap.size=32G
+# K8s executor pod memory limit: 74G (32G heap + 10G overhead + 32G off-heap)
+spark.comet.exec.shuffle.enabled=true
+spark.comet.scan.impl=native_datafusion
 spark.comet.exec.replaceSortMergeJoin=true
 spark.comet.memoryPool.fraction=0.8
 ```
