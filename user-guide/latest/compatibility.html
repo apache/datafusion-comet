@@ -497,6 +497,14 @@ will make relevant operations fall back to Spark.</p>
 <p>Expressions that are not 100% Spark-compatible will fall back to Spark by default and can be enabled by setting
 <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.EXPRNAME.allowIncompatible=true</span></code>, where <code class="docutils literal notranslate"><span class="pre">EXPRNAME</span></code> is the Spark expression class name. See
 the <a class="reference internal" href="expressions.html"><span class="std std-doc">Comet Supported Expressions Guide</span></a> for more information on this configuration setting.</p>
+<section id="aggregate-expressions">
+<h3>Aggregate Expressions<a class="headerlink" href="#aggregate-expressions" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p><strong>CollectSet</strong>: Comet deduplicates NaN values (treats <code class="docutils literal notranslate"><span class="pre">NaN</span> <span class="pre">==</span> <span class="pre">NaN</span></code>) while Spark treats each NaN as a distinct value.
+When <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.strictFloatingPoint=true</span></code>, <code class="docutils literal notranslate"><span class="pre">collect_set</span></code> on floating-point types falls back to Spark unless
+<code class="docutils literal notranslate"><span class="pre">spark.comet.expression.CollectSet.allowIncompatible=true</span></code> is set.</p></li>
+</ul>
+</section>
 <section id="array-expressions">
 <h3>Array Expressions<a class="headerlink" href="#array-expressions" title="Link to this heading">#</a></h3>
 <ul class="simple">

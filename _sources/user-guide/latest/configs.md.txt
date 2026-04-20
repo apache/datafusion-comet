@@ -372,6 +372,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.BitOrAgg.enabled` | Enable Comet acceleration for `BitOrAgg` | true |
 | `spark.comet.expression.BitXorAgg.enabled` | Enable Comet acceleration for `BitXorAgg` | true |
 | `spark.comet.expression.BloomFilterAggregate.enabled` | Enable Comet acceleration for `BloomFilterAggregate` | true |
+| `spark.comet.expression.CollectSet.enabled` | Enable Comet acceleration for `CollectSet` | true |
 | `spark.comet.expression.Corr.enabled` | Enable Comet acceleration for `Corr` | true |
 | `spark.comet.expression.Count.enabled` | Enable Comet acceleration for `Count` | true |
 | `spark.comet.expression.CovPopulation.enabled` | Enable Comet acceleration for `CovPopulation` | true |
