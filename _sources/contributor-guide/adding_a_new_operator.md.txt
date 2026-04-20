@@ -553,8 +553,14 @@ For operators that run in the JVM:
 Example pattern from `CometExecRule.scala`:
 
 ```scala
-case s: ShuffleExchangeExec if nativeShuffleSupported(s) =>
-  CometShuffleExchangeExec(s, shuffleType = CometNativeShuffle)
+case s: ShuffleExchangeExec =>
+  CometShuffleExchangeExec.shuffleSupported(s) match {
+    case Some(CometNativeShuffle) =>
+      CometShuffleExchangeExec(s, shuffleType = CometNativeShuffle)
+    case Some(CometColumnarShuffle) =>
+      CometShuffleExchangeExec(s, shuffleType = CometColumnarShuffle)
+    case None => s
+  }
 ```
 
 ## Common Patterns and Helpers

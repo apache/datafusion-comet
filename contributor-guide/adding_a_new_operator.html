@@ -971,8 +971,14 @@ manages the boundary between JVM and native execution.</p>
 <li><p>No protobuf or Rust implementation needed</p></li>
 </ol>
 <p>Example pattern from <code class="docutils literal notranslate"><span class="pre">CometExecRule.scala</span></code>:</p>
-<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="k">case</span><span class="w"> </span><span class="n">s</span><span class="p">:</span><span class="w"> </span><span class="nc">ShuffleExchangeExec</span><span class="w"> </span><span class="k">if</span><span class="w"> </span><span class="n">nativeShuffleSupported</span><span class="p">(</span><span class="n">s</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span>
-<span class="w">  </span><span class="nc">CometShuffleExchangeExec</span><span class="p">(</span><span class="n">s</span><span class="p">,</span><span class="w"> </span><span class="n">shuffleType</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nc">CometNativeShuffle</span><span class="p">)</span>
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="k">case</span><span class="w"> </span><span class="n">s</span><span class="p">:</span><span class="w"> </span><span class="nc">ShuffleExchangeExec</span><span class="w"> </span><span class="o">=&gt;</span>
+<span class="w">  </span><span class="nc">CometShuffleExchangeExec</span><span class="p">.</span><span class="n">shuffleSupported</span><span class="p">(</span><span class="n">s</span><span class="p">)</span><span class="w"> </span><span class="k">match</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">case</span><span class="w"> </span><span class="nc">Some</span><span class="p">(</span><span class="nc">CometNativeShuffle</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span>
+<span class="w">      </span><span class="nc">CometShuffleExchangeExec</span><span class="p">(</span><span class="n">s</span><span class="p">,</span><span class="w"> </span><span class="n">shuffleType</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nc">CometNativeShuffle</span><span class="p">)</span>
+<span class="w">    </span><span class="k">case</span><span class="w"> </span><span class="nc">Some</span><span class="p">(</span><span class="nc">CometColumnarShuffle</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span>
+<span class="w">      </span><span class="nc">CometShuffleExchangeExec</span><span class="p">(</span><span class="n">s</span><span class="p">,</span><span class="w"> </span><span class="n">shuffleType</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nc">CometColumnarShuffle</span><span class="p">)</span>
+<span class="w">    </span><span class="k">case</span><span class="w"> </span><span class="nc">None</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="n">s</span>
+<span class="w">  </span><span class="p">}</span>
 </pre></div>
 </div>
 </section>
