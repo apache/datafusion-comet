@@ -140,7 +140,7 @@ object CometConf extends ShimCometConf {
           "Iceberg tables are read directly through native execution, bypassing Spark's " +
           "DataSource V2 API for better performance.")
       .booleanConf
-      .createWithDefault(false)
+      .createWithDefault(true)
 
   val COMET_ICEBERG_DATA_FILE_CONCURRENCY_LIMIT: ConfigEntry[Int] =
     conf("spark.comet.scan.icebergNative.dataFileConcurrencyLimit")

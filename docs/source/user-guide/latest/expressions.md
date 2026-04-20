@@ -203,6 +203,7 @@ Expressions that are not Spark-compatible will fall back to Spark by default and
 | BitXorAgg     |            | Yes                       |                                                                  |
 | BoolAnd       | `bool_and` | Yes                       |                                                                  |
 | BoolOr        | `bool_or`  | Yes                       |                                                                  |
+| CollectSet    |            | No                        | NaN dedup differs from Spark. See compatibility guide.           |
 | Corr          |            | Yes                       |                                                                  |
 | Count         |            | Yes                       |                                                                  |
 | CovPopulation |            | Yes                       |                                                                  |
@@ -241,7 +242,7 @@ Comet supports using the following aggregate functions within window contexts wi
 | ArrayAppend    | Yes               |                                                                                                                                                                                           |
 | ArrayCompact   | No                |                                                                                                                                                                                           |
 | ArrayContains  | Yes               |                                                                                                                                                                                           |
-| ArrayDistinct  | No                | Behaves differently than spark. Comet first sorts then removes duplicates while Spark preserves the original order.                                                                       |
+| ArrayDistinct  | Yes               |                                                                                                                                                                                           |
 | ArrayExcept    | No                |                                                                                                                                                                                           |
 | ArrayFilter    | Yes               | Only supports case where function is `IsNotNull`                                                                                                                                          |
 | ArrayInsert    | No                |                                                                                                                                                                                           |
