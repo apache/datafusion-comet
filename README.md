@@ -51,6 +51,14 @@ required a given cluster size can run on roughly half the compute with Comet, pr
 cloud bills, on-prem hardware, and energy usage, with no changes to your existing Spark SQL, DataFrame, or
 PySpark code.
 
+**Comet provides a 2x speedup for TPC-H @ 1TB, resulting in 50% cost savings.**
+
+![](docs/source/_static/images/benchmark-results/0.15.0/tpch_allqueries.png)
+
+![](docs/source/_static/images/benchmark-results/0.15.0/tpch_queries_compare.png)
+
+See the [Comet Benchmarking Guide](https://datafusion.apache.org/comet/contributor-guide/benchmarking.html) for more details.
+
 ### Do More with Commodity Hardware
 
 Comet runs on the hardware you already have. There is no requirement for GPUs, FPGAs, or other specialized
