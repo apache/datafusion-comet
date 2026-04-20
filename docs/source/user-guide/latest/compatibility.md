@@ -58,6 +58,12 @@ Expressions that are not 100% Spark-compatible will fall back to Spark by defaul
 `spark.comet.expression.EXPRNAME.allowIncompatible=true`, where `EXPRNAME` is the Spark expression class name. See
 the [Comet Supported Expressions Guide](expressions.md) for more information on this configuration setting.
 
+### Aggregate Expressions
+
+- **CollectSet**: Comet deduplicates NaN values (treats `NaN == NaN`) while Spark treats each NaN as a distinct value.
+  When `spark.comet.exec.strictFloatingPoint=true`, `collect_set` on floating-point types falls back to Spark unless
+  `spark.comet.expression.CollectSet.allowIncompatible=true` is set.
+
 ### Array Expressions
 
 - **ArraysOverlap**: Inconsistent behavior when arrays contain NULL values.
