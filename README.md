@@ -40,42 +40,11 @@ Apache DataFusion Comet is a high-performance accelerator for Apache Spark, buil
 performance of Apache Spark workloads while leveraging commodity hardware and seamlessly integrating with the
 Spark ecosystem without requiring any code changes.
 
-[Apache DataFusion]: https://datafusion.apache.org
-
-## Benefits of Using Comet
-
-### Reduce Your Spark Compute Costs
-
-Comet's performance improvements translate directly into infrastructure savings. In many cases, jobs that previously
-required a given cluster size can run on roughly half the compute with Comet, producing meaningful cost reductions on
-cloud bills, on-prem hardware, and energy usage, with no changes to your existing Spark SQL, DataFrame, or
-PySpark code.
-
 **Comet provides a 2x speedup for TPC-H @ 1TB, resulting in 50% cost savings.**
 
 ![](docs/source/_static/images/benchmark-results/0.15.0/tpch_allqueries.png)
 
-![](docs/source/_static/images/benchmark-results/0.15.0/tpch_queries_compare.png)
-
-See the [Comet Benchmarking Guide](https://datafusion.apache.org/comet/contributor-guide/benchmarking.html) for more details.
-
-### Do More with Commodity Hardware
-
-Comet runs on the hardware you already have. There is no requirement for GPUs, FPGAs, or other specialized
-accelerators, so the savings above come from better utilization of the same commodity infrastructure rather than
-from hardware upgrades.
-
-### Drop-In Integration
-
-Comet aims for 100% compatibility with all supported versions of Apache Spark, allowing you to integrate Comet into
-your existing Spark deployments and workflows seamlessly. With no code changes required, you can immediately harness
-the benefits of Comet's acceleration capabilities without disrupting your Spark applications.
-
-## Supported Spark Versions
-
-Comet supports Apache Spark 3.4 and 3.5, and provides experimental support for Spark 4.0. See the
-[installation guide](https://datafusion.apache.org/comet/user-guide/installation.html) for the detailed
-version, Java, and Scala compatibility matrix.
+[Apache DataFusion]: https://datafusion.apache.org
 
 ## What Comet Accelerates
 
@@ -94,7 +63,32 @@ It uses Apache Arrow for zero-copy data transfer between the JVM and native code
 For the authoritative lists, see the [supported expressions](https://datafusion.apache.org/comet/user-guide/expressions.html)
 and [supported operators](https://datafusion.apache.org/comet/user-guide/operators.html) pages.
 
+## Benefits of Using Comet
+
+### Reduce Your Spark Compute Costs
+
+Comet's performance improvements translate directly into infrastructure savings. In many cases, jobs that previously
+required a given cluster size can run on roughly half the compute with Comet, producing meaningful cost reductions on
+cloud bills, on-prem hardware, and energy usage, with no changes to your existing Spark SQL, DataFrame, or
+PySpark code. Comet runs on the hardware you already have: there is no requirement for GPUs, FPGAs, or other
+specialized accelerators, so the savings come from better utilization of the same commodity infrastructure rather
+than from hardware upgrades.
+
+![](docs/source/_static/images/benchmark-results/0.15.0/tpch_queries_compare.png)
+
+See the [Comet Benchmarking Guide](https://datafusion.apache.org/comet/contributor-guide/benchmarking.html) for more details.
+
+### Drop-In Integration
+
+Comet is designed as a drop-in accelerator for Apache Spark, allowing you to integrate Comet into your existing
+Spark deployments and workflows seamlessly. With no code changes required, you can immediately harness the
+benefits of Comet's acceleration capabilities without disrupting your Spark applications.
+
 ## Getting Started
+
+Comet supports Apache Spark 3.4 and 3.5, and provides experimental support for Spark 4.0. See the
+[installation guide](https://datafusion.apache.org/comet/user-guide/installation.html) for the detailed
+version, Java, and Scala compatibility matrix.
 
 Install Comet by adding the jar for your Spark and Scala version to the Spark classpath and enabling the plugin.
 A typical configuration looks like:
