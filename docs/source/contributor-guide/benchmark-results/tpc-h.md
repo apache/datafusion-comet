@@ -19,7 +19,7 @@ under the License.
 
 # Apache DataFusion Comet: Benchmarks Derived From TPC-H
 
-The following benchmarks were performed on an EKS cluster (`r61.2xlarge` instances with EBS storage) with data stored in S3.
+The following benchmarks were performed on an EKS cluster (`r6i.2xlarge` instances with EBS storage) with data stored in S3.
 
 ## Configuration
 

@@ -19,7 +19,7 @@ under the License.
 
 # Apache DataFusion Comet: Benchmarks Derived From TPC-DS
 
-The following benchmarks were performed on an EKS cluster (`r61.2xlarge` instances with EBS storage) with data stored in S3.
+The following benchmarks were performed on an EKS cluster (`r6i.2xlarge` instances with EBS storage) with data stored in S3.
 
 The tracking issue for improving TPC-DS performance is [#858](https://github.com/apache/datafusion-comet/issues/858).
 
