@@ -30,7 +30,9 @@ import org.apache.spark.sql.execution.aggregate.HashAggregateExec
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 
-import org.apache.comet.CometConf
+import org.apache.comet.{CometConf, ConfigEntry}
+import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass, SupportLevel, Unsupported}
+import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 /**
@@ -205,6 +207,67 @@ class CometExecRuleSuite extends CometTestBase {
       }
     }
   }
+
+  test("convertToComet short-circuits repeat call for a handler that already failed") {
+    withTempView("test_data") {
+      createTestDataFrame.createOrReplaceTempView("test_data")
+
+      val sparkPlan = createSparkPlan(spark, "SELECT id FROM test_data WHERE id > 0")
+      val op = sparkPlan.collectFirst { case f: FilterExec => f }.get
+
+      val stub = new StubUnsupportedHandlerA
+      val rule = CometExecRule(spark)
+
+      assert(rule.convertToComet(op, stub).isEmpty)
+      assert(stub.calls == 1, s"first call should invoke getSupportLevel once, got ${stub.calls}")
+
+      assert(rule.convertToComet(op, stub).isEmpty)
+      assert(
+        stub.calls == 1,
+        s"second call should short-circuit; getSupportLevel calls = ${stub.calls}")
+    }
+  }
+
+  test("convertToComet short-circuit is per-handler (other handlers still run)") {
+    withTempView("test_data") {
+      createTestDataFrame.createOrReplaceTempView("test_data")
+
+      val sparkPlan = createSparkPlan(spark, "SELECT id FROM test_data WHERE id > 0")
+      val op = sparkPlan.collectFirst { case f: FilterExec => f }.get
+
+      val stubA = new StubUnsupportedHandlerA
+      val stubB = new StubUnsupportedHandlerB
+      val rule = CometExecRule(spark)
+
+      assert(rule.convertToComet(op, stubA).isEmpty)
+      assert(rule.convertToComet(op, stubA).isEmpty)
+      assert(
+        stubA.calls == 1,
+        s"handler A should be short-circuited on repeat, got ${stubA.calls}")
+
+      // Different handler class on the same node must still run even though A already failed.
+      assert(rule.convertToComet(op, stubB).isEmpty)
+      assert(stubB.calls == 1, s"handler B (different class) must still run, got ${stubB.calls}")
+    }
+  }
+
+  private abstract class CountingStubHandler extends CometOperatorSerde[SparkPlan] {
+    var calls: Int = 0
+    override def enabledConfig: Option[ConfigEntry[Boolean]] = None
+    override def getSupportLevel(operator: SparkPlan): SupportLevel = {
+      calls += 1
+      Unsupported(Some("stub fallback"))
+    }
+    override def convert(
+        op: SparkPlan,
+        builder: Operator.Builder,
+        childOp: Operator*): Option[OperatorOuterClass.Operator] = None
+    override def createExec(nativeOp: Operator, op: SparkPlan): CometNativeExec =
+      throw new AssertionError("createExec should not be invoked on Unsupported")
+  }
+
+  private class StubUnsupportedHandlerA extends CountingStubHandler
+  private class StubUnsupportedHandlerB extends CountingStubHandler
 
   test("CometExecRule should apply shuffle exchange transformations") {
     withTempView("test_data") {

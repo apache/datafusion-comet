@@ -98,17 +98,18 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
   private lazy val showTransformations = CometConf.COMET_EXPLAIN_TRANSFORMATIONS.get()
 
   private def applyCometShuffle(plan: SparkPlan): SparkPlan = {
-    plan.transformUp {
-      case s: ShuffleExchangeExec if CometShuffleExchangeExec.nativeShuffleSupported(s) =>
-        // Switch to use Decimal128 regardless of precision, since Arrow native execution
-        // doesn't support Decimal32 and Decimal64 yet.
-        conf.setConfString(CometConf.COMET_USE_DECIMAL_128.key, "true")
-        CometShuffleExchangeExec(s, shuffleType = CometNativeShuffle)
-
-      case s: ShuffleExchangeExec if CometShuffleExchangeExec.columnarShuffleSupported(s) =>
-        // Columnar shuffle for regular Spark operators (not Comet) and Comet operators
-        // (if configured)
-        CometShuffleExchangeExec(s, shuffleType = CometColumnarShuffle)
+    plan.transformUp { case s: ShuffleExchangeExec =>
+      CometShuffleExchangeExec.shuffleSupported(s) match {
+        case Some(CometNativeShuffle) =>
+          // Switch to use Decimal128 regardless of precision, since Arrow native execution
+          // doesn't support Decimal32 and Decimal64 yet.
+          conf.setConfString(CometConf.COMET_USE_DECIMAL_128.key, "true")
+          CometShuffleExchangeExec(s, shuffleType = CometNativeShuffle)
+        case Some(CometColumnarShuffle) =>
+          CometShuffleExchangeExec(s, shuffleType = CometColumnarShuffle)
+        case None =>
+          s
+      }
     }
   }
 
@@ -479,8 +480,13 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
   }
 
   /** Convert a Spark plan to a Comet plan using the specified serde handler */
-  private def convertToComet(op: SparkPlan, handler: CometOperatorSerde[_]): Option[SparkPlan] = {
+  private[rules] def convertToComet(
+      op: SparkPlan,
+      handler: CometOperatorSerde[_]): Option[SparkPlan] = {
     val serde = handler.asInstanceOf[CometOperatorSerde[SparkPlan]]
+    if (hasFailedHandler(op, handler)) {
+      return None
+    }
     if (isOperatorEnabled(serde, op)) {
       // For operators that require native children (like writes), check if all data-producing
       // children are CometNativeExec. This prevents runtime failures when the native operator
@@ -521,6 +527,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       handler.getSupportLevel(op) match {
         case Unsupported(notes) =>
           withInfo(op, notes.getOrElse(""))
+          recordFailedHandler(op, handler)
           false
         case Incompatible(notes) =>
           val allowIncompat = CometConf.isOperatorAllowIncompat(opName)
@@ -539,6 +546,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
               s"$opName is not fully compatible with Spark$optionalNotes. " +
                 s"To enable it anyway, set $incompatConf=true. " +
                 s"${CometConf.COMPAT_GUIDE}.")
+            recordFailedHandler(op, handler)
             false
           }
         case Compatible(notes) =>
@@ -554,6 +562,16 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
           s"Set ${handler.enabledConfig.get.key}=true to enable it.")
       false
     }
+  }
+
+  private def hasFailedHandler(op: SparkPlan, handler: CometOperatorSerde[_]): Boolean = {
+    op.getTagValue(CometExplainInfo.FAILED_HANDLERS)
+      .exists(_.contains(handler.getClass.getName))
+  }
+
+  private def recordFailedHandler(op: SparkPlan, handler: CometOperatorSerde[_]): Unit = {
+    val existing = op.getTagValue(CometExplainInfo.FAILED_HANDLERS).getOrElse(Set.empty[String])
+    op.setTagValue(CometExplainInfo.FAILED_HANDLERS, existing + handler.getClass.getName)
   }
 
   private def shouldApplySparkToColumnar(conf: SQLConf, op: SparkPlan): Boolean = {

@@ -214,6 +214,15 @@ object CometCoverageStats {
 object CometExplainInfo {
   val EXTENSION_INFO = new TreeNodeTag[Set[String]]("CometExtensionInfo")
 
+  /**
+   * Records handler class names whose `getSupportLevel` has already returned `Unsupported` or
+   * `Incompatible` (without `allowIncompat`) on a given operator, so that repeat invocations of
+   * the same handler on the same node during later rule passes can short-circuit without
+   * re-running the check. Orthogonal to [[EXTENSION_INFO]]; keyed per handler so other handlers
+   * on the same node are unaffected.
+   */
+  val FAILED_HANDLERS = new TreeNodeTag[Set[String]]("CometFailedHandlers")
+
   def getActualPlan(node: TreeNode[_]): TreeNode[_] = {
     node match {
       case p: AdaptiveSparkPlanExec => getActualPlan(p.executedPlan)
