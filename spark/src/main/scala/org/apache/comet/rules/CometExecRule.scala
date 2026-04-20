@@ -102,23 +102,31 @@ case class CometExecRule(session: SparkSession)
 
   /**
    * Revert any `CometShuffleExchangeExec` with `CometColumnarShuffle` that is sandwiched between
-   * two non-Comet operators back to the original Spark `ShuffleExchangeExec`. Columnar shuffle
-   * converts row-based input to Arrow batches for the shuffle read side; if neither the parent
-   * nor the child is a Comet plan that can consume columnar output, that conversion is pure
-   * overhead (row->arrow->shuffle->arrow->row vs. row->shuffle->row).
+   * two non-Comet `HashAggregateExec` / `ObjectHashAggregateExec` operators back to the original
+   * Spark `ShuffleExchangeExec`. This is the partial-final-aggregate pattern where Comet couldn't
+   * convert either aggregate; keeping a columnar shuffle between them only adds
+   * row->arrow->shuffle->arrow->row conversion overhead with no Comet consumer on either side.
+   * See https://github.com/apache/datafusion-comet/issues/4004.
+   *
+   * The match is intentionally narrow (both sides must be row-based aggregates) so this does not
+   * interfere with non-relational plan shapes such as object-mode Dataset plans where the shuffle
+   * sits between encoder/serializer nodes.
    */
   private def revertRedundantColumnarShuffle(plan: SparkPlan): SparkPlan = {
+    def isAggregate(p: SparkPlan): Boolean =
+      p.isInstanceOf[HashAggregateExec] || p.isInstanceOf[ObjectHashAggregateExec]
+
     def isRedundantShuffle(child: SparkPlan): Boolean = child match {
       case s: CometShuffleExchangeExec =>
-        s.shuffleType == CometColumnarShuffle && !s.child.isInstanceOf[CometPlan]
+        s.shuffleType == CometColumnarShuffle && isAggregate(s.child)
       case _ => false
     }
 
     plan.transform {
-      case op if !op.isInstanceOf[CometPlan] && op.children.exists(isRedundantShuffle) =>
+      case op if isAggregate(op) && op.children.exists(isRedundantShuffle) =>
         val newChildren = op.children.map {
           case s: CometShuffleExchangeExec
-              if s.shuffleType == CometColumnarShuffle && !s.child.isInstanceOf[CometPlan] =>
+              if s.shuffleType == CometColumnarShuffle && isAggregate(s.child) =>
             s.originalPlan.withNewChildren(Seq(s.child)).asInstanceOf[SparkPlan]
           case other => other
         }
