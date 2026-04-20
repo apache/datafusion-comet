@@ -76,6 +76,27 @@ case class CometNativeScanExec(
 
   override lazy val metadata: Map[String, String] = originalPlan.metadata
 
+  /**
+   * Prepare DPP subquery plans before execution.
+   *
+   * For non-AQE DPP, partitionFilters contains DynamicPruningExpression(InSubqueryExec(...))
+   * inserted by PlanDynamicPruningFilters (which runs before Comet rules). We call
+   * e.plan.prepare() here so that the subquery plans are set up before execution begins.
+   *
+   * Note: doPrepare() alone is NOT sufficient for DPP resolution. serializedPartitionData can be
+   * triggered from findAllPlanData (via commonData) on a BroadcastExchangeExec thread, outside
+   * the normal prepare() -> executeSubqueries() flow. The actual DPP resolution (updateResult)
+   * happens in serializedPartitionData below.
+   */
+  override protected def doPrepare(): Unit = {
+    partitionFilters.foreach {
+      case DynamicPruningExpression(e: InSubqueryExec) =>
+        e.plan.prepare()
+      case _ =>
+    }
+    super.doPrepare()
+  }
+
   override val nodeName: String =
     s"CometNativeScan $relation ${tableIdentifier.map(_.unquotedString).getOrElse("")}"
 
@@ -141,6 +162,15 @@ case class CometNativeScanExec(
    * partition's files (lazily, as tasks are scheduled).
    */
   @transient private lazy val serializedPartitionData: (Array[Byte], Array[Array[Byte]]) = {
+    // Ensure DPP subqueries are resolved before accessing file partitions.
+    // serializedPartitionData can be triggered from findAllPlanData (via commonData) on a
+    // different execution path than the standard prepare() -> executeSubqueries() flow
+    // (e.g., from a BroadcastExchangeExec thread). We must resolve DPP here explicitly.
+    partitionFilters.foreach {
+      case DynamicPruningExpression(e: InSubqueryExec) if e.values().isEmpty =>
+        e.updateResult()
+      case _ =>
+    }
     // Extract common data from nativeOp
     val commonBytes = nativeOp.getNativeScan.getCommon.toByteArray
 

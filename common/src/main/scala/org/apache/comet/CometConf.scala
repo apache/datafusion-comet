@@ -557,7 +557,8 @@ object CometConf extends ShimCometConf {
   val COMET_DPP_FALLBACK_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.dppFallback.enabled")
       .category(CATEGORY_EXEC)
-      .doc("Whether to fall back to Spark for queries that use DPP.")
+      .doc("Whether to fall back to Spark for queries that use AQE Dynamic Partition Pruning " +
+        "(SubqueryAdaptiveBroadcastExec). Non-AQE DPP is always supported natively.")
       .booleanConf
       .createWithDefault(true)
 

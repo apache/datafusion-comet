@@ -138,7 +138,7 @@ class CometExecSuite extends CometTestBase {
               "select * from dpp_fact join dpp_dim on fact_date = dim_date where dim_id > 7")
           val (_, cometPlan) = checkSparkAnswer(df)
           val infos = new ExtendedExplainInfo().generateExtendedInfo(cometPlan)
-          assert(infos.contains("Dynamic Partition Pruning is not supported"))
+          assert(infos.contains("AQE Dynamic Partition Pruning is not supported"))
         }
       }
     }
@@ -178,6 +178,88 @@ class CometExecSuite extends CometTestBase {
             !cometPlan.toString().contains("CometColumnarShuffle"),
             "Should not use Comet columnar shuffle for stages with DPP scans")
         }
+      }
+    }
+  }
+
+  test("non-AQE DPP with BHJ works with CometNativeScanExec") {
+    withTempDir { path =>
+      val factPath = s"${path.getAbsolutePath}/fact.parquet"
+      val dimPath = s"${path.getAbsolutePath}/dim.parquet"
+      withSQLConf(CometConf.COMET_EXEC_ENABLED.key -> "false") {
+        val one_day = 24 * 60 * 60000
+        val fact = Range(0, 100)
+          .map(i => (i, new java.sql.Date(System.currentTimeMillis() + (i % 10) * one_day)))
+          .toDF("fact_id", "fact_date")
+        fact.write.partitionBy("fact_date").parquet(factPath)
+        val dim = Range(0, 10)
+          .map(i => (i, new java.sql.Date(System.currentTimeMillis() + i * one_day)))
+          .toDF("dim_id", "dim_date")
+        dim.write.parquet(dimPath)
+      }
+
+      // AQE off ensures PlanDynamicPruningFilters (non-AQE) creates the DPP filters
+      // with SubqueryBroadcastExec, not SubqueryAdaptiveBroadcastExec
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        CometConf.COMET_DPP_FALLBACK_ENABLED.key -> "true") {
+        spark.read.parquet(factPath).createOrReplaceTempView("dpp_fact_bhj")
+        spark.read.parquet(dimPath).createOrReplaceTempView("dpp_dim_bhj")
+        val df = spark.sql(
+          "select * from dpp_fact_bhj join dpp_dim_bhj on fact_date = dim_date where dim_id > 7")
+        val (_, cometPlan) = checkSparkAnswer(df)
+
+        assert(
+          cometPlan.toString().contains("CometNativeScan"),
+          s"Expected CometNativeScan in plan:\n${cometPlan.toString()}")
+
+        val infos = new ExtendedExplainInfo().generateExtendedInfo(cometPlan)
+        assert(
+          !infos.contains("AQE Dynamic Partition Pruning is not supported"),
+          s"Should not fall back for non-AQE DPP:\n$infos")
+      }
+    }
+  }
+
+  test("non-AQE DPP with SMJ works with CometNativeScanExec") {
+    withTempDir { path =>
+      val factPath = s"${path.getAbsolutePath}/fact.parquet"
+      val dimPath = s"${path.getAbsolutePath}/dim.parquet"
+      withSQLConf(CometConf.COMET_EXEC_ENABLED.key -> "false") {
+        val one_day = 24 * 60 * 60000
+        val fact = Range(0, 100)
+          .map(i => (i, new java.sql.Date(System.currentTimeMillis() + (i % 10) * one_day)))
+          .toDF("fact_id", "fact_date")
+        fact.write.partitionBy("fact_date").parquet(factPath)
+        val dim = Range(0, 10)
+          .map(i => (i, new java.sql.Date(System.currentTimeMillis() + i * one_day)))
+          .toDF("dim_id", "dim_date")
+        dim.write.parquet(dimPath)
+      }
+
+      // AQE off + broadcast disabled → SMJ is used. PlanDynamicPruningFilters can't reuse
+      // broadcast, so DPP uses SubqueryExec (aggregate) or Literal.TrueLiteral (if
+      // onlyInBroadcast). Either way, non-AQE DPP should work natively.
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+        CometConf.COMET_DPP_FALLBACK_ENABLED.key -> "true") {
+        spark.read.parquet(factPath).createOrReplaceTempView("dpp_fact_smj")
+        spark.read.parquet(dimPath).createOrReplaceTempView("dpp_dim_smj")
+        val df = spark.sql(
+          "select * from dpp_fact_smj join dpp_dim_smj on fact_date = dim_date where dim_id > 7")
+        val (_, cometPlan) = checkSparkAnswer(df)
+
+        assert(
+          cometPlan.toString().contains("CometNativeScan"),
+          s"Expected CometNativeScan in plan:\n${cometPlan.toString()}")
+
+        val infos = new ExtendedExplainInfo().generateExtendedInfo(cometPlan)
+        assert(
+          !infos.contains("AQE Dynamic Partition Pruning is not supported"),
+          s"Should not fall back for non-AQE DPP:\n$infos")
       }
     }
   }

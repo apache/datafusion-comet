@@ -26,7 +26,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions.{Expression, Literal, PlanExpression}
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
 import org.apache.spark.sql.comet.{CometNativeExec, CometNativeScanExec, CometScanExec}
-import org.apache.spark.sql.execution.FileSourceScanExec
+import org.apache.spark.sql.execution.{FileSourceScanExec, InSubqueryExec, SubqueryAdaptiveBroadcastExec}
 import org.apache.spark.sql.execution.datasources.PartitionedFile
 import org.apache.spark.sql.internal.SQLConf
 
@@ -57,9 +57,11 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
       withInfo(scanExec, s"Full native scan disabled because ${COMET_EXEC_ENABLED.key} disabled")
     }
 
-    // Native DataFusion doesn't support subqueries/dynamic pruning
-    if (scanExec.partitionFilters.exists(isDynamicPruningFilter)) {
-      withInfo(scanExec, "Native DataFusion scan does not support subqueries/dynamic pruning")
+    // Native DataFusion doesn't support AQE DPP (SubqueryAdaptiveBroadcastExec).
+    // Non-AQE DPP (SubqueryBroadcastExec/SubqueryExec) is supported through the lazy
+    // partition serialization path in CometNativeScanExec.
+    if (scanExec.partitionFilters.exists(isAqeDynamicPruningFilter)) {
+      withInfo(scanExec, "Native DataFusion scan does not support AQE dynamic pruning")
     }
 
     if (SQLConf.get.ignoreCorruptFiles ||
@@ -83,6 +85,13 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
 
   private def isDynamicPruningFilter(e: Expression): Boolean =
     e.exists(_.isInstanceOf[PlanExpression[_]])
+
+  /** Detects AQE DPP (SubqueryAdaptiveBroadcastExec), as opposed to non-AQE DPP. */
+  private def isAqeDynamicPruningFilter(e: Expression): Boolean =
+    e.exists {
+      case sub: InSubqueryExec => sub.plan.isInstanceOf[SubqueryAdaptiveBroadcastExec]
+      case _ => false
+    }
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] = None
 
@@ -144,10 +153,13 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
         commonBuilder.addAllDefaultValuesIndexes(indexes.toIterable.asJava)
       }
 
-      // Extract object store options from first file (S3 configs apply to all files in scan)
-      var firstPartition: Option[PartitionedFile] = None
-      val filePartitions = scan.getFilePartitions()
-      firstPartition = filePartitions.flatMap(_.files.headOption).headOption
+      // Extract object store options from first file (S3 configs apply to all files in scan).
+      // Use selectedPartitions (static) instead of getFilePartitions() because at planning time
+      // DPP subqueries haven't been resolved yet. Object store options don't depend on DPP.
+      val firstFileUri = scan.selectedPartitions
+        .flatMap(_.files.headOption)
+        .headOption
+        .map(_.getPath.toUri)
 
       val partitionSchema = schema2Proto(scan.relation.partitionSchema.fields)
       val requiredSchema = schema2Proto(scan.requiredSchema.fields)
@@ -181,9 +193,9 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
 
       commonBuilder.setEncryptionEnabled(CometParquetUtils.encryptionEnabled(hadoopConf))
 
-      firstPartition.foreach { partitionFile =>
+      firstFileUri.foreach { uri =>
         val objectStoreOptions =
-          NativeConfig.extractObjectStoreOptions(hadoopConf, partitionFile.pathUri)
+          NativeConfig.extractObjectStoreOptions(hadoopConf, uri)
         objectStoreOptions.foreach { case (key, value) =>
           commonBuilder.putObjectStoreOptions(key, value)
         }
