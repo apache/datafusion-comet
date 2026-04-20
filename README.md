@@ -42,12 +42,11 @@ Spark ecosystem without requiring any code changes.
 
 **Comet provides a 2x speedup for TPC-H @ 1TB, resulting in 50% cost savings.**
 
-Comet's performance improvements translate directly into infrastructure savings. In many cases, jobs that previously
-required a given cluster size can run on roughly half the resources with Comet, producing meaningful cost reductions
-on cloud bills, on-prem hardware, and energy usage, with no changes to your existing Spark SQL, DataFrame, or
-PySpark code. Comet runs on the hardware you already have: there is no requirement for GPUs, FPGAs, or other
-specialized accelerators, so the savings come from better utilization of the same commodity infrastructure rather
-than from hardware upgrades.
+That 2x speedup gives you a choice: finish the same Spark workload in half the time on the cluster you already have,
+or match your current Spark performance on roughly half the resources. Either way, the gain translates directly into
+lower cloud bills, reduced on-prem capacity, and lower energy usage, with no changes to your existing Spark SQL,
+DataFrame, or PySpark code. Comet runs on commodity hardware: no GPUs, FPGAs, or other specialized accelerators are
+required, so the savings come from better utilization of the infrastructure you already run on.
 
 ![](docs/source/_static/images/benchmark-results/0.15.0/tpch_allqueries.png)
 
