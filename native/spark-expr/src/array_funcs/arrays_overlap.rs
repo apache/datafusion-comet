@@ -195,12 +195,19 @@ fn arrays_overlap_list<OffsetSize: OffsetSizeTrait>(
             (&right_values, &left_values)
         };
 
+        // Check element type once outside the loop.
+        let use_vectorized = !needs_recursive_eq(probe.data_type());
+
         for pi in 0..probe.len() {
             if probe.is_null(pi) {
                 has_null = true;
                 continue;
             }
-            let (found, null_eq) = find_in_array(probe, pi, search)?;
+            let (found, null_eq) = if use_vectorized {
+                find_in_array_flat(probe, pi, search)?
+            } else {
+                find_in_array_nested(probe, pi, search)?
+            };
             if null_eq {
                 has_null = true;
             }
@@ -222,20 +229,20 @@ fn arrays_overlap_list<OffsetSize: OffsetSizeTrait>(
     Ok(Arc::new(builder.finish()))
 }
 
-/// Check if the element at `probe[pi]` exists in `search`.
-/// Returns (found_match, encountered_null).
-///
-/// For flat types, uses Arrow's vectorized `eq` kernel (one call compares the
-/// probe element against all search elements via SIMD). For nested types that
-/// the `eq` kernel does not support, falls back to element-by-element comparison.
-fn find_in_array(probe: &ArrayRef, pi: usize, search: &ArrayRef) -> Result<(bool, bool)> {
-    if !needs_recursive_eq(probe.data_type()) {
-        let scalar = Scalar::new(probe.slice(pi, 1));
-        let eq_result = eq(search, &scalar)
-            .map_err(|e| datafusion::error::DataFusionError::ArrowError(Box::new(e), None))?;
-        return Ok((eq_result.true_count() > 0, eq_result.null_count() > 0));
-    }
+/// Vectorized search using Arrow's `eq` kernel. One SIMD call per probe element.
+fn find_in_array_flat(probe: &ArrayRef, pi: usize, search: &ArrayRef) -> Result<(bool, bool)> {
+    let scalar = Scalar::new(probe.slice(pi, 1));
+    let eq_result = eq(search, &scalar)
+        .map_err(|e| datafusion::error::DataFusionError::ArrowError(Box::new(e), None))?;
+    Ok((eq_result.true_count() > 0, eq_result.null_count() > 0))
+}
 
+/// Element-by-element search using structural equality for nested types.
+fn find_in_array_nested(
+    probe: &ArrayRef,
+    pi: usize,
+    search: &ArrayRef,
+) -> Result<(bool, bool)> {
     let mut has_null = false;
     for si in 0..search.len() {
         if search.is_null(si) {
