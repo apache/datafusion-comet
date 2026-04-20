@@ -42,7 +42,18 @@ Spark ecosystem without requiring any code changes.
 
 **Comet provides a 2x speedup for TPC-H @ 1TB, resulting in 50% cost savings.**
 
+Comet's performance improvements translate directly into infrastructure savings. In many cases, jobs that previously
+required a given cluster size can run on roughly half the resources with Comet, producing meaningful cost reductions
+on cloud bills, on-prem hardware, and energy usage, with no changes to your existing Spark SQL, DataFrame, or
+PySpark code. Comet runs on the hardware you already have: there is no requirement for GPUs, FPGAs, or other
+specialized accelerators, so the savings come from better utilization of the same commodity infrastructure rather
+than from hardware upgrades.
+
 ![](docs/source/_static/images/benchmark-results/0.15.0/tpch_allqueries.png)
+
+![](docs/source/_static/images/benchmark-results/0.15.0/tpch_queries_compare.png)
+
+See the [Comet Benchmarking Guide](https://datafusion.apache.org/comet/contributor-guide/benchmarking.html) for more details.
 
 [Apache DataFusion]: https://datafusion.apache.org
 
@@ -63,22 +74,7 @@ It uses Apache Arrow for zero-copy data transfer between the JVM and native code
 For the authoritative lists, see the [supported expressions](https://datafusion.apache.org/comet/user-guide/expressions.html)
 and [supported operators](https://datafusion.apache.org/comet/user-guide/operators.html) pages.
 
-## Benefits of Using Comet
-
-### Reduce Your Spark Compute Costs
-
-Comet's performance improvements translate directly into infrastructure savings. In many cases, jobs that previously
-required a given cluster size can run on roughly half the compute with Comet, producing meaningful cost reductions on
-cloud bills, on-prem hardware, and energy usage, with no changes to your existing Spark SQL, DataFrame, or
-PySpark code. Comet runs on the hardware you already have: there is no requirement for GPUs, FPGAs, or other
-specialized accelerators, so the savings come from better utilization of the same commodity infrastructure rather
-than from hardware upgrades.
-
-![](docs/source/_static/images/benchmark-results/0.15.0/tpch_queries_compare.png)
-
-See the [Comet Benchmarking Guide](https://datafusion.apache.org/comet/contributor-guide/benchmarking.html) for more details.
-
-### Drop-In Integration
+## Drop-In Integration
 
 Comet is designed as a drop-in accelerator for Apache Spark, allowing you to integrate Comet into your existing
 Spark deployments and workflows seamlessly. With no code changes required, you can immediately harness the
