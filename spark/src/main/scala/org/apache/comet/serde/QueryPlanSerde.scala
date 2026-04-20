@@ -262,6 +262,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[BitOrAgg] -> CometBitOrAgg,
     classOf[BitXorAgg] -> CometBitXOrAgg,
     classOf[BloomFilterAggregate] -> CometBloomFilterAggregate,
+    classOf[CollectSet] -> CometCollectSet,
     classOf[Corr] -> CometCorr,
     classOf[Count] -> CometCount,
     classOf[CovPopulation] -> CometCovPopulation,
