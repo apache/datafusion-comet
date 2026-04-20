@@ -62,6 +62,10 @@ spark.comet.memoryPool.fraction=0.8
 
 ## Benchmark Results
 
+The following chart shows benchmark results comparing Spark to Comet, both with Comet's default settings, and with Hash Join enabled in Comet.
+
+Comet's Hash Join does not support spilling yet, so it isn't suitable for all workloads.
+
 ![](../../_static/images/benchmark-results/0.15.0/tpch_allqueries_with_tuned.png)
 
 ## Comet (with Hash Join enabled)
