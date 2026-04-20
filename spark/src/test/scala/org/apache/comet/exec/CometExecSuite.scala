@@ -31,7 +31,7 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.{FunctionIdentifier, TableIdentifier}
 import org.apache.spark.sql.catalyst.catalog.{BucketSpec, CatalogStatistics, CatalogTable}
-import org.apache.spark.sql.catalyst.expressions.{Expression, ExpressionInfo, Hex}
+import org.apache.spark.sql.catalyst.expressions.{DynamicPruningExpression, Expression, ExpressionInfo, Hex}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, BloomFilterAggregate}
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
@@ -208,11 +208,16 @@ class CometExecSuite extends CometTestBase {
         spark.read.parquet(dimPath).createOrReplaceTempView("dpp_dim_bhj")
         val df = spark.sql(
           "select * from dpp_fact_bhj join dpp_dim_bhj on fact_date = dim_date where dim_id > 7")
-        val (_, cometPlan) = checkSparkAnswer(df)
+        val (_, cometPlan) = checkSparkAnswerAndOperator(df)
 
+        val nativeScans = cometPlan.collect { case s: CometNativeScanExec => s }
+        assert(nativeScans.nonEmpty, "Expected CometNativeScanExec in plan")
+
+        val dppScans =
+          nativeScans.filter(_.partitionFilters.exists(_.isInstanceOf[DynamicPruningExpression]))
         assert(
-          cometPlan.toString().contains("CometNativeScan"),
-          s"Expected CometNativeScan in plan:\n${cometPlan.toString()}")
+          dppScans.nonEmpty,
+          "Expected at least one CometNativeScanExec with DynamicPruningExpression")
 
         val infos = new ExtendedExplainInfo().generateExtendedInfo(cometPlan)
         assert(
@@ -238,7 +243,7 @@ class CometExecSuite extends CometTestBase {
         dim.write.parquet(dimPath)
       }
 
-      // AQE off + broadcast disabled → SMJ is used. PlanDynamicPruningFilters can't reuse
+      // AQE off + broadcast disabled -> SMJ is used. PlanDynamicPruningFilters can't reuse
       // broadcast, so DPP uses SubqueryExec (aggregate) or Literal.TrueLiteral (if
       // onlyInBroadcast). Either way, non-AQE DPP should work natively.
       withSQLConf(
@@ -250,11 +255,10 @@ class CometExecSuite extends CometTestBase {
         spark.read.parquet(dimPath).createOrReplaceTempView("dpp_dim_smj")
         val df = spark.sql(
           "select * from dpp_fact_smj join dpp_dim_smj on fact_date = dim_date where dim_id > 7")
-        val (_, cometPlan) = checkSparkAnswer(df)
+        val (_, cometPlan) = checkSparkAnswerAndOperator(df)
 
-        assert(
-          cometPlan.toString().contains("CometNativeScan"),
-          s"Expected CometNativeScan in plan:\n${cometPlan.toString()}")
+        val nativeScans = cometPlan.collect { case s: CometNativeScanExec => s }
+        assert(nativeScans.nonEmpty, "Expected CometNativeScanExec in plan")
 
         val infos = new ExtendedExplainInfo().generateExtendedInfo(cometPlan)
         assert(
