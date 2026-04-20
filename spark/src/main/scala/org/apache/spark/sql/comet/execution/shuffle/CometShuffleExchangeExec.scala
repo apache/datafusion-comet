@@ -50,6 +50,7 @@ import com.google.common.base.Objects
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometConf.{COMET_EXEC_SHUFFLE_ENABLED, COMET_SHUFFLE_MODE}
+import org.apache.comet.CometFallback.{isMarkedForFallback, markForFallback}
 import org.apache.comet.CometSparkSessionExtensions.{isCometShuffleManagerEnabled, withInfo}
 import org.apache.comet.serde.{Compatible, OperatorOuterClass, QueryPlanSerde, SupportLevel, Unsupported}
 import org.apache.comet.serde.operator.CometSink
@@ -328,6 +329,11 @@ object CometShuffleExchangeExec
         false
     }
 
+    // Preserve any prior-pass fallback decision (see `CometFallback`).
+    if (isMarkedForFallback(s)) {
+      return false
+    }
+
     if (!isCometShuffleEnabledWithInfo(s)) {
       return false
     }
@@ -450,12 +456,17 @@ object CometShuffleExchangeExec
         false
     }
 
+    // Preserve any prior-pass fallback decision (see `CometFallback`).
+    if (isMarkedForFallback(s)) {
+      return false
+    }
+
     if (!isCometShuffleEnabledWithInfo(s)) {
       return false
     }
 
     if (CometConf.COMET_DPP_FALLBACK_ENABLED.get() && stageContainsDPPScan(s)) {
-      withInfo(s, "Stage contains a scan with Dynamic Partition Pruning")
+      markForFallback(s, "Stage contains a scan with Dynamic Partition Pruning")
       return false
     }
 

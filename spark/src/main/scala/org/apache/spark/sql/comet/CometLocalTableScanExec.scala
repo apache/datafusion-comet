@@ -66,7 +66,8 @@ case class CometLocalTableScanExec(
   override def doExecuteColumnar(): RDD[ColumnarBatch] = {
     val numInputRows = longMetric("numOutputRows")
     val maxRecordsPerBatch = CometConf.COMET_BATCH_SIZE.get(conf)
-    val timeZoneId = conf.sessionLocalTimeZone
+    // Use UTC to match native side expectations. See CometSparkToColumnarExec.
+    val timeZoneId = "UTC"
     rdd.mapPartitionsInternal { sparkBatches =>
       val context = TaskContext.get()
       val batches = CometArrowConverters.rowToArrowBatchIter(
