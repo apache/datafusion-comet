@@ -39,7 +39,7 @@ index 6c51bd4ff2e..e72ec1d26e2 100644
        withSpark(sc) { sc =>
          TestUtils.waitUntilExecutorsUp(sc, 2, 60000)
 diff --git a/pom.xml b/pom.xml
-index 22922143fc3..97332f7e6ac 100644
+index 22922143fc3..d8eefb0abe2 100644
 --- a/pom.xml
 +++ b/pom.xml
 @@ -148,6 +148,8 @@
@@ -1763,17 +1763,16 @@ index 47d5ff67b84..8dc8f65d4b1 100644
      withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/RemoveRedundantProjectsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/RemoveRedundantProjectsSuite.scala
-index b5bac8079c4..1606dd057e0 100644
+index b5bac8079c4..873d7d95843 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/RemoveRedundantProjectsSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/RemoveRedundantProjectsSuite.scala
 @@ -17,7 +17,10 @@
  
  package org.apache.spark.sql.execution
  
--import org.apache.spark.sql.{DataFrame, QueryTest, Row}
 +import org.apache.comet.CometConf
 +
-+import org.apache.spark.sql.{DataFrame, IgnoreComet, QueryTest, Row}
+ import org.apache.spark.sql.{DataFrame, QueryTest, Row}
 +import org.apache.spark.sql.comet.CometProjectExec
  import org.apache.spark.sql.connector.SimpleWritableDataSource
  import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanHelper, DisableAdaptiveExecutionSuite, EnableAdaptiveExecutionSuite}

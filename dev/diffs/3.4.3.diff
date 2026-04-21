@@ -1,5 +1,5 @@
 diff --git a/pom.xml b/pom.xml
-index d3544881af1..377683b10c5 100644
+index d3544881af1..d075572c5b3 100644
 --- a/pom.xml
 +++ b/pom.xml
 @@ -148,6 +148,8 @@
@@ -1305,17 +1305,16 @@ index 4b3d3a4b805..56e1e0e6f16 100644
  
    setupTestData()
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/RemoveRedundantProjectsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/RemoveRedundantProjectsSuite.scala
-index 9e9d717db3b..ad41c8f3901 100644
+index 9e9d717db3b..bb04190c3ca 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/RemoveRedundantProjectsSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/RemoveRedundantProjectsSuite.scala
 @@ -17,7 +17,10 @@
  
  package org.apache.spark.sql.execution
  
--import org.apache.spark.sql.{DataFrame, QueryTest, Row}
 +import org.apache.comet.CometConf
 +
-+import org.apache.spark.sql.{DataFrame, IgnoreComet, QueryTest, Row}
+ import org.apache.spark.sql.{DataFrame, QueryTest, Row}
 +import org.apache.spark.sql.comet.CometProjectExec
  import org.apache.spark.sql.connector.SimpleWritableDataSource
  import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanHelper, DisableAdaptiveExecutionSuite, EnableAdaptiveExecutionSuite}
