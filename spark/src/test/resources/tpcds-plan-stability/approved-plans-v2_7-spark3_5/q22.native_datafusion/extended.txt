@@ -13,12 +13,11 @@ TakeOrderedAndProject
                      :        :  +- CometBroadcastHashJoin
                      :        :     :- CometFilter
                      :        :     :  +- CometNativeScan parquet spark_catalog.default.inventory
-                     :        :     :        +- SubqueryBroadcast
-                     :        :     :           +- BroadcastExchange
-                     :        :     :              +- CometNativeColumnarToRow
-                     :        :     :                 +- CometProject
-                     :        :     :                    +- CometFilter
-                     :        :     :                       +- CometNativeScan parquet spark_catalog.default.date_dim
+                     :        :     :        +- CometSubqueryBroadcast
+                     :        :     :           +- CometBroadcastExchange
+                     :        :     :              +- CometProject
+                     :        :     :                 +- CometFilter
+                     :        :     :                    +- CometNativeScan parquet spark_catalog.default.date_dim
                      :        :     +- CometBroadcastExchange
                      :        :        +- CometProject
                      :        :           +- CometFilter
@@ -31,4 +30,4 @@ TakeOrderedAndProject
                         +- CometNativeColumnarToRow
                            +- CometNativeScan parquet spark_catalog.default.warehouse
 
-Comet accelerated 19 out of 28 eligible operators (67%). Final plan contains 4 transitions between Spark and Comet.
+Comet accelerated 20 out of 28 eligible operators (71%). Final plan contains 3 transitions between Spark and Comet.

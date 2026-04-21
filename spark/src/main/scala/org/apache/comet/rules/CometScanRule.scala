@@ -646,7 +646,15 @@ case class CometScanRule(session: SparkSession)
   private def isDynamicPruningFilter(e: Expression): Boolean =
     e.exists(_.isInstanceOf[PlanExpression[_]])
 
-  /** Detects AQE DPP (SubqueryAdaptiveBroadcastExec), as opposed to non-AQE DPP. */
+  /**
+   * Detects AQE DPP (SubqueryAdaptiveBroadcastExec), as opposed to non-AQE DPP.
+   *
+   * Non-AQE DPP (PlanDynamicPruningFilters) runs before Comet rules and produces
+   * SubqueryBroadcastExec/SubqueryExec which Spark's execution framework resolves. AQE DPP
+   * (PlanAdaptiveDynamicPruningFilters) runs after Comet rules and searches for
+   * BroadcastHashJoinExec. It doesn't recognize Comet operators, so it can't create DPP filters
+   * correctly.
+   */
   private def isAqeDynamicPruningFilter(e: Expression): Boolean =
     e.exists {
       case sub: InSubqueryExec => sub.plan.isInstanceOf[SubqueryAdaptiveBroadcastExec]
