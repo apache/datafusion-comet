@@ -124,7 +124,7 @@ class CometScanRuleSuite extends CometTestBase {
           createSparkPlan(spark, "SELECT id, value FROM unsupported_data WHERE id = 1")
 
         withSQLConf(
-          CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_ICEBERG_COMPAT,
+          CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
           CometConf.COMET_PARQUET_UNSIGNED_SMALL_INT_CHECK.key -> "true") {
           val transformedPlan = applyCometScanRule(sparkPlan)
 

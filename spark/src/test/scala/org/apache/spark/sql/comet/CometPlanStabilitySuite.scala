@@ -62,9 +62,6 @@ import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plu
  * }}}
  */
 trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBase {
-  protected val scanImpls: Seq[String] =
-    Seq(CometConf.SCAN_NATIVE_ICEBERG_COMPAT, CometConf.SCAN_NATIVE_DATAFUSION)
-
   protected val baseResourcePath: File = {
     getWorkspaceFilePath("spark", "src", "test", "resources", "tpcds-plan-stability").toFile
   }
@@ -85,8 +82,7 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
     } else {
       name
     }
-    val nativeImpl = CometConf.COMET_NATIVE_SCAN_IMPL.get()
-    goldenFileName = s"$goldenFileName.$nativeImpl"
+    goldenFileName = s"$goldenFileName"
     new File(goldenFilePath, goldenFileName)
   }
 
@@ -273,13 +269,9 @@ class CometTPCDSV1_4_PlanStabilitySuite extends CometPlanStabilitySuite {
   override val goldenFilePath: String =
     new File(baseResourcePath, planName).getAbsolutePath
 
-  scanImpls.foreach { scan =>
-    tpcdsQueries.foreach { q =>
-      test(s"check simplified (tpcds-v1.4/$q) - $scan") {
-        withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> scan) {
-          testQuery("tpcds", q)
-        }
-      }
+  tpcdsQueries.foreach { q =>
+    test(s"check simplified (tpcds-v1.4/$q)") {
+      testQuery("tpcds", q)
     }
   }
 }
@@ -295,13 +287,9 @@ class CometTPCDSV2_7_PlanStabilitySuite extends CometPlanStabilitySuite {
   override val goldenFilePath: String =
     new File(baseResourcePath, planName).getAbsolutePath
 
-  scanImpls.foreach { scan =>
-    tpcdsQueriesV2_7_0.foreach { q =>
-      test(s"check simplified (tpcds-v2.7.0/$q) - $scan") {
-        withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> scan) {
-          testQuery("tpcds-v2.7.0", q)
-        }
-      }
+  tpcdsQueriesV2_7_0.foreach { q =>
+    test(s"check simplified (tpcds-v2.7.0/$q)") {
+      testQuery("tpcds-v2.7.0", q)
     }
   }
 }
