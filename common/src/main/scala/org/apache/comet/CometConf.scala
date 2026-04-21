@@ -123,6 +123,7 @@ object CometConf extends ShimCometConf {
   @deprecated
   val COMET_NATIVE_SCAN_IMPL: ConfigEntry[String] = conf("spark.comet.scan.impl")
     .category(CATEGORY_TESTING)
+    .internal()
     .doc("This configuration option is deprecated and has no effect on Comet behavior.")
     .stringConf
     .transform(_.toLowerCase(Locale.ROOT))
