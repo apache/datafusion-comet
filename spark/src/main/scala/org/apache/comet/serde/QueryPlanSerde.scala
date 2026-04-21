@@ -373,6 +373,19 @@ object QueryPlanSerde extends Logging with CometExprShim {
   }
 
   /**
+   * Returns true if the given data type is or contains a `MapType` at any nesting level. Arrow's
+   * row format (used by DataFusion's grouped hash aggregate for composite group keys) does not
+   * support `Map`, so grouping on any type that transitively contains a map would crash in native
+   * execution.
+   */
+  def containsMapType(dt: DataType): Boolean = dt match {
+    case _: MapType => true
+    case a: ArrayType => containsMapType(a.elementType)
+    case s: StructType => s.fields.exists(f => containsMapType(f.dataType))
+    case _ => false
+  }
+
+  /**
    * Serializes Spark datatype to protobuf. Note that, a datatype can be serialized by this method
    * doesn't mean it is supported by Comet native execution, i.e., `supportedDataType` may return
    * false for it.

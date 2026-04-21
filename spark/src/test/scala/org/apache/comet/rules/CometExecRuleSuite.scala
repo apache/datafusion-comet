@@ -231,6 +231,28 @@ class CometExecRuleSuite extends CometTestBase {
     }
   }
 
+  test("CometExecRule should not convert hash aggregate when grouping key contains map type") {
+    // Arrow's row format, used by DataFusion's grouped hash aggregate for composite keys, does
+    // not support Map at any nesting level. Grouping by a type that transitively contains a map
+    // (e.g. array<map<int,int>>) must stay on Spark to avoid a native row-encoding crash.
+    val sparkPlan = createSparkPlan(
+      spark,
+      """SELECT count(*)
+        |FROM VALUES (ARRAY(MAP(1, 2), MAP(1, 3))),
+        |            (ARRAY(MAP(2, 3), MAP(1, 3))) AS t(a)
+        |GROUP BY a""".stripMargin)
+
+    val originalHashAggCount = countOperators(sparkPlan, classOf[HashAggregateExec])
+    assert(originalHashAggCount == 2)
+
+    withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+      val transformedPlan = applyCometExecRule(sparkPlan)
+
+      assert(countOperators(transformedPlan, classOf[HashAggregateExec]) == originalHashAggCount)
+      assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 0)
+    }
+  }
+
   test("CometExecRule should apply broadcast exchange transformations") {
     withTempView("test_data") {
       createTestDataFrame.createOrReplaceTempView("test_data")

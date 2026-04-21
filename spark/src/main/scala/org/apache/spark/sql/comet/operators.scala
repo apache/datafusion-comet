@@ -1393,11 +1393,7 @@ trait CometBaseAggregate {
       return None
     }
 
-    if (groupingExpressions.exists(expr =>
-        expr.dataType match {
-          case _: MapType => true
-          case _ => false
-        })) {
+    if (groupingExpressions.exists(expr => QueryPlanSerde.containsMapType(expr.dataType))) {
       withInfo(aggregate, "Grouping on map types is not supported")
       return None
     }
