@@ -98,17 +98,18 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
   private lazy val showTransformations = CometConf.COMET_EXPLAIN_TRANSFORMATIONS.get()
 
   private def applyCometShuffle(plan: SparkPlan): SparkPlan = {
-    plan.transformUp {
-      case s: ShuffleExchangeExec if CometShuffleExchangeExec.nativeShuffleSupported(s) =>
-        // Switch to use Decimal128 regardless of precision, since Arrow native execution
-        // doesn't support Decimal32 and Decimal64 yet.
-        conf.setConfString(CometConf.COMET_USE_DECIMAL_128.key, "true")
-        CometShuffleExchangeExec(s, shuffleType = CometNativeShuffle)
-
-      case s: ShuffleExchangeExec if CometShuffleExchangeExec.columnarShuffleSupported(s) =>
-        // Columnar shuffle for regular Spark operators (not Comet) and Comet operators
-        // (if configured)
-        CometShuffleExchangeExec(s, shuffleType = CometColumnarShuffle)
+    plan.transformUp { case s: ShuffleExchangeExec =>
+      CometShuffleExchangeExec.shuffleSupported(s) match {
+        case Some(CometNativeShuffle) =>
+          // Switch to use Decimal128 regardless of precision, since Arrow native execution
+          // doesn't support Decimal32 and Decimal64 yet.
+          conf.setConfString(CometConf.COMET_USE_DECIMAL_128.key, "true")
+          CometShuffleExchangeExec(s, shuffleType = CometNativeShuffle)
+        case Some(CometColumnarShuffle) =>
+          CometShuffleExchangeExec(s, shuffleType = CometColumnarShuffle)
+        case None =>
+          s
+      }
     }
   }
 

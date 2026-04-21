@@ -124,7 +124,7 @@ class CometDppFallbackRepro3949Suite extends CometTestBase {
           fail(s"No ShuffleExchangeExec found in initial plan:\n${initialPlan.treeString}")
         }
 
-        val initialDecision = CometShuffleExchangeExec.columnarShuffleSupported(shuffle)
+        val initialDecision = CometShuffleExchangeExec.shuffleSupported(shuffle)
 
         val initialDppVisible = shuffle.child.exists {
           case scan: FileSourceScanExec =>
@@ -135,13 +135,13 @@ class CometDppFallbackRepro3949Suite extends CometTestBase {
         // Simulate AQE stage prep: wrap the shuffle's child in an opaque LeafExecNode,
         // matching how `ShuffleQueryStageExec` presents to `.exists` walks (its `children`
         // is `Seq.empty`). `withNewChildren` preserves tree-node tags, so if the fix is in
-        // place the sticky CometFallback marker on `shuffle` carries over to
-        // `postAqeShuffle`, and the decision short-circuits to false. Without the fix,
-        // the DPP walk re-runs, fails to see the scan, and flips to true.
+        // place the explain-info tag on `shuffle` carries over to `postAqeShuffle`, and the
+        // decision short-circuits to None. Without the fix, the DPP walk re-runs, fails to
+        // see the scan, and flips to Some(...).
         val hiddenChild = OpaqueStageStub(shuffle.child.output)
         val postAqeShuffle =
           shuffle.withNewChildren(Seq(hiddenChild)).asInstanceOf[ShuffleExchangeExec]
-        val postAqeDecision = CometShuffleExchangeExec.columnarShuffleSupported(postAqeShuffle)
+        val postAqeDecision = CometShuffleExchangeExec.shuffleSupported(postAqeShuffle)
 
         val postAqeDppVisible = postAqeShuffle.child.exists {
           case scan: FileSourceScanExec =>
@@ -151,9 +151,9 @@ class CometDppFallbackRepro3949Suite extends CometTestBase {
 
         assert(initialDppVisible, "initial child tree should expose DPP scan")
         assert(!postAqeDppVisible, "stage-wrapped child should hide DPP scan")
-        assert(!initialDecision, s"expected fall back initially, got $initialDecision")
+        assert(initialDecision.isEmpty, s"expected fall back initially, got $initialDecision")
         assert(
-          !postAqeDecision,
+          postAqeDecision.isEmpty,
           s"decision must stay 'fall back' across the AQE-style wrap, got $postAqeDecision")
       }
     }
