@@ -19,7 +19,7 @@
 
 package org.apache.comet.shims
 
-import org.apache.spark.sql.execution.SubqueryAdaptiveBroadcastExec
+import org.apache.spark.sql.execution.{SubqueryAdaptiveBroadcastExec, SubqueryBroadcastExec}
 
 trait ShimSubqueryBroadcast {
 
@@ -29,5 +29,10 @@ trait ShimSubqueryBroadcast {
    */
   def getSubqueryBroadcastIndices(sab: SubqueryAdaptiveBroadcastExec): Seq[Int] = {
     sab.indices
+  }
+
+  /** Same version shim for SubqueryBroadcastExec. */
+  def getSubqueryBroadcastExecIndices(sub: SubqueryBroadcastExec): Seq[Int] = {
+    sub.indices
   }
 }
