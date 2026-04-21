@@ -321,6 +321,16 @@ class CometExecSuite extends CometTestBase {
         assert(
           broadcasts.size == 1,
           s"Expected exactly 1 CometBroadcastExchangeExec (other reused):\n${cometPlan.treeString}")
+
+        // Verify canonical forms match — this is what ReuseExchangeAndSubquery uses to
+        // determine reuse eligibility
+        if (reused.nonEmpty && broadcasts.nonEmpty) {
+          val reusedChild = reused.head.child
+          assert(
+            reusedChild.canonicalized == broadcasts.head.canonicalized,
+            s"ReusedExchangeExec child and CometBroadcastExchangeExec should have same " +
+              s"canonical form for reuse")
+        }
       }
     }
   }

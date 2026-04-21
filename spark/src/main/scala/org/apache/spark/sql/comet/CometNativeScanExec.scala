@@ -193,9 +193,11 @@ case class CometNativeScanExec(
         }
       case _ =>
     }
-    // Also resolve DPP in CometScanExec's partitionFilters, which may reference
-    // a different InSubqueryExec instance (with the original SubqueryBroadcastExec).
-    // CometScanExec.dynamicallySelectedPartitions evaluates these filters.
+    // CometNativeScanExec.partitionFilters and CometScanExec.partitionFilters contain
+    // different InSubqueryExec instances. convertSubqueryBroadcasts replaced the former with
+    // CometSubqueryBroadcastExec, but the latter still has the original SubqueryBroadcastExec.
+    // Both need resolution because CometScanExec.dynamicallySelectedPartitions evaluates its
+    // own partitionFilters. updateResult() is a no-op if already resolved.
     if (scan != null) {
       scan.partitionFilters.foreach {
         case DynamicPruningExpression(e: InSubqueryExec) if e.values().isEmpty =>
