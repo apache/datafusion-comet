@@ -139,8 +139,7 @@ case class CometScanRule(session: SparkSession)
 
   private def transformV1Scan(plan: SparkPlan, scanExec: FileSourceScanExec): SparkPlan = {
 
-    if (COMET_DPP_FALLBACK_ENABLED.get() &&
-      scanExec.partitionFilters.exists(isAqeDynamicPruningFilter)) {
+    if (scanExec.partitionFilters.exists(isAqeDynamicPruningFilter)) {
       return withInfo(scanExec, "AQE Dynamic Partition Pruning is not supported")
     }
 

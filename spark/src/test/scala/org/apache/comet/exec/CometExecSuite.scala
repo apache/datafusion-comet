@@ -128,9 +128,7 @@ class CometExecSuite extends CometTestBase {
 
       // note that this test does not trigger DPP with v2 data source
       Seq("parquet").foreach { v1List =>
-        withSQLConf(
-          SQLConf.USE_V1_SOURCE_LIST.key -> v1List,
-          CometConf.COMET_DPP_FALLBACK_ENABLED.key -> "true") {
+        withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> v1List) {
           spark.read.parquet(factPath).createOrReplaceTempView("dpp_fact")
           spark.read.parquet(dimPath).createOrReplaceTempView("dpp_dim")
           val df =
@@ -164,8 +162,7 @@ class CometExecSuite extends CometTestBase {
       Seq("parquet").foreach { v1List =>
         withSQLConf(
           SQLConf.USE_V1_SOURCE_LIST.key -> v1List,
-          SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
-          CometConf.COMET_DPP_FALLBACK_ENABLED.key -> "true") {
+          SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
           spark.read.parquet(factPath).createOrReplaceTempView("dpp_fact2")
           spark.read.parquet(dimPath).createOrReplaceTempView("dpp_dim2")
           val df =
@@ -202,8 +199,7 @@ class CometExecSuite extends CometTestBase {
       // with SubqueryBroadcastExec, not SubqueryAdaptiveBroadcastExec
       withSQLConf(
         SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
-        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
-        CometConf.COMET_DPP_FALLBACK_ENABLED.key -> "true") {
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
         spark.read.parquet(factPath).createOrReplaceTempView("dpp_fact_bhj")
         spark.read.parquet(dimPath).createOrReplaceTempView("dpp_dim_bhj")
         val df = spark.sql(
@@ -249,8 +245,7 @@ class CometExecSuite extends CometTestBase {
       withSQLConf(
         SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
-        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
-        CometConf.COMET_DPP_FALLBACK_ENABLED.key -> "true") {
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
         spark.read.parquet(factPath).createOrReplaceTempView("dpp_fact_smj")
         spark.read.parquet(dimPath).createOrReplaceTempView("dpp_dim_smj")
         val df = spark.sql(
