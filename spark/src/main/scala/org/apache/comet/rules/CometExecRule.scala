@@ -627,20 +627,25 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
    */
   private def tagUnsafePartialAggregates(plan: SparkPlan): Unit = {
     plan.foreach {
-      case agg: BaseAggregateExec if agg.aggregateExpressions.exists(_.mode == Final) =>
-        if (!QueryPlanSerde.allAggsSupportMixedExecution(agg.aggregateExpressions)) {
-          if (!canAggregateBeConverted(agg, Final)) {
-            findPartialAggInPlan(agg.child).foreach { partial =>
-              // Only tag if the Partial would otherwise have been converted. If the Partial
-              // itself cannot be converted (e.g. the aggregate function is incompatible for the
-              // input type), there is no buffer-format mismatch to guard against, and tagging
-              // would mask the natural, more specific fallback reason.
-              if (canAggregateBeConverted(partial, Partial)) {
-                partial.setTagValue(
-                  CometExecRule.COMET_UNSAFE_PARTIAL,
-                  "Partial aggregate disabled: corresponding final aggregate " +
-                    "cannot be converted to Comet and intermediate buffer formats are incompatible")
-              }
+      case agg: BaseAggregateExec =>
+        // Only consider single-mode Final aggregates. Multi-mode Finals come from Spark's
+        // distinct-aggregate rewrite, where the Comet partial (if any) feeds into a Spark
+        // PartialMerge rather than directly into a Final, which is a different code path
+        // than the Comet-Partial → Spark-Final crash scenario from issue #1389.
+        val modes = agg.aggregateExpressions.map(_.mode).distinct
+        if (modes == Seq(Final) &&
+          !QueryPlanSerde.allAggsSupportMixedExecution(agg.aggregateExpressions) &&
+          !canAggregateBeConverted(agg, Final)) {
+          findPartialAggInPlan(agg.child).foreach { partial =>
+            // Only tag if the Partial would otherwise have been converted. If the Partial
+            // itself cannot be converted (e.g. the aggregate function is incompatible for the
+            // input type), there is no buffer-format mismatch to guard against, and tagging
+            // would mask the natural, more specific fallback reason.
+            if (canAggregateBeConverted(partial, Partial)) {
+              partial.setTagValue(
+                CometExecRule.COMET_UNSAFE_PARTIAL,
+                "Partial aggregate disabled: corresponding final aggregate " +
+                  "cannot be converted to Comet and intermediate buffer formats are incompatible")
             }
           }
         }
@@ -717,20 +722,22 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
   }
 
   /**
-   * Search the child subtree for the first Partial-mode aggregate, traversing through exchanges
-   * and AQE stages. Requires `aggregateExpressions.nonEmpty` so that intermediate distinct stages
-   * (group-by-only aggregates with empty aggregateExpressions, where `.forall` vacuously matches)
-   * are not mistaken for the partial we want to tag.
+   * Look for a Partial-mode aggregate that feeds directly into the given plan (the child of a
+   * Final). Walks through exchanges and AQE stages only, stopping at anything else including
+   * other aggregate stages. This avoids tagging unrelated Partials found deeper in the plan (e.g.
+   * the non-distinct Partial in a distinct-aggregate rewrite, which is separated from the Final
+   * by intermediate PartialMerge stages). Requires `aggregateExpressions.nonEmpty` so that
+   * group-by-only dedup stages are not mistaken for the partial we want to tag.
    */
-  private def findPartialAggInPlan(plan: SparkPlan): Option[BaseAggregateExec] = {
-    plan.collectFirst {
-      case agg: BaseAggregateExec
-          if agg.aggregateExpressions.nonEmpty &&
-            agg.aggregateExpressions.forall(e => e.mode == Partial) =>
-        Some(agg)
-      case a: AQEShuffleReadExec => findPartialAggInPlan(a.child)
-      case s: ShuffleQueryStageExec => findPartialAggInPlan(s.plan)
-    }.flatten
+  private def findPartialAggInPlan(plan: SparkPlan): Option[BaseAggregateExec] = plan match {
+    case agg: BaseAggregateExec
+        if agg.aggregateExpressions.nonEmpty &&
+          agg.aggregateExpressions.forall(e => e.mode == Partial) =>
+      Some(agg)
+    case a: AQEShuffleReadExec => findPartialAggInPlan(a.child)
+    case s: ShuffleQueryStageExec => findPartialAggInPlan(s.plan)
+    case e: ShuffleExchangeExec => findPartialAggInPlan(e.child)
+    case _ => None
   }
 
 }
