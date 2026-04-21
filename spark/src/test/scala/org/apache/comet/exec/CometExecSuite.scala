@@ -542,6 +542,34 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("DPP non-atomic type uses CometSubqueryBroadcastExec") {
+    withDppTables {
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true",
+        SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
+
+        Seq("struct", "array").foreach { dataType =>
+          val df =
+            sql(s"""SELECT f.date_id, f.product_id, f.units_sold, f.store_id FROM fact_stats f
+               |JOIN dim_stats s
+               |ON $dataType(f.store_id) = $dataType(s.store_id) WHERE s.country = 'DE'
+               """.stripMargin)
+          val (_, cometPlan) = checkSparkAnswer(df)
+
+          val cometSubqueries = collectWithSubqueries(cometPlan) {
+            case s: CometSubqueryBroadcastExec => s
+          }
+          assert(
+            cometSubqueries.nonEmpty,
+            s"Expected DPP with CometSubqueryBroadcastExec for $dataType key:\n" +
+              cometPlan.treeString)
+        }
+      }
+    }
+  }
+
   test("ShuffleQueryStageExec could be direct child node of CometBroadcastExchangeExec") {
     withSQLConf(CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
       val table = "src"
