@@ -18,7 +18,8 @@
 #![allow(deprecated)]
 
 use crate::kernels::strings::substring;
-use arrow::datatypes::{DataType, Schema};
+use arrow::array::{as_dictionary_array, as_largestring_array, as_string_array, Array, ArrayRef};
+use arrow::datatypes::{DataType, Int32Type, Schema};
 use arrow::record_batch::RecordBatch;
 use datafusion::common::DataFusionError;
 use datafusion::logical_expr::ColumnarValue;
@@ -88,8 +89,14 @@ impl PhysicalExpr for SubstringExpr {
         let arg = self.child.evaluate(batch)?;
         match arg {
             ColumnarValue::Array(array) => {
+                // Spark returns empty when negative start exceeds string length.
+                // Arrow clamps to 0 instead, so we must fix up per-element.
+                let array = if self.start < 0 {
+                    clamp_negative_start(&array, self.start)?
+                } else {
+                    array
+                };
                 let result = substring(&array, self.start, self.len)?;
-
                 Ok(ColumnarValue::Array(result))
             }
             _ => Err(DataFusionError::Execution(
@@ -111,5 +118,58 @@ impl PhysicalExpr for SubstringExpr {
             self.start,
             self.len,
         )))
+    }
+}
+
+/// For negative start, Spark returns empty when abs(start) > string length.
+/// Arrow's substring_by_char clamps to 0 instead. This function replaces
+/// such strings with "" so the subsequent Arrow substring returns "".
+fn clamp_negative_start(array: &ArrayRef, start: i64) -> datafusion::common::Result<ArrayRef> {
+    use arrow::array::{DictionaryArray, GenericStringBuilder};
+
+    let abs_start = start.unsigned_abs() as usize;
+
+    match array.data_type() {
+        DataType::Utf8 => {
+            let str_array = as_string_array(array);
+            let mut builder = GenericStringBuilder::<i32>::new();
+            for i in 0..str_array.len() {
+                if str_array.is_null(i) {
+                    builder.append_null();
+                } else {
+                    let val = str_array.value(i);
+                    if val.chars().count() < abs_start {
+                        builder.append_value("");
+                    } else {
+                        builder.append_value(val);
+                    }
+                }
+            }
+            Ok(Arc::new(builder.finish()) as ArrayRef)
+        }
+        DataType::LargeUtf8 => {
+            let str_array = as_largestring_array(array);
+            let mut builder = GenericStringBuilder::<i64>::new();
+            for i in 0..str_array.len() {
+                if str_array.is_null(i) {
+                    builder.append_null();
+                } else {
+                    let val = str_array.value(i);
+                    if val.chars().count() < abs_start {
+                        builder.append_value("");
+                    } else {
+                        builder.append_value(val);
+                    }
+                }
+            }
+            Ok(Arc::new(builder.finish()) as ArrayRef)
+        }
+        DataType::Dictionary(_, _) => {
+            let dict = as_dictionary_array::<Int32Type>(array);
+            let values = clamp_negative_start(dict.values(), start)?;
+            let result = DictionaryArray::try_new(dict.keys().clone(), values)?;
+            Ok(Arc::new(result) as ArrayRef)
+        }
+        _ => Ok(Arc::clone(array)),
     }
 }

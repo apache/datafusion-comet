@@ -479,7 +479,7 @@ class CometStringExpressionSuite extends CometTestBase {
   }
 
   test("substring") {
-    val data = Seq(("hello world",), ("",), (null,), ("abc",))
+    val data = Seq(("hello world", ""), ("", ""), (null, ""), ("abc", ""))
     withParquetTable(data, "tbl") {
       // positive start
       checkSparkAnswerAndOperator("SELECT substring(_1, 1, 5) FROM tbl")
