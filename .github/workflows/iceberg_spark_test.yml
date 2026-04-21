@@ -32,7 +32,11 @@ on:
       - "**.md"
       - "native/core/benches/**"
       - "native/spark-expr/benches/**"
-      - "spark/src/test/scala/org/apache/spark/sql/benchmark/**"
+      - "spark/src/test/**"
+      - "common/src/test/**"
+      - "fuzz-testing/**"
+      - "spark-integration/**"
+      - "dev/**"
   pull_request:
     paths-ignore:
       - "benchmarks/**"
@@ -41,7 +45,11 @@ on:
       - "**.md"
       - "native/core/benches/**"
       - "native/spark-expr/benches/**"
-      - "spark/src/test/scala/org/apache/spark/sql/benchmark/**"
+      - "spark/src/test/**"
+      - "common/src/test/**"
+      - "fuzz-testing/**"
+      - "spark-integration/**"
+      - "dev/**"
   # manual trigger
   # https://docs.github.com/en/actions/managing-workflow-runs/manually-running-a-workflow
   workflow_dispatch:
