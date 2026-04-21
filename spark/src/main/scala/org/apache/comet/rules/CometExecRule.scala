@@ -23,7 +23,7 @@ import scala.collection.mutable.ListBuffer
 
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{Divide, DoubleLiteral, EqualNullSafe, EqualTo, Expression, FloatLiteral, GreaterThan, GreaterThanOrEqual, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, NamedExpression, Remainder}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, Final, Partial}
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.trees.TreeNodeTag
@@ -629,12 +629,18 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
     plan.foreach {
       case agg: BaseAggregateExec if agg.aggregateExpressions.exists(_.mode == Final) =>
         if (!QueryPlanSerde.allAggsSupportMixedExecution(agg.aggregateExpressions)) {
-          if (!canFinalAggregateBeConverted(agg)) {
+          if (!canAggregateBeConverted(agg, Final)) {
             findPartialAggInPlan(agg.child).foreach { partial =>
-              partial.setTagValue(
-                CometExecRule.COMET_UNSAFE_PARTIAL,
-                "Partial aggregate disabled: corresponding final aggregate " +
-                  "cannot be converted to Comet and intermediate buffer formats are incompatible")
+              // Only tag if the Partial would otherwise have been converted. If the Partial
+              // itself cannot be converted (e.g. the aggregate function is incompatible for the
+              // input type), there is no buffer-format mismatch to guard against, and tagging
+              // would mask the natural, more specific fallback reason.
+              if (canAggregateBeConverted(partial, Partial)) {
+                partial.setTagValue(
+                  CometExecRule.COMET_UNSAFE_PARTIAL,
+                  "Partial aggregate disabled: corresponding final aggregate " +
+                    "cannot be converted to Comet and intermediate buffer formats are incompatible")
+              }
             }
           }
         }
@@ -643,8 +649,8 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
   }
 
   /**
-   * Conservative check for whether a Final-mode aggregate could be converted to Comet. Checks
-   * operator enablement, grouping expressions, aggregate expressions, and result expressions.
+   * Conservative check for whether an aggregate could be converted to Comet. Checks operator
+   * enablement, grouping expressions, aggregate expressions, and result expressions.
    * Intentionally skips the sparkFinalMode / child-native checks since those depend on
    * transformation state.
    *
@@ -653,7 +659,9 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
    * this tagging pass will drift and either crash (missed tag) or over-disable (spurious tag). A
    * shared predicate helper would be preferable.
    */
-  private def canFinalAggregateBeConverted(agg: BaseAggregateExec): Boolean = {
+  private def canAggregateBeConverted(
+      agg: BaseAggregateExec,
+      expectedMode: AggregateMode): Boolean = {
     val handler = allExecs.get(agg.getClass)
     if (handler.isEmpty) return false
     val serde = handler.get.asInstanceOf[CometOperatorSerde[SparkPlan]]
@@ -677,20 +685,35 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       return false
     }
 
-    if (aggregateExpressions.nonEmpty) {
-      val modes = aggregateExpressions.map(_.mode).distinct
-      if (modes.size != 1 || !modes.contains(Final)) return false
-
-      val binding = false
-      if (!aggregateExpressions.forall(e =>
-          QueryPlanSerde.aggExprToProto(e, agg.child.output, binding, agg.conf).isDefined)) {
-        return false
-      }
+    if (aggregateExpressions.isEmpty) {
+      // Result expressions always checked when there are no aggregate expressions
+      val attributes =
+        groupingExpressions.map(_.toAttribute) ++ agg.aggregateAttributes
+      return agg.resultExpressions.forall(e =>
+        QueryPlanSerde.exprToProto(e, attributes).isDefined)
     }
 
-    val attributes =
-      groupingExpressions.map(_.toAttribute) ++ agg.aggregateAttributes
-    agg.resultExpressions.forall(e => QueryPlanSerde.exprToProto(e, attributes).isDefined)
+    val modes = aggregateExpressions.map(_.mode).distinct
+    if (modes.size != 1 || modes.head != expectedMode) return false
+
+    // In Final mode, exprToProto resolves against the child's output; in Partial/non-Final mode
+    // it must bind to input attributes. This mirrors the `binding` calculation in
+    // `CometBaseAggregate.doConvert`.
+    val binding = expectedMode != Final
+    if (!aggregateExpressions.forall(e =>
+        QueryPlanSerde.aggExprToProto(e, agg.child.output, binding, agg.conf).isDefined)) {
+      return false
+    }
+
+    // doConvert only checks resultExpressions in Final mode when aggregate expressions exist
+    // (Partial emits the buffer directly). Mirror that here to avoid false negatives.
+    if (expectedMode == Final) {
+      val attributes =
+        groupingExpressions.map(_.toAttribute) ++ agg.aggregateAttributes
+      agg.resultExpressions.forall(e => QueryPlanSerde.exprToProto(e, attributes).isDefined)
+    } else {
+      true
+    }
   }
 
   /**
