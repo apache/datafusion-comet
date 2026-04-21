@@ -185,7 +185,7 @@ case class CometNativeScanExec(
         logDebug(s"Resolving DPP subquery: plan=${e.plan.getClass.getSimpleName}")
         try {
           e.updateResult()
-          logDebug(s"DPP subquery resolved successfully")
+          logDebug("DPP subquery resolved successfully")
         } catch {
           case ex: Exception =>
             logError(s"DPP subquery resolution failed: ${ex.getMessage}")
@@ -200,7 +200,7 @@ case class CometNativeScanExec(
       scan.partitionFilters.foreach {
         case DynamicPruningExpression(e: InSubqueryExec) if e.values().isEmpty =>
           logDebug(
-            s"Resolving CometScanExec DPP subquery: " +
+            "Resolving CometScanExec DPP subquery: " +
               s"plan=${e.plan.getClass.getSimpleName}")
           e.updateResult()
         case _ =>

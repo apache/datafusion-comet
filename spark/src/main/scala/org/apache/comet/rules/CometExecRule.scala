@@ -339,8 +339,8 @@ case class CometExecRule(session: SparkSession)
               }
               if (cometChild.isInstanceOf[CometNativeExec]) {
                 logInfo(
-                  s"Converting SubqueryBroadcastExec to " +
-                    s"CometSubqueryBroadcastExec for DPP exchange reuse")
+                  "Converting SubqueryBroadcastExec to " +
+                    "CometSubqueryBroadcastExec for DPP exchange reuse")
                 val cometBroadcast = CometBroadcastExchangeExec(b, b.output, b.mode, cometChild)
                 val cometSub = CometSubqueryBroadcastExec(
                   sub.name,
