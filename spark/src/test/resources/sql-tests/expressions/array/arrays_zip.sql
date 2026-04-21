@@ -129,6 +129,12 @@ INSERT INTO test_arrays_zip VALUES (array(1), array(10, 20)), (array(2, 3), arra
 query
 select arrays_zip(a, b) FROM test_arrays_zip
 
+query
+SELECT arrays_zip(a, b)['a'] FROM (SELECT array(1, 2, 3) as a, array(3, 4, 5) as b)
+
+query
+SELECT arrays_zip(a, b)['b'] FROM (SELECT array(1, 2, 3) as a, array(3, 4, 5) as b)
+
 -- single argument
 query
 select arrays_zip(a) FROM test_arrays_zip
