@@ -1918,7 +1918,7 @@ dependencies = [
 
 [[package]]
 name = "datafusion-comet"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "arrow",
  "assertables",
@@ -1974,7 +1974,7 @@ dependencies = [
 
 [[package]]
 name = "datafusion-comet-common"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "arrow",
  "datafusion",
@@ -2000,7 +2000,7 @@ dependencies = [
 
 [[package]]
 name = "datafusion-comet-jni-bridge"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "arrow",
  "assertables",
@@ -2018,7 +2018,7 @@ dependencies = [
 
 [[package]]
 name = "datafusion-comet-objectstore-hdfs"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -2032,7 +2032,7 @@ dependencies = [
 
 [[package]]
 name = "datafusion-comet-proto"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "prost",
  "prost-build",
@@ -2040,7 +2040,7 @@ dependencies = [
 
 [[package]]
 name = "datafusion-comet-shuffle"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "arrow",
  "async-trait",
@@ -2068,7 +2068,7 @@ dependencies = [
 
 [[package]]
 name = "datafusion-comet-spark-expr"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "arrow",
  "base64",
