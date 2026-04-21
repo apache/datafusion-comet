@@ -118,6 +118,9 @@ object CometConf extends ShimCometConf {
   val SCAN_NATIVE_DATAFUSION = "native_datafusion"
 
   @deprecated
+  val SCAN_NATIVE_ICEBERG_COMPAT = "native_iceberg_compat"
+
+  @deprecated
   val SCAN_AUTO = "auto"
 
   @deprecated
