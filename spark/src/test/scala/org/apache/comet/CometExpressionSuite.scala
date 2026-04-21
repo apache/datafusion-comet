@@ -2271,8 +2271,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("to_json") {
-    // TODO fix for Spark 4.0.0
-    assume(!isSpark40Plus)
     withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[StructsToJson]) -> "true") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withParquetTable(
@@ -2298,8 +2296,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("to_json escaping of field names and string values") {
-    // TODO fix for Spark 4.0.0
-    assume(!isSpark40Plus)
     withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[StructsToJson]) -> "true") {
       val gen = new DataGenerator(new Random(42))
       val chars = "\\'\"abc\t\r\n\f\b"
@@ -2329,8 +2325,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("to_json unicode") {
-    // TODO fix for Spark 4.0.0
-    assume(!isSpark40Plus)
     withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[StructsToJson]) -> "true") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withParquetTable(
