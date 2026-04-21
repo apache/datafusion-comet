@@ -36,7 +36,7 @@ these scenarios:
 - Spark's Datasource V2 API. When `spark.sql.sources.useV1SourceList` does not include `parquet`, Spark uses the
   V2 API for Parquet scans. The Comet Parquet scan only supports the V1 API.
 - Spark metadata columns (e.g., `_metadata.file_path`)
-- No support for Dynamic Partition Pruning (DPP)
+- No support for AQE Dynamic Partition Pruning (DPP). Non-AQE DPP is supported.
 - No support for row indexes
 - No support for reading Parquet field IDs
 - No support for `input_file_name()`, `input_file_block_start()`, or `input_file_block_length()` SQL functions.
