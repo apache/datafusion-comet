@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import scala.annotation.tailrec
 
-import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayFilter, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayPosition, ArrayRemove, ArrayRepeat, ArraysOverlap, ArrayUnion, Attribute, CreateArray, ElementAt, Expression, Flatten, GetArrayItem, IsNotNull, Literal, Reverse, Size, SortArray}
+import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayContains, ArrayExcept, ArrayFilter, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayPosition, ArrayRemove, ArrayRepeat, ArraysOverlap, ArrayUnion, Attribute, CreateArray, ElementAt, Expression, Flatten, GetArrayItem, IsNotNull, Literal, Reverse, Size, SortArray}
 import org.apache.spark.sql.catalyst.util.GenericArrayData
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
@@ -120,34 +120,7 @@ object CometArrayContains extends CometExpressionSerde[ArrayContains] {
   }
 }
 
-object CometArrayDistinct extends CometExpressionSerde[ArrayDistinct] {
-
-  override def getSupportLevel(expr: ArrayDistinct): SupportLevel =
-    Incompatible(Some("Output elements are sorted rather than preserving insertion order"))
-
-  override def convert(
-      expr: ArrayDistinct,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val arrayExprProto = exprToProto(expr.children.head, inputs, binding)
-
-    val arrayDistinctScalarExpr =
-      scalarFunctionExprToProto("array_distinct", arrayExprProto)
-    optExprWithInfo(arrayDistinctScalarExpr, expr)
-  }
-}
-
 object CometSortArray extends CometExpressionSerde[SortArray] {
-  private def containsFloatingPoint(dt: DataType): Boolean = {
-    dt match {
-      case FloatType | DoubleType => true
-      case ArrayType(elementType, _) => containsFloatingPoint(elementType)
-      case StructType(fields) => fields.exists(f => containsFloatingPoint(f.dataType))
-      case MapType(keyType, valueType, _) =>
-        containsFloatingPoint(keyType) || containsFloatingPoint(valueType)
-      case _ => false
-    }
-  }
 
   private def supportedSortArrayElementType(
       dt: DataType,
@@ -173,7 +146,7 @@ object CometSortArray extends CometExpressionSerde[SortArray] {
     if (!supportedSortArrayElementType(elementType)) {
       Unsupported(Some(s"Sort on array element type $elementType is not supported"))
     } else if (CometConf.COMET_EXEC_STRICT_FLOATING_POINT.get() &&
-      containsFloatingPoint(elementType)) {
+      SupportLevel.containsFloatingPoint(elementType)) {
       Incompatible(
         Some(
           "Sorting on floating-point is not 100% compatible with Spark, and Comet is running " +
