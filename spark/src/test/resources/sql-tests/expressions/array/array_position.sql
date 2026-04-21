@@ -238,3 +238,17 @@ INSERT INTO test_ap_ts VALUES
 
 query
 SELECT array_position(arr, val) FROM test_ap_ts
+
+-- timestamp_ntz arrays
+statement
+CREATE TABLE test_ap_ts_ntz(arr array<timestamp_ntz>, val timestamp_ntz) USING parquet
+
+statement
+INSERT INTO test_ap_ts_ntz VALUES
+  (array(timestamp_ntz '2024-01-01 00:00:00', timestamp_ntz '2024-06-15 12:30:00'), timestamp_ntz '2024-06-15 12:30:00'),
+  (array(timestamp_ntz '2000-01-01 00:00:00'), timestamp_ntz '1999-12-31 23:59:59'),
+  (NULL, timestamp_ntz '2024-01-01 00:00:00'),
+  (array(timestamp_ntz '2024-01-01 00:00:00'), NULL)
+
+query
+SELECT array_position(arr, val) FROM test_ap_ts_ntz
