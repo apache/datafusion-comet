@@ -478,4 +478,28 @@ class CometStringExpressionSuite extends CometTestBase {
     }
   }
 
+  test("substring") {
+    val data = Seq(("hello world",), ("",), (null,), ("abc",))
+    withParquetTable(data, "tbl") {
+      // positive start
+      checkSparkAnswerAndOperator("SELECT substring(_1, 1, 5) FROM tbl")
+      // negative start, no length
+      checkSparkAnswerAndOperator("SELECT substring(_1, -3) FROM tbl")
+      // zero start
+      checkSparkAnswerAndOperator("SELECT substring(_1, 0, 3) FROM tbl")
+      // zero length
+      checkSparkAnswerAndOperator("SELECT substring(_1, 1, 0) FROM tbl")
+      // negative length
+      checkSparkAnswerAndOperator("SELECT substring(_1, 1, -1) FROM tbl")
+      // start beyond string length
+      checkSparkAnswerAndOperator("SELECT substring(_1, 100) FROM tbl")
+      // negative start with length
+      checkSparkAnswerAndOperator("SELECT substring(_1, -2, 3) FROM tbl")
+      // negative start beyond string length with length
+      checkSparkAnswerAndOperator("SELECT substring(_1, -10, 3) FROM tbl")
+      // large negative start with length
+      checkSparkAnswerAndOperator("SELECT substring(_1, -300, 3) FROM tbl")
+    }
+  }
+
 }
