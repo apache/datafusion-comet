@@ -162,13 +162,16 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
   test("hour/minute/second - timestamp_ntz input") {
     // TimestampNTZ extracts time components directly from the stored local time,
     // so the result should be the same regardless of session timezone.
+    // Comet currently falls back to Spark for hour/minute/second on TimestampNTZ
+    // inputs (https://github.com/apache/datafusion-comet/issues/3180); we verify
+    // correctness (matching Spark's output) in all session timezones.
     val r = new Random(42)
     val ntzSchema = StructType(Seq(StructField("ts_ntz", DataTypes.TimestampNTZType, true)))
     val ntzDF = FuzzDataGenerator.generateDataFrame(r, spark, ntzSchema, 100, DataGenOptions())
     ntzDF.createOrReplaceTempView("ntz_tbl")
     for (tz <- crossTimezones) {
       withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
-        checkSparkAnswerAndOperator(
+        checkSparkAnswer(
           "SELECT ts_ntz, hour(ts_ntz), minute(ts_ntz), second(ts_ntz) from ntz_tbl order by ts_ntz")
       }
     }
@@ -177,6 +180,10 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
   test("date_trunc - timestamp_ntz input") {
     // TimestampNTZ truncation should be timezone-independent.
     // Verify the result is the same regardless of session timezone.
+    // Catalyst wraps the NTZ child in cast(ts_ntz as timestamp), so Comet runs
+    // date_trunc natively only when the session timezone is UTC (see
+    // https://github.com/apache/datafusion-comet/issues/2649); for non-UTC
+    // sessions it falls back to Spark but must still produce correct results.
     val r = new Random(42)
     val ntzSchema = StructType(Seq(StructField("ts_ntz", DataTypes.TimestampNTZType, true)))
     // Use a reasonable date range (around year 2024) to avoid chrono-tz DST calculation
@@ -194,8 +201,13 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
     for (tz <- crossTimezones) {
       withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
         for (format <- CometTruncTimestamp.supportedFormats) {
-          checkSparkAnswerAndOperator(
-            s"SELECT ts_ntz, date_trunc('$format', ts_ntz) from ntz_tbl order by ts_ntz")
+          val sql =
+            s"SELECT ts_ntz, date_trunc('$format', ts_ntz) from ntz_tbl order by ts_ntz"
+          if (tz == "UTC") {
+            checkSparkAnswerAndOperator(sql)
+          } else {
+            checkSparkAnswer(sql)
+          }
         }
       }
     }
@@ -260,16 +272,19 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
         for (readTz <- readTimezones) {
           withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> readTz) {
             spark.read.parquet(dir.toString).createOrReplaceTempView("ntz_cross_tz")
-            // Verify raw values, casts, and temporal functions all match Spark
+            // Casts and unix_timestamp are supported natively for NTZ in any session TZ
             checkSparkAnswerAndOperator(
               "SELECT ts_ntz, CAST(ts_ntz AS STRING) FROM ntz_cross_tz ORDER BY ts_ntz")
             checkSparkAnswerAndOperator(
               "SELECT ts_ntz, CAST(ts_ntz AS DATE) FROM ntz_cross_tz ORDER BY ts_ntz")
             checkSparkAnswerAndOperator(
               "SELECT ts_ntz, unix_timestamp(ts_ntz) FROM ntz_cross_tz ORDER BY ts_ntz")
-            checkSparkAnswerAndOperator(
+            // hour/minute/second fall back for NTZ (issue #3180); date_trunc falls
+            // back when the session timezone is non-UTC (issue #2649). Verify
+            // correctness only.
+            checkSparkAnswer(
               "SELECT ts_ntz, hour(ts_ntz), minute(ts_ntz), second(ts_ntz) FROM ntz_cross_tz ORDER BY ts_ntz")
-            checkSparkAnswerAndOperator(
+            checkSparkAnswer(
               "SELECT ts_ntz, date_trunc('HOUR', ts_ntz) FROM ntz_cross_tz ORDER BY ts_ntz")
           }
         }
