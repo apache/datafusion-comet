@@ -20,7 +20,7 @@
 package org.apache.comet.parquet
 
 import java.io.File
-import java.math.{BigDecimal, BigInteger}
+import java.math.BigDecimal
 import java.time.{ZoneId, ZoneOffset}
 
 import scala.reflect.ClassTag
