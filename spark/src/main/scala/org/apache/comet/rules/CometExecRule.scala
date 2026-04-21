@@ -647,6 +647,11 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
    * operator enablement, grouping expressions, aggregate expressions, and result expressions.
    * Intentionally skips the sparkFinalMode / child-native checks since those depend on
    * transformation state.
+   *
+   * WARNING: this intentionally mirrors the predicate checks in `CometBaseAggregate.doConvert`
+   * (operators.scala). Any change to the convertibility rules there must be reflected here or
+   * this tagging pass will drift and either crash (missed tag) or over-disable (spurious tag). A
+   * shared predicate helper would be preferable.
    */
   private def canFinalAggregateBeConverted(agg: BaseAggregateExec): Boolean = {
     val handler = allExecs.get(agg.getClass)
@@ -690,11 +695,15 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
 
   /**
    * Search the child subtree for the first Partial-mode aggregate, traversing through exchanges
-   * and AQE stages.
+   * and AQE stages. Requires `aggregateExpressions.nonEmpty` so that intermediate distinct stages
+   * (group-by-only aggregates with empty aggregateExpressions, where `.forall` vacuously matches)
+   * are not mistaken for the partial we want to tag.
    */
   private def findPartialAggInPlan(plan: SparkPlan): Option[BaseAggregateExec] = {
     plan.collectFirst {
-      case agg: BaseAggregateExec if agg.aggregateExpressions.forall(e => e.mode == Partial) =>
+      case agg: BaseAggregateExec
+          if agg.aggregateExpressions.nonEmpty &&
+            agg.aggregateExpressions.forall(e => e.mode == Partial) =>
         Some(agg)
       case a: AQEShuffleReadExec => findPartialAggInPlan(a.child)
       case s: ShuffleQueryStageExec => findPartialAggInPlan(s.plan)

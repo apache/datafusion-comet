@@ -50,6 +50,14 @@ trait CometAggregateExpressionSerde[T <: AggregateFunction] {
   def getSupportLevel(expr: T): SupportLevel = Compatible(None)
 
   /**
+   * Whether this aggregate's intermediate buffer format is compatible between Spark and Comet,
+   * making it safe to run the Partial in one engine and the Final in the other. Aggregates with
+   * simple single-value buffers (MIN, MAX, COUNT, bitwise) are safe; those with complex or
+   * differently-encoded buffers (AVG, SUM with decimals, CollectSet, Variance) are not.
+   */
+  def supportsMixedPartialFinal: Boolean = false
+
+  /**
    * Convert a Spark expression into a protocol buffer representation that can be passed into
    * native code.
    *
@@ -68,14 +76,6 @@ trait CometAggregateExpressionSerde[T <: AggregateFunction] {
    *   case it is expected that the input expression will have been tagged with reasons why it
    *   could not be converted.
    */
-  /**
-   * Whether this aggregate's intermediate buffer format is compatible between Spark and Comet,
-   * making it safe to run the Partial in one engine and the Final in the other. Aggregates with
-   * simple single-value buffers (MIN, MAX, COUNT, bitwise) are safe; those with complex or
-   * differently-encoded buffers (AVG, SUM with decimals, CollectSet, Variance) are not.
-   */
-  def supportsMixedPartialFinal: Boolean = false
-
   def convert(
       aggExpr: AggregateExpression,
       expr: T,
