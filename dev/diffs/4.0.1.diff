@@ -589,28 +589,31 @@ index 81713c777bc..b5f92ed9742 100644
      assert(exchanges.size == 2)
    }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala
-index 2c24cc7d570..dae4419bd1c 100644
+index 2c24cc7d570..697ea7f8a60 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala
 @@ -22,6 +22,7 @@ import org.scalatest.GivenWhenThen
  import org.apache.spark.sql.catalyst.expressions.{DynamicPruningExpression, Expression}
  import org.apache.spark.sql.catalyst.expressions.CodegenObjectFactoryMode._
  import org.apache.spark.sql.catalyst.plans.ExistenceJoin
-+import org.apache.spark.sql.comet.CometScanExec
++import org.apache.spark.sql.comet.{CometNativeScanExec, CometScanExec}
  import org.apache.spark.sql.connector.catalog.{InMemoryTableCatalog, InMemoryTableWithV2FilterCatalog}
  import org.apache.spark.sql.execution._
  import org.apache.spark.sql.execution.adaptive._
-@@ -262,6 +263,9 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -262,6 +263,12 @@ abstract class DynamicPartitionPruningSuiteBase
        case s: BatchScanExec => s.runtimeFilters.collect {
          case d: DynamicPruningExpression => d.child
        }
 +      case s: CometScanExec => s.partitionFilters.collect {
 +        case d: DynamicPruningExpression => d.child
 +      }
++      case s: CometNativeScanExec => s.partitionFilters.collect {
++        case d: DynamicPruningExpression => d.child
++      }
        case _ => Nil
      }
    }
-@@ -1027,7 +1031,8 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -1027,7 +1034,8 @@ abstract class DynamicPartitionPruningSuiteBase
      }
    }
  
@@ -620,7 +623,7 @@ index 2c24cc7d570..dae4419bd1c 100644
      withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "false",
        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
        withTable("large", "dimTwo", "dimThree") {
-@@ -1151,7 +1156,8 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -1151,7 +1159,8 @@ abstract class DynamicPartitionPruningSuiteBase
      }
    }
  
@@ -630,7 +633,7 @@ index 2c24cc7d570..dae4419bd1c 100644
      withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true",
        SQLConf.ADAPTIVE_OPTIMIZER_EXCLUDED_RULES.key -> AQEPropagateEmptyRelation.ruleName,
        SQLConf.ANSI_ENABLED.key -> "false" // ANSI mode doesn't support "String + String"
-@@ -1215,7 +1221,8 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -1215,7 +1224,8 @@ abstract class DynamicPartitionPruningSuiteBase
    }
  
    test("SPARK-32509: Unused Dynamic Pruning filter shouldn't affect " +
@@ -640,7 +643,7 @@ index 2c24cc7d570..dae4419bd1c 100644
      withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
        withSQLConf(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
          val df = sql(
-@@ -1330,6 +1337,7 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -1330,6 +1340,7 @@ abstract class DynamicPartitionPruningSuiteBase
    }
  
    test("Subquery reuse across the whole plan",
@@ -648,7 +651,7 @@ index 2c24cc7d570..dae4419bd1c 100644
      DisableAdaptiveExecution("DPP in AQE must reuse broadcast")) {
      withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true",
        SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "false",
-@@ -1424,7 +1432,8 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -1424,7 +1435,8 @@ abstract class DynamicPartitionPruningSuiteBase
      }
    }
  
@@ -658,7 +661,7 @@ index 2c24cc7d570..dae4419bd1c 100644
      withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
        val df = sql(
          """ WITH v as (
-@@ -1699,7 +1708,8 @@ abstract class DynamicPartitionPruningV1Suite extends DynamicPartitionPruningDat
+@@ -1699,7 +1711,8 @@ abstract class DynamicPartitionPruningV1Suite extends DynamicPartitionPruningDat
     * Check the static scan metrics with and without DPP
     */
    test("static scan metrics",
@@ -668,7 +671,7 @@ index 2c24cc7d570..dae4419bd1c 100644
      withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true",
        SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "false",
        SQLConf.EXCHANGE_REUSE_ENABLED.key -> "false") {
-@@ -1730,6 +1740,8 @@ abstract class DynamicPartitionPruningV1Suite extends DynamicPartitionPruningDat
+@@ -1730,6 +1743,8 @@ abstract class DynamicPartitionPruningV1Suite extends DynamicPartitionPruningDat
                case s: BatchScanExec =>
                  // we use f1 col for v2 tables due to schema pruning
                  s.output.exists(_.exists(_.argString(maxFields = 100).contains("f1")))
@@ -3864,7 +3867,7 @@ index 982d57fb287..6017f36c440 100644
    implicit val formats: DefaultFormats = new DefaultFormats {
      override def dateFormatter = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss")
 diff --git a/sql/hive/src/test/scala/org/apache/spark/sql/hive/DynamicPartitionPruningHiveScanSuite.scala b/sql/hive/src/test/scala/org/apache/spark/sql/hive/DynamicPartitionPruningHiveScanSuite.scala
-index 52abd248f3a..7a199931a08 100644
+index 52abd248f3a..b4e096cae24 100644
 --- a/sql/hive/src/test/scala/org/apache/spark/sql/hive/DynamicPartitionPruningHiveScanSuite.scala
 +++ b/sql/hive/src/test/scala/org/apache/spark/sql/hive/DynamicPartitionPruningHiveScanSuite.scala
 @@ -19,6 +19,7 @@ package org.apache.spark.sql.hive
@@ -3875,11 +3878,14 @@ index 52abd248f3a..7a199931a08 100644
  import org.apache.spark.sql.execution._
  import org.apache.spark.sql.execution.adaptive.{DisableAdaptiveExecutionSuite, EnableAdaptiveExecutionSuite}
  import org.apache.spark.sql.hive.execution.HiveTableScanExec
-@@ -35,6 +36,9 @@ abstract class DynamicPartitionPruningHiveScanSuiteBase
+@@ -35,6 +36,12 @@ abstract class DynamicPartitionPruningHiveScanSuiteBase
        case s: FileSourceScanExec => s.partitionFilters.collect {
          case d: DynamicPruningExpression => d.child
        }
 +      case s: CometScanExec => s.partitionFilters.collect {
++        case d: DynamicPruningExpression => d.child
++      }
++      case s: CometNativeScanExec => s.partitionFilters.collect {
 +        case d: DynamicPruningExpression => d.child
 +      }
        case h: HiveTableScanExec => h.partitionPruningPred.collect {
