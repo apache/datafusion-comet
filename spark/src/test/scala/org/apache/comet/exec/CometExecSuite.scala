@@ -335,6 +335,42 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("non-AQE DPP with non-atomic type (struct/array) join key") {
+    withTempDir { dir =>
+      val path = s"${dir.getAbsolutePath}/data"
+      withSQLConf(CometConf.COMET_EXEC_ENABLED.key -> "false") {
+        spark
+          .range(100)
+          .selectExpr(
+            "cast(id % 10 as int) as store_id",
+            "cast(id as int) as date_id",
+            "cast(id * 2 as int) as units_sold")
+          .write
+          .partitionBy("store_id")
+          .parquet(s"$path/fact")
+        spark
+          .range(10)
+          .selectExpr("cast(id as int) as store_id", "cast(id as string) as country")
+          .write
+          .parquet(s"$path/dim")
+      }
+
+      Seq("struct", "array").foreach { dataType =>
+        withSQLConf(
+          SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+          spark.read.parquet(s"$path/fact").createOrReplaceTempView("fact_nonatomic")
+          spark.read.parquet(s"$path/dim").createOrReplaceTempView("dim_nonatomic")
+          val df = spark.sql(s"""SELECT f.date_id, f.store_id FROM fact_nonatomic f
+               |JOIN dim_nonatomic d
+               |ON $dataType(f.store_id) = $dataType(d.store_id)
+               |WHERE d.country = 'DE'""".stripMargin)
+          checkSparkAnswer(df)
+        }
+      }
+    }
+  }
+
   test("ShuffleQueryStageExec could be direct child node of CometBroadcastExchangeExec") {
     withSQLConf(CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
       val table = "src"

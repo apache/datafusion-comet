@@ -23,6 +23,7 @@ import java.util.concurrent.{Future => JFuture}
 
 import scala.concurrent.ExecutionContext
 import scala.concurrent.duration.Duration
+import scala.jdk.CollectionConverters._
 
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
@@ -95,31 +96,31 @@ case class CometSubqueryBroadcastExec(
         val broadcasted = child.executeBroadcast[Array[ChunkedByteBuffer]]()
         val arrowBatches = broadcasted.value
 
-        // Decode Arrow batches and extract key column values
-        val keyIndices = indices.map { idx =>
+        // Decode Arrow batches to rows using the same approach as ColumnarToRowExec:
+        // batch.rowIterator() + UnsafeProjection handles all types including structs/arrays.
+        val broadcastOutput = child.output
+        val toUnsafe = UnsafeProjection.create(broadcastOutput, broadcastOutput)
+
+        // Project key columns from the full broadcast output
+        val keyExprs = indices.map { idx =>
           val key = buildKeys(idx)
-          // Find the column index in the broadcast output that matches the build key
           key match {
             case attr: Attribute =>
-              child.output.indexWhere(_.exprId == attr.exprId)
-            case Cast(attr: Attribute, _, _, _) =>
-              child.output.indexWhere(_.exprId == attr.exprId)
-            case _ => idx
+              val colIdx = broadcastOutput.indexWhere(_.exprId == attr.exprId)
+              BoundReference(colIdx, key.dataType, key.nullable)
+            case Cast(attr: Attribute, dt, tz, ansi) =>
+              val colIdx = broadcastOutput.indexWhere(_.exprId == attr.exprId)
+              Cast(BoundReference(colIdx, attr.dataType, attr.nullable), dt, tz, ansi)
+            case _ =>
+              BoundReference(idx, key.dataType, key.nullable)
           }
         }
+        val keyProj = UnsafeProjection.create(keyExprs)
 
         val rows = arrowBatches.iterator
           .flatMap(Utils.decodeBatches(_, this.getClass.getSimpleName))
           .flatMap { batch =>
-            val numRows = batch.numRows()
-            (0 until numRows).iterator.map { rowIdx =>
-              val row = batch.getRow(rowIdx)
-              val projected = new GenericInternalRow(keyIndices.length)
-              keyIndices.zipWithIndex.foreach { case (colIdx, outIdx) =>
-                projected.update(outIdx, row.get(colIdx, output(outIdx).dataType))
-              }
-              projected.asInstanceOf[InternalRow].copy()
-            }
+            batch.rowIterator().asScala.map(toUnsafe).map(keyProj).map(_.copy())
           }
           .toArray
           .distinct
@@ -127,14 +128,11 @@ case class CometSubqueryBroadcastExec(
         val beforeBuild = System.nanoTime()
         longMetric("collectTime") += (beforeBuild - beforeCollect) / 1000000
         longMetric("numOutputRows") += rows.length
-        // Convert to UnsafeRow for consistent size metric and to match SubqueryBroadcastExec
-        val unsafeProj = UnsafeProjection.create(output.map(_.dataType).toArray)
-        val unsafeRows = rows.map(r => unsafeProj(r).copy())
-        val dataSize = unsafeRows.map(_.getSizeInBytes.toLong).sum
+        val dataSize = rows.map(_.asInstanceOf[UnsafeRow].getSizeInBytes.toLong).sum
         longMetric("dataSize") += dataSize
         SQLMetrics.postDriverMetricUpdates(sparkContext, executionId, metrics.values.toSeq)
 
-        unsafeRows.asInstanceOf[Array[InternalRow]]
+        rows.asInstanceOf[Array[InternalRow]]
       }
     }
   }
