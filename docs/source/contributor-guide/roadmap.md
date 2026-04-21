@@ -34,8 +34,8 @@ encryption) to the reader.
 
 ### Spark 4.0 Support
 
-Comet has experimental support for Spark 4.0, but there is more work to do ([#1637]), such as enabling
-more Spark SQL tests and fully implementing ANSI support ([#313]) for all supported expressions.
+Comet fully supports Spark 4.0. There is ongoing work to fully implement ANSI support ([#313]) for all
+supported expressions and to address remaining [Spark 4.0-specific limitations](../../user-guide/latest/compatibility.md#spark-40-limitations).
 
 [#313]: https://github.com/apache/datafusion-comet/issues/313
 [#1637]: https://github.com/apache/datafusion-comet/issues/1637

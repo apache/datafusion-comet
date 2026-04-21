@@ -125,6 +125,23 @@ achieves the same semantic goals:
 The only difference is that Comet's partition assignments will differ from Spark's. When results are sorted,
 they will be identical to Spark. Unsorted results may have different row ordering.
 
+## Spark 4.0 Limitations
+
+The following limitations apply specifically when running Comet with Spark 4.0. These represent new Spark
+4.0 features that Comet does not yet support. Queries that use these features will fall back to Spark.
+
+### Variant Type
+
+Comet does not yet support the Variant data type introduced in Spark 4.0. All variant-related operations
+will fall back to Spark. Tracking issue: [#2209](https://github.com/apache/datafusion-comet/issues/2209)
+
+### Parquet Type Widening
+
+Comet's native Parquet reader does not support Spark 4.0's type widening feature, which allows reading
+Parquet columns whose types have been widened (e.g., `int` to `long`, `float` to `double`,
+`date` to `timestamp_ntz`). These reads will fall back to Spark.
+Tracking issue: [#3321](https://github.com/apache/datafusion-comet/issues/3321)
+
 ## Cast
 
 Cast operations in Comet fall into three levels of support:
