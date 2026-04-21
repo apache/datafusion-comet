@@ -589,7 +589,7 @@ index 81713c777bc..b5f92ed9742 100644
      assert(exchanges.size == 2)
    }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala
-index 2c24cc7d570..fd3c85eef87 100644
+index 2c24cc7d570..e68e44be724 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala
 @@ -22,6 +22,7 @@ import org.scalatest.GivenWhenThen
@@ -608,7 +608,16 @@ index 2c24cc7d570..fd3c85eef87 100644
      }
  
      val hasFilter = if (withSubquery) "Should" else "Shouldn't"
-@@ -262,6 +264,12 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -247,6 +249,8 @@ abstract class DynamicPartitionPruningSuiteBase
+     val buf = collectDynamicPruningExpressions(df.queryExecution.executedPlan).collect {
+       case InSubqueryExec(_, b: SubqueryBroadcastExec, _, _, _, _) =>
+         b.indices.map(idx => b.buildKeys(idx))
++      case InSubqueryExec(_, b: CometSubqueryBroadcastExec, _, _, _, _) =>
++        b.indices.map(idx => b.buildKeys(idx))
+     }
+     assert(buf.distinct.size == n)
+   }
+@@ -262,6 +266,12 @@ abstract class DynamicPartitionPruningSuiteBase
        case s: BatchScanExec => s.runtimeFilters.collect {
          case d: DynamicPruningExpression => d.child
        }
@@ -621,7 +630,7 @@ index 2c24cc7d570..fd3c85eef87 100644
        case _ => Nil
      }
    }
-@@ -1027,7 +1035,8 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -1027,7 +1037,8 @@ abstract class DynamicPartitionPruningSuiteBase
      }
    }
  
@@ -631,7 +640,7 @@ index 2c24cc7d570..fd3c85eef87 100644
      withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "false",
        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
        withTable("large", "dimTwo", "dimThree") {
-@@ -1151,7 +1160,8 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -1151,7 +1162,8 @@ abstract class DynamicPartitionPruningSuiteBase
      }
    }
  
@@ -641,7 +650,26 @@ index 2c24cc7d570..fd3c85eef87 100644
      withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true",
        SQLConf.ADAPTIVE_OPTIMIZER_EXCLUDED_RULES.key -> AQEPropagateEmptyRelation.ruleName,
        SQLConf.ANSI_ENABLED.key -> "false" // ANSI mode doesn't support "String + String"
-@@ -1215,7 +1225,8 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -1204,10 +1216,16 @@ abstract class DynamicPartitionPruningSuiteBase
+ 
+       val plan = df.queryExecution.executedPlan
+       val countSubqueryBroadcasts =
+-        collectWithSubqueries(plan)({ case _: SubqueryBroadcastExec => 1 }).sum
++        collectWithSubqueries(plan)({
++          case _: SubqueryBroadcastExec => 1
++          case _: CometSubqueryBroadcastExec => 1
++        }).sum
+ 
+       val countReusedSubqueryBroadcasts =
+-        collectWithSubqueries(plan)({ case ReusedSubqueryExec(_: SubqueryBroadcastExec) => 1}).sum
++        collectWithSubqueries(plan)({
++          case ReusedSubqueryExec(_: SubqueryBroadcastExec) => 1
++          case ReusedSubqueryExec(_: CometSubqueryBroadcastExec) => 1
++        }).sum
+ 
+       assert(countSubqueryBroadcasts == 1)
+       assert(countReusedSubqueryBroadcasts == 1)
+@@ -1215,7 +1233,8 @@ abstract class DynamicPartitionPruningSuiteBase
    }
  
    test("SPARK-32509: Unused Dynamic Pruning filter shouldn't affect " +
@@ -651,7 +679,7 @@ index 2c24cc7d570..fd3c85eef87 100644
      withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
        withSQLConf(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
          val df = sql(
-@@ -1330,6 +1341,7 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -1330,6 +1349,7 @@ abstract class DynamicPartitionPruningSuiteBase
    }
  
    test("Subquery reuse across the whole plan",
@@ -659,7 +687,7 @@ index 2c24cc7d570..fd3c85eef87 100644
      DisableAdaptiveExecution("DPP in AQE must reuse broadcast")) {
      withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true",
        SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "false",
-@@ -1424,7 +1436,8 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -1424,7 +1444,8 @@ abstract class DynamicPartitionPruningSuiteBase
      }
    }
  
@@ -669,7 +697,15 @@ index 2c24cc7d570..fd3c85eef87 100644
      withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
        val df = sql(
          """ WITH v as (
-@@ -1699,7 +1712,8 @@ abstract class DynamicPartitionPruningV1Suite extends DynamicPartitionPruningDat
+@@ -1578,6 +1599,7 @@ abstract class DynamicPartitionPruningSuiteBase
+ 
+         val subqueryBroadcastExecs = collectWithSubqueries(df.queryExecution.executedPlan) {
+           case s: SubqueryBroadcastExec => s
++          case s: CometSubqueryBroadcastExec => s
+         }
+         assert(subqueryBroadcastExecs.size === 1)
+         subqueryBroadcastExecs.foreach { subqueryBroadcastExec =>
+@@ -1699,7 +1721,8 @@ abstract class DynamicPartitionPruningV1Suite extends DynamicPartitionPruningDat
     * Check the static scan metrics with and without DPP
     */
    test("static scan metrics",
@@ -679,7 +715,7 @@ index 2c24cc7d570..fd3c85eef87 100644
      withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true",
        SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "false",
        SQLConf.EXCHANGE_REUSE_ENABLED.key -> "false") {
-@@ -1730,6 +1744,8 @@ abstract class DynamicPartitionPruningV1Suite extends DynamicPartitionPruningDat
+@@ -1730,6 +1753,8 @@ abstract class DynamicPartitionPruningV1Suite extends DynamicPartitionPruningDat
                case s: BatchScanExec =>
                  // we use f1 col for v2 tables due to schema pruning
                  s.output.exists(_.exists(_.argString(maxFields = 100).contains("f1")))
@@ -1301,14 +1337,14 @@ index 0df7f806272..92390bd819f 100644
  
    test("non-matching optional group") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
-index 2e33f6505ab..c74f3e5562f 100644
+index 2e33f6505ab..6d4a75d02ff 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
 @@ -23,12 +23,14 @@ import org.apache.spark.SparkRuntimeException
  import org.apache.spark.sql.catalyst.expressions.SubqueryExpression
  import org.apache.spark.sql.catalyst.plans.{LeftAnti, LeftSemi}
  import org.apache.spark.sql.catalyst.plans.logical.{Aggregate, Filter, Join, LogicalPlan, Project, Sort, Union}
-+import org.apache.spark.sql.comet.CometScanExec
++import org.apache.spark.sql.comet.{CometNativeColumnarToRowExec, CometNativeScanExec, CometScanExec}
  import org.apache.spark.sql.execution._
  import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanHelper, DisableAdaptiveExecution}
  import org.apache.spark.sql.execution.datasources.FileScanRDD
@@ -1320,7 +1356,7 @@ index 2e33f6505ab..c74f3e5562f 100644
  import org.apache.spark.sql.test.SharedSparkSession
  
  class SubquerySuite extends QueryTest
-@@ -1529,6 +1531,12 @@ class SubquerySuite extends QueryTest
+@@ -1529,6 +1531,18 @@ class SubquerySuite extends QueryTest
              fs.inputRDDs().forall(
                _.asInstanceOf[FileScanRDD].filePartitions.forall(
                  _.files.forall(_.urlEncodedPath.contains("p=0"))))
@@ -1330,10 +1366,16 @@ index 2e33f6505ab..c74f3e5562f 100644
 +            fs.inputRDDs().forall(
 +              _.asInstanceOf[FileScanRDD].filePartitions.forall(
 +                _.files.forall(_.urlEncodedPath.contains("p=0"))))
++        case CometNativeColumnarToRowExec(
++        fs: CometNativeScanExec) =>
++          fs.partitionFilters.exists(ExecSubqueryExpression.hasSubquery) &&
++            fs.inputRDDs().forall(
++              _.asInstanceOf[FileScanRDD].filePartitions.forall(
++                _.files.forall(_.urlEncodedPath.contains("p=0"))))
          case _ => false
        })
      }
-@@ -2094,7 +2102,7 @@ class SubquerySuite extends QueryTest
+@@ -2094,7 +2108,7 @@ class SubquerySuite extends QueryTest
  
        df.collect()
        val exchanges = collect(df.queryExecution.executedPlan) {
@@ -1342,7 +1384,7 @@ index 2e33f6505ab..c74f3e5562f 100644
        }
        assert(exchanges.size === 1)
      }
-@@ -2674,22 +2682,31 @@ class SubquerySuite extends QueryTest
+@@ -2674,22 +2688,31 @@ class SubquerySuite extends QueryTest
      }
    }
  
