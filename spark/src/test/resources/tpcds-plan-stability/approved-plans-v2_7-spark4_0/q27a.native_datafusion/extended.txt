@@ -48,11 +48,7 @@ CometNativeColumnarToRow
       :              :     :     :  +- CometBroadcastHashJoin
       :              :     :     :     :- CometFilter
       :              :     :     :     :  +- CometNativeScan parquet spark_catalog.default.store_sales
-      :              :     :     :     :        +- CometSubqueryBroadcast
-      :              :     :     :     :           +- CometBroadcastExchange
-      :              :     :     :     :              +- CometProject
-      :              :     :     :     :                 +- CometFilter
-      :              :     :     :     :                    +- CometNativeScan parquet spark_catalog.default.date_dim
+      :              :     :     :     :        +- ReusedSubquery
       :              :     :     :     +- CometBroadcastExchange
       :              :     :     :        +- CometProject
       :              :     :     :           +- CometFilter
@@ -82,11 +78,7 @@ CometNativeColumnarToRow
                      :     :     :  +- CometBroadcastHashJoin
                      :     :     :     :- CometFilter
                      :     :     :     :  +- CometNativeScan parquet spark_catalog.default.store_sales
-                     :     :     :     :        +- CometSubqueryBroadcast
-                     :     :     :     :           +- CometBroadcastExchange
-                     :     :     :     :              +- CometProject
-                     :     :     :     :                 +- CometFilter
-                     :     :     :     :                    +- CometNativeScan parquet spark_catalog.default.date_dim
+                     :     :     :     :        +- ReusedSubquery
                      :     :     :     +- CometBroadcastExchange
                      :     :     :        +- CometProject
                      :     :     :           +- CometFilter
@@ -103,4 +95,4 @@ CometNativeColumnarToRow
                         +- CometFilter
                            +- CometNativeScan parquet spark_catalog.default.item
 
-Comet accelerated 100 out of 103 eligible operators (97%). Final plan contains 1 transitions between Spark and Comet.
+Comet accelerated 92 out of 95 eligible operators (96%). Final plan contains 1 transitions between Spark and Comet.
