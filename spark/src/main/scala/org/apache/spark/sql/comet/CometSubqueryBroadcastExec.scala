@@ -40,14 +40,17 @@ import org.apache.spark.util.io.ChunkedByteBuffer
  * Comet replacement for SubqueryBroadcastExec that consumes Arrow broadcast data from a
  * CometBroadcastExchangeExec instead of HashedRelation from BroadcastExchangeExec.
  *
- * This enables broadcast exchange reuse between DPP subqueries and broadcast hash joins
- * when CometExecRule converts BroadcastExchangeExec to CometBroadcastExchangeExec.
- * Without this, the two exchanges have different types and canonical forms, so Spark's
- * ReuseExchangeAndSubquery (which runs after Comet rules) cannot match them.
+ * This enables broadcast exchange reuse between DPP subqueries and broadcast hash joins when
+ * CometExecRule converts BroadcastExchangeExec to CometBroadcastExchangeExec. Without this, the
+ * two exchanges have different types and canonical forms, so Spark's ReuseExchangeAndSubquery
+ * (which runs after Comet rules) cannot match them.
  *
- * @param indices the indices of the join keys in the list of keys from the build side
- * @param buildKeys the join keys from the build side of the join
- * @param child the CometBroadcastExchangeExec (or ReusedExchangeExec after reuse)
+ * @param indices
+ *   the indices of the join keys in the list of keys from the build side
+ * @param buildKeys
+ *   the join keys from the build side of the join
+ * @param child
+ *   the CometBroadcastExchangeExec (or ReusedExchangeExec after reuse)
  */
 case class CometSubqueryBroadcastExec(
     name: String,
@@ -150,8 +153,7 @@ case class CometSubqueryBroadcastExec(
 
   override def stringArgs: Iterator[Any] = super.stringArgs ++ Iterator(s"[id=#$id]")
 
-  override protected def withNewChildInternal(
-      newChild: SparkPlan): CometSubqueryBroadcastExec =
+  override protected def withNewChildInternal(newChild: SparkPlan): CometSubqueryBroadcastExec =
     copy(child = newChild)
 }
 

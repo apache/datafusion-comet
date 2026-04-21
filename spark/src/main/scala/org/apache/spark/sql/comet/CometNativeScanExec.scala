@@ -176,37 +176,20 @@ case class CometNativeScanExec(
    * partition's files (lazily, as tasks are scheduled).
    */
   @transient private lazy val serializedPartitionData: (Array[Byte], Array[Array[Byte]]) = {
-    // scalastyle:off println
-    println(s"[DPP-DEBUG] serializedPartitionData: checking partitionFilters")
-    partitionFilters.foreach {
-      case DynamicPruningExpression(e: InSubqueryExec) =>
-        println(s"[DPP-DEBUG]   InSubqueryExec plan=${e.plan.getClass.getSimpleName} " +
-          s"values empty=${e.values().isEmpty}")
-      case other =>
-        println(s"[DPP-DEBUG]   filter: ${other.getClass.getSimpleName}")
-    }
-    // scalastyle:on println
     // Ensure DPP subqueries are resolved before accessing file partitions.
     // serializedPartitionData can be triggered from findAllPlanData (via commonData) on a
     // different execution path than the standard prepare() -> executeSubqueries() flow
     // (e.g., from a BroadcastExchangeExec thread). We must resolve DPP here explicitly.
     partitionFilters.foreach {
       case DynamicPruningExpression(e: InSubqueryExec) if e.values().isEmpty =>
-        // scalastyle:off println
-        println(s"[DPP-DEBUG] calling updateResult on InSubqueryExec " +
-          s"plan=${e.plan.getClass.getSimpleName} id=${System.identityHashCode(e)}")
-        // scalastyle:on println
+        logDebug(s"Resolving DPP subquery: plan=${e.plan.getClass.getSimpleName}")
         try {
           e.updateResult()
-          // scalastyle:off println
-          println(s"[DPP-DEBUG] updateResult succeeded, values empty=${e.values().isEmpty}")
-          // scalastyle:on println
+          logDebug(s"DPP subquery resolved successfully")
         } catch {
-          // scalastyle:off println
           case ex: Exception =>
-            println(s"[DPP-DEBUG] updateResult FAILED: ${ex.getMessage}")
+            logError(s"DPP subquery resolution failed: ${ex.getMessage}")
             throw ex
-          // scalastyle:on println
         }
       case _ =>
     }
@@ -216,10 +199,9 @@ case class CometNativeScanExec(
     if (scan != null) {
       scan.partitionFilters.foreach {
         case DynamicPruningExpression(e: InSubqueryExec) if e.values().isEmpty =>
-          // scalastyle:off println
-          println(s"[DPP-DEBUG] also resolving scan's InSubqueryExec " +
-            s"plan=${e.plan.getClass.getSimpleName} id=${System.identityHashCode(e)}")
-          // scalastyle:on println
+          logDebug(
+            s"Resolving CometScanExec DPP subquery: " +
+              s"plan=${e.plan.getClass.getSimpleName}")
           e.updateResult()
         case _ =>
       }
