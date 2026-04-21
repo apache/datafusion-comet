@@ -371,6 +371,177 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  // Regression tests for DPP exchange/subquery reuse (from DynamicPartitionPruningSuite)
+
+  private def withDppTables(f: => Unit): Unit = {
+    val factData = Seq(
+      (1000, 1, 1, 10),
+      (1010, 2, 1, 10),
+      (1020, 2, 1, 10),
+      (1030, 3, 2, 10),
+      (1040, 3, 2, 50),
+      (1050, 3, 2, 50),
+      (1060, 3, 2, 50),
+      (1070, 4, 2, 10),
+      (1080, 4, 3, 20),
+      (1090, 4, 3, 10),
+      (1100, 4, 3, 10),
+      (1110, 5, 3, 10),
+      (1120, 6, 4, 10),
+      (1130, 7, 4, 50),
+      (1140, 8, 4, 50),
+      (1150, 9, 1, 20),
+      (1160, 10, 1, 20),
+      (1170, 11, 1, 30),
+      (1180, 12, 2, 20),
+      (1190, 13, 2, 20),
+      (1200, 14, 3, 40),
+      (1200, 15, 3, 70),
+      (1210, 16, 4, 10),
+      (1220, 17, 4, 20),
+      (1230, 18, 4, 20),
+      (1240, 19, 5, 40),
+      (1250, 20, 5, 40),
+      (1260, 21, 5, 40),
+      (1270, 22, 5, 50),
+      (1280, 23, 1, 50),
+      (1290, 24, 1, 50),
+      (1300, 25, 1, 50))
+
+    val storeData = Seq(
+      (1, "North-Holland", "NL"),
+      (2, "South-Holland", "NL"),
+      (3, "Bavaria", "DE"),
+      (4, "California", "US"),
+      (5, "Texas", "US"),
+      (6, "Texas", "US"))
+
+    val storeCode = Seq((1, 10), (2, 20), (3, 30), (4, 40), (5, 50), (6, 60))
+
+    import testImplicits._
+
+    withTable("fact_np", "fact_sk", "fact_stats", "dim_stats", "dim_store", "code_stats") {
+      factData
+        .toDF("date_id", "store_id", "product_id", "units_sold")
+        .write
+        .format("parquet")
+        .saveAsTable("fact_np")
+      factData
+        .toDF("date_id", "store_id", "product_id", "units_sold")
+        .write
+        .partitionBy("store_id")
+        .format("parquet")
+        .saveAsTable("fact_sk")
+      factData
+        .toDF("date_id", "store_id", "product_id", "units_sold")
+        .write
+        .partitionBy("store_id")
+        .format("parquet")
+        .saveAsTable("fact_stats")
+      storeData
+        .toDF("store_id", "state_province", "country")
+        .write
+        .format("parquet")
+        .saveAsTable("dim_store")
+      storeData
+        .toDF("store_id", "state_province", "country")
+        .write
+        .format("parquet")
+        .saveAsTable("dim_stats")
+      storeCode
+        .toDF("store_id", "code")
+        .write
+        .partitionBy("store_id")
+        .format("parquet")
+        .saveAsTable("code_stats")
+      sql("ANALYZE TABLE fact_stats COMPUTE STATISTICS FOR COLUMNS store_id")
+      sql("ANALYZE TABLE dim_stats COMPUTE STATISTICS FOR COLUMNS store_id")
+      sql("ANALYZE TABLE dim_store COMPUTE STATISTICS FOR COLUMNS store_id")
+      sql("ANALYZE TABLE code_stats COMPUTE STATISTICS FOR COLUMNS store_id")
+
+      f
+    }
+  }
+
+  test("DPP broadcast exchange reuse") {
+    withDppTables {
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
+
+        val df = sql("""SELECT /*+ BROADCAST(f)*/
+            |f.date_id, f.store_id, f.product_id, f.units_sold FROM fact_np f
+            |JOIN code_stats s
+            |ON f.store_id = s.store_id WHERE f.date_id <= 1030""".stripMargin)
+        val (_, cometPlan) = checkSparkAnswer(df)
+
+        val reusedExchanges = collectWithSubqueries(cometPlan) { case e: ReusedExchangeExec =>
+          e
+        }
+        assert(
+          reusedExchanges.nonEmpty,
+          s"Expected ReusedExchangeExec for broadcast exchange reuse:\n${cometPlan.treeString}")
+      }
+    }
+  }
+
+  test("DPP subquery reuse with uncorrelated scalar subquery") {
+    withDppTables {
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
+
+        val df = sql("""SELECT d.store_id, SUM(f.units_sold),
+            |       (SELECT SUM(f.units_sold)
+            |        FROM fact_stats f JOIN dim_stats d ON d.store_id = f.store_id
+            |        WHERE d.country = 'US') AS total_prod
+            |FROM fact_stats f JOIN dim_stats d ON d.store_id = f.store_id
+            |WHERE d.country = 'US'
+            |GROUP BY 1""".stripMargin)
+        val (_, cometPlan) = checkSparkAnswer(df)
+
+        val countSubqueryBroadcasts = collectWithSubqueries(cometPlan)({
+          case _: SubqueryBroadcastExec => 1
+          case _: CometSubqueryBroadcastExec => 1
+        }).sum
+        val countReusedSubqueryBroadcasts = collectWithSubqueries(cometPlan)({
+          case ReusedSubqueryExec(_: SubqueryBroadcastExec) => 1
+          case ReusedSubqueryExec(_: CometSubqueryBroadcastExec) => 1
+        }).sum
+
+        assert(
+          countSubqueryBroadcasts == 1,
+          s"Expected 1 subquery broadcast but got $countSubqueryBroadcasts:\n" +
+            cometPlan.treeString)
+        assert(
+          countReusedSubqueryBroadcasts == 1,
+          s"Expected 1 reused subquery broadcast but got $countReusedSubqueryBroadcasts:\n" +
+            cometPlan.treeString)
+      }
+    }
+  }
+
+  test("DPP with non-atomic type (struct/array) join key") {
+    withDppTables {
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true") {
+
+        Seq("struct", "array").foreach { dataType =>
+          val df =
+            sql(s"""SELECT f.date_id, f.product_id, f.units_sold, f.store_id FROM fact_stats f
+               |JOIN dim_stats s
+               |ON $dataType(f.store_id) = $dataType(s.store_id) WHERE s.country = 'DE'
+               """.stripMargin)
+          checkSparkAnswer(df)
+        }
+      }
+    }
+  }
+
   test("ShuffleQueryStageExec could be direct child node of CometBroadcastExchangeExec") {
     withSQLConf(CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
       val table = "src"

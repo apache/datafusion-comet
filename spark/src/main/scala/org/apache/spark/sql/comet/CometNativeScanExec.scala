@@ -298,7 +298,8 @@ case class CometNativeScanExec(
     obj match {
       case other: CometNativeScanExec =>
         this.originalPlan == other.originalPlan &&
-        this.serializedPlanOpt == other.serializedPlanOpt
+        this.serializedPlanOpt == other.serializedPlanOpt &&
+        this.partitionFilters == other.partitionFilters
       case _ =>
         false
     }
