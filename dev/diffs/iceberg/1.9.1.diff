@@ -6,7 +6,7 @@ index c50991c5fc..c3bd841c95 100644
  bson-ver = "4.11.5"
  caffeine = "2.9.3"
  calcite = "1.39.0"
-+comet = "0.15.0-SNAPSHOT"
++comet = "0.16.0-SNAPSHOT"
  datasketches = "6.2.0"
  delta-standalone = "3.3.1"
  delta-spark = "3.3.1"
