@@ -109,6 +109,7 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     withParquetTable((0 until 5000).map(i => (i, (i + 1).toLong)), "tbl") {
       withTempPath { dir =>
         val outPath = new File(dir, "written").getAbsolutePath
+        val expectedRows = 5000L
         val outputBytes = mutable.ArrayBuffer.empty[Long]
         val outputRecords = mutable.ArrayBuffer.empty[Long]
         val targetStageIds = mutable.HashSet.empty[Int]
@@ -163,8 +164,25 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           spark.sparkContext.listenerBus.waitUntilEmpty()
 
           assert(outputBytes.nonEmpty, "No task reported outputMetrics.bytesWritten")
-          assert(outputBytes.sum > 0L, "outputMetrics.bytesWritten should be positive")
-          assert(outputRecords.sum > 0L, "outputMetrics.recordsWritten should be positive")
+          val totalOutputBytes = outputBytes.sum
+          val totalOutputRecords = outputRecords.sum
+
+          assert(
+            totalOutputRecords == expectedRows,
+            s"recordsWritten mismatch: metrics=$totalOutputRecords, expected=$expectedRows")
+
+          val outputDir = new File(outPath)
+          val fileBytes = Option(outputDir.listFiles())
+            .getOrElse(Array.empty)
+            .filter(f => f.isFile && f.getName.startsWith("part-"))
+            .map(_.length())
+            .sum
+
+          assert(fileBytes > 0L, s"Expected written parquet bytes should be > 0, got $fileBytes")
+          val ratio = totalOutputBytes.toDouble / fileBytes.toDouble
+          assert(
+            ratio >= 0.7 && ratio <= 1.3,
+            s"bytesWritten ratio out of range: metrics=$totalOutputBytes, files=$fileBytes, ratio=$ratio")
         } finally {
           spark.sparkContext.removeSparkListener(listener)
         }
