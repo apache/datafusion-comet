@@ -89,14 +89,14 @@ impl PhysicalExpr for SubstringExpr {
         let arg = self.child.evaluate(batch)?;
         match arg {
             ColumnarValue::Array(array) => {
-                // Spark returns empty when negative start exceeds string length.
-                // Arrow clamps to 0 instead, so we must fix up per-element.
-                let array = if self.start < 0 {
-                    clamp_negative_start(&array, self.start)?
+                let result = if self.start < 0 {
+                    // Spark and Arrow differ for negative start: Arrow clamps
+                    // start to 0 then takes `len` chars, but Spark computes
+                    // end = unclamped_start + len, then clamps both independently.
+                    spark_substring_negative_start(&array, self.start, self.len)?
                 } else {
-                    array
+                    substring(&array, self.start, self.len)?
                 };
-                let result = substring(&array, self.start, self.len)?;
                 Ok(ColumnarValue::Array(result))
             }
             _ => Err(DataFusionError::Execution(
@@ -121,13 +121,15 @@ impl PhysicalExpr for SubstringExpr {
     }
 }
 
-/// For negative start, Spark returns empty when abs(start) > string length.
-/// Arrow's substring_by_char clamps to 0 instead. This function replaces
-/// such strings with "" so the subsequent Arrow substring returns "".
-fn clamp_negative_start(array: &ArrayRef, start: i64) -> datafusion::common::Result<ArrayRef> {
+/// Implement Spark's substring semantics for negative start positions.
+/// Spark: start = numChars + pos, end = start + len, clamp both, empty if start >= end.
+/// Arrow: start = max(0, numChars + pos), take len chars — differs when start is clamped.
+fn spark_substring_negative_start(
+    array: &ArrayRef,
+    start: i64,
+    len: u64,
+) -> datafusion::common::Result<ArrayRef> {
     use arrow::array::{DictionaryArray, GenericStringBuilder};
-
-    let abs_start = start.unsigned_abs() as usize;
 
     match array.data_type() {
         DataType::Utf8 => {
@@ -137,12 +139,7 @@ fn clamp_negative_start(array: &ArrayRef, start: i64) -> datafusion::common::Res
                 if str_array.is_null(i) {
                     builder.append_null();
                 } else {
-                    let val = str_array.value(i);
-                    if val.chars().count() < abs_start {
-                        builder.append_value("");
-                    } else {
-                        builder.append_value(val);
-                    }
+                    builder.append_value(spark_substr_negative(str_array.value(i), start, len));
                 }
             }
             Ok(Arc::new(builder.finish()) as ArrayRef)
@@ -154,22 +151,33 @@ fn clamp_negative_start(array: &ArrayRef, start: i64) -> datafusion::common::Res
                 if str_array.is_null(i) {
                     builder.append_null();
                 } else {
-                    let val = str_array.value(i);
-                    if val.chars().count() < abs_start {
-                        builder.append_value("");
-                    } else {
-                        builder.append_value(val);
-                    }
+                    builder.append_value(spark_substr_negative(str_array.value(i), start, len));
                 }
             }
             Ok(Arc::new(builder.finish()) as ArrayRef)
         }
         DataType::Dictionary(_, _) => {
             let dict = as_dictionary_array::<Int32Type>(array);
-            let values = clamp_negative_start(dict.values(), start)?;
+            let values = spark_substring_negative_start(dict.values(), start, len)?;
             let result = DictionaryArray::try_new(dict.keys().clone(), values)?;
             Ok(Arc::new(result) as ArrayRef)
         }
         _ => Ok(Arc::clone(array)),
     }
+}
+
+fn spark_substr_negative(s: &str, pos: i64, len: u64) -> String {
+    let num_chars = s.chars().count() as i64;
+    let start = num_chars + pos;
+    let end = start.saturating_add(len as i64).min(num_chars);
+    let start = start.max(0);
+
+    if start >= end {
+        return String::new();
+    }
+
+    s.chars()
+        .skip(start as usize)
+        .take((end - start) as usize)
+        .collect()
 }

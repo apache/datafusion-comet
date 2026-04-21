@@ -584,14 +584,10 @@ class CometStringExpressionSuite extends CometTestBase {
   test("substring - large start and length values") {
     val data = Seq(("hello world", ""), ("abc", ""), ("", ""), (null, ""))
     withParquetTable(data, "tbl") {
-      checkSparkAnswerAndOperator(
-        s"SELECT substring(_1, ${Int.MaxValue}, 5) FROM tbl")
-      checkSparkAnswerAndOperator(
-        s"SELECT substring(_1, 1, ${Int.MaxValue}) FROM tbl")
-      checkSparkAnswerAndOperator(
-        s"SELECT substring(_1, ${Int.MinValue + 1}, 5) FROM tbl")
-      checkSparkAnswerAndOperator(
-        s"SELECT substring(_1, ${Int.MinValue + 1}) FROM tbl")
+      checkSparkAnswerAndOperator(s"SELECT substring(_1, ${Int.MaxValue}, 5) FROM tbl")
+      checkSparkAnswerAndOperator(s"SELECT substring(_1, 1, ${Int.MaxValue}) FROM tbl")
+      checkSparkAnswerAndOperator(s"SELECT substring(_1, ${Int.MinValue + 1}, 5) FROM tbl")
+      checkSparkAnswerAndOperator(s"SELECT substring(_1, ${Int.MinValue + 1}) FROM tbl")
       checkSparkAnswerAndOperator(
         s"SELECT substring(_1, ${Int.MaxValue}, ${Int.MaxValue}) FROM tbl")
     }
