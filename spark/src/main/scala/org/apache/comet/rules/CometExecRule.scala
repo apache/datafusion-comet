@@ -53,6 +53,7 @@ import org.apache.comet.CometSparkSessionExtensions._
 import org.apache.comet.rules.CometExecRule.allExecs
 import org.apache.comet.serde._
 import org.apache.comet.serde.operator._
+import org.apache.comet.shims.ShimSubqueryBroadcast
 
 object CometExecRule {
 
@@ -93,7 +94,9 @@ object CometExecRule {
 /**
  * Spark physical optimizer rule for replacing Spark operators with Comet operators.
  */
-case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
+case class CometExecRule(session: SparkSession)
+    extends Rule[SparkPlan]
+    with ShimSubqueryBroadcast {
 
   private lazy val showTransformations = CometConf.COMET_EXPLAIN_TRANSFORMATIONS.get()
 
@@ -298,8 +301,100 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         }
     }
 
+    // scalastyle:off println
     plan.transformUp { case op =>
-      convertNode(op)
+      val hasSubqueryExpr = op.expressions.exists(_.exists {
+        case _: InSubqueryExec => true
+        case _ => false
+      })
+      if (hasSubqueryExpr) {
+        println(s"[RULE-DEBUG] convertNode on ${op.getClass.getSimpleName} " +
+          s"which HAS InSubqueryExec expressions")
+        op.expressions.foreach { expr =>
+          expr.foreach {
+            case sub: InSubqueryExec =>
+              println(s"[RULE-DEBUG]   InSubqueryExec.plan: ${sub.plan.getClass.getSimpleName}")
+              sub.plan match {
+                case sb: SubqueryBroadcastExec =>
+                  println(s"[RULE-DEBUG]   SubqueryBroadcast.child: " +
+                    s"${sb.child.getClass.getSimpleName}")
+                  sb.child match {
+                    case b: BroadcastExchangeExec =>
+                      println(s"[RULE-DEBUG]   BroadcastExchange.child: " +
+                        s"${b.child.getClass.getSimpleName}")
+                      println(s"[RULE-DEBUG]   BroadcastExchange.child is CometNative? " +
+                        s"${b.child.isInstanceOf[CometNativeExec]}")
+                      println(s"[RULE-DEBUG]   BroadcastExchange.children all CometNative? " +
+                        s"${b.children.forall(_.isInstanceOf[CometNativeExec])}")
+                    case other =>
+                      println(s"[RULE-DEBUG]   SubqueryBroadcast.child is: " +
+                        s"${other.getClass.getSimpleName}")
+                  }
+                case other =>
+                  println(s"[RULE-DEBUG]   sub.plan is: ${other.getClass.getSimpleName}")
+              }
+            case _ =>
+          }
+        }
+      }
+      val converted = convertNode(op)
+      // Replace SubqueryBroadcastExec with CometSubqueryBroadcastExec in DPP expressions
+      // when the broadcast child has a Comet plan underneath. This enables exchange reuse
+      // between the DPP subquery and the join's CometBroadcastExchangeExec because both
+      // will have the same CometBroadcastExchangeExec type and canonical form.
+      convertSubqueryBroadcasts(converted)
+    }
+    // scalastyle:on println
+  }
+
+  /**
+   * Replace SubqueryBroadcastExec with CometSubqueryBroadcastExec in a node's expressions.
+   *
+   * When CometExecRule converts BroadcastExchangeExec to CometBroadcastExchangeExec on the
+   * join side, the DPP subquery still references the original BroadcastExchangeExec.
+   * ReuseExchangeAndSubquery (which runs after Comet rules) can't match them because they
+   * have different types. By replacing SubqueryBroadcastExec with CometSubqueryBroadcastExec
+   * (which wraps a CometBroadcastExchangeExec), both sides have the same exchange type and
+   * reuse works.
+   *
+   * The BroadcastExchangeExec in the subquery has a CometNativeColumnarToRowExec child
+   * (inserted by ApplyColumnarRulesAndInsertTransitions because BroadcastExchangeExec expects
+   * row input). We strip this transition and create CometBroadcastExchangeExec with the
+   * underlying Comet plan directly.
+   */
+  private def convertSubqueryBroadcasts(plan: SparkPlan): SparkPlan = {
+    plan.transformExpressionsUp {
+      case inSub: InSubqueryExec =>
+        inSub.plan match {
+          case sub: SubqueryBroadcastExec =>
+            sub.child match {
+              case b: BroadcastExchangeExec =>
+                // The BroadcastExchangeExec child is CometNativeColumnarToRowExec wrapping
+                // a Comet plan. Strip the row transition to get the columnar Comet plan.
+                val cometChild = b.child match {
+                  case c2r: CometNativeColumnarToRowExec => c2r.child
+                  case other => other
+                }
+                if (cometChild.isInstanceOf[CometNativeExec]) {
+                  // scalastyle:off println
+                  println(s"[RULE-DEBUG] Converting SubqueryBroadcastExec to " +
+                    s"CometSubqueryBroadcastExec, cometChild=${cometChild.getClass.getSimpleName}")
+                  // scalastyle:on println
+                  val cometBroadcast = CometBroadcastExchangeExec(
+                    b, b.output, b.mode, cometChild)
+                  val cometSub = CometSubqueryBroadcastExec(
+                    sub.name,
+                    getSubqueryBroadcastExecIndices(sub),
+                    sub.buildKeys,
+                    cometBroadcast)
+                  inSub.withNewPlan(cometSub)
+                } else {
+                  inSub
+                }
+              case _ => inSub
+            }
+          case _ => inSub
+        }
     }
   }
 

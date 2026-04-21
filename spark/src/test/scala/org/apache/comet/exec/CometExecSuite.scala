@@ -204,7 +204,9 @@ class CometExecSuite extends CometTestBase {
         spark.read.parquet(dimPath).createOrReplaceTempView("dpp_dim_bhj")
         val df = spark.sql(
           "select * from dpp_fact_bhj join dpp_dim_bhj on fact_date = dim_date where dim_id > 7")
-        val (_, cometPlan) = checkSparkAnswerAndOperator(df)
+        // Exclude ReusedExchangeExec — it appears inside the DPP subquery after exchange reuse
+        val (_, cometPlan) = checkSparkAnswerAndOperator(
+          df, classOf[ReusedExchangeExec])
 
         val nativeScans = cometPlan.collect { case s: CometNativeScanExec => s }
         assert(nativeScans.nonEmpty, "Expected CometNativeScanExec in plan")
@@ -259,6 +261,77 @@ class CometExecSuite extends CometTestBase {
         assert(
           !infos.contains("AQE Dynamic Partition Pruning is not supported"),
           s"Should not fall back for non-AQE DPP:\n$infos")
+      }
+    }
+  }
+
+  test("DPP broadcast exchange reuse investigation") {
+    withTempDir { dir =>
+      val path = s"${dir.getAbsolutePath}/data"
+      withSQLConf(CometConf.COMET_EXEC_ENABLED.key -> "false") {
+        spark.range(100).selectExpr(
+          "id % 10 as store_id", "cast(id * 2 as int) as date_id",
+          "cast(id * 3 as int) as product_id", "cast(id as int) as units_sold")
+          .write.partitionBy("store_id").parquet(s"$path/fact")
+        spark.range(10).selectExpr(
+          "cast(id as int) as store_id", "cast(id as string) as country")
+          .write.parquet(s"$path/dim")
+      }
+
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
+        spark.read.parquet(s"$path/fact").createOrReplaceTempView("fact_reuse")
+        spark.read.parquet(s"$path/dim").createOrReplaceTempView("dim_reuse")
+
+        val df = spark.sql(
+          """SELECT f.date_id, f.store_id
+            |FROM fact_reuse f JOIN dim_reuse d
+            |ON f.store_id = d.store_id
+            |WHERE d.country = 'DE'""".stripMargin)
+        df.collect()
+        val plan = df.queryExecution.executedPlan
+        // scalastyle:off println
+        println(s"[REUSE-DEBUG] Plan:\n${plan.treeString}")
+
+        // Walk into subquery expressions to see what's inside
+        plan.foreach { node =>
+          node.expressions.foreach { expr =>
+            expr.foreach {
+              case sub: InSubqueryExec =>
+                println(s"[REUSE-DEBUG] Found InSubqueryExec in ${node.getClass.getSimpleName}")
+                println(s"[REUSE-DEBUG]   sub.plan class: ${sub.plan.getClass.getSimpleName}")
+                println(s"[REUSE-DEBUG]   sub.plan tree:\n${sub.plan.treeString}")
+                sub.plan match {
+                  case sb: SubqueryBroadcastExec =>
+                    println(s"[REUSE-DEBUG]   SubqueryBroadcast child: " +
+                      s"${sb.child.getClass.getSimpleName}")
+                    println(s"[REUSE-DEBUG]   SubqueryBroadcast child tree:\n" +
+                      s"${sb.child.treeString}")
+                  case other =>
+                    println(s"[REUSE-DEBUG]   sub.plan is: ${other.getClass.getSimpleName}")
+                }
+              case _ =>
+            }
+          }
+        }
+
+        val reused = collectWithSubqueries(plan) {
+          case e: ReusedExchangeExec => e
+        }
+        println(s"[REUSE-DEBUG] ReusedExchangeExec count: ${reused.size}")
+
+        val broadcasts = collectWithSubqueries(plan) {
+          case e: BroadcastExchangeExec => ("BroadcastExchangeExec", e: SparkPlan)
+          case e: CometBroadcastExchangeExec => ("CometBroadcastExchangeExec", e: SparkPlan)
+        }
+        println(s"[REUSE-DEBUG] Broadcast exchange count: ${broadcasts.size}")
+        broadcasts.foreach { case (typ, e) =>
+          println(s"[REUSE-DEBUG]   $typ hash=${e.canonicalized.hashCode()}")
+          println(s"[REUSE-DEBUG]   $typ child: ${e.children.map(_.getClass.getSimpleName)}")
+        }
+        // scalastyle:on println
       }
     }
   }
