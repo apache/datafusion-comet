@@ -495,7 +495,7 @@ columns are always safe because they can only come from signed <code class="docu
 <li><p>Spark’s Datasource V2 API. When <code class="docutils literal notranslate"><span class="pre">spark.sql.sources.useV1SourceList</span></code> does not include <code class="docutils literal notranslate"><span class="pre">parquet</span></code>, Spark uses the
 V2 API for Parquet scans. The DataFusion-based implementations only support the V1 API.</p></li>
 <li><p>Spark metadata columns (e.g., <code class="docutils literal notranslate"><span class="pre">_metadata.file_path</span></code>)</p></li>
-<li><p>No support for Dynamic Partition Pruning (DPP)</p></li>
+<li><p>No support for AQE Dynamic Partition Pruning (DPP). Non-AQE DPP is supported.</p></li>
 </ul>
 <p>The following shared limitation may produce incorrect results without falling back to Spark:</p>
 <ul class="simple">

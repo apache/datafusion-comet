@@ -577,59 +577,55 @@ under the License.
 <td><p>Whether to enable debug mode for Comet. When enabled, Comet will do additional checks for debugging purpose. For example, validating array when importing arrays from JVM at native side. Note that these checks may be expensive in performance and should only be enabled for debugging purpose.</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.dppFallback.enabled</span></code></p></td>
-<td><p>Whether to fall back to Spark for queries that use DPP.</p></td>
-<td><p>true</p></td>
-</tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.enabled</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.enabled</span></code></p></td>
 <td><p>Whether to enable Comet extension for Spark. When this is turned on, Spark will use Comet to read Parquet data source. Note that to enable native vectorized execution, both this config and <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.enabled</span></code> need to be enabled. It can be overridden by the environment variable <code class="docutils literal notranslate"><span class="pre">ENABLE_COMET</span></code>.</p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exceptionOnDatetimeRebase</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exceptionOnDatetimeRebase</span></code></p></td>
 <td><p>Whether to throw exception when seeing dates/timestamps from the legacy hybrid (Julian + Gregorian) calendar. Since Spark 3, dates/timestamps were written according to the Proleptic Gregorian calendar. When this is true, Comet will throw exceptions when seeing these dates/timestamps that were written by Spark version before 3.0. If this is false, these dates/timestamps will be read as if they were written to the Proleptic Gregorian calendar and will not be rebased.</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.columnarToRow.native.enabled</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.columnarToRow.native.enabled</span></code></p></td>
 <td><p>Whether to enable native columnar to row conversion. When enabled, Comet will use native Rust code to convert Arrow columnar data to Spark UnsafeRow format instead of the JVM implementation. This can improve performance for queries that need to convert between columnar and row formats.</p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.enabled</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.enabled</span></code></p></td>
 <td><p>Whether to enable Comet native vectorized execution for Spark. This controls whether Spark should convert operators into their Comet counterparts and execute them in native space. Note: each operator is associated with a separate config in the format of <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.&lt;operator_name&gt;.enabled</span></code> at the moment, and both the config and this need to be turned on, in order for the operator to be executed in native.</p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.replaceSortMergeJoin</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.replaceSortMergeJoin</span></code></p></td>
 <td><p>Experimental feature to force Spark to replace SortMergeJoin with ShuffledHashJoin for improved performance. This feature is not stable yet. For more information, refer to the <a class="reference external" href="https://datafusion.apache.org/comet/user-guide/tuning.html">Comet Tuning Guide</a>.</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.strictFloatingPoint</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.strictFloatingPoint</span></code></p></td>
 <td><p>When enabled, fall back to Spark for floating-point operations that may differ from Spark, such as when comparing or sorting -0.0 and 0.0. For more information, refer to the <a class="reference external" href="https://datafusion.apache.org/comet/user-guide/compatibility.html">Comet Compatibility Guide</a>.</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.maxTempDirectorySize</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.maxTempDirectorySize</span></code></p></td>
 <td><p>The maximum amount of data (in bytes) stored inside the temporary directories.</p></td>
 <td><p>107374182400b</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.metrics.enabled</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.metrics.enabled</span></code></p></td>
 <td><p>Whether to enable Comet metrics reporting through Spark’s external monitoring system. When enabled, Comet exposes metrics such as native operators, Spark operators, queries planned, transitions, and acceleration ratio. These metrics can be visualized through tools like Grafana when a metrics sink (e.g., Prometheus) is configured. Disabled by default because Spark plan traversal adds overhead and metrics require a sink to be useful. This config must be set before the SparkSession is created to take effect.</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.metrics.updateInterval</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.metrics.updateInterval</span></code></p></td>
 <td><p>The interval in milliseconds to update metrics. If interval is negative, metrics will be updated upon task completion.</p></td>
 <td><p>3000</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.nativeLoadRequired</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.nativeLoadRequired</span></code></p></td>
 <td><p>Whether to require Comet native library to load successfully when Comet is enabled. If not, Comet will silently fallback to Spark when it fails to load the native lib. Otherwise, an error will be thrown and the Spark job will be aborted.</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.operator.DataWritingCommandExec.allowIncompatible</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.operator.DataWritingCommandExec.allowIncompatible</span></code></p></td>
 <td><p>Whether to allow incompatibility for operator: DataWritingCommandExec. False by default. Can be overridden with SPARK_COMET_OPERATOR_DATAWRITINGCOMMANDEXEC_ALLOWINCOMPATIBLE env variable It can be overridden by the environment variable <code class="docutils literal notranslate"><span class="pre">SPARK_COMET_OPERATOR_DATAWRITINGCOMMANDEXEC_ALLOWINCOMPATIBLE</span></code>.</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.sparkToColumnar.enabled</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.sparkToColumnar.enabled</span></code></p></td>
 <td><p>Whether to enable Spark to Arrow columnar conversion. When this is turned on, Comet will convert operators in <code class="docutils literal notranslate"><span class="pre">spark.comet.sparkToColumnar.supportedOperatorList</span></code> into Arrow columnar format before processing.</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.sparkToColumnar.supportedOperatorList</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.sparkToColumnar.supportedOperatorList</span></code></p></td>
 <td><p>A comma-separated list of operators that will be converted to Arrow columnar format when <code class="docutils literal notranslate"><span class="pre">spark.comet.sparkToColumnar.enabled</span></code> is true.</p></td>
 <td><p>Range,InMemoryTableScan,RDDScan</p></td>
 </tr>
