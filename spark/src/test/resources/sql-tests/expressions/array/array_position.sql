@@ -225,6 +225,35 @@ SELECT array_position(array(array(1, 2), array(3, 4)), array(1, 2))
 query spark_answer_only
 SELECT array_position(array(array(1, 2), array(3, 4)), array(5, 6))
 
+-- nested int array column (exercises position_fallback natively)
+statement
+CREATE TABLE test_ap_nested_int(arr array<array<int>>, val array<int>) USING parquet
+
+statement
+INSERT INTO test_ap_nested_int VALUES
+  (array(array(1, 2), array(3, 4), array(5, 6)), array(3, 4)),
+  (array(array(1, 2), array(3, 4)), array(5, 6)),
+  (array(array(1, 2), array(1, 2, 3)), array(1, 2)),
+  (NULL, array(1, 2)),
+  (array(array(1, 2)), NULL)
+
+query
+SELECT array_position(arr, val) FROM test_ap_nested_int
+
+-- nested string array column (exercises position_fallback natively)
+statement
+CREATE TABLE test_ap_nested_str(arr array<array<string>>, val array<string>) USING parquet
+
+statement
+INSERT INTO test_ap_nested_str VALUES
+  (array(array('a', 'b'), array('c', 'd')), array('c', 'd')),
+  (array(array('a', 'b'), array('c', 'd')), array('x', 'y')),
+  (NULL, array('a')),
+  (array(array('a')), NULL)
+
+query
+SELECT array_position(arr, val) FROM test_ap_nested_str
+
 -- timestamp arrays
 statement
 CREATE TABLE test_ap_ts(arr array<timestamp>, val timestamp) USING parquet
