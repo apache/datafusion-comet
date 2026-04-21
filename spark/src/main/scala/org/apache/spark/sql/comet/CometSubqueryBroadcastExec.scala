@@ -112,7 +112,7 @@ case class CometSubqueryBroadcastExec(
               val colIdx = broadcastOutput.indexWhere(_.exprId == attr.exprId)
               Cast(BoundReference(colIdx, attr.dataType, attr.nullable), dt, tz, ansi)
             case _ =>
-              BoundReference(idx, key.dataType, key.nullable)
+              BindReferences.bindReference(key, broadcastOutput)
           }
         }
         val keyProj = UnsafeProjection.create(keyExprs)
