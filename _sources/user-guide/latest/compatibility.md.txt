@@ -160,6 +160,18 @@ suffixes (e.g. `Europe/Moscow`), and the full Spark timestamp year range
 (-290308 to 294247). Note that `CAST(string AS DATE)` is only compatible for years between
 262143 BC and 262142 AD due to an underlying library limitation.
 
+### Decimal with Negative Scale to String
+
+Casting a `DecimalType` with a negative scale to `StringType` is marked as incompatible when
+`spark.sql.legacy.allowNegativeScaleOfDecimal` is `false` (the default). When that config is
+disabled, Spark cannot create negative-scale decimals, so Comet falls back to avoid running
+native execution on unexpected inputs.
+
+When `spark.sql.legacy.allowNegativeScaleOfDecimal=true`, the cast is compatible. Comet matches
+Spark's behavior of using Java `BigDecimal.toString()` semantics, which produces scientific
+notation (e.g. a value of 12300 stored as `Decimal(7,-2)` with unscaled value 123 is rendered
+as `"1.23E+4"`).
+
 ### Legacy Mode
 
 <!--BEGIN:CAST_LEGACY_TABLE-->

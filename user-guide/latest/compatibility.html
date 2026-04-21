@@ -421,7 +421,7 @@ under the License.
     <li class="breadcrumb-item"><a href="../index.html" class="nav-link">Comet User Guide</a></li>
     
     
-    <li class="breadcrumb-item"><a href="index.html" class="nav-link">Comet 0.15.0-SNAPSHOT User Guide</a></li>
+    <li class="breadcrumb-item"><a href="index.html" class="nav-link">Comet 0.16.0-SNAPSHOT User Guide</a></li>
     
     <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Compatibility Guide</span></li>
   </ul>
@@ -604,6 +604,17 @@ by Apache Spark, including ISO 8601 date-time strings, date-only strings, time-o
 suffixes (e.g. <code class="docutils literal notranslate"><span class="pre">Europe/Moscow</span></code>), and the full Spark timestamp year range
 (-290308 to 294247). Note that <code class="docutils literal notranslate"><span class="pre">CAST(string</span> <span class="pre">AS</span> <span class="pre">DATE)</span></code> is only compatible for years between
 262143 BC and 262142 AD due to an underlying library limitation.</p>
+</section>
+<section id="decimal-with-negative-scale-to-string">
+<h3>Decimal with Negative Scale to String<a class="headerlink" href="#decimal-with-negative-scale-to-string" title="Link to this heading">#</a></h3>
+<p>Casting a <code class="docutils literal notranslate"><span class="pre">DecimalType</span></code> with a negative scale to <code class="docutils literal notranslate"><span class="pre">StringType</span></code> is marked as incompatible when
+<code class="docutils literal notranslate"><span class="pre">spark.sql.legacy.allowNegativeScaleOfDecimal</span></code> is <code class="docutils literal notranslate"><span class="pre">false</span></code> (the default). When that config is
+disabled, Spark cannot create negative-scale decimals, so Comet falls back to avoid running
+native execution on unexpected inputs.</p>
+<p>When <code class="docutils literal notranslate"><span class="pre">spark.sql.legacy.allowNegativeScaleOfDecimal=true</span></code>, the cast is compatible. Comet matches
+Spark’s behavior of using Java <code class="docutils literal notranslate"><span class="pre">BigDecimal.toString()</span></code> semantics, which produces scientific
+notation (e.g. a value of 12300 stored as <code class="docutils literal notranslate"><span class="pre">Decimal(7,-2)</span></code> with unscaled value 123 is rendered
+as <code class="docutils literal notranslate"><span class="pre">&quot;1.23E+4&quot;</span></code>).</p>
 </section>
 <section id="legacy-mode">
 <h3>Legacy Mode<a class="headerlink" href="#legacy-mode" title="Link to this heading">#</a></h3>
