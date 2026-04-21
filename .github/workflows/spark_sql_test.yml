@@ -130,7 +130,7 @@ jobs:
           - config: {spark-short: '4.0', spark-full: '4.0.1', java: 17}
             module: {name: "sql_hive-1", args1: "", args2: "hive/testOnly * -- -l org.apache.spark.tags.ExtendedHiveTest -l org.apache.spark.tags.SlowHiveTest"}
       fail-fast: false
-    name: spark-sql-${{ matrix.config.scan-impl }}-${{ matrix.module.name }}/spark-${{ matrix.config.spark-full }}
+    name: spark-sql-${{ matrix.module.name }}/spark-${{ matrix.config.spark-full }}
     runs-on: ${{ matrix.os }}
     container:
       image: amd64/rust
@@ -167,7 +167,7 @@ jobs:
         if: ${{ github.event.inputs.collect-fallback-logs == 'true' }}
         uses: actions/upload-artifact@v7
         with:
-          name: fallback-log-spark-sql-${{ matrix.config.scan-impl }}-${{ matrix.module.name }}-spark-${{ matrix.config.spark-full }}
+          name: fallback-log-spark-sql-${{ matrix.module.name }}-spark-${{ matrix.config.spark-full }}
           path: "**/fallback.log"
 
   merge-fallback-logs:
