@@ -328,8 +328,8 @@ class CometExecSuite extends CometTestBase {
           val reusedChild = reused.head.child
           assert(
             reusedChild.canonicalized == broadcasts.head.canonicalized,
-            s"ReusedExchangeExec child and CometBroadcastExchangeExec should have same " +
-              s"canonical form for reuse")
+            "ReusedExchangeExec child and CometBroadcastExchangeExec should have same " +
+              "canonical form for reuse")
         }
       }
     }
