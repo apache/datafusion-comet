@@ -2209,6 +2209,98 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("LocalTableScanExec with timestamps in non-UTC timezone") {
+    withSQLConf(
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      SESSION_LOCAL_TIMEZONE.key -> "America/Los_Angeles") {
+      val df = Seq(
+        (1, java.sql.Timestamp.valueOf("2024-01-15 10:30:00")),
+        (2, java.sql.Timestamp.valueOf("2024-06-15 14:00:00")),
+        (3, java.sql.Timestamp.valueOf("2024-12-25 08:00:00")))
+        .toDF("id", "ts")
+        .orderBy("ts")
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("SparkToColumnar with timestamps in non-UTC timezone") {
+    withTempDir { dir =>
+      val path = new java.io.File(dir, "data").getAbsolutePath
+      Seq(
+        (1, java.sql.Timestamp.valueOf("2024-01-15 10:30:00")),
+        (2, java.sql.Timestamp.valueOf("2024-06-15 14:00:00")),
+        (3, java.sql.Timestamp.valueOf("2024-12-25 08:00:00")))
+        .toDF("id", "ts")
+        .write
+        .parquet(path)
+      withSQLConf(
+        CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
+        CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true",
+        CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true",
+        SESSION_LOCAL_TIMEZONE.key -> "America/Los_Angeles") {
+        val df = spark.read.parquet(path).orderBy("ts")
+        checkSparkAnswerAndOperator(df)
+      }
+    }
+  }
+
+  test("sort on timestamps with non-UTC timezone via LocalTableScan") {
+    // When session timezone is non-UTC, CometLocalTableScanExec and
+    // CometSparkToColumnarExec must use UTC for the Arrow schema timezone
+    // to match the native side's expectations. Without this, the native
+    // ScanExec sees a timezone mismatch and performs an unnecessary cast.
+    // The cast is currently a no-op (Arrow timestamps with timezone are
+    // always UTC microseconds), but using UTC avoids the overhead and
+    // keeps schemas consistent throughout the native plan.
+    withSQLConf(
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      SESSION_LOCAL_TIMEZONE.key -> "America/Los_Angeles") {
+      val df = Seq(
+        (1, java.sql.Timestamp.valueOf("2024-01-15 10:30:00")),
+        (2, java.sql.Timestamp.valueOf("2024-06-15 14:00:00")),
+        (3, java.sql.Timestamp.valueOf("2024-12-25 08:00:00")))
+        .toDF("id", "ts")
+        .repartition(2)
+        .orderBy("ts")
+      checkSparkAnswer(df)
+    }
+  }
+
+  test("Native_datafusion reports correct files and bytes scanned") {
+    val inputFiles = 2
+
+    withTempDir { dir =>
+      val path = new java.io.File(dir, "test_metrics").getAbsolutePath
+      spark.range(100).repartition(inputFiles).write.mode("overwrite").parquet(path)
+
+      withSQLConf(
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_NATIVE_SCAN_IMPL.key -> "native_datafusion") {
+        val df = spark.read.parquet(path)
+
+        // Trigger two different actions to ensure metrics are not duplicated
+        df.count()
+        df.collect()
+
+        val scanNode = stripAQEPlan(df.queryExecution.executedPlan)
+          .collectFirst {
+            case n: org.apache.spark.sql.comet.CometNativeScanExec => n
+            case n: org.apache.spark.sql.comet.CometScanExec => n
+          }
+          .getOrElse {
+            fail(
+              s"Comet scan node not found in the physical plan. Plan: \n${df.queryExecution.executedPlan}")
+          }
+
+        val numFiles = scanNode.metrics("numFiles").value
+        assert(
+          numFiles == inputFiles,
+          s"Expected exactly $inputFiles files to be scanned, but got metrics reporting $numFiles")
+      }
+    }
+  }
+
 }
 
 case class BucketedTableTestSpec(

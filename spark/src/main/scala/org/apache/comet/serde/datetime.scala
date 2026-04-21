@@ -21,9 +21,9 @@ package org.apache.comet.serde
 
 import java.util.Locale
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, DateAdd, DateDiff, DateFormatClass, DateSub, DayOfMonth, DayOfWeek, DayOfYear, Days, GetDateField, Hour, LastDay, Literal, MakeDate, Minute, Month, NextDay, Quarter, Second, TruncDate, TruncTimestamp, UnixDate, UnixTimestamp, WeekDay, WeekOfYear, Year}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, DateAdd, DateDiff, DateFormatClass, DateFromUnixDate, DateSub, DayOfMonth, DayOfWeek, DayOfYear, Days, GetDateField, Hour, Hours, LastDay, Literal, MakeDate, Minute, Month, NextDay, Quarter, Second, TruncDate, TruncTimestamp, UnixDate, UnixTimestamp, WeekDay, WeekOfYear, Year}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{DateType, IntegerType, StringType, TimestampType}
+import org.apache.spark.sql.types.{DateType, IntegerType, StringType, TimestampNTZType, TimestampType}
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
@@ -352,6 +352,8 @@ object CometMakeDate extends CometScalarFunction[MakeDate]("make_date")
 
 object CometLastDay extends CometScalarFunction[LastDay]("last_day")
 
+object CometDateFromUnixDate extends CometScalarFunction[DateFromUnixDate]("date_from_unix_date")
+
 object CometDateDiff extends CometScalarFunction[DateDiff]("date_diff")
 
 /**
@@ -584,6 +586,37 @@ object CometDateFormat extends CometExpressionSerde[DateFormatClass] {
         withInfo(expr, expr.left, expr.right)
         None
     }
+  }
+}
+
+/**
+ * Converts a timestamp to the number of hours since Unix epoch (1970-01-01 00:00:00 UTC). This is
+ * a V2 partition transform expression.
+ *
+ * Both TimestampType and TimestampNTZType use direct division of the raw microsecond value
+ * without applying any session timezone offset.
+ */
+object CometHours extends CometExpressionSerde[Hours] {
+  override def convert(
+      expr: Hours,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val optExpr = expr.child.dataType match {
+      case TimestampType | TimestampNTZType =>
+        exprToProtoInternal(expr.child, inputs, binding).map { childExpr =>
+          val builder = ExprOuterClass.HoursTransform.newBuilder()
+          builder.setChild(childExpr)
+
+          ExprOuterClass.Expr
+            .newBuilder()
+            .setHoursTransform(builder)
+            .build()
+        }
+      case other =>
+        withInfo(expr, s"Hours does not support input type: $other")
+        None
+    }
+    optExprWithInfo(optExpr, expr, expr.child)
   }
 }
 

@@ -203,6 +203,11 @@ class Native extends NativeBase {
    */
   @native def logMemoryUsage(name: String, memoryUsageBytes: Long): Unit
 
+  /**
+   * Returns the Rust thread ID for the current thread.
+   */
+  @native def getRustThreadId(): Long
+
   // Native Columnar to Row conversion methods
 
   /**

@@ -17,20 +17,17 @@
   under the License.
 -->
 
-# Accelerating Apache Iceberg Parquet Scans using Comet (Experimental)
-
-**Note: Iceberg integration is a work-in-progress.**
+# Accelerating Apache Iceberg Parquet Scans using Comet
 
 ## Native Reader
 
-Comet's fully-native Iceberg integration does not require modifying Iceberg source
-code. Instead, Comet relies on reflection to extract `FileScanTask`s from Iceberg, which are
+Comet's native Iceberg reader relies on reflection to extract `FileScanTask`s from Iceberg, which are
 then serialized to Comet's native execution engine (see
 [PR #2528](https://github.com/apache/datafusion-comet/pull/2528)).
 
 The example below uses Spark's package downloader to retrieve Comet 0.14.0 and Iceberg
-1.8.1, but Comet has been tested with Iceberg 1.5, 1.7, 1.8, 1.9, and 1.10. The key configuration
-to enable fully-native Iceberg is `spark.comet.scan.icebergNative.enabled=true`.
+1.8.1, but Comet has been tested with Iceberg 1.5, 1.7, 1.8, 1.9, and 1.10. The native Iceberg
+reader is enabled by default. To disable it, set `spark.comet.scan.icebergNative.enabled=false`.
 
 ```shell
 $SPARK_HOME/bin/spark-shell \
@@ -43,7 +40,6 @@ $SPARK_HOME/bin/spark-shell \
     --conf spark.plugins=org.apache.spark.CometPlugin \
     --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
     --conf spark.sql.extensions=org.apache.comet.CometSparkSessionExtensions \
-    --conf spark.comet.scan.icebergNative.enabled=true \
     --conf spark.comet.explainFallback.enabled=true \
     --conf spark.memory.offHeap.enabled=true \
     --conf spark.memory.offHeap.size=2g
@@ -120,7 +116,6 @@ $SPARK_HOME/bin/spark-shell \
     --conf spark.plugins=org.apache.spark.CometPlugin \
     --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
     --conf spark.sql.extensions=org.apache.comet.CometSparkSessionExtensions \
-    --conf spark.comet.scan.icebergNative.enabled=true \
     --conf spark.comet.explainFallback.enabled=true \
     --conf spark.memory.offHeap.enabled=true \
     --conf spark.memory.offHeap.size=2g

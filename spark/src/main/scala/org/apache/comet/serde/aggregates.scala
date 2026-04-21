@@ -22,7 +22,7 @@ package org.apache.comet.serde
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.catalyst.expressions.Attribute
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, Corr, Count, Covariance, CovPopulation, CovSample, First, Last, Max, Min, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, CollectSet, Corr, Count, Covariance, CovPopulation, CovSample, First, Last, Max, Min, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ByteType, DataTypes, DecimalType, IntegerType, LongType, ShortType, StringType}
 
@@ -584,13 +584,6 @@ object CometStddevPop extends CometAggregateExpressionSerde[StddevPop] with Come
 }
 
 object CometCorr extends CometAggregateExpressionSerde[Corr] {
-
-  override def getSupportLevel(expr: Corr): SupportLevel =
-    Incompatible(
-      Some(
-        "Returns null instead of NaN in some edge cases" +
-          " (https://github.com/apache/datafusion-comet/issues/2646)"))
-
   override def convert(
       aggExpr: AggregateExpression,
       corr: Corr,
@@ -666,6 +659,52 @@ object CometBloomFilterAggregate extends CometAggregateExpressionSerde[BloomFilt
         bloomFilter.child,
         bloomFilter.estimatedNumItemsExpression,
         bloomFilter.numBitsExpression)
+      None
+    }
+  }
+}
+
+object CometCollectSet extends CometAggregateExpressionSerde[CollectSet] {
+
+  override def getSupportLevel(expr: CollectSet): SupportLevel = {
+    if (COMET_EXEC_STRICT_FLOATING_POINT.get() &&
+      SupportLevel.containsFloatingPoint(expr.children.head.dataType)) {
+      Incompatible(
+        Some(
+          "collect_set on floating-point types is not 100% compatible with Spark " +
+            "(Comet deduplicates NaN values while Spark treats each NaN as distinct), " +
+            s"and Comet is running with ${COMET_EXEC_STRICT_FLOATING_POINT.key}=true. " +
+            s"${CometConf.COMPAT_GUIDE}"))
+    } else {
+      Compatible()
+    }
+  }
+
+  override def convert(
+      aggExpr: AggregateExpression,
+      expr: CollectSet,
+      inputs: Seq[Attribute],
+      binding: Boolean,
+      conf: SQLConf): Option[ExprOuterClass.AggExpr] = {
+    val child = expr.children.head
+    val childExpr = exprToProto(child, inputs, binding)
+    val dataType = serializeDataType(expr.dataType)
+
+    if (childExpr.isDefined && dataType.isDefined) {
+      val builder = ExprOuterClass.CollectSet.newBuilder()
+      builder.setChild(childExpr.get)
+      builder.setDatatype(dataType.get)
+
+      Some(
+        ExprOuterClass.AggExpr
+          .newBuilder()
+          .setCollectSet(builder)
+          .build())
+    } else if (dataType.isEmpty) {
+      withInfo(aggExpr, s"datatype ${expr.dataType} is not supported", child)
+      None
+    } else {
+      withInfo(aggExpr, child)
       None
     }
   }

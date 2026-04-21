@@ -253,11 +253,6 @@ jobs:
           - name: "Spark 3.5, JDK 17, Scala 2.12"
             java_version: "17"
             maven_opts: "-Pspark-3.5 -Pscala-2.12"
-            scan_impl: "native_datafusion"
-
-          - name: "Spark 3.5, JDK 17, Scala 2.12"
-            java_version: "17"
-            maven_opts: "-Pspark-3.5 -Pscala-2.12"
             scan_impl: "native_iceberg_compat"
 
           - name: "Spark 4.0, JDK 17"
@@ -320,6 +315,8 @@ jobs:
               org.apache.spark.sql.comet.CometTPCDSV1_4_PlanStabilitySuite
               org.apache.spark.sql.comet.CometTPCDSV2_7_PlanStabilitySuite
               org.apache.spark.sql.comet.CometTaskMetricsSuite
+              org.apache.spark.sql.comet.CometDppFallbackRepro3949Suite
+              org.apache.spark.sql.comet.CometShuffleFallbackStickinessSuite
               org.apache.comet.objectstore.NativeConfigSuite
           - name: "expressions"
             value: |

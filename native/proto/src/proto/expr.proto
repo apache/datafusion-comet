@@ -88,6 +88,7 @@ message Expr {
     UnixTimestamp unix_timestamp = 65;
     FromJson from_json = 66;
     ToCsv to_csv = 67;
+    HoursTransform hours_transform = 68;
   }
 
   // Optional QueryContext for error reporting (contains SQL text and position)
@@ -139,6 +140,7 @@ message AggExpr {
     Stddev stddev = 14;
     Correlation correlation = 15;
     BloomFilterAgg bloomFilterAgg = 16;
+    CollectSet collectSet = 17;
   }
 
   // Optional filter expression for SQL FILTER (WHERE ...) clause.
@@ -247,6 +249,11 @@ message BloomFilterAgg {
   DataType datatype = 4;
 }
 
+message CollectSet {
+  Expr child = 1;
+  DataType datatype = 2;
+}
+
 enum EvalMode {
   LEGACY = 0;
   TRY = 1;
@@ -266,6 +273,9 @@ message Cast {
   string timezone = 3;
   EvalMode eval_mode = 4;
   bool allow_incompat = 5;
+  // True when running against Spark 4.0+. Controls version-specific cast behaviour
+  // such as the handling of leading whitespace before T-prefixed time-only strings.
+  bool is_spark4_plus = 6;
 }
 
 message BinaryExpr {
@@ -351,6 +361,10 @@ message ToPrettyString {
 message Hour {
   Expr child = 1;
   string timezone = 2;
+}
+
+message HoursTransform {
+  Expr child = 1;
 }
 
 message Minute {

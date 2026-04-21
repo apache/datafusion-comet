@@ -7,7 +7,7 @@ index d3544881af1..377683b10c5 100644
      <ivy.version>2.5.1</ivy.version>
      <oro.version>2.0.8</oro.version>
 +    <spark.version.short>3.4</spark.version.short>
-+    <comet.version>0.15.0-SNAPSHOT</comet.version>
++    <comet.version>0.16.0-SNAPSHOT</comet.version>
      <!--
      If you changes codahale.metrics.version, you also need to change
      the link to metrics.dropwizard.io in docs/monitoring.md.
@@ -438,16 +438,6 @@ index f33432ddb6f..7d758d2481f 100644
        case _ => Nil
      }
    }
-@@ -755,7 +759,8 @@ abstract class DynamicPartitionPruningSuiteBase
-     }
-   }
- 
--  test("partition pruning in broadcast hash joins") {
-+  test("partition pruning in broadcast hash joins",
-+    IgnoreComet("TODO: Support SubqueryBroadcastExec in Comet: #1737")) {
-     Given("disable broadcast pruning and disable subquery duplication")
-     withSQLConf(
-       SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true",
 @@ -1027,7 +1032,8 @@ abstract class DynamicPartitionPruningSuiteBase
      }
    }
@@ -956,48 +946,6 @@ index 525d97e4998..843f0472c23 100644
      AccumulatorSuite.verifyPeakExecutionMemorySet(sparkContext, "external sort") {
        sql("SELECT * FROM testData2 ORDER BY a ASC, b ASC").collect()
      }
-@@ -4429,7 +4430,8 @@ class SQLQuerySuite extends QueryTest with SharedSparkSession with AdaptiveSpark
-   }
- 
-   test("SPARK-39166: Query context of binary arithmetic should be serialized to executors" +
--    " when WSCG is off") {
-+    " when WSCG is off",
-+    IgnoreComet("https://github.com/apache/datafusion-comet/issues/2215")) {
-     withSQLConf(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
-       SQLConf.ANSI_ENABLED.key -> "true") {
-       withTable("t") {
-@@ -4450,7 +4452,8 @@ class SQLQuerySuite extends QueryTest with SharedSparkSession with AdaptiveSpark
-   }
- 
-   test("SPARK-39175: Query context of Cast should be serialized to executors" +
--    " when WSCG is off") {
-+    " when WSCG is off",
-+    IgnoreComet("https://github.com/apache/datafusion-comet/issues/2215")) {
-     withSQLConf(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
-       SQLConf.ANSI_ENABLED.key -> "true") {
-       withTable("t") {
-@@ -4467,14 +4470,19 @@ class SQLQuerySuite extends QueryTest with SharedSparkSession with AdaptiveSpark
-           val msg = intercept[SparkException] {
-             sql(query).collect()
-           }.getMessage
--          assert(msg.contains(query))
-+          if (!isCometEnabled) {
-+            // Comet's error message does not include the original SQL query
-+            // https://github.com/apache/datafusion-comet/issues/2215
-+            assert(msg.contains(query))
-+          }
-         }
-       }
-     }
-   }
- 
-   test("SPARK-39190,SPARK-39208,SPARK-39210: Query context of decimal overflow error should " +
--    "be serialized to executors when WSCG is off") {
-+    "be serialized to executors when WSCG is off",
-+    IgnoreComet("https://github.com/apache/datafusion-comet/issues/2215")) {
-     withSQLConf(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
-       SQLConf.ANSI_ENABLED.key -> "true") {
-       withTable("t") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala
 index 48ad10992c5..51d1ee65422 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala
@@ -2332,34 +2280,18 @@ index 240bb4e6dcb..8287ffa03ca 100644
  
    import testImplicits._
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRowIndexSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRowIndexSuite.scala
-index 351c6d698fc..583d9225cca 100644
+index 351c6d698fc..cef6bb08b8c 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRowIndexSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRowIndexSuite.scala
-@@ -20,12 +20,14 @@ import java.io.File
- 
- import scala.collection.JavaConverters._
- 
-+import org.apache.comet.CometConf
- import org.apache.hadoop.fs.Path
- import org.apache.parquet.column.ParquetProperties._
- import org.apache.parquet.hadoop.{ParquetFileReader, ParquetOutputFormat}
+@@ -26,6 +26,7 @@ import org.apache.parquet.hadoop.{ParquetFileReader, ParquetOutputFormat}
  import org.apache.parquet.hadoop.ParquetWriter.DEFAULT_BLOCK_SIZE
  
  import org.apache.spark.sql.QueryTest
-+import org.apache.spark.sql.comet.{CometBatchScanExec, CometScanExec}
++import org.apache.spark.sql.comet.{CometBatchScanExec, CometNativeScanExec, CometScanExec}
  import org.apache.spark.sql.execution.FileSourceScanExec
  import org.apache.spark.sql.execution.datasources.FileFormat
  import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
-@@ -172,6 +174,8 @@ class ParquetRowIndexSuite extends QueryTest with SharedSparkSession {
- 
-   private def testRowIndexGeneration(label: String, conf: RowIndexTestConf): Unit = {
-     test (s"$label - ${conf.desc}") {
-+      // native_datafusion Parquet scan does not support row index generation.
-+      assume(CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_DATAFUSION)
-       withSQLConf(conf.sqlConfs: _*) {
-         withTempPath { path =>
-           val rowIndexColName = FileFormat.ROW_INDEX_TEMPORARY_COLUMN_NAME
-@@ -230,6 +234,12 @@ class ParquetRowIndexSuite extends QueryTest with SharedSparkSession {
+@@ -230,6 +231,17 @@ class ParquetRowIndexSuite extends QueryTest with SharedSparkSession {
              case f: FileSourceScanExec =>
                numPartitions += f.inputRDD.partitions.length
                numOutputRows += f.metrics("numOutputRows").value
@@ -2369,18 +2301,14 @@ index 351c6d698fc..583d9225cca 100644
 +            case b: CometBatchScanExec =>
 +              numPartitions += b.inputRDD.partitions.length
 +              numOutputRows += b.metrics("numOutputRows").value
++            case b: CometNativeScanExec =>
++              numPartitions +=
++                b.originalPlan.inputRDD.partitions.length
++              numOutputRows +=
++                b.metrics("numOutputRows").value
              case _ =>
            }
            assert(numPartitions > 0)
-@@ -291,6 +301,8 @@ class ParquetRowIndexSuite extends QueryTest with SharedSparkSession {
-     val conf = RowIndexTestConf(useDataSourceV2 = useDataSourceV2)
- 
-     test(s"invalid row index column type - ${conf.desc}") {
-+      // native_datafusion Parquet scan does not support row index generation.
-+      assume(CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_DATAFUSION)
-       withSQLConf(conf.sqlConfs: _*) {
-         withTempPath{ path =>
-           val df = spark.range(0, 10, 1, 1).toDF("id")
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaPruningSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaPruningSuite.scala
 index 5c0b7def039..151184bc98c 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaPruningSuite.scala
