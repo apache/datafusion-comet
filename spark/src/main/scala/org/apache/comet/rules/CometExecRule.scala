@@ -23,15 +23,17 @@ import scala.collection.mutable.ListBuffer
 
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{Divide, DoubleLiteral, EqualNullSafe, EqualTo, Expression, FloatLiteral, GreaterThan, GreaterThanOrEqual, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, NamedExpression, Remainder}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial}
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 import org.apache.spark.sql.catalyst.rules.Rule
+import org.apache.spark.sql.catalyst.trees.TreeNodeTag
 import org.apache.spark.sql.catalyst.util.sideBySide
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, BroadcastQueryStageExec, ShuffleQueryStageExec}
-import org.apache.spark.sql.execution.aggregate.{HashAggregateExec, ObjectHashAggregateExec}
+import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
 import org.apache.spark.sql.execution.command.{DataWritingCommandExec, ExecutedCommandExec}
 import org.apache.spark.sql.execution.datasources.WriteFilesExec
 import org.apache.spark.sql.execution.datasources.csv.CSVFileFormat
@@ -55,6 +57,14 @@ import org.apache.comet.serde._
 import org.apache.comet.serde.operator._
 
 object CometExecRule {
+
+  /**
+   * Tag applied to Partial-mode aggregate operators that must NOT be converted to Comet because
+   * the corresponding Final-mode aggregate cannot be converted, and the aggregate functions have
+   * incompatible intermediate buffer formats between Spark and Comet.
+   */
+  val COMET_UNSAFE_PARTIAL: TreeNodeTag[String] =
+    TreeNodeTag[String]("comet.unsafePartialAgg")
 
   /**
    * Fully native operators.
@@ -388,6 +398,12 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         normalizedPlan
       }
 
+      // Tag Partial aggregates that must not be converted to Comet because the
+      // corresponding Final aggregate cannot be converted and the intermediate buffer
+      // formats are incompatible. This runs before transform() so the tags are checked
+      // during the bottom-up conversion. Tags persist through AQE stage creation.
+      tagUnsafePartialAggregates(planWithJoinRewritten)
+
       var newPlan = transform(planWithJoinRewritten)
 
       // if the plan cannot be run fully natively then explain why (when appropriate
@@ -599,6 +615,90 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       val nodeName = simpleClassName.replaceAll("Exec$", "")
       COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST.get(conf).contains(nodeName)
     }
+  }
+
+  /**
+   * Walk the plan to find Final-mode aggregates that cannot be converted to Comet. For each such
+   * Final, if the aggregate functions have incompatible intermediate buffer formats, tag the
+   * corresponding Partial-mode aggregate so it will also be skipped during conversion.
+   *
+   * This prevents the crash described in issue #1389 where a Comet Partial produces intermediate
+   * data in a format that the Spark Final cannot interpret.
+   */
+  private def tagUnsafePartialAggregates(plan: SparkPlan): Unit = {
+    plan.foreach {
+      case agg: BaseAggregateExec if agg.aggregateExpressions.exists(_.mode == Final) =>
+        if (!QueryPlanSerde.allAggsSupportMixedExecution(agg.aggregateExpressions)) {
+          if (!canFinalAggregateBeConverted(agg)) {
+            findPartialAggInPlan(agg.child).foreach { partial =>
+              partial.setTagValue(
+                CometExecRule.COMET_UNSAFE_PARTIAL,
+                "Partial aggregate disabled: corresponding final aggregate " +
+                  "cannot be converted to Comet and intermediate buffer formats are incompatible")
+            }
+          }
+        }
+      case _ =>
+    }
+  }
+
+  /**
+   * Conservative check for whether a Final-mode aggregate could be converted to Comet. Checks
+   * operator enablement, grouping expressions, aggregate expressions, and result expressions.
+   * Intentionally skips the sparkFinalMode / child-native checks since those depend on
+   * transformation state.
+   */
+  private def canFinalAggregateBeConverted(agg: BaseAggregateExec): Boolean = {
+    val handler = allExecs.get(agg.getClass)
+    if (handler.isEmpty) return false
+    val serde = handler.get.asInstanceOf[CometOperatorSerde[SparkPlan]]
+    if (!isOperatorEnabled(serde, agg.asInstanceOf[SparkPlan])) return false
+
+    // ObjectHashAggregate has an extra shuffle-enabled guard in its convert method
+    agg match {
+      case _: ObjectHashAggregateExec if !isCometShuffleEnabled(agg.conf) => return false
+      case _ =>
+    }
+
+    val aggregateExpressions = agg.aggregateExpressions
+    val groupingExpressions = agg.groupingExpressions
+
+    if (groupingExpressions.isEmpty && aggregateExpressions.isEmpty) return false
+
+    if (groupingExpressions.exists(_.dataType.isInstanceOf[MapType])) return false
+
+    if (!groupingExpressions.forall(e =>
+        QueryPlanSerde.exprToProto(e, agg.child.output).isDefined)) {
+      return false
+    }
+
+    if (aggregateExpressions.nonEmpty) {
+      val modes = aggregateExpressions.map(_.mode).distinct
+      if (modes.size != 1 || !modes.contains(Final)) return false
+
+      val binding = false
+      if (!aggregateExpressions.forall(e =>
+          QueryPlanSerde.aggExprToProto(e, agg.child.output, binding, agg.conf).isDefined)) {
+        return false
+      }
+    }
+
+    val attributes =
+      groupingExpressions.map(_.toAttribute) ++ agg.aggregateAttributes
+    agg.resultExpressions.forall(e => QueryPlanSerde.exprToProto(e, attributes).isDefined)
+  }
+
+  /**
+   * Search the child subtree for the first Partial-mode aggregate, traversing through exchanges
+   * and AQE stages.
+   */
+  private def findPartialAggInPlan(plan: SparkPlan): Option[BaseAggregateExec] = {
+    plan.collectFirst {
+      case agg: BaseAggregateExec if agg.aggregateExpressions.forall(e => e.mode == Partial) =>
+        Some(agg)
+      case a: AQEShuffleReadExec => findPartialAggInPlan(a.child)
+      case s: ShuffleQueryStageExec => findPartialAggInPlan(s.plan)
+    }.flatten
   }
 
 }

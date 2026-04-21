@@ -277,6 +277,24 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[VariancePop] -> CometVariancePop,
     classOf[VarianceSamp] -> CometVarianceSamp)
 
+  /**
+   * Returns true if all aggregate expressions in the list have intermediate buffer formats that
+   * are compatible between Spark and Comet, making it safe to run Partial in one engine and Final
+   * in the other.
+   */
+  def allAggsSupportMixedExecution(aggExprs: Seq[AggregateExpression]): Boolean = {
+    aggExprs.forall { aggExpr =>
+      val fn = aggExpr.aggregateFunction
+      aggrSerdeMap.get(fn.getClass) match {
+        case Some(handler) =>
+          handler
+            .asInstanceOf[CometAggregateExpressionSerde[AggregateFunction]]
+            .supportsMixedPartialFinal
+        case None => false
+      }
+    }
+  }
+
   //  A unique id for each expression. ~used to look up QueryContext during error creation.
   private val exprIdCounter = new AtomicLong(0)
 

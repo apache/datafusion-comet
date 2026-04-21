@@ -131,9 +131,8 @@ class CometExecRuleSuite extends CometTestBase {
     }
   }
 
-  // TODO this test exposes the bug described in
-  // https://github.com/apache/datafusion-comet/issues/1389
-  ignore("CometExecRule should not allow Comet partial and Spark final hash aggregate") {
+  // Regression test for https://github.com/apache/datafusion-comet/issues/1389
+  test("CometExecRule should not allow Comet partial and Spark final hash aggregate") {
     withTempView("test_data") {
       createTestDataFrame.createOrReplaceTempView("test_data")
 
@@ -149,7 +148,8 @@ class CometExecRuleSuite extends CometTestBase {
         CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
         val transformedPlan = applyCometExecRule(sparkPlan)
 
-        // if the final aggregate cannot be converted to Comet, then neither should be
+        // SUM has incompatible intermediate buffers, so if the final aggregate cannot
+        // be converted to Comet, neither should be
         assert(
           countOperators(transformedPlan, classOf[HashAggregateExec]) == originalHashAggCount)
         assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 0)
@@ -177,6 +177,56 @@ class CometExecRuleSuite extends CometTestBase {
         assert(
           countOperators(transformedPlan, classOf[HashAggregateExec]) == originalHashAggCount)
         assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 0)
+      }
+    }
+  }
+
+  test("CometExecRule should allow safe Comet partial and Spark final hash aggregate") {
+    withTempView("test_data") {
+      createTestDataFrame.createOrReplaceTempView("test_data")
+
+      // Query uses only safe aggregates (MIN, MAX, COUNT) with compatible intermediate buffers
+      val sparkPlan =
+        createSparkPlan(
+          spark,
+          "SELECT COUNT(*), MIN(id), MAX(id) FROM test_data GROUP BY (id % 3)")
+
+      val originalHashAggCount = countOperators(sparkPlan, classOf[HashAggregateExec])
+      assert(originalHashAggCount == 2)
+
+      withSQLConf(
+        CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> "false",
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        val transformedPlan = applyCometExecRule(sparkPlan)
+
+        // Safe aggregates allow mixed execution: partial can be Comet, final stays Spark
+        assert(countOperators(transformedPlan, classOf[HashAggregateExec]) == 1) // final only
+        assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 1) // partial
+      }
+    }
+  }
+
+  test("CometExecRule should allow safe Spark partial and Comet final hash aggregate") {
+    withTempView("test_data") {
+      createTestDataFrame.createOrReplaceTempView("test_data")
+
+      // Query uses only safe aggregates (MIN, MAX, COUNT) with compatible intermediate buffers
+      val sparkPlan =
+        createSparkPlan(
+          spark,
+          "SELECT COUNT(*), MIN(id), MAX(id) FROM test_data GROUP BY (id % 3)")
+
+      val originalHashAggCount = countOperators(sparkPlan, classOf[HashAggregateExec])
+      assert(originalHashAggCount == 2)
+
+      withSQLConf(
+        CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE.key -> "false",
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        val transformedPlan = applyCometExecRule(sparkPlan)
+
+        // Safe aggregates allow mixed execution: partial stays Spark, final can be Comet
+        assert(countOperators(transformedPlan, classOf[HashAggregateExec]) == 1) // partial only
+        assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 1) // final
       }
     }
   }
