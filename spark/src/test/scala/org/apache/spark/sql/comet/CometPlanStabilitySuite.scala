@@ -77,12 +77,11 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
   private val approvedAnsiPlans: Seq[String] = Seq("q83", "q83.sf100")
 
   private def getDirForTest(name: String): File = {
-    var goldenFileName = if (SQLConf.get.ansiEnabled && approvedAnsiPlans.contains(name)) {
+    val goldenFileName = if (SQLConf.get.ansiEnabled && approvedAnsiPlans.contains(name)) {
       name + ".ansi"
     } else {
       name
     }
-    goldenFileName = s"$goldenFileName"
     new File(goldenFilePath, goldenFileName)
   }
 

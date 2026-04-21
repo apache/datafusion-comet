@@ -236,7 +236,7 @@ class ParquetEncryptionITCase extends CometTestBase with SQLTestUtils {
         assert(parquetDF.inputFiles.nonEmpty)
         val readDataset = parquetDF.select("a", "b", "c")
 
-        // native_datafusion and native_iceberg_compat fall back due to Arrow-rs
+        // native_datafusion falls back due to Arrow-rs
         // https://github.com/apache/arrow-rs/blob/da9829728e2a9dffb8d4f47ffe7b103793851724/parquet/src/file/metadata/parser.rs#L494
         checkAnswer(readDataset, inputDF)
       }
@@ -435,8 +435,7 @@ class ParquetEncryptionITCase extends CometTestBase with SQLTestUtils {
         assert(parquetDF.inputFiles.nonEmpty)
         val readDataset = parquetDF.select("a", "b", "c")
 
-        // native_datafusion and native_iceberg_compat fall back due to Arrow-rs not
-        // supporting other key lengths
+        // native_datafusion falls back due to Arrow-rs not supporting other key lengths
         checkAnswer(readDataset, inputDF)
       }
     }

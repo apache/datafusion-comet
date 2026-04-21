@@ -699,7 +699,7 @@ abstract class ParquetReadSuite extends CometTestBase {
           checkSparkAnswer(df)
 
           // Missing optional struct field with nested required field
-          // TODO: This produces incorrect results in both native_datafusion and native_iceberg_compat
+          // TODO: This produces incorrect results in native_datafusion
           //          df = sql("select a, c.c1 from complex_types")
           //          checkSparkAnswer(df)
 
@@ -712,7 +712,7 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
-  // TODO: This test fails for both native_datafusion and native_iceberg_compat
+  // TODO: This test fails for native_datafusion
   ignore(" Missing optional struct field with nested required field") {
     Seq(true, false).foreach { dictionaryEnabled =>
       def makeRawParquetFile(path: Path): Unit = {
@@ -761,7 +761,7 @@ abstract class ParquetReadSuite extends CometTestBase {
 
         withParquetTable(spark.read.format("parquet").load(path.toString), "complex_types") {
           // Missing optional struct field with nested required field
-          // TODO: This produces incorrect results in both native_datafusion and native_iceberg_compat
+          // TODO: This produces incorrect results in native_datafusion
           val df = sql("select a, c.c1 from complex_types")
           checkSparkAnswer(df)
 
@@ -1495,42 +1495,39 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
         val path = new Path(dir.toURI.toString, "complex_types.parquet")
         makeParquetFileComplexTypes(path, dictionaryEnabled, 10)
         withParquetTable(path.toUri.toString, "complex_types") {
-          Seq(CometConf.SCAN_NATIVE_DATAFUSION, CometConf.SCAN_NATIVE_ICEBERG_COMPAT).foreach(
-            scanMode => {
-              withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> scanMode) {
-                checkSparkAnswerAndOperator(sql("select * from complex_types"))
-                // First level
-                checkSparkAnswerAndOperator(sql(
-                  "select optional_array, array_of_struct, optional_map, complex_map from complex_types"))
-                // second nested level
-                checkSparkAnswerAndOperator(
-                  sql(
-                    "select optional_array[0], " +
-                      "array_of_struct[0].field1, " +
-                      "array_of_struct[0].optional_nested_array, " +
-                      "optional_map.key, " +
-                      "optional_map.value, " +
-                      "map_keys(complex_map), " +
-                      "map_entries(complex_map), " +
-                      "map_values(complex_map) " +
-                      "from complex_types"))
-                // leaf fields
-                checkSparkAnswerAndOperator(
-                  sql(
-                    "select optional_array[0], " +
-                      "array_of_struct[0].field1, " +
-                      "array_of_struct[0].optional_nested_array[0], " +
-                      "optional_map.key, " +
-                      "optional_map.value, " +
-                      "map_keys(complex_map)[0].key_field1, " +
-                      "map_keys(complex_map)[0].key_field2, " +
-                      "map_entries(complex_map)[0].key, " +
-                      "map_entries(complex_map)[0].value, " +
-                      "map_values(complex_map)[0].value_field1, " +
-                      "map_values(complex_map)[0].value_field2 " +
-                      "from complex_types"))
-              }
-            })
+          withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION) {
+            checkSparkAnswerAndOperator(sql("select * from complex_types"))
+            // First level
+            checkSparkAnswerAndOperator(sql(
+              "select optional_array, array_of_struct, optional_map, complex_map from complex_types"))
+            // second nested level
+            checkSparkAnswerAndOperator(
+              sql(
+                "select optional_array[0], " +
+                  "array_of_struct[0].field1, " +
+                  "array_of_struct[0].optional_nested_array, " +
+                  "optional_map.key, " +
+                  "optional_map.value, " +
+                  "map_keys(complex_map), " +
+                  "map_entries(complex_map), " +
+                  "map_values(complex_map) " +
+                  "from complex_types"))
+            // leaf fields
+            checkSparkAnswerAndOperator(
+              sql(
+                "select optional_array[0], " +
+                  "array_of_struct[0].field1, " +
+                  "array_of_struct[0].optional_nested_array[0], " +
+                  "optional_map.key, " +
+                  "optional_map.value, " +
+                  "map_keys(complex_map)[0].key_field1, " +
+                  "map_keys(complex_map)[0].key_field2, " +
+                  "map_entries(complex_map)[0].key, " +
+                  "map_entries(complex_map)[0].value, " +
+                  "map_values(complex_map)[0].value_field1, " +
+                  "map_values(complex_map)[0].value_field2 " +
+                  "from complex_types"))
+          }
         }
       }
     })
@@ -1543,25 +1540,20 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
     val file =
       getResourceParquetFilePath("test-data/before_1582_date_v3_2_0.snappy.parquet")
 
-    Seq(CometConf.SCAN_NATIVE_ICEBERG_COMPAT, CometConf.SCAN_NATIVE_DATAFUSION).foreach {
-      scanImpl =>
-        withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> scanImpl) {
-          val df = spark.read.parquet(file)
+    withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION) {
+      val df = spark.read.parquet(file)
 
-          // Verify Comet scan is in the plan
-          val plan = df.queryExecution.executedPlan
-          checkCometOperators(plan)
+      // Verify Comet scan is in the plan
+      val plan = df.queryExecution.executedPlan
+      checkCometOperators(plan)
 
-          // Verify all 8 rows are read and contain dates before 1582
-          val rows = df.collect()
-          assert(rows.length == 8, s"Expected 8 rows with $scanImpl, got ${rows.length}")
-          rows.foreach { row =>
-            val date = row.getDate(0)
-            assert(
-              date.toLocalDate.getYear < 1582,
-              s"Expected date before 1582 with $scanImpl, got $date")
-          }
-        }
+      // Verify all 8 rows are read and contain dates before 1582
+      val rows = df.collect()
+      assert(rows.length == 8, s"Expected 8 rows, got ${rows.length}")
+      rows.foreach { row =>
+        val date = row.getDate(0)
+        assert(date.toLocalDate.getYear < 1582, s"Expected date before 1582, got $date")
+      }
     }
   }
 

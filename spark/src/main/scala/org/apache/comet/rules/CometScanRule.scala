@@ -166,12 +166,7 @@ case class CometScanRule(session: SparkSession)
           return scanExec
         }
 
-        COMET_NATIVE_SCAN_IMPL.get() match {
-          case SCAN_AUTO | SCAN_NATIVE_DATAFUSION =>
-            nativeDataFusionScan(plan, session, scanExec, r, hadoopConf).getOrElse(scanExec)
-          case SCAN_NATIVE_ICEBERG_COMPAT =>
-            nativeIcebergCompatScan(session, scanExec, r, hadoopConf).getOrElse(scanExec)
-        }
+        nativeDataFusionScan(plan, session, scanExec, r, hadoopConf).getOrElse(scanExec)
 
       case _ =>
         withInfo(scanExec, s"Unsupported relation ${scanExec.relation}")
@@ -228,21 +223,6 @@ case class CometScanRule(session: SparkSession)
       return None
     }
     Some(CometScanExec(scanExec, session, SCAN_NATIVE_DATAFUSION))
-  }
-
-  private def nativeIcebergCompatScan(
-      session: SparkSession,
-      scanExec: FileSourceScanExec,
-      r: HadoopFsRelation,
-      hadoopConf: Configuration): Option[SparkPlan] = {
-    if (encryptionEnabled(hadoopConf) && !isEncryptionConfigSupported(hadoopConf)) {
-      withInfo(scanExec, s"$SCAN_NATIVE_ICEBERG_COMPAT does not support encryption")
-      return None
-    }
-    if (!isSchemaSupported(scanExec, SCAN_NATIVE_ICEBERG_COMPAT, r)) {
-      return None
-    }
-    Some(CometScanExec(scanExec, session, SCAN_NATIVE_ICEBERG_COMPAT))
   }
 
   private def transformV2Scan(scanExec: BatchScanExec): SparkPlan = {
@@ -753,8 +733,7 @@ object CometScanRule extends Logging {
           Native.validateObjectStoreConfig(filePath, objectStoreOptions)
         } catch {
           case e: CometNativeException =>
-            val reason = "Object store config not supported by " +
-              s"$SCAN_NATIVE_ICEBERG_COMPAT: ${e.getMessage}"
+            val reason = s"Object store config not supported: ${e.getMessage}"
             fallbackReasons += reason
             configValidityMap.put(cacheKey, Some(reason))
         }

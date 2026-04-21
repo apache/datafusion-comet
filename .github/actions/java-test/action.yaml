@@ -29,10 +29,6 @@ inputs:
     description: 'Maven options passed to the mvn command'
     required: false
     default: ''
-  scan_impl:
-    description: 'The default Parquet scan implementation'
-    required: false
-    default: 'auto'
   upload-test-reports:
     description: 'Whether to upload test results including coverage to GitHub'
     required: false
@@ -72,7 +68,6 @@ runs:
       shell: bash
       if: ${{ inputs.suites == '' }}
       env:
-        COMET_PARQUET_SCAN_IMPL: ${{ inputs.scan_impl }}
         SPARK_LOCAL_HOSTNAME: "localhost"
         SPARK_LOCAL_IP: "127.0.0.1"
       run: |
@@ -81,7 +76,6 @@ runs:
       shell: bash
       if: ${{ inputs.suites != '' }}
       env:
-        COMET_PARQUET_SCAN_IMPL: ${{ inputs.scan_impl }}
         SPARK_LOCAL_HOSTNAME: "localhost"
         SPARK_LOCAL_IP: "127.0.0.1"
       run: |
