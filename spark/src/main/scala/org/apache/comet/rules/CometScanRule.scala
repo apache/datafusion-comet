@@ -820,7 +820,7 @@ object CometScanRule extends Logging {
         val filePath = pathMethod.invoke(dataFile).toString
         val uri = new URI(filePath)
         val scheme = uri.getScheme
-        if (scheme != null && !supportedSchemes.contains(scheme)) {
+        if (scheme == null || !supportedSchemes.contains(scheme)) {
           unsupportedSchemes += scheme
         }
       } catch {
@@ -862,7 +862,7 @@ object CometScanRule extends Logging {
                 try {
                   val deleteUri = new URI(deletePath)
                   val deleteScheme = deleteUri.getScheme
-                  if (deleteScheme != null && !supportedSchemes.contains(deleteScheme)) {
+                  if (deleteScheme == null || !supportedSchemes.contains(deleteScheme)) {
                     unsupportedSchemes += deleteScheme
                   }
                 } catch {
