@@ -23,59 +23,86 @@
 
 -- ConfigMatrix: parquet.enable.dictionary=false,true
 
+statement
+CREATE TABLE test_str_to_map(
+  s STRING,
+  pair_delim STRING,
+  key_value_delim STRING,
+  s_char CHAR(16),
+  pair_delim_char CHAR(4),
+  key_value_delim_char CHAR(4),
+  s_varchar VARCHAR(16),
+  pair_delim_varchar VARCHAR(4),
+  key_value_delim_varchar VARCHAR(4)
+) USING parquet
+
+statement
+INSERT INTO test_str_to_map VALUES
+  ('a:1,b:2,c:3', ',', ':', 'a:1,b:2,c:3', ',', ':', 'a:1,b:2,c:3', ',', ':'),
+  ('x=9;y=8', ';', '=', 'x=9;y=8', ';', '=', 'x=9;y=8', ';', '='),
+  (NULL, ',', ':', NULL, ',', ':', NULL, ',', ':')
+
 -- s0: Basic test with default delimiters
-query spark_answer_only
+query
 SELECT str_to_map('a:1,b:2,c:3')
 
 -- s1: Preserve spaces in values
-query spark_answer_only
+query
 SELECT str_to_map('a: ,b:2')
 
 -- s2: Custom key-value delimiter '='
-query spark_answer_only
+query
 SELECT str_to_map('a=1,b=2,c=3', ',', '=')
 
 -- s3: Empty string returns map with empty key and NULL value
-query spark_answer_only
+query
 SELECT str_to_map('', ',', '=')
 
 -- s4: Custom pair delimiter '_'
-query spark_answer_only
+query
 SELECT str_to_map('a:1_b:2_c:3', '_', ':')
 
 -- s5: Single key without value returns NULL value
-query spark_answer_only
+query
 SELECT str_to_map('a')
 
 -- s6: Custom delimiters '&' and '='
-query spark_answer_only
+query
 SELECT str_to_map('a=1&b=2&c=3', '&', '=')
 
 -- Duplicate keys: EXCEPTION policy (Spark 3.0+ default)
 -- TODO: Add LAST_WIN policy tests when spark.sql.mapKeyDedupPolicy config is supported
--- query spark_answer_only
+-- query
 -- SELECT str_to_map('a:1,b:2,a:3')
 
 -- NULL input returns NULL
-query spark_answer_only
+query
 SELECT str_to_map(NULL, ',', ':')
 
 -- Explicit 3-arg form
-query spark_answer_only
+query
 SELECT str_to_map('a:1,b:2,c:3', ',', ':')
 
 -- Missing key-value delimiter results in NULL value
-query spark_answer_only
+query
 SELECT str_to_map('a,b:2', ',', ':')
 
 -- Multi-row test
-query spark_answer_only
-SELECT str_to_map(col) FROM (VALUES ('a:1,b:2'), ('x:9'), (NULL)) AS t(col)
+query
+SELECT str_to_map(s) FROM test_str_to_map
 
--- Multi-row with custom delimiter
-query spark_answer_only
-SELECT str_to_map(col, ',', '=') FROM (VALUES ('a=1,b=2'), ('x=9'), (NULL)) AS t(col)
+-- Rows with per-row delimiters
+query
+SELECT str_to_map(s, pair_delim, key_value_delim) FROM test_str_to_map
 
--- Per-row delimiters: each row can have different delimiters
-query spark_answer_only
-SELECT str_to_map(col1, col2, col3) FROM (VALUES ('a=1,b=2', ',', '='), ('x#9', ',', '#'), (NULL, ',', '=')) AS t(col1, col2, col3)
+-- STRING input with literal delimiters
+query
+SELECT str_to_map(s, ',', ':') FROM test_str_to_map
+
+-- CHAR input and delimiters with per-row delimiter values
+query
+SELECT str_to_map(s_char, pair_delim_char, key_value_delim_char) FROM test_str_to_map
+
+-- VARCHAR input and delimiters with per-row delimiter values
+query
+SELECT str_to_map(s_varchar, pair_delim_varchar, key_value_delim_varchar) FROM test_str_to_map
