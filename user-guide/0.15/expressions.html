@@ -61,7 +61,7 @@ under the License.
     <script src="../../_static/documentation_options.js?v=5929fcd5"></script>
     <script src="../../_static/doctools.js?v=9a2dae69"></script>
     <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script>DOCUMENTATION_OPTIONS.pagename = 'user-guide/0.11/expressions';</script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'user-guide/0.15/expressions';</script>
     <script async="true" defer="true" src="https://buttons.github.io/buttons.js"></script>
     <link rel="index" title="Index" href="../../genindex.html" />
     <link rel="search" title="Search" href="../../search.html" />
@@ -352,11 +352,8 @@ under the License.
 <ul class="current">
 <li class="toctree-l1"><a class="reference internal" href="../../about/index.html">Comet Overview</a></li>
 <li class="toctree-l1 current"><a class="reference internal" href="../index.html">User Guide</a><ul class="current">
-<li class="toctree-l2"><a class="reference internal" href="../latest/index.html">0.15.0-SNAPSHOT</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../0.14/index.html">0.14.x</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../0.13/index.html">0.13.x</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../0.12/index.html">0.12.x</a></li>
-<li class="toctree-l2 current"><a class="reference internal" href="index.html">0.11.x</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="../latest/index.html">0.16.0-SNAPSHOT</a></li>
+<li class="toctree-l2 current"><a class="reference internal" href="index.html">0.15.x</a><ul class="current">
 <li class="toctree-l3"><a class="reference internal" href="installation.html">Installing Comet</a></li>
 <li class="toctree-l3"><a class="reference internal" href="source.html">Building From Source</a></li>
 <li class="toctree-l3"><a class="reference internal" href="datasources.html">Supported Data Sources</a></li>
@@ -371,6 +368,9 @@ under the License.
 <li class="toctree-l3"><a class="reference internal" href="kubernetes.html">Kubernetes Guide</a></li>
 </ul>
 </li>
+<li class="toctree-l2"><a class="reference internal" href="../0.14/index.html">0.14.x</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../0.13/index.html">0.13.x</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../0.12/index.html">0.12.x</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../../contributor-guide/index.html">Contributor Guide</a></li>
@@ -421,7 +421,7 @@ under the License.
     <li class="breadcrumb-item"><a href="../index.html" class="nav-link">Comet User Guide</a></li>
     
     
-    <li class="breadcrumb-item"><a href="index.html" class="nav-link">Comet 0.11.0 User Guide</a></li>
+    <li class="breadcrumb-item"><a href="index.html" class="nav-link">Comet 0.15.0 User Guide</a></li>
     
     <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Supported Spark Expressions</span></li>
   </ul>
@@ -458,10 +458,6 @@ under the License.
   specific language governing permissions and limitations
   under the License.
 -->
-<div class="admonition warning">
-<p class="admonition-title">Warning</p>
-<p>This is <strong>out-of-date</strong> documentation. The latest Comet release is version 0.14.0.</p>
-</div>
 <section id="supported-spark-expressions">
 <h1>Supported Spark Expressions<a class="headerlink" href="#supported-spark-expressions" title="Link to this heading">#</a></h1>
 <p>Comet supports the following Spark expressions. Expressions that are marked as Spark-compatible will either run
@@ -473,8 +469,6 @@ the following tables, such as <code class="docutils literal notranslate"><span c
 of expressions that be disabled.</p>
 <p>Expressions that are not Spark-compatible will fall back to Spark by default and can be enabled by setting
 <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.EXPRNAME.allowIncompatible=true</span></code>.</p>
-<p>It is also possible to specify <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.allowIncompatible=true</span></code> to enable all
-incompatible expressions.</p>
 <section id="conditional-expressions">
 <h2>Conditional Expressions<a class="headerlink" href="#conditional-expressions" title="Link to this heading">#</a></h2>
 <div class="pst-scrollable-table-container"><table class="table">
@@ -585,21 +579,29 @@ incompatible expressions.</p>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p>ConcatWs</p></td>
+<tr class="row-odd"><td><p>Concat</p></td>
+<td><p>Yes</p></td>
+<td><p>Only string inputs are supported</p></td>
+</tr>
+<tr class="row-even"><td><p>ConcatWs</p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p>Contains</p></td>
+<tr class="row-odd"><td><p>Contains</p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p>EndsWith</p></td>
+<tr class="row-even"><td><p>EndsWith</p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p>InitCap</p></td>
+<tr class="row-odd"><td><p>InitCap</p></td>
 <td><p>No</p></td>
 <td><p>Behavior is different in some cases, such as hyphenated names.</p></td>
+</tr>
+<tr class="row-even"><td><p>Left</p></td>
+<td><p>Yes</p></td>
+<td><p>Length argument must be a literal value</p></td>
 </tr>
 <tr class="row-odd"><td><p>Length</p></td>
 <td><p>Yes</p></td>
@@ -685,6 +687,24 @@ incompatible expressions.</p>
 </table>
 </div>
 </section>
+<section id="json-functions">
+<h2>JSON Functions<a class="headerlink" href="#json-functions" title="Link to this heading">#</a></h2>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Expression</p></th>
+<th class="head"><p>Spark-Compatible?</p></th>
+<th class="head"><p>Compatibility Notes</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>GetJsonObject</p></td>
+<td><p>No</p></td>
+<td><p>Spark allows single-quoted JSON and unescaped control characters which Comet does not support</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
 <section id="date-time-functions">
 <h2>Date/Time Functions<a class="headerlink" href="#date-time-functions" title="Link to this heading">#</a></h2>
 <div class="pst-scrollable-table-container"><table class="table">
@@ -701,6 +721,16 @@ incompatible expressions.</p>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
+<tr class="row-odd"><td><p>DateDiff</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">datediff</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>DateFormat</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">date_format</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p>Partial support. Only specific format patterns are supported.</p></td>
+</tr>
 <tr class="row-odd"><td><p>DateSub</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">date_sub</span></code></p></td>
 <td><p>Yes</p></td>
@@ -711,30 +741,40 @@ incompatible expressions.</p>
 <td><p>Yes</p></td>
 <td><p>Supported values of <code class="docutils literal notranslate"><span class="pre">field</span></code>: <code class="docutils literal notranslate"><span class="pre">year</span></code>/<code class="docutils literal notranslate"><span class="pre">month</span></code>/<code class="docutils literal notranslate"><span class="pre">week</span></code>/<code class="docutils literal notranslate"><span class="pre">day</span></code>/<code class="docutils literal notranslate"><span class="pre">dayofweek</span></code>/<code class="docutils literal notranslate"><span class="pre">dayofweek_iso</span></code>/<code class="docutils literal notranslate"><span class="pre">doy</span></code>/<code class="docutils literal notranslate"><span class="pre">quarter</span></code>/<code class="docutils literal notranslate"><span class="pre">hour</span></code>/<code class="docutils literal notranslate"><span class="pre">minute</span></code></p></td>
 </tr>
-<tr class="row-odd"><td><p>Extract</p></td>
+<tr class="row-odd"><td><p>Days</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">days</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p>V2 partition transform. Supports DateType and TimestampType inputs.</p></td>
+</tr>
+<tr class="row-even"><td><p>Extract</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">extract(field</span> <span class="pre">FROM</span> <span class="pre">source)</span></code></p></td>
 <td><p>Yes</p></td>
 <td><p>Supported values of <code class="docutils literal notranslate"><span class="pre">field</span></code>: <code class="docutils literal notranslate"><span class="pre">year</span></code>/<code class="docutils literal notranslate"><span class="pre">month</span></code>/<code class="docutils literal notranslate"><span class="pre">week</span></code>/<code class="docutils literal notranslate"><span class="pre">day</span></code>/<code class="docutils literal notranslate"><span class="pre">dayofweek</span></code>/<code class="docutils literal notranslate"><span class="pre">dayofweek_iso</span></code>/<code class="docutils literal notranslate"><span class="pre">doy</span></code>/<code class="docutils literal notranslate"><span class="pre">quarter</span></code>/<code class="docutils literal notranslate"><span class="pre">hour</span></code>/<code class="docutils literal notranslate"><span class="pre">minute</span></code></p></td>
 </tr>
-<tr class="row-even"><td><p>FromUnixTime</p></td>
+<tr class="row-odd"><td><p>FromUnixTime</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">from_unixtime</span></code></p></td>
 <td><p>No</p></td>
 <td><p>Does not support format, supports only -8334601211038 &lt;= sec &lt;= 8210266876799</p></td>
 </tr>
-<tr class="row-odd"><td><p>Hour</p></td>
+<tr class="row-even"><td><p>Hour</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">hour</span></code></p></td>
+<td><p>No</p></td>
+<td><p>Incorrectly applies timezone conversion to TimestampNTZ inputs (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3180">#3180</a>)</p></td>
+</tr>
+<tr class="row-odd"><td><p>LastDay</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">last_day</span></code></p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>Minute</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">minute</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
+<td><p>No</p></td>
+<td><p>Incorrectly applies timezone conversion to TimestampNTZ inputs (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3180">#3180</a>)</p></td>
 </tr>
 <tr class="row-odd"><td><p>Second</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">second</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
+<td><p>No</p></td>
+<td><p>Incorrectly applies timezone conversion to TimestampNTZ inputs (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3180">#3180</a>)</p></td>
 </tr>
 <tr class="row-even"><td><p>TruncDate</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">trunc</span></code></p></td>
@@ -742,7 +782,17 @@ incompatible expressions.</p>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>TruncTimestamp</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">trunc_date</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">date_trunc</span></code></p></td>
+<td><p>No</p></td>
+<td><p>Incorrect results in non-UTC timezones (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2649">#2649</a>)</p></td>
+</tr>
+<tr class="row-even"><td><p>UnixDate</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">unix_date</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>UnixTimestamp</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">unix_timestamp</span></code></p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
@@ -801,133 +851,153 @@ incompatible expressions.</p>
 </tr>
 </thead>
 <tbody>
-<tr class="row-even"><td><p>Acos</p></td>
+<tr class="row-even"><td><p>Abs</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">abs</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>Acos</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">acos</span></code></p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p>Add</p></td>
+<tr class="row-even"><td><p>Add</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">+</span></code></p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p>Asin</p></td>
+<tr class="row-odd"><td><p>Asin</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">asin</span></code></p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p>Atan</p></td>
+<tr class="row-even"><td><p>Atan</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">atan</span></code></p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p>Atan2</p></td>
+<tr class="row-odd"><td><p>Atan2</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">atan2</span></code></p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p>BRound</p></td>
+<tr class="row-even"><td><p>BRound</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">bround</span></code></p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p>Ceil</p></td>
+<tr class="row-odd"><td><p>Ceil</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">ceil</span></code></p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p>Cos</p></td>
+<tr class="row-even"><td><p>Cos</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">cos</span></code></p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p>Divide</p></td>
+<tr class="row-odd"><td><p>Cosh</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">cosh</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>Cot</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">cot</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>Divide</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">/</span></code></p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p>Exp</p></td>
+<tr class="row-even"><td><p>Exp</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">exp</span></code></p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p>Expm1</p></td>
+<tr class="row-odd"><td><p>Expm1</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">expm1</span></code></p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p>Floor</p></td>
+<tr class="row-even"><td><p>Floor</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">floor</span></code></p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p>Hex</p></td>
+<tr class="row-odd"><td><p>Hex</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">hex</span></code></p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p>IntegralDivide</p></td>
+<tr class="row-even"><td><p>IntegralDivide</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">div</span></code></p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p>IsNaN</p></td>
+<tr class="row-odd"><td><p>IsNaN</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">isnan</span></code></p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p>Log</p></td>
+<tr class="row-even"><td><p>Log</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">log</span></code></p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p>Log2</p></td>
+<tr class="row-odd"><td><p>Log2</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">log2</span></code></p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p>Log10</p></td>
+<tr class="row-even"><td><p>Log10</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">log10</span></code></p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p>Multiply</p></td>
+<tr class="row-odd"><td><p>Multiply</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">*</span></code></p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p>Pow</p></td>
+<tr class="row-even"><td><p>Pow</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">power</span></code></p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p>Rand</p></td>
+<tr class="row-odd"><td><p>Rand</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">rand</span></code></p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p>Randn</p></td>
+<tr class="row-even"><td><p>Randn</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">randn</span></code></p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p>Remainder</p></td>
+<tr class="row-odd"><td><p>Remainder</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">%</span></code></p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p>Round</p></td>
+<tr class="row-even"><td><p>Round</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">round</span></code></p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p>Signum</p></td>
+<tr class="row-odd"><td><p>Signum</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">signum</span></code></p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p>Sin</p></td>
+<tr class="row-even"><td><p>Sin</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">sin</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>Sinh</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">sinh</span></code></p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
@@ -946,32 +1016,37 @@ incompatible expressions.</p>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p>TryAdd</p></td>
+<tr class="row-odd"><td><p>Tanh</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">tanh</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>TryAdd</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">try_add</span></code></p></td>
 <td><p>Yes</p></td>
 <td><p>Only integer inputs are supported</p></td>
 </tr>
-<tr class="row-even"><td><p>TryDivide</p></td>
+<tr class="row-odd"><td><p>TryDivide</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">try_div</span></code></p></td>
 <td><p>Yes</p></td>
 <td><p>Only integer inputs are supported</p></td>
 </tr>
-<tr class="row-odd"><td><p>TryMultiply</p></td>
+<tr class="row-even"><td><p>TryMultiply</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">try_mul</span></code></p></td>
 <td><p>Yes</p></td>
 <td><p>Only integer inputs are supported</p></td>
 </tr>
-<tr class="row-even"><td><p>TrySubtract</p></td>
+<tr class="row-odd"><td><p>TrySubtract</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">try_sub</span></code></p></td>
 <td><p>Yes</p></td>
 <td><p>Only integer inputs are supported</p></td>
 </tr>
-<tr class="row-odd"><td><p>UnaryMinus</p></td>
+<tr class="row-even"><td><p>UnaryMinus</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">-</span></code></p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p>Unhex</p></td>
+<tr class="row-odd"><td><p>Unhex</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">unhex</span></code></p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
@@ -995,10 +1070,13 @@ incompatible expressions.</p>
 <tr class="row-odd"><td><p>Murmur3Hash</p></td>
 <td><p>Yes</p></td>
 </tr>
-<tr class="row-even"><td><p>Sha2</p></td>
+<tr class="row-even"><td><p>Sha1</p></td>
 <td><p>Yes</p></td>
 </tr>
-<tr class="row-odd"><td><p>XxHash64</p></td>
+<tr class="row-odd"><td><p>Sha2</p></td>
+<td><p>Yes</p></td>
+</tr>
+<tr class="row-even"><td><p>XxHash64</p></td>
 <td><p>Yes</p></td>
 </tr>
 </tbody>
@@ -1161,6 +1239,42 @@ incompatible expressions.</p>
 </table>
 </div>
 </section>
+<section id="window-functions">
+<h2>Window Functions<a class="headerlink" href="#window-functions" title="Link to this heading">#</a></h2>
+<div class="admonition warning">
+<p class="admonition-title">Warning</p>
+<p>Window support is disabled by default due to known correctness issues. Tracking issue: <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2721">#2721</a>.</p>
+</div>
+<p>Comet supports using the following aggregate functions within window contexts with PARTITION BY and ORDER BY clauses.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Expression</p></th>
+<th class="head"><p>Spark-Compatible?</p></th>
+<th class="head"><p>Compatibility Notes</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Count</p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>Max</p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>Min</p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>Sum</p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><strong>Note:</strong> Dedicated window functions such as <code class="docutils literal notranslate"><span class="pre">rank</span></code>, <code class="docutils literal notranslate"><span class="pre">dense_rank</span></code>, <code class="docutils literal notranslate"><span class="pre">row_number</span></code>, <code class="docutils literal notranslate"><span class="pre">lag</span></code>, <code class="docutils literal notranslate"><span class="pre">lead</span></code>, <code class="docutils literal notranslate"><span class="pre">ntile</span></code>, <code class="docutils literal notranslate"><span class="pre">cume_dist</span></code>, <code class="docutils literal notranslate"><span class="pre">percent_rank</span></code>, and <code class="docutils literal notranslate"><span class="pre">nth_value</span></code> are not currently supported and will fall back to Spark.</p>
+</section>
 <section id="array-expressions">
 <h2>Array Expressions<a class="headerlink" href="#array-expressions" title="Link to this heading">#</a></h2>
 <div class="pst-scrollable-table-container"><table class="table">
@@ -1172,7 +1286,7 @@ incompatible expressions.</p>
 </thead>
 <tbody>
 <tr class="row-even"><td><p>ArrayAppend</p></td>
-<td><p>No</p></td>
+<td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>ArrayCompact</p></td>
@@ -1285,20 +1399,29 @@ incompatible expressions.</p>
 <thead>
 <tr class="row-odd"><th class="head"><p>Expression</p></th>
 <th class="head"><p>Spark-Compatible?</p></th>
+<th class="head"><p>Compatibility Notes</p></th>
 </tr>
 </thead>
 <tbody>
 <tr class="row-even"><td><p>CreateNamedStruct</p></td>
 <td><p>Yes</p></td>
+<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>GetArrayStructFields</p></td>
 <td><p>Yes</p></td>
+<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>GetStructField</p></td>
 <td><p>Yes</p></td>
+<td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p>StructsToJson</p></td>
-<td><p>Yes</p></td>
+<tr class="row-odd"><td><p>JsonToStructs</p></td>
+<td><p>No</p></td>
+<td><p>Partial support. Requires explicit schema.</p></td>
+</tr>
+<tr class="row-even"><td><p>StructsToJson</p></td>
+<td><p>No</p></td>
+<td><p>Does not support Infinity/-Infinity for numeric types (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3016">#3016</a>)</p></td>
 </tr>
 </tbody>
 </table>
@@ -1322,6 +1445,36 @@ incompatible expressions.</p>
 </table>
 </div>
 </section>
+<section id="sortorder">
+<h2>SortOrder<a class="headerlink" href="#sortorder" title="Link to this heading">#</a></h2>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Expression</p></th>
+<th class="head"><p>Spark-Compatible?</p></th>
+<th class="head"><p>Compatibility Notes</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>NullsFirst</p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>NullsLast</p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>Ascending</p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>Descending</p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
 <section id="other">
 <h2>Other<a class="headerlink" href="#other" title="Link to this heading">#</a></h2>
 <div class="pst-scrollable-table-container"><table class="table">
@@ -1336,7 +1489,7 @@ incompatible expressions.</p>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p>AttributeRefernce</p></td>
+<tr class="row-odd"><td><p>AttributeReference</p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>

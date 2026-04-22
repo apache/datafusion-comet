@@ -27,7 +27,7 @@ under the License.
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Accelerating Apache Iceberg Parquet Scans using Comet (Experimental) &#8212; Apache DataFusion Comet  documentation</title>
+    <title>Comet 0.15.0 User Guide &#8212; Apache DataFusion Comet  documentation</title>
   
   
   
@@ -61,12 +61,12 @@ under the License.
     <script src="../../_static/documentation_options.js?v=5929fcd5"></script>
     <script src="../../_static/doctools.js?v=9a2dae69"></script>
     <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script>DOCUMENTATION_OPTIONS.pagename = 'user-guide/0.11/iceberg';</script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'user-guide/0.15/index';</script>
     <script async="true" defer="true" src="https://buttons.github.io/buttons.js"></script>
     <link rel="index" title="Index" href="../../genindex.html" />
     <link rel="search" title="Search" href="../../search.html" />
-    <link rel="next" title="Comet Kubernetes Support" href="kubernetes.html" />
-    <link rel="prev" title="Comet Metrics" href="metrics.html" />
+    <link rel="next" title="Installing DataFusion Comet" href="installation.html" />
+    <link rel="prev" title="Comet Kubernetes Support" href="../latest/kubernetes.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="" />
@@ -352,11 +352,8 @@ under the License.
 <ul class="current">
 <li class="toctree-l1"><a class="reference internal" href="../../about/index.html">Comet Overview</a></li>
 <li class="toctree-l1 current"><a class="reference internal" href="../index.html">User Guide</a><ul class="current">
-<li class="toctree-l2"><a class="reference internal" href="../latest/index.html">0.15.0-SNAPSHOT</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../0.14/index.html">0.14.x</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../0.13/index.html">0.13.x</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../0.12/index.html">0.12.x</a></li>
-<li class="toctree-l2 current"><a class="reference internal" href="index.html">0.11.x</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="../latest/index.html">0.16.0-SNAPSHOT</a></li>
+<li class="toctree-l2 current"><a class="current reference internal" href="#">0.15.x</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="installation.html">Installing Comet</a></li>
 <li class="toctree-l3"><a class="reference internal" href="source.html">Building From Source</a></li>
 <li class="toctree-l3"><a class="reference internal" href="datasources.html">Supported Data Sources</a></li>
@@ -367,10 +364,13 @@ under the License.
 <li class="toctree-l3"><a class="reference internal" href="compatibility.html">Compatibility Guide</a></li>
 <li class="toctree-l3"><a class="reference internal" href="tuning.html">Tuning Guide</a></li>
 <li class="toctree-l3"><a class="reference internal" href="metrics.html">Metrics Guide</a></li>
-<li class="toctree-l3 current"><a class="current reference internal" href="#">Iceberg Guide</a></li>
+<li class="toctree-l3"><a class="reference internal" href="iceberg.html">Iceberg Guide</a></li>
 <li class="toctree-l3"><a class="reference internal" href="kubernetes.html">Kubernetes Guide</a></li>
 </ul>
 </li>
+<li class="toctree-l2"><a class="reference internal" href="../0.14/index.html">0.14.x</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../0.13/index.html">0.13.x</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../0.12/index.html">0.12.x</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../../contributor-guide/index.html">Contributor Guide</a></li>
@@ -420,10 +420,7 @@ under the License.
     
     <li class="breadcrumb-item"><a href="../index.html" class="nav-link">Comet User Guide</a></li>
     
-    
-    <li class="breadcrumb-item"><a href="index.html" class="nav-link">Comet 0.11.0 User Guide</a></li>
-    
-    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Accelerating Apache Iceberg Parquet Scans using Comet (Experimental)</span></li>
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Comet 0.15.0 User Guide</span></li>
   </ul>
 </nav>
 </div>
@@ -440,143 +437,26 @@ under the License.
 <div id="searchbox"></div>
                 <article class="bd-article">
                   
-  <!---
-  Licensed to the Apache Software Foundation (ASF) under one
-  or more contributor license agreements.  See the NOTICE file
-  distributed with this work for additional information
-  regarding copyright ownership.  The ASF licenses this file
-  to you under the Apache License, Version 2.0 (the
-  "License"); you may not use this file except in compliance
-  with the License.  You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-  Unless required by applicable law or agreed to in writing,
-  software distributed under the License is distributed on an
-  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-  KIND, either express or implied.  See the License for the
-  specific language governing permissions and limitations
-  under the License.
--->
-<div class="admonition warning">
-<p class="admonition-title">Warning</p>
-<p>This is <strong>out-of-date</strong> documentation. The latest Comet release is version 0.14.0.</p>
-</div>
-<section id="accelerating-apache-iceberg-parquet-scans-using-comet-experimental">
-<h1>Accelerating Apache Iceberg Parquet Scans using Comet (Experimental)<a class="headerlink" href="#accelerating-apache-iceberg-parquet-scans-using-comet-experimental" title="Link to this heading">#</a></h1>
-<p><strong>Note: Iceberg integration is a work-in-progress. It is currently necessary to build Iceberg from
-source rather than using available artifacts in Maven</strong></p>
-<section id="build-comet">
-<h2>Build Comet<a class="headerlink" href="#build-comet" title="Link to this heading">#</a></h2>
-<p>Run a Maven install so that we can compile Iceberg against latest Comet:</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>mvn<span class="w"> </span>install<span class="w"> </span>-DskipTests
-</pre></div>
-</div>
-<p>Build the release JAR to be used from Spark:</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>make<span class="w"> </span>release
-</pre></div>
-</div>
-<p>Set <code class="docutils literal notranslate"><span class="pre">COMET_JAR</span></code> env var:</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">COMET_JAR</span><span class="o">=</span><span class="sb">`</span><span class="nb">pwd</span><span class="sb">`</span>/spark/target/comet-spark-spark3.5_2.12-0.11.0.jar
-</pre></div>
-</div>
-</section>
-<section id="build-iceberg">
-<h2>Build Iceberg<a class="headerlink" href="#build-iceberg" title="Link to this heading">#</a></h2>
-<p>Clone the Iceberg repository and apply code changes needed by Comet</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>clone<span class="w"> </span>git@github.com:apache/iceberg.git
-<span class="nb">cd</span><span class="w"> </span>iceberg
-git<span class="w"> </span>checkout<span class="w"> </span>apache-iceberg-1.8.1
-git<span class="w"> </span>apply<span class="w"> </span>../datafusion-comet/dev/diffs/iceberg/1.8.1.diff
-</pre></div>
-</div>
-<p>Perform a clean build</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>./gradlew<span class="w"> </span>clean
-./gradlew<span class="w"> </span>build<span class="w"> </span>-x<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-x<span class="w"> </span>integrationTest
-</pre></div>
-</div>
-</section>
-<section id="test">
-<h2>Test<a class="headerlink" href="#test" title="Link to this heading">#</a></h2>
-<p>Set <code class="docutils literal notranslate"><span class="pre">ICEBERG_JAR</span></code> environment variable.</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">ICEBERG_JAR</span><span class="o">=</span><span class="sb">`</span><span class="nb">pwd</span><span class="sb">`</span>/spark/v3.5/spark-runtime/build/libs/iceberg-spark-runtime-3.5_2.12-1.9.0-SNAPSHOT.jar
-</pre></div>
-</div>
-<p>Launch Spark Shell:</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nv">$SPARK_HOME</span>/bin/spark-shell<span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--jars<span class="w"> </span><span class="nv">$COMET_JAR</span>,<span class="nv">$ICEBERG_JAR</span><span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--conf<span class="w"> </span>spark.driver.extraClassPath<span class="o">=</span><span class="nv">$COMET_JAR</span>,<span class="nv">$ICEBERG_JAR</span><span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--conf<span class="w"> </span>spark.executor.extraClassPath<span class="o">=</span><span class="nv">$COMET_JAR</span>,<span class="nv">$ICEBERG_JAR</span><span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--conf<span class="w"> </span>spark.sql.extensions<span class="o">=</span>org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions<span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--conf<span class="w"> </span>spark.sql.catalog.spark_catalog<span class="o">=</span>org.apache.iceberg.spark.SparkCatalog<span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--conf<span class="w"> </span>spark.sql.catalog.spark_catalog.type<span class="o">=</span>hadoop<span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--conf<span class="w"> </span>spark.sql.catalog.spark_catalog.warehouse<span class="o">=</span>/tmp/warehouse<span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--conf<span class="w"> </span>spark.plugins<span class="o">=</span>org.apache.spark.CometPlugin<span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--conf<span class="w"> </span>spark.shuffle.manager<span class="o">=</span>org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager<span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--conf<span class="w"> </span>spark.sql.iceberg.parquet.reader-type<span class="o">=</span>COMET<span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--conf<span class="w"> </span>spark.comet.explainFallback.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--conf<span class="w"> </span>spark.memory.offHeap.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--conf<span class="w"> </span>spark.memory.offHeap.size<span class="o">=</span>2g<span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--conf<span class="w"> </span>spark.comet.use.lazyMaterialization<span class="o">=</span><span class="nb">false</span><span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--conf<span class="w"> </span>spark.comet.schemaEvolution.enabled<span class="o">=</span><span class="nb">true</span>
-</pre></div>
-</div>
-<p>Create an Iceberg table. Note that Comet will not accelerate this part.</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">scala</span><span class="o">&gt;</span> <span class="n">spark</span><span class="o">.</span><span class="n">sql</span><span class="p">(</span><span class="n">s</span><span class="s2">&quot;CREATE TABLE IF NOT EXISTS t1 (c0 INT, c1 STRING) USING iceberg&quot;</span><span class="p">)</span>
-<span class="n">scala</span><span class="o">&gt;</span> <span class="n">spark</span><span class="o">.</span><span class="n">sql</span><span class="p">(</span><span class="n">s</span><span class="s2">&quot;INSERT INTO t1 VALUES ${(0 until 10000).map(i =&gt; (i, i)).mkString(&quot;</span><span class="p">,</span><span class="s2">&quot;)}&quot;</span><span class="p">)</span>
-</pre></div>
-</div>
-<p>Comet should now be able to accelerate reading the table:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">scala</span><span class="o">&gt;</span> <span class="n">spark</span><span class="o">.</span><span class="n">sql</span><span class="p">(</span><span class="n">s</span><span class="s2">&quot;SELECT * from t1&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">show</span><span class="p">()</span>
-</pre></div>
-</div>
-<p>This should produce the following output:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">scala</span><span class="o">&gt;</span> <span class="n">spark</span><span class="o">.</span><span class="n">sql</span><span class="p">(</span><span class="n">s</span><span class="s2">&quot;SELECT * from t1&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">show</span><span class="p">()</span>
-<span class="o">+---+---+</span>
-<span class="o">|</span> <span class="n">c0</span><span class="o">|</span> <span class="n">c1</span><span class="o">|</span>
-<span class="o">+---+---+</span>
-<span class="o">|</span>  <span class="mi">0</span><span class="o">|</span>  <span class="mi">0</span><span class="o">|</span>
-<span class="o">|</span>  <span class="mi">1</span><span class="o">|</span>  <span class="mi">1</span><span class="o">|</span>
-<span class="o">|</span>  <span class="mi">2</span><span class="o">|</span>  <span class="mi">2</span><span class="o">|</span>
-<span class="o">|</span>  <span class="mi">3</span><span class="o">|</span>  <span class="mi">3</span><span class="o">|</span>
-<span class="o">|</span>  <span class="mi">4</span><span class="o">|</span>  <span class="mi">4</span><span class="o">|</span>
-<span class="o">|</span>  <span class="mi">5</span><span class="o">|</span>  <span class="mi">5</span><span class="o">|</span>
-<span class="o">|</span>  <span class="mi">6</span><span class="o">|</span>  <span class="mi">6</span><span class="o">|</span>
-<span class="o">|</span>  <span class="mi">7</span><span class="o">|</span>  <span class="mi">7</span><span class="o">|</span>
-<span class="o">|</span>  <span class="mi">8</span><span class="o">|</span>  <span class="mi">8</span><span class="o">|</span>
-<span class="o">|</span>  <span class="mi">9</span><span class="o">|</span>  <span class="mi">9</span><span class="o">|</span>
-<span class="o">|</span> <span class="mi">10</span><span class="o">|</span> <span class="mi">10</span><span class="o">|</span>
-<span class="o">|</span> <span class="mi">11</span><span class="o">|</span> <span class="mi">11</span><span class="o">|</span>
-<span class="o">|</span> <span class="mi">12</span><span class="o">|</span> <span class="mi">12</span><span class="o">|</span>
-<span class="o">|</span> <span class="mi">13</span><span class="o">|</span> <span class="mi">13</span><span class="o">|</span>
-<span class="o">|</span> <span class="mi">14</span><span class="o">|</span> <span class="mi">14</span><span class="o">|</span>
-<span class="o">|</span> <span class="mi">15</span><span class="o">|</span> <span class="mi">15</span><span class="o">|</span>
-<span class="o">|</span> <span class="mi">16</span><span class="o">|</span> <span class="mi">16</span><span class="o">|</span>
-<span class="o">|</span> <span class="mi">17</span><span class="o">|</span> <span class="mi">17</span><span class="o">|</span>
-<span class="o">|</span> <span class="mi">18</span><span class="o">|</span> <span class="mi">18</span><span class="o">|</span>
-<span class="o">|</span> <span class="mi">19</span><span class="o">|</span> <span class="mi">19</span><span class="o">|</span>
-<span class="o">+---+---+</span>
-<span class="n">only</span> <span class="n">showing</span> <span class="n">top</span> <span class="mi">20</span> <span class="n">rows</span>
-</pre></div>
-</div>
-<p>Confirm that the query was accelerated by Comet:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">scala</span><span class="o">&gt;</span> <span class="n">spark</span><span class="o">.</span><span class="n">sql</span><span class="p">(</span><span class="n">s</span><span class="s2">&quot;SELECT * from t1&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">explain</span><span class="p">()</span>
-<span class="o">==</span> <span class="n">Physical</span> <span class="n">Plan</span> <span class="o">==</span>
-<span class="o">*</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span> <span class="n">CometColumnarToRow</span>
-<span class="o">+-</span> <span class="n">CometBatchScan</span> <span class="n">spark_catalog</span><span class="o">.</span><span class="n">default</span><span class="o">.</span><span class="n">t1</span><span class="p">[</span><span class="n">c0</span><span class="c1">#26, c1#27] spark_catalog.default.t1 (branch=null) [filters=, groupedBy=] RuntimeFilters: []</span>
-</pre></div>
-</div>
-</section>
-<section id="known-issues">
-<h2>Known issues<a class="headerlink" href="#known-issues" title="Link to this heading">#</a></h2>
-<ul class="simple">
-<li><p>Spark Runtime Filtering isn’t <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2116">working</a></p>
+  <img alt="DataFusion Comet Logo" src="../../_images/DataFusionComet-Logo-Light.png" />
+<section id="comet-0-15-0-user-guide">
+<h1>Comet 0.15.0 User Guide<a class="headerlink" href="#comet-0-15-0-user-guide" title="Link to this heading">#</a></h1>
+<div class="toctree-wrapper compound" id="toc-user-guide-links-0-15-0">
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Comet 0.15.0 User Guide</span></p>
 <ul>
-<li><p>You can bypass the issue by either setting <code class="docutils literal notranslate"><span class="pre">spark.sql.adaptive.enabled=false</span></code> or <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.broadcastExchange.enabled=false</span></code></p></li>
+<li class="toctree-l1"><a class="reference internal" href="installation.html">Installing Comet</a></li>
+<li class="toctree-l1"><a class="reference internal" href="source.html">Building From Source</a></li>
+<li class="toctree-l1"><a class="reference internal" href="datasources.html">Supported Data Sources</a></li>
+<li class="toctree-l1"><a class="reference internal" href="datatypes.html">Supported Data Types</a></li>
+<li class="toctree-l1"><a class="reference internal" href="operators.html">Supported Operators</a></li>
+<li class="toctree-l1"><a class="reference internal" href="expressions.html">Supported Expressions</a></li>
+<li class="toctree-l1"><a class="reference internal" href="configs.html">Configuration Settings</a></li>
+<li class="toctree-l1"><a class="reference internal" href="compatibility.html">Compatibility Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="tuning.html">Tuning Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="metrics.html">Metrics Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="iceberg.html">Iceberg Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="kubernetes.html">Kubernetes Guide</a></li>
 </ul>
-</li>
-</ul>
-</section>
+</div>
 </section>
 
 
@@ -590,20 +470,20 @@ git<span class="w"> </span>apply<span class="w"> </span>../datafusion-comet/dev/
                   
 <div class="prev-next-area">
     <a class="left-prev"
-       href="metrics.html"
+       href="../latest/kubernetes.html"
        title="previous page">
       <i class="fa-solid fa-angle-left"></i>
       <div class="prev-next-info">
         <p class="prev-next-subtitle">previous</p>
-        <p class="prev-next-title">Comet Metrics</p>
+        <p class="prev-next-title">Comet Kubernetes Support</p>
       </div>
     </a>
     <a class="right-next"
-       href="kubernetes.html"
+       href="installation.html"
        title="next page">
       <div class="prev-next-info">
         <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">Comet Kubernetes Support</p>
+        <p class="prev-next-title">Installing DataFusion Comet</p>
       </div>
       <i class="fa-solid fa-angle-right"></i>
     </a>

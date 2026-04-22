@@ -61,7 +61,7 @@ under the License.
     <script src="../../_static/documentation_options.js?v=5929fcd5"></script>
     <script src="../../_static/doctools.js?v=9a2dae69"></script>
     <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script>DOCUMENTATION_OPTIONS.pagename = 'user-guide/0.14/compatibility';</script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'user-guide/0.15/compatibility';</script>
     <script async="true" defer="true" src="https://buttons.github.io/buttons.js"></script>
     <link rel="index" title="Index" href="../../genindex.html" />
     <link rel="search" title="Search" href="../../search.html" />
@@ -353,8 +353,7 @@ under the License.
 <li class="toctree-l1"><a class="reference internal" href="../../about/index.html">Comet Overview</a></li>
 <li class="toctree-l1 current"><a class="reference internal" href="../index.html">User Guide</a><ul class="current">
 <li class="toctree-l2"><a class="reference internal" href="../latest/index.html">0.16.0-SNAPSHOT</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../0.15/index.html">0.15.x</a></li>
-<li class="toctree-l2 current"><a class="reference internal" href="index.html">0.14.x</a><ul class="current">
+<li class="toctree-l2 current"><a class="reference internal" href="index.html">0.15.x</a><ul class="current">
 <li class="toctree-l3"><a class="reference internal" href="installation.html">Installing Comet</a></li>
 <li class="toctree-l3"><a class="reference internal" href="source.html">Building From Source</a></li>
 <li class="toctree-l3"><a class="reference internal" href="datasources.html">Supported Data Sources</a></li>
@@ -369,6 +368,7 @@ under the License.
 <li class="toctree-l3"><a class="reference internal" href="kubernetes.html">Kubernetes Guide</a></li>
 </ul>
 </li>
+<li class="toctree-l2"><a class="reference internal" href="../0.14/index.html">0.14.x</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../0.13/index.html">0.13.x</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../0.12/index.html">0.12.x</a></li>
 </ul>
@@ -421,7 +421,7 @@ under the License.
     <li class="breadcrumb-item"><a href="../index.html" class="nav-link">Comet User Guide</a></li>
     
     
-    <li class="breadcrumb-item"><a href="index.html" class="nav-link">Comet 0.14.0 User Guide</a></li>
+    <li class="breadcrumb-item"><a href="index.html" class="nav-link">Comet 0.15.0 User Guide</a></li>
     
     <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Compatibility Guide</span></li>
   </ul>
@@ -458,10 +458,6 @@ KIND, either express or implied.  See the License for the
 specific language governing permissions and limitations
 under the License.
 -->
-<div class="admonition warning">
-<p class="admonition-title">Warning</p>
-<p>This is <strong>out-of-date</strong> documentation. The latest Comet release is version 0.15.0.</p>
-</div>
 <section id="compatibility-guide">
 <h1>Compatibility Guide<a class="headerlink" href="#compatibility-guide" title="Link to this heading">#</a></h1>
 <p>Comet aims to provide consistent results with the version of Apache Spark that is being used.</p>
@@ -504,20 +500,13 @@ the <a class="reference internal" href="expressions.html"><span class="std std-d
 <section id="array-expressions">
 <h3>Array Expressions<a class="headerlink" href="#array-expressions" title="Link to this heading">#</a></h3>
 <ul class="simple">
-<li><p><strong>ArrayContains</strong>: Returns null instead of false for empty arrays with literal values.
-<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3346">#3346</a></p></li>
-<li><p><strong>ArrayRemove</strong>: Returns null when the element to remove is null, instead of removing null elements from the array.
-<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3173">#3173</a></p></li>
-<li><p><strong>GetArrayItem</strong>: Known correctness issues with index handling, including off-by-one errors and incorrect results
-with dynamic (non-literal) index values.
-<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3330">#3330</a>,
-<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3332">#3332</a></p></li>
 <li><p><strong>ArraysOverlap</strong>: Inconsistent behavior when arrays contain NULL values.
 <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3645">#3645</a>,
 <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2036">#2036</a></p></li>
 <li><p><strong>ArrayUnion</strong>: Sorts input arrays before performing the union, while Spark preserves the order of the first array
 and appends unique elements from the second.
 <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3644">#3644</a></p></li>
+<li><p><strong>SortArray</strong>: Nested arrays with <code class="docutils literal notranslate"><span class="pre">Struct</span></code> or <code class="docutils literal notranslate"><span class="pre">Null</span></code> child values are not supported natively and will fall back to Spark.</p></li>
 </ul>
 </section>
 <section id="date-time-expressions">
@@ -529,24 +518,6 @@ time without timezone, so no conversion should be applied. These expressions wor
 <li><p><strong>TruncTimestamp (date_trunc)</strong>: Produces incorrect results when used with non-UTC timezones. Compatible when
 timezone is UTC.
 <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2649">#2649</a></p></li>
-</ul>
-</section>
-<section id="math-expressions">
-<h3>Math Expressions<a class="headerlink" href="#math-expressions" title="Link to this heading">#</a></h3>
-<ul class="simple">
-<li><p><strong>Ceil, Floor</strong>: Incorrect results for Decimal type inputs.
-<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/1729">#1729</a></p></li>
-<li><p><strong>Tan</strong>: <code class="docutils literal notranslate"><span class="pre">tan(-0.0)</span></code> produces <code class="docutils literal notranslate"><span class="pre">0.0</span></code> instead of <code class="docutils literal notranslate"><span class="pre">-0.0</span></code>.
-<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/1897">#1897</a></p></li>
-</ul>
-</section>
-<section id="aggregate-expressions">
-<h3>Aggregate Expressions<a class="headerlink" href="#aggregate-expressions" title="Link to this heading">#</a></h3>
-<ul class="simple">
-<li><p><strong>Corr</strong>: Returns null instead of NaN in some edge cases.
-<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2646">#2646</a></p></li>
-<li><p><strong>First, Last</strong>: These functions are not deterministic. When <code class="docutils literal notranslate"><span class="pre">ignoreNulls</span></code> is set, results may not match Spark.
-<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/1630">#1630</a></p></li>
 </ul>
 </section>
 <section id="struct-expressions">
@@ -603,6 +574,29 @@ recommended for production use.</p></li>
 Spark.</p></li>
 <li><p><strong>N/A</strong>: Spark does not support this cast.</p></li>
 </ul>
+<section id="string-to-decimal">
+<h3>String to Decimal<a class="headerlink" href="#string-to-decimal" title="Link to this heading">#</a></h3>
+<p>Comet’s native <code class="docutils literal notranslate"><span class="pre">CAST(string</span> <span class="pre">AS</span> <span class="pre">DECIMAL)</span></code> implementation matches Apache Spark’s behavior,
+including:</p>
+<ul class="simple">
+<li><p>Leading and trailing ASCII whitespace is trimmed before parsing.</p></li>
+<li><p>Null bytes (<code class="docutils literal notranslate"><span class="pre">\u0000</span></code>) at the start or end of a string are trimmed, matching Spark’s
+<code class="docutils literal notranslate"><span class="pre">UTF8String</span></code> behavior. Null bytes embedded in the middle of a string produce <code class="docutils literal notranslate"><span class="pre">NULL</span></code>.</p></li>
+<li><p>Fullwidth Unicode digits (U+FF10–U+FF19, e.g. <code class="docutils literal notranslate"><span class="pre">１２３.４５</span></code>) are treated as their ASCII
+equivalents, so <code class="docutils literal notranslate"><span class="pre">CAST('１２３.４５'</span> <span class="pre">AS</span> <span class="pre">DECIMAL(10,2))</span></code> returns <code class="docutils literal notranslate"><span class="pre">123.45</span></code>.</p></li>
+<li><p>Scientific notation (e.g. <code class="docutils literal notranslate"><span class="pre">1.23E+5</span></code>) is supported.</p></li>
+<li><p>Special values (<code class="docutils literal notranslate"><span class="pre">inf</span></code>, <code class="docutils literal notranslate"><span class="pre">infinity</span></code>, <code class="docutils literal notranslate"><span class="pre">nan</span></code>) produce <code class="docutils literal notranslate"><span class="pre">NULL</span></code>.</p></li>
+</ul>
+</section>
+<section id="string-to-timestamp">
+<h3>String to Timestamp<a class="headerlink" href="#string-to-timestamp" title="Link to this heading">#</a></h3>
+<p>Comet’s native <code class="docutils literal notranslate"><span class="pre">CAST(string</span> <span class="pre">AS</span> <span class="pre">TIMESTAMP)</span></code> implementation supports all timestamp formats accepted
+by Apache Spark, including ISO 8601 date-time strings, date-only strings, time-only strings
+(<code class="docutils literal notranslate"><span class="pre">HH:MM:SS</span></code>), embedded timezone offsets (e.g. <code class="docutils literal notranslate"><span class="pre">+07:30</span></code>, <code class="docutils literal notranslate"><span class="pre">GMT-01:00</span></code>, <code class="docutils literal notranslate"><span class="pre">UTC</span></code>), named timezone
+suffixes (e.g. <code class="docutils literal notranslate"><span class="pre">Europe/Moscow</span></code>), and the full Spark timestamp year range
+(-290308 to 294247). Note that <code class="docutils literal notranslate"><span class="pre">CAST(string</span> <span class="pre">AS</span> <span class="pre">DATE)</span></code> is only compatible for years between
+262143 BC and 262142 AD due to an underlying library limitation.</p>
+</section>
 <section id="legacy-mode">
 <h3>Legacy Mode<a class="headerlink" href="#legacy-mode" title="Link to this heading">#</a></h3>
 <!--BEGIN:CAST_LEGACY_TABLE-->
@@ -770,14 +764,14 @@ Spark.</p></li>
 <td><p>C</p></td>
 <td><p>C</p></td>
 <td><p>C</p></td>
-<td><p>I</p></td>
+<td><p>C</p></td>
 <td><p>C</p></td>
 <td><p>C</p></td>
 <td><p>C</p></td>
 <td><p>C</p></td>
 <td><p>C</p></td>
 <td><p>-</p></td>
-<td><p>I</p></td>
+<td><p>C</p></td>
 </tr>
 <tr class="row-odd"><td><p>timestamp</p></td>
 <td><p>N/A</p></td>
@@ -798,22 +792,12 @@ Spark.</p></li>
 </div>
 <p><strong>Notes:</strong></p>
 <ul>
-<li><p><strong>decimal -&gt; string</strong>: There can be formatting differences in some case due to Spark using scientific notation where Comet does not</p></li>
 <li><p><strong>double -&gt; decimal</strong>: There can be rounding differences</p></li>
 <li><p><strong>double -&gt; string</strong>: There can be differences in precision. For example, the input “1.4E-45” will produce 1.0E-45 instead of 1.4E-45</p></li>
 <li><p><strong>float -&gt; decimal</strong>: There can be rounding differences</p></li>
 <li><p><strong>float -&gt; string</strong>: There can be differences in precision. For example, the input “1.4E-45” will produce 1.0E-45 instead of 1.4E-45</p></li>
-<li><p><strong>string -&gt; date</strong>: Only supports years between 262143 BC and 262142 AD</p></li>
-<li><p><strong>string -&gt; decimal</strong>: Does not support fullwidth unicode digits (e.g \uFF10)
-or strings containing null bytes (e.g \u0000)</p></li>
-<li><p><strong>string -&gt; timestamp</strong>: Not all valid formats are supported</p>
+<li><p><strong>string -&gt; date</strong>: Only supports years between 262143 BC and 262142 AD</p>
 <!-- prettier-ignore-end -->
-<!--END:CAST_LEGACY_TABLE-->
-</li>
-</ul>
-</section>
-<section id="try-mode">
-<h3>Try Mode<a class="headerlink" href="#try-mode" title="Link to this heading">#</a></h3>
 <!--BEGIN:CAST_TRY_TABLE-->
 <!-- prettier-ignore-start -->
 <div class="pst-scrollable-table-container"><table class="table">
@@ -979,14 +963,14 @@ or strings containing null bytes (e.g \u0000)</p></li>
 <td><p>C</p></td>
 <td><p>C</p></td>
 <td><p>C</p></td>
-<td><p>I</p></td>
+<td><p>C</p></td>
 <td><p>C</p></td>
 <td><p>C</p></td>
 <td><p>C</p></td>
 <td><p>C</p></td>
 <td><p>C</p></td>
 <td><p>-</p></td>
-<td><p>I</p></td>
+<td><p>C</p></td>
 </tr>
 <tr class="row-odd"><td><p>timestamp</p></td>
 <td><p>N/A</p></td>
@@ -1005,24 +989,16 @@ or strings containing null bytes (e.g \u0000)</p></li>
 </tbody>
 </table>
 </div>
+</li>
+</ul>
 <p><strong>Notes:</strong></p>
 <ul>
-<li><p><strong>decimal -&gt; string</strong>: There can be formatting differences in some case due to Spark using scientific notation where Comet does not</p></li>
 <li><p><strong>double -&gt; decimal</strong>: There can be rounding differences</p></li>
 <li><p><strong>double -&gt; string</strong>: There can be differences in precision. For example, the input “1.4E-45” will produce 1.0E-45 instead of 1.4E-45</p></li>
 <li><p><strong>float -&gt; decimal</strong>: There can be rounding differences</p></li>
 <li><p><strong>float -&gt; string</strong>: There can be differences in precision. For example, the input “1.4E-45” will produce 1.0E-45 instead of 1.4E-45</p></li>
-<li><p><strong>string -&gt; date</strong>: Only supports years between 262143 BC and 262142 AD</p></li>
-<li><p><strong>string -&gt; decimal</strong>: Does not support fullwidth unicode digits (e.g \uFF10)
-or strings containing null bytes (e.g \u0000)</p></li>
-<li><p><strong>string -&gt; timestamp</strong>: Not all valid formats are supported</p>
+<li><p><strong>string -&gt; date</strong>: Only supports years between 262143 BC and 262142 AD</p>
 <!-- prettier-ignore-end -->
-<!--END:CAST_TRY_TABLE-->
-</li>
-</ul>
-</section>
-<section id="id1">
-<h3>ANSI Mode<a class="headerlink" href="#id1" title="Link to this heading">#</a></h3>
 <!--BEGIN:CAST_ANSI_TABLE-->
 <!-- prettier-ignore-start -->
 <div class="pst-scrollable-table-container"><table class="table">
@@ -1188,14 +1164,14 @@ or strings containing null bytes (e.g \u0000)</p></li>
 <td><p>C</p></td>
 <td><p>C</p></td>
 <td><p>C</p></td>
-<td><p>I</p></td>
+<td><p>C</p></td>
 <td><p>C</p></td>
 <td><p>C</p></td>
 <td><p>C</p></td>
 <td><p>C</p></td>
 <td><p>C</p></td>
 <td><p>-</p></td>
-<td><p>I</p></td>
+<td><p>C</p></td>
 </tr>
 <tr class="row-odd"><td><p>timestamp</p></td>
 <td><p>N/A</p></td>
@@ -1214,22 +1190,17 @@ or strings containing null bytes (e.g \u0000)</p></li>
 </tbody>
 </table>
 </div>
+</li>
+</ul>
 <p><strong>Notes:</strong></p>
-<ul>
-<li><p><strong>decimal -&gt; string</strong>: There can be formatting differences in some case due to Spark using scientific notation where Comet does not</p></li>
+<ul class="simple">
 <li><p><strong>double -&gt; decimal</strong>: There can be rounding differences</p></li>
 <li><p><strong>double -&gt; string</strong>: There can be differences in precision. For example, the input “1.4E-45” will produce 1.0E-45 instead of 1.4E-45</p></li>
 <li><p><strong>float -&gt; decimal</strong>: There can be rounding differences</p></li>
 <li><p><strong>float -&gt; string</strong>: There can be differences in precision. For example, the input “1.4E-45” will produce 1.0E-45 instead of 1.4E-45</p></li>
 <li><p><strong>string -&gt; date</strong>: Only supports years between 262143 BC and 262142 AD</p></li>
-<li><p><strong>string -&gt; decimal</strong>: Does not support fullwidth unicode digits (e.g \uFF10)
-or strings containing null bytes (e.g \u0000)</p></li>
-<li><p><strong>string -&gt; timestamp</strong>: ANSI mode not supported</p>
-<!-- prettier-ignore-end -->
-<!--END:CAST_ANSI_TABLE-->
-</li>
 </ul>
-<p>See the <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/286">tracking issue</a> for more details.</p>
+<!-- prettier-ignore-end -->
 </section>
 </section>
 </section>
