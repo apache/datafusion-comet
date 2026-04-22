@@ -131,8 +131,6 @@ object CometMax extends CometAggregateExpressionSerde[Max] {
 }
 
 object CometCount extends CometAggregateExpressionSerde[Count] {
-  override def supportsMixedPartialFinal: Boolean = true
-
   override def convert(
       aggExpr: AggregateExpression,
       expr: Count,

@@ -31,6 +31,7 @@ import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ShuffleEx
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 
 import org.apache.comet.CometConf
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 /**
@@ -185,11 +186,11 @@ class CometExecRuleSuite extends CometTestBase {
     withTempView("test_data") {
       createTestDataFrame.createOrReplaceTempView("test_data")
 
-      // Query uses only safe aggregates (MIN, MAX, COUNT) with compatible intermediate buffers
+      // Query uses only safe aggregates (MIN, MAX) with compatible intermediate buffers
       val sparkPlan =
         createSparkPlan(
           spark,
-          "SELECT COUNT(*), MIN(id), MAX(id) FROM test_data GROUP BY (id % 3)")
+          "SELECT MIN(id), MAX(id) FROM test_data GROUP BY (id % 3)")
 
       val originalHashAggCount = countOperators(sparkPlan, classOf[HashAggregateExec])
       assert(originalHashAggCount == 2)
@@ -210,11 +211,11 @@ class CometExecRuleSuite extends CometTestBase {
     withTempView("test_data") {
       createTestDataFrame.createOrReplaceTempView("test_data")
 
-      // Query uses only safe aggregates (MIN, MAX, COUNT) with compatible intermediate buffers
+      // Query uses only safe aggregates (MIN, MAX) with compatible intermediate buffers
       val sparkPlan =
         createSparkPlan(
           spark,
-          "SELECT COUNT(*), MIN(id), MAX(id) FROM test_data GROUP BY (id % 3)")
+          "SELECT MIN(id), MAX(id) FROM test_data GROUP BY (id % 3)")
 
       val originalHashAggCount = countOperators(sparkPlan, classOf[HashAggregateExec])
       assert(originalHashAggCount == 2)
@@ -232,6 +233,10 @@ class CometExecRuleSuite extends CometTestBase {
   }
 
   test("CometExecRule should not convert hash aggregate when grouping key contains map type") {
+    // Spark 3.4/3.5 reject `array<map<...>>` as a grouping key in the analyzer (not orderable),
+    // so the plan never reaches CometExecRule on those versions. The guard we're exercising
+    // (containsMapType) only matters on Spark 4.0+, which permits the GROUP BY to be analyzed.
+    assume(isSpark40Plus)
     // Arrow's row format, used by DataFusion's grouped hash aggregate for composite keys, does
     // not support Map at any nesting level. Grouping by a type that transitively contains a map
     // (e.g. array<map<int,int>>) must stay on Spark to avoid a native row-encoding crash.
