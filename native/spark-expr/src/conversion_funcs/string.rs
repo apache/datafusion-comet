@@ -1867,7 +1867,7 @@ fn timestamp_ntz_parser(
                     Ok(None)
                 };
             }
-            stripped
+            stripped.trim_end()
         } else {
             value
         }
@@ -2272,6 +2272,11 @@ mod tests {
         assert_eq!(
             parse("2020-01-01T12:34:56-08:00", true),
             Some(1_577_882_096_000_000)
+        );
+        // Space-separated offset (e.g. "2021-11-22 10:54:27 +08:00")
+        assert_eq!(
+            parse("2021-11-22 10:54:27 +08:00", true),
+            parse("2021-11-22 10:54:27", true)
         );
 
         // Timezone rejected (allow_time_zone=false)
