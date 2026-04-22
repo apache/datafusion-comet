@@ -19,20 +19,38 @@
 
 package org.apache.comet.shims
 
-import org.apache.spark.sql.execution.{SubqueryAdaptiveBroadcastExec, SubqueryBroadcastExec}
+import org.apache.spark.sql.catalyst.expressions.Expression
+import org.apache.spark.sql.execution.{InSubqueryExec, SparkPlan, SubqueryAdaptiveBroadcastExec, SubqueryBroadcastExec}
 
 trait ShimSubqueryBroadcast {
 
-  /**
-   * Gets the build key indices from SubqueryAdaptiveBroadcastExec. Spark 3.x has `index: Int`,
-   * Spark 4.x has `indices: Seq[Int]`.
-   */
   def getSubqueryBroadcastIndices(sab: SubqueryAdaptiveBroadcastExec): Seq[Int] = {
     Seq(sab.index)
   }
 
-  /** Same version shim for SubqueryBroadcastExec. */
   def getSubqueryBroadcastExecIndices(sub: SubqueryBroadcastExec): Seq[Int] = {
     Seq(sub.index)
+  }
+
+  /** Creates a SubqueryBroadcastExec with version-appropriate index parameter. */
+  def createSubqueryBroadcastExec(
+      name: String,
+      indices: Seq[Int],
+      buildKeys: Seq[Expression],
+      child: SparkPlan): SubqueryBroadcastExec = {
+    assert(indices.length == 1, s"Multi-index DPP not supported: indices=$indices")
+    SubqueryBroadcastExec(name, indices.head, buildKeys, child)
+  }
+
+  // CometPlanAdaptiveDynamicPruningFilters converts all SABs before execution -- to
+  // CometSubqueryBroadcastExec (broadcast reuse) or Literal.TrueLiteral (no broadcast).
+  // Reaching this method means the rule didn't run, which is a configuration error.
+  def resolveSubqueryAdaptiveBroadcast(
+      e: InSubqueryExec,
+      sab: SubqueryAdaptiveBroadcastExec): Unit = {
+    throw new IllegalStateException(
+      "SubqueryAdaptiveBroadcastExec should have been converted by " +
+        "CometPlanAdaptiveDynamicPruningFilters. This indicates the AQE optimizer rule " +
+        "was not registered.")
   }
 }

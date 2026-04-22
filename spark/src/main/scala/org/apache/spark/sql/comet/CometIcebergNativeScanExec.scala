@@ -23,7 +23,7 @@ import scala.jdk.CollectionConverters._
 
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, DynamicPruningExpression, SortOrder}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, DynamicPruningExpression, SortOrder}
 import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.plans.physical.{Partitioning, UnknownPartitioning}
 import org.apache.spark.sql.execution.{InSubqueryExec, SubqueryAdaptiveBroadcastExec}
@@ -86,8 +86,8 @@ case class CometIcebergNativeScanExec(
    * Lazy partition serialization - deferred until execution time for DPP support.
    *
    * Entry points: This lazy val may be triggered from either doExecuteColumnar() (via
-   * commonData/perPartitionData) or capturedMetricValues (for Iceberg metrics). Lazy val
-   * semantics ensure single evaluation regardless of entry point.
+   * commonData/perPartitionData). Lazy val semantics ensure single evaluation regardless of entry
+   * point.
    *
    * DPP (Dynamic Partition Pruning) Flow:
    *
@@ -103,50 +103,24 @@ case class CometIcebergNativeScanExec(
    *        - Subquery plans are set up (but not yet executed)
    *
    *   2. Spark calls doExecuteColumnar() (or metrics are accessed)
-   *        - Accesses perPartitionData (or capturedMetricValues)
+   *        - Accesses perPartitionData
    *        - Forces serializedPartitionData evaluation (here)
-   *        - Waits for DPP values (updateResult or reflection)
+   *        - Waits for DPP values (updateResult)
    *        - Calls serializePartitions with DPP-filtered inputRDD
    *        - Only matching partitions are serialized
    * }}}
    */
   @transient private lazy val serializedPartitionData: (Array[Byte], Array[Array[Byte]]) = {
-    // Ensure DPP subqueries are resolved before accessing inputRDD.
     originalPlan.runtimeFilters.foreach {
       case DynamicPruningExpression(e: InSubqueryExec) if e.values().isEmpty =>
         e.plan match {
           case sab: SubqueryAdaptiveBroadcastExec =>
-            // SubqueryAdaptiveBroadcastExec.executeCollect() throws, so we call
-            // child.executeCollect() directly. We use the index from SAB to find the
-            // right buildKey, then locate that key's column in child.output.
-            val rows = sab.child.executeCollect()
-            val indices = getSubqueryBroadcastIndices(sab)
-
-            // SPARK-46946 changed index: Int to indices: Seq[Int] as a preparatory refactor
-            // for future features (Null Safe Equality DPP, multiple equality predicates).
-            // Currently indices always has one element. CometScanRule checks for multi-index
-            // DPP and falls back, so this assertion should never fail.
-            assert(
-              indices.length == 1,
-              s"Multi-index DPP not supported: indices=$indices. See SPARK-46946.")
-            val buildKeyIndex = indices.head
-            val buildKey = sab.buildKeys(buildKeyIndex)
-
-            // Find column index in child.output by matching buildKey's exprId
-            val colIndex = buildKey match {
-              case attr: Attribute =>
-                sab.child.output.indexWhere(_.exprId == attr.exprId)
-              // DPP may cast partition column to match join key type
-              case Cast(attr: Attribute, _, _, _) =>
-                sab.child.output.indexWhere(_.exprId == attr.exprId)
-              case _ => buildKeyIndex
-            }
-            if (colIndex < 0) {
-              throw new IllegalStateException(
-                s"DPP build key '$buildKey' not found in ${sab.child.output.map(_.name)}")
-            }
-
-            setInSubqueryResult(e, rows.map(_.get(colIndex, e.child.dataType)))
+            // On 3.5+, CometPlanAdaptiveDynamicPruningFilters should have converted
+            // all SABs before execution. This path is a fallback for Spark 3.4.
+            logWarning(
+              "SubqueryAdaptiveBroadcastExec found at execution time " +
+                "(expected conversion by CometPlanAdaptiveDynamicPruningFilters)")
+            resolveSubqueryAdaptiveBroadcast(e, sab)
           case _ =>
             e.updateResult()
         }
@@ -154,29 +128,6 @@ case class CometIcebergNativeScanExec(
     }
 
     CometIcebergNativeScan.serializePartitions(originalPlan, output, nativeIcebergScanMetadata)
-  }
-
-  /**
-   * Sets InSubqueryExec's private result field via reflection.
-   *
-   * Reflection is required because:
-   *   - SubqueryAdaptiveBroadcastExec.executeCollect() throws UnsupportedOperationException
-   *   - InSubqueryExec has no public setter for result, only updateResult() which calls
-   *     executeCollect()
-   *   - We can't replace e.plan since it's a val
-   */
-  private def setInSubqueryResult(e: InSubqueryExec, result: Array[_]): Unit = {
-    val fields = e.getClass.getDeclaredFields
-    // Field name is mangled by Scala compiler, e.g. "org$apache$...$InSubqueryExec$$result"
-    val resultField = fields
-      .find(f => f.getName.endsWith("$result") && !f.getName.contains("Broadcast"))
-      .getOrElse {
-        throw new IllegalStateException(
-          s"Cannot find 'result' field in ${e.getClass.getName}. " +
-            "Spark version may be incompatible with Comet's DPP implementation.")
-      }
-    resultField.setAccessible(true)
-    resultField.set(e, result)
   }
 
   def commonData: Array[Byte] = serializedPartitionData._1
@@ -189,10 +140,6 @@ case class CometIcebergNativeScanExec(
   override lazy val outputPartitioning: Partitioning = UnknownPartitioning(numPartitions)
 
   override lazy val outputOrdering: Seq[SortOrder] = Nil
-
-  // Capture metric VALUES and TYPES (not objects!) in a serializable case class
-  // This survives serialization while SQLMetric objects get reset to 0
-  private case class MetricValue(name: String, value: Long, metricType: String)
 
   /**
    * Maps Iceberg V2 custom metric types to standard Spark metric types for better UI formatting.
@@ -225,71 +172,60 @@ case class CometIcebergNativeScanExec(
   }
 
   /**
-   * Captures Iceberg planning metrics for display in Spark UI.
+   * Immutable SQLMetric for Iceberg planning metrics.
    *
-   * This lazy val intentionally triggers serializedPartitionData evaluation because Iceberg
-   * populates metrics during planning (when inputRDD is accessed). Both this and
-   * doExecuteColumnar() may trigger serializedPartitionData, but lazy val semantics ensure it's
-   * evaluated only once.
+   * Reading `value` lazily triggers serializedPartitionData to ensure Iceberg planning has run
+   * and the metric is populated. This avoids the side effect during metrics MAP construction
+   * (which SparkPlanInfo accesses before AQE runs), while still producing correct values when the
+   * metric VALUE is actually read (e.g., by tests or Spark UI after execution).
+   *
+   * Overrides merge/reset to prevent accumulator merges from executor (which carry 0) from
+   * overwriting the driver-side planning values.
    */
-  @transient private lazy val capturedMetricValues: Seq[MetricValue] = {
-    // Guard against null originalPlan (from doCanonicalize)
-    if (originalPlan == null) {
-      Seq.empty
-    } else {
-      // Trigger serializedPartitionData to ensure Iceberg planning has run and
-      // metrics are populated
+  private class LazyIcebergMetric(metricType: String, metricName: String)
+      extends SQLMetric(metricType, 0) {
+
+    override def value: Long = {
       val _ = serializedPartitionData
-
-      originalPlan.metrics
-        .filterNot { case (name, _) =>
-          // Filter out metrics that are now runtime metrics incremented on the native side
-          name == "numOutputRows" || name == "numDeletes" || name == "numSplits"
-        }
-        .map { case (name, metric) =>
-          val mappedType = mapMetricType(name, metric.metricType)
-          MetricValue(name, metric.value, mappedType)
-        }
-        .toSeq
+      originalPlan.metrics.get(metricName).map(_.value).getOrElse(0L)
     }
-  }
-
-  /**
-   * Immutable SQLMetric for planning metrics that don't change during execution.
-   *
-   * Regular SQLMetric extends AccumulatorV2, which means when execution completes, accumulator
-   * updates from executors (which are 0 since they don't update planning metrics) get merged back
-   * to the driver, overwriting the driver's values with 0.
-   *
-   * This class overrides the accumulator methods to make the metric truly immutable once set.
-   */
-  private class ImmutableSQLMetric(metricType: String) extends SQLMetric(metricType, 0) {
 
     override def merge(other: AccumulatorV2[Long, Long]): Unit = {}
 
     override def reset(): Unit = {}
   }
 
+  /**
+   * Iceberg planning metrics, created eagerly from originalPlan.metrics names and types.
+   *
+   * SparkPlanInfo reads the metrics MAP (names, types, ids) before AQE runs. This is safe because
+   * constructing the map has no side effects. Metric VALUES are lazily resolved via
+   * LazyIcebergMetric when actually read (after execution).
+   */
+  @transient private lazy val icebergPlanningMetrics: Map[String, LazyIcebergMetric] = {
+    if (originalPlan == null) {
+      Map.empty
+    } else {
+      originalPlan.metrics
+        .filterNot { case (name, _) =>
+          name == "numOutputRows" || name == "numDeletes" || name == "numSplits"
+        }
+        .map { case (name, metric) =>
+          val mappedType = mapMetricType(name, metric.metricType)
+          val lazyMetric = new LazyIcebergMetric(mappedType, name)
+          sparkContext.register(lazyMetric, name)
+          name -> lazyMetric
+        }
+    }
+  }
+
   override lazy val metrics: Map[String, SQLMetric] = {
     val baseMetrics = Map(
       "output_rows" -> SQLMetrics.createMetric(sparkContext, "number of output rows"))
 
-    // Create IMMUTABLE metrics with captured values AND types
-    // these won't be affected by accumulator merges
-    val icebergMetrics = capturedMetricValues.map { mv =>
-      // Create the immutable metric with initValue = 0 (Spark 4 requires initValue <= 0)
-      val metric = new ImmutableSQLMetric(mv.metricType)
-      // Set the actual value after creation
-      metric.set(mv.value)
-      // Register it with SparkContext to assign metadata (name, etc.)
-      sparkContext.register(metric, mv.name)
-      mv.name -> metric
-    }.toMap
-
-    // Add num_splits as a runtime metric (incremented on the native side during execution)
     val numSplitsMetric = SQLMetrics.createMetric(sparkContext, "number of file splits processed")
 
-    baseMetrics ++ icebergMetrics + ("num_splits" -> numSplitsMetric)
+    baseMetrics ++ icebergPlanningMetrics + ("num_splits" -> numSplitsMetric)
   }
 
   /** Executes using CometExecRDD - planning data is computed lazily on first access. */
@@ -356,15 +292,26 @@ case class CometIcebergNativeScanExec(
     Iterator(output, s"$metadataLocation, $scanDesc$runtimeFiltersStr", taskCount)
   }
 
+  // runtimeFilters must be included in equals so that transformUp detects changes when
+  // CometPlanAdaptiveDynamicPruningFilters replaces SubqueryAdaptiveBroadcastExec with
+  // CometSubqueryBroadcastExec. Without this, the new scan would be "equal" to the old
+  // one and transformUp would return the original (unconverted) plan tree.
   override def equals(obj: Any): Boolean = {
     obj match {
       case other: CometIcebergNativeScanExec =>
         this.metadataLocation == other.metadataLocation &&
         this.output == other.output &&
-        this.serializedPlanOpt == other.serializedPlanOpt
+        this.serializedPlanOpt == other.serializedPlanOpt &&
+        this.runtimeFiltersEqual(other)
       case _ =>
         false
     }
+  }
+
+  private def runtimeFiltersEqual(other: CometIcebergNativeScanExec): Boolean = {
+    if (this.originalPlan eq other.originalPlan) return true
+    if (this.originalPlan == null || other.originalPlan == null) return false
+    this.originalPlan.runtimeFilters == other.originalPlan.runtimeFilters
   }
 
   override def hashCode(): Int =

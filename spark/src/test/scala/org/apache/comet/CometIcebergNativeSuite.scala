@@ -25,8 +25,10 @@ import java.nio.file.Files
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.CometTestBase
-import org.apache.spark.sql.comet.CometIcebergNativeScanExec
-import org.apache.spark.sql.execution.SparkPlan
+import org.apache.spark.sql.catalyst.expressions.DynamicPruningExpression
+import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometIcebergNativeScanExec, CometSubqueryBroadcastExec}
+import org.apache.spark.sql.execution.{InSubqueryExec, SparkPlan}
+import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanHelper, BroadcastQueryStageExec}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{StringType, TimestampType}
 
@@ -38,7 +40,10 @@ import org.apache.comet.testing.{FuzzDataGenerator, SchemaGenOptions}
  *
  * Note: Requires Iceberg dependencies to be added to pom.xml
  */
-class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
+class CometIcebergNativeSuite
+    extends CometTestBase
+    with RESTCatalogHelper
+    with AdaptiveSparkPlanHelper {
 
   // Skip these tests if Iceberg is not available in classpath
   private def icebergAvailable: Boolean = {
@@ -2530,6 +2535,15 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
         val numPartitions = icebergScans.head.numPartitions
         assert(numPartitions == 1, s"Expected DPP to prune to 1 partition but got $numPartitions")
 
+        // Verify AQE DPP used CometSubqueryBroadcastExec with broadcast reuse
+        val subqueries = collectIcebergDPPSubqueries(cometPlan)
+        assert(subqueries.size == 2, s"Expected 2 DPP subqueries but got ${subqueries.size}")
+        subqueries.foreach { sub =>
+          assert(
+            sub.isInstanceOf[CometSubqueryBroadcastExec],
+            s"Expected CometSubqueryBroadcastExec but got ${sub.getClass.getSimpleName}")
+        }
+
         spark.sql("DROP TABLE runtime_cat.db.multi_dpp_fact")
       }
     }
@@ -2607,6 +2621,20 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
           s"Expected CometIcebergNativeScanExec but found none. Plan:\n$cometPlan")
         val numPartitions = icebergScans.head.numPartitions
         assert(numPartitions == 1, s"Expected DPP to prune to 1 partition but got $numPartitions")
+
+        // Verify AQE DPP used CometSubqueryBroadcastExec with broadcast reuse
+        val subqueries = collectIcebergDPPSubqueries(cometPlan)
+        assert(subqueries.nonEmpty, s"Expected DPP subqueries in plan:\n$cometPlan")
+        subqueries.foreach { sub =>
+          assert(
+            sub.isInstanceOf[CometSubqueryBroadcastExec],
+            s"Expected CometSubqueryBroadcastExec but got ${sub.getClass.getSimpleName}")
+          val csb = sub.asInstanceOf[CometSubqueryBroadcastExec]
+          assert(
+            csb.child.isInstanceOf[BroadcastQueryStageExec],
+            "Expected BroadcastQueryStageExec child (broadcast reuse) but got " +
+              s"${csb.child.getClass.getSimpleName}")
+        }
 
         spark.sql("DROP TABLE runtime_cat.db.fact_table")
       }
@@ -2761,6 +2789,420 @@ class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
           case _: ClassNotFoundException =>
             cancel("SparkTableUtil not available")
         }
+      }
+    }
+  }
+
+  // ---- AQE DPP broadcast reuse tests ----
+
+  /**
+   * Collects DPP subquery plans from CometIcebergNativeScanExec's originalPlan.runtimeFilters.
+   * These are hidden from the normal plan expression tree (unlike BatchScanExec).
+   */
+  private def collectIcebergDPPSubqueries(plan: SparkPlan): Seq[SparkPlan] = {
+    collect(plan) { case scan: CometIcebergNativeScanExec => scan }
+      .filter(_.originalPlan != null)
+      .flatMap(_.originalPlan.runtimeFilters)
+      .collect { case DynamicPruningExpression(e: InSubqueryExec) =>
+        e.plan
+      }
+  }
+
+  test("AQE DPP - CometSubqueryBroadcastExec replaces SubqueryAdaptiveBroadcastExec") {
+    assume(icebergAvailable, "Iceberg not available")
+    withTempIcebergDir { warehouseDir =>
+      val dimDir = new File(warehouseDir, "dim_parquet")
+      withSQLConf(
+        "spark.sql.catalog.aqe_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.aqe_cat.type" -> "hadoop",
+        "spark.sql.catalog.aqe_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        "spark.sql.autoBroadcastJoinThreshold" -> "1KB",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE aqe_cat.db.dpp_reuse_fact (
+            id BIGINT, data STRING, date DATE
+          ) USING iceberg PARTITIONED BY (date)
+        """)
+        spark.sql("""
+          INSERT INTO aqe_cat.db.dpp_reuse_fact VALUES
+          (1, 'a', DATE '1970-01-01'), (2, 'b', DATE '1970-01-02'),
+          (3, 'c', DATE '1970-01-02'), (4, 'd', DATE '1970-01-03')
+        """)
+
+        spark
+          .createDataFrame(Seq((1L, java.sql.Date.valueOf("1970-01-02"))))
+          .toDF("id", "date")
+          .write
+          .parquet(dimDir.getAbsolutePath)
+        spark.read.parquet(dimDir.getAbsolutePath).createOrReplaceTempView("aqe_dim")
+
+        val query =
+          """SELECT /*+ BROADCAST(d) */ f.* FROM aqe_cat.db.dpp_reuse_fact f
+            |JOIN aqe_dim d ON f.date = d.date AND d.id = 1""".stripMargin
+        val (_, cometPlan) = checkSparkAnswer(query)
+
+        // Verify CometSubqueryBroadcastExec replaced SubqueryAdaptiveBroadcastExec
+        val subqueries = collectIcebergDPPSubqueries(cometPlan)
+        assert(subqueries.nonEmpty, s"Expected DPP subqueries in plan:\n$cometPlan")
+        subqueries.foreach { sub =>
+          assert(
+            sub.isInstanceOf[CometSubqueryBroadcastExec],
+            s"Expected CometSubqueryBroadcastExec but got ${sub.getClass.getSimpleName}")
+        }
+
+        // Verify broadcast reuse: child should be BroadcastQueryStageExec (the join's
+        // already-materialized broadcast), not a standalone exchange
+        subqueries.foreach {
+          case csb: CometSubqueryBroadcastExec =>
+            assert(
+              csb.child.isInstanceOf[BroadcastQueryStageExec],
+              "Expected BroadcastQueryStageExec child (broadcast reuse) but got " +
+                s"${csb.child.getClass.getSimpleName}")
+          case _ =>
+        }
+
+        // Verify only 1 CometBroadcastExchangeExec (shared between join and DPP)
+        val broadcasts = collectWithSubqueries(cometPlan) { case e: CometBroadcastExchangeExec =>
+          e
+        }
+        assert(
+          broadcasts.size == 1,
+          s"Expected 1 CometBroadcastExchangeExec (reused) but got ${broadcasts.size}")
+
+        // Verify correct results and partition pruning
+        val icebergScans = collectIcebergNativeScans(cometPlan)
+        assert(icebergScans.nonEmpty, "Expected CometIcebergNativeScanExec in plan")
+        assert(
+          icebergScans.head.numPartitions == 1,
+          s"Expected DPP to prune to 1 partition but got ${icebergScans.head.numPartitions}")
+
+        spark.sql("DROP TABLE aqe_cat.db.dpp_reuse_fact")
+      }
+    }
+  }
+
+  test("AQE DPP - multiple DPP filters reuse same broadcast") {
+    assume(icebergAvailable, "Iceberg not available")
+    withTempIcebergDir { warehouseDir =>
+      val dimDir = new File(warehouseDir, "dim_parquet")
+      withSQLConf(
+        "spark.sql.catalog.aqe_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.aqe_cat.type" -> "hadoop",
+        "spark.sql.catalog.aqe_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        "spark.sql.autoBroadcastJoinThreshold" -> "1KB",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE aqe_cat.db.multi_dpp_reuse (
+            id BIGINT, data STRING, date DATE, ts TIMESTAMP
+          ) USING iceberg PARTITIONED BY (data, bucket(8, id))
+        """)
+        val df = spark
+          .range(1, 100)
+          .selectExpr(
+            "id",
+            "CAST(DATE_ADD(DATE '1970-01-01', CAST(id % 4 AS INT)) AS STRING) as data",
+            "DATE_ADD(DATE '1970-01-01', CAST(id % 4 AS INT)) as date",
+            "CAST(DATE_ADD(DATE '1970-01-01', CAST(id % 4 AS INT)) AS TIMESTAMP) as ts")
+        df.coalesce(1)
+          .write
+          .format("iceberg")
+          .option("fanout-enabled", "true")
+          .mode("append")
+          .saveAsTable("aqe_cat.db.multi_dpp_reuse")
+
+        spark
+          .createDataFrame(Seq((1L, java.sql.Date.valueOf("1970-01-02"), "1970-01-02")))
+          .toDF("id", "date", "data")
+          .write
+          .parquet(dimDir.getAbsolutePath)
+        spark.read.parquet(dimDir.getAbsolutePath).createOrReplaceTempView("aqe_multi_dim")
+
+        val query =
+          """SELECT /*+ BROADCAST(d) */ f.*
+            |FROM aqe_cat.db.multi_dpp_reuse f
+            |JOIN aqe_multi_dim d ON f.id = d.id AND f.data = d.data
+            |WHERE d.date = DATE '1970-01-02'""".stripMargin
+        val (_, cometPlan) = checkSparkAnswer(query)
+
+        // Both DPP filters should use CometSubqueryBroadcastExec
+        val subqueries = collectIcebergDPPSubqueries(cometPlan)
+        assert(subqueries.size == 2, s"Expected 2 DPP subqueries but got ${subqueries.size}")
+        subqueries.foreach { sub =>
+          assert(
+            sub.isInstanceOf[CometSubqueryBroadcastExec],
+            s"Expected CometSubqueryBroadcastExec but got ${sub.getClass.getSimpleName}")
+        }
+
+        // Both should reuse the same BroadcastQueryStageExec
+        val stages = subqueries.collect { case csb: CometSubqueryBroadcastExec =>
+          csb.child
+        }
+        assert(
+          stages.forall(_.isInstanceOf[BroadcastQueryStageExec]),
+          "All DPP subqueries should reuse the join's BroadcastQueryStageExec")
+
+        // Only 1 broadcast exchange in the plan
+        val broadcasts = collectWithSubqueries(cometPlan) { case e: CometBroadcastExchangeExec =>
+          e
+        }
+        assert(
+          broadcasts.size == 1,
+          s"Expected 1 CometBroadcastExchangeExec but got ${broadcasts.size}")
+
+        spark.sql("DROP TABLE aqe_cat.db.multi_dpp_reuse")
+      }
+    }
+  }
+
+  test("AQE DPP - two separate broadcast joins disambiguated by buildKeys") {
+    assume(icebergAvailable, "Iceberg not available")
+    withTempIcebergDir { warehouseDir =>
+      val dim1Dir = new File(warehouseDir, "dim1_parquet")
+      val dim2Dir = new File(warehouseDir, "dim2_parquet")
+      withSQLConf(
+        "spark.sql.catalog.aqe_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.aqe_cat.type" -> "hadoop",
+        "spark.sql.catalog.aqe_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        "spark.sql.autoBroadcastJoinThreshold" -> "1KB",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        // Fact table partitioned by TWO columns: date and category
+        spark.sql("""
+          CREATE TABLE aqe_cat.db.two_join_fact (
+            id BIGINT, date DATE, category STRING, value INT
+          ) USING iceberg PARTITIONED BY (date, category)
+        """)
+        spark.sql("""
+          INSERT INTO aqe_cat.db.two_join_fact VALUES
+          (1, DATE '2024-01-01', 'A', 10),
+          (2, DATE '2024-01-01', 'B', 20),
+          (3, DATE '2024-01-02', 'A', 30),
+          (4, DATE '2024-01-02', 'B', 40),
+          (5, DATE '2024-01-03', 'A', 50),
+          (6, DATE '2024-01-03', 'C', 60)
+        """)
+
+        // Dim1: filters on date
+        spark
+          .createDataFrame(Seq((java.sql.Date.valueOf("2024-01-02"), "keep")))
+          .toDF("date", "label")
+          .write
+          .parquet(dim1Dir.getAbsolutePath)
+        spark.read.parquet(dim1Dir.getAbsolutePath).createOrReplaceTempView("date_dim")
+
+        // Dim2: filters on category
+        spark
+          .createDataFrame(Seq(("A", "keep")))
+          .toDF("category", "label")
+          .write
+          .parquet(dim2Dir.getAbsolutePath)
+        spark.read.parquet(dim2Dir.getAbsolutePath).createOrReplaceTempView("cat_dim")
+
+        // Two separate broadcast joins — each creates its own DPP filter
+        val query =
+          """SELECT /*+ BROADCAST(d1), BROADCAST(d2) */ f.*
+            |FROM aqe_cat.db.two_join_fact f
+            |JOIN date_dim d1 ON f.date = d1.date
+            |JOIN cat_dim d2 ON f.category = d2.category
+            |WHERE d1.label = 'keep' AND d2.label = 'keep'""".stripMargin
+
+        val (_, cometPlan) = checkSparkAnswer(query)
+
+        // Should have DPP subqueries for both joins
+        val subqueries = collectIcebergDPPSubqueries(cometPlan)
+        assert(subqueries.nonEmpty, s"Expected DPP subqueries in plan:\n$cometPlan")
+
+        // Each should be CometSubqueryBroadcastExec with BroadcastQueryStageExec child
+        subqueries.foreach { sub =>
+          assert(
+            sub.isInstanceOf[CometSubqueryBroadcastExec],
+            s"Expected CometSubqueryBroadcastExec but got ${sub.getClass.getSimpleName}")
+        }
+
+        // The two subqueries should reference DIFFERENT broadcast stages
+        // (one for date_dim, one for cat_dim)
+        val stages = subqueries.collect { case csb: CometSubqueryBroadcastExec =>
+          System.identityHashCode(csb.child)
+        }.distinct
+        if (subqueries.size >= 2) {
+          assert(
+            stages.size == subqueries.size,
+            s"Expected ${subqueries.size} distinct broadcast stages but got ${stages.size}. " +
+              "buildKeys disambiguation may not be working.")
+        }
+
+        // Verify correct results: date=2024-01-02 AND category=A → row (3, 2024-01-02, A, 30)
+        val icebergScans = collectIcebergNativeScans(cometPlan)
+        assert(icebergScans.nonEmpty, "Expected CometIcebergNativeScanExec in plan")
+        assert(
+          icebergScans.head.numPartitions == 1,
+          s"Expected DPP to prune to 1 partition but got ${icebergScans.head.numPartitions}")
+
+        spark.sql("DROP TABLE aqe_cat.db.two_join_fact")
+      }
+    }
+  }
+
+  test("AQE DPP - graceful fallback when broadcast join is not Comet") {
+    assume(icebergAvailable, "Iceberg not available")
+    withTempIcebergDir { warehouseDir =>
+      val dimDir = new File(warehouseDir, "dim_parquet")
+      withSQLConf(
+        "spark.sql.catalog.aqe_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.aqe_cat.type" -> "hadoop",
+        "spark.sql.catalog.aqe_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        "spark.sql.autoBroadcastJoinThreshold" -> "1KB",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true",
+        // Disable Comet BHJ so the join stays as Spark's BroadcastHashJoinExec.
+        // The rule can't find CometBroadcastHashJoinExec and must handle gracefully.
+        CometConf.COMET_EXEC_BROADCAST_HASH_JOIN_ENABLED.key -> "false",
+        CometConf.COMET_EXEC_BROADCAST_EXCHANGE_ENABLED.key -> "false") {
+
+        spark.sql("""
+          CREATE TABLE aqe_cat.db.fallback_fact (
+            id BIGINT, data STRING, date DATE
+          ) USING iceberg PARTITIONED BY (date)
+        """)
+        spark.sql("""
+          INSERT INTO aqe_cat.db.fallback_fact VALUES
+          (1, 'a', DATE '1970-01-01'), (2, 'b', DATE '1970-01-02'),
+          (3, 'c', DATE '1970-01-02'), (4, 'd', DATE '1970-01-03')
+        """)
+
+        spark
+          .createDataFrame(Seq((1L, java.sql.Date.valueOf("1970-01-02"))))
+          .toDF("id", "date")
+          .write
+          .parquet(dimDir.getAbsolutePath)
+        spark.read.parquet(dimDir.getAbsolutePath).createOrReplaceTempView("fallback_dim")
+
+        // Query should still produce correct results even without Comet BHJ
+        val query =
+          """SELECT /*+ BROADCAST(d) */ f.* FROM aqe_cat.db.fallback_fact f
+            |JOIN fallback_dim d ON f.date = d.date AND d.id = 1
+            |ORDER BY f.id""".stripMargin
+        checkSparkAnswer(query)
+
+        spark.sql("DROP TABLE aqe_cat.db.fallback_fact")
+      }
+    }
+  }
+
+  test("AQE DPP - empty broadcast result prunes all partitions") {
+    assume(icebergAvailable, "Iceberg not available")
+    withTempIcebergDir { warehouseDir =>
+      val dimDir = new File(warehouseDir, "dim_parquet")
+      withSQLConf(
+        "spark.sql.catalog.aqe_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.aqe_cat.type" -> "hadoop",
+        "spark.sql.catalog.aqe_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        "spark.sql.autoBroadcastJoinThreshold" -> "1KB",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE aqe_cat.db.empty_dpp_fact (
+            id BIGINT, data STRING, date DATE
+          ) USING iceberg PARTITIONED BY (date)
+        """)
+        spark.sql("""
+          INSERT INTO aqe_cat.db.empty_dpp_fact VALUES
+          (1, 'a', DATE '1970-01-01'), (2, 'b', DATE '1970-01-02'),
+          (3, 'c', DATE '1970-01-03')
+        """)
+
+        // Dim table with a value that matches NO fact partitions
+        spark
+          .createDataFrame(Seq((1L, java.sql.Date.valueOf("2099-12-31"))))
+          .toDF("id", "date")
+          .write
+          .parquet(dimDir.getAbsolutePath)
+        spark.read.parquet(dimDir.getAbsolutePath).createOrReplaceTempView("empty_dim")
+
+        val query =
+          """SELECT /*+ BROADCAST(d) */ f.* FROM aqe_cat.db.empty_dpp_fact f
+            |JOIN empty_dim d ON f.date = d.date AND d.id = 1""".stripMargin
+
+        // Should return empty result — DPP prunes all partitions
+        val result = spark.sql(query).collect()
+        assert(result.isEmpty, s"Expected empty result but got ${result.length} rows")
+
+        val (_, cometPlan) = checkSparkAnswer(query)
+
+        // Verify the rule still converted the SAB
+        val subqueries = collectIcebergDPPSubqueries(cometPlan)
+        subqueries.foreach { sub =>
+          assert(
+            sub.isInstanceOf[CometSubqueryBroadcastExec],
+            s"Expected CometSubqueryBroadcastExec but got ${sub.getClass.getSimpleName}")
+        }
+
+        spark.sql("DROP TABLE aqe_cat.db.empty_dpp_fact")
+      }
+    }
+  }
+
+  test("AQE DPP - no broadcast join (SMJ) handles SAB gracefully") {
+    assume(icebergAvailable, "Iceberg not available")
+    withTempIcebergDir { warehouseDir =>
+      val dimDir = new File(warehouseDir, "dim_parquet")
+      withSQLConf(
+        "spark.sql.catalog.aqe_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.aqe_cat.type" -> "hadoop",
+        "spark.sql.catalog.aqe_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        // Disable broadcast to force sort-merge join — no broadcast join for DPP to reuse
+        "spark.sql.autoBroadcastJoinThreshold" -> "-1",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE aqe_cat.db.smj_fact (
+            id BIGINT, data STRING, date DATE
+          ) USING iceberg PARTITIONED BY (date)
+        """)
+        spark.sql("""
+          INSERT INTO aqe_cat.db.smj_fact VALUES
+          (1, 'a', DATE '1970-01-01'), (2, 'b', DATE '1970-01-02'),
+          (3, 'c', DATE '1970-01-02'), (4, 'd', DATE '1970-01-03')
+        """)
+
+        spark
+          .createDataFrame(Seq((1L, java.sql.Date.valueOf("1970-01-02"))))
+          .toDF("id", "date")
+          .write
+          .parquet(dimDir.getAbsolutePath)
+        spark.read.parquet(dimDir.getAbsolutePath).createOrReplaceTempView("smj_dim")
+
+        // No BROADCAST hint + threshold=-1 forces SMJ. DPP may still create SABs
+        // but there's no broadcast join for our rule to find.
+        val query =
+          """SELECT f.* FROM aqe_cat.db.smj_fact f
+            |JOIN smj_dim d ON f.date = d.date
+            |WHERE d.id = 1
+            |ORDER BY f.id""".stripMargin
+
+        // Should produce correct results regardless of DPP path
+        checkSparkAnswer(query)
+
+        spark.sql("DROP TABLE aqe_cat.db.smj_fact")
       }
     }
   }
