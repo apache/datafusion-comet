@@ -222,6 +222,7 @@ jobs:
           - name: "sql"
             value: |
               org.apache.spark.sql.CometToPrettyStringSuite
+              org.apache.spark.sql.CometCollationSuite
 
       fail-fast: false
     name: ${{ matrix.os }}/${{ matrix.profile.name }} [${{ matrix.suite.name }}]
