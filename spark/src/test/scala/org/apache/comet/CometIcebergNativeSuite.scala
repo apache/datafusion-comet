@@ -26,7 +26,8 @@ import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.catalyst.expressions.DynamicPruningExpression
-import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometIcebergNativeScanExec, CometSubqueryBroadcastExec}
+import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight}
+import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometIcebergNativeScanExec, CometSubqueryBroadcastExec}
 import org.apache.spark.sql.execution.{InSubqueryExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanHelper, BroadcastQueryStageExec}
 import org.apache.spark.sql.internal.SQLConf
@@ -2795,10 +2796,6 @@ class CometIcebergNativeSuite
 
   // ---- AQE DPP broadcast reuse tests ----
 
-  /**
-   * Collects DPP subquery plans from CometIcebergNativeScanExec's originalPlan.runtimeFilters.
-   * These are hidden from the normal plan expression tree (unlike BatchScanExec).
-   */
   private def collectIcebergDPPSubqueries(plan: SparkPlan): Seq[SparkPlan] = {
     collect(plan) { case scan: CometIcebergNativeScanExec => scan }
       .filter(_.originalPlan != null)
@@ -2806,6 +2803,14 @@ class CometIcebergNativeSuite
       .collect { case DynamicPruningExpression(e: InSubqueryExec) =>
         e.plan
       }
+  }
+
+  /** Extracts the broadcast-side child from a CometBroadcastHashJoinExec. */
+  private def broadcastChild(join: CometBroadcastHashJoinExec): SparkPlan = {
+    join.buildSide match {
+      case BuildLeft => join.left
+      case BuildRight => join.right
+    }
   }
 
   test("AQE DPP - CometSubqueryBroadcastExec replaces SubqueryAdaptiveBroadcastExec") {
@@ -2854,24 +2859,20 @@ class CometIcebergNativeSuite
             s"Expected CometSubqueryBroadcastExec but got ${sub.getClass.getSimpleName}")
         }
 
-        // Verify broadcast reuse: child should be BroadcastQueryStageExec (the join's
-        // already-materialized broadcast), not a standalone exchange
+        // Verify broadcast reuse: subquery child should be the same BroadcastQueryStageExec
+        // instance that the join uses (reference equality, not just same type)
+        val joinBroadcastStage = collect(cometPlan) {
+          case j: CometBroadcastHashJoinExec => broadcastChild(j)
+        }.collectFirst { case b: BroadcastQueryStageExec => b }.get
+
         subqueries.foreach {
           case csb: CometSubqueryBroadcastExec =>
             assert(
-              csb.child.isInstanceOf[BroadcastQueryStageExec],
-              "Expected BroadcastQueryStageExec child (broadcast reuse) but got " +
-                s"${csb.child.getClass.getSimpleName}")
+              csb.child eq joinBroadcastStage,
+              "DPP subquery child should be the same BroadcastQueryStageExec instance " +
+                "as the join's broadcast side (eq check failed)")
           case _ =>
         }
-
-        // Verify only 1 CometBroadcastExchangeExec (shared between join and DPP)
-        val broadcasts = collectWithSubqueries(cometPlan) { case e: CometBroadcastExchangeExec =>
-          e
-        }
-        assert(
-          broadcasts.size == 1,
-          s"Expected 1 CometBroadcastExchangeExec (reused) but got ${broadcasts.size}")
 
         // Verify correct results and partition pruning
         val icebergScans = collectIcebergNativeScans(cometPlan)
@@ -2941,21 +2942,19 @@ class CometIcebergNativeSuite
             s"Expected CometSubqueryBroadcastExec but got ${sub.getClass.getSimpleName}")
         }
 
-        // Both should reuse the same BroadcastQueryStageExec
-        val stages = subqueries.collect { case csb: CometSubqueryBroadcastExec =>
-          csb.child
-        }
-        assert(
-          stages.forall(_.isInstanceOf[BroadcastQueryStageExec]),
-          "All DPP subqueries should reuse the join's BroadcastQueryStageExec")
+        // Both should reuse the exact same BroadcastQueryStageExec instance from the join
+        val joinBroadcastStage = collect(cometPlan) {
+          case j: CometBroadcastHashJoinExec => broadcastChild(j)
+        }.collectFirst { case b: BroadcastQueryStageExec => b }.get
 
-        // Only 1 broadcast exchange in the plan
-        val broadcasts = collectWithSubqueries(cometPlan) { case e: CometBroadcastExchangeExec =>
-          e
+        subqueries.foreach {
+          case csb: CometSubqueryBroadcastExec =>
+            assert(
+              csb.child eq joinBroadcastStage,
+              "Both DPP subqueries should reuse the same BroadcastQueryStageExec " +
+                "instance as the join (eq check failed)")
+          case _ =>
         }
-        assert(
-          broadcasts.size == 1,
-          s"Expected 1 CometBroadcastExchangeExec but got ${broadcasts.size}")
 
         spark.sql("DROP TABLE aqe_cat.db.multi_dpp_reuse")
       }
@@ -3030,16 +3029,30 @@ class CometIcebergNativeSuite
             s"Expected CometSubqueryBroadcastExec but got ${sub.getClass.getSimpleName}")
         }
 
-        // The two subqueries should reference DIFFERENT broadcast stages
-        // (one for date_dim, one for cat_dim)
-        val stages = subqueries.collect { case csb: CometSubqueryBroadcastExec =>
-          System.identityHashCode(csb.child)
-        }.distinct
-        if (subqueries.size >= 2) {
+        // Each subquery should reuse the broadcast stage from the CORRECT join
+        // (not mixed up). Collect join broadcast stages keyed by their broadcast's exprId set.
+        val joinStages = collect(cometPlan) {
+          case j: CometBroadcastHashJoinExec => j
+        }.collect { case j if broadcastChild(j).isInstanceOf[BroadcastQueryStageExec] =>
+          broadcastChild(j).asInstanceOf[BroadcastQueryStageExec]
+        }
+
+        val subqueryCsbs = subqueries.collect { case csb: CometSubqueryBroadcastExec => csb }
+        subqueryCsbs.foreach { csb =>
           assert(
-            stages.size == subqueries.size,
-            s"Expected ${subqueries.size} distinct broadcast stages but got ${stages.size}. " +
-              "buildKeys disambiguation may not be working.")
+            joinStages.exists(_ eq csb.child),
+            s"DPP subquery child should be eq to one of the join's BroadcastQueryStageExec " +
+              s"instances, but was not found")
+        }
+
+        // The subqueries should reference DIFFERENT broadcast stages
+        // (one for date_dim, one for cat_dim)
+        if (subqueryCsbs.size >= 2) {
+          val distinctChildren = subqueryCsbs.map(_.child).distinct
+          assert(
+            distinctChildren.size == subqueryCsbs.size,
+            s"Expected ${subqueryCsbs.size} distinct broadcast stages but got " +
+              s"${distinctChildren.size}. buildKeys disambiguation may not be working.")
         }
 
         // Verify correct results: date=2024-01-02 AND category=A → row (3, 2024-01-02, A, 30)
