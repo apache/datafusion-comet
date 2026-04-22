@@ -27,7 +27,7 @@ import scala.jdk.CollectionConverters._
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.catalyst.expressions.DynamicPruningExpression
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight}
-import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometIcebergNativeScanExec, CometSubqueryBroadcastExec}
+import org.apache.spark.sql.comet.{CometBroadcastHashJoinExec, CometIcebergNativeScanExec, CometSubqueryBroadcastExec}
 import org.apache.spark.sql.execution.{InSubqueryExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanHelper, BroadcastQueryStageExec}
 import org.apache.spark.sql.internal.SQLConf
@@ -3042,8 +3042,8 @@ class CometIcebergNativeSuite
         subqueryCsbs.foreach { csb =>
           assert(
             joinStages.exists(_ eq csb.child),
-            s"DPP subquery child should be eq to one of the join's BroadcastQueryStageExec " +
-              s"instances, but was not found")
+            "DPP subquery child should be eq to one of the join's BroadcastQueryStageExec " +
+              "instances, but was not found")
         }
 
         // The subqueries should reference DIFFERENT broadcast stages
