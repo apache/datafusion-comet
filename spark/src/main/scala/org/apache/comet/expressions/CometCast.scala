@@ -21,7 +21,7 @@ package org.apache.comet.expressions
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Expression, Literal}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, NullType, StructType, TimestampType}
+import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, NullType, StructType, TimestampNTZType, TimestampType}
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, withInfo}
@@ -220,6 +220,10 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
         Compatible(Some("Only supports years between 262143 BC and 262142 AD"))
       case DataTypes.TimestampType =>
         Compatible()
+      case _: TimestampNTZType if evalMode == CometEvalMode.ANSI =>
+        Incompatible(Some("ANSI mode not supported"))
+      case _: TimestampNTZType =>
+        Incompatible(Some("Not all valid formats are supported"))
       case _ =>
         unsupported(DataTypes.StringType, toType)
     }
