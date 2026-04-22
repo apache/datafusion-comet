@@ -32,7 +32,10 @@ on:
       - "**.md"
       - "native/core/benches/**"
       - "native/spark-expr/benches/**"
-      - "spark/src/test/scala/org/apache/spark/sql/benchmark/**"
+      - "spark/src/test/**"
+      - "common/src/test/**"
+      - "fuzz-testing/**"
+      - "spark-integration/**"
   pull_request:
     paths-ignore:
       - "benchmarks/**"
@@ -41,7 +44,10 @@ on:
       - "**.md"
       - "native/core/benches/**"
       - "native/spark-expr/benches/**"
-      - "spark/src/test/scala/org/apache/spark/sql/benchmark/**"
+      - "spark/src/test/**"
+      - "common/src/test/**"
+      - "fuzz-testing/**"
+      - "spark-integration/**"
   # manual trigger
   # https://docs.github.com/en/actions/managing-workflow-runs/manually-running-a-workflow
   workflow_dispatch:
@@ -49,6 +55,10 @@ on:
 env:
   RUST_VERSION: stable
   RUST_BACKTRACE: 1
+  # Force GNU ld on Linux: recent Rust stable defaults to rust-lld on
+  # x86_64-unknown-linux-gnu, and rust-lld cannot resolve -ljvm against the
+  # Zulu JDK layout installed by setup-java. Keep bfd for all cargo invocations.
+  RUSTFLAGS: "-Clink-arg=-fuse-ld=bfd"
 
 jobs:
   # Build native library once and share with all test jobs
@@ -82,7 +92,7 @@ jobs:
         run: |
           cd native && cargo build --profile ci
         env:
-          RUSTFLAGS: "-Ctarget-cpu=x86-64-v3"
+          RUSTFLAGS: "-Ctarget-cpu=x86-64-v3 -Clink-arg=-fuse-ld=bfd"
 
       - name: Save Cargo cache
         uses: actions/cache/save@v5

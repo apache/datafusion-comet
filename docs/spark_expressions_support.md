@@ -33,7 +33,7 @@
 - [x] bool_and
 - [x] bool_or
 - [ ] collect_list
-- [ ] collect_set
+- [x] collect_set
 - [ ] corr
 - [x] count
 - [x] count_if
