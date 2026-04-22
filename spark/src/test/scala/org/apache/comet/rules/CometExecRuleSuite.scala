@@ -188,9 +188,7 @@ class CometExecRuleSuite extends CometTestBase {
 
       // Query uses only safe aggregates (MIN, MAX) with compatible intermediate buffers
       val sparkPlan =
-        createSparkPlan(
-          spark,
-          "SELECT MIN(id), MAX(id) FROM test_data GROUP BY (id % 3)")
+        createSparkPlan(spark, "SELECT MIN(id), MAX(id) FROM test_data GROUP BY (id % 3)")
 
       val originalHashAggCount = countOperators(sparkPlan, classOf[HashAggregateExec])
       assert(originalHashAggCount == 2)
@@ -213,9 +211,7 @@ class CometExecRuleSuite extends CometTestBase {
 
       // Query uses only safe aggregates (MIN, MAX) with compatible intermediate buffers
       val sparkPlan =
-        createSparkPlan(
-          spark,
-          "SELECT MIN(id), MAX(id) FROM test_data GROUP BY (id % 3)")
+        createSparkPlan(spark, "SELECT MIN(id), MAX(id) FROM test_data GROUP BY (id % 3)")
 
       val originalHashAggCount = countOperators(sparkPlan, classOf[HashAggregateExec])
       assert(originalHashAggCount == 2)
