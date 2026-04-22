@@ -1386,12 +1386,17 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           "acos",
           "asin",
           "atan",
+          "cbrt",
           "cos",
           "cosh",
+          "csc",
+          "degrees",
           "exp",
           "ln",
           "log10",
           "log2",
+          "radians",
+          "sec",
           "sin",
           "sinh",
           "sqrt",
@@ -1408,7 +1413,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
     withParquetTable(doubleValues.flatMap(m => doubleValues.map(n => (m, n))), "tbl") {
       // expressions with two args
-      for (expr <- Seq("atan2", "pow")) {
+      for (expr <- Seq("atan2", "hypot", "pow")) {
         val (_, cometPlan) =
           checkSparkAnswerAndOperatorWithTol(sql(s"SELECT $expr(_1, _2) FROM tbl"))
         val cometProjectExecs = collect(cometPlan) { case op: CometProjectExec =>
@@ -1474,6 +1479,85 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("expm1") {
     testDoubleScalarExpr("expm1")
+  }
+
+  test("degrees") {
+    testDoubleScalarExpr("degrees")
+  }
+
+  test("radians") {
+    testDoubleScalarExpr("radians")
+  }
+
+  test("pi and e") {
+    withParquetTable(Seq((1, 1)), "tbl") {
+      val (_, cometPlan) =
+        checkSparkAnswerAndOperatorWithTol(sql("SELECT pi(), e() FROM tbl"))
+      val cometProjectExecs = collect(cometPlan) { case op: CometProjectExec =>
+        op
+      }
+      assert(cometProjectExecs.length == 1)
+    }
+  }
+
+  test("factorial") {
+    withParquetTable(
+      Seq(
+        Integer.valueOf(-1),
+        Integer.valueOf(0),
+        Integer.valueOf(1),
+        Integer.valueOf(5),
+        Integer.valueOf(20),
+        Integer.valueOf(21),
+        null).map(Tuple1(_)),
+      "tbl") {
+      val (_, cometPlan) =
+        checkSparkAnswerAndOperator(sql("SELECT factorial(_1) FROM tbl"))
+      val cometProjectExecs = collect(cometPlan) { case op: CometProjectExec =>
+        op
+      }
+      assert(cometProjectExecs.length == 1)
+    }
+  }
+
+  test("shiftrightunsigned") {
+    val intData: Seq[(java.lang.Integer, java.lang.Integer)] = Seq(
+      (Int.MinValue, 1),
+      (-1, 1),
+      (0, 1),
+      (1, 1),
+      (8, 2),
+      (Int.MaxValue, 31),
+      (null, 1),
+      (1, null))
+
+    withParquetTable(intData, "tbl") {
+      val (_, cometPlan) =
+        checkSparkAnswerAndOperator(sql("SELECT shiftrightunsigned(_1, _2) FROM tbl"))
+      val cometProjectExecs = collect(cometPlan) { case op: CometProjectExec =>
+        op
+      }
+      assert(cometProjectExecs.length == 1)
+    }
+
+    val longData: Seq[(java.lang.Long, java.lang.Integer)] = Seq(
+      (Long.MinValue, 1),
+      (-1L, 1),
+      (0L, 1),
+      (1L, 1),
+      (8L, 2),
+      (Long.MaxValue, 63),
+      (null, 1),
+      (1L, null))
+
+    withParquetTable(longData, "tbl") {
+      val (_, cometPlan) =
+        checkSparkAnswerAndOperator(sql("SELECT shiftrightunsigned(_1, _2) FROM tbl"))
+      val cometProjectExecs = collect(cometPlan) { case op: CometProjectExec =>
+        op
+      }
+      assert(cometProjectExecs.length == 1)
+    }
   }
 
   test("ceil and floor") {

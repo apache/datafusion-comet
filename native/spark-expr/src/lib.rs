@@ -80,8 +80,10 @@ pub use json_funcs::{FromJson, ToJson};
 pub use math_funcs::{
     create_modulo_expr, create_negate_expr, spark_ceil, spark_decimal_div,
     spark_decimal_integral_div, spark_floor, spark_log, spark_make_decimal, spark_round,
-    spark_unhex, spark_unscaled_value, CheckOverflow, DecimalRescaleCheckOverflow, NegativeExpr,
-    NormalizeNaNAndZero, WideDecimalBinaryExpr, WideDecimalOp,
+    spark_unhex, spark_unscaled_value, CbrtFunc, CheckOverflow, CscFunc,
+    DecimalRescaleCheckOverflow, EulerNumberFunc, FactorialFunc, HypotFunc, NegativeExpr,
+    NormalizeNaNAndZero, PiFunc, SecFunc, ShiftRightUnsignedFunc, ToDegreesFunc, ToRadiansFunc,
+    WideDecimalBinaryExpr, WideDecimalOp,
 };
 pub use query_context::{create_query_context_map, QueryContext, QueryContextMap};
 pub use string_funcs::*;
