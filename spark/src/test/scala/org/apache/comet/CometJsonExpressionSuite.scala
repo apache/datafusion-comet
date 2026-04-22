@@ -30,6 +30,7 @@ import org.apache.spark.sql.catalyst.expressions.{JsonToStructs, StructsToJson}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions._
 
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.serde.CometStructsToJson
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
 
@@ -47,6 +48,7 @@ class CometJsonExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
   }
 
   test("to_json - all supported types") {
+    assume(!isSpark40Plus)
     withTempDir { dir =>
       val path = new Path(dir.toURI.toString, "test.parquet")
       val filename = path.toString
