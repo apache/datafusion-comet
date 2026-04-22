@@ -712,8 +712,7 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
-  // TODO: This test fails for both native_datafusion and native_iceberg_compat
-  ignore(" Missing optional struct field with nested required field") {
+  test(" Missing optional struct field with nested required field") {
     Seq(true, false).foreach { dictionaryEnabled =>
       def makeRawParquetFile(path: Path): Unit = {
         val schemaStr =

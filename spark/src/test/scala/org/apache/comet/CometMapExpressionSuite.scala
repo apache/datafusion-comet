@@ -140,8 +140,7 @@ class CometMapExpressionSuite extends CometTestBase {
     }
   }
 
-  // fails with "map is not supported"
-  ignore("size with map input") {
+  test("size with map input") {
     withTempDir { dir =>
       withTempView("t1") {
         val path = new Path(dir.toURI.toString, "test.parquet")
