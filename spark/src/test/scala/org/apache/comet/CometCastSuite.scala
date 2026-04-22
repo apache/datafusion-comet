@@ -1594,7 +1594,13 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   // CAST from TimestampNTZType
 
   test("cast TimestampNTZType to StringType") {
-    castTest(generateTimestampNTZ(), DataTypes.StringType)
+    // TimestampNTZ is timezone-independent, so casting to string should produce
+    // the same result regardless of the session timezone.
+    for (tz <- representativeTimezones) {
+      withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
+        castTest(generateTimestampNTZ(), DataTypes.StringType)
+      }
+    }
   }
 
   test("cast TimestampNTZType to DateType") {
