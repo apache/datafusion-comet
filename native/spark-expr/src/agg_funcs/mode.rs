@@ -23,7 +23,7 @@ use std::sync::Arc;
 
 use arrow::array::{Array, ArrayRef, AsArray, BinaryBuilder, BooleanArray};
 use arrow::datatypes::{DataType, Field, FieldRef, TimeUnit};
-use datafusion::common::{DataFusionError, Result, ScalarValue, internal_err, not_impl_err};
+use datafusion::common::{internal_err, not_impl_err, DataFusionError, Result, ScalarValue};
 use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
 use datafusion::logical_expr::{
     Accumulator, AggregateUDFImpl, EmitTo, GroupsAccumulator, Signature, Volatility,
@@ -34,8 +34,7 @@ pub fn is_supported_mode_type(data_type: &DataType) -> bool {
     use DataType::*;
     matches!(
         data_type,
-        Null
-            | Boolean
+        Null | Boolean
             | Int8
             | Int16
             | Int32
@@ -246,15 +245,15 @@ fn deserialize_scalar(bytes: &[u8], off: &mut usize, data_type: &DataType) -> Re
     match data_type {
         DataType::Boolean => Ok(ScalarValue::Boolean(Some(read_u8(bytes, off)? != 0))),
         DataType::Int8 => Ok(ScalarValue::Int8(Some(read_u8(bytes, off)? as i8))),
-        DataType::Int16 => Ok(ScalarValue::Int16(Some(i16::from_le_bytes(read_exact::<2>(
-            bytes, off,
-        )?)))),
-        DataType::Int32 => Ok(ScalarValue::Int32(Some(i32::from_le_bytes(read_exact::<4>(
-            bytes, off,
-        )?)))),
-        DataType::Int64 => Ok(ScalarValue::Int64(Some(i64::from_le_bytes(read_exact::<8>(
-            bytes, off,
-        )?)))),
+        DataType::Int16 => Ok(ScalarValue::Int16(Some(i16::from_le_bytes(
+            read_exact::<2>(bytes, off)?,
+        )))),
+        DataType::Int32 => Ok(ScalarValue::Int32(Some(i32::from_le_bytes(
+            read_exact::<4>(bytes, off)?,
+        )))),
+        DataType::Int64 => Ok(ScalarValue::Int64(Some(i64::from_le_bytes(
+            read_exact::<8>(bytes, off)?,
+        )))),
         DataType::Float32 => Ok(ScalarValue::Float32(Some(f32::from_bits(
             u32::from_le_bytes(read_exact::<4>(bytes, off)?),
         )))),
@@ -267,7 +266,9 @@ fn deserialize_scalar(bytes: &[u8], off: &mut usize, data_type: &DataType) -> Re
                 return internal_err!("corrupt state");
             }
             let s = std::str::from_utf8(&bytes[*off..*off + len])
-                .map_err(|e| DataFusionError::Execution(format!("invalid utf8 in mode state: {e}")))?
+                .map_err(|e| {
+                    DataFusionError::Execution(format!("invalid utf8 in mode state: {e}"))
+                })?
                 .to_string();
             *off += len;
             Ok(ScalarValue::Utf8(Some(s)))
@@ -281,8 +282,10 @@ fn deserialize_scalar(bytes: &[u8], off: &mut usize, data_type: &DataType) -> Re
             *off += len;
             Ok(ScalarValue::Binary(Some(v)))
         }
-        DataType::Date32 => Ok(ScalarValue::Date32(Some(i32::from_le_bytes(read_exact::<4>(
-            bytes, off,
+        DataType::Date32 => Ok(ScalarValue::Date32(Some(i32::from_le_bytes(read_exact::<
+            4,
+        >(
+            bytes, off
         )?)))),
         DataType::Decimal128(p, s) => Ok(ScalarValue::Decimal128(
             Some(i128::from_le_bytes(read_exact::<16>(bytes, off)?)),
@@ -545,7 +548,11 @@ impl GroupsAccumulator for ModeGroupsAccumulator {
                 continue;
             }
 
-            deserialize_and_merge(arr.value(row_idx), &mut self.groups[group_idx], &self.data_type)?;
+            deserialize_and_merge(
+                arr.value(row_idx),
+                &mut self.groups[group_idx],
+                &self.data_type,
+            )?;
         }
 
         Ok(())

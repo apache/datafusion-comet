@@ -122,8 +122,8 @@ use datafusion_comet_proto::{
 };
 use datafusion_comet_spark_expr::{
     ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Correlation, Covariance, CreateNamedStruct,
-    DecimalRescaleCheckOverflow, GetArrayStructFields, GetStructField, IfExpr, ListExtract,
-    Mode, NormalizeNaNAndZero, SparkCastOptions, Stddev, SumDecimal, ToJson, UnboundColumn, Variance,
+    DecimalRescaleCheckOverflow, GetArrayStructFields, GetStructField, IfExpr, ListExtract, Mode,
+    NormalizeNaNAndZero, SparkCastOptions, Stddev, SumDecimal, ToJson, UnboundColumn, Variance,
     WideDecimalBinaryExpr, WideDecimalOp,
 };
 use itertools::Itertools;
