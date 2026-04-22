@@ -2861,8 +2861,8 @@ class CometIcebergNativeSuite
 
         // Verify broadcast reuse: subquery child should be the same BroadcastQueryStageExec
         // instance that the join uses (reference equality, not just same type)
-        val joinBroadcastStage = collect(cometPlan) {
-          case j: CometBroadcastHashJoinExec => broadcastChild(j)
+        val joinBroadcastStage = collect(cometPlan) { case j: CometBroadcastHashJoinExec =>
+          broadcastChild(j)
         }.collectFirst { case b: BroadcastQueryStageExec => b }.get
 
         subqueries.foreach {
@@ -2943,8 +2943,8 @@ class CometIcebergNativeSuite
         }
 
         // Both should reuse the exact same BroadcastQueryStageExec instance from the join
-        val joinBroadcastStage = collect(cometPlan) {
-          case j: CometBroadcastHashJoinExec => broadcastChild(j)
+        val joinBroadcastStage = collect(cometPlan) { case j: CometBroadcastHashJoinExec =>
+          broadcastChild(j)
         }.collectFirst { case b: BroadcastQueryStageExec => b }.get
 
         subqueries.foreach {
@@ -3031,10 +3031,11 @@ class CometIcebergNativeSuite
 
         // Each subquery should reuse the broadcast stage from the CORRECT join
         // (not mixed up). Collect join broadcast stages keyed by their broadcast's exprId set.
-        val joinStages = collect(cometPlan) {
-          case j: CometBroadcastHashJoinExec => j
-        }.collect { case j if broadcastChild(j).isInstanceOf[BroadcastQueryStageExec] =>
-          broadcastChild(j).asInstanceOf[BroadcastQueryStageExec]
+        val joinStages = collect(cometPlan) { case j: CometBroadcastHashJoinExec =>
+          j
+        }.collect {
+          case j if broadcastChild(j).isInstanceOf[BroadcastQueryStageExec] =>
+            broadcastChild(j).asInstanceOf[BroadcastQueryStageExec]
         }
 
         val subqueryCsbs = subqueries.collect { case csb: CometSubqueryBroadcastExec => csb }
