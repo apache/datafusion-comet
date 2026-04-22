@@ -56,7 +56,7 @@ import org.apache.comet.CometSparkSessionExtensions.{isCometShuffleEnabled, with
 import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.serde.{CometOperatorSerde, Compatible, Incompatible, OperatorOuterClass, SupportLevel, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, Operator}
-import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, supportedSortType}
+import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, isStringCollationType, supportedSortType}
 import org.apache.comet.serde.operator.CometSink
 
 /**
@@ -1383,6 +1383,14 @@ trait CometBaseAggregate {
           case _ => false
         })) {
       withInfo(aggregate, "Grouping on map types is not supported")
+      return None
+    }
+
+    if (groupingExpressions.exists(expr => isStringCollationType(expr.dataType))) {
+      // Collation-aware grouping requires collation-aware hashing/equality; Comet only
+      // compares raw bytes, which would put rows that compare equal under the collation
+      // into different groups.
+      withInfo(aggregate, "Grouping on non-default collated strings is not supported")
       return None
     }
 
