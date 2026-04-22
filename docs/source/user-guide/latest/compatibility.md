@@ -58,6 +58,12 @@ Expressions that are not 100% Spark-compatible will fall back to Spark by defaul
 `spark.comet.expression.EXPRNAME.allowIncompatible=true`, where `EXPRNAME` is the Spark expression class name. See
 the [Comet Supported Expressions Guide](expressions.md) for more information on this configuration setting.
 
+### Aggregate Expressions
+
+- **CollectSet**: Comet deduplicates NaN values (treats `NaN == NaN`) while Spark treats each NaN as a distinct value.
+  When `spark.comet.exec.strictFloatingPoint=true`, `collect_set` on floating-point types falls back to Spark unless
+  `spark.comet.expression.CollectSet.allowIncompatible=true` is set.
+
 ### Array Expressions
 
 - **ArraysOverlap**: Inconsistent behavior when arrays contain NULL values.
@@ -153,6 +159,18 @@ by Apache Spark, including ISO 8601 date-time strings, date-only strings, time-o
 suffixes (e.g. `Europe/Moscow`), and the full Spark timestamp year range
 (-290308 to 294247). Note that `CAST(string AS DATE)` is only compatible for years between
 262143 BC and 262142 AD due to an underlying library limitation.
+
+### Decimal with Negative Scale to String
+
+Casting a `DecimalType` with a negative scale to `StringType` is marked as incompatible when
+`spark.sql.legacy.allowNegativeScaleOfDecimal` is `false` (the default). When that config is
+disabled, Spark cannot create negative-scale decimals, so Comet falls back to avoid running
+native execution on unexpected inputs.
+
+When `spark.sql.legacy.allowNegativeScaleOfDecimal=true`, the cast is compatible. Comet matches
+Spark's behavior of using Java `BigDecimal.toString()` semantics, which produces scientific
+notation (e.g. a value of 12300 stored as `Decimal(7,-2)` with unscaled value 123 is rendered
+as `"1.23E+4"`).
 
 ### Legacy Mode
 

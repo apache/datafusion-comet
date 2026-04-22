@@ -26,8 +26,8 @@ then serialized to Comet's native execution engine (see
 [PR #2528](https://github.com/apache/datafusion-comet/pull/2528)).
 
 The example below uses Spark's package downloader to retrieve Comet 0.14.0 and Iceberg
-1.8.1, but Comet has been tested with Iceberg 1.5, 1.7, 1.8, 1.9, and 1.10. The native
-Iceberg reader is enabled by default.
+1.8.1, but Comet has been tested with Iceberg 1.5, 1.7, 1.8, 1.9, and 1.10. The native Iceberg
+reader is enabled by default. To disable it, set `spark.comet.scan.icebergNative.enabled=false`.
 
 ```shell
 $SPARK_HOME/bin/spark-shell \

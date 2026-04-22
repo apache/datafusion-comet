@@ -140,7 +140,7 @@ object CometConf extends ShimCometConf {
           "Iceberg tables are read directly through native execution, bypassing Spark's " +
           "DataSource V2 API for better performance.")
       .booleanConf
-      .createWithDefault(false)
+      .createWithDefault(true)
 
   val COMET_ICEBERG_DATA_FILE_CONCURRENCY_LIMIT: ConfigEntry[Int] =
     conf("spark.comet.scan.icebergNative.dataFileConcurrencyLimit")
@@ -553,13 +553,6 @@ object CometConf extends ShimCometConf {
         "avoid regressions in join strategy.")
     .doubleConf
     .createWithDefault(1.0)
-
-  val COMET_DPP_FALLBACK_ENABLED: ConfigEntry[Boolean] =
-    conf("spark.comet.dppFallback.enabled")
-      .category(CATEGORY_EXEC)
-      .doc("Whether to fall back to Spark for queries that use DPP.")
-      .booleanConf
-      .createWithDefault(true)
 
   val COMET_DEBUG_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.debug.enabled")

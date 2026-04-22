@@ -120,6 +120,12 @@ fn get_build_flags() -> Vec<String> {
 fn get_java_dependency() -> Vec<String> {
     let mut result = vec![];
 
+    // Re-run when the JDK changes. The resolved jvm_lib_location below is
+    // baked into the crate's link args, so a cache restored against a previous
+    // JDK install (e.g. CI runners where setup-java floats Zulu patch
+    // versions) would otherwise hand the linker -L paths that no longer exist.
+    println!("cargo:rerun-if-env-changed=JAVA_HOME");
+
     // Include directories
     let java_home = java_locator::locate_java_home()
         .expect("JAVA_HOME could not be found, trying setting the variable manually");
