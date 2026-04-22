@@ -24,6 +24,7 @@ import scala.jdk.CollectionConverters._
 import org.apache.hadoop.fs.Path
 import org.apache.hadoop.mapreduce.{Job, TaskAttemptContext, TaskAttemptID, TaskID, TaskType}
 import org.apache.hadoop.mapreduce.task.TaskAttemptContextImpl
+import org.apache.spark.TaskContext
 import org.apache.spark.internal.io.FileCommitProtocol
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
@@ -197,6 +198,9 @@ case class CometNativeWriteExec(
       }
 
       val nativeMetrics = CometMetricNode.fromCometPlan(this)
+      // Register before CometExecIterator so completion listeners run after iterator close
+      // (Spark runs task completion callbacks in reverse registration order).
+      Option(TaskContext.get()).foreach(nativeMetrics.reportNativeWriteOutputMetrics)
 
       val size = modifiedNativeOp.getSerializedSize
       val planBytes = new Array[Byte](size)
