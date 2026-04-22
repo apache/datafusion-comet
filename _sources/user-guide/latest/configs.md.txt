@@ -203,6 +203,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.ArrayRepeat.enabled` | Enable Comet acceleration for `ArrayRepeat` | true |
 | `spark.comet.expression.ArrayUnion.enabled` | Enable Comet acceleration for `ArrayUnion` | true |
 | `spark.comet.expression.ArraysOverlap.enabled` | Enable Comet acceleration for `ArraysOverlap` | true |
+| `spark.comet.expression.ArraysZip.enabled` | Enable Comet acceleration for `ArraysZip` | true |
 | `spark.comet.expression.Ascii.enabled` | Enable Comet acceleration for `Ascii` | true |
 | `spark.comet.expression.Asin.enabled` | Enable Comet acceleration for `Asin` | true |
 | `spark.comet.expression.Atan.enabled` | Enable Comet acceleration for `Atan` | true |
