@@ -805,7 +805,8 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     val toJsonMethod = schemaParserClass.getMethod("toJson", schemaClass)
     toJsonMethod.setAccessible(true)
 
-    // Access inputRDD - safe now, DPP is resolved
+    // Access inputRDD - safe now, DPP is resolved.
+    // When DPP prunes all partitions, inputRDD may be an EmptyRDD (not DataSourceRDD).
     scanExec.inputRDD match {
       case rdd: DataSourceRDD =>
         val partitions = rdd.partitions
@@ -986,7 +987,8 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
           perPartitionBuilders += partitionBuilder.build()
         }
       case _ =>
-        throw new IllegalStateException("Expected DataSourceRDD from BatchScanExec")
+        // Empty inputRDD (e.g., DPP pruned all partitions) — return empty serialization data
+        logDebug("BatchScanExec inputRDD is not DataSourceRDD (likely empty after DPP pruning)")
     }
 
     // Log deduplication summary
