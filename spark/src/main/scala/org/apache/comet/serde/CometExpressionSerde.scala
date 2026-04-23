@@ -38,6 +38,24 @@ trait CometExpressionSerde[T <: Expression] {
   def getExprConfigName(expr: T): String = expr.getClass.getSimpleName
 
   /**
+   * Get documentation for usages where this expression may be incompatible with Spark. This
+   * is called from GenerateDocs when generating the Compatibility Guide.
+   *
+   * @return
+   *   List of reasons, defaulting to an empty list.
+   */
+  def getIncompatibleReasons(): Seq[String] = Seq.empty
+
+  /**
+   * Get documentation for usages where this expression is unsupported with Spark. This
+   * is called from GenerateDocs when generating the Compatibility Guide.
+   *
+   * @return
+   *   List of reasons, defaulting to an empty list.
+   */
+  def getUnsupportedReasons(): Seq[String] = Seq.empty
+
+  /**
    * Determine the support level of the expression based on its attributes.
    *
    * @param expr
