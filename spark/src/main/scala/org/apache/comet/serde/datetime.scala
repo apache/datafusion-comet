@@ -536,6 +536,14 @@ object CometDateFormat extends CometExpressionSerde[DateFormatClass] {
     // ISO formats
     "yyyy-MM-dd'T'HH:mm:ss" -> "%Y-%m-%dT%H:%M:%S")
 
+  override def getIncompatibleReasons(): Seq[String] = Seq(
+    "Non-UTC timezones may produce different results than Spark"
+  )
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(
+    s"Only the following formats are supported:${supportedFormats.mkString("\n- ", "\n-", "")}"
+  )
+
   override def getSupportLevel(expr: DateFormatClass): SupportLevel = {
     // Check timezone - only UTC is fully compatible
     val timezone = expr.timeZoneId.getOrElse("UTC")
