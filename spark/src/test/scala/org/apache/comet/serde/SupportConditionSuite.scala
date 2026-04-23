@@ -124,8 +124,12 @@ class SupportConditionSuite extends AnyFunSuite {
     assert(result == Compatible(None))
   }
 
-  test("CometLength: conditions list contains the binary-child id") {
-    val ids = CometLength.conditions.map(_.id)
-    assert(ids == Seq("binary-child"))
+  test("CometLength: declared condition pins id, level, and description") {
+    val conditions = CometLength.conditions
+    assert(conditions.size == 1)
+    val c = conditions.head
+    assert(c.id == "binary-child")
+    assert(c.level == SupportLevelKind.Unsupported)
+    assert(c.description == "Child is BinaryType")
   }
 }
