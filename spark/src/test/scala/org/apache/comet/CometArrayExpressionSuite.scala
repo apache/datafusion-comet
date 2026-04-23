@@ -906,7 +906,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
 
   test("size - respect to legacySizeOfNull") {
     val table = "t1"
-    withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_ICEBERG_COMPAT) {
+    withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION) {
       withTable(table) {
         sql(s"create table $table(col array<string>) using parquet")
         sql(s"insert into $table values(null)")

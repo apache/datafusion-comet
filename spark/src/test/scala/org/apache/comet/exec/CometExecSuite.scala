@@ -1162,50 +1162,43 @@ class CometExecSuite extends CometTestBase {
   }
 
   test("Comet native metrics: scan") {
-    Seq(CometConf.SCAN_NATIVE_DATAFUSION, CometConf.SCAN_NATIVE_ICEBERG_COMPAT).foreach {
-      scanMode =>
-        withSQLConf(
-          CometConf.COMET_EXEC_ENABLED.key -> "true",
-          CometConf.COMET_NATIVE_SCAN_IMPL.key -> scanMode) {
-          withTempDir { dir =>
-            val path = new Path(dir.toURI.toString, "native-scan.parquet")
-            makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = true, 10000)
-            withParquetTable(path.toString, "tbl") {
-              val df = sql("SELECT * FROM tbl")
-              df.collect()
+    withSQLConf(
+      CometConf.COMET_EXEC_ENABLED.key -> "true",
+      CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION) {
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "native-scan.parquet")
+        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = true, 10000)
+        withParquetTable(path.toString, "tbl") {
+          val df = sql("SELECT * FROM tbl")
+          df.collect()
 
-              val scan = find(df.queryExecution.executedPlan)(s =>
-                s.isInstanceOf[CometScanExec] || s.isInstanceOf[CometNativeScanExec])
-              assert(scan.isDefined, s"Expected to find a Comet scan node for $scanMode")
-              val metrics = scan.get.metrics
+          val scan = find(df.queryExecution.executedPlan)(s =>
+            s.isInstanceOf[CometScanExec] || s.isInstanceOf[CometNativeScanExec])
+          assert(scan.isDefined, "Expected to find a Comet scan node")
+          val metrics = scan.get.metrics
 
-              assert(
-                metrics.contains("time_elapsed_scanning_total"),
-                s"[$scanMode] Missing time_elapsed_scanning_total. Available: ${metrics.keys}")
-              assert(metrics.contains("bytes_scanned"))
-              assert(metrics.contains("output_rows"))
-              assert(metrics.contains("time_elapsed_opening"))
-              assert(metrics.contains("time_elapsed_processing"))
-              assert(metrics.contains("time_elapsed_scanning_until_data"))
-              assert(
-                metrics("time_elapsed_scanning_total").value > 0,
-                s"[$scanMode] time_elapsed_scanning_total should be > 0")
-              assert(
-                metrics("bytes_scanned").value > 0,
-                s"[$scanMode] bytes_scanned should be > 0")
-              assert(metrics("output_rows").value > 0, s"[$scanMode] output_rows should be > 0")
-              assert(
-                metrics("time_elapsed_opening").value > 0,
-                s"[$scanMode] time_elapsed_opening should be > 0")
-              assert(
-                metrics("time_elapsed_processing").value > 0,
-                s"[$scanMode] time_elapsed_processing should be > 0")
-              assert(
-                metrics("time_elapsed_scanning_until_data").value > 0,
-                s"[$scanMode] time_elapsed_scanning_until_data should be > 0")
-            }
-          }
+          assert(
+            metrics.contains("time_elapsed_scanning_total"),
+            s"Missing time_elapsed_scanning_total. Available: ${metrics.keys}")
+          assert(metrics.contains("bytes_scanned"))
+          assert(metrics.contains("output_rows"))
+          assert(metrics.contains("time_elapsed_opening"))
+          assert(metrics.contains("time_elapsed_processing"))
+          assert(metrics.contains("time_elapsed_scanning_until_data"))
+          assert(
+            metrics("time_elapsed_scanning_total").value > 0,
+            "time_elapsed_scanning_total should be > 0")
+          assert(metrics("bytes_scanned").value > 0, "bytes_scanned should be > 0")
+          assert(metrics("output_rows").value > 0, "output_rows should be > 0")
+          assert(metrics("time_elapsed_opening").value > 0, "time_elapsed_opening should be > 0")
+          assert(
+            metrics("time_elapsed_processing").value > 0,
+            "time_elapsed_processing should be > 0")
+          assert(
+            metrics("time_elapsed_scanning_until_data").value > 0,
+            "time_elapsed_scanning_until_data should be > 0")
         }
+      }
     }
   }
 

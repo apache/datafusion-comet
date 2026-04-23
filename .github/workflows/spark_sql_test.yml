@@ -131,18 +131,16 @@ jobs:
           - {name: "sql_hive-1", args1: "", args2: "hive/testOnly * -- -l org.apache.spark.tags.ExtendedHiveTest -l org.apache.spark.tags.SlowHiveTest"}
           - {name: "sql_hive-2", args1: "", args2: "hive/testOnly * -- -n org.apache.spark.tags.ExtendedHiveTest"}
           - {name: "sql_hive-3", args1: "", args2: "hive/testOnly * -- -n org.apache.spark.tags.SlowHiveTest"}
-        # Since 4f5eaf0, auto mode uses native_datafusion for V1 scans,
-        # so we only need to test with auto.
         config:
-          - {spark-short: '3.4', spark-full: '3.4.3', java: 11, scan-impl: 'auto'}
-          - {spark-short: '3.5', spark-full: '3.5.8', java: 11, scan-impl: 'auto'}
-          - {spark-short: '4.0', spark-full: '4.0.1', java: 17, scan-impl: 'auto'}
+          - {spark-short: '3.4', spark-full: '3.4.3', java: 11}
+          - {spark-short: '3.5', spark-full: '3.5.8', java: 11}
+          - {spark-short: '4.0', spark-full: '4.0.1', java: 17}
         # Skip sql_hive-1 for Spark 4.0 due to https://github.com/apache/datafusion-comet/issues/2946
         exclude:
-          - config: {spark-short: '4.0', spark-full: '4.0.1', java: 17, scan-impl: 'auto'}
+          - config: {spark-short: '4.0', spark-full: '4.0.1', java: 17}
             module: {name: "sql_hive-1", args1: "", args2: "hive/testOnly * -- -l org.apache.spark.tags.ExtendedHiveTest -l org.apache.spark.tags.SlowHiveTest"}
       fail-fast: false
-    name: spark-sql-${{ matrix.config.scan-impl }}-${{ matrix.module.name }}/spark-${{ matrix.config.spark-full }}
+    name: spark-sql-${{ matrix.module.name }}/spark-${{ matrix.config.spark-full }}
     runs-on: ${{ matrix.os }}
     container:
       image: amd64/rust
@@ -168,7 +166,7 @@ jobs:
         run: |
           cd apache-spark
           rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups
-          NOLINT_ON_COMPILE=true ENABLE_COMET=true ENABLE_COMET_ONHEAP=true COMET_PARQUET_SCAN_IMPL=${{ matrix.config.scan-impl }} ENABLE_COMET_LOG_FALLBACK_REASONS=${{ github.event.inputs.collect-fallback-logs || 'false' }} \
+          NOLINT_ON_COMPILE=true ENABLE_COMET=true ENABLE_COMET_ONHEAP=true ENABLE_COMET_LOG_FALLBACK_REASONS=${{ github.event.inputs.collect-fallback-logs || 'false' }} \
             build/sbt -Dsbt.log.noformat=true ${{ matrix.module.args1 }} "${{ matrix.module.args2 }}"
           if [ "${{ github.event.inputs.collect-fallback-logs }}" = "true" ]; then
             find . -type f -name "unit-tests.log" -print0 | xargs -0 grep -h "Comet cannot accelerate" | sed 's/.*Comet cannot accelerate/Comet cannot accelerate/' | sort -u > fallback.log
@@ -179,7 +177,7 @@ jobs:
         if: ${{ github.event.inputs.collect-fallback-logs == 'true' }}
         uses: actions/upload-artifact@v7
         with:
-          name: fallback-log-spark-sql-${{ matrix.config.scan-impl }}-${{ matrix.module.name }}-spark-${{ matrix.config.spark-full }}
+          name: fallback-log-spark-sql-${{ matrix.module.name }}-spark-${{ matrix.config.spark-full }}
           path: "**/fallback.log"
 
   merge-fallback-logs:

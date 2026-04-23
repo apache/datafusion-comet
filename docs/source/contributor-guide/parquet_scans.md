@@ -17,23 +17,13 @@ specific language governing permissions and limitations
 under the License.
 -->
 
-# Comet Parquet Scan Implementations
+# Comet Parquet Scan
 
-Comet currently has two distinct implementations of the Parquet scan operator.
+Comet provides a fully native Parquet scan, which requires `spark.comet.exec.enabled=true` because the
+scan node must be wrapped by `CometExecRule`.
 
-| Scan Implementation     | Notes                  |
-| ----------------------- | ---------------------- |
-| `native_datafusion`     | Fully native scan      |
-| `native_iceberg_compat` | Hybrid JVM/native scan |
-
-The configuration property
-`spark.comet.scan.impl` is used to select an implementation. The default setting is `spark.comet.scan.impl=auto`, which
-attempts to use `native_datafusion` first, and falls back to Spark if the scan cannot be converted
-(e.g., due to unsupported features). Most users should not need to change this setting.
-However, it is possible to force Comet to use a particular implementation for all scan operations by setting
-this configuration property to one of the following implementations. For example: `--conf spark.comet.scan.impl=native_datafusion`.
-
-The following features are not supported by either scan implementation, and Comet will fall back to Spark in these scenarios:
+The following features are not supported by the Comet Parquet scan, and Comet will fall back to Spark in
+these scenarios:
 
 - `ShortType` columns, by default. When reading Parquet files written by systems other than Spark that contain
   columns with the logical type `UINT_8` (unsigned 8-bit integers), Comet may produce different results than Spark.
@@ -44,53 +34,38 @@ The following features are not supported by either scan implementation, and Come
   columns are always safe because they can only come from signed `INT8`, where truncation preserves the signed value.
 - Default values that are nested types (e.g., maps, arrays, structs). Literal default values are supported.
 - Spark's Datasource V2 API. When `spark.sql.sources.useV1SourceList` does not include `parquet`, Spark uses the
-  V2 API for Parquet scans. The DataFusion-based implementations only support the V1 API.
+  V2 API for Parquet scans. The Comet Parquet scan only supports the V1 API.
 - Spark metadata columns (e.g., `_metadata.file_path`)
 - No support for AQE Dynamic Partition Pruning (DPP). Non-AQE DPP is supported.
+- No support for row indexes
+- No support for reading Parquet field IDs
+- No support for `input_file_name()`, `input_file_block_start()`, or `input_file_block_length()` SQL functions.
+  The Comet Parquet scan does not use Spark's `FileScanRDD`, so these functions cannot populate their values.
+- No support for `ignoreMissingFiles` or `ignoreCorruptFiles` being set to `true`
 
-The following shared limitation may produce incorrect results without falling back to Spark:
+The following limitations may produce incorrect results without falling back to Spark:
 
 - No support for datetime rebasing. When reading Parquet files containing dates or timestamps written before
   Spark 3.0 (which used a hybrid Julian/Gregorian calendar), dates/timestamps will be read as if they were
   written using the Proleptic Gregorian calendar. This may produce incorrect results for dates before
   October 15, 1582.
 
-The `native_datafusion` scan has some additional limitations, mostly related to Parquet metadata. All of these
-cause Comet to fall back to Spark (including when using `auto` mode). Note that the `native_datafusion` scan
-requires `spark.comet.exec.enabled=true` because the scan node must be wrapped by `CometExecRule`.
-
-- No support for row indexes
-- No support for reading Parquet field IDs
-- No support for `input_file_name()`, `input_file_block_start()`, or `input_file_block_length()` SQL functions.
-  The `native_datafusion` scan does not use Spark's `FileScanRDD`, so these functions cannot populate their values.
-- No support for `ignoreMissingFiles` or `ignoreCorruptFiles` being set to `true`
-- Duplicate field names in case-insensitive mode (e.g., a Parquet file with both `B` and `b` columns)
-  are detected at read time and raise a `SparkRuntimeException` with error class `_LEGACY_ERROR_TEMP_2093`,
-  matching Spark's behavior.
-
-The `native_iceberg_compat` scan has the following additional limitation that may produce incorrect results
-without falling back to Spark:
-
-- Some Spark configuration values are hard-coded to their defaults rather than respecting user-specified values.
-  This may produce incorrect results when non-default values are set. The affected configurations are
-  `spark.sql.parquet.binaryAsString`, `spark.sql.parquet.int96AsTimestamp`, `spark.sql.caseSensitive`,
-  `spark.sql.parquet.inferTimestampNTZ.enabled`, and `spark.sql.legacy.parquet.nanosAsLong`. See
-  [issue #1816](https://github.com/apache/datafusion-comet/issues/1816) for more details.
+Duplicate field names in case-insensitive mode (e.g., a Parquet file with both `B` and `b` columns)
+are detected at read time and raise a `SparkRuntimeException` with error class `_LEGACY_ERROR_TEMP_2093`,
+matching Spark's behavior.
 
 ## S3 Support
 
-The `native_datafusion` and `native_iceberg_compat` Parquet scan implementations completely offload data loading
-to native code. They use the [`object_store` crate](https://crates.io/crates/object_store) to read data from S3 and
-support configuring S3 access using standard [Hadoop S3A configurations](https://hadoop.apache.org/docs/stable/hadoop-aws/tools/hadoop-aws/index.html#General_S3A_Client_configuration) by translating them to
-the `object_store` crate's format.
+The Comet Parquet scan completely offloads data loading to native code. It uses the
+[`object_store` crate](https://crates.io/crates/object_store) to read data from S3 and supports configuring
+S3 access using standard [Hadoop S3A configurations](https://hadoop.apache.org/docs/stable/hadoop-aws/tools/hadoop-aws/index.html#General_S3A_Client_configuration) by translating them to the `object_store` crate's format.
 
-This implementation maintains compatibility with existing Hadoop S3A configurations, so existing code will
+This maintains compatibility with existing Hadoop S3A configurations, so existing code will
 continue to work as long as the configurations are supported and can be translated without loss of functionality.
 
 #### Additional S3 Configuration Options
 
-Beyond credential providers, the `native_datafusion` and `native_iceberg_compat` implementations support additional
-S3 configuration options:
+Beyond credential providers, the Comet Parquet scan supports additional S3 configuration options:
 
 | Option                          | Description                                                                                        |
 | ------------------------------- | -------------------------------------------------------------------------------------------------- |
@@ -103,8 +78,8 @@ All configuration options support bucket-specific overrides using the pattern `f
 
 #### Examples
 
-The following examples demonstrate how to configure S3 access with the `native_datafusion` and `native_iceberg_compat`
-Parquet scan implementations using different authentication methods.
+The following examples demonstrate how to configure S3 access for the Comet Parquet scan using different
+authentication methods.
 
 **Example 1: Simple Credentials**
 
@@ -113,7 +88,6 @@ This example shows how to access a private S3 bucket using an access key and sec
 ```shell
 $SPARK_HOME/bin/spark-shell \
 ...
---conf spark.comet.scan.impl=native_datafusion \
 --conf spark.hadoop.fs.s3a.access.key=my-access-key \
 --conf spark.hadoop.fs.s3a.secret.key=my-secret-key
 ...
@@ -126,7 +100,6 @@ This example demonstrates using an assumed role credential to access a private S
 ```shell
 $SPARK_HOME/bin/spark-shell \
 ...
---conf spark.comet.scan.impl=native_datafusion \
 --conf spark.hadoop.fs.s3a.aws.credentials.provider=org.apache.hadoop.fs.s3a.auth.AssumedRoleCredentialProvider \
 --conf spark.hadoop.fs.s3a.assumed.role.arn=arn:aws:iam::123456789012:role/my-role \
 --conf spark.hadoop.fs.s3a.assumed.role.session.name=my-session \
@@ -136,7 +109,7 @@ $SPARK_HOME/bin/spark-shell \
 
 #### Limitations
 
-The S3 support of `native_datafusion` and `native_iceberg_compat` has the following limitations:
+Comet's S3 support has the following limitations:
 
 1. **Partial Hadoop S3A configuration support**: Not all Hadoop S3A configurations are currently supported. Only the configurations listed in the tables above are translated and applied to the underlying `object_store` crate.
 
