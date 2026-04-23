@@ -142,9 +142,9 @@ case class CometExecRule(session: SparkSession)
               s.originalPlan.withNewChildren(Seq(s.child)).asInstanceOf[ShuffleExchangeExec]
             reverted.setTagValue(CometExecRule.SKIP_COMET_SHUFFLE_TAG, ())
             logInfo(
-              s"Reverting Comet columnar shuffle to Spark shuffle between " +
+              "Reverting Comet columnar shuffle to Spark shuffle between " +
                 s"${op.getClass.getSimpleName} and ${s.child.getClass.getSimpleName} " +
-                s"(no Comet operator on either side to consume columnar output)")
+                "(no Comet operator on either side to consume columnar output)")
             reverted
           case other => other
         }
