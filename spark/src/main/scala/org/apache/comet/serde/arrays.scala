@@ -286,9 +286,6 @@ object CometArrayRepeat extends CometExpressionSerde[ArrayRepeat] {
 }
 
 object CometArrayCompact extends CometExpressionSerde[Expression] {
-
-  override def getSupportLevel(expr: Expression): SupportLevel = Compatible()
-
   override def convert(
       expr: Expression,
       inputs: Seq[Attribute],
@@ -426,13 +423,6 @@ object CometArrayInsert extends CometExpressionSerde[ArrayInsert] {
 }
 
 object CometArrayUnion extends CometExpressionSerde[ArrayUnion] {
-
-  override def getSupportLevel(expr: ArrayUnion): SupportLevel =
-    Incompatible(
-      Some(
-        "Correctness issue" +
-          " (https://github.com/apache/datafusion-comet/issues/3644)"))
-
   override def convert(
       expr: ArrayUnion,
       inputs: Seq[Attribute],

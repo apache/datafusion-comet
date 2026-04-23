@@ -19,7 +19,4 @@ under the License.
 
 # Array Expressions
 
-- **ArrayUnion**: Sorts input arrays before performing the union, while Spark preserves the order of the first array
-  and appends unique elements from the second.
-  [#3644](https://github.com/apache/datafusion-comet/issues/3644)
 - **SortArray**: Nested arrays with `Struct` or `Null` child values are not supported natively and will fall back to Spark.
