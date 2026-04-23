@@ -22,6 +22,10 @@ package org.apache.comet.serde
 import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.types._
 
+/**
+ * @see
+ *   [[SupportLevelKind]]
+ */
 sealed trait SupportLevel
 
 /**
@@ -59,7 +63,13 @@ object SupportLevel {
   }
 }
 
-/** The kind of support outcome produced by a [[SupportCondition]]. */
+/**
+ * The kind of support outcome produced by a [[SupportCondition]].
+ *
+ * The member names mirror the [[SupportLevel]] case classes on purpose so that a condition's
+ * `level` reads the same as the resulting `SupportLevel`. To disambiguate references in this file
+ * or in wildcard imports of the `serde` package, qualify as `SupportLevelKind.Compatible` etc.
+ */
 sealed trait SupportLevelKind
 object SupportLevelKind {
   case object Compatible extends SupportLevelKind
