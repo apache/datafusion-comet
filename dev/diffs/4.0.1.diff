@@ -3902,21 +3902,6 @@ index 52abd248f3a..b4e096cae24 100644
        case h: HiveTableScanExec => h.partitionPruningPred.collect {
          case d: DynamicPruningExpression => d.child
        }
-diff --git a/sql/hive/src/test/scala/org/apache/spark/sql/hive/HiveUDFDynamicLoadSuite.scala b/sql/hive/src/test/scala/org/apache/spark/sql/hive/HiveUDFDynamicLoadSuite.scala
-index 4b27082e188..6710c90c789 100644
---- a/sql/hive/src/test/scala/org/apache/spark/sql/hive/HiveUDFDynamicLoadSuite.scala
-+++ b/sql/hive/src/test/scala/org/apache/spark/sql/hive/HiveUDFDynamicLoadSuite.scala
-@@ -147,7 +147,9 @@ class HiveUDFDynamicLoadSuite extends QueryTest with SQLTestUtils with TestHiveS
- 
-     // This jar file should not be placed to the classpath.
-     val jarPath = "src/test/noclasspath/hive-test-udfs.jar"
--    assume(new java.io.File(jarPath).exists)
-+    // Comet: hive-test-udfs.jar files has been removed from Apache Spark repository
-+    //        comment out the following line for now
-+    // assume(new java.io.File(jarPath).exists)
-     val jarUrl = s"file://${System.getProperty("user.dir")}/$jarPath"
- 
-     test("Spark should be able to run Hive UDF using jar regardless of " +
 diff --git a/sql/hive/src/test/scala/org/apache/spark/sql/hive/InsertSuite.scala b/sql/hive/src/test/scala/org/apache/spark/sql/hive/InsertSuite.scala
 index cc7bb193731..06555d48da7 100644
 --- a/sql/hive/src/test/scala/org/apache/spark/sql/hive/InsertSuite.scala
