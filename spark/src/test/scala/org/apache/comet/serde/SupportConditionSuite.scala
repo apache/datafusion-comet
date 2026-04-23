@@ -132,4 +132,33 @@ class SupportConditionSuite extends AnyFunSuite {
     assert(c.level == SupportLevelKind.Unsupported)
     assert(c.description == "Child is BinaryType")
   }
+
+  test("CometSortArray: unsupported element type returns Unsupported") {
+    import org.apache.spark.sql.catalyst.expressions.SortArray
+    import org.apache.spark.sql.types.{ArrayType, MapType}
+    val mapArray = Literal.create(null, ArrayType(MapType(StringType, StringType)))
+    val expr = SortArray(mapArray, Literal(true))
+    val result = CometSortArray.getSupportLevel(expr)
+    assert(result.isInstanceOf[Unsupported])
+    val msg = result.asInstanceOf[Unsupported].notes.getOrElse("")
+    assert(msg.startsWith("Sort on array element type"))
+  }
+
+  test("CometSortArray: non-float element type returns Compatible") {
+    import org.apache.spark.sql.catalyst.expressions.SortArray
+    import org.apache.spark.sql.types.{ArrayType, IntegerType}
+    val arr = Literal.create(null, ArrayType(IntegerType))
+    val expr = SortArray(arr, Literal(true))
+    val result = CometSortArray.getSupportLevel(expr)
+    assert(result == Compatible(None))
+  }
+
+  test("CometSortArray: declared conditions order is element-type then floating-point") {
+    val conditions = CometSortArray.conditions
+    assert(conditions.size == 2)
+    assert(conditions(0).id == "unsupported-element-type")
+    assert(conditions(0).level == SupportLevelKind.Unsupported)
+    assert(conditions(1).id == "strict-floating-point")
+    assert(conditions(1).level == SupportLevelKind.Incompatible)
+  }
 }

@@ -141,21 +141,27 @@ object CometSortArray extends CometExpressionSerde[SortArray] {
     }
   }
 
-  override def getSupportLevel(expr: SortArray): SupportLevel = {
-    val elementType = expr.base.dataType.asInstanceOf[ArrayType].elementType
-
-    if (!supportedSortArrayElementType(elementType)) {
-      Unsupported(Some(s"Sort on array element type $elementType is not supported"))
-    } else if (CometConf.COMET_EXEC_STRICT_FLOATING_POINT.get() &&
-      SupportLevel.containsFloatingPoint(elementType)) {
-      Incompatible(
-        Some(
+  override val conditions: Seq[SupportCondition[SortArray]] = {
+    def elementType(e: SortArray): DataType =
+      e.base.dataType.asInstanceOf[ArrayType].elementType
+    Seq(
+      SupportCondition[SortArray](
+        id = "unsupported-element-type",
+        description = "Array element type is not supported for sorting",
+        level = SupportLevelKind.Unsupported,
+        fires = e => !supportedSortArrayElementType(elementType(e)),
+        message = e => s"Sort on array element type ${elementType(e)} is not supported"),
+      SupportCondition[SortArray](
+        id = "strict-floating-point",
+        description = "Strict floating-point mode is on and element type contains float/double",
+        level = SupportLevelKind.Incompatible,
+        fires = e =>
+          CometConf.COMET_EXEC_STRICT_FLOATING_POINT.get() &&
+            SupportLevel.containsFloatingPoint(elementType(e)),
+        message = e =>
           "Sorting on floating-point is not 100% compatible with Spark, and Comet is running " +
             s"with ${CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key}=true. " +
             s"${CometConf.COMPAT_GUIDE}"))
-    } else {
-      Compatible()
-    }
   }
 
   override def convert(
