@@ -20,7 +20,8 @@
 package org.apache.comet.shims
 
 import org.apache.spark.sql.catalyst.expressions._
-import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
+import org.apache.spark.sql.catalyst.expressions.json.StructsToJsonEvaluator
+import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.types.StringTypeWithCollation
 import org.apache.spark.sql.types.{BinaryType, BooleanType, DataTypes, StringType}
@@ -113,6 +114,19 @@ trait CometExprShim extends CommonStringExprs {
       // so we pass through to the child expression.
       case k: KnownNotContainsNull =>
         exprToProtoInternal(k.child, inputs, binding)
+
+      // In Spark 4.0, StructsToJson is a RuntimeReplaceable whose replacement is
+      // Invoke(Literal(StructsToJsonEvaluator), "evaluate", ...). Reconstruct the
+      // original StructsToJson and recurse so support-level checks apply.
+      case i: Invoke =>
+        (i.targetObject, i.functionName, i.arguments) match {
+          case (Literal(evaluator: StructsToJsonEvaluator, _), "evaluate", Seq(child)) =>
+            exprToProtoInternal(
+              StructsToJson(evaluator.options, child, evaluator.timeZoneId),
+              inputs,
+              binding)
+          case _ => None
+        }
 
       case _ => None
     }
