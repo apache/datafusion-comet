@@ -28,7 +28,6 @@ Comet Plugin Overview <plugin_overview>
 Arrow FFI <ffi>
 JVM Shuffle <jvm_shuffle>
 Native Shuffle <native_shuffle>
-Parquet Scans <parquet_scans>
 Development Guide <development>
 Debugging Guide <debugging>
 Benchmarking Guide <benchmarking>
