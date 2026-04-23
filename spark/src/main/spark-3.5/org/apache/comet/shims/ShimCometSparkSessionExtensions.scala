@@ -19,21 +19,16 @@
 
 package org.apache.comet.shims
 
+import org.apache.spark.sql.SparkSessionExtensions
+import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.execution.{QueryExecution, SparkPlan}
 
 trait ShimCometSparkSessionExtensions {
 
-  /**
-   * TODO: delete after dropping Spark 3.x support and directly call
-   * SQLConf.EXTENDED_EXPLAIN_PROVIDERS.key
-   */
   protected val EXTENDED_EXPLAIN_PROVIDERS_KEY = "spark.sql.extendedExplainProviders"
 
-  // Extended info is available only since Spark 4.0.0
-  // (https://issues.apache.org/jira/browse/SPARK-47289)
   def supportsExtendedExplainInfo(qe: QueryExecution): Boolean = {
     try {
-      // Look for QueryExecution.extendedExplainInfo(scala.Function1[String, Unit], SparkPlan)
       qe.getClass.getDeclaredMethod(
         "extendedExplainInfo",
         classOf[String => Unit],
@@ -42,5 +37,12 @@ trait ShimCometSparkSessionExtensions {
       case _: NoSuchMethodException | _: SecurityException => return false
     }
     true
+  }
+
+  // Available since Spark 3.5 (SPARK-45785)
+  def injectQueryStageOptimizerRuleShim(
+      extensions: SparkSessionExtensions,
+      rule: Rule[SparkPlan]): Unit = {
+    extensions.injectQueryStageOptimizerRule(_ => rule)
   }
 }

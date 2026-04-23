@@ -21,21 +21,26 @@ package org.apache.comet.shims
 
 import org.apache.spark.sql.SparkSessionExtensions
 import org.apache.spark.sql.catalyst.rules.Rule
-import org.apache.spark.sql.connector.expressions.aggregate.Aggregation
 import org.apache.spark.sql.execution.{QueryExecution, SparkPlan}
-import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
-import org.apache.spark.sql.internal.SQLConf
 
 trait ShimCometSparkSessionExtensions {
-  protected def getPushedAggregate(scan: ParquetScan): Option[Aggregation] = scan.pushedAggregate
 
-  protected def supportsExtendedExplainInfo(qe: QueryExecution): Boolean = true
+  protected val EXTENDED_EXPLAIN_PROVIDERS_KEY = "spark.sql.extendedExplainProviders"
 
-  protected val EXTENDED_EXPLAIN_PROVIDERS_KEY = SQLConf.EXTENDED_EXPLAIN_PROVIDERS.key
+  def supportsExtendedExplainInfo(qe: QueryExecution): Boolean = {
+    try {
+      qe.getClass.getDeclaredMethod(
+        "extendedExplainInfo",
+        classOf[String => Unit],
+        classOf[SparkPlan])
+    } catch {
+      case _: NoSuchMethodException | _: SecurityException => return false
+    }
+    true
+  }
 
+  // injectQueryStageOptimizerRule not available on Spark 3.4
   def injectQueryStageOptimizerRuleShim(
       extensions: SparkSessionExtensions,
-      rule: Rule[SparkPlan]): Unit = {
-    extensions.injectQueryStageOptimizerRule(_ => rule)
-  }
+      rule: Rule[SparkPlan]): Unit = {}
 }

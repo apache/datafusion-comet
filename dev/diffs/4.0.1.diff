@@ -1309,7 +1309,7 @@ index 0df7f806272..92390bd819f 100644
  
    test("non-matching optional group") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
-index 2e33f6505ab..949fdea0003 100644
+index 2e33f6505ab..e35475b7683 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
 @@ -23,10 +23,12 @@ import org.apache.spark.SparkRuntimeException
@@ -1354,13 +1354,7 @@ index 2e33f6505ab..949fdea0003 100644
        }
        assert(exchanges.size === 1)
      }
-@@ -2674,22 +2688,31 @@ class SubquerySuite extends QueryTest
-     }
-   }
- 
--  test("SPARK-43402: FileSourceScanExec supports push down data filter with scalar subquery") {
-+  test("SPARK-43402: FileSourceScanExec supports push down data filter with scalar subquery",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3315")) {
+@@ -2678,18 +2692,25 @@ class SubquerySuite extends QueryTest
      def checkFileSourceScan(query: String, answer: Seq[Row]): Unit = {
        val df = sql(query)
        checkAnswer(df, answer)
@@ -1369,6 +1363,7 @@ index 2e33f6505ab..949fdea0003 100644
 +      val dataSourceScanExec = collect(df.queryExecution.executedPlan) {
 +        case f: FileSourceScanLike => f
 +        case c: CometScanExec => c
++        case n: CometNativeScanExec => n
        }
        sparkContext.listenerBus.waitUntilEmpty()
 -      assert(fileSourceScanExec.size === 1)
@@ -1378,13 +1373,11 @@ index 2e33f6505ab..949fdea0003 100644
 +      assert(dataSourceScanExec.size === 1)
 +      val scalarSubquery = dataSourceScanExec.head match {
 +        case f: FileSourceScanLike =>
-+          f.dataFilters.flatMap(_.collect {
-+            case s: ScalarSubquery => s
-+          })
++          f.dataFilters.flatMap(_.collect { case s: ScalarSubquery => s })
 +        case c: CometScanExec =>
-+          c.dataFilters.flatMap(_.collect {
-+            case s: ScalarSubquery => s
-+          })
++          c.dataFilters.flatMap(_.collect { case s: ScalarSubquery => s })
++        case n: CometNativeScanExec =>
++          n.dataFilters.flatMap(_.collect { case s: ScalarSubquery => s })
 +      }
        assert(scalarSubquery.length === 1)
        assert(scalarSubquery.head.plan.isInstanceOf[ReusedSubqueryExec])

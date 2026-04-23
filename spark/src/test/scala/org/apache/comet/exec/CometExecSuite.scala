@@ -1161,6 +1161,63 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  // Regression test for https://github.com/apache/datafusion-comet/issues/4042
+  // SPARK-43402 (Spark 4.0+) pushes scalar subqueries into FileSourceScanExec.dataFilters.
+  // CometReuseSubquery re-applies subquery deduplication after Comet node conversions, and
+  // the resolved literal is pushed to the native Parquet reader at execution time (same
+  // approach as FileSourceScanLike.pushedDownFilters in DataSourceScanExec.scala).
+  test("scalar subquery in data filters does not break subquery reuse") {
+    assume(isSpark40Plus, "SPARK-43402 scalar subquery pushdown is Spark 4.0+ only")
+
+    Seq(true, false).foreach { aqeEnabled =>
+      withTable("t1", "t2") {
+        withSQLConf(
+          SQLConf.LEAF_NODE_DEFAULT_PARALLELISM.key -> "1",
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqeEnabled.toString) {
+          Seq(1, 2, 3).toDF("c1").write.format("parquet").saveAsTable("t1")
+          Seq(4, 5, 6).toDF("c2").write.format("parquet").saveAsTable("t2")
+
+          checkSparkAnswer(sql("SELECT * FROM t1 WHERE c1 > (SELECT min(c2) FROM t2)"))
+
+          val df = sql("SELECT * FROM t1 WHERE c1 < (SELECT min(c2) FROM t2)")
+          val (_, cometPlan) = checkSparkAnswer(df)
+
+          val nativeScans = collectWithSubqueries(cometPlan) { case n: CometNativeScanExec =>
+            n
+          }
+          val t1Scan =
+            nativeScans.find(_.dataFilters.exists(_.exists(_.isInstanceOf[ScalarSubquery])))
+          assert(t1Scan.isDefined, "Expected CometNativeScanExec with ScalarSubquery")
+          val scalarSubqueries = t1Scan.get.dataFilters.flatMap(_.collect {
+            case s: ScalarSubquery => s
+          })
+          assert(scalarSubqueries.length === 1)
+          assert(t1Scan.get.metrics("numFiles").value === 1)
+
+          // Exactly one copy should be ReusedSubqueryExec. AQE (top-down traversal via
+          // CometReuseSubquery) puts it on the scan; non-AQE (bottom-up via Spark's
+          // ReuseExchangeAndSubquery) puts it on the filter. Either way the subquery
+          // executes once.
+          val allReused = collectWithSubqueries(cometPlan) { case p: SparkPlan =>
+            p.expressions.flatMap(_.collect {
+              case s: ScalarSubquery if s.plan.isInstanceOf[ReusedSubqueryExec] => s
+            })
+          }.flatten
+          assert(
+            allReused.nonEmpty,
+            s"Expected at least one ReusedSubqueryExec in plan (AQE=$aqeEnabled)")
+
+          if (aqeEnabled) {
+            assert(
+              scalarSubqueries.head.plan.isInstanceOf[ReusedSubqueryExec],
+              "Expected ReusedSubqueryExec on scan's ScalarSubquery (AQE=true) " +
+                s"but got ${scalarSubqueries.head.plan.getClass.getSimpleName}")
+          }
+        }
+      }
+    }
+  }
+
   test("Comet native metrics: scan") {
     Seq(CometConf.SCAN_NATIVE_DATAFUSION, CometConf.SCAN_NATIVE_ICEBERG_COMPAT).foreach {
       scanMode =>

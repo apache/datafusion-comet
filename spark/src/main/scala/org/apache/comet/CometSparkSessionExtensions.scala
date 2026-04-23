@@ -32,13 +32,45 @@ import org.apache.spark.sql.execution._
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf._
-import org.apache.comet.rules.{CometExecRule, CometScanRule, EliminateRedundantTransitions}
+import org.apache.comet.rules.{CometExecRule, CometReuseSubquery, CometScanRule, EliminateRedundantTransitions}
 import org.apache.comet.shims.ShimCometSparkSessionExtensions
 
 /**
  * CometDriverPlugin will register an instance of this class with Spark.
  *
- * This class is responsible for injecting Comet rules and extensions into Spark.
+ * Comet rules are injected into Spark's rule pipeline at several extension points. The execution
+ * order differs between AQE and non-AQE paths:
+ *
+ * Non-AQE (QueryExecution.preparations):
+ * {{{
+ *   1. PlanDynamicPruningFilters    -- Spark creates DPP filters
+ *   2. PlanSubqueries               -- Spark creates SubqueryExec for scalar subqueries
+ *   3. EnsureRequirements            -- Spark inserts shuffles/sorts
+ *   4. ApplyColumnarRulesAndInsertTransitions:
+ *      a. preColumnarTransitions:   CometScanRule, CometExecRule (replace Spark -> Comet nodes)
+ *      b. insertTransitions:        ColumnarToRow/RowToColumnar added
+ *      c. postColumnarTransitions:  EliminateRedundantTransitions
+ *   5. ReuseExchangeAndSubquery     -- Spark deduplicates subqueries (sees Comet nodes)
+ * }}}
+ *
+ * AQE (AdaptiveSparkPlanExec):
+ * {{{
+ *   Initial plan:
+ *     queryStagePreparationRules:   CometScanRule, CometExecRule (replace Spark -> Comet nodes)
+ *
+ *   Per stage (optimizeQueryStage + postStageCreationRules):
+ *     1. queryStageOptimizerRules:  ReuseAdaptiveSubquery, CometReuseSubquery
+ *     2. postStageCreationRules -> ApplyColumnarRulesAndInsertTransitions:
+ *        a. preColumnarTransitions: CometScanRule, CometExecRule (no-ops, already converted)
+ *        b. insertTransitions
+ *        c. postColumnarTransitions: EliminateRedundantTransitions
+ * }}}
+ *
+ * CometReuseSubquery is needed in AQE because Spark's ReuseAdaptiveSubquery may run before
+ * Comet's node replacements in the initial plan construction, and the replacements can disrupt
+ * subquery reuse that was already applied. The shim-based registration
+ * (injectQueryStageOptimizerRuleShim) handles API availability: Spark 3.5+ has
+ * injectQueryStageOptimizerRule, Spark 3.4 does not (no-op).
  */
 class CometSparkSessionExtensions
     extends (SparkSessionExtensions => Unit)
@@ -49,6 +81,7 @@ class CometSparkSessionExtensions
     extensions.injectColumnar { session => CometExecColumnar(session) }
     extensions.injectQueryStagePrepRule { session => CometScanRule(session) }
     extensions.injectQueryStagePrepRule { session => CometExecRule(session) }
+    injectQueryStageOptimizerRuleShim(extensions, CometReuseSubquery)
   }
 
   case class CometScanColumnar(session: SparkSession) extends ColumnarRule {
