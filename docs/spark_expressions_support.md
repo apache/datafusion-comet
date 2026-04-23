@@ -98,7 +98,7 @@
 - [x] array_repeat
 - [x] array_union
 - [x] arrays_overlap
-- [ ] arrays_zip
+- [x] arrays_zip
 - [x] element_at
 - [ ] flatten
 - [x] get
