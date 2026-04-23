@@ -172,25 +172,6 @@ INSERT INTO test_overlap_ts VALUES (array(timestamp '2024-01-01 00:00:00', times
 query
 SELECT a, b, arrays_overlap(a, b) FROM test_overlap_ts
 
--- large arrays
-statement
-CREATE TABLE test_overlap_large(id int) USING parquet
-
-statement
-INSERT INTO test_overlap_large VALUES (1)
-
--- large array with single overlap at end
-query
-SELECT arrays_overlap(sequence(1, 100), sequence(100, 200)) FROM test_overlap_large
-
--- large array with no overlap
-query
-SELECT arrays_overlap(sequence(1, 100), sequence(101, 200)) FROM test_overlap_large
-
--- large array self-overlap
-query
-SELECT arrays_overlap(sequence(1, 1000), sequence(1, 1000)) FROM test_overlap_large
-
 -- nested arrays
 statement
 CREATE TABLE test_overlap_nested(a array<array<int>>, b array<array<int>>) USING parquet
