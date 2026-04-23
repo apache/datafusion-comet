@@ -68,10 +68,12 @@ object CometUpper extends CometCaseConversionBase[Upper]("upper")
 object CometLower extends CometCaseConversionBase[Lower]("lower")
 
 object CometLength extends CometScalarFunction[Length]("length") {
-  override def getSupportLevel(expr: Length): SupportLevel = expr.child.dataType match {
-    case _: BinaryType => Unsupported(Some("Length on BinaryType is not supported"))
-    case _ => Compatible()
-  }
+  override val conditions: Seq[SupportCondition[Length]] = Seq(
+    SupportCondition.unsupported[Length](
+      id = "binary-child",
+      description = "Child is BinaryType",
+      fires = _.child.dataType.isInstanceOf[BinaryType],
+      message = "Length on BinaryType is not supported"))
 }
 
 object CometInitCap extends CometScalarFunction[InitCap]("initcap") {

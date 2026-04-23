@@ -21,8 +21,8 @@ package org.apache.comet.serde
 
 import org.scalatest.funsuite.AnyFunSuite
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Literal}
-import org.apache.spark.sql.types.{IntegerType, LongType, StringType}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Length, Literal}
+import org.apache.spark.sql.types.{BinaryType, IntegerType, LongType, StringType}
 import org.apache.spark.unsafe.types.UTF8String
 
 class SupportConditionSuite extends AnyFunSuite {
@@ -110,5 +110,22 @@ class SupportConditionSuite extends AnyFunSuite {
     val result =
       DynamicMessageSerde.getSupportLevel(Literal(UTF8String.fromString("x"), StringType))
     assert(result == Unsupported(Some("unsupported dtype string")))
+  }
+
+  test("CometLength: BinaryType child returns Unsupported") {
+    val expr = Length(Literal(Array[Byte](1, 2, 3), BinaryType))
+    val result = CometLength.getSupportLevel(expr)
+    assert(result == Unsupported(Some("Length on BinaryType is not supported")))
+  }
+
+  test("CometLength: StringType child returns Compatible") {
+    val expr = Length(Literal(UTF8String.fromString("hello"), StringType))
+    val result = CometLength.getSupportLevel(expr)
+    assert(result == Compatible(None))
+  }
+
+  test("CometLength: conditions list contains the binary-child id") {
+    val ids = CometLength.conditions.map(_.id)
+    assert(ids == Seq("binary-child"))
   }
 }
