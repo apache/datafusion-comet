@@ -1309,16 +1309,15 @@ index 0df7f806272..92390bd819f 100644
  
    test("non-matching optional group") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
-index 2e33f6505ab..e35475b7683 100644
+index 2e33f6505ab..54f5081e10a 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
-@@ -23,10 +23,12 @@ import org.apache.spark.SparkRuntimeException
+@@ -23,10 +23,11 @@ import org.apache.spark.SparkRuntimeException
  import org.apache.spark.sql.catalyst.expressions.SubqueryExpression
  import org.apache.spark.sql.catalyst.plans.{LeftAnti, LeftSemi}
  import org.apache.spark.sql.catalyst.plans.logical.{Aggregate, Filter, Join, LogicalPlan, Project, Sort, Union}
 +import org.apache.spark.sql.comet.{CometNativeColumnarToRowExec, CometNativeScanExec, CometScanExec}
  import org.apache.spark.sql.execution._
-+import org.apache.spark.sql.IgnoreCometNativeDataFusion
  import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanHelper, DisableAdaptiveExecution}
  import org.apache.spark.sql.execution.datasources.FileScanRDD
 -import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
@@ -1326,7 +1325,7 @@ index 2e33f6505ab..e35475b7683 100644
  import org.apache.spark.sql.execution.joins.{BaseJoinExec, BroadcastHashJoinExec, BroadcastNestedLoopJoinExec}
  import org.apache.spark.sql.internal.SQLConf
  import org.apache.spark.sql.test.SharedSparkSession
-@@ -1529,6 +1531,18 @@ class SubquerySuite extends QueryTest
+@@ -1529,6 +1530,18 @@ class SubquerySuite extends QueryTest
              fs.inputRDDs().forall(
                _.asInstanceOf[FileScanRDD].filePartitions.forall(
                  _.files.forall(_.urlEncodedPath.contains("p=0"))))
@@ -1345,7 +1344,7 @@ index 2e33f6505ab..e35475b7683 100644
          case _ => false
        })
      }
-@@ -2094,7 +2108,7 @@ class SubquerySuite extends QueryTest
+@@ -2094,7 +2107,7 @@ class SubquerySuite extends QueryTest
  
        df.collect()
        val exchanges = collect(df.queryExecution.executedPlan) {
@@ -1354,7 +1353,7 @@ index 2e33f6505ab..e35475b7683 100644
        }
        assert(exchanges.size === 1)
      }
-@@ -2678,18 +2692,25 @@ class SubquerySuite extends QueryTest
+@@ -2678,18 +2691,25 @@ class SubquerySuite extends QueryTest
      def checkFileSourceScan(query: String, answer: Seq[Row]): Unit = {
        val df = sql(query)
        checkAnswer(df, answer)

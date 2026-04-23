@@ -28,7 +28,7 @@ import org.apache.spark.sql.execution.{BaseSubqueryExec, ExecSubqueryExpression,
 /**
  * Re-applies subquery deduplication after Comet node conversions.
  *
- * Spark's ReuseAdaptiveSubquery runs as a queryStageOptimizerRule BEFORE postStageCreationRules,
+ * Spark's ReuseAdaptiveSubquery runs as a queryStageOptimizerRule before postStageCreationRules,
  * which is where CometScanRule/CometExecRule replace Spark operators with Comet equivalents. The
  * Comet rules copy expressions from the original Spark nodes, which can disrupt subquery reuse
  * that was already applied by Spark's rule. This rule runs after Comet conversions to restore
