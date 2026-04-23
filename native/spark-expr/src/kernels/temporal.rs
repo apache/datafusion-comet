@@ -18,8 +18,7 @@
 //! temporal kernels
 
 use chrono::{
-    DateTime, Datelike, Duration, LocalResult, NaiveDate, NaiveDateTime, Offset, TimeZone,
-    Timelike, Utc,
+    DateTime, Datelike, Duration, LocalResult, NaiveDate, NaiveDateTime, TimeZone, Timelike, Utc,
 };
 
 use std::sync::Arc;
@@ -157,29 +156,22 @@ where
 }
 
 // Apply the Tz to the Naive Date Time, convert to UTC, and return as microseconds in Unix epoch.
-// This function re-interprets the local datetime in the timezone to ensure the correct DST offset
-// is used for the target date (not the original date's offset). This is important when truncation
-// changes the date to a different DST period (e.g., from December/PST to October/PDT).
-//
-// Note: For far-future dates (approximately beyond year 2100), chrono-tz may not accurately
-// calculate DST transitions, which can result in incorrect offsets. See the compatibility
-// guide for more information.
+// After truncation the carried UTC offset may be wrong if the truncated time falls in a different
+// DST period than the original (e.g., truncating a December/PST timestamp to QUARTER yields
+// October 1 which is in PDT). We re-resolve the naive local time through the timezone so that
+// chrono picks the correct offset for the target date.
 #[inline]
 fn as_micros_from_unix_epoch_utc(dt: Option<DateTime<Tz>>) -> i64 {
     let dt = dt.unwrap();
     let naive = dt.naive_local();
     let tz = dt.timezone();
 
-    // Re-interpret the local time in the timezone to get the correct DST offset
-    // for the truncated date. Use noon to avoid DST gaps that occur around midnight.
-    let noon = naive.date().and_hms_opt(12, 0, 0).unwrap_or(naive);
-
-    let offset = match tz.offset_from_local_datetime(&noon) {
-        LocalResult::Single(off) | LocalResult::Ambiguous(off, _) => off.fix(),
-        LocalResult::None => return dt.with_timezone(&Utc).timestamp_micros(),
-    };
-
-    (naive - offset).and_utc().timestamp_micros()
+    match tz.from_local_datetime(&naive) {
+        LocalResult::Single(resolved) | LocalResult::Ambiguous(resolved, _) => {
+            resolved.with_timezone(&Utc).timestamp_micros()
+        }
+        LocalResult::None => dt.with_timezone(&Utc).timestamp_micros(),
+    }
 }
 
 #[inline]

@@ -181,7 +181,7 @@ object CometQuarter extends CometExpressionSerde[Quarter] with CometExprGetDateF
 object CometHour extends CometExpressionSerde[Hour] {
 
   override def getSupportLevel(expr: Hour): SupportLevel = {
-    if (expr.child.dataType.typeName == "timestamp_ntz") {
+    if (expr.child.dataType == TimestampNTZType) {
       Incompatible(
         Some(
           "Incorrectly applies timezone conversion to TimestampNTZ inputs" +
@@ -219,7 +219,7 @@ object CometHour extends CometExpressionSerde[Hour] {
 object CometMinute extends CometExpressionSerde[Minute] {
 
   override def getSupportLevel(expr: Minute): SupportLevel = {
-    if (expr.child.dataType.typeName == "timestamp_ntz") {
+    if (expr.child.dataType == TimestampNTZType) {
       Incompatible(
         Some(
           "Incorrectly applies timezone conversion to TimestampNTZ inputs" +
@@ -257,7 +257,7 @@ object CometMinute extends CometExpressionSerde[Minute] {
 object CometSecond extends CometExpressionSerde[Second] {
 
   override def getSupportLevel(expr: Second): SupportLevel = {
-    if (expr.child.dataType.typeName == "timestamp_ntz") {
+    if (expr.child.dataType == TimestampNTZType) {
       Incompatible(
         Some(
           "Incorrectly applies timezone conversion to TimestampNTZ inputs" +
@@ -297,7 +297,7 @@ object CometUnixTimestamp extends CometExpressionSerde[UnixTimestamp] {
   private def isSupportedInputType(expr: UnixTimestamp): Boolean = {
     expr.children.head.dataType match {
       case TimestampType | DateType => true
-      case dt if dt.typeName == "timestamp_ntz" => true
+      case TimestampNTZType => true
       case _ => false
     }
   }
