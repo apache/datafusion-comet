@@ -21,7 +21,3 @@ under the License.
 
 <!--BEGIN:EXPR_COMPAT[datetime]-->
 <!--END:EXPR_COMPAT-->
-
-- **TruncTimestamp (date_trunc)**: Produces incorrect results when used with non-UTC timezones. Compatible when
-  timezone is UTC.
-  [#2649](https://github.com/apache/datafusion-comet/issues/2649)

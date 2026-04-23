@@ -123,6 +123,10 @@ object CometArrayContains extends CometExpressionSerde[ArrayContains] {
 
 object CometSortArray extends CometExpressionSerde[SortArray] {
 
+  override def getUnsupportedReasons(): Seq[String] = Seq(
+    "Nested arrays with `Struct` or `Null` child values are not supported natively and will" +
+      " fall back to Spark.")
+
   private def supportedSortArrayElementType(
       dt: DataType,
       nestedInArray: Boolean = false): Boolean = {

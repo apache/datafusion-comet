@@ -425,6 +425,10 @@ object CometTruncDate extends CometExpressionSerde[TruncDate] {
 
 object CometTruncTimestamp extends CometExpressionSerde[TruncTimestamp] {
 
+  override def getIncompatibleReasons(): Seq[String] = Seq(
+    "Produces incorrect results when used with non-UTC timezones. Compatible when timezone is" +
+      " UTC. (https://github.com/apache/datafusion-comet/issues/2649)")
+
   val supportedFormats: Seq[String] =
     Seq(
       "year",

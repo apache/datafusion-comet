@@ -41,7 +41,8 @@ trait CometAggregateExpressionSerde[T <: AggregateFunction] {
 
   /**
    * Get documentation for usages where this expression may be incompatible with Spark. This is
-   * called from GenerateDocs when generating the Compatibility Guide.
+   * called from GenerateDocs when generating the Compatibility Guide. Each reason should be
+   * written in Markdown and may span multiple lines.
    *
    * @return
    *   List of reasons, defaulting to an empty list.
@@ -50,7 +51,8 @@ trait CometAggregateExpressionSerde[T <: AggregateFunction] {
 
   /**
    * Get documentation for usages where this expression is unsupported with Spark. This is called
-   * from GenerateDocs when generating the Compatibility Guide.
+   * from GenerateDocs when generating the Compatibility Guide. Each reason should be written in
+   * Markdown and may span multiple lines.
    *
    * @return
    *   List of reasons, defaulting to an empty list.

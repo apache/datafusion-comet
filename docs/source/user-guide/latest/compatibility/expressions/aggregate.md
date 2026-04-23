@@ -22,16 +22,8 @@ under the License.
 <!--BEGIN:EXPR_COMPAT[aggregate]-->
 <!--END:EXPR_COMPAT-->
 
-## Incompatible Aggregates
-
-- **CollectSet**: Comet deduplicates NaN values (treats `NaN == NaN`) while Spark treats each NaN as a distinct value.
-  When `spark.comet.exec.strictFloatingPoint=true`, `collect_set` on floating-point types falls back to Spark unless
-  `spark.comet.expression.CollectSet.allowIncompatible=true` is set.
-
 ## ANSI Mode
 
-Comet will fall back to Spark for the following aggregate expressions when ANSI mode is enabled. These can be enabled by setting `spark.comet.expression.EXPRNAME.allowIncompatible=true`, where `EXPRNAME` is the Spark expression class name. See the [Comet Supported Expressions Guide](../../expressions.md) for more information on this configuration setting.
-
-- Average (supports all numeric inputs except decimal types)
+Comet will fall back to Spark for some aggregate expressions when ANSI mode is enabled. These can be enabled by setting `spark.comet.expression.EXPRNAME.allowIncompatible=true`, where `EXPRNAME` is the Spark expression class name. See the [Comet Supported Expressions Guide](../../expressions.md) for more information on this configuration setting.
 
 There is an [epic](https://github.com/apache/datafusion-comet/issues/313) where we are tracking the work to fully implement ANSI support.
