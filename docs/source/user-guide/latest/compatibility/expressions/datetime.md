@@ -25,3 +25,19 @@ under the License.
 - **TruncTimestamp (date_trunc)**: Produces incorrect results when used with non-UTC timezones. Compatible when
   timezone is UTC.
   [#2649](https://github.com/apache/datafusion-comet/issues/2649)
+
+## Date and Time Functions
+
+Comet's native implementation of date and time functions may produce different results than Spark for dates
+far in the future (approximately beyond year 2100). This is because Comet uses the chrono-tz library for
+timezone calculations, which has limited support for Daylight Saving Time (DST) rules beyond the IANA
+time zone database's explicit transitions.
+
+For dates within a reasonable range (approximately 1970-2100), Comet's date and time functions are compatible
+with Spark. For dates beyond this range, functions that involve timezone-aware calculations (such as
+`date_trunc` with timezone-aware timestamps) may produce results with incorrect DST offsets.
+
+If you need to process dates far in the future with accurate timezone handling, consider:
+
+- Using timezone-naive types (`timestamp_ntz`) when timezone conversion is not required
+- Falling back to Spark for these specific operations
