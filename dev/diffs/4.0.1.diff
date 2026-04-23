@@ -1319,7 +1319,7 @@ index 0df7f806272..92390bd819f 100644
  
    test("non-matching optional group") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
-index 2e33f6505ab..3a8b154b565 100644
+index 2e33f6505ab..8fca1231d66 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
 @@ -23,11 +23,13 @@ import org.apache.spark.SparkRuntimeException
@@ -1365,13 +1365,13 @@ index 2e33f6505ab..3a8b154b565 100644
        }
        assert(exchanges.size === 1)
      }
-@@ -2674,22 +2688,31 @@ class SubquerySuite extends QueryTest
+@@ -2674,22 +2688,36 @@ class SubquerySuite extends QueryTest
      }
    }
  
 -  test("SPARK-43402: FileSourceScanExec supports push down data filter with scalar subquery") {
 +  test("SPARK-43402: FileSourceScanExec supports push down data filter with scalar subquery",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3315")) {
++    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/4042")) {
      def checkFileSourceScan(query: String, answer: Seq[Row]): Unit = {
        val df = sql(query)
        checkAnswer(df, answer)
@@ -1380,6 +1380,7 @@ index 2e33f6505ab..3a8b154b565 100644
 +      val dataSourceScanExec = collect(df.queryExecution.executedPlan) {
 +        case f: FileSourceScanLike => f
 +        case c: CometScanExec => c
++        case n: CometNativeScanExec => n
        }
        sparkContext.listenerBus.waitUntilEmpty()
 -      assert(fileSourceScanExec.size === 1)
@@ -1394,6 +1395,10 @@ index 2e33f6505ab..3a8b154b565 100644
 +          })
 +        case c: CometScanExec =>
 +          c.dataFilters.flatMap(_.collect {
++            case s: ScalarSubquery => s
++          })
++        case n: CometNativeScanExec =>
++          n.dataFilters.flatMap(_.collect {
 +            case s: ScalarSubquery => s
 +          })
 +      }
