@@ -158,7 +158,7 @@ object CometSortArray extends CometExpressionSerde[SortArray] {
         fires = e =>
           CometConf.COMET_EXEC_STRICT_FLOATING_POINT.get() &&
             SupportLevel.containsFloatingPoint(elementType(e)),
-        message = e =>
+        message = _ =>
           "Sorting on floating-point is not 100% compatible with Spark, and Comet is running " +
             s"with ${CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key}=true. " +
             s"${CometConf.COMPAT_GUIDE}"))
