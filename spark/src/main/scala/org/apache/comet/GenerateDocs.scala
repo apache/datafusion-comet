@@ -42,7 +42,7 @@ object GenerateDocs {
   def main(args: Array[String]): Unit = {
     val userGuideLocation = args(0)
     generateConfigReference(s"$userGuideLocation/configs.md")
-    generateCompatibilityGuide(s"$userGuideLocation/compatibility.md")
+    generateCompatibilityGuide(s"$userGuideLocation/compatibility/expressions/cast.md")
   }
 
   private def generateConfigReference(filename: String): Unit = {

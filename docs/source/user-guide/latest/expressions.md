@@ -316,4 +316,4 @@ Comet supports using the following aggregate functions within window contexts wi
 | UnscaledValue                | Yes               |                                                                             |
 
 [Comet Configuration Guide]: configs.md
-[Comet Compatibility Guide]: compatibility.md
+[Comet Compatibility Guide]: compatibility/expressions/index.md
