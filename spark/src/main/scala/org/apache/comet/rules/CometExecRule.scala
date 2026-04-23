@@ -141,6 +141,10 @@ case class CometExecRule(session: SparkSession)
             val reverted =
               s.originalPlan.withNewChildren(Seq(s.child)).asInstanceOf[ShuffleExchangeExec]
             reverted.setTagValue(CometExecRule.SKIP_COMET_SHUFFLE_TAG, ())
+            logInfo(
+              s"Reverting Comet columnar shuffle to Spark shuffle between " +
+                s"${op.getClass.getSimpleName} and ${s.child.getClass.getSimpleName} " +
+                s"(no Comet operator on either side to consume columnar output)")
             reverted
           case other => other
         }
@@ -524,7 +528,9 @@ case class CometExecRule(session: SparkSession)
       // Revert CometColumnarShuffle to Spark's ShuffleExchangeExec when sandwiched between two
       // non-Comet HashAggregate/ObjectHashAggregate operators that remained JVM after the main
       // transform pass. See https://github.com/apache/datafusion-comet/issues/4004.
-      newPlan = revertRedundantColumnarShuffle(newPlan)
+      if (CometConf.COMET_EXEC_SHUFFLE_REVERT_SANDWICHED_ENABLED.get()) {
+        newPlan = revertRedundantColumnarShuffle(newPlan)
+      }
 
       // Set up logical links
       newPlan = newPlan.transform {
