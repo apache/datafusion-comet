@@ -57,8 +57,6 @@ object CometArrayRemove
 
 object CometArrayAppend extends CometExpressionSerde[ArrayAppend] {
 
-  override def getSupportLevel(expr: ArrayAppend): SupportLevel = Compatible()
-
   override def convert(
       expr: ArrayAppend,
       inputs: Seq[Attribute],
