@@ -33,71 +33,19 @@ use std::num::Wrapping;
 use std::str::FromStr;
 use std::sync::{Arc, LazyLock};
 
+// Shared macro for casting UTF-8 string arrays to timestamp types (both TZ and NTZ).
+// $builder is a PrimitiveBuilder expression; $extra_args are forwarded to $cast_method
+// after (value, eval_mode).
 macro_rules! cast_utf8_to_timestamp {
-    // $tz is a Timezone:Tz object and contains the session timezone.
-    // $to_tz_str is a string containing the to_type timezone
-    ($array:expr, $eval_mode:expr, $array_type:ty, $cast_method:ident, $tz:expr, $to_tz_str:expr, $is_spark4_plus:expr) => {{
-        let len = $array.len();
-        let mut cast_array = PrimitiveArray::<$array_type>::builder(len).with_timezone($to_tz_str);
+    ($array:expr, $eval_mode:expr, $builder:expr, $cast_method:ident $(, $extra_arg:expr)*) => {{
+        let mut cast_array = $builder;
         let mut cast_err: Option<SparkError> = None;
-        for i in 0..len {
+        for i in 0..$array.len() {
             if $array.is_null(i) {
                 cast_array.append_null()
             } else {
-                // we use trim_end instead of trim because strings with leading spaces are interpreted differently
-                // by Spark in cases where the string has only the time component starting with T.
-                // The string " T2" results in null while "T2" results in a valid timestamp.
-                match $cast_method($array.value(i).trim_end(), $eval_mode, $tz, $is_spark4_plus) {
-                    Ok(Some(cast_value)) => cast_array.append_value(cast_value),
-                    Ok(None) => cast_array.append_null(),
-                    Err(e) => {
-                        if $eval_mode == EvalMode::Ansi {
-                            // Replace the error value with the raw (untrimmed) input to match
-                            // Spark's behavior: Spark reports the original string in CAST_INVALID_INPUT.
-                            let raw_value = $array.value(i).to_string();
-                            let e = match e {
-                                SparkError::InvalidInputInCastToDatetime {
-                                    from_type,
-                                    to_type,
-                                    ..
-                                } => SparkError::InvalidInputInCastToDatetime {
-                                    value: raw_value,
-                                    from_type,
-                                    to_type,
-                                },
-                                other => other,
-                            };
-                            cast_err = Some(e);
-                            break;
-                        }
-                        cast_array.append_null()
-                    }
-                }
-            }
-        }
-        if let Some(e) = cast_err {
-            Err(e)
-        } else {
-            Ok(Arc::new(cast_array.finish()) as ArrayRef)
-        }
-    }};
-}
-
-macro_rules! cast_utf8_to_timestamp_ntz {
-    ($array:expr, $eval_mode:expr, $cast_method:ident, $allow_tz:expr, $is_spark4_plus:expr) => {{
-        let len = $array.len();
-        let mut cast_array = PrimitiveArray::<TimestampMicrosecondType>::builder(len);
-        let mut cast_err: Option<SparkError> = None;
-        for i in 0..len {
-            if $array.is_null(i) {
-                cast_array.append_null()
-            } else {
-                match $cast_method(
-                    $array.value(i).trim_end(),
-                    $eval_mode,
-                    $allow_tz,
-                    $is_spark4_plus,
-                ) {
+                // trim_end only: leading spaces affect parsing (e.g. " T2" -> null, "T2" -> valid)
+                match $cast_method($array.value(i).trim_end(), $eval_mode $(, $extra_arg)*) {
                     Ok(Some(cast_value)) => cast_array.append_value(cast_value),
                     Ok(None) => cast_array.append_null(),
                     Err(e) => {
@@ -160,6 +108,7 @@ macro_rules! cast_utf8_to_int {
     }};
 }
 
+#[derive(Clone)]
 struct TimeStampInfo {
     year: i32,
     month: u32,
@@ -801,10 +750,10 @@ pub(crate) fn cast_string_to_timestamp(
             cast_utf8_to_timestamp!(
                 string_array,
                 eval_mode,
-                TimestampMicrosecondType,
+                PrimitiveArray::<TimestampMicrosecondType>::builder(string_array.len())
+                    .with_timezone(to_tz),
                 timestamp_parser,
                 tz,
-                to_tz,
                 is_spark4_plus
             )?
         }
@@ -824,9 +773,10 @@ pub(crate) fn cast_string_to_timestamp_ntz(
         .downcast_ref::<GenericStringArray<i32>>()
         .expect("Expected a string array");
 
-    let cast_array: ArrayRef = cast_utf8_to_timestamp_ntz!(
+    let cast_array: ArrayRef = cast_utf8_to_timestamp!(
         string_array,
         eval_mode,
+        PrimitiveArray::<TimestampMicrosecondType>::builder(string_array.len()),
         timestamp_ntz_parser,
         allow_time_zone,
         is_spark4_plus
@@ -1106,12 +1056,10 @@ pub fn invalid_value(value: &str, from_type: &str, to_type: &str) -> SparkError 
     }
 }
 
-fn get_timestamp_values<T: TimeZone>(
+fn parse_to_timestamp_info(
     value: &str,
     timestamp_type: &str,
-    tz: &T,
-) -> SparkResult<Option<i64>> {
-    // Handle negative year: strip leading '-' and remember the sign.
+) -> SparkResult<Option<TimeStampInfo>> {
     let (sign, date_part) = if let Some(stripped) = value.strip_prefix('-') {
         (-1i32, stripped)
     } else {
@@ -1139,8 +1087,6 @@ fn get_timestamp_values<T: TimeZone>(
     let minute = parts.next().map_or(0, |m| m.parse::<u32>().unwrap_or(0));
     let second = parts.next().map_or(0, |s| s.parse::<u32>().unwrap_or(0));
     let microsecond = parts.next().map_or(0, |ms| {
-        // Truncate to at most 6 digits then scale to fill the microsecond field.
-        // E.g. ".123" -> 123 * 10^3 = 123_000 µs; ".1234567" -> truncated to 123_456 µs.
         let ms = &ms[..ms.len().min(6)];
         let n = ms.len();
         ms.parse::<u32>().unwrap_or(0) * 10u32.pow((6 - n) as u32)
@@ -1189,7 +1135,18 @@ fn get_timestamp_values<T: TimeZone>(
             })
         }
     };
-    parse_timestamp_to_micros(timestamp_info, tz)
+    Ok(Some(timestamp_info.to_owned()))
+}
+
+fn get_timestamp_values<T: TimeZone>(
+    value: &str,
+    timestamp_type: &str,
+    tz: &T,
+) -> SparkResult<Option<i64>> {
+    match parse_to_timestamp_info(value, timestamp_type)? {
+        Some(info) => parse_timestamp_to_micros(&info, tz),
+        None => Ok(None),
+    }
 }
 
 /// Howard Hinnant's algorithm: proleptic Gregorian days since 1970-01-01 for any i64 year.
@@ -1722,81 +1679,6 @@ fn timestamp_parser_with_tz<T: TimeZone>(
     Ok(timestamp)
 }
 
-fn get_timestamp_ntz_values(value: &str, timestamp_type: &str) -> SparkResult<Option<i64>> {
-    let (sign, date_part) = if let Some(stripped) = value.strip_prefix('-') {
-        (-1i32, stripped)
-    } else {
-        (1i32, value)
-    };
-    let mut parts = date_part.split(['T', ' ', '-', ':', '.']);
-    let year = sign
-        * parts
-            .next()
-            .unwrap_or("")
-            .parse::<i32>()
-            .unwrap_or_default();
-
-    if !(-290309..=294248).contains(&year) {
-        return Ok(None);
-    }
-
-    let month = parts.next().map_or(1, |m| m.parse::<u32>().unwrap_or(1));
-    let day = parts.next().map_or(1, |d| d.parse::<u32>().unwrap_or(1));
-    let hour = parts.next().map_or(0, |h| h.parse::<u32>().unwrap_or(0));
-    let minute = parts.next().map_or(0, |m| m.parse::<u32>().unwrap_or(0));
-    let second = parts.next().map_or(0, |s| s.parse::<u32>().unwrap_or(0));
-    let microsecond = parts.next().map_or(0, |ms| {
-        let ms = &ms[..ms.len().min(6)];
-        let n = ms.len();
-        ms.parse::<u32>().unwrap_or(0) * 10u32.pow((6 - n) as u32)
-    });
-
-    let mut timestamp_info = TimeStampInfo::default();
-
-    let timestamp_info = match timestamp_type {
-        "year" => timestamp_info.with_year(year),
-        "month" => timestamp_info.with_year(year).with_month(month),
-        "day" => timestamp_info
-            .with_year(year)
-            .with_month(month)
-            .with_day(day),
-        "hour" => timestamp_info
-            .with_year(year)
-            .with_month(month)
-            .with_day(day)
-            .with_hour(hour),
-        "minute" => timestamp_info
-            .with_year(year)
-            .with_month(month)
-            .with_day(day)
-            .with_hour(hour)
-            .with_minute(minute),
-        "second" => timestamp_info
-            .with_year(year)
-            .with_month(month)
-            .with_day(day)
-            .with_hour(hour)
-            .with_minute(minute)
-            .with_second(second),
-        "microsecond" => timestamp_info
-            .with_year(year)
-            .with_month(month)
-            .with_day(day)
-            .with_hour(hour)
-            .with_minute(minute)
-            .with_second(second)
-            .with_microsecond(microsecond),
-        _ => {
-            return Err(SparkError::InvalidInputInCastToDatetime {
-                value: value.to_string(),
-                from_type: "STRING".to_string(),
-                to_type: "TIMESTAMP_NTZ".to_string(),
-            })
-        }
-    };
-    local_datetime_to_micros(timestamp_info)
-}
-
 fn timestamp_ntz_parser(
     value: &str,
     eval_mode: EvalMode,
@@ -1879,65 +1761,34 @@ fn timestamp_ntz_parser(
 }
 
 fn timestamp_ntz_parser_inner(value: &str, eval_mode: EvalMode) -> SparkResult<Option<i64>> {
-    type NtzParsePattern = (&'static Regex, fn(&str) -> SparkResult<Option<i64>>);
-
-    fn parse_ntz_year(value: &str) -> SparkResult<Option<i64>> {
-        get_timestamp_ntz_values(value, "year")
-    }
-    fn parse_ntz_month(value: &str) -> SparkResult<Option<i64>> {
-        get_timestamp_ntz_values(value, "month")
-    }
-    fn parse_ntz_day(value: &str) -> SparkResult<Option<i64>> {
-        get_timestamp_ntz_values(value, "day")
-    }
-    fn parse_ntz_hour(value: &str) -> SparkResult<Option<i64>> {
-        get_timestamp_ntz_values(value, "hour")
-    }
-    fn parse_ntz_minute(value: &str) -> SparkResult<Option<i64>> {
-        get_timestamp_ntz_values(value, "minute")
-    }
-    fn parse_ntz_second(value: &str) -> SparkResult<Option<i64>> {
-        get_timestamp_ntz_values(value, "second")
-    }
-    fn parse_ntz_microsecond(value: &str) -> SparkResult<Option<i64>> {
-        get_timestamp_ntz_values(value, "microsecond")
-    }
-
-    let patterns: &[NtzParsePattern] = &[
-        (
-            &RE_YEAR,
-            parse_ntz_year as fn(&str) -> SparkResult<Option<i64>>,
-        ),
-        (&RE_MONTH, parse_ntz_month),
-        (&RE_DAY, parse_ntz_day),
-        (&RE_HOUR, parse_ntz_hour),
-        (&RE_MINUTE, parse_ntz_minute),
-        (&RE_SECOND, parse_ntz_second),
-        (&RE_MICROSECOND, parse_ntz_microsecond),
+    let patterns: &[(&Regex, &str)] = &[
+        (&RE_YEAR, "year"),
+        (&RE_MONTH, "month"),
+        (&RE_DAY, "day"),
+        (&RE_HOUR, "hour"),
+        (&RE_MINUTE, "minute"),
+        (&RE_SECOND, "second"),
+        (&RE_MICROSECOND, "microsecond"),
     ];
 
-    let mut timestamp = None;
-
-    for (pattern, parse_func) in patterns {
-        if pattern.is_match(value) {
-            timestamp = parse_func(value)?;
-            break;
+    for (re, ts_type) in patterns {
+        if re.is_match(value) {
+            return match parse_to_timestamp_info(value, ts_type)? {
+                Some(info) => local_datetime_to_micros(&info),
+                None => Ok(None),
+            };
         }
     }
 
-    if timestamp.is_none() {
-        return if eval_mode == EvalMode::Ansi {
-            Err(SparkError::InvalidInputInCastToDatetime {
-                value: value.to_string(),
-                from_type: "STRING".to_string(),
-                to_type: "TIMESTAMP_NTZ".to_string(),
-            })
-        } else {
-            Ok(None)
-        };
+    if eval_mode == EvalMode::Ansi {
+        Err(SparkError::InvalidInputInCastToDatetime {
+            value: value.to_string(),
+            from_type: "STRING".to_string(),
+            to_type: "TIMESTAMP_NTZ".to_string(),
+        })
+    } else {
+        Ok(None)
     }
-
-    Ok(timestamp)
 }
 
 fn parse_str_to_time_only_timestamp<T: TimeZone>(value: &str, tz: &T) -> SparkResult<Option<i64>> {
@@ -2151,10 +2002,10 @@ mod tests {
         let result = cast_utf8_to_timestamp!(
             &string_array,
             eval_mode,
-            TimestampMicrosecondType,
+            PrimitiveArray::<TimestampMicrosecondType>::builder(string_array.len())
+                .with_timezone("UTC"),
             timestamp_parser,
             tz,
-            "UTC",
             true
         )
         .unwrap();
@@ -2186,10 +2037,10 @@ mod tests {
         let result = cast_utf8_to_timestamp!(
             &string_array,
             eval_mode,
-            TimestampMicrosecondType,
+            PrimitiveArray::<TimestampMicrosecondType>::builder(string_array.len())
+                .with_timezone("UTC"),
             timestamp_parser,
             tz,
-            "UTC",
             true
         );
         assert!(
@@ -2215,10 +2066,10 @@ mod tests {
         let result = cast_utf8_to_timestamp!(
             &string_array,
             eval_mode,
-            TimestampMicrosecondType,
+            PrimitiveArray::<TimestampMicrosecondType>::builder(string_array.len())
+                .with_timezone("UTC"),
             timestamp_parser,
             tz,
-            "UTC",
             true
         );
         match result {
