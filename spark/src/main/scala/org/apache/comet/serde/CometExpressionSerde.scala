@@ -38,14 +38,40 @@ trait CometExpressionSerde[T <: Expression] {
   def getExprConfigName(expr: T): String = expr.getClass.getSimpleName
 
   /**
+   * Declarative support conditions for this expression. First match wins.
+   *
+   * Prefer declaring `conditions` over overriding [[getSupportLevel]]: the list is enumerable for
+   * documentation and tests, and each condition carries a stable id and static description.
+   */
+  def conditions: Seq[SupportCondition[T]] = Seq.empty
+
+  /**
    * Determine the support level of the expression based on its attributes.
+   *
+   * The default implementation is derived from [[conditions]]. Subclasses may still override this
+   * during migration, but new serdes should prefer declaring `conditions`.
    *
    * @param expr
    *   The Spark expression.
    * @return
    *   Support level (Compatible, Incompatible, or Unsupported).
    */
-  def getSupportLevel(expr: T): SupportLevel = Compatible(None)
+  def getSupportLevel(expr: T): SupportLevel = {
+    if (conditions.isEmpty) {
+      Compatible(None)
+    } else {
+      conditions.find(_.fires(expr)) match {
+        case Some(c) =>
+          val msg = Some(c.message(expr)).filter(_.nonEmpty)
+          c.level match {
+            case SupportLevelKind.Compatible => Compatible(msg)
+            case SupportLevelKind.Incompatible => Incompatible(msg)
+            case SupportLevelKind.Unsupported => Unsupported(msg)
+          }
+        case None => Compatible(None)
+      }
+    }
+  }
 
   /**
    * Convert a Spark expression into a protocol buffer representation that can be passed into
