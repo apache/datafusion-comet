@@ -17,9 +17,7 @@ specific language governing permissions and limitations
 under the License.
 -->
 
-# Scan Compatibility
-
-## Parquet
+# Parquet Compatibility
 
 Comet currently has two distinct implementations of the Parquet scan operator.
 
@@ -34,7 +32,7 @@ cannot be converted (e.g., due to unsupported features). Most users should not n
 it is possible to force Comet to use a particular implementation for all scan operations by setting this
 configuration property to one of the following implementations. For example: `--conf spark.comet.scan.impl=native_datafusion`.
 
-### Shared Limitations
+## Shared Limitations
 
 The following features are not supported by either scan implementation, and Comet will fall back to Spark in these scenarios:
 
@@ -59,7 +57,7 @@ The following shared limitation may produce incorrect results without falling ba
   written using the Proleptic Gregorian calendar. This may produce incorrect results for dates before
   October 15, 1582.
 
-### `native_datafusion` Limitations
+## `native_datafusion` Limitations
 
 The `native_datafusion` scan has some additional limitations, mostly related to Parquet metadata. All of these
 cause Comet to fall back to Spark (including when using `auto` mode). Note that the `native_datafusion` scan
@@ -74,7 +72,7 @@ requires `spark.comet.exec.enabled=true` because the scan node must be wrapped b
   are detected at read time and raise a `SparkRuntimeException` with error class `_LEGACY_ERROR_TEMP_2093`,
   matching Spark's behavior.
 
-### `native_iceberg_compat` Limitations
+## `native_iceberg_compat` Limitations
 
 The `native_iceberg_compat` scan has the following additional limitation that may produce incorrect results
 without falling back to Spark:
