@@ -19,6 +19,7 @@
 
 package org.apache.comet.serde
 
+import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.types._
 
 sealed trait SupportLevel
@@ -56,4 +57,96 @@ object SupportLevel {
       containsFloatingPoint(keyType) || containsFloatingPoint(valueType)
     case _ => false
   }
+}
+
+/** The kind of support outcome produced by a [[SupportCondition]]. */
+sealed trait SupportLevelKind
+object SupportLevelKind {
+  case object Compatible extends SupportLevelKind
+  case object Incompatible extends SupportLevelKind
+  case object Unsupported extends SupportLevelKind
+}
+
+/**
+ * A single support condition: a predicate that, when matched against an expression, yields a
+ * [[SupportLevel]] with an optional message.
+ *
+ * Conditions are declared statically per serde so that they can be enumerated at build time for
+ * documentation and tests. They evaluate at runtime by calling `fires(expr)`.
+ *
+ * Ordering within a serde's `conditions` list is significant: the first condition whose `fires`
+ * predicate matches determines the outcome. If no condition matches, the expression is treated as
+ * `Compatible(None)`.
+ */
+trait SupportCondition[-T <: Expression] {
+
+  /** Stable, machine-readable id, unique per serde. Used in docs and tests. */
+  def id: String
+
+  /** Static prose describing when this fires. For example, "Child is BinaryType". */
+  def description: String
+
+  /** The outcome if this condition matches. */
+  def level: SupportLevelKind
+
+  /** Runtime predicate. May consult `CometConf` or other dynamic state. */
+  def fires(expr: T): Boolean
+
+  /** Runtime message, usually constant. May interpolate from the expression. */
+  def message(expr: T): String
+
+  /** Optional issue links for doc output. */
+  def issues: Seq[String] = Nil
+}
+
+object SupportCondition {
+
+  private final case class Impl[T <: Expression](
+      id: String,
+      description: String,
+      level: SupportLevelKind,
+      firesFn: T => Boolean,
+      messageFn: T => String,
+      override val issues: Seq[String])
+      extends SupportCondition[T] {
+    override def fires(expr: T): Boolean = firesFn(expr)
+    override def message(expr: T): String = messageFn(expr)
+  }
+
+  /** Generic builder. Use this when `message` depends on the expression. */
+  def apply[T <: Expression](
+      id: String,
+      description: String,
+      level: SupportLevelKind,
+      fires: T => Boolean,
+      message: T => String,
+      issues: Seq[String] = Nil): SupportCondition[T] =
+    Impl(id, description, level, fires, message, issues)
+
+  /** Convenience: unsupported with a static message. */
+  def unsupported[T <: Expression](
+      id: String,
+      description: String,
+      fires: T => Boolean,
+      message: String,
+      issues: Seq[String] = Nil): SupportCondition[T] =
+    Impl(id, description, SupportLevelKind.Unsupported, fires, (_: T) => message, issues)
+
+  /** Convenience: incompatible with a static message. */
+  def incompatible[T <: Expression](
+      id: String,
+      description: String,
+      fires: T => Boolean,
+      message: String,
+      issues: Seq[String] = Nil): SupportCondition[T] =
+    Impl(id, description, SupportLevelKind.Incompatible, fires, (_: T) => message, issues)
+
+  /** Convenience: compatible-with-note (a caveat on an otherwise supported path). */
+  def compatibleWithNote[T <: Expression](
+      id: String,
+      description: String,
+      fires: T => Boolean,
+      message: String,
+      issues: Seq[String] = Nil): SupportCondition[T] =
+    Impl(id, description, SupportLevelKind.Compatible, fires, (_: T) => message, issues)
 }
