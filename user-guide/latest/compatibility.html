@@ -508,9 +508,6 @@ When <code class="docutils literal notranslate"><span class="pre">spark.comet.ex
 <section id="array-expressions">
 <h3>Array Expressions<a class="headerlink" href="#array-expressions" title="Link to this heading">#</a></h3>
 <ul class="simple">
-<li><p><strong>ArraysOverlap</strong>: Inconsistent behavior when arrays contain NULL values.
-<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3645">#3645</a>,
-<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2036">#2036</a></p></li>
 <li><p><strong>ArrayUnion</strong>: Sorts input arrays before performing the union, while Spark preserves the order of the first array
 and appends unique elements from the second.
 <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3644">#3644</a></p></li>
@@ -635,6 +632,7 @@ as <code class="docutils literal notranslate"><span class="pre">&quot;1.23E+4&qu
 <th class="head"><p>short</p></th>
 <th class="head"><p>string</p></th>
 <th class="head"><p>timestamp</p></th>
+<th class="head"><p>timestamp_ntz</p></th>
 </tr>
 </thead>
 <tbody>
@@ -651,6 +649,7 @@ as <code class="docutils literal notranslate"><span class="pre">&quot;1.23E+4&qu
 <td><p>N/A</p></td>
 <td><p>C</p></td>
 <td><p>N/A</p></td>
+<td><p>N/A</p></td>
 </tr>
 <tr class="row-odd"><td><p>boolean</p></td>
 <td><p>N/A</p></td>
@@ -665,6 +664,7 @@ as <code class="docutils literal notranslate"><span class="pre">&quot;1.23E+4&qu
 <td><p>C</p></td>
 <td><p>C</p></td>
 <td><p>C</p></td>
+<td><p>N/A</p></td>
 </tr>
 <tr class="row-even"><td><p>byte</p></td>
 <td><p>C</p></td>
@@ -679,12 +679,14 @@ as <code class="docutils literal notranslate"><span class="pre">&quot;1.23E+4&qu
 <td><p>C</p></td>
 <td><p>C</p></td>
 <td><p>C</p></td>
+<td><p>N/A</p></td>
 </tr>
 <tr class="row-odd"><td><p>date</p></td>
 <td><p>N/A</p></td>
 <td><p>C</p></td>
 <td><p>C</p></td>
 <td><p>-</p></td>
+<td><p>C</p></td>
 <td><p>C</p></td>
 <td><p>C</p></td>
 <td><p>C</p></td>
@@ -707,6 +709,7 @@ as <code class="docutils literal notranslate"><span class="pre">&quot;1.23E+4&qu
 <td><p>C</p></td>
 <td><p>C</p></td>
 <td><p>C</p></td>
+<td><p>N/A</p></td>
 </tr>
 <tr class="row-odd"><td><p>double</p></td>
 <td><p>N/A</p></td>
@@ -721,6 +724,7 @@ as <code class="docutils literal notranslate"><span class="pre">&quot;1.23E+4&qu
 <td><p>C</p></td>
 <td><p>C</p></td>
 <td><p>C</p></td>
+<td><p>N/A</p></td>
 </tr>
 <tr class="row-even"><td><p>float</p></td>
 <td><p>N/A</p></td>
@@ -735,6 +739,7 @@ as <code class="docutils literal notranslate"><span class="pre">&quot;1.23E+4&qu
 <td><p>C</p></td>
 <td><p>C</p></td>
 <td><p>C</p></td>
+<td><p>N/A</p></td>
 </tr>
 <tr class="row-odd"><td><p>integer</p></td>
 <td><p>C</p></td>
@@ -749,6 +754,7 @@ as <code class="docutils literal notranslate"><span class="pre">&quot;1.23E+4&qu
 <td><p>C</p></td>
 <td><p>C</p></td>
 <td><p>C</p></td>
+<td><p>N/A</p></td>
 </tr>
 <tr class="row-even"><td><p>long</p></td>
 <td><p>C</p></td>
@@ -763,6 +769,7 @@ as <code class="docutils literal notranslate"><span class="pre">&quot;1.23E+4&qu
 <td><p>C</p></td>
 <td><p>C</p></td>
 <td><p>C</p></td>
+<td><p>N/A</p></td>
 </tr>
 <tr class="row-odd"><td><p>short</p></td>
 <td><p>C</p></td>
@@ -777,6 +784,7 @@ as <code class="docutils literal notranslate"><span class="pre">&quot;1.23E+4&qu
 <td><p>-</p></td>
 <td><p>C</p></td>
 <td><p>C</p></td>
+<td><p>N/A</p></td>
 </tr>
 <tr class="row-even"><td><p>string</p></td>
 <td><p>C</p></td>
@@ -791,6 +799,7 @@ as <code class="docutils literal notranslate"><span class="pre">&quot;1.23E+4&qu
 <td><p>C</p></td>
 <td><p>-</p></td>
 <td><p>C</p></td>
+<td><p>I</p></td>
 </tr>
 <tr class="row-odd"><td><p>timestamp</p></td>
 <td><p>N/A</p></td>
@@ -805,6 +814,22 @@ as <code class="docutils literal notranslate"><span class="pre">&quot;1.23E+4&qu
 <td><p>U</p></td>
 <td><p>C</p></td>
 <td><p>-</p></td>
+<td><p>C</p></td>
+</tr>
+<tr class="row-even"><td><p>timestamp_ntz</p></td>
+<td><p>N/A</p></td>
+<td><p>N/A</p></td>
+<td><p>N/A</p></td>
+<td><p>C</p></td>
+<td><p>N/A</p></td>
+<td><p>N/A</p></td>
+<td><p>N/A</p></td>
+<td><p>N/A</p></td>
+<td><p>N/A</p></td>
+<td><p>N/A</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>-</p></td>
 </tr>
 </tbody>
 </table>
@@ -816,6 +841,7 @@ as <code class="docutils literal notranslate"><span class="pre">&quot;1.23E+4&qu
 <li><p><strong>float -&gt; decimal</strong>: There can be rounding differences</p></li>
 <li><p><strong>float -&gt; string</strong>: There can be differences in precision. For example, the input “1.4E-45” will produce 1.0E-45 instead of 1.4E-45</p></li>
 <li><p><strong>string -&gt; date</strong>: Only supports years between 262143 BC and 262142 AD</p></li>
+<li><p><strong>string -&gt; timestamp_ntz</strong>: Cast from String to TimestampNTZ is not yet supported</p></li>
 </ul>
 <!-- prettier-ignore-end -->
 <!--END:CAST_LEGACY_TABLE-->
@@ -839,6 +865,7 @@ as <code class="docutils literal notranslate"><span class="pre">&quot;1.23E+4&qu
 <th class="head"><p>short</p></th>
 <th class="head"><p>string</p></th>
 <th class="head"><p>timestamp</p></th>
+<th class="head"><p>timestamp_ntz</p></th>
 </tr>
 </thead>
 <tbody>
@@ -855,6 +882,7 @@ as <code class="docutils literal notranslate"><span class="pre">&quot;1.23E+4&qu
 <td><p>N/A</p></td>
 <td><p>C</p></td>
 <td><p>N/A</p></td>
+<td><p>N/A</p></td>
 </tr>
 <tr class="row-odd"><td><p>boolean</p></td>
 <td><p>N/A</p></td>
@@ -869,6 +897,7 @@ as <code class="docutils literal notranslate"><span class="pre">&quot;1.23E+4&qu
 <td><p>C</p></td>
 <td><p>C</p></td>
 <td><p>U</p></td>
+<td><p>N/A</p></td>
 </tr>
 <tr class="row-even"><td><p>byte</p></td>
 <td><p>U</p></td>
@@ -883,6 +912,7 @@ as <code class="docutils literal notranslate"><span class="pre">&quot;1.23E+4&qu
 <td><p>C</p></td>
 <td><p>C</p></td>
 <td><p>C</p></td>
+<td><p>N/A</p></td>
 </tr>
 <tr class="row-odd"><td><p>date</p></td>
 <td><p>N/A</p></td>
@@ -895,6 +925,7 @@ as <code class="docutils literal notranslate"><span class="pre">&quot;1.23E+4&qu
 <td><p>U</p></td>
 <td><p>U</p></td>
 <td><p>U</p></td>
+<td><p>C</p></td>
 <td><p>C</p></td>
 <td><p>C</p></td>
 </tr>
@@ -911,6 +942,7 @@ as <code class="docutils literal notranslate"><span class="pre">&quot;1.23E+4&qu
 <td><p>C</p></td>
 <td><p>C</p></td>
 <td><p>C</p></td>
+<td><p>N/A</p></td>
 </tr>
 <tr class="row-odd"><td><p>double</p></td>
 <td><p>N/A</p></td>
@@ -925,6 +957,7 @@ as <code class="docutils literal notranslate"><span class="pre">&quot;1.23E+4&qu
 <td><p>C</p></td>
 <td><p>C</p></td>
 <td><p>C</p></td>
+<td><p>N/A</p></td>
 </tr>
 <tr class="row-even"><td><p>float</p></td>
 <td><p>N/A</p></td>
@@ -939,6 +972,7 @@ as <code class="docutils literal notranslate"><span class="pre">&quot;1.23E+4&qu
 <td><p>C</p></td>
 <td><p>C</p></td>
 <td><p>C</p></td>
+<td><p>N/A</p></td>
 </tr>
 <tr class="row-odd"><td><p>integer</p></td>
 <td><p>U</p></td>
@@ -953,6 +987,7 @@ as <code class="docutils literal notranslate"><span class="pre">&quot;1.23E+4&qu
 <td><p>C</p></td>
 <td><p>C</p></td>
 <td><p>C</p></td>
+<td><p>N/A</p></td>
 </tr>
 <tr class="row-even"><td><p>long</p></td>
 <td><p>U</p></td>
@@ -967,6 +1002,7 @@ as <code class="docutils literal notranslate"><span class="pre">&quot;1.23E+4&qu
 <td><p>C</p></td>
 <td><p>C</p></td>
 <td><p>C</p></td>
+<td><p>N/A</p></td>
 </tr>
 <tr class="row-odd"><td><p>short</p></td>
 <td><p>U</p></td>
@@ -981,6 +1017,7 @@ as <code class="docutils literal notranslate"><span class="pre">&quot;1.23E+4&qu
 <td><p>-</p></td>
 <td><p>C</p></td>
 <td><p>C</p></td>
+<td><p>N/A</p></td>
 </tr>
 <tr class="row-even"><td><p>string</p></td>
 <td><p>C</p></td>
@@ -995,6 +1032,7 @@ as <code class="docutils literal notranslate"><span class="pre">&quot;1.23E+4&qu
 <td><p>C</p></td>
 <td><p>-</p></td>
 <td><p>C</p></td>
+<td><p>I</p></td>
 </tr>
 <tr class="row-odd"><td><p>timestamp</p></td>
 <td><p>N/A</p></td>
@@ -1009,6 +1047,22 @@ as <code class="docutils literal notranslate"><span class="pre">&quot;1.23E+4&qu
 <td><p>U</p></td>
 <td><p>C</p></td>
 <td><p>-</p></td>
+<td><p>C</p></td>
+</tr>
+<tr class="row-even"><td><p>timestamp_ntz</p></td>
+<td><p>N/A</p></td>
+<td><p>N/A</p></td>
+<td><p>N/A</p></td>
+<td><p>C</p></td>
+<td><p>N/A</p></td>
+<td><p>N/A</p></td>
+<td><p>N/A</p></td>
+<td><p>N/A</p></td>
+<td><p>N/A</p></td>
+<td><p>N/A</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>-</p></td>
 </tr>
 </tbody>
 </table>
@@ -1020,6 +1074,7 @@ as <code class="docutils literal notranslate"><span class="pre">&quot;1.23E+4&qu
 <li><p><strong>float -&gt; decimal</strong>: There can be rounding differences</p></li>
 <li><p><strong>float -&gt; string</strong>: There can be differences in precision. For example, the input “1.4E-45” will produce 1.0E-45 instead of 1.4E-45</p></li>
 <li><p><strong>string -&gt; date</strong>: Only supports years between 262143 BC and 262142 AD</p></li>
+<li><p><strong>string -&gt; timestamp_ntz</strong>: Cast from String to TimestampNTZ is not yet supported</p></li>
 </ul>
 <!-- prettier-ignore-end -->
 <!--END:CAST_TRY_TABLE-->
@@ -1043,6 +1098,7 @@ as <code class="docutils literal notranslate"><span class="pre">&quot;1.23E+4&qu
 <th class="head"><p>short</p></th>
 <th class="head"><p>string</p></th>
 <th class="head"><p>timestamp</p></th>
+<th class="head"><p>timestamp_ntz</p></th>
 </tr>
 </thead>
 <tbody>
@@ -1059,6 +1115,7 @@ as <code class="docutils literal notranslate"><span class="pre">&quot;1.23E+4&qu
 <td><p>N/A</p></td>
 <td><p>C</p></td>
 <td><p>N/A</p></td>
+<td><p>N/A</p></td>
 </tr>
 <tr class="row-odd"><td><p>boolean</p></td>
 <td><p>N/A</p></td>
@@ -1073,6 +1130,7 @@ as <code class="docutils literal notranslate"><span class="pre">&quot;1.23E+4&qu
 <td><p>C</p></td>
 <td><p>C</p></td>
 <td><p>U</p></td>
+<td><p>N/A</p></td>
 </tr>
 <tr class="row-even"><td><p>byte</p></td>
 <td><p>U</p></td>
@@ -1087,6 +1145,7 @@ as <code class="docutils literal notranslate"><span class="pre">&quot;1.23E+4&qu
 <td><p>C</p></td>
 <td><p>C</p></td>
 <td><p>C</p></td>
+<td><p>N/A</p></td>
 </tr>
 <tr class="row-odd"><td><p>date</p></td>
 <td><p>N/A</p></td>
@@ -1099,6 +1158,7 @@ as <code class="docutils literal notranslate"><span class="pre">&quot;1.23E+4&qu
 <td><p>U</p></td>
 <td><p>U</p></td>
 <td><p>U</p></td>
+<td><p>C</p></td>
 <td><p>C</p></td>
 <td><p>C</p></td>
 </tr>
@@ -1115,6 +1175,7 @@ as <code class="docutils literal notranslate"><span class="pre">&quot;1.23E+4&qu
 <td><p>C</p></td>
 <td><p>C</p></td>
 <td><p>C</p></td>
+<td><p>N/A</p></td>
 </tr>
 <tr class="row-odd"><td><p>double</p></td>
 <td><p>N/A</p></td>
@@ -1129,6 +1190,7 @@ as <code class="docutils literal notranslate"><span class="pre">&quot;1.23E+4&qu
 <td><p>C</p></td>
 <td><p>C</p></td>
 <td><p>C</p></td>
+<td><p>N/A</p></td>
 </tr>
 <tr class="row-even"><td><p>float</p></td>
 <td><p>N/A</p></td>
@@ -1143,6 +1205,7 @@ as <code class="docutils literal notranslate"><span class="pre">&quot;1.23E+4&qu
 <td><p>C</p></td>
 <td><p>C</p></td>
 <td><p>C</p></td>
+<td><p>N/A</p></td>
 </tr>
 <tr class="row-odd"><td><p>integer</p></td>
 <td><p>U</p></td>
@@ -1157,6 +1220,7 @@ as <code class="docutils literal notranslate"><span class="pre">&quot;1.23E+4&qu
 <td><p>C</p></td>
 <td><p>C</p></td>
 <td><p>C</p></td>
+<td><p>N/A</p></td>
 </tr>
 <tr class="row-even"><td><p>long</p></td>
 <td><p>U</p></td>
@@ -1171,6 +1235,7 @@ as <code class="docutils literal notranslate"><span class="pre">&quot;1.23E+4&qu
 <td><p>C</p></td>
 <td><p>C</p></td>
 <td><p>C</p></td>
+<td><p>N/A</p></td>
 </tr>
 <tr class="row-odd"><td><p>short</p></td>
 <td><p>U</p></td>
@@ -1185,6 +1250,7 @@ as <code class="docutils literal notranslate"><span class="pre">&quot;1.23E+4&qu
 <td><p>-</p></td>
 <td><p>C</p></td>
 <td><p>C</p></td>
+<td><p>N/A</p></td>
 </tr>
 <tr class="row-even"><td><p>string</p></td>
 <td><p>C</p></td>
@@ -1199,6 +1265,7 @@ as <code class="docutils literal notranslate"><span class="pre">&quot;1.23E+4&qu
 <td><p>C</p></td>
 <td><p>-</p></td>
 <td><p>C</p></td>
+<td><p>I</p></td>
 </tr>
 <tr class="row-odd"><td><p>timestamp</p></td>
 <td><p>N/A</p></td>
@@ -1213,6 +1280,22 @@ as <code class="docutils literal notranslate"><span class="pre">&quot;1.23E+4&qu
 <td><p>U</p></td>
 <td><p>C</p></td>
 <td><p>-</p></td>
+<td><p>C</p></td>
+</tr>
+<tr class="row-even"><td><p>timestamp_ntz</p></td>
+<td><p>N/A</p></td>
+<td><p>N/A</p></td>
+<td><p>N/A</p></td>
+<td><p>C</p></td>
+<td><p>N/A</p></td>
+<td><p>N/A</p></td>
+<td><p>N/A</p></td>
+<td><p>N/A</p></td>
+<td><p>N/A</p></td>
+<td><p>N/A</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>-</p></td>
 </tr>
 </tbody>
 </table>
@@ -1224,6 +1307,7 @@ as <code class="docutils literal notranslate"><span class="pre">&quot;1.23E+4&qu
 <li><p><strong>float -&gt; decimal</strong>: There can be rounding differences</p></li>
 <li><p><strong>float -&gt; string</strong>: There can be differences in precision. For example, the input “1.4E-45” will produce 1.0E-45 instead of 1.4E-45</p></li>
 <li><p><strong>string -&gt; date</strong>: Only supports years between 262143 BC and 262142 AD</p></li>
+<li><p><strong>string -&gt; timestamp_ntz</strong>: Cast from String to TimestampNTZ is not yet supported</p></li>
 </ul>
 <!-- prettier-ignore-end -->
 <!--END:CAST_ANSI_TABLE-->

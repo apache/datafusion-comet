@@ -66,9 +66,6 @@ the [Comet Supported Expressions Guide](expressions.md) for more information on 
 
 ### Array Expressions
 
-- **ArraysOverlap**: Inconsistent behavior when arrays contain NULL values.
-  [#3645](https://github.com/apache/datafusion-comet/issues/3645),
-  [#2036](https://github.com/apache/datafusion-comet/issues/2036)
 - **ArrayUnion**: Sorts input arrays before performing the union, while Spark preserves the order of the first array
   and appends unique elements from the second.
   [#3644](https://github.com/apache/datafusion-comet/issues/3644)
@@ -176,20 +173,21 @@ as `"1.23E+4"`).
 
 <!--BEGIN:CAST_LEGACY_TABLE-->
 <!-- prettier-ignore-start -->
-| | binary | boolean | byte | date | decimal | double | float | integer | long | short | string | timestamp |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| binary | - | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | C | N/A |
-| boolean | N/A | - | C | N/A | C | C | C | C | C | C | C | C |
-| byte | C | C | - | N/A | C | C | C | C | C | C | C | C |
-| date | N/A | C | C | - | C | C | C | C | C | C | C | C |
-| decimal | N/A | C | C | N/A | - | C | C | C | C | C | C | C |
-| double | N/A | C | C | N/A | I | - | C | C | C | C | C | C |
-| float | N/A | C | C | N/A | I | C | - | C | C | C | C | C |
-| integer | C | C | C | N/A | C | C | C | - | C | C | C | C |
-| long | C | C | C | N/A | C | C | C | C | - | C | C | C |
-| short | C | C | C | N/A | C | C | C | C | C | - | C | C |
-| string | C | C | C | C | C | C | C | C | C | C | - | C |
-| timestamp | N/A | U | U | C | U | U | U | U | C | U | C | - |
+| | binary | boolean | byte | date | decimal | double | float | integer | long | short | string | timestamp | timestamp_ntz |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| binary | - | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | C | N/A | N/A |
+| boolean | N/A | - | C | N/A | C | C | C | C | C | C | C | C | N/A |
+| byte | C | C | - | N/A | C | C | C | C | C | C | C | C | N/A |
+| date | N/A | C | C | - | C | C | C | C | C | C | C | C | C |
+| decimal | N/A | C | C | N/A | - | C | C | C | C | C | C | C | N/A |
+| double | N/A | C | C | N/A | I | - | C | C | C | C | C | C | N/A |
+| float | N/A | C | C | N/A | I | C | - | C | C | C | C | C | N/A |
+| integer | C | C | C | N/A | C | C | C | - | C | C | C | C | N/A |
+| long | C | C | C | N/A | C | C | C | C | - | C | C | C | N/A |
+| short | C | C | C | N/A | C | C | C | C | C | - | C | C | N/A |
+| string | C | C | C | C | C | C | C | C | C | C | - | C | I |
+| timestamp | N/A | U | U | C | U | U | U | U | C | U | C | - | C |
+| timestamp_ntz | N/A | N/A | N/A | C | N/A | N/A | N/A | N/A | N/A | N/A | C | C | - |
 
 **Notes:**
 - **double -> decimal**: There can be rounding differences
@@ -197,6 +195,7 @@ as `"1.23E+4"`).
 - **float -> decimal**: There can be rounding differences
 - **float -> string**: There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45
 - **string -> date**: Only supports years between 262143 BC and 262142 AD
+- **string -> timestamp_ntz**: Cast from String to TimestampNTZ is not yet supported
 <!-- prettier-ignore-end -->
 <!--END:CAST_LEGACY_TABLE-->
 
@@ -204,20 +203,21 @@ as `"1.23E+4"`).
 
 <!--BEGIN:CAST_TRY_TABLE-->
 <!-- prettier-ignore-start -->
-| | binary | boolean | byte | date | decimal | double | float | integer | long | short | string | timestamp |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| binary | - | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | C | N/A |
-| boolean | N/A | - | C | N/A | C | C | C | C | C | C | C | U |
-| byte | U | C | - | N/A | C | C | C | C | C | C | C | C |
-| date | N/A | U | U | - | U | U | U | U | U | U | C | C |
-| decimal | N/A | C | C | N/A | - | C | C | C | C | C | C | C |
-| double | N/A | C | C | N/A | I | - | C | C | C | C | C | C |
-| float | N/A | C | C | N/A | I | C | - | C | C | C | C | C |
-| integer | U | C | C | N/A | C | C | C | - | C | C | C | C |
-| long | U | C | C | N/A | C | C | C | C | - | C | C | C |
-| short | U | C | C | N/A | C | C | C | C | C | - | C | C |
-| string | C | C | C | C | C | C | C | C | C | C | - | C |
-| timestamp | N/A | U | U | C | U | U | U | U | C | U | C | - |
+| | binary | boolean | byte | date | decimal | double | float | integer | long | short | string | timestamp | timestamp_ntz |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| binary | - | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | C | N/A | N/A |
+| boolean | N/A | - | C | N/A | C | C | C | C | C | C | C | U | N/A |
+| byte | U | C | - | N/A | C | C | C | C | C | C | C | C | N/A |
+| date | N/A | U | U | - | U | U | U | U | U | U | C | C | C |
+| decimal | N/A | C | C | N/A | - | C | C | C | C | C | C | C | N/A |
+| double | N/A | C | C | N/A | I | - | C | C | C | C | C | C | N/A |
+| float | N/A | C | C | N/A | I | C | - | C | C | C | C | C | N/A |
+| integer | U | C | C | N/A | C | C | C | - | C | C | C | C | N/A |
+| long | U | C | C | N/A | C | C | C | C | - | C | C | C | N/A |
+| short | U | C | C | N/A | C | C | C | C | C | - | C | C | N/A |
+| string | C | C | C | C | C | C | C | C | C | C | - | C | I |
+| timestamp | N/A | U | U | C | U | U | U | U | C | U | C | - | C |
+| timestamp_ntz | N/A | N/A | N/A | C | N/A | N/A | N/A | N/A | N/A | N/A | C | C | - |
 
 **Notes:**
 - **double -> decimal**: There can be rounding differences
@@ -225,6 +225,7 @@ as `"1.23E+4"`).
 - **float -> decimal**: There can be rounding differences
 - **float -> string**: There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45
 - **string -> date**: Only supports years between 262143 BC and 262142 AD
+- **string -> timestamp_ntz**: Cast from String to TimestampNTZ is not yet supported
 <!-- prettier-ignore-end -->
 <!--END:CAST_TRY_TABLE-->
 
@@ -232,20 +233,21 @@ as `"1.23E+4"`).
 
 <!--BEGIN:CAST_ANSI_TABLE-->
 <!-- prettier-ignore-start -->
-| | binary | boolean | byte | date | decimal | double | float | integer | long | short | string | timestamp |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| binary | - | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | C | N/A |
-| boolean | N/A | - | C | N/A | C | C | C | C | C | C | C | U |
-| byte | U | C | - | N/A | C | C | C | C | C | C | C | C |
-| date | N/A | U | U | - | U | U | U | U | U | U | C | C |
-| decimal | N/A | C | C | N/A | - | C | C | C | C | C | C | C |
-| double | N/A | C | C | N/A | I | - | C | C | C | C | C | C |
-| float | N/A | C | C | N/A | I | C | - | C | C | C | C | C |
-| integer | U | C | C | N/A | C | C | C | - | C | C | C | C |
-| long | U | C | C | N/A | C | C | C | C | - | C | C | C |
-| short | U | C | C | N/A | C | C | C | C | C | - | C | C |
-| string | C | C | C | C | C | C | C | C | C | C | - | C |
-| timestamp | N/A | U | U | C | U | U | U | U | C | U | C | - |
+| | binary | boolean | byte | date | decimal | double | float | integer | long | short | string | timestamp | timestamp_ntz |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| binary | - | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | C | N/A | N/A |
+| boolean | N/A | - | C | N/A | C | C | C | C | C | C | C | U | N/A |
+| byte | U | C | - | N/A | C | C | C | C | C | C | C | C | N/A |
+| date | N/A | U | U | - | U | U | U | U | U | U | C | C | C |
+| decimal | N/A | C | C | N/A | - | C | C | C | C | C | C | C | N/A |
+| double | N/A | C | C | N/A | I | - | C | C | C | C | C | C | N/A |
+| float | N/A | C | C | N/A | I | C | - | C | C | C | C | C | N/A |
+| integer | U | C | C | N/A | C | C | C | - | C | C | C | C | N/A |
+| long | U | C | C | N/A | C | C | C | C | - | C | C | C | N/A |
+| short | U | C | C | N/A | C | C | C | C | C | - | C | C | N/A |
+| string | C | C | C | C | C | C | C | C | C | C | - | C | I |
+| timestamp | N/A | U | U | C | U | U | U | U | C | U | C | - | C |
+| timestamp_ntz | N/A | N/A | N/A | C | N/A | N/A | N/A | N/A | N/A | N/A | C | C | - |
 
 **Notes:**
 - **double -> decimal**: There can be rounding differences
@@ -253,6 +255,7 @@ as `"1.23E+4"`).
 - **float -> decimal**: There can be rounding differences
 - **float -> string**: There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45
 - **string -> date**: Only supports years between 262143 BC and 262142 AD
+- **string -> timestamp_ntz**: Cast from String to TimestampNTZ is not yet supported
 <!-- prettier-ignore-end -->
 <!--END:CAST_ANSI_TABLE-->
 
