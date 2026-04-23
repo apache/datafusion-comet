@@ -399,8 +399,11 @@ case class CometScanRule(session: SparkSession)
         // Check if table uses a FileIO implementation compatible with iceberg-rust
 
         val fileIOCompatible = IcebergReflection.getFileIO(metadata.table) match {
+          case Some(fileIO)
+              if fileIO.getClass.getName == "org.apache.iceberg.inmemory.InMemoryFileIO" =>
+            fallbackReasons += "InMemoryFileIO is not supported by Comet's native reader"
+            false
           case Some(_) =>
-            // InMemoryFileIO is now supported with table location fallback for REST catalogs
             true
           case None =>
             fallbackReasons += "Could not check FileIO compatibility"
@@ -820,7 +823,7 @@ object CometScanRule extends Logging {
         val filePath = pathMethod.invoke(dataFile).toString
         val uri = new URI(filePath)
         val scheme = uri.getScheme
-        if (scheme == null || !supportedSchemes.contains(scheme)) {
+        if (scheme != null && !supportedSchemes.contains(scheme)) {
           unsupportedSchemes += scheme
         }
       } catch {
@@ -862,7 +865,7 @@ object CometScanRule extends Logging {
                 try {
                   val deleteUri = new URI(deletePath)
                   val deleteScheme = deleteUri.getScheme
-                  if (deleteScheme == null || !supportedSchemes.contains(deleteScheme)) {
+                  if (deleteScheme != null && !supportedSchemes.contains(deleteScheme)) {
                     unsupportedSchemes += deleteScheme
                   }
                 } catch {
