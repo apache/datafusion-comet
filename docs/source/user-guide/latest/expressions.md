@@ -238,7 +238,7 @@ Comet supports using the following aggregate functions within window contexts wi
 ## Array Expressions
 
 | Expression     | Spark-Compatible? | Compatibility Notes                                   |
-| -------------- | ----------------- |-------------------------------------------------------|
+| -------------- | ----------------- | ----------------------------------------------------- |
 | ArrayAppend    | Yes               |                                                       |
 | ArrayCompact   | No                |                                                       |
 | ArrayContains  | Yes               |                                                       |
