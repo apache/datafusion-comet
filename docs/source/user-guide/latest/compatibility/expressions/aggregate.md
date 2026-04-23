@@ -21,9 +21,3 @@ under the License.
 
 <!--BEGIN:EXPR_COMPAT[aggregate]-->
 <!--END:EXPR_COMPAT-->
-
-## ANSI Mode
-
-Comet will fall back to Spark for some aggregate expressions when ANSI mode is enabled. These can be enabled by setting `spark.comet.expression.EXPRNAME.allowIncompatible=true`, where `EXPRNAME` is the Spark expression class name. See the [Comet Supported Expressions Guide](../../expressions.md) for more information on this configuration setting.
-
-There is an [epic](https://github.com/apache/datafusion-comet/issues/313) where we are tracking the work to fully implement ANSI support.
