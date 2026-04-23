@@ -169,8 +169,8 @@ Each revert is logged at `INFO` level on the driver as `Reverting Comet columnar
 <parent> and <child>`, which lets you correlate any unexpected behavior with this optimization.
 
 This optimization is enabled by default and can be disabled by setting
-`spark.comet.exec.shuffle.revertSandwiched.enabled=false`, in which case Comet will keep the columnar shuffle even
-when it is sandwiched between two non-Comet operators.
+`spark.comet.exec.shuffle.revertRedundantColumnar.enabled=false`, in which case Comet will keep the columnar shuffle
+even when both its parent and child are non-Comet operators.
 
 ### Shuffle Compression
 

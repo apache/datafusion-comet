@@ -427,12 +427,12 @@ object CometConf extends ShimCometConf {
         "The maximum number of columns to hash for round robin partitioning must be non-negative.")
       .createWithDefault(0)
 
-  val COMET_EXEC_SHUFFLE_REVERT_SANDWICHED_ENABLED: ConfigEntry[Boolean] =
-    conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.revertSandwiched.enabled")
+  val COMET_EXEC_SHUFFLE_REVERT_REDUNDANT_COLUMNAR_ENABLED: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.revertRedundantColumnar.enabled")
       .category(CATEGORY_SHUFFLE)
       .doc(
         "When enabled, Comet reverts a `CometShuffleExchangeExec` with `CometColumnarShuffle` " +
-          "back to Spark's `ShuffleExchangeExec` when it is sandwiched between two non-Comet " +
+          "back to Spark's `ShuffleExchangeExec` when both its parent and child are non-Comet " +
           "hash aggregate operators. This avoids a redundant " +
           "row -> Arrow -> shuffle -> Arrow -> row conversion when no Comet operator on either " +
           "side can consume columnar output. Disable to keep Comet columnar shuffle even in " +

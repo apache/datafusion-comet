@@ -108,8 +108,8 @@ case class CometExecRule(session: SparkSession)
   private lazy val showTransformations = CometConf.COMET_EXPLAIN_TRANSFORMATIONS.get()
 
   /**
-   * Revert any `CometShuffleExchangeExec` with `CometColumnarShuffle` that is sandwiched between
-   * two non-Comet `HashAggregateExec` / `ObjectHashAggregateExec` operators back to the original
+   * Revert any `CometShuffleExchangeExec` with `CometColumnarShuffle` whose parent and child are
+   * both non-Comet `HashAggregateExec` / `ObjectHashAggregateExec` operators back to the original
    * Spark `ShuffleExchangeExec`. This is the partial-final-aggregate pattern where Comet couldn't
    * convert either aggregate; keeping a columnar shuffle between them only adds
    * row->arrow->shuffle->arrow->row conversion overhead with no Comet consumer on either side.
@@ -525,10 +525,10 @@ case class CometExecRule(session: SparkSession)
         case CometScanWrapper(_, s) => s
       }
 
-      // Revert CometColumnarShuffle to Spark's ShuffleExchangeExec when sandwiched between two
-      // non-Comet HashAggregate/ObjectHashAggregate operators that remained JVM after the main
+      // Revert CometColumnarShuffle to Spark's ShuffleExchangeExec when both its parent and child
+      // are non-Comet HashAggregate/ObjectHashAggregate operators that remained JVM after the main
       // transform pass. See https://github.com/apache/datafusion-comet/issues/4004.
-      if (CometConf.COMET_EXEC_SHUFFLE_REVERT_SANDWICHED_ENABLED.get()) {
+      if (CometConf.COMET_EXEC_SHUFFLE_REVERT_REDUNDANT_COLUMNAR_ENABLED.get()) {
         newPlan = revertRedundantColumnarShuffle(newPlan)
       }
 
