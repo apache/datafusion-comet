@@ -42,6 +42,9 @@ trait CometExpressionSerde[T <: Expression] {
    *
    * Prefer declaring `conditions` over overriding [[getSupportLevel]]: the list is enumerable for
    * documentation and tests, and each condition carries a stable id and static description.
+   *
+   * Subclasses should declare `conditions` as a `val` so the list is built once, not on every
+   * `getSupportLevel` call.
    */
   def conditions: Seq[SupportCondition[T]] = Seq.empty
 
@@ -56,22 +59,17 @@ trait CometExpressionSerde[T <: Expression] {
    * @return
    *   Support level (Compatible, Incompatible, or Unsupported).
    */
-  def getSupportLevel(expr: T): SupportLevel = {
-    if (conditions.isEmpty) {
-      Compatible(None)
-    } else {
-      conditions.find(_.fires(expr)) match {
-        case Some(c) =>
-          val msg = Some(c.message(expr)).filter(_.nonEmpty)
-          c.level match {
-            case SupportLevelKind.Compatible => Compatible(msg)
-            case SupportLevelKind.Incompatible => Incompatible(msg)
-            case SupportLevelKind.Unsupported => Unsupported(msg)
-          }
-        case None => Compatible(None)
-      }
+  def getSupportLevel(expr: T): SupportLevel =
+    conditions.find(_.fires(expr)) match {
+      case Some(c) =>
+        val msg = Some(c.message(expr)).filter(_.nonEmpty)
+        c.level match {
+          case SupportLevelKind.Compatible => Compatible(msg)
+          case SupportLevelKind.Incompatible => Incompatible(msg)
+          case SupportLevelKind.Unsupported => Unsupported(msg)
+        }
+      case None => Compatible(None)
     }
-  }
 
   /**
    * Convert a Spark expression into a protocol buffer representation that can be passed into
