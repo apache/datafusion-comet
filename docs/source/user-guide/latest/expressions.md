@@ -237,27 +237,27 @@ Comet supports using the following aggregate functions within window contexts wi
 
 ## Array Expressions
 
-| Expression     | Spark-Compatible? | Compatibility Notes                                                                                                                                                                       |
-| -------------- |-------------------| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| ArrayAppend    | Yes               |                                                                                                                                                                                           |
-| ArrayCompact   | No                |                                                                                                                                                                                           |
-| ArrayContains  | Yes               |                                                                                                                                                                                           |
-| ArrayDistinct  | Yes               |                                                                                                                                                                                           |
-| ArrayExcept    | No                |                                                                                                                                                                                           |
-| ArrayFilter    | Yes               | Only supports case where function is `IsNotNull`                                                                                                                                          |
-| ArrayInsert    | No                |                                                                                                                                                                                           |
-| ArrayIntersect | No                |                                                                                                                                                                                           |
-| ArrayJoin      | No                |                                                                                                                                                                                           |
-| ArrayMax       | Yes               |                                                                                                                                                                                           |
-| ArrayMin       | Yes               |                                                                                                                                                                                           |
-| ArrayRemove    | Yes               |                                                                                                                                                                                           |
-| ArrayRepeat    | No                |                                                                                                                                                                                           |
-| ArrayUnion     | Yes               |  |
-| ArraysOverlap  | No                |                                                                                                                                                                                           |
-| CreateArray    | Yes               |                                                                                                                                                                                           |
-| ElementAt      | Yes               | Input must be an array. Map inputs are not supported.                                                                                                                                     |
-| Flatten        | Yes               |                                                                                                                                                                                           |
-| GetArrayItem   | Yes               |                                                                                                                                                                                           |
+| Expression     | Spark-Compatible? | Compatibility Notes                                   |
+| -------------- | ----------------- |-------------------------------------------------------|
+| ArrayAppend    | Yes               |                                                       |
+| ArrayCompact   | No                |                                                       |
+| ArrayContains  | Yes               |                                                       |
+| ArrayDistinct  | Yes               |                                                       |
+| ArrayExcept    | No                |                                                       |
+| ArrayFilter    | Yes               | Only supports case where function is `IsNotNull`      |
+| ArrayInsert    | No                |                                                       |
+| ArrayIntersect | No                |                                                       |
+| ArrayJoin      | No                |                                                       |
+| ArrayMax       | Yes               |                                                       |
+| ArrayMin       | Yes               |                                                       |
+| ArrayRemove    | Yes               |                                                       |
+| ArrayRepeat    | No                |                                                       |
+| ArrayUnion     | Yes               |                                                       |
+| ArraysOverlap  | No                |                                                       |
+| CreateArray    | Yes               |                                                       |
+| ElementAt      | Yes               | Input must be an array. Map inputs are not supported. |
+| Flatten        | Yes               |                                                       |
+| GetArrayItem   | Yes               |                                                       |
 
 ## Map Expressions
 
