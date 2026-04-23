@@ -19,9 +19,9 @@ under the License.
 
 # Date/Time Expressions
 
-- **Hour, Minute, Second**: Incorrectly apply timezone conversion to TimestampNTZ inputs. TimestampNTZ stores local
-  time without timezone, so no conversion should be applied. These expressions work correctly with Timestamp inputs.
-  [#3180](https://github.com/apache/datafusion-comet/issues/3180)
+<!--BEGIN:EXPR_COMPAT[datetime]-->
+<!--END:EXPR_COMPAT-->
+
 - **TruncTimestamp (date_trunc)**: Produces incorrect results when used with non-UTC timezones. Compatible when
   timezone is UTC.
   [#2649](https://github.com/apache/datafusion-comet/issues/2649)

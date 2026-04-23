@@ -183,9 +183,7 @@ object CometHour extends CometExpressionSerde[Hour] {
   val incompatReason = "Incorrectly applies timezone conversion to TimestampNTZ inputs" +
     " (https://github.com/apache/datafusion-comet/issues/3180)"
 
-  override def getIncompatibleReasons(): Seq[String] = Seq(
-    incompatReason
-  )
+  override def getIncompatibleReasons(): Seq[String] = Seq(incompatReason)
 
   override def getSupportLevel(expr: Hour): SupportLevel = {
     if (expr.child.dataType.typeName == "timestamp_ntz") {
@@ -541,12 +539,14 @@ object CometDateFormat extends CometExpressionSerde[DateFormatClass] {
     "yyyy-MM-dd'T'HH:mm:ss" -> "%Y-%m-%dT%H:%M:%S")
 
   override def getIncompatibleReasons(): Seq[String] = Seq(
-    "Non-UTC timezones may produce different results than Spark"
-  )
+    "Non-UTC timezones may produce different results than Spark")
 
   override def getUnsupportedReasons(): Seq[String] = Seq(
-    s"Only the following formats are supported:${supportedFormats.mkString("\n- ", "\n-", "")}"
-  )
+    "Only the following formats are supported:" +
+      supportedFormats.toSeq
+        .sortBy(_._1)
+        .map { case (k, v) => s"`$k` -> `$v`" }
+        .mkString("\n  - ", "\n  - ", ""))
 
   override def getSupportLevel(expr: DateFormatClass): SupportLevel = {
     // Check timezone - only UTC is fully compatible

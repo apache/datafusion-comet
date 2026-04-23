@@ -19,4 +19,7 @@ under the License.
 
 # Array Expressions
 
+<!--BEGIN:EXPR_COMPAT[array]-->
+<!--END:EXPR_COMPAT-->
+
 - **SortArray**: Nested arrays with `Struct` or `Null` child values are not supported natively and will fall back to Spark.

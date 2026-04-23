@@ -19,6 +19,9 @@ under the License.
 
 # Aggregate Expressions
 
+<!--BEGIN:EXPR_COMPAT[aggregate]-->
+<!--END:EXPR_COMPAT-->
+
 ## Incompatible Aggregates
 
 - **CollectSet**: Comet deduplicates NaN values (treats `NaN == NaN`) while Spark treats each NaN as a distinct value.
