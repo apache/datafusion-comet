@@ -253,7 +253,7 @@ Comet supports using the following aggregate functions within window contexts wi
 | ArrayRemove    | Yes               |                                                       |
 | ArrayRepeat    | No                |                                                       |
 | ArrayUnion     | Yes               |                                                       |
-| ArraysOverlap  | No                |                                                       |
+| ArraysOverlap  | Yes               |                                                       |
 | CreateArray    | Yes               |                                                       |
 | ElementAt      | Yes               | Input must be an array. Map inputs are not supported. |
 | Flatten        | Yes               |                                                       |

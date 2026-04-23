@@ -66,9 +66,6 @@ the [Comet Supported Expressions Guide](expressions.md) for more information on 
 
 ### Array Expressions
 
-- **ArraysOverlap**: Inconsistent behavior when arrays contain NULL values.
-  [#3645](https://github.com/apache/datafusion-comet/issues/3645),
-  [#2036](https://github.com/apache/datafusion-comet/issues/2036)
 - **SortArray**: Nested arrays with `Struct` or `Null` child values are not supported natively and will fall back to Spark.
 
 ### Date/Time Expressions
