@@ -234,23 +234,15 @@ object CometArrayMin extends CometExpressionSerde[ArrayMin] {
 }
 
 object CometArraysOverlap extends CometExpressionSerde[ArraysOverlap] {
-
-  override def getSupportLevel(expr: ArraysOverlap): SupportLevel =
-    Incompatible(
-      Some(
-        "Inconsistent behavior with NULL values" +
-          " (https://github.com/apache/datafusion-comet/issues/3645)" +
-          " (https://github.com/apache/datafusion-comet/issues/2036)"))
-
   override def convert(
       expr: ArraysOverlap,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val leftArrayExprProto = exprToProto(expr.children.head, inputs, binding)
-    val rightArrayExprProto = exprToProto(expr.children(1), inputs, binding)
+    val leftArrayExprProto = exprToProto(expr.left, inputs, binding)
+    val rightArrayExprProto = exprToProto(expr.right, inputs, binding)
 
     val arraysOverlapScalarExpr = scalarFunctionExprToProtoWithReturnType(
-      "array_has_any",
+      "spark_arrays_overlap",
       BooleanType,
       false,
       leftArrayExprProto,
@@ -300,9 +292,6 @@ object CometArrayRepeat extends CometExpressionSerde[ArrayRepeat] {
 }
 
 object CometArrayCompact extends CometExpressionSerde[Expression] {
-
-  override def getSupportLevel(expr: Expression): SupportLevel = Compatible()
-
   override def convert(
       expr: Expression,
       inputs: Seq[Attribute],
@@ -440,13 +429,6 @@ object CometArrayInsert extends CometExpressionSerde[ArrayInsert] {
 }
 
 object CometArrayUnion extends CometExpressionSerde[ArrayUnion] {
-
-  override def getSupportLevel(expr: ArrayUnion): SupportLevel =
-    Incompatible(
-      Some(
-        "Correctness issue" +
-          " (https://github.com/apache/datafusion-comet/issues/3644)"))
-
   override def convert(
       expr: ArrayUnion,
       inputs: Seq[Attribute],
