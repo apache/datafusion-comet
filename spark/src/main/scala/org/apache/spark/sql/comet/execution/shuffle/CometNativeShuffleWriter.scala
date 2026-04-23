@@ -192,6 +192,7 @@ class CometNativeShuffleWriter[K, V](
         CometConf.COMET_EXEC_SHUFFLE_COMPRESSION_ZSTD_LEVEL.get)
       shuffleWriterBuilder.setWriteBufferSize(
         CometConf.COMET_SHUFFLE_WRITE_BUFFER_SIZE.get().min(Int.MaxValue).toInt)
+      shuffleWriterBuilder.setBatchSpillLimit(CometConf.COMET_SHUFFLE_BATCH_SPILL_LIMIT.get())
 
       outputPartitioning match {
         case p if isSinglePartitioning(p) =>
