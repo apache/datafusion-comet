@@ -58,6 +58,11 @@ object GenerateDocs {
       QueryPlanSerde.temporalExpressions.toSeq.map { case (cls, serde) =>
         (cls.getSimpleName, serde.getIncompatibleReasons(), serde.getUnsupportedReasons())
       }),
+    "math" -> ("compatibility/expressions/math.md",
+    () =>
+      QueryPlanSerde.mathExpressions.toSeq.map { case (cls, serde) =>
+        (cls.getSimpleName, serde.getIncompatibleReasons(), serde.getUnsupportedReasons())
+      }),
     "struct" -> ("compatibility/expressions/struct.md",
     () =>
       QueryPlanSerde.structExpressions.toSeq.map { case (cls, serde) =>
