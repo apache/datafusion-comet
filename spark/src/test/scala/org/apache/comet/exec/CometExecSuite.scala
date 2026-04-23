@@ -570,6 +570,50 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  // Reproduces CI failure from DynamicPartitionPruningSuiteV1AEOn SPARK-37995.
+  // DynamicPartitionPruningSuiteBase.checkPartitionPruningPredicate (line 233-240) asserts
+  // that all non-broadcast subquery plans contain AdaptiveSparkPlanExec when AQE is on.
+  test("SPARK-37995: DPP with scalar subquery does not break subquery assertions") {
+    withDppTables {
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true",
+        SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "false",
+        SQLConf.EXCHANGE_REUSE_ENABLED.key -> "false") {
+        val df = sql("""SELECT f.date_id, f.store_id FROM fact_sk f
+            |JOIN dim_store s ON f.store_id = s.store_id AND s.country = 'NL'
+            |WHERE s.state_province != (SELECT max(state_province) FROM dim_stats)
+            |""".stripMargin)
+        val (_, plan) = checkSparkAnswer(df)
+
+        val isMainQueryAdaptive = plan.isInstanceOf[AdaptiveSparkPlanExec]
+        val dpExprs = flatMap(plan) {
+          case s: FileSourceScanExec =>
+            s.partitionFilters.collect { case d: DynamicPruningExpression => d.child }
+          case s: CometScanExec =>
+            s.partitionFilters.collect { case d: DynamicPruningExpression => d.child }
+          case s: CometNativeScanExec =>
+            s.partitionFilters.collect { case d: DynamicPruningExpression => d.child }
+          case _ => Nil
+        }
+        val subqueryBroadcast = dpExprs.collect {
+          case InSubqueryExec(_, b: SubqueryBroadcastExec, _, _, _, _) => b
+          case InSubqueryExec(_, b: CometSubqueryBroadcastExec, _, _, _, _) => b
+        }
+        subqueriesAll(plan).filterNot(subqueryBroadcast.contains).foreach { s =>
+          val subquery = s match {
+            case r: ReusedSubqueryExec => r.child
+            case o => o
+          }
+          assert(
+            subquery.exists(_.isInstanceOf[AdaptiveSparkPlanExec]) == isMainQueryAdaptive,
+            s"Subquery ${subquery.getClass.getSimpleName} adaptive mismatch:\n" +
+              s"${subquery.treeString}")
+        }
+      }
+    }
+  }
+
   test("non-AQE DPP with two separate broadcast joins") {
     withTempDir { dir =>
       val path = s"${dir.getAbsolutePath}/data"

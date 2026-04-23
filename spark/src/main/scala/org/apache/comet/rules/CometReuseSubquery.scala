@@ -55,7 +55,7 @@ case object CometReuseSubquery extends Rule[SparkPlan] {
     val cache = mutable.Map.empty[SparkPlan, BaseSubqueryExec]
 
     plan.transformAllExpressionsWithPruning(_.containsPattern(PLAN_EXPRESSION)) {
-      case sub: ExecSubqueryExpression =>
+      case sub: ExecSubqueryExpression if !sub.plan.isInstanceOf[ReusedSubqueryExec] =>
         val cached = cache.getOrElseUpdate(sub.plan.canonicalized, sub.plan)
         if (cached.ne(sub.plan)) {
           sub.withNewPlan(ReusedSubqueryExec(cached))
