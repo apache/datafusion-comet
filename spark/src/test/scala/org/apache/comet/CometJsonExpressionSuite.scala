@@ -71,7 +71,6 @@ class CometJsonExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
   }
 
   test("to_json - fallback reasons") {
-    assume(!isSpark40Plus)
     withTable("t") {
       sql("CREATE TABLE t(a INT, b STRING) USING parquet")
       sql("INSERT INTO t VALUES (1, 'hello')")
