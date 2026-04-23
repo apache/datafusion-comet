@@ -508,9 +508,6 @@ When <code class="docutils literal notranslate"><span class="pre">spark.comet.ex
 <section id="array-expressions">
 <h3>Array Expressions<a class="headerlink" href="#array-expressions" title="Link to this heading">#</a></h3>
 <ul class="simple">
-<li><p><strong>ArrayUnion</strong>: Sorts input arrays before performing the union, while Spark preserves the order of the first array
-and appends unique elements from the second.
-<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3644">#3644</a></p></li>
 <li><p><strong>SortArray</strong>: Nested arrays with <code class="docutils literal notranslate"><span class="pre">Struct</span></code> or <code class="docutils literal notranslate"><span class="pre">Null</span></code> child values are not supported natively and will fall back to Spark.</p></li>
 </ul>
 </section>
