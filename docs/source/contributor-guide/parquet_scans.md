@@ -46,7 +46,7 @@ The following features are not supported by either scan implementation, and Come
 - Spark's Datasource V2 API. When `spark.sql.sources.useV1SourceList` does not include `parquet`, Spark uses the
   V2 API for Parquet scans. The DataFusion-based implementations only support the V1 API.
 - Spark metadata columns (e.g., `_metadata.file_path`)
-- No support for Dynamic Partition Pruning (DPP)
+- No support for AQE Dynamic Partition Pruning (DPP). Non-AQE DPP is supported.
 
 The following shared limitation may produce incorrect results without falling back to Spark:
 

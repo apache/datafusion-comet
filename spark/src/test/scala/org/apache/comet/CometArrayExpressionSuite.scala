@@ -23,7 +23,7 @@ import scala.util.Random
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.CometTestBase
-import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayExcept, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayRepeat, ArraysOverlap, ArrayUnion}
+import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayExcept, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayRepeat, ArrayUnion}
 import org.apache.spark.sql.catalyst.expressions.{ArrayContains, ArrayRemove}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions._
@@ -539,30 +539,106 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   }
 
   test("arrays_overlap") {
-    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[ArraysOverlap]) -> "true") {
-      Seq(true, false).foreach { dictionaryEnabled =>
-        withTempDir { dir =>
-          withTempView("t1") {
-            val path = new Path(dir.toURI.toString, "test.parquet")
-            makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled, 10000)
-            spark.read.parquet(path.toString).createOrReplaceTempView("t1")
-            checkSparkAnswerAndOperator(sql(
-              "SELECT arrays_overlap(array(_2, _3, _4), array(_3, _4)) from t1 where _2 is not null"))
-            checkSparkAnswerAndOperator(sql(
-              "SELECT arrays_overlap(array('a', null, cast(_1 as string)), array('b', cast(_1 as string), cast(_2 as string))) from t1 where _1 is not null"))
-            checkSparkAnswerAndOperator(sql(
-              "SELECT arrays_overlap(array('a', null), array('b', null)) from t1 where _1 is not null"))
-            checkSparkAnswerAndOperator(spark.sql(
-              "SELECT arrays_overlap((CASE WHEN _2 =_3 THEN array(_6, _7) END), array(_6, _7)) FROM t1"));
-          }
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withTempDir { dir =>
+        withTempView("t1") {
+          val path = new Path(dir.toURI.toString, "test.parquet")
+          makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled, 10000)
+          spark.read.parquet(path.toString).createOrReplaceTempView("t1")
+          checkSparkAnswerAndOperator(sql(
+            "SELECT arrays_overlap(array(_2, _3, _4), array(_3, _4)) from t1 where _2 is not null"))
+          checkSparkAnswerAndOperator(sql(
+            "SELECT arrays_overlap(array('a', null, cast(_1 as string)), array('b', cast(_1 as string), cast(_2 as string))) from t1 where _1 is not null"))
+          checkSparkAnswerAndOperator(sql(
+            "SELECT arrays_overlap(array('a', null), array('b', null)) from t1 where _1 is not null"))
+          checkSparkAnswerAndOperator(spark.sql(
+            "SELECT arrays_overlap((CASE WHEN _2 =_3 THEN array(_6, _7) END), array(_6, _7)) FROM t1"));
+        }
+      }
+    }
+  }
+
+  test("arrays_overlap - null handling behavior verification") {
+    withSQLConf(
+      "spark.sql.optimizer.excludedRules" -> "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+      withTable("t") {
+        sql("create table t using parquet as select CAST(NULL as array<int>) a1 from range(1)")
+        val data = Seq(
+          "array(1, 2, 3)",
+          "array(3, 4, 5)",
+          "array(1, 2)",
+          "array(3, 4)",
+          "array(1, NULL, 3)",
+          "array(4, 5)",
+          "array(1, 4)",
+          "array(1, NULL)",
+          "array(2, NULL)",
+          "array(NULL, 2)",
+          "array(1)",
+          "array(2)",
+          "array()",
+          "array(NULL)",
+          "array(NULL, NULL)",
+          "a1")
+        for (y <- data; x <- data) {
+          checkSparkAnswerAndOperator(sql(s"SELECT arrays_overlap($y, $x) from t"))
+        }
+      }
+    }
+  }
+
+  test("arrays_overlap - nested array null handling behavior verification") {
+    withSQLConf(
+      "spark.sql.optimizer.excludedRules" -> "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+      withTable("t") {
+        sql(
+          "create table t using parquet as select CAST(NULL as array<array<int>>) a1 from range(1)")
+        val data = Seq(
+          "array(array(1, 2), array(3, 4))",
+          "array(array(1, 2), array(5, 6))",
+          "array(array(1, 2))",
+          "array(array(3, 4))",
+          "array(array(1, NULL))",
+          "array(array(NULL, 2))",
+          "array(array(NULL))",
+          "array(CAST(NULL as array<int>))",
+          "array(array(1, 2), CAST(NULL as array<int>))",
+          "array()",
+          "a1")
+        for (y <- data; x <- data) {
+          checkSparkAnswerAndOperator(sql(s"SELECT arrays_overlap($y, $x) from t"))
+        }
+      }
+    }
+  }
+
+  test("arrays_overlap - struct element null handling behavior verification") {
+    withSQLConf(
+      "spark.sql.optimizer.excludedRules" -> "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+      withTable("t") {
+        sql(
+          "create table t using parquet as select CAST(NULL as array<struct<a:int,b:int>>) a1 from range(1)")
+        // Cast all structs to the same nullable type to avoid Arrow schema mismatch
+        val s = "struct<a:int,b:int>"
+        val data = Seq(
+          s"array(CAST(named_struct('a', 1, 'b', 2) AS $s), CAST(named_struct('a', 3, 'b', 4) AS $s))",
+          s"array(CAST(named_struct('a', 1, 'b', 2) AS $s))",
+          s"array(CAST(named_struct('a', 3, 'b', 4) AS $s))",
+          s"array(CAST(named_struct('a', 1, 'b', CAST(NULL as int)) AS $s))",
+          s"array(CAST(named_struct('a', CAST(NULL as int), 'b', 2) AS $s))",
+          s"array(CAST(named_struct('a', CAST(NULL as int), 'b', CAST(NULL as int)) AS $s))",
+          s"array(CAST(NULL as $s))",
+          s"array(CAST(named_struct('a', 1, 'b', 2) AS $s), CAST(NULL as $s))",
+          "array()",
+          "a1")
+        for (y <- data; x <- data) {
+          checkSparkAnswerAndOperator(sql(s"SELECT arrays_overlap($y, $x) from t"))
         }
       }
     }
   }
 
   test("array_compact") {
-    // TODO fix for Spark 4.0.0
-    assume(!isSpark40Plus)
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
         withTempView("t1") {

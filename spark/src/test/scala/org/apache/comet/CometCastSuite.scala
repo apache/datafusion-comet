@@ -66,21 +66,39 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     hasUnsignedSmallIntSafetyCheck(conf)
 
   // Timezone list to check temporal type casts
-  private val compatibleTimezones = Seq(
+  private val representativeTimezones = Seq(
+    // UTC
     "UTC",
+    // North America
     "America/New_York",
     "America/Chicago",
     "America/Denver",
     "America/Los_Angeles",
+    "America/Sao_Paulo", // South America, UTC-3 (no DST in winter)
+    // Europe
     "Europe/London",
     "Europe/Paris",
     "Europe/Berlin",
+    // Africa
+    "Africa/Cairo", // UTC+2, no DST
+    "Africa/Johannesburg", // UTC+2, no DST
+    // Middle East
+    "Asia/Dubai", // UTC+4, no DST
+    // Asia/Tehran omitted: IANA tzdata for 1977-1979 Iran has been revised multiple times
+    // (UTC+4 vs UTC+3:30 as standard for parts of that period), causing JDK and chrono-tz
+    // to disagree on historical dates. Use Asia/Dubai for UTC+4 coverage.
+    // Asia
     "Asia/Tokyo",
     "Asia/Shanghai",
-    "Asia/Singapore",
-    "Asia/Kolkata",
+    // Asia/Singapore omitted: changed UTC+7:30 -> UTC+8 in 1982; test dates go back to 1970
+    // and JDK tzdata versions may disagree with chrono-tz on the historical offset.
+    "Asia/Kolkata", // UTC+5:30 (half-hour offset)
+    "Asia/Kathmandu", // UTC+5:45 (quarter-hour offset)
+    // Oceania
     "Australia/Sydney",
-    "Pacific/Auckland")
+    "Pacific/Auckland",
+    "Pacific/Chatham" // UTC+12:45 (quarter-hour offset)
+  )
 
   test("all valid cast combinations covered") {
     val names = testNames
@@ -241,7 +259,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast ByteType to TimestampType") {
-    compatibleTimezones.foreach { tz =>
+    representativeTimezones.foreach { tz =>
       withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
         castTest(
           generateBytes(),
@@ -321,7 +339,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast ShortType to TimestampType") {
-    compatibleTimezones.foreach { tz =>
+    representativeTimezones.foreach { tz =>
       withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
         castTest(
           generateShorts(),
@@ -387,7 +405,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast IntegerType to TimestampType") {
-    compatibleTimezones.foreach { tz =>
+    representativeTimezones.foreach { tz =>
       withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
         castTest(generateInts(), DataTypes.TimestampType)
       }
@@ -438,7 +456,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("cast LongType to TimestampType") {
     // Cast back to long avoids java.sql.Timestamp overflow during collect() for extreme values
-    compatibleTimezones.foreach { tz =>
+    representativeTimezones.foreach { tz =>
       withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
         withTable("t1") {
           generateLongs().write.saveAsTable("t1")
@@ -506,7 +524,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast FloatType to TimestampType") {
-    compatibleTimezones.foreach { tz =>
+    representativeTimezones.foreach { tz =>
       withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
         // Use useDFDiff to avoid collect() which fails on extreme timestamp values
         castTest(generateFloats(), DataTypes.TimestampType, useDataFrameDiff = true)
@@ -571,7 +589,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast DoubleType to TimestampType") {
-    compatibleTimezones.foreach { tz =>
+    representativeTimezones.foreach { tz =>
       withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
         // Use useDFDiff to avoid collect() which fails on extreme timestamp values
         castTest(generateDoubles(), DataTypes.TimestampType, useDataFrameDiff = true)
@@ -1250,6 +1268,15 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  ignore("cast StringType to TimestampNTZType") {
+    // Phase 5: String → NTZ parsing not yet implemented
+    // https://github.com/apache/datafusion-comet/issues/378
+    withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC") {
+      val values = Seq("2020-01-01T12:34:56.123456", "2020-01-01T12:34:56", "2020-01-01")
+      castTimestampTest(values.toDF("a"), DataTypes.TimestampNTZType)
+    }
+  }
+
   // CAST from BinaryType
 
   test("cast BinaryType to StringType") {
@@ -1310,24 +1337,17 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast DateType to TimestampType") {
-    val compatibleTimezones = Seq(
-      "UTC",
-      "America/New_York",
-      "America/Chicago",
-      "America/Denver",
-      "America/Los_Angeles",
-      "Europe/London",
-      "Europe/Paris",
-      "Europe/Berlin",
-      "Asia/Tokyo",
-      "Asia/Shanghai",
-      "Asia/Singapore",
-      "Asia/Kolkata",
-      "Australia/Sydney",
-      "Pacific/Auckland")
-    compatibleTimezones.map { tz =>
+    representativeTimezones.foreach { tz =>
       withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
         castTest(generateDates(), DataTypes.TimestampType)
+      }
+    }
+  }
+
+  test("cast DateType to TimestampNTZType") {
+    representativeTimezones.foreach { tz =>
+      withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
+        castTimestampTest(generateDates(), DataTypes.TimestampNTZType, assertNative = true)
       }
     }
   }
@@ -1385,6 +1405,14 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("cast TimestampType to DateType") {
     castTest(generateTimestamps(), DataTypes.DateType)
+  }
+
+  test("cast TimestampType to TimestampNTZType") {
+    representativeTimezones.foreach { tz =>
+      withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
+        castTimestampTest(generateTimestamps(), DataTypes.TimestampNTZType, assertNative = true)
+      }
+    }
   }
 
   // Complex Types
@@ -1561,6 +1589,28 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       types,
       dt => ArrayType(ArrayType(dt)),
       dt => generateArrays(100, ArrayType(dt)))
+  }
+
+  // CAST from TimestampNTZType
+
+  test("cast TimestampNTZType to StringType") {
+    castTest(generateTimestampNTZ(), DataTypes.StringType)
+  }
+
+  test("cast TimestampNTZType to DateType") {
+    representativeTimezones.foreach { tz =>
+      withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
+        castTimestampTest(generateTimestampNTZ(), DataTypes.DateType, assertNative = true)
+      }
+    }
+  }
+
+  test("cast TimestampNTZType to TimestampType") {
+    representativeTimezones.foreach { tz =>
+      withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
+        castTimestampTest(generateTimestampNTZ(), DataTypes.TimestampType, assertNative = true)
+      }
+    }
   }
 
   private def testArrayCastMatrix(
@@ -1874,6 +1924,14 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     withNulls(values)
       .toDF("str")
       .withColumn("a", col("str").cast(DataTypes.TimestampType))
+      .drop("str")
+  }
+
+  private def generateTimestampNTZ(): DataFrame = {
+    val values = generateTimestampLiterals()
+    withNulls(values)
+      .toDF("str")
+      .withColumn("a", col("str").cast(DataTypes.TimestampNTZType))
       .drop("str")
   }
 

@@ -275,10 +275,11 @@ object CometShuffleExchangeExec
       case None =>
     }
 
-    // DPP fallback is a combined-path decision: a Comet shuffle wrapped around a stage that
-    // still contains a DPP scan produces inefficient row<->columnar transitions. Disqualifies
-    // both paths.
-    if (CometConf.COMET_DPP_FALLBACK_ENABLED.get() && stageContainsDPPScan(s)) {
+    // A Comet shuffle wrapped around a stage that still contains a Spark FileSourceScanExec
+    // with DPP produces inefficient row<->columnar transitions. This only happens when the
+    // scan fell back (e.g., AQE DPP not supported). If the scan converted to
+    // CometNativeScanExec, stageContainsDPPScan won't match (it checks FileSourceScanExec).
+    if (stageContainsDPPScan(s)) {
       withInfos(s, Set("Stage contains a scan with Dynamic Partition Pruning"))
       return None
     }

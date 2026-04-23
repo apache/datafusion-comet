@@ -31,7 +31,7 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.{FunctionIdentifier, TableIdentifier}
 import org.apache.spark.sql.catalyst.catalog.{BucketSpec, CatalogStatistics, CatalogTable}
-import org.apache.spark.sql.catalyst.expressions.{Expression, ExpressionInfo, Hex}
+import org.apache.spark.sql.catalyst.expressions.{DynamicPruningExpression, Expression, ExpressionInfo, Hex}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, BloomFilterAggregate}
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
@@ -128,9 +128,7 @@ class CometExecSuite extends CometTestBase {
 
       // note that this test does not trigger DPP with v2 data source
       Seq("parquet").foreach { v1List =>
-        withSQLConf(
-          SQLConf.USE_V1_SOURCE_LIST.key -> v1List,
-          CometConf.COMET_DPP_FALLBACK_ENABLED.key -> "true") {
+        withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> v1List) {
           spark.read.parquet(factPath).createOrReplaceTempView("dpp_fact")
           spark.read.parquet(dimPath).createOrReplaceTempView("dpp_dim")
           val df =
@@ -138,7 +136,7 @@ class CometExecSuite extends CometTestBase {
               "select * from dpp_fact join dpp_dim on fact_date = dim_date where dim_id > 7")
           val (_, cometPlan) = checkSparkAnswer(df)
           val infos = new ExtendedExplainInfo().generateExtendedInfo(cometPlan)
-          assert(infos.contains("Dynamic Partition Pruning is not supported"))
+          assert(infos.contains("AQE Dynamic Partition Pruning is not supported"))
         }
       }
     }
@@ -164,8 +162,7 @@ class CometExecSuite extends CometTestBase {
       Seq("parquet").foreach { v1List =>
         withSQLConf(
           SQLConf.USE_V1_SOURCE_LIST.key -> v1List,
-          SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
-          CometConf.COMET_DPP_FALLBACK_ENABLED.key -> "true") {
+          SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
           spark.read.parquet(factPath).createOrReplaceTempView("dpp_fact2")
           spark.read.parquet(dimPath).createOrReplaceTempView("dpp_dim2")
           val df =
@@ -178,6 +175,569 @@ class CometExecSuite extends CometTestBase {
             !cometPlan.toString().contains("CometColumnarShuffle"),
             "Should not use Comet columnar shuffle for stages with DPP scans")
         }
+      }
+    }
+  }
+
+  test("non-AQE DPP with BHJ works with CometNativeScanExec") {
+    withTempDir { path =>
+      val factPath = s"${path.getAbsolutePath}/fact.parquet"
+      val dimPath = s"${path.getAbsolutePath}/dim.parquet"
+      withSQLConf(CometConf.COMET_EXEC_ENABLED.key -> "false") {
+        val one_day = 24 * 60 * 60000
+        val fact = Range(0, 100)
+          .map(i => (i, new java.sql.Date(System.currentTimeMillis() + (i % 10) * one_day)))
+          .toDF("fact_id", "fact_date")
+        fact.write.partitionBy("fact_date").parquet(factPath)
+        val dim = Range(0, 10)
+          .map(i => (i, new java.sql.Date(System.currentTimeMillis() + i * one_day)))
+          .toDF("dim_id", "dim_date")
+        dim.write.parquet(dimPath)
+      }
+
+      // AQE off ensures PlanDynamicPruningFilters (non-AQE) creates the DPP filters
+      // with SubqueryBroadcastExec, not SubqueryAdaptiveBroadcastExec
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+        spark.read.parquet(factPath).createOrReplaceTempView("dpp_fact_bhj")
+        spark.read.parquet(dimPath).createOrReplaceTempView("dpp_dim_bhj")
+        val df = spark.sql(
+          "select * from dpp_fact_bhj join dpp_dim_bhj on fact_date = dim_date where dim_id > 7")
+        // Exclude ReusedExchangeExec — it appears inside the DPP subquery after exchange reuse
+        val (_, cometPlan) = checkSparkAnswerAndOperator(df, classOf[ReusedExchangeExec])
+
+        val nativeScans = cometPlan.collect { case s: CometNativeScanExec => s }
+        assert(nativeScans.nonEmpty, "Expected CometNativeScanExec in plan")
+
+        val dppScans =
+          nativeScans.filter(_.partitionFilters.exists(_.isInstanceOf[DynamicPruningExpression]))
+        assert(
+          dppScans.nonEmpty,
+          "Expected at least one CometNativeScanExec with DynamicPruningExpression")
+
+        val infos = new ExtendedExplainInfo().generateExtendedInfo(cometPlan)
+        assert(
+          !infos.contains("AQE Dynamic Partition Pruning is not supported"),
+          s"Should not fall back for non-AQE DPP:\n$infos")
+      }
+    }
+  }
+
+  test("non-AQE DPP with SMJ works with CometNativeScanExec") {
+    withTempDir { path =>
+      val factPath = s"${path.getAbsolutePath}/fact.parquet"
+      val dimPath = s"${path.getAbsolutePath}/dim.parquet"
+      withSQLConf(CometConf.COMET_EXEC_ENABLED.key -> "false") {
+        val one_day = 24 * 60 * 60000
+        val fact = Range(0, 100)
+          .map(i => (i, new java.sql.Date(System.currentTimeMillis() + (i % 10) * one_day)))
+          .toDF("fact_id", "fact_date")
+        fact.write.partitionBy("fact_date").parquet(factPath)
+        val dim = Range(0, 10)
+          .map(i => (i, new java.sql.Date(System.currentTimeMillis() + i * one_day)))
+          .toDF("dim_id", "dim_date")
+        dim.write.parquet(dimPath)
+      }
+
+      // AQE off + broadcast disabled -> SMJ is used. PlanDynamicPruningFilters can't reuse
+      // broadcast, so DPP uses SubqueryExec (aggregate) or Literal.TrueLiteral (if
+      // onlyInBroadcast). Either way, non-AQE DPP should work natively.
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+        spark.read.parquet(factPath).createOrReplaceTempView("dpp_fact_smj")
+        spark.read.parquet(dimPath).createOrReplaceTempView("dpp_dim_smj")
+        val df = spark.sql(
+          "select * from dpp_fact_smj join dpp_dim_smj on fact_date = dim_date where dim_id > 7")
+        val (_, cometPlan) = checkSparkAnswerAndOperator(df)
+
+        val nativeScans = cometPlan.collect { case s: CometNativeScanExec => s }
+        assert(nativeScans.nonEmpty, "Expected CometNativeScanExec in plan")
+
+        val infos = new ExtendedExplainInfo().generateExtendedInfo(cometPlan)
+        assert(
+          !infos.contains("AQE Dynamic Partition Pruning is not supported"),
+          s"Should not fall back for non-AQE DPP:\n$infos")
+      }
+    }
+  }
+
+  test("non-AQE DPP with BHJ reuses broadcast exchange") {
+    withTempDir { dir =>
+      val path = s"${dir.getAbsolutePath}/data"
+      withSQLConf(CometConf.COMET_EXEC_ENABLED.key -> "false") {
+        spark
+          .range(100)
+          .selectExpr(
+            "id % 10 as store_id",
+            "cast(id * 2 as int) as date_id",
+            "cast(id * 3 as int) as product_id",
+            "cast(id as int) as units_sold")
+          .write
+          .partitionBy("store_id")
+          .parquet(s"$path/fact")
+        spark
+          .range(10)
+          .selectExpr("cast(id as int) as store_id", "cast(id as string) as country")
+          .write
+          .parquet(s"$path/dim")
+      }
+
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
+        spark.read.parquet(s"$path/fact").createOrReplaceTempView("fact_reuse")
+        spark.read.parquet(s"$path/dim").createOrReplaceTempView("dim_reuse")
+
+        val df = spark.sql("""SELECT f.date_id, f.store_id
+            |FROM fact_reuse f JOIN dim_reuse d
+            |ON f.store_id = d.store_id
+            |WHERE d.country = 'DE'""".stripMargin)
+        val (_, cometPlan) = checkSparkAnswer(df)
+
+        // DPP subquery should use CometSubqueryBroadcastExec (not SubqueryBroadcastExec)
+        val cometSubqueries = collectWithSubqueries(cometPlan) {
+          case s: CometSubqueryBroadcastExec => s
+        }
+        assert(
+          cometSubqueries.nonEmpty,
+          "Expected CometSubqueryBroadcastExec in plan for exchange reuse")
+
+        // Broadcast exchange should be reused — only one CometBroadcastExchangeExec,
+        // the other replaced by ReusedExchangeExec
+        val reused = collectWithSubqueries(cometPlan) { case e: ReusedExchangeExec =>
+          e
+        }
+        assert(
+          reused.nonEmpty,
+          s"Expected ReusedExchangeExec for broadcast exchange reuse:\n${cometPlan.treeString}")
+
+        val broadcasts = collectWithSubqueries(cometPlan) { case e: CometBroadcastExchangeExec =>
+          e
+        }
+        assert(
+          broadcasts.size == 1,
+          s"Expected exactly 1 CometBroadcastExchangeExec (other reused):\n${cometPlan.treeString}")
+
+        // Verify canonical forms match — this is what ReuseExchangeAndSubquery uses to
+        // determine reuse eligibility
+        if (reused.nonEmpty && broadcasts.nonEmpty) {
+          val reusedChild = reused.head.child
+          assert(
+            reusedChild.canonicalized == broadcasts.head.canonicalized,
+            "ReusedExchangeExec child and CometBroadcastExchangeExec should have same " +
+              "canonical form for reuse")
+        }
+      }
+    }
+  }
+
+  test("non-AQE DPP with non-atomic type (struct/array) join key") {
+    withTempDir { dir =>
+      val path = s"${dir.getAbsolutePath}/data"
+      withSQLConf(CometConf.COMET_EXEC_ENABLED.key -> "false") {
+        spark
+          .range(100)
+          .selectExpr(
+            "cast(id % 10 as int) as store_id",
+            "cast(id as int) as date_id",
+            "cast(id * 2 as int) as units_sold")
+          .write
+          .partitionBy("store_id")
+          .parquet(s"$path/fact")
+        spark
+          .range(10)
+          .selectExpr("cast(id as int) as store_id", "cast(id as string) as country")
+          .write
+          .parquet(s"$path/dim")
+      }
+
+      Seq("struct", "array").foreach { dataType =>
+        withSQLConf(
+          SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+          spark.read.parquet(s"$path/fact").createOrReplaceTempView("fact_nonatomic")
+          spark.read.parquet(s"$path/dim").createOrReplaceTempView("dim_nonatomic")
+          val df = spark.sql(s"""SELECT f.date_id, f.store_id FROM fact_nonatomic f
+               |JOIN dim_nonatomic d
+               |ON $dataType(f.store_id) = $dataType(d.store_id)
+               |WHERE d.country = 'DE'""".stripMargin)
+          checkSparkAnswer(df)
+        }
+      }
+    }
+  }
+
+  // Regression tests for DPP exchange/subquery reuse (from DynamicPartitionPruningSuite)
+
+  private def withDppTables(f: => Unit): Unit = {
+    val factData = Seq(
+      (1000, 1, 1, 10),
+      (1010, 2, 1, 10),
+      (1020, 2, 1, 10),
+      (1030, 3, 2, 10),
+      (1040, 3, 2, 50),
+      (1050, 3, 2, 50),
+      (1060, 3, 2, 50),
+      (1070, 4, 2, 10),
+      (1080, 4, 3, 20),
+      (1090, 4, 3, 10),
+      (1100, 4, 3, 10),
+      (1110, 5, 3, 10),
+      (1120, 6, 4, 10),
+      (1130, 7, 4, 50),
+      (1140, 8, 4, 50),
+      (1150, 9, 1, 20),
+      (1160, 10, 1, 20),
+      (1170, 11, 1, 30),
+      (1180, 12, 2, 20),
+      (1190, 13, 2, 20),
+      (1200, 14, 3, 40),
+      (1200, 15, 3, 70),
+      (1210, 16, 4, 10),
+      (1220, 17, 4, 20),
+      (1230, 18, 4, 20),
+      (1240, 19, 5, 40),
+      (1250, 20, 5, 40),
+      (1260, 21, 5, 40),
+      (1270, 22, 5, 50),
+      (1280, 23, 1, 50),
+      (1290, 24, 1, 50),
+      (1300, 25, 1, 50))
+
+    val storeData = Seq(
+      (1, "North-Holland", "NL"),
+      (2, "South-Holland", "NL"),
+      (3, "Bavaria", "DE"),
+      (4, "California", "US"),
+      (5, "Texas", "US"),
+      (6, "Texas", "US"))
+
+    val storeCode = Seq((1, 10), (2, 20), (3, 30), (4, 40), (5, 50), (6, 60))
+
+    import testImplicits._
+
+    withTable("fact_np", "fact_sk", "fact_stats", "dim_stats", "dim_store", "code_stats") {
+      factData
+        .toDF("date_id", "store_id", "product_id", "units_sold")
+        .write
+        .format("parquet")
+        .saveAsTable("fact_np")
+      factData
+        .toDF("date_id", "store_id", "product_id", "units_sold")
+        .write
+        .partitionBy("store_id")
+        .format("parquet")
+        .saveAsTable("fact_sk")
+      factData
+        .toDF("date_id", "store_id", "product_id", "units_sold")
+        .write
+        .partitionBy("store_id")
+        .format("parquet")
+        .saveAsTable("fact_stats")
+      storeData
+        .toDF("store_id", "state_province", "country")
+        .write
+        .format("parquet")
+        .saveAsTable("dim_store")
+      storeData
+        .toDF("store_id", "state_province", "country")
+        .write
+        .format("parquet")
+        .saveAsTable("dim_stats")
+      storeCode
+        .toDF("store_id", "code")
+        .write
+        .partitionBy("store_id")
+        .format("parquet")
+        .saveAsTable("code_stats")
+      sql("ANALYZE TABLE fact_stats COMPUTE STATISTICS FOR COLUMNS store_id")
+      sql("ANALYZE TABLE dim_stats COMPUTE STATISTICS FOR COLUMNS store_id")
+      sql("ANALYZE TABLE dim_store COMPUTE STATISTICS FOR COLUMNS store_id")
+      sql("ANALYZE TABLE code_stats COMPUTE STATISTICS FOR COLUMNS store_id")
+
+      f
+    }
+  }
+
+  test("DPP broadcast exchange reuse") {
+    withDppTables {
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
+
+        val df = sql("""SELECT /*+ BROADCAST(f)*/
+            |f.date_id, f.store_id, f.product_id, f.units_sold FROM fact_np f
+            |JOIN code_stats s
+            |ON f.store_id = s.store_id WHERE f.date_id <= 1030""".stripMargin)
+        val (_, cometPlan) = checkSparkAnswer(df)
+
+        val reusedExchanges = collectWithSubqueries(cometPlan) { case e: ReusedExchangeExec =>
+          e
+        }
+        assert(
+          reusedExchanges.nonEmpty,
+          s"Expected ReusedExchangeExec for broadcast exchange reuse:\n${cometPlan.treeString}")
+      }
+    }
+  }
+
+  test("DPP subquery reuse with uncorrelated scalar subquery") {
+    withDppTables {
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
+
+        val df = sql("""SELECT d.store_id, SUM(f.units_sold),
+            |       (SELECT SUM(f.units_sold)
+            |        FROM fact_stats f JOIN dim_stats d ON d.store_id = f.store_id
+            |        WHERE d.country = 'US') AS total_prod
+            |FROM fact_stats f JOIN dim_stats d ON d.store_id = f.store_id
+            |WHERE d.country = 'US'
+            |GROUP BY 1""".stripMargin)
+        val (_, cometPlan) = checkSparkAnswer(df)
+
+        val countSubqueryBroadcasts = collectWithSubqueries(cometPlan)({
+          case _: SubqueryBroadcastExec => 1
+          case _: CometSubqueryBroadcastExec => 1
+        }).sum
+        val countReusedSubqueryBroadcasts = collectWithSubqueries(cometPlan)({
+          case ReusedSubqueryExec(_: SubqueryBroadcastExec) => 1
+          case ReusedSubqueryExec(_: CometSubqueryBroadcastExec) => 1
+        }).sum
+
+        assert(
+          countSubqueryBroadcasts == 1,
+          s"Expected 1 subquery broadcast but got $countSubqueryBroadcasts:\n" +
+            cometPlan.treeString)
+        assert(
+          countReusedSubqueryBroadcasts == 1,
+          s"Expected 1 reused subquery broadcast but got $countReusedSubqueryBroadcasts:\n" +
+            cometPlan.treeString)
+      }
+    }
+  }
+
+  test("DPP with non-atomic type (struct/array) join key") {
+    withDppTables {
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true") {
+
+        Seq("struct", "array").foreach { dataType =>
+          val df =
+            sql(s"""SELECT f.date_id, f.product_id, f.units_sold, f.store_id FROM fact_stats f
+                 |JOIN dim_stats s
+                 |ON $dataType(f.store_id) = $dataType(s.store_id) WHERE s.country = 'DE'
+               """.stripMargin)
+          checkSparkAnswer(df)
+        }
+      }
+    }
+  }
+
+  test("DPP non-atomic type uses CometSubqueryBroadcastExec") {
+    withDppTables {
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true",
+        SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
+
+        Seq("struct", "array").foreach { dataType =>
+          val df =
+            sql(s"""SELECT f.date_id, f.product_id, f.units_sold, f.store_id FROM fact_stats f
+                 |JOIN dim_stats s
+                 |ON $dataType(f.store_id) = $dataType(s.store_id) WHERE s.country = 'DE'
+               """.stripMargin)
+          val (_, cometPlan) = checkSparkAnswer(df)
+
+          val cometSubqueries = collectWithSubqueries(cometPlan) {
+            case s: CometSubqueryBroadcastExec => s
+          }
+          assert(
+            cometSubqueries.nonEmpty,
+            s"Expected DPP with CometSubqueryBroadcastExec for $dataType key:\n" +
+              cometPlan.treeString)
+        }
+      }
+    }
+  }
+
+  test("non-AQE DPP with two separate broadcast joins") {
+    withTempDir { dir =>
+      val path = s"${dir.getAbsolutePath}/data"
+      withSQLConf(CometConf.COMET_EXEC_ENABLED.key -> "false") {
+        spark
+          .range(100)
+          .selectExpr(
+            "cast(id % 5 as int) as store_id",
+            "cast(id % 3 as int) as region_id",
+            "cast(id as int) as amount")
+          .write
+          .partitionBy("store_id", "region_id")
+          .parquet(s"$path/fact")
+        spark
+          .range(5)
+          .selectExpr("cast(id as int) as store_id", "cast(id as string) as store_name")
+          .write
+          .parquet(s"$path/store_dim")
+        spark
+          .range(3)
+          .selectExpr("cast(id as int) as region_id", "cast(id as string) as region_name")
+          .write
+          .parquet(s"$path/region_dim")
+      }
+
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+        spark.read.parquet(s"$path/fact").createOrReplaceTempView("fact_two_joins")
+        spark.read.parquet(s"$path/store_dim").createOrReplaceTempView("store_dim")
+        spark.read.parquet(s"$path/region_dim").createOrReplaceTempView("region_dim")
+
+        val df = spark.sql("""SELECT f.amount, s.store_name, r.region_name
+            |FROM fact_two_joins f
+            |JOIN store_dim s ON f.store_id = s.store_id
+            |JOIN region_dim r ON f.region_id = r.region_id
+            |WHERE s.store_name = '1' AND r.region_name = '2'""".stripMargin)
+        val (_, cometPlan) = checkSparkAnswer(df)
+
+        val nativeScans = cometPlan.collect { case s: CometNativeScanExec => s }
+        assert(nativeScans.nonEmpty, "Expected CometNativeScanExec in plan")
+
+        val dppScans =
+          nativeScans.filter(_.partitionFilters.exists(_.isInstanceOf[DynamicPruningExpression]))
+        assert(
+          dppScans.nonEmpty,
+          "Expected at least one CometNativeScanExec with DynamicPruningExpression")
+      }
+    }
+  }
+
+  test("non-AQE DPP fallback when broadcast exchange is not Comet") {
+    withTempDir { dir =>
+      val path = s"${dir.getAbsolutePath}/data"
+      withSQLConf(CometConf.COMET_EXEC_ENABLED.key -> "false") {
+        spark
+          .range(100)
+          .selectExpr("cast(id % 10 as int) as store_id", "cast(id as int) as amount")
+          .write
+          .partitionBy("store_id")
+          .parquet(s"$path/fact")
+        spark
+          .range(10)
+          .selectExpr("cast(id as int) as store_id", "cast(id as string) as country")
+          .write
+          .parquet(s"$path/dim")
+      }
+
+      // Disable Comet broadcast exchange so SubqueryBroadcastExec wraps a Spark
+      // BroadcastExchangeExec. convertSubqueryBroadcasts should skip it (child isn't
+      // CometNativeExec). Query should still produce correct results via Spark's standard path.
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        CometConf.COMET_EXEC_BROADCAST_EXCHANGE_ENABLED.key -> "false",
+        CometConf.COMET_EXEC_BROADCAST_HASH_JOIN_ENABLED.key -> "false") {
+        spark.read.parquet(s"$path/fact").createOrReplaceTempView("fact_fallback")
+        spark.read.parquet(s"$path/dim").createOrReplaceTempView("dim_fallback")
+
+        val df = spark.sql("""SELECT f.amount, f.store_id
+            |FROM fact_fallback f JOIN dim_fallback d
+            |ON f.store_id = d.store_id
+            |WHERE d.country = 'DE'""".stripMargin)
+        checkSparkAnswer(df)
+      }
+    }
+  }
+
+  test("non-AQE DPP with empty broadcast result") {
+    withTempDir { dir =>
+      val path = s"${dir.getAbsolutePath}/data"
+      withSQLConf(CometConf.COMET_EXEC_ENABLED.key -> "false") {
+        spark
+          .range(100)
+          .selectExpr("cast(id % 10 as int) as store_id", "cast(id as int) as amount")
+          .write
+          .partitionBy("store_id")
+          .parquet(s"$path/fact")
+        spark
+          .range(10)
+          .selectExpr("cast(id as int) as store_id", "cast(id as string) as country")
+          .write
+          .parquet(s"$path/dim")
+      }
+
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+        spark.read.parquet(s"$path/fact").createOrReplaceTempView("fact_empty")
+        spark.read.parquet(s"$path/dim").createOrReplaceTempView("dim_empty")
+
+        // Filter on dim that matches nothing -- DPP prunes all partitions
+        val df = spark.sql("""SELECT f.amount, f.store_id
+            |FROM fact_empty f JOIN dim_empty d
+            |ON f.store_id = d.store_id
+            |WHERE d.country = 'NONEXISTENT'""".stripMargin)
+        val result = df.collect()
+        assert(result.isEmpty, s"Expected empty result but got ${result.length} rows")
+        checkSparkAnswer(df)
+      }
+    }
+  }
+
+  test("non-AQE DPP resolves both outer and inner partition filters") {
+    // CometNativeScanExec.partitionFilters and CometScanExec.partitionFilters contain
+    // different InSubqueryExec instances. Both must be resolved for partition selection
+    // to work correctly. This test verifies correct results, which requires both sets
+    // of filters to be resolved.
+    withTempDir { dir =>
+      val path = s"${dir.getAbsolutePath}/data"
+      withSQLConf(CometConf.COMET_EXEC_ENABLED.key -> "false") {
+        spark
+          .range(100)
+          .selectExpr(
+            "cast(id % 10 as int) as store_id",
+            "cast(id as int) as date_id",
+            "cast(id as int) as amount")
+          .write
+          .partitionBy("store_id")
+          .parquet(s"$path/fact")
+        spark
+          .range(10)
+          .selectExpr("cast(id as int) as store_id", "cast(id as string) as country")
+          .write
+          .parquet(s"$path/dim")
+      }
+
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
+        spark.read.parquet(s"$path/fact").createOrReplaceTempView("fact_dual")
+        spark.read.parquet(s"$path/dim").createOrReplaceTempView("dim_dual")
+
+        val df = spark.sql("""SELECT f.date_id, f.store_id
+            |FROM fact_dual f JOIN dim_dual d
+            |ON f.store_id = d.store_id
+            |WHERE d.country = 'DE'""".stripMargin)
+        val (_, cometPlan) = checkSparkAnswer(df)
+
+        // Verify native scan is used
+        val nativeScans = cometPlan.collect { case s: CometNativeScanExec => s }
+        assert(nativeScans.nonEmpty, "Expected CometNativeScanExec in plan")
+
+        // Verify DPP is present
+        val dppScans =
+          nativeScans.filter(_.partitionFilters.exists(_.isInstanceOf[DynamicPruningExpression]))
+        assert(dppScans.nonEmpty, "Expected DPP filter on native scan")
       }
     }
   }
@@ -2000,8 +2560,6 @@ class CometExecSuite extends CometTestBase {
   }
 
   test("SparkToColumnar eliminate redundant in AQE") {
-    // TODO fix for Spark 4.0.0
-    assume(!isSpark40Plus)
     withSQLConf(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
       CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
@@ -2016,7 +2574,10 @@ class CometExecSuite extends CometTestBase {
       val planAfter = df.queryExecution.executedPlan
       assert(planAfter.toString.startsWith("AdaptiveSparkPlan isFinalPlan=true"))
       val adaptivePlan = planAfter.asInstanceOf[AdaptiveSparkPlanExec].executedPlan
-      val numOperators = adaptivePlan.collect { case c: CometSparkToColumnarExec =>
+      // Use AdaptiveSparkPlanHelper.collect so traversal descends through QueryStageExec.plan;
+      // Spark 4 wraps the final plan in ResultQueryStageExec (a LeafExecNode) that
+      // SparkPlan.collect would otherwise stop at.
+      val numOperators = collect(adaptivePlan) { case c: CometSparkToColumnarExec =>
         c
       }
       assert(numOperators.length == 1)
@@ -2090,8 +2651,6 @@ class CometExecSuite extends CometTestBase {
   }
 
   test("SparkToColumnar override node name for row input") {
-    // TODO fix for Spark 4.0.0
-    assume(!isSpark40Plus)
     withSQLConf(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
       CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
@@ -2106,7 +2665,8 @@ class CometExecSuite extends CometTestBase {
       val planAfter = df.queryExecution.executedPlan
       assert(planAfter.toString.startsWith("AdaptiveSparkPlan isFinalPlan=true"))
       val adaptivePlan = planAfter.asInstanceOf[AdaptiveSparkPlanExec].executedPlan
-      val nodeNames = adaptivePlan.collect { case c: CometSparkToColumnarExec =>
+      // See comment in the "eliminate redundant in AQE" test about AdaptiveSparkPlanHelper.collect.
+      val nodeNames = collect(adaptivePlan) { case c: CometSparkToColumnarExec =>
         c.nodeName
       }
       assert(nodeNames.length == 1)

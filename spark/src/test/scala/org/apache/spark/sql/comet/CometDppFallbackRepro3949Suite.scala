@@ -109,7 +109,6 @@ class CometDppFallbackRepro3949Suite extends CometTestBase {
     withTempDir { dir =>
       buildDppTables(dir, "mech")
       withSQLConf(
-        CometConf.COMET_DPP_FALLBACK_ENABLED.key -> "true",
         SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
         SQLConf.PREFER_SORTMERGEJOIN.key -> "true",
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
@@ -336,9 +335,7 @@ class CometDppFallbackRepro3949Suite extends CometTestBase {
       val suspicious = mutable.Buffer.empty[(String, Int, String)]
 
       for ((variantName, variantConf) <- variants; (q, idx) <- queries.zipWithIndex) {
-        val conf = variantConf ++ Map(
-          CometConf.COMET_DPP_FALLBACK_ENABLED.key -> "true",
-          SQLConf.USE_V1_SOURCE_LIST.key -> "parquet")
+        val conf = variantConf ++ Map(SQLConf.USE_V1_SOURCE_LIST.key -> "parquet")
         try {
           withSQLConf(conf.toSeq: _*) {
             val df = spark.sql(q)

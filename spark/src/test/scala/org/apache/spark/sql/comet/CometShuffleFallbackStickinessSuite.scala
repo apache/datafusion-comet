@@ -52,11 +52,9 @@ class CometShuffleFallbackStickinessSuite extends CometTestBase {
     val shuffle = ShuffleExchangeExec(SinglePartition, SyntheticLeaf(Nil))
     withInfo(shuffle, "pretend prior pass decided Spark fallback")
 
-    withSQLConf(CometConf.COMET_DPP_FALLBACK_ENABLED.key -> "true") {
-      assert(
-        CometShuffleExchangeExec.shuffleSupported(shuffle).isEmpty,
-        "marked shuffle must preserve its prior-pass fallback decision")
-    }
+    assert(
+      CometShuffleExchangeExec.shuffleSupported(shuffle).isEmpty,
+      "marked shuffle must preserve its prior-pass fallback decision")
   }
 
   test(
@@ -85,7 +83,6 @@ class CometShuffleFallbackStickinessSuite extends CometTestBase {
       spark.read.parquet(dimPath).createOrReplaceTempView("t_sticky_dim")
 
       withSQLConf(
-        CometConf.COMET_DPP_FALLBACK_ENABLED.key -> "true",
         SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
         SQLConf.PREFER_SORTMERGEJOIN.key -> "true",
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",

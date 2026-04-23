@@ -35,7 +35,7 @@ use crate::conversion_funcs::temporal::{
     is_df_cast_from_timestamp_spark_compatible,
 };
 use crate::conversion_funcs::utils::spark_cast_postprocess;
-use crate::utils::array_with_timezone;
+use crate::utils::{array_with_timezone, cast_timestamp_to_ntz, timestamp_ntz_to_timestamp};
 use crate::EvalMode::Legacy;
 use crate::{cast_whole_num_to_binary, BinaryOutputStyle};
 use crate::{EvalMode, SparkError};
@@ -440,6 +440,21 @@ pub(crate) fn cast_array(
         (Float32 | Float64, Timestamp(_, tz)) => cast_float_to_timestamp(&array, tz, eval_mode),
         (Boolean, Timestamp(_, tz)) => cast_boolean_to_timestamp(&array, tz),
         (Decimal128(_, scale), Timestamp(_, tz)) => cast_decimal_to_timestamp(&array, tz, *scale),
+        // NTZ → TIMESTAMP: interpret NTZ local-epoch value as session-TZ local time, convert to UTC.
+        // Must come before the is_datafusion_spark_compatible fallthrough which would
+        // incorrectly copy raw μs without any timezone conversion.
+        (Timestamp(_, None), Timestamp(_, Some(target_tz))) => Ok(timestamp_ntz_to_timestamp(
+            array,
+            &cast_options.timezone,
+            Some(target_tz.as_ref()),
+        )?),
+        // TIMESTAMP → NTZ: shift UTC epoch to local time in session TZ, store as local epoch.
+        (Timestamp(_, Some(_)), Timestamp(_, None)) => {
+            Ok(cast_timestamp_to_ntz(array, &cast_options.timezone)?)
+        }
+        // NTZ → Date32 and NTZ → Utf8 are handled by the DataFusion fall-through below
+        // (is_df_cast_from_timestamp_spark_compatible returns true for Date32 and Utf8).
+        // These casts are timezone-independent and DataFusion's implementation matches Spark.
         _ if cast_options.is_adapting_schema
             || is_datafusion_spark_compatible(&from_type, to_type) =>
         {
