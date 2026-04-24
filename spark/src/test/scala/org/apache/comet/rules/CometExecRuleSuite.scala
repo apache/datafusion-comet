@@ -262,4 +262,56 @@ class CometExecRuleSuite extends CometTestBase {
     }
   }
 
+  test("CometExecRule should not revert columnar shuffle when the revert config is disabled") {
+    withTempView("test_data") {
+      createTestDataFrame.createOrReplaceTempView("test_data")
+
+      val sparkPlan =
+        createSparkPlan(spark, "SELECT COUNT(*), SUM(id) FROM test_data GROUP BY (id % 3)")
+
+      assert(countOperators(sparkPlan, classOf[ShuffleExchangeExec]) == 1)
+      assert(countOperators(sparkPlan, classOf[HashAggregateExec]) == 2)
+
+      // Both aggregates fall back to JVM as in the prior test, but the revert optimization is
+      // disabled, so the shuffle should still be wrapped in CometColumnarShuffle.
+      withSQLConf(
+        CometConf.COMET_EXEC_SHUFFLE_REVERT_REDUNDANT_COLUMNAR_ENABLED.key -> "false",
+        CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE.key -> "false",
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        val transformedPlan = applyCometExecRule(sparkPlan)
+
+        assert(countOperators(transformedPlan, classOf[HashAggregateExec]) == 2)
+        assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 0)
+
+        assert(countOperators(transformedPlan, classOf[ShuffleExchangeExec]) == 0)
+        assert(countOperators(transformedPlan, classOf[CometShuffleExchangeExec]) == 1)
+      }
+    }
+  }
+
+  test("CometExecRule should not revert columnar shuffle when both aggregates go native") {
+    withTempView("test_data") {
+      createTestDataFrame.createOrReplaceTempView("test_data")
+
+      val sparkPlan =
+        createSparkPlan(spark, "SELECT COUNT(*), SUM(id) FROM test_data GROUP BY (id % 3)")
+
+      assert(countOperators(sparkPlan, classOf[ShuffleExchangeExec]) == 1)
+      assert(countOperators(sparkPlan, classOf[HashAggregateExec]) == 2)
+
+      // With default settings both aggregates convert to Comet native, so the shuffle between
+      // them has a Comet consumer on both sides and must remain columnar - the revert must not
+      // fire here.
+      withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        val transformedPlan = applyCometExecRule(sparkPlan)
+
+        assert(countOperators(transformedPlan, classOf[HashAggregateExec]) == 0)
+        assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 2)
+
+        assert(countOperators(transformedPlan, classOf[ShuffleExchangeExec]) == 0)
+        assert(countOperators(transformedPlan, classOf[CometShuffleExchangeExec]) == 1)
+      }
+    }
+  }
+
 }

@@ -120,8 +120,16 @@ case class CometExecRule(session: SparkSession)
    * main conversion already decided to keep both aggregates JVM - we never create the dangerous
    * mixed mode where a Comet partial feeds a JVM final (see issue #1389).
    *
-   * Also tag the reverted shuffle so AQE stage-isolated re-planning does not convert it back to a
-   * Comet shuffle when the outer aggregate context is no longer visible.
+   * Correctness depends on running as part of `preColumnarTransitions`: if the revert ran after
+   * Spark inserted `ColumnarToRowExec` between the aggregate and the columnar shuffle, the
+   * pattern would no longer match (the shuffle would be separated from the aggregate by the
+   * transition) and the unnecessary conversion could not be eliminated.
+   *
+   * The reverted shuffle is tagged with `SKIP_COMET_SHUFFLE_TAG` so both the AQE
+   * `QueryStagePrepRule` pass and the `ColumnarRule` `preColumnarTransitions` pass leave it alone
+   * on re-entry - AQE in particular re-runs the rule on each stage in isolation, where the outer
+   * aggregate context is no longer visible and the shuffle would otherwise be re-wrapped as a
+   * Comet columnar shuffle.
    */
   private def revertRedundantColumnarShuffle(plan: SparkPlan): SparkPlan = {
     def isAggregate(p: SparkPlan): Boolean =
