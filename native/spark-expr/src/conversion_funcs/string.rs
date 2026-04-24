@@ -1774,7 +1774,17 @@ fn timestamp_ntz_parser_inner(value: &str, eval_mode: EvalMode) -> SparkResult<O
     for (re, ts_type) in patterns {
         if re.is_match(value) {
             return match parse_to_timestamp_info(value, ts_type)? {
-                Some(info) => local_datetime_to_micros(&info),
+                Some(info) => match local_datetime_to_micros(&info)? {
+                    some @ Some(_) => Ok(some),
+                    None if eval_mode == EvalMode::Ansi => {
+                        Err(SparkError::InvalidInputInCastToDatetime {
+                            value: value.to_string(),
+                            from_type: "STRING".to_string(),
+                            to_type: "TIMESTAMP_NTZ".to_string(),
+                        })
+                    }
+                    None => Ok(None),
+                },
                 None => Ok(None),
             };
         }
@@ -2209,6 +2219,26 @@ mod tests {
             }
             other => panic!("Expected InvalidInputInCastToDatetime, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_cast_string_to_timestamp_ntz_ansi_invalid_date() {
+        // 2023-02-29 is parseable but invalid (not a leap year).
+        // In ANSI mode this must error, not return NULL.
+        let result = timestamp_ntz_parser("2023-02-29", EvalMode::Ansi, false, false);
+        assert!(
+            result.is_err(),
+            "ANSI mode should error on invalid date 2023-02-29"
+        );
+        match result.unwrap_err() {
+            SparkError::InvalidInputInCastToDatetime { to_type, .. } => {
+                assert_eq!(to_type, "TIMESTAMP_NTZ");
+            }
+            other => panic!("Expected InvalidInputInCastToDatetime, got {other:?}"),
+        }
+        // In Legacy mode, same input should return None (null).
+        let result = timestamp_ntz_parser("2023-02-29", EvalMode::Legacy, false, false);
+        assert_eq!(result.unwrap(), None);
     }
 
     #[test]

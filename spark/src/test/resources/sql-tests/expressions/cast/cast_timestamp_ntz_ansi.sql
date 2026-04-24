@@ -28,6 +28,10 @@ SELECT cast('T12:34:56' as timestamp_ntz)
 query expect_error(CAST_INVALID_INPUT)
 SELECT cast('' as timestamp_ntz)
 
+-- ANSI mode: parseable but invalid date should error, not return NULL
+query expect_error(CAST_INVALID_INPUT)
+SELECT cast('2023-02-29' as timestamp_ntz)
+
 -- TRY_CAST: returns NULL even in ANSI mode
 query
 SELECT try_cast('invalid' as timestamp_ntz), try_cast('T12:34' as timestamp_ntz)
