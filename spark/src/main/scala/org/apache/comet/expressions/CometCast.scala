@@ -48,6 +48,13 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
       DataTypes.TimestampType,
       DataTypes.TimestampNTZType)
 
+  override def getIncompatibleReasons(): Seq[String] = Seq(
+    "Some cast operations between specific type pairs may produce different results than Spark." +
+      " Refer to the compatibility guide for the full matrix of supported cast operations.")
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(
+    "Not all cast type combinations are supported. Unsupported casts fall back to Spark.")
+
   override def getSupportLevel(cast: Cast): SupportLevel = {
     if (cast.child.isInstanceOf[Literal]) {
       // casting from literal is compatible because we delegate to Spark
