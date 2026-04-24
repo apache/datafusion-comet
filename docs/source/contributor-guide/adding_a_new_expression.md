@@ -73,9 +73,9 @@ object CometUnhex extends CometExpressionSerde[Unhex] {
 The `CometExpressionSerde` trait provides several methods you can override:
 
 - `convert(expr: T, inputs: Seq[Attribute], binding: Boolean): Option[Expr]` - **Required**. Converts the Spark expression to protobuf. Return `None` if the expression cannot be converted.
-- `getSupportLevel(expr: T): SupportLevel` - Optional. Returns the level of support for the expression at planning time, based on a specific expression instance. See "Using getSupportLevel" section below for details.
-- `getIncompatibleReasons(): Seq[String]` - Optional. Returns reasons why this expression may produce different results than Spark. Used to generate the Compatibility Guide. See "Documenting Incompatible and Unsupported Reasons" below.
-- `getUnsupportedReasons(): Seq[String]` - Optional. Returns reasons why this expression may not be supported by Comet (for example, unsupported data types or format strings). Used to generate the Compatibility Guide. See "Documenting Incompatible and Unsupported Reasons" below.
+- `getSupportLevel(expr: T): SupportLevel` - Optional. Returns the [support level](#support-levels) for the expression at planning time, based on a specific expression instance. See [Using getSupportLevel](#using-getsupportlevel) below for details.
+- `getIncompatibleReasons(): Seq[String]` - Optional. Returns reasons why this expression may produce different results than Spark. Used to generate the Compatibility Guide. See [Documenting Incompatible and Unsupported Reasons](#documenting-incompatible-and-unsupported-reasons) below.
+- `getUnsupportedReasons(): Seq[String]` - Optional. Returns reasons why this expression may not be supported by Comet (for example, unsupported data types or format strings). Used to generate the Compatibility Guide. See [Documenting Incompatible and Unsupported Reasons](#documenting-incompatible-and-unsupported-reasons) below.
 - `getExprConfigName(expr: T): String` - Optional. Returns a short name for configuration keys. Defaults to the Spark class name.
 
 For simple scalar functions that map directly to a DataFusion function, you can use the built-in `CometScalarFunction` implementation:
@@ -103,6 +103,16 @@ A few things to note:
 - `scalarFunctionExprToProtoWithReturnType` is for scalar functions that need to return type information. Your expression may use a different method depending on the type of expression.
 - Use helper methods like `createBinaryExpr` and `createUnaryExpr` from `QueryPlanSerde` for common expression patterns.
 
+#### Support Levels
+
+The `SupportLevel` sealed trait has three possible values:
+
+- **`Compatible(notes: Option[String] = None)`** - Comet supports this expression with full compatibility with Spark, or may have known differences in specific edge cases unlikely to affect most users. This is the default if you don't override `getSupportLevel`.
+- **`Incompatible(notes: Option[String] = None)`** - Comet supports this expression but results can differ from Spark. The expression will only be used if `spark.comet.expr.allowIncompatible=true` or the expression-specific config `spark.comet.expr.<exprName>.allowIncompatible=true` is set.
+- **`Unsupported(notes: Option[String] = None)`** - Comet does not support this expression under the current conditions. Spark will fall back to its native execution.
+
+All three accept an optional `notes` parameter to provide additional context that is logged for debugging.
+
 #### Using getSupportLevel
 
 The `getSupportLevel` method allows you to control whether an expression should be executed by Comet based on various conditions such as data types, parameter values, or other expression-specific constraints. This is particularly useful when:
@@ -110,14 +120,6 @@ The `getSupportLevel` method allows you to control whether an expression should 
 1. Your expression only supports specific data types
 2. Your expression has known incompatibilities with Spark's behavior
 3. Your expression has edge cases that aren't yet supported
-
-The method returns one of three `SupportLevel` values:
-
-- **`Compatible(notes: Option[String] = None)`** - Comet supports this expression with full compatibility with Spark, or may have known differences in specific edge cases that are unlikely to be an issue for most users. This is the default if you don't override `getSupportLevel`.
-- **`Incompatible(notes: Option[String] = None)`** - Comet supports this expression but results can be different from Spark. The expression will only be used if `spark.comet.expr.allowIncompatible=true` or the expression-specific config `spark.comet.expr.<exprName>.allowIncompatible=true` is set.
-- **`Unsupported(notes: Option[String] = None)`** - Comet does not support this expression under the current conditions. The expression will not be used and Spark will fall back to its native execution.
-
-All three support levels accept an optional `notes` parameter to provide additional context about the support level.
 
 ##### Examples
 
