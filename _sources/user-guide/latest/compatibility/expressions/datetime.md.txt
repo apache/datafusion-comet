@@ -19,7 +19,29 @@ under the License.
 
 # Date/Time Expressions
 
-<!--BEGIN:EXPR_COMPAT[datetime]-->
+- **Hour, Minute, Second**: Incorrectly apply timezone conversion to TimestampNTZ inputs. TimestampNTZ stores local
+  time without timezone, so no conversion should be applied. These expressions work correctly with Timestamp inputs.
+  [#3180](https://github.com/apache/datafusion-comet/issues/3180)
+- **TruncTimestamp (date_trunc)**: Produces incorrect results when used with non-UTC timezones. Compatible when
+  timezone is UTC.
+  [#2649](https://github.com/apache/datafusion-comet/issues/2649)
+
+## Date and Time Functions
+
+Comet's native implementation of date and time functions may produce different results than Spark for dates
+far in the future (approximately beyond year 2100). This is because Comet uses the chrono-tz library for
+timezone calculations, which has limited support for Daylight Saving Time (DST) rules beyond the IANA
+time zone database's explicit transitions.
+
+For dates within a reasonable range (approximately 1970-2100), Comet's date and time functions are compatible
+with Spark. For dates beyond this range, functions that involve timezone-aware calculations (such as
+`date_trunc` with timezone-aware timestamps) may produce results with incorrect DST offsets.
+
+If you need to process dates far in the future with accurate timezone handling, consider:
+
+- Using timezone-naive types (`timestamp_ntz`) when timezone conversion is not required
+- Falling back to Spark for these specific operations
+  <!--BEGIN:EXPR_COMPAT[datetime]-->
 
 ### DateFormatClass
 
@@ -65,4 +87,4 @@ The following incompatibilities cause `Hour` to fall back to Spark by default. S
 The following incompatibilities cause `TruncTimestamp` to fall back to Spark by default. Set `spark.comet.expression.TruncTimestamp.allowIncompatible=true` to enable Comet acceleration despite these differences.
 
 - Produces incorrect results when used with non-UTC timezones. Compatible when timezone is UTC. (https://github.com/apache/datafusion-comet/issues/2649)
-<!--END:EXPR_COMPAT-->
+  <!--END:EXPR_COMPAT-->

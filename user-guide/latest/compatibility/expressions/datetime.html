@@ -473,9 +473,32 @@ under the License.
 -->
 <section id="date-time-expressions">
 <h1>Date/Time Expressions<a class="headerlink" href="#date-time-expressions" title="Link to this heading">#</a></h1>
+<ul class="simple">
+<li><p><strong>Hour, Minute, Second</strong>: Incorrectly apply timezone conversion to TimestampNTZ inputs. TimestampNTZ stores local
+time without timezone, so no conversion should be applied. These expressions work correctly with Timestamp inputs.
+<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3180">#3180</a></p></li>
+<li><p><strong>TruncTimestamp (date_trunc)</strong>: Produces incorrect results when used with non-UTC timezones. Compatible when
+timezone is UTC.
+<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2649">#2649</a></p></li>
+</ul>
+<section id="date-and-time-functions">
+<h2>Date and Time Functions<a class="headerlink" href="#date-and-time-functions" title="Link to this heading">#</a></h2>
+<p>Comet’s native implementation of date and time functions may produce different results than Spark for dates
+far in the future (approximately beyond year 2100). This is because Comet uses the chrono-tz library for
+timezone calculations, which has limited support for Daylight Saving Time (DST) rules beyond the IANA
+time zone database’s explicit transitions.</p>
+<p>For dates within a reasonable range (approximately 1970-2100), Comet’s date and time functions are compatible
+with Spark. For dates beyond this range, functions that involve timezone-aware calculations (such as
+<code class="docutils literal notranslate"><span class="pre">date_trunc</span></code> with timezone-aware timestamps) may produce results with incorrect DST offsets.</p>
+<p>If you need to process dates far in the future with accurate timezone handling, consider:</p>
+<ul>
+<li><p>Using timezone-naive types (<code class="docutils literal notranslate"><span class="pre">timestamp_ntz</span></code>) when timezone conversion is not required</p></li>
+<li><p>Falling back to Spark for these specific operations</p>
 <!--BEGIN:EXPR_COMPAT[datetime]-->
+</li>
+</ul>
 <section id="dateformatclass">
-<h2>DateFormatClass<a class="headerlink" href="#dateformatclass" title="Link to this heading">#</a></h2>
+<h3>DateFormatClass<a class="headerlink" href="#dateformatclass" title="Link to this heading">#</a></h3>
 <p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">DateFormatClass</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.DateFormatClass.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
 <ul class="simple">
 <li><p>Non-UTC timezones may produce different results than Spark</p></li>
@@ -512,19 +535,21 @@ under the License.
 </ul>
 </section>
 <section id="hour">
-<h2>Hour<a class="headerlink" href="#hour" title="Link to this heading">#</a></h2>
+<h3>Hour<a class="headerlink" href="#hour" title="Link to this heading">#</a></h3>
 <p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">Hour</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Hour.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
 <ul class="simple">
 <li><p>Incorrectly applies timezone conversion to TimestampNTZ inputs (https://github.com/apache/datafusion-comet/issues/3180)</p></li>
 </ul>
 </section>
 <section id="trunctimestamp">
-<h2>TruncTimestamp<a class="headerlink" href="#trunctimestamp" title="Link to this heading">#</a></h2>
+<h3>TruncTimestamp<a class="headerlink" href="#trunctimestamp" title="Link to this heading">#</a></h3>
 <p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">TruncTimestamp</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.TruncTimestamp.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
-<ul class="simple">
-<li><p>Produces incorrect results when used with non-UTC timezones. Compatible when timezone is UTC. (https://github.com/apache/datafusion-comet/issues/2649)</p></li>
-</ul>
+<ul>
+<li><p>Produces incorrect results when used with non-UTC timezones. Compatible when timezone is UTC. (https://github.com/apache/datafusion-comet/issues/2649)</p>
 <!--END:EXPR_COMPAT-->
+</li>
+</ul>
+</section>
 </section>
 </section>
 
