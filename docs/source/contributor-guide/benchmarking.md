@@ -27,12 +27,6 @@ Data generation scripts are available in the [DataFusion Benchmarks](https://git
 
 ## Current Benchmark Results
 
-The published benchmarks are performed on a Linux workstation with PCIe 5, AMD 7950X CPU (16 cores), 128 GB RAM, and
-data stored locally in Parquet format on NVMe storage. Performance characteristics will vary in different environments
-and we encourage you to run these benchmarks in your own environments.
-
-The operating system used was Ubuntu 22.04.5 LTS.
-
 - [Benchmarks derived from TPC-H](benchmark-results/tpc-h)
 - [Benchmarks derived from TPC-DS](benchmark-results/tpc-ds)
 

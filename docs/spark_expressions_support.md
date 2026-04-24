@@ -33,7 +33,7 @@
 - [x] bool_and
 - [x] bool_or
 - [ ] collect_list
-- [ ] collect_set
+- [x] collect_set
 - [ ] corr
 - [x] count
 - [x] count_if
@@ -93,12 +93,12 @@
 - [x] array_join
 - [x] array_max
 - [ ] array_min
-- [ ] array_position
+- [x] array_position
 - [x] array_remove
 - [x] array_repeat
 - [x] array_union
 - [x] arrays_overlap
-- [ ] arrays_zip
+- [x] arrays_zip
 - [x] element_at
 - [ ] flatten
 - [x] get

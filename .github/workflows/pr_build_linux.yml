@@ -30,18 +30,22 @@ on:
       - "doc/**"
       - "docs/**"
       - "**.md"
+      - "dev/changelog/*.md"
       - "native/core/benches/**"
       - "native/spark-expr/benches/**"
       - "spark/src/test/scala/org/apache/spark/sql/benchmark/**"
+      - "spark/src/main/scala/org/apache/comet/GenerateDocs.scala"
   pull_request:
     paths-ignore:
       - "benchmarks/**"
       - "doc/**"
       - "docs/**"
       - "**.md"
+      - "dev/changelog/*.md"
       - "native/core/benches/**"
       - "native/spark-expr/benches/**"
       - "spark/src/test/scala/org/apache/spark/sql/benchmark/**"
+      - "spark/src/main/scala/org/apache/comet/GenerateDocs.scala"
   # manual trigger
   # https://docs.github.com/en/actions/managing-workflow-runs/manually-running-a-workflow
   workflow_dispatch:
@@ -49,6 +53,10 @@ on:
 env:
   RUST_VERSION: stable
   RUST_BACKTRACE: 1
+  # Force GNU ld on Linux: recent Rust stable defaults to rust-lld on
+  # x86_64-unknown-linux-gnu, and rust-lld cannot resolve -ljvm against the
+  # Zulu JDK layout installed by setup-java. Keep bfd for all cargo invocations.
+  RUSTFLAGS: "-Clink-arg=-fuse-ld=bfd"
 
 jobs:
 
@@ -166,7 +174,7 @@ jobs:
           # (no LTO, parallel codegen)
           cargo build --profile ci
         env:
-          RUSTFLAGS: "-Ctarget-cpu=x86-64-v3"
+          RUSTFLAGS: "-Ctarget-cpu=x86-64-v3 -Clink-arg=-fuse-ld=bfd"
 
       - name: Upload native library
         uses: actions/upload-artifact@v7
