@@ -31,6 +31,7 @@ Compatibility notes are grouped by expression category:
 aggregate
 array
 datetime
+math
 struct
 cast
 ```

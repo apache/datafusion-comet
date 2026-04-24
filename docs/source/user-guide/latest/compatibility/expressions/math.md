@@ -17,7 +17,7 @@ specific language governing permissions and limitations
 under the License.
 -->
 
-# Struct Expressions
+# Math Expressions
 
-<!--BEGIN:EXPR_COMPAT[struct]-->
+<!--BEGIN:EXPR_COMPAT[math]-->
 <!--END:EXPR_COMPAT-->
