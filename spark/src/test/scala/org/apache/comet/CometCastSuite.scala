@@ -1268,12 +1268,31 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  ignore("cast StringType to TimestampNTZType") {
-    // Phase 5: String → NTZ parsing not yet implemented
-    // https://github.com/apache/datafusion-comet/issues/378
-    withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC") {
-      val values = Seq("2020-01-01T12:34:56.123456", "2020-01-01T12:34:56", "2020-01-01")
-      castTimestampTest(values.toDF("a"), DataTypes.TimestampNTZType)
+  test("cast StringType to TimestampNTZType") {
+    representativeTimezones.foreach { tz =>
+      withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
+        val values = Seq(
+          "2020-01-01T12:34:56.123456",
+          "2020-01-01T12:34:56",
+          "2020-01-01 12:34:56",
+          "2020-01-01",
+          "2020-01",
+          "2020",
+          "2020-06-15T12:30:00Z",
+          "2020-06-15T12:30:00+05:30",
+          "2020-06-15T12:30:00-08:00",
+          "2020-06-15T12:30:00 UTC",
+          "2024-03-10 02:30:00",
+          "2024-11-03 01:30:00",
+          "not a timestamp",
+          "",
+          "T12:34:56",
+          "12:34:56",
+          "2020-02-29 00:00:00",
+          "2023-02-29 00:00:00",
+          null)
+        castTimestampTest(values.toDF("a"), DataTypes.TimestampNTZType, assertNative = true)
+      }
     }
   }
 

@@ -225,8 +225,7 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
       case DataTypes.TimestampType =>
         Compatible()
       case _: TimestampNTZType =>
-        // https://github.com/apache/datafusion-comet/issues/378
-        Incompatible(Some("Cast from String to TimestampNTZ is not yet supported"))
+        Compatible()
       case _ =>
         unsupported(DataTypes.StringType, toType)
     }
