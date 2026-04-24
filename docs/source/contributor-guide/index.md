@@ -33,6 +33,7 @@ Debugging Guide <debugging>
 Benchmarking Guide <benchmarking>
 Adding a New Operator <adding_a_new_operator>
 Adding a New Expression <adding_a_new_expression>
+Supported Spark Expressions <spark_expressions_support>
 Tracing <tracing>
 Profiling <profiling>
 Spark SQL Tests <spark-sql-tests.md>

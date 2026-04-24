@@ -89,6 +89,9 @@
 - [x] array_distinct
 - [x] array_except
 - [x] array_insert
+  - Spark 3.4.3 audited 2026-04-02
+  - Spark 3.5.8 audited 2026-04-02
+  - Spark 4.0.1 audited 2026-04-02 (pos=0 error message differs from Spark)
 - [x] array_intersect
 - [x] array_join
 - [x] array_max

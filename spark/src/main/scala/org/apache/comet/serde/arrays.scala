@@ -390,7 +390,7 @@ object CometArrayJoin extends CometExpressionSerde[ArrayJoin] {
 
 object CometArrayInsert extends CometExpressionSerde[ArrayInsert] {
 
-  override def getSupportLevel(expr: ArrayInsert): SupportLevel = Incompatible(None)
+  override def getSupportLevel(expr: ArrayInsert): SupportLevel = Compatible()
 
   override def convert(
       expr: ArrayInsert,
