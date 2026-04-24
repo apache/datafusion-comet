@@ -656,4 +656,55 @@ class CometStringExpressionSuite extends CometTestBase {
     }
   }
 
+  test("substring - scalar inputs") {
+    val noConstantFolding =
+      "spark.sql.optimizer.excludedRules" ->
+        "org.apache.spark.sql.catalyst.optimizer.ConstantFolding"
+    val data = Seq(("hello world", ""), ("abc", ""), ("", ""), (null, ""))
+    withSQLConf(noConstantFolding) {
+      withParquetTable(data, "tbl") {
+        // all-literal arguments
+        checkSparkAnswerAndOperator("SELECT substring('hello world', 1, 5) FROM tbl")
+        checkSparkAnswerAndOperator("SELECT substring('hello world', -3) FROM tbl")
+        checkSparkAnswerAndOperator("SELECT substring('hello world', 0, 3) FROM tbl")
+        checkSparkAnswerAndOperator("SELECT substring('hello world', 1, 0) FROM tbl")
+        checkSparkAnswerAndOperator("SELECT substring('hello world', 1, -1) FROM tbl")
+        checkSparkAnswerAndOperator("SELECT substring('hello world', 100) FROM tbl")
+        checkSparkAnswerAndOperator("SELECT substring('', 1, 5) FROM tbl")
+        checkSparkAnswerAndOperator("SELECT substring(NULL, 1, 5) FROM tbl")
+        // negative start edge cases
+        checkSparkAnswerAndOperator("SELECT substring('hello world', -2, 3) FROM tbl")
+        checkSparkAnswerAndOperator("SELECT substring('hello world', -10, 3) FROM tbl")
+        checkSparkAnswerAndOperator("SELECT substring('hello world', -300, 3) FROM tbl")
+        // scalar alongside column
+        checkSparkAnswerAndOperator(
+          "SELECT substring(_1, 1, 5), substring('hello', 1, 5) FROM tbl")
+        checkSparkAnswerAndOperator("SELECT substring(_1, -3), substring('world', -3) FROM tbl")
+      }
+    }
+  }
+
+  test("substring - scalar inputs with multi-byte") {
+    val noConstantFolding =
+      "spark.sql.optimizer.excludedRules" ->
+        "org.apache.spark.sql.catalyst.optimizer.ConstantFolding"
+    // scalastyle:off
+    val data = Seq(Tuple1("placeholder"))
+    withSQLConf(noConstantFolding) {
+      withParquetTable(data, "tbl") {
+        checkSparkAnswerAndOperator("SELECT substring('こんにちは世界', 1, 3) FROM tbl")
+        checkSparkAnswerAndOperator("SELECT substring('こんにちは世界', -2) FROM tbl")
+        checkSparkAnswerAndOperator("SELECT substring('🎉🎊🎈🎁', 2, 2) FROM tbl")
+        checkSparkAnswerAndOperator("SELECT substring('ab🎉cd', 3, 1) FROM tbl")
+        // decomposed vs precomposed
+        checkSparkAnswerAndOperator("SELECT substring('é', 1, 1) FROM tbl")
+        checkSparkAnswerAndOperator("SELECT substring('é', 1, 1) FROM tbl")
+        // Telugu
+        checkSparkAnswerAndOperator("SELECT substring('తెలుగు', 1, 2) FROM tbl")
+        checkSparkAnswerAndOperator("SELECT substring('తెలుగు', -2, 2) FROM tbl")
+      }
+    }
+    // scalastyle:on
+  }
+
 }

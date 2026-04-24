@@ -21,7 +21,6 @@ use crate::kernels::strings::substring;
 use arrow::array::{as_dictionary_array, as_largestring_array, as_string_array, Array, ArrayRef};
 use arrow::datatypes::{DataType, Int32Type, Schema};
 use arrow::record_batch::RecordBatch;
-use datafusion::common::DataFusionError;
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::physical_expr::PhysicalExpr;
 use std::{
@@ -87,21 +86,21 @@ impl PhysicalExpr for SubstringExpr {
 
     fn evaluate(&self, batch: &RecordBatch) -> datafusion::common::Result<ColumnarValue> {
         let arg = self.child.evaluate(batch)?;
-        match arg {
-            ColumnarValue::Array(array) => {
-                let result = if self.start < 0 {
-                    // Spark and Arrow differ for negative start: Arrow clamps
-                    // start to 0 then takes `len` chars, but Spark computes
-                    // end = unclamped_start + len, then clamps both independently.
-                    spark_substring_negative_start(&array, self.start, self.len)?
-                } else {
-                    substring(&array, self.start, self.len)?
-                };
-                Ok(ColumnarValue::Array(result))
-            }
-            _ => Err(DataFusionError::Execution(
-                "Substring(scalar) should be fold in Spark JVM side.".to_string(),
-            )),
+        let is_scalar = matches!(arg, ColumnarValue::Scalar(_));
+        let array = arg.into_array(1)?;
+        // Spark and Arrow differ for negative start: Arrow clamps
+        // start to 0 then takes `len` chars, but Spark computes
+        // end = unclamped_start + len, then clamps both independently.
+        let result = if self.start < 0 {
+            spark_substring_negative_start(&array, self.start, self.len)?
+        } else {
+            substring(&array, self.start, self.len)?
+        };
+        if is_scalar {
+            let scalar = datafusion::common::ScalarValue::try_from_array(&result, 0)?;
+            Ok(ColumnarValue::Scalar(scalar))
+        } else {
+            Ok(ColumnarValue::Array(result))
         }
     }
 
@@ -570,5 +569,91 @@ mod tests {
                 Some("".to_string()),
             ]
         );
+    }
+
+    // --- Scalar support ---
+
+    fn evaluate_scalar_substring(value: Option<&str>, start: i64, len: u64) -> ColumnarValue {
+        use datafusion::common::ScalarValue;
+        use datafusion::physical_expr::expressions::Literal;
+
+        let scalar = ScalarValue::Utf8(value.map(|s| s.to_string()));
+        let child = Arc::new(Literal::new(scalar)) as Arc<dyn PhysicalExpr>;
+        let expr = SubstringExpr::new(child, start, len);
+        let schema = Schema::new(vec![Field::new("dummy", DataType::Utf8, true)]);
+        let batch = RecordBatch::new_empty(Arc::new(schema));
+        expr.evaluate(&batch).unwrap()
+    }
+
+    #[test]
+    fn test_scalar_basic() {
+        use datafusion::common::ScalarValue;
+        match evaluate_scalar_substring(Some("hello world"), 0, 5) {
+            ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) => assert_eq!(s, "hello"),
+            other => panic!("Expected Scalar Utf8, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_scalar_negative_start() {
+        use datafusion::common::ScalarValue;
+        match evaluate_scalar_substring(Some("hello world"), -3, 3) {
+            ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) => assert_eq!(s, "rld"),
+            other => panic!("Expected Scalar Utf8, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_scalar_null() {
+        use datafusion::common::ScalarValue;
+        match evaluate_scalar_substring(None, 0, 5) {
+            ColumnarValue::Scalar(ScalarValue::Utf8(None)) => {}
+            other => panic!("Expected Scalar Utf8(None), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_scalar_empty_string() {
+        use datafusion::common::ScalarValue;
+        match evaluate_scalar_substring(Some(""), 0, 5) {
+            ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) => assert_eq!(s, ""),
+            other => panic!("Expected Scalar Utf8, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_scalar_multibyte() {
+        use datafusion::common::ScalarValue;
+        match evaluate_scalar_substring(Some("こんにちは"), 0, 3) {
+            ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) => assert_eq!(s, "こんに"),
+            other => panic!("Expected Scalar Utf8, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_scalar_negative_start_multibyte() {
+        use datafusion::common::ScalarValue;
+        match evaluate_scalar_substring(Some("こんにちは"), -2, 2) {
+            ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) => assert_eq!(s, "ちは"),
+            other => panic!("Expected Scalar Utf8, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_scalar_decomposed_e_acute() {
+        use datafusion::common::ScalarValue;
+        match evaluate_scalar_substring(Some("e\u{301}"), 0, 1) {
+            ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) => assert_eq!(s, "e"),
+            other => panic!("Expected Scalar Utf8, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_scalar_telugu() {
+        use datafusion::common::ScalarValue;
+        match evaluate_scalar_substring(Some("తెలుగు"), -2, 2) {
+            ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) => assert_eq!(s, "గు"),
+            other => panic!("Expected Scalar Utf8, got {:?}", other),
+        }
     }
 }

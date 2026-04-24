@@ -135,6 +135,57 @@ SELECT substring(s, 1, 3) = 'hel' FROM test_substring
 query
 SELECT length(substring(s, 2)) FROM test_substring
 
+-- scalar string inputs (constant folding is disabled by test framework)
+query
+SELECT substring('hello world', 1, 5)
+
+query
+SELECT substring('hello world', -3)
+
+query
+SELECT substring('hello world', 0, 3)
+
+query
+SELECT substring('hello world', 1, 0)
+
+query
+SELECT substring('hello world', 1, -1)
+
+query
+SELECT substring('hello world', 100)
+
+query
+SELECT substring('hello world', -2, 3)
+
+query
+SELECT substring('hello world', -10, 3)
+
+query
+SELECT substring('', 1, 5)
+
+query
+SELECT substring(NULL, 1, 5)
+
+-- scalar multi-byte
+query
+SELECT substring('こんにちは世界', 1, 3)
+
+query
+SELECT substring('こんにちは世界', -2)
+
+query
+SELECT substring('🎉🎊🎈🎁', 2, 2)
+
+query
+SELECT substring('ab🎉cd', 3, 1)
+
+-- scalar with mixed column/literal args
+query
+SELECT substring(s, 1, 5), substring('hello', 1, 5) FROM test_substring
+
+query
+SELECT substring(s, -3), substring('world', -3) FROM test_substring
+
 -- literal + literal + literal
-query ignore(https://github.com/apache/datafusion-comet/issues/3337)
+query
 SELECT substring('hello world', 1, 5), substring('hello world', -3), substring('', 1, 5), substring(NULL, 1, 5)
