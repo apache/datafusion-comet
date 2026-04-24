@@ -3830,16 +3830,44 @@ index 52abd248f3a..b4e096cae24 100644
          case d: DynamicPruningExpression => d.child
        }
 diff --git a/sql/hive/src/test/scala/org/apache/spark/sql/hive/HiveUDFDynamicLoadSuite.scala b/sql/hive/src/test/scala/org/apache/spark/sql/hive/HiveUDFDynamicLoadSuite.scala
-index 4b27082e188..6710c90c789 100644
+index 4b27082e188..057b2430872 100644
 --- a/sql/hive/src/test/scala/org/apache/spark/sql/hive/HiveUDFDynamicLoadSuite.scala
 +++ b/sql/hive/src/test/scala/org/apache/spark/sql/hive/HiveUDFDynamicLoadSuite.scala
-@@ -147,7 +147,9 @@ class HiveUDFDynamicLoadSuite extends QueryTest with SQLTestUtils with TestHiveS
+@@ -17,7 +17,7 @@
+ 
+ package org.apache.spark.sql.hive
+ 
+-import org.apache.spark.sql.{QueryTest, Row}
++import org.apache.spark.sql.{IgnoreCometSuite, QueryTest, Row}
+ import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Expression}
+ import org.apache.spark.sql.hive.HiveShim.HiveFunctionWrapper
+ import org.apache.spark.sql.hive.test.TestHiveSingleton
+@@ -26,7 +26,13 @@ import org.apache.spark.sql.types.{IntegerType, StringType}
+ import org.apache.spark.util.ArrayImplicits._
+ import org.apache.spark.util.Utils
+ 
+-class HiveUDFDynamicLoadSuite extends QueryTest with SQLTestUtils with TestHiveSingleton {
++// Comet: mix in IgnoreCometSuite so these tests are reported as ignored when Comet is enabled
++// (ENABLE_COMET=true). The jar these tests depend on (`hive-test-udfs.jar`) is stripped from the
++// Spark 4.0.1 release source tag per the ASF binary-artifact policy, so the tests cannot run in
++// Comet's CI. Ignoring keeps the suite passing without masking real regressions; the upstream
++// tests still run in non-Comet Spark builds that ship the jar on branch-4.0.
++class HiveUDFDynamicLoadSuite extends QueryTest with SQLTestUtils with TestHiveSingleton
++  with IgnoreCometSuite {
+ 
+   case class UDFTestInformation(
+       identifier: String,
+@@ -147,7 +153,13 @@ class HiveUDFDynamicLoadSuite extends QueryTest with SQLTestUtils with TestHiveS
  
      // This jar file should not be placed to the classpath.
      val jarPath = "src/test/noclasspath/hive-test-udfs.jar"
 -    assume(new java.io.File(jarPath).exists)
-+    // Comet: hive-test-udfs.jar files has been removed from Apache Spark repository
-+    //        comment out the following line for now
++    // Comet: the upstream `assume(...)` runs here in the suite constructor (inside this foreach,
++    // before `test(...)` registers a case). When the jar is missing - as it is on the v4.0.1
++    // release tag - `assume` throws TestCanceledException out of `<init>`, which ScalaTest
++    // reports as a suite abort (not a per-test cancel) and fails the whole job. The
++    // IgnoreCometSuite mixin above already reroutes these tests to `ignore` under Comet, so
++    // the jar presence check is unnecessary; comment it out to avoid the constructor-time abort.
 +    // assume(new java.io.File(jarPath).exists)
      val jarUrl = s"file://${System.getProperty("user.dir")}/$jarPath"
  
