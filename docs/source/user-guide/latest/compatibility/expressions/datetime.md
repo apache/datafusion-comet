@@ -23,7 +23,7 @@ under the License.
   time without timezone, so no conversion should be applied. These expressions work correctly with Timestamp inputs.
   [#3180](https://github.com/apache/datafusion-comet/issues/3180)
 - **TruncTimestamp (date_trunc)**: Produces incorrect results when used with non-UTC timezones. Compatible when
-  timezone is UTC.
+  timezone is UTC. TimestampNTZ inputs are handled correctly (timezone-independent truncation).
   [#2649](https://github.com/apache/datafusion-comet/issues/2649)
 
 ## Date and Time Functions
@@ -41,5 +41,7 @@ If you need to process dates far in the future with accurate timezone handling, 
 
 - Using timezone-naive types (`timestamp_ntz`) when timezone conversion is not required
 - Falling back to Spark for these specific operations
-  <!--BEGIN:EXPR_COMPAT[datetime]-->
-  <!--END:EXPR_COMPAT-->
+
+<!--BEGIN:EXPR_COMPAT[datetime]-->
+
+<!--END:EXPR_COMPAT-->
