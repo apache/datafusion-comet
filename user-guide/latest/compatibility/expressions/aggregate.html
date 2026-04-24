@@ -487,6 +487,27 @@ under the License.
 <ul class="simple">
 <li><p>Comet deduplicates NaN values (treats <code class="docutils literal notranslate"><span class="pre">NaN</span> <span class="pre">==</span> <span class="pre">NaN</span></code>) while Spark treats each NaN as a distinct value. When <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.strictFloatingPoint=true</span></code>, <code class="docutils literal notranslate"><span class="pre">collect_set</span></code> on floating-point types falls back to Spark unless <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.CollectSet.allowIncompatible=true</span></code> is set.</p></li>
 </ul>
+</section>
+<section id="first">
+<h2>First<a class="headerlink" href="#first" title="Link to this heading">#</a></h2>
+<p>The following differences from Spark are always present and do not require any additional configuration:</p>
+<ul class="simple">
+<li><p>This function is not deterministic. Results may not match Spark.</p></li>
+</ul>
+</section>
+<section id="last">
+<h2>Last<a class="headerlink" href="#last" title="Link to this heading">#</a></h2>
+<p>The following differences from Spark are always present and do not require any additional configuration:</p>
+<ul class="simple">
+<li><p>This function is not deterministic. Results may not match Spark.</p></li>
+</ul>
+</section>
+<section id="sum">
+<h2>Sum<a class="headerlink" href="#sum" title="Link to this heading">#</a></h2>
+<p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">Sum</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Sum.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
+<ul class="simple">
+<li><p>Falls back to Spark in ANSI mode.</p></li>
+</ul>
 <!--END:EXPR_COMPAT-->
 </section>
 </section>

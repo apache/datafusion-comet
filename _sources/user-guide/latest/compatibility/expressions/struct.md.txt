@@ -21,6 +21,26 @@ under the License.
 
 <!--BEGIN:EXPR_COMPAT[struct]-->
 
+### JsonToStructs
+
+The following incompatibilities cause `JsonToStructs` to fall back to Spark by default. Set `spark.comet.expression.JsonToStructs.allowIncompatible=true` to enable Comet acceleration despite these differences.
+
+- Partially implemented and not comprehensively tested
+
+The following cases are not supported by Comet:
+
+- Requires an explicit schema
+
+### StructsToCsv
+
+The following incompatibilities cause `StructsToCsv` to fall back to Spark by default. Set `spark.comet.expression.StructsToCsv.allowIncompatible=true` to enable Comet acceleration despite these differences.
+
+- Date, Timestamp, TimestampNTZ, and Binary data types may produce different results (https://github.com/apache/datafusion-comet/issues/3232)
+
+The following cases are not supported by Comet:
+
+- Complex types (arrays, maps, structs) in the schema are not supported
+
 ### StructsToJson
 
 The following incompatibilities cause `StructsToJson` to fall back to Spark by default. Set `spark.comet.expression.StructsToJson.allowIncompatible=true` to enable Comet acceleration despite these differences.

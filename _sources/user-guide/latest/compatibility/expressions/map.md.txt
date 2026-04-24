@@ -17,24 +17,14 @@ specific language governing permissions and limitations
 under the License.
 -->
 
-# Expression Compatibility
+# Map Expressions
 
-Expressions that are not 100% Spark-compatible will fall back to Spark by default and can be enabled by setting
-`spark.comet.expression.EXPRNAME.allowIncompatible=true`, where `EXPRNAME` is the Spark expression class name. See
-the [Comet Supported Expressions Guide](../../expressions.md) for more information on this configuration setting.
+<!--BEGIN:EXPR_COMPAT[map]-->
 
-Compatibility notes are grouped by expression category:
+### MapFromEntries
 
-```{toctree}
-:maxdepth: 1
+The following incompatibilities cause `MapFromEntries` to fall back to Spark by default. Set `spark.comet.expression.MapFromEntries.allowIncompatible=true` to enable Comet acceleration despite these differences.
 
-aggregate
-array
-datetime
-map
-math
-misc
-string
-struct
-cast
-```
+- Using BinaryType as Map keys is not allowed in map_from_entries
+- Using BinaryType as Map values is not allowed in map_from_entries
+<!--END:EXPR_COMPAT-->

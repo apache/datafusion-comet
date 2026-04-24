@@ -32,4 +32,22 @@ The following incompatibilities cause `Average` to fall back to Spark by default
 The following incompatibilities cause `CollectSet` to fall back to Spark by default. Set `spark.comet.expression.CollectSet.allowIncompatible=true` to enable Comet acceleration despite these differences.
 
 - Comet deduplicates NaN values (treats `NaN == NaN`) while Spark treats each NaN as a distinct value. When `spark.comet.exec.strictFloatingPoint=true`, `collect_set` on floating-point types falls back to Spark unless `spark.comet.expression.CollectSet.allowIncompatible=true` is set.
+
+### First
+
+The following differences from Spark are always present and do not require any additional configuration:
+
+- This function is not deterministic. Results may not match Spark.
+
+### Last
+
+The following differences from Spark are always present and do not require any additional configuration:
+
+- This function is not deterministic. Results may not match Spark.
+
+### Sum
+
+The following incompatibilities cause `Sum` to fall back to Spark by default. Set `spark.comet.expression.Sum.allowIncompatible=true` to enable Comet acceleration despite these differences.
+
+- Falls back to Spark in ANSI mode.
 <!--END:EXPR_COMPAT-->

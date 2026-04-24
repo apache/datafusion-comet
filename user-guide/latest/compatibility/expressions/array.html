@@ -474,8 +474,61 @@ under the License.
 <section id="array-expressions">
 <h1>Array Expressions<a class="headerlink" href="#array-expressions" title="Link to this heading">#</a></h1>
 <!--BEGIN:EXPR_COMPAT[array]-->
+<section id="arrayexcept">
+<h2>ArrayExcept<a class="headerlink" href="#arrayexcept" title="Link to this heading">#</a></h2>
+<p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">ArrayExcept</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.ArrayExcept.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
+<ul class="simple">
+<li><p>Null handling and ordering may differ from Spark</p></li>
+</ul>
+</section>
+<section id="arrayfilter">
+<h2>ArrayFilter<a class="headerlink" href="#arrayfilter" title="Link to this heading">#</a></h2>
+<p>The following cases are not supported by Comet:</p>
+<ul class="simple">
+<li><p>Only supports <code class="docutils literal notranslate"><span class="pre">array_filter</span></code> when the function is <code class="docutils literal notranslate"><span class="pre">IsNotNull</span></code> (used by <code class="docutils literal notranslate"><span class="pre">array_compact</span></code>)</p></li>
+</ul>
+</section>
+<section id="arrayintersect">
+<h2>ArrayIntersect<a class="headerlink" href="#arrayintersect" title="Link to this heading">#</a></h2>
+<p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">ArrayIntersect</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.ArrayIntersect.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
+<ul class="simple">
+<li><p>Null handling and ordering may differ from Spark</p></li>
+</ul>
+</section>
+<section id="arrayjoin">
+<h2>ArrayJoin<a class="headerlink" href="#arrayjoin" title="Link to this heading">#</a></h2>
+<p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">ArrayJoin</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.ArrayJoin.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
+<ul class="simple">
+<li><p>Null handling may differ from Spark</p></li>
+</ul>
+</section>
+<section id="arrayszip">
+<h2>ArraysZip<a class="headerlink" href="#arrayszip" title="Link to this heading">#</a></h2>
+<p>The following cases are not supported by Comet:</p>
+<ul class="simple">
+<li><p>Not all input data types are supported; falls back to Spark for unsupported types</p></li>
+</ul>
+</section>
+<section id="elementat">
+<h2>ElementAt<a class="headerlink" href="#elementat" title="Link to this heading">#</a></h2>
+<p>The following cases are not supported by Comet:</p>
+<ul class="simple">
+<li><p>Input must be an array. <code class="docutils literal notranslate"><span class="pre">Map</span></code> inputs are not supported.</p></li>
+</ul>
+</section>
+<section id="size">
+<h2>Size<a class="headerlink" href="#size" title="Link to this heading">#</a></h2>
+<p>The following cases are not supported by Comet:</p>
+<ul class="simple">
+<li><p>Only supports <code class="docutils literal notranslate"><span class="pre">ArrayType</span></code> input; <code class="docutils literal notranslate"><span class="pre">MapType</span></code> input is not supported</p></li>
+</ul>
+</section>
 <section id="sortarray">
 <h2>SortArray<a class="headerlink" href="#sortarray" title="Link to this heading">#</a></h2>
+<p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">SortArray</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.SortArray.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
+<ul class="simple">
+<li><p>When <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.strictFloatingPoint=true</span></code>, sorting on floating-point types is not 100% compatible with Spark</p></li>
+</ul>
 <p>The following cases are not supported by Comet:</p>
 <ul class="simple">
 <li><p>Nested arrays with <code class="docutils literal notranslate"><span class="pre">Struct</span></code> or <code class="docutils literal notranslate"><span class="pre">Null</span></code> child values are not supported natively and will fall back to Spark.</p></li>

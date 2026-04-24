@@ -27,7 +27,7 @@ under the License.
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Date/Time Expressions &#8212; Apache DataFusion Comet  documentation</title>
+    <title>Miscellaneous Expressions &#8212; Apache DataFusion Comet  documentation</title>
   
   
   
@@ -61,12 +61,12 @@ under the License.
     <script src="../../../../_static/documentation_options.js?v=5929fcd5"></script>
     <script src="../../../../_static/doctools.js?v=9a2dae69"></script>
     <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script>DOCUMENTATION_OPTIONS.pagename = 'user-guide/latest/compatibility/expressions/datetime';</script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'user-guide/latest/compatibility/expressions/misc';</script>
     <script async="true" defer="true" src="https://buttons.github.io/buttons.js"></script>
     <link rel="index" title="Index" href="../../../../genindex.html" />
     <link rel="search" title="Search" href="../../../../search.html" />
-    <link rel="next" title="Map Expressions" href="map.html" />
-    <link rel="prev" title="Array Expressions" href="array.html" />
+    <link rel="next" title="String Expressions" href="string.html" />
+    <link rel="prev" title="Math Expressions" href="math.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="" />
@@ -436,7 +436,7 @@ under the License.
     
     <li class="breadcrumb-item"><a href="index.html" class="nav-link">Expression Compatibility</a></li>
     
-    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Date/Time Expressions</span></li>
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Miscellaneous Expressions</span></li>
   </ul>
 </nav>
 </div>
@@ -471,122 +471,44 @@ KIND, either express or implied.  See the License for the
 specific language governing permissions and limitations
 under the License.
 -->
-<section id="date-time-expressions">
-<h1>Date/Time Expressions<a class="headerlink" href="#date-time-expressions" title="Link to this heading">#</a></h1>
-<ul class="simple">
-<li><p><strong>Hour, Minute, Second</strong>: Incorrectly apply timezone conversion to TimestampNTZ inputs. TimestampNTZ stores local
-time without timezone, so no conversion should be applied. These expressions work correctly with Timestamp inputs.
-<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3180">#3180</a></p></li>
-<li><p><strong>TruncTimestamp (date_trunc)</strong>: Produces incorrect results when used with non-UTC timezones. Compatible when
-timezone is UTC. TimestampNTZ inputs are handled correctly (timezone-independent truncation).
-<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2649">#2649</a></p></li>
-</ul>
-<section id="date-and-time-functions">
-<h2>Date and Time Functions<a class="headerlink" href="#date-and-time-functions" title="Link to this heading">#</a></h2>
-<p>Comet’s native implementation of date and time functions may produce different results than Spark for dates
-far in the future (approximately beyond year 2100). This is because Comet uses the chrono-tz library for
-timezone calculations, which has limited support for Daylight Saving Time (DST) rules beyond the IANA
-time zone database’s explicit transitions.</p>
-<p>For dates within a reasonable range (approximately 1970-2100), Comet’s date and time functions are compatible
-with Spark. For dates beyond this range, functions that involve timezone-aware calculations (such as
-<code class="docutils literal notranslate"><span class="pre">date_trunc</span></code> with timezone-aware timestamps) may produce results with incorrect DST offsets.</p>
-<p>If you need to process dates far in the future with accurate timezone handling, consider:</p>
-<ul class="simple">
-<li><p>Using timezone-naive types (<code class="docutils literal notranslate"><span class="pre">timestamp_ntz</span></code>) when timezone conversion is not required</p></li>
-<li><p>Falling back to Spark for these specific operations</p></li>
-</ul>
-<!--BEGIN:EXPR_COMPAT[datetime]-->
-<section id="dateformatclass">
-<h3>DateFormatClass<a class="headerlink" href="#dateformatclass" title="Link to this heading">#</a></h3>
-<p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">DateFormatClass</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.DateFormatClass.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
-<ul class="simple">
-<li><p>Non-UTC timezones may produce different results than Spark</p></li>
-</ul>
+<section id="miscellaneous-expressions">
+<h1>Miscellaneous Expressions<a class="headerlink" href="#miscellaneous-expressions" title="Link to this heading">#</a></h1>
+<!--BEGIN:EXPR_COMPAT[misc]-->
+<section id="checkoverflow">
+<h2>CheckOverflow<a class="headerlink" href="#checkoverflow" title="Link to this heading">#</a></h2>
 <p>The following cases are not supported by Comet:</p>
 <ul class="simple">
-<li><p>Only the following formats are supported:</p>
-<ul>
-<li><p><code class="docutils literal notranslate"><span class="pre">EEE</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">EEEE</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">HH</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">HH:mm</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">HH:mm:ss</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">MM</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">MMM</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">MMMM</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">dd</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">h:mm</span> <span class="pre">a</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">hh:mm</span> <span class="pre">a</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">hh:mm:ss</span> <span class="pre">a</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">mm</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">ss</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">yy</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">yyyy</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">yyyy-MM-dd</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">yyyy-MM-dd</span> <span class="pre">HH:mm:ss</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">yyyy-MM-dd'T'HH:mm:ss</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">yyyy/MM/dd</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">yyyy/MM/dd</span> <span class="pre">HH:mm:ss</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">yyyyMM</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">yyyyMMdd</span></code></p></li>
-</ul>
-</li>
+<li><p>Only <code class="docutils literal notranslate"><span class="pre">DecimalType</span></code> is supported</p></li>
 </ul>
 </section>
-<section id="fromunixtime">
-<h3>FromUnixTime<a class="headerlink" href="#fromunixtime" title="Link to this heading">#</a></h3>
-<p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">FromUnixTime</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.FromUnixTime.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
-<ul class="simple">
-<li><p>Only supports the default datetime format pattern <code class="docutils literal notranslate"><span class="pre">yyyy-MM-dd</span> <span class="pre">HH:mm:ss</span></code>. DataFusion’s valid timestamp range differs from Spark (https://github.com/apache/datafusion/issues/16594)</p></li>
-</ul>
-</section>
-<section id="hour">
-<h3>Hour<a class="headerlink" href="#hour" title="Link to this heading">#</a></h3>
-<p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">Hour</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Hour.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
-<ul class="simple">
-<li><p>Incorrectly applies timezone conversion to TimestampNTZ inputs (https://github.com/apache/datafusion-comet/issues/3180)</p></li>
-</ul>
-</section>
-<section id="minute">
-<h3>Minute<a class="headerlink" href="#minute" title="Link to this heading">#</a></h3>
-<p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">Minute</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Minute.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
-<ul class="simple">
-<li><p>Incorrectly applies timezone conversion to TimestampNTZ inputs (https://github.com/apache/datafusion-comet/issues/3180)</p></li>
-</ul>
-</section>
-<section id="second">
-<h3>Second<a class="headerlink" href="#second" title="Link to this heading">#</a></h3>
-<p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">Second</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Second.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
-<ul class="simple">
-<li><p>Incorrectly applies timezone conversion to TimestampNTZ inputs (https://github.com/apache/datafusion-comet/issues/3180)</p></li>
-</ul>
-</section>
-<section id="truncdate">
-<h3>TruncDate<a class="headerlink" href="#truncdate" title="Link to this heading">#</a></h3>
-<p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">TruncDate</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.TruncDate.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
-<ul class="simple">
-<li><p>Non-literal format strings will throw an exception instead of returning NULL</p></li>
-</ul>
+<section id="knownfloatingpointnormalized">
+<h2>KnownFloatingPointNormalized<a class="headerlink" href="#knownfloatingpointnormalized" title="Link to this heading">#</a></h2>
 <p>The following cases are not supported by Comet:</p>
 <ul class="simple">
-<li><p>Only the following formats are supported: year, yyyy, yy, quarter, mon, month, mm, week</p></li>
+<li><p>Only supports <code class="docutils literal notranslate"><span class="pre">NormalizeNaNAndZero</span></code> child expressions</p></li>
 </ul>
 </section>
-<section id="trunctimestamp">
-<h3>TruncTimestamp<a class="headerlink" href="#trunctimestamp" title="Link to this heading">#</a></h3>
-<p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">TruncTimestamp</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.TruncTimestamp.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
-<ul class="simple">
-<li><p>Produces incorrect results when used with non-UTC timezones. Compatible when timezone is UTC. (https://github.com/apache/datafusion-comet/issues/2649)</p></li>
-</ul>
-</section>
-<section id="unixtimestamp">
-<h3>UnixTimestamp<a class="headerlink" href="#unixtimestamp" title="Link to this heading">#</a></h3>
+<section id="literal">
+<h2>Literal<a class="headerlink" href="#literal" title="Link to this heading">#</a></h2>
 <p>The following cases are not supported by Comet:</p>
 <ul class="simple">
-<li><p>Only <code class="docutils literal notranslate"><span class="pre">TimestampType</span></code> and <code class="docutils literal notranslate"><span class="pre">DateType</span></code> inputs are supported. <code class="docutils literal notranslate"><span class="pre">TimestampNTZType</span></code> is not supported because Comet incorrectly applies timezone conversion to TimestampNTZ values.</p></li>
+<li><p>Not all data types are supported for literal values</p></li>
+</ul>
+</section>
+<section id="makedecimal">
+<h2>MakeDecimal<a class="headerlink" href="#makedecimal" title="Link to this heading">#</a></h2>
+<p>The following cases are not supported by Comet:</p>
+<ul class="simple">
+<li><p>Only <code class="docutils literal notranslate"><span class="pre">LongType</span></code> input is supported</p></li>
+</ul>
+</section>
+<section id="sortorder">
+<h2>SortOrder<a class="headerlink" href="#sortorder" title="Link to this heading">#</a></h2>
+<p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">SortOrder</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.SortOrder.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
+<ul class="simple">
+<li><p>When <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.strictFloatingPoint=true</span></code>, sorting on floating-point types is not 100% compatible with Spark</p></li>
 </ul>
 <!--END:EXPR_COMPAT-->
-</section>
 </section>
 </section>
 
@@ -601,20 +523,20 @@ with Spark. For dates beyond this range, functions that involve timezone-aware c
                   
 <div class="prev-next-area">
     <a class="left-prev"
-       href="array.html"
+       href="math.html"
        title="previous page">
       <i class="fa-solid fa-angle-left"></i>
       <div class="prev-next-info">
         <p class="prev-next-subtitle">previous</p>
-        <p class="prev-next-title">Array Expressions</p>
+        <p class="prev-next-title">Math Expressions</p>
       </div>
     </a>
     <a class="right-next"
-       href="map.html"
+       href="string.html"
        title="next page">
       <div class="prev-next-info">
         <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">Map Expressions</p>
+        <p class="prev-next-title">String Expressions</p>
       </div>
       <i class="fa-solid fa-angle-right"></i>
     </a>

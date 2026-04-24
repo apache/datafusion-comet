@@ -460,32 +460,26 @@ under the License.
 -->
 <section id="supported-spark-expressions">
 <h1>Supported Spark Expressions<a class="headerlink" href="#supported-spark-expressions" title="Link to this heading">#</a></h1>
-<p>Comet supports the following Spark expressions. Expressions that are marked as Spark-compatible will either run
-natively in Comet and provide the same results as Spark, or will fall back to Spark for cases that would not
-be compatible.</p>
+<p>Comet supports the following Spark expressions. See the <a class="reference internal" href="compatibility/expressions/index.html"><span class="std std-doc">Comet Compatibility Guide</span></a> for details on known
+incompatibilities and unsupported cases.</p>
 <p>All expressions are enabled by default, but most can be disabled by setting
 <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.EXPRNAME.enabled=false</span></code>, where <code class="docutils literal notranslate"><span class="pre">EXPRNAME</span></code> is the expression name as specified in
 the following tables, such as <code class="docutils literal notranslate"><span class="pre">Length</span></code>, or <code class="docutils literal notranslate"><span class="pre">StartsWith</span></code>. See the <a class="reference internal" href="configs.html"><span class="std std-doc">Comet Configuration Guide</span></a> for a full list
 of expressions that be disabled.</p>
-<p>Expressions that are not Spark-compatible will fall back to Spark by default and can be enabled by setting
-<code class="docutils literal notranslate"><span class="pre">spark.comet.expression.EXPRNAME.allowIncompatible=true</span></code>.</p>
 <section id="conditional-expressions">
 <h2>Conditional Expressions<a class="headerlink" href="#conditional-expressions" title="Link to this heading">#</a></h2>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Expression</p></th>
 <th class="head"><p>SQL</p></th>
-<th class="head"><p>Spark-Compatible?</p></th>
 </tr>
 </thead>
 <tbody>
 <tr class="row-even"><td><p>CaseWhen</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">CASE</span> <span class="pre">WHEN</span> <span class="pre">expr</span> <span class="pre">THEN</span> <span class="pre">expr</span> <span class="pre">ELSE</span> <span class="pre">expr</span> <span class="pre">END</span></code></p></td>
-<td><p>Yes</p></td>
 </tr>
 <tr class="row-odd"><td><p>If</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">IF(predicate_expr,</span> <span class="pre">true_expr,</span> <span class="pre">false_expr)</span></code></p></td>
-<td><p>Yes</p></td>
 </tr>
 </tbody>
 </table>
@@ -497,61 +491,47 @@ of expressions that be disabled.</p>
 <thead>
 <tr class="row-odd"><th class="head"><p>Expression</p></th>
 <th class="head"><p>SQL</p></th>
-<th class="head"><p>Spark-Compatible?</p></th>
 </tr>
 </thead>
 <tbody>
 <tr class="row-even"><td><p>And</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">AND</span></code></p></td>
-<td><p>Yes</p></td>
 </tr>
 <tr class="row-odd"><td><p>EqualTo</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">=</span></code></p></td>
-<td><p>Yes</p></td>
 </tr>
 <tr class="row-even"><td><p>EqualNullSafe</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">&lt;=&gt;</span></code></p></td>
-<td><p>Yes</p></td>
 </tr>
 <tr class="row-odd"><td><p>GreaterThan</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">&gt;</span></code></p></td>
-<td><p>Yes</p></td>
 </tr>
 <tr class="row-even"><td><p>GreaterThanOrEqual</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">&gt;=</span></code></p></td>
-<td><p>Yes</p></td>
 </tr>
 <tr class="row-odd"><td><p>LessThan</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">&lt;</span></code></p></td>
-<td><p>Yes</p></td>
 </tr>
 <tr class="row-even"><td><p>LessThanOrEqual</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">&lt;=</span></code></p></td>
-<td><p>Yes</p></td>
 </tr>
 <tr class="row-odd"><td><p>In</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">IN</span></code></p></td>
-<td><p>Yes</p></td>
 </tr>
 <tr class="row-even"><td><p>IsNotNull</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">IS</span> <span class="pre">NOT</span> <span class="pre">NULL</span></code></p></td>
-<td><p>Yes</p></td>
 </tr>
 <tr class="row-odd"><td><p>IsNull</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">IS</span> <span class="pre">NULL</span></code></p></td>
-<td><p>Yes</p></td>
 </tr>
 <tr class="row-even"><td><p>InSet</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">IN</span> <span class="pre">(...)</span></code></p></td>
-<td><p>Yes</p></td>
 </tr>
 <tr class="row-odd"><td><p>Not</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">NOT</span></code></p></td>
-<td><p>Yes</p></td>
 </tr>
 <tr class="row-even"><td><p>Or</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">OR</span></code></p></td>
-<td><p>Yes</p></td>
 </tr>
 </tbody>
 </table>
@@ -562,126 +542,66 @@ of expressions that be disabled.</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Expression</p></th>
-<th class="head"><p>Spark-Compatible?</p></th>
-<th class="head"><p>Compatibility Notes</p></th>
 </tr>
 </thead>
 <tbody>
 <tr class="row-even"><td><p>Ascii</p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>BitLength</p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>Chr</p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>Concat</p></td>
-<td><p>Yes</p></td>
-<td><p>Only string inputs are supported</p></td>
 </tr>
 <tr class="row-even"><td><p>ConcatWs</p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>Contains</p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>EndsWith</p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>InitCap</p></td>
-<td><p>No</p></td>
-<td><p>Behavior is different in some cases, such as hyphenated names.</p></td>
 </tr>
 <tr class="row-even"><td><p>Left</p></td>
-<td><p>Yes</p></td>
-<td><p>Length argument must be a literal value</p></td>
 </tr>
 <tr class="row-odd"><td><p>Length</p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>Like</p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>Lower</p></td>
-<td><p>No</p></td>
-<td><p>Results can vary depending on locale and character set. Requires <code class="docutils literal notranslate"><span class="pre">spark.comet.caseConversion.enabled=true</span></code></p></td>
 </tr>
 <tr class="row-even"><td><p>OctetLength</p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>Reverse</p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>RLike</p></td>
-<td><p>No</p></td>
-<td><p>Uses Rust regexp engine, which has different behavior to Java regexp engine</p></td>
 </tr>
 <tr class="row-odd"><td><p>StartsWith</p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>StringInstr</p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>StringRepeat</p></td>
-<td><p>Yes</p></td>
-<td><p>Negative argument for number of times to repeat causes exception</p></td>
 </tr>
 <tr class="row-even"><td><p>StringReplace</p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>StringLPad</p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>StringRPad</p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>StringSpace</p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>StringTranslate</p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>StringTrim</p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>StringTrimBoth</p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>StringTrimLeft</p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>StringTrimRight</p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>Substring</p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>Upper</p></td>
-<td><p>No</p></td>
-<td><p>Results can vary depending on locale and character set. Requires <code class="docutils literal notranslate"><span class="pre">spark.comet.caseConversion.enabled=true</span></code></p></td>
 </tr>
 </tbody>
 </table>
@@ -692,14 +612,10 @@ of expressions that be disabled.</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Expression</p></th>
-<th class="head"><p>Spark-Compatible?</p></th>
-<th class="head"><p>Compatibility Notes</p></th>
 </tr>
 </thead>
 <tbody>
 <tr class="row-even"><td><p>GetJsonObject</p></td>
-<td><p>No</p></td>
-<td><p>Spark allows single-quoted JSON and unescaped control characters which Comet does not support</p></td>
 </tr>
 </tbody>
 </table>
@@ -711,130 +627,80 @@ of expressions that be disabled.</p>
 <thead>
 <tr class="row-odd"><th class="head"><p>Expression</p></th>
 <th class="head"><p>SQL</p></th>
-<th class="head"><p>Spark-Compatible?</p></th>
-<th class="head"><p>Compatibility Notes</p></th>
 </tr>
 </thead>
 <tbody>
 <tr class="row-even"><td><p>DateAdd</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">date_add</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>DateDiff</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">datediff</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>DateFormat</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">date_format</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p>Partial support. Only specific format patterns are supported.</p></td>
 </tr>
 <tr class="row-odd"><td><p>DateSub</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">date_sub</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>DatePart</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">date_part(field,</span> <span class="pre">source)</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p>Supported values of <code class="docutils literal notranslate"><span class="pre">field</span></code>: <code class="docutils literal notranslate"><span class="pre">year</span></code>/<code class="docutils literal notranslate"><span class="pre">month</span></code>/<code class="docutils literal notranslate"><span class="pre">week</span></code>/<code class="docutils literal notranslate"><span class="pre">day</span></code>/<code class="docutils literal notranslate"><span class="pre">dayofweek</span></code>/<code class="docutils literal notranslate"><span class="pre">dayofweek_iso</span></code>/<code class="docutils literal notranslate"><span class="pre">doy</span></code>/<code class="docutils literal notranslate"><span class="pre">quarter</span></code>/<code class="docutils literal notranslate"><span class="pre">hour</span></code>/<code class="docutils literal notranslate"><span class="pre">minute</span></code></p></td>
 </tr>
 <tr class="row-odd"><td><p>Days</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">days</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p>V2 partition transform. Supports DateType and TimestampType inputs.</p></td>
 </tr>
 <tr class="row-even"><td><p>Extract</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">extract(field</span> <span class="pre">FROM</span> <span class="pre">source)</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p>Supported values of <code class="docutils literal notranslate"><span class="pre">field</span></code>: <code class="docutils literal notranslate"><span class="pre">year</span></code>/<code class="docutils literal notranslate"><span class="pre">month</span></code>/<code class="docutils literal notranslate"><span class="pre">week</span></code>/<code class="docutils literal notranslate"><span class="pre">day</span></code>/<code class="docutils literal notranslate"><span class="pre">dayofweek</span></code>/<code class="docutils literal notranslate"><span class="pre">dayofweek_iso</span></code>/<code class="docutils literal notranslate"><span class="pre">doy</span></code>/<code class="docutils literal notranslate"><span class="pre">quarter</span></code>/<code class="docutils literal notranslate"><span class="pre">hour</span></code>/<code class="docutils literal notranslate"><span class="pre">minute</span></code></p></td>
 </tr>
 <tr class="row-odd"><td><p>FromUnixTime</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">from_unixtime</span></code></p></td>
-<td><p>No</p></td>
-<td><p>Does not support format, supports only -8334601211038 &lt;= sec &lt;= 8210266876799</p></td>
 </tr>
 <tr class="row-even"><td><p>Hour</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">hour</span></code></p></td>
-<td><p>No</p></td>
-<td><p>Incorrectly applies timezone conversion to TimestampNTZ inputs (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3180">#3180</a>)</p></td>
 </tr>
 <tr class="row-odd"><td><p>LastDay</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">last_day</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>Minute</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">minute</span></code></p></td>
-<td><p>No</p></td>
-<td><p>Incorrectly applies timezone conversion to TimestampNTZ inputs (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3180">#3180</a>)</p></td>
 </tr>
 <tr class="row-odd"><td><p>Second</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">second</span></code></p></td>
-<td><p>No</p></td>
-<td><p>Incorrectly applies timezone conversion to TimestampNTZ inputs (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3180">#3180</a>)</p></td>
 </tr>
 <tr class="row-even"><td><p>TruncDate</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">trunc</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>TruncTimestamp</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">date_trunc</span></code></p></td>
-<td><p>No</p></td>
-<td><p>Incorrect results in non-UTC timezones (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2649">#2649</a>)</p></td>
 </tr>
 <tr class="row-even"><td><p>UnixDate</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">unix_date</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>UnixTimestamp</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">unix_timestamp</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>Year</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">year</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>Month</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">month</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>DayOfMonth</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">day</span></code>/<code class="docutils literal notranslate"><span class="pre">dayofmonth</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>DayOfWeek</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">dayofweek</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>WeekDay</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">weekday</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>DayOfYear</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">dayofyear</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>WeekOfYear</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">weekofyear</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>Quarter</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">quarter</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 </tbody>
 </table>
@@ -846,210 +712,128 @@ of expressions that be disabled.</p>
 <thead>
 <tr class="row-odd"><th class="head"><p>Expression</p></th>
 <th class="head"><p>SQL</p></th>
-<th class="head"><p>Spark-Compatible?</p></th>
-<th class="head"><p>Compatibility Notes</p></th>
 </tr>
 </thead>
 <tbody>
 <tr class="row-even"><td><p>Abs</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">abs</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>Acos</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">acos</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>Add</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">+</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>Asin</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">asin</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>Atan</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">atan</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>Atan2</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">atan2</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>BRound</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">bround</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>Ceil</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">ceil</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>Cos</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">cos</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>Cosh</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">cosh</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>Cot</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">cot</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>Divide</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">/</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>Exp</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">exp</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>Expm1</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">expm1</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>Floor</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">floor</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>Hex</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">hex</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>IntegralDivide</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">div</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>IsNaN</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">isnan</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>Log</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">log</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>Log2</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">log2</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>Log10</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">log10</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>Multiply</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">*</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>Pow</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">power</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>Rand</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">rand</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>Randn</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">randn</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>Remainder</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">%</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>Round</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">round</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>Signum</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">signum</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>Sin</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">sin</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>Sinh</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">sinh</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>Sqrt</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">sqrt</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>Subtract</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">-</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>Tan</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">tan</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>Tanh</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">tanh</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>TryAdd</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">try_add</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p>Only integer inputs are supported</p></td>
 </tr>
 <tr class="row-odd"><td><p>TryDivide</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">try_div</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p>Only integer inputs are supported</p></td>
 </tr>
 <tr class="row-even"><td><p>TryMultiply</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">try_mul</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p>Only integer inputs are supported</p></td>
 </tr>
 <tr class="row-odd"><td><p>TrySubtract</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">try_sub</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p>Only integer inputs are supported</p></td>
 </tr>
 <tr class="row-even"><td><p>UnaryMinus</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">-</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>Unhex</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">unhex</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 </tbody>
 </table>
@@ -1060,24 +844,18 @@ of expressions that be disabled.</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Expression</p></th>
-<th class="head"><p>Spark-Compatible?</p></th>
 </tr>
 </thead>
 <tbody>
 <tr class="row-even"><td><p>Md5</p></td>
-<td><p>Yes</p></td>
 </tr>
 <tr class="row-odd"><td><p>Murmur3Hash</p></td>
-<td><p>Yes</p></td>
 </tr>
 <tr class="row-even"><td><p>Sha1</p></td>
-<td><p>Yes</p></td>
 </tr>
 <tr class="row-odd"><td><p>Sha2</p></td>
-<td><p>Yes</p></td>
 </tr>
 <tr class="row-even"><td><p>XxHash64</p></td>
-<td><p>Yes</p></td>
 </tr>
 </tbody>
 </table>
@@ -1089,41 +867,32 @@ of expressions that be disabled.</p>
 <thead>
 <tr class="row-odd"><th class="head"><p>Expression</p></th>
 <th class="head"><p>SQL</p></th>
-<th class="head"><p>Spark-Compatible?</p></th>
 </tr>
 </thead>
 <tbody>
 <tr class="row-even"><td><p>BitwiseAnd</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">&amp;</span></code></p></td>
-<td><p>Yes</p></td>
 </tr>
 <tr class="row-odd"><td><p>BitwiseCount</p></td>
 <td><p></p></td>
-<td><p>Yes</p></td>
 </tr>
 <tr class="row-even"><td><p>BitwiseGet</p></td>
 <td><p></p></td>
-<td><p>Yes</p></td>
 </tr>
 <tr class="row-odd"><td><p>BitwiseOr</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">|</span></code></p></td>
-<td><p>Yes</p></td>
 </tr>
 <tr class="row-even"><td><p>BitwiseNot</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">~</span></code></p></td>
-<td><p>Yes</p></td>
 </tr>
 <tr class="row-odd"><td><p>BitwiseXor</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">^</span></code></p></td>
-<td><p>Yes</p></td>
 </tr>
 <tr class="row-even"><td><p>ShiftLeft</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">&lt;&lt;</span></code></p></td>
-<td><p>Yes</p></td>
 </tr>
 <tr class="row-odd"><td><p>ShiftRight</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">&gt;&gt;</span></code></p></td>
-<td><p>Yes</p></td>
 </tr>
 </tbody>
 </table>
@@ -1135,109 +904,67 @@ of expressions that be disabled.</p>
 <thead>
 <tr class="row-odd"><th class="head"><p>Expression</p></th>
 <th class="head"><p>SQL</p></th>
-<th class="head"><p>Spark-Compatible?</p></th>
-<th class="head"><p>Compatibility Notes</p></th>
 </tr>
 </thead>
 <tbody>
 <tr class="row-even"><td><p>Average</p></td>
 <td><p></p></td>
-<td><p>Yes, except for ANSI mode</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>BitAndAgg</p></td>
-<td><p></p></td>
-<td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>BitOrAgg</p></td>
 <td><p></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>BitXorAgg</p></td>
-<td><p></p></td>
-<td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>BoolAnd</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">bool_and</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>BoolOr</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">bool_or</span></code></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>CollectSet</p></td>
 <td><p></p></td>
-<td><p>No</p></td>
-<td><p>NaN dedup differs from Spark. See compatibility guide.</p></td>
 </tr>
 <tr class="row-odd"><td><p>Corr</p></td>
-<td><p></p></td>
-<td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>Count</p></td>
 <td><p></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>CovPopulation</p></td>
-<td><p></p></td>
-<td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>CovSample</p></td>
 <td><p></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>First</p></td>
 <td><p></p></td>
-<td><p>No</p></td>
-<td><p>This function is not deterministic. Results may not match Spark.</p></td>
 </tr>
 <tr class="row-even"><td><p>Last</p></td>
 <td><p></p></td>
-<td><p>No</p></td>
-<td><p>This function is not deterministic. Results may not match Spark.</p></td>
 </tr>
 <tr class="row-odd"><td><p>Max</p></td>
-<td><p></p></td>
-<td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>Min</p></td>
 <td><p></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>StddevPop</p></td>
-<td><p></p></td>
-<td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>StddevSamp</p></td>
 <td><p></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>Sum</p></td>
-<td><p></p></td>
-<td><p>Yes, except for ANSI mode</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>VariancePop</p></td>
 <td><p></p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>VarianceSamp</p></td>
-<td><p></p></td>
-<td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
 </tbody>
@@ -1254,26 +981,16 @@ of expressions that be disabled.</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Expression</p></th>
-<th class="head"><p>Spark-Compatible?</p></th>
-<th class="head"><p>Compatibility Notes</p></th>
 </tr>
 </thead>
 <tbody>
 <tr class="row-even"><td><p>Count</p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>Max</p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>Min</p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>Sum</p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 </tbody>
 </table>
@@ -1285,86 +1002,46 @@ of expressions that be disabled.</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Expression</p></th>
-<th class="head"><p>Spark-Compatible?</p></th>
-<th class="head"><p>Compatibility Notes</p></th>
 </tr>
 </thead>
 <tbody>
 <tr class="row-even"><td><p>ArrayAppend</p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>ArrayCompact</p></td>
-<td><p>No</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>ArrayContains</p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>ArrayDistinct</p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>ArrayExcept</p></td>
-<td><p>No</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>ArrayFilter</p></td>
-<td><p>Yes</p></td>
-<td><p>Only supports case where function is <code class="docutils literal notranslate"><span class="pre">IsNotNull</span></code></p></td>
 </tr>
 <tr class="row-even"><td><p>ArrayInsert</p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>ArrayIntersect</p></td>
-<td><p>No</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>ArrayJoin</p></td>
-<td><p>No</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>ArrayMax</p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>ArrayMin</p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>ArrayRemove</p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>ArrayRepeat</p></td>
-<td><p>No</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>ArrayUnion</p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>ArraysOverlap</p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>CreateArray</p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>ElementAt</p></td>
-<td><p>Yes</p></td>
-<td><p>Input must be an array. Map inputs are not supported.</p></td>
 </tr>
 <tr class="row-odd"><td><p>Flatten</p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>GetArrayItem</p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 </tbody>
 </table>
@@ -1375,24 +1052,18 @@ of expressions that be disabled.</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Expression</p></th>
-<th class="head"><p>Spark-Compatible?</p></th>
 </tr>
 </thead>
 <tbody>
 <tr class="row-even"><td><p>GetMapValue</p></td>
-<td><p>Yes</p></td>
 </tr>
 <tr class="row-odd"><td><p>MapKeys</p></td>
-<td><p>Yes</p></td>
 </tr>
 <tr class="row-even"><td><p>MapEntries</p></td>
-<td><p>Yes</p></td>
 </tr>
 <tr class="row-odd"><td><p>MapValues</p></td>
-<td><p>Yes</p></td>
 </tr>
 <tr class="row-even"><td><p>MapFromArrays</p></td>
-<td><p>Yes</p></td>
 </tr>
 </tbody>
 </table>
@@ -1403,30 +1074,18 @@ of expressions that be disabled.</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Expression</p></th>
-<th class="head"><p>Spark-Compatible?</p></th>
-<th class="head"><p>Compatibility Notes</p></th>
 </tr>
 </thead>
 <tbody>
 <tr class="row-even"><td><p>CreateNamedStruct</p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>GetArrayStructFields</p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>GetStructField</p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>JsonToStructs</p></td>
-<td><p>No</p></td>
-<td><p>Partial support. Requires explicit schema.</p></td>
 </tr>
 <tr class="row-even"><td><p>StructsToJson</p></td>
-<td><p>No</p></td>
-<td><p>Does not support Infinity/-Infinity for numeric types (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3016">#3016</a>)</p></td>
 </tr>
 </tbody>
 </table>
@@ -1437,14 +1096,10 @@ of expressions that be disabled.</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Expression</p></th>
-<th class="head"><p>Spark-Compatible</p></th>
-<th class="head"><p>Compatibility Notes</p></th>
 </tr>
 </thead>
 <tbody>
 <tr class="row-even"><td><p>Cast</p></td>
-<td><p>Depends on specific cast</p></td>
-<td><p>See the <a class="reference internal" href="compatibility/expressions/index.html"><span class="std std-doc">Comet Compatibility Guide</span></a> for list of supported cast expressions and known issues</p></td>
 </tr>
 </tbody>
 </table>
@@ -1455,26 +1110,16 @@ of expressions that be disabled.</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Expression</p></th>
-<th class="head"><p>Spark-Compatible?</p></th>
-<th class="head"><p>Compatibility Notes</p></th>
 </tr>
 </thead>
 <tbody>
 <tr class="row-even"><td><p>NullsFirst</p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>NullsLast</p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>Ascending</p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>Descending</p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 </tbody>
 </table>
@@ -1485,74 +1130,40 @@ of expressions that be disabled.</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Expression</p></th>
-<th class="head"><p>Spark-Compatible?</p></th>
-<th class="head"><p>Compatibility Notes</p></th>
 </tr>
 </thead>
 <tbody>
 <tr class="row-even"><td><p>Alias</p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>AttributeReference</p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>BloomFilterMightContain</p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>Coalesce</p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>CheckOverflow</p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>KnownFloatingPointNormalized</p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>Literal</p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>MakeDecimal</p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>MonotonicallyIncreasingID</p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>NormalizeNaNAndZero</p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>PromotePrecision</p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>RegExpReplace</p></td>
-<td><p>No</p></td>
-<td><p>Uses Rust regexp engine, which has different behavior to Java regexp engine</p></td>
 </tr>
 <tr class="row-even"><td><p>ScalarSubquery</p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>SparkPartitionID</p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>ToPrettyString</p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>UnscaledValue</p></td>
-<td><p>Yes</p></td>
-<td><p></p></td>
 </tr>
 </tbody>
 </table>

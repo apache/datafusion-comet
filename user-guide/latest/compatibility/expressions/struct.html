@@ -66,7 +66,7 @@ under the License.
     <link rel="index" title="Index" href="../../../../genindex.html" />
     <link rel="search" title="Search" href="../../../../search.html" />
     <link rel="next" title="Cast" href="cast.html" />
-    <link rel="prev" title="Math Expressions" href="math.html" />
+    <link rel="prev" title="String Expressions" href="string.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="" />
@@ -474,6 +474,28 @@ under the License.
 <section id="struct-expressions">
 <h1>Struct Expressions<a class="headerlink" href="#struct-expressions" title="Link to this heading">#</a></h1>
 <!--BEGIN:EXPR_COMPAT[struct]-->
+<section id="jsontostructs">
+<h2>JsonToStructs<a class="headerlink" href="#jsontostructs" title="Link to this heading">#</a></h2>
+<p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">JsonToStructs</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.JsonToStructs.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
+<ul class="simple">
+<li><p>Partially implemented and not comprehensively tested</p></li>
+</ul>
+<p>The following cases are not supported by Comet:</p>
+<ul class="simple">
+<li><p>Requires an explicit schema</p></li>
+</ul>
+</section>
+<section id="structstocsv">
+<h2>StructsToCsv<a class="headerlink" href="#structstocsv" title="Link to this heading">#</a></h2>
+<p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">StructsToCsv</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StructsToCsv.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
+<ul class="simple">
+<li><p>Date, Timestamp, TimestampNTZ, and Binary data types may produce different results (https://github.com/apache/datafusion-comet/issues/3232)</p></li>
+</ul>
+<p>The following cases are not supported by Comet:</p>
+<ul class="simple">
+<li><p>Complex types (arrays, maps, structs) in the schema are not supported</p></li>
+</ul>
+</section>
 <section id="structstojson">
 <h2>StructsToJson<a class="headerlink" href="#structstojson" title="Link to this heading">#</a></h2>
 <p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">StructsToJson</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StructsToJson.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
@@ -495,12 +517,12 @@ under the License.
                   
 <div class="prev-next-area">
     <a class="left-prev"
-       href="math.html"
+       href="string.html"
        title="previous page">
       <i class="fa-solid fa-angle-left"></i>
       <div class="prev-next-info">
         <p class="prev-next-subtitle">previous</p>
-        <p class="prev-next-title">Math Expressions</p>
+        <p class="prev-next-title">String Expressions</p>
       </div>
     </a>
     <a class="right-next"
