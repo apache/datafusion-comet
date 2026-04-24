@@ -58,6 +58,14 @@ suffixes (e.g. `Europe/Moscow`), and the full Spark timestamp year range
 (-290308 to 294247). Note that `CAST(string AS DATE)` is only compatible for years between
 262143 BC and 262142 AD due to an underlying library limitation.
 
+## String to TimestampNTZ
+
+Comet's native `CAST(string AS TIMESTAMP_NTZ)` implementation matches Apache Spark's behavior.
+Unlike `CAST(string AS TIMESTAMP)`, this cast is timezone-independent: any timezone offset in
+the input string (e.g. `+08:00`, `Z`, `UTC`) is silently discarded, and the local date-time
+components are preserved as-is. Time-only strings (e.g. `T12:34:56`, `12:34`) produce `NULL`.
+The result is always a wall-clock timestamp with no timezone conversion or DST adjustment.
+
 ## Decimal with Negative Scale to String
 
 Casting a `DecimalType` with a negative scale to `StringType` is marked as incompatible when
