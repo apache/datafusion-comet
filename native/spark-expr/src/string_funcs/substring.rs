@@ -128,7 +128,9 @@ fn spark_substring_negative_start(
     start: i64,
     len: u64,
 ) -> datafusion::common::Result<ArrayRef> {
-    use arrow::array::{DictionaryArray, GenericStringBuilder};
+    use arrow::array::{
+        BinaryArray, DictionaryArray, GenericBinaryBuilder, GenericStringBuilder, LargeBinaryArray,
+    };
 
     match array.data_type() {
         DataType::Utf8 => {
@@ -151,6 +153,38 @@ fn spark_substring_negative_start(
                     builder.append_null();
                 } else {
                     builder.append_value(spark_substr_negative(str_array.value(i), start, len));
+                }
+            }
+            Ok(Arc::new(builder.finish()) as ArrayRef)
+        }
+        DataType::Binary => {
+            let bin_array = array.as_any().downcast_ref::<BinaryArray>().unwrap();
+            let mut builder = GenericBinaryBuilder::<i32>::new();
+            for i in 0..bin_array.len() {
+                if bin_array.is_null(i) {
+                    builder.append_null();
+                } else {
+                    builder.append_value(spark_binary_substr_negative(
+                        bin_array.value(i),
+                        start,
+                        len,
+                    ));
+                }
+            }
+            Ok(Arc::new(builder.finish()) as ArrayRef)
+        }
+        DataType::LargeBinary => {
+            let bin_array = array.as_any().downcast_ref::<LargeBinaryArray>().unwrap();
+            let mut builder = GenericBinaryBuilder::<i64>::new();
+            for i in 0..bin_array.len() {
+                if bin_array.is_null(i) {
+                    builder.append_null();
+                } else {
+                    builder.append_value(spark_binary_substr_negative(
+                        bin_array.value(i),
+                        start,
+                        len,
+                    ));
                 }
             }
             Ok(Arc::new(builder.finish()) as ArrayRef)
@@ -179,6 +213,19 @@ fn spark_substr_negative(s: &str, pos: i64, len: u64) -> String {
         .skip(start as usize)
         .take((end - start) as usize)
         .collect()
+}
+
+fn spark_binary_substr_negative(bytes: &[u8], pos: i64, len: u64) -> &[u8] {
+    let num_bytes = bytes.len() as i64;
+    let start = num_bytes + pos;
+    let end = start.saturating_add(len as i64).min(num_bytes);
+    let start = start.max(0);
+
+    if start >= end {
+        return &[];
+    }
+
+    &bytes[start as usize..end as usize]
 }
 
 #[cfg(test)]
@@ -452,6 +499,47 @@ mod tests {
         assert_eq!(str_arr.value(0), "rld");
         assert!(str_arr.is_null(1));
         assert_eq!(str_arr.value(2), "abc");
+    }
+
+    // --- Binary negative start ---
+
+    #[test]
+    fn test_binary_negative_basic() {
+        assert_eq!(
+            spark_binary_substr_negative(&[1, 2, 3, 4, 5], -2, 2),
+            &[4, 5]
+        );
+    }
+
+    #[test]
+    fn test_binary_negative_clips_at_end() {
+        assert_eq!(
+            spark_binary_substr_negative(&[1, 2, 3, 4, 5], -2, 100),
+            &[4, 5]
+        );
+    }
+
+    #[test]
+    fn test_binary_negative_beyond_length() {
+        let empty: &[u8] = &[];
+        assert_eq!(spark_binary_substr_negative(&[1, 2, 3], -10, 3), empty);
+    }
+
+    #[test]
+    fn test_binary_negative_start_array() {
+        use arrow::array::BinaryArray;
+        let array = Arc::new(BinaryArray::from(vec![
+            Some(vec![1, 2, 3, 4, 5].as_slice()),
+            Some(&[0xFF]),
+            Some(&[]),
+            None,
+        ])) as ArrayRef;
+        let result = spark_substring_negative_start(&array, -2, 2).unwrap();
+        let bin_arr = result.as_any().downcast_ref::<BinaryArray>().unwrap();
+        assert_eq!(bin_arr.value(0), &[4, 5]);
+        assert_eq!(bin_arr.value(1), &[0xFF]);
+        assert_eq!(bin_arr.value(2), &[] as &[u8]);
+        assert!(bin_arr.is_null(3));
     }
 
     // --- Unicode edge cases: decomposed vs precomposed and combining characters ---
