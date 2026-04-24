@@ -49,14 +49,82 @@ including:
 - Scientific notation (e.g. `1.23E+5`) is supported.
 - Special values (`inf`, `infinity`, `nan`) produce `NULL`.
 
+## String to Date
+
+Comet's native `CAST(string AS DATE)` implementation matches Apache Spark's behavior for years
+between 262143 BC and 262142 AD. This range limitation comes from the underlying chrono library's
+`NaiveDate` type. Spark itself supports a wider range. All three eval modes (Legacy, ANSI, Try)
+are supported.
+
+Supported input formats match Spark exactly:
+
+- `yyyy`, `yyyy-[m]m`, `yyyy-[m]m-[d]d`
+- Optional `T` suffix with arbitrary trailing text (e.g. `2020-01-01T12:34:56`)
+- Leading/trailing whitespace and control characters are trimmed
+- Optional sign prefix (`-` for negative years)
+- Leading zeros (e.g. `0002020-01-01` is year 2020)
+
+## Date to Timestamp
+
+Comet's native `CAST(date AS TIMESTAMP)` is compatible with Spark. The cast interprets each
+date as midnight in the session timezone and converts to a UTC epoch value. DST transitions
+are handled correctly, including spring-forward gaps (where midnight may not exist) and
+fall-back ambiguity (where Comet picks the earlier/DST occurrence, matching Spark's
+`LocalDate.atStartOfDay(zoneId)` behavior).
+
+## Date to TimestampNTZ
+
+Comet's native `CAST(date AS TIMESTAMP_NTZ)` is compatible with Spark. The cast is
+timezone-independent: each date is converted to midnight as pure arithmetic
+(`days * 86,400,000,000` microseconds) with no session timezone offset applied. The result
+is the same regardless of the session timezone setting.
+
+## Date to Numeric Types
+
+In Legacy mode, `CAST(date AS INT)`, `CAST(date AS LONG)`, and casts to all other numeric
+types (Boolean, Byte, Short, Float, Double, Decimal) always return `NULL`. Comet handles
+this by short-circuiting to a null literal during query planning, so no native execution
+is needed. In ANSI and Try modes, Spark rejects these casts at analysis time (before
+execution reaches Comet).
+
 ## String to Timestamp
 
 Comet's native `CAST(string AS TIMESTAMP)` implementation supports all timestamp formats accepted
 by Apache Spark, including ISO 8601 date-time strings, date-only strings, time-only strings
 (`HH:MM:SS`), embedded timezone offsets (e.g. `+07:30`, `GMT-01:00`, `UTC`), named timezone
 suffixes (e.g. `Europe/Moscow`), and the full Spark timestamp year range
-(-290308 to 294247). Note that `CAST(string AS DATE)` is only compatible for years between
-262143 BC and 262142 AD due to an underlying library limitation.
+(-290308 to 294247).
+
+## String to TimestampNTZ
+
+Comet's native `CAST(string AS TIMESTAMP_NTZ)` implementation matches Apache Spark's behavior.
+Unlike `CAST(string AS TIMESTAMP)`, this cast is timezone-independent: any timezone offset in
+the input string (e.g. `+08:00`, `Z`, `UTC`) is silently discarded, and the local date-time
+components are preserved as-is. Time-only strings (e.g. `T12:34:56`, `12:34`) produce `NULL`.
+The result is always a wall-clock timestamp with no timezone conversion or DST adjustment.
+
+## TimestampNTZ Casts
+
+Comet supports the following `TIMESTAMP_NTZ` casts natively:
+
+| Cast                               | Compatible | Notes                                                             |
+| ---------------------------------- | ---------- | ----------------------------------------------------------------- |
+| `CAST(timestamp_ntz AS STRING)`    | Yes        | Formats local time as-is, timezone-independent                    |
+| `CAST(timestamp_ntz AS DATE)`      | Yes        | Extracts the date component, timezone-independent                 |
+| `CAST(timestamp_ntz AS TIMESTAMP)` | Yes        | Interprets NTZ as local time in session TZ, converts to UTC epoch |
+| `CAST(date AS TIMESTAMP_NTZ)`      | Yes        | Pure arithmetic, timezone-independent                             |
+| `CAST(timestamp AS TIMESTAMP_NTZ)` | Yes        | Shifts UTC epoch to local time in session TZ                      |
+| `CAST(string AS TIMESTAMP_NTZ)`    | Yes        | See [String to TimestampNTZ](#string-to-timestampntz) above       |
+
+The NTZ-to-Timestamp and Timestamp-to-NTZ casts are session-timezone-dependent (the session
+timezone determines the UTC offset). All other NTZ casts are timezone-independent and produce
+the same result regardless of the session timezone.
+
+## Date to String
+
+Comet's native `CAST(date AS STRING)` is compatible with Spark. Years below 1000 are
+zero-padded to four digits (e.g. year 999 renders as `0999-01-01`). Years above 9999 are
+rendered without truncation. The cast is timezone-independent.
 
 ## String to TimestampNTZ
 

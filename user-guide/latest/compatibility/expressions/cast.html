@@ -503,17 +503,110 @@ equivalents, so <code class="docutils literal notranslate"><span class="pre">CAS
 <li><p>Special values (<code class="docutils literal notranslate"><span class="pre">inf</span></code>, <code class="docutils literal notranslate"><span class="pre">infinity</span></code>, <code class="docutils literal notranslate"><span class="pre">nan</span></code>) produce <code class="docutils literal notranslate"><span class="pre">NULL</span></code>.</p></li>
 </ul>
 </section>
+<section id="string-to-date">
+<h2>String to Date<a class="headerlink" href="#string-to-date" title="Link to this heading">#</a></h2>
+<p>Comet’s native <code class="docutils literal notranslate"><span class="pre">CAST(string</span> <span class="pre">AS</span> <span class="pre">DATE)</span></code> implementation matches Apache Spark’s behavior for years
+between 262143 BC and 262142 AD. This range limitation comes from the underlying chrono library’s
+<code class="docutils literal notranslate"><span class="pre">NaiveDate</span></code> type. Spark itself supports a wider range. All three eval modes (Legacy, ANSI, Try)
+are supported.</p>
+<p>Supported input formats match Spark exactly:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">yyyy</span></code>, <code class="docutils literal notranslate"><span class="pre">yyyy-[m]m</span></code>, <code class="docutils literal notranslate"><span class="pre">yyyy-[m]m-[d]d</span></code></p></li>
+<li><p>Optional <code class="docutils literal notranslate"><span class="pre">T</span></code> suffix with arbitrary trailing text (e.g. <code class="docutils literal notranslate"><span class="pre">2020-01-01T12:34:56</span></code>)</p></li>
+<li><p>Leading/trailing whitespace and control characters are trimmed</p></li>
+<li><p>Optional sign prefix (<code class="docutils literal notranslate"><span class="pre">-</span></code> for negative years)</p></li>
+<li><p>Leading zeros (e.g. <code class="docutils literal notranslate"><span class="pre">0002020-01-01</span></code> is year 2020)</p></li>
+</ul>
+</section>
+<section id="date-to-timestamp">
+<h2>Date to Timestamp<a class="headerlink" href="#date-to-timestamp" title="Link to this heading">#</a></h2>
+<p>Comet’s native <code class="docutils literal notranslate"><span class="pre">CAST(date</span> <span class="pre">AS</span> <span class="pre">TIMESTAMP)</span></code> is compatible with Spark. The cast interprets each
+date as midnight in the session timezone and converts to a UTC epoch value. DST transitions
+are handled correctly, including spring-forward gaps (where midnight may not exist) and
+fall-back ambiguity (where Comet picks the earlier/DST occurrence, matching Spark’s
+<code class="docutils literal notranslate"><span class="pre">LocalDate.atStartOfDay(zoneId)</span></code> behavior).</p>
+</section>
+<section id="date-to-timestampntz">
+<h2>Date to TimestampNTZ<a class="headerlink" href="#date-to-timestampntz" title="Link to this heading">#</a></h2>
+<p>Comet’s native <code class="docutils literal notranslate"><span class="pre">CAST(date</span> <span class="pre">AS</span> <span class="pre">TIMESTAMP_NTZ)</span></code> is compatible with Spark. The cast is
+timezone-independent: each date is converted to midnight as pure arithmetic
+(<code class="docutils literal notranslate"><span class="pre">days</span> <span class="pre">*</span> <span class="pre">86,400,000,000</span></code> microseconds) with no session timezone offset applied. The result
+is the same regardless of the session timezone setting.</p>
+</section>
+<section id="date-to-numeric-types">
+<h2>Date to Numeric Types<a class="headerlink" href="#date-to-numeric-types" title="Link to this heading">#</a></h2>
+<p>In Legacy mode, <code class="docutils literal notranslate"><span class="pre">CAST(date</span> <span class="pre">AS</span> <span class="pre">INT)</span></code>, <code class="docutils literal notranslate"><span class="pre">CAST(date</span> <span class="pre">AS</span> <span class="pre">LONG)</span></code>, and casts to all other numeric
+types (Boolean, Byte, Short, Float, Double, Decimal) always return <code class="docutils literal notranslate"><span class="pre">NULL</span></code>. Comet handles
+this by short-circuiting to a null literal during query planning, so no native execution
+is needed. In ANSI and Try modes, Spark rejects these casts at analysis time (before
+execution reaches Comet).</p>
+</section>
 <section id="string-to-timestamp">
 <h2>String to Timestamp<a class="headerlink" href="#string-to-timestamp" title="Link to this heading">#</a></h2>
 <p>Comet’s native <code class="docutils literal notranslate"><span class="pre">CAST(string</span> <span class="pre">AS</span> <span class="pre">TIMESTAMP)</span></code> implementation supports all timestamp formats accepted
 by Apache Spark, including ISO 8601 date-time strings, date-only strings, time-only strings
 (<code class="docutils literal notranslate"><span class="pre">HH:MM:SS</span></code>), embedded timezone offsets (e.g. <code class="docutils literal notranslate"><span class="pre">+07:30</span></code>, <code class="docutils literal notranslate"><span class="pre">GMT-01:00</span></code>, <code class="docutils literal notranslate"><span class="pre">UTC</span></code>), named timezone
 suffixes (e.g. <code class="docutils literal notranslate"><span class="pre">Europe/Moscow</span></code>), and the full Spark timestamp year range
-(-290308 to 294247). Note that <code class="docutils literal notranslate"><span class="pre">CAST(string</span> <span class="pre">AS</span> <span class="pre">DATE)</span></code> is only compatible for years between
-262143 BC and 262142 AD due to an underlying library limitation.</p>
+(-290308 to 294247).</p>
 </section>
 <section id="string-to-timestampntz">
 <h2>String to TimestampNTZ<a class="headerlink" href="#string-to-timestampntz" title="Link to this heading">#</a></h2>
+<p>Comet’s native <code class="docutils literal notranslate"><span class="pre">CAST(string</span> <span class="pre">AS</span> <span class="pre">TIMESTAMP_NTZ)</span></code> implementation matches Apache Spark’s behavior.
+Unlike <code class="docutils literal notranslate"><span class="pre">CAST(string</span> <span class="pre">AS</span> <span class="pre">TIMESTAMP)</span></code>, this cast is timezone-independent: any timezone offset in
+the input string (e.g. <code class="docutils literal notranslate"><span class="pre">+08:00</span></code>, <code class="docutils literal notranslate"><span class="pre">Z</span></code>, <code class="docutils literal notranslate"><span class="pre">UTC</span></code>) is silently discarded, and the local date-time
+components are preserved as-is. Time-only strings (e.g. <code class="docutils literal notranslate"><span class="pre">T12:34:56</span></code>, <code class="docutils literal notranslate"><span class="pre">12:34</span></code>) produce <code class="docutils literal notranslate"><span class="pre">NULL</span></code>.
+The result is always a wall-clock timestamp with no timezone conversion or DST adjustment.</p>
+</section>
+<section id="timestampntz-casts">
+<h2>TimestampNTZ Casts<a class="headerlink" href="#timestampntz-casts" title="Link to this heading">#</a></h2>
+<p>Comet supports the following <code class="docutils literal notranslate"><span class="pre">TIMESTAMP_NTZ</span></code> casts natively:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Cast</p></th>
+<th class="head"><p>Compatible</p></th>
+<th class="head"><p>Notes</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CAST(timestamp_ntz</span> <span class="pre">AS</span> <span class="pre">STRING)</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p>Formats local time as-is, timezone-independent</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CAST(timestamp_ntz</span> <span class="pre">AS</span> <span class="pre">DATE)</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p>Extracts the date component, timezone-independent</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CAST(timestamp_ntz</span> <span class="pre">AS</span> <span class="pre">TIMESTAMP)</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p>Interprets NTZ as local time in session TZ, converts to UTC epoch</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CAST(date</span> <span class="pre">AS</span> <span class="pre">TIMESTAMP_NTZ)</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p>Pure arithmetic, timezone-independent</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CAST(timestamp</span> <span class="pre">AS</span> <span class="pre">TIMESTAMP_NTZ)</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p>Shifts UTC epoch to local time in session TZ</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CAST(string</span> <span class="pre">AS</span> <span class="pre">TIMESTAMP_NTZ)</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p>See <a class="reference internal" href="#string-to-timestampntz">String to TimestampNTZ</a> above</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>The NTZ-to-Timestamp and Timestamp-to-NTZ casts are session-timezone-dependent (the session
+timezone determines the UTC offset). All other NTZ casts are timezone-independent and produce
+the same result regardless of the session timezone.</p>
+</section>
+<section id="date-to-string">
+<h2>Date to String<a class="headerlink" href="#date-to-string" title="Link to this heading">#</a></h2>
+<p>Comet’s native <code class="docutils literal notranslate"><span class="pre">CAST(date</span> <span class="pre">AS</span> <span class="pre">STRING)</span></code> is compatible with Spark. Years below 1000 are
+zero-padded to four digits (e.g. year 999 renders as <code class="docutils literal notranslate"><span class="pre">0999-01-01</span></code>). Years above 9999 are
+rendered without truncation. The cast is timezone-independent.</p>
+</section>
+<section id="id1">
+<h2>String to TimestampNTZ<a class="headerlink" href="#id1" title="Link to this heading">#</a></h2>
 <p>Comet’s native <code class="docutils literal notranslate"><span class="pre">CAST(string</span> <span class="pre">AS</span> <span class="pre">TIMESTAMP_NTZ)</span></code> implementation matches Apache Spark’s behavior.
 Unlike <code class="docutils literal notranslate"><span class="pre">CAST(string</span> <span class="pre">AS</span> <span class="pre">TIMESTAMP)</span></code>, this cast is timezone-independent: any timezone offset in
 the input string (e.g. <code class="docutils literal notranslate"><span class="pre">+08:00</span></code>, <code class="docutils literal notranslate"><span class="pre">Z</span></code>, <code class="docutils literal notranslate"><span class="pre">UTC</span></code>) is silently discarded, and the local date-time
