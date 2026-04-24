@@ -88,6 +88,8 @@ message Expr {
     UnixTimestamp unix_timestamp = 65;
     FromJson from_json = 66;
     ToCsv to_csv = 67;
+    HoursTransform hours_transform = 68;
+    ArraysZip arrays_zip = 69;
   }
 
   // Optional QueryContext for error reporting (contains SQL text and position)
@@ -139,6 +141,7 @@ message AggExpr {
     Stddev stddev = 14;
     Correlation correlation = 15;
     BloomFilterAgg bloomFilterAgg = 16;
+    CollectSet collectSet = 17;
   }
 
   // Optional filter expression for SQL FILTER (WHERE ...) clause.
@@ -245,6 +248,11 @@ message BloomFilterAgg {
   Expr numItems = 2;
   Expr numBits = 3;
   DataType datatype = 4;
+}
+
+message CollectSet {
+  Expr child = 1;
+  DataType datatype = 2;
 }
 
 enum EvalMode {
@@ -354,6 +362,10 @@ message ToPrettyString {
 message Hour {
   Expr child = 1;
   string timezone = 2;
+}
+
+message HoursTransform {
+  Expr child = 1;
 }
 
 message Minute {
@@ -483,4 +495,11 @@ message ArrayJoin {
 
 message Rand {
   int64 seed = 1;
+}
+
+// Spark's ArraysZip takes children: Seq[Expression] and names: Seq[Expression]
+// https://github.com/apache/spark/blob/branch-4.1/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/collectionOperations.scala#L296
+message ArraysZip {
+  repeated Expr values = 1;
+  repeated string names = 2;
 }

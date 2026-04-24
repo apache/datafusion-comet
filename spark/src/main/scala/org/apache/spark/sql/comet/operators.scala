@@ -30,7 +30,7 @@ import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSet, Expression, ExpressionSet, Generator, NamedExpression, SortOrder}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, Final, Partial, PartialMerge}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, CollectSet, Final, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.catalyst.plans.physical._
@@ -1580,13 +1580,50 @@ object CometObjectHashAggregateExec
     CometHashAggregateExec(
       nativeOp,
       op,
-      op.output,
+      adjustOutputForNativeState(op),
       op.groupingExpressions,
       op.aggregateExpressions,
       op.resultExpressions,
       op.child.output,
       op.child,
       SerializedPlan(None))
+  }
+
+  /**
+   * For Partial mode aggregates containing TypedImperativeAggregate functions (like CollectSet),
+   * the Spark-side output declares buffer columns as BinaryType (since Spark serializes state to
+   * binary). However, the native Comet aggregate produces the actual state type (e.g.,
+   * ArrayType(elementType) for CollectSet). This method corrects the output schema to match the
+   * native state types so the shuffle exchange schema is consistent with the actual data.
+   *
+   * NOTE: If a new TypedImperativeAggregate function (e.g., CollectList) is added natively, add a
+   * case branch here mapping it to the native state type.
+   */
+  private def adjustOutputForNativeState(op: ObjectHashAggregateExec): Seq[Attribute] = {
+    // CometBaseAggregate.doConvert guarantees all expressions share the same mode.
+    val modes = op.aggregateExpressions.map(_.mode).distinct
+    if (modes != Seq(Partial)) {
+      return op.output
+    }
+
+    val numGrouping = op.groupingExpressions.length
+    val output = op.output.toArray
+
+    var bufferIdx = numGrouping
+    for (aggExpr <- op.aggregateExpressions) {
+      val aggFunc = aggExpr.aggregateFunction
+      val bufferAttrs = aggFunc.aggBufferAttributes
+      aggFunc match {
+        case cs: CollectSet =>
+          val elementType = cs.children.head.dataType
+          val nativeStateType = ArrayType(elementType, containsNull = true)
+          output(bufferIdx) = output(bufferIdx).withDataType(nativeStateType)
+        case _ =>
+      }
+      bufferIdx += bufferAttrs.length
+    }
+
+    output.toSeq
   }
 }
 
@@ -2043,7 +2080,7 @@ object CometSortMergeJoinExec extends CometOperatorSerde[SortMergeJoinExec] {
     }
 
     if (errorMsgs.nonEmpty) {
-      withInfo(join, errorMsgs.flatten.mkString("\n"))
+      withInfo(join, errorMsgs.mkString("\n"))
       return None
     }
 

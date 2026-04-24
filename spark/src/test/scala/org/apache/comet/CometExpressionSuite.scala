@@ -58,6 +58,13 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   val DIVIDE_BY_ZERO_EXCEPTION_MSG =
     """Division by zero. Use `try_divide` to tolerate divisor being 0 and return NULL instead"""
 
+  // Temporary test to verify checkSparkAnswer failure output labels Comet/Spark correctly.
+  ignore("check output labels on mismatch") {
+    val cometDf = Seq((1, "apple"), (2, "banana"), (3, "cherry")).toDF("id", "fruit")
+    val sparkAnswer = Seq(Row(1, "apple"), Row(2, "BANANA"), Row(3, "cherry"))
+    checkCometAnswer(cometDf, sparkAnswer)
+  }
+
   test("sort floating point with negative zero") {
     val schema = StructType(
       Seq(
@@ -2264,8 +2271,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("to_json") {
-    // TODO fix for Spark 4.0.0
-    assume(!isSpark40Plus)
     withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[StructsToJson]) -> "true") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withParquetTable(
@@ -2291,8 +2296,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("to_json escaping of field names and string values") {
-    // TODO fix for Spark 4.0.0
-    assume(!isSpark40Plus)
     withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[StructsToJson]) -> "true") {
       val gen = new DataGenerator(new Random(42))
       val chars = "\\'\"abc\t\r\n\f\b"
@@ -2322,8 +2325,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("to_json unicode") {
-    // TODO fix for Spark 4.0.0
-    assume(!isSpark40Plus)
     withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[StructsToJson]) -> "true") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withParquetTable(
@@ -2394,8 +2395,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("get_struct_field - select primitive fields") {
-    val scanImpl = CometConf.COMET_NATIVE_SCAN_IMPL.get()
-    assume(!(scanImpl == CometConf.SCAN_AUTO && CometSparkSessionExtensions.isSpark40Plus))
     withTempPath { dir =>
       // create input file with Comet disabled
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
@@ -2413,8 +2412,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("get_struct_field - select subset of struct") {
-    val scanImpl = CometConf.COMET_NATIVE_SCAN_IMPL.get()
-    assume(!(scanImpl == CometConf.SCAN_AUTO && CometSparkSessionExtensions.isSpark40Plus))
     withTempPath { dir =>
       // create input file with Comet disabled
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
@@ -2442,8 +2439,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("get_struct_field - read entire struct") {
-    val scanImpl = CometConf.COMET_NATIVE_SCAN_IMPL.get()
-    assume(!(scanImpl == CometConf.SCAN_AUTO && CometSparkSessionExtensions.isSpark40Plus))
     withTempPath { dir =>
       // create input file with Comet disabled
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
@@ -2880,25 +2875,38 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("test integral divide overflow for decimal") {
-    if (isSpark40Plus) {
-      Seq(true, false)
-    } else
-      {
-        // ansi mode only supported in Spark 4.0+
-        Seq(false)
-      }.foreach { ansiMode =>
-        withSQLConf(SQLConf.ANSI_ENABLED.key -> ansiMode.toString) {
-          withTable("t1") {
-            sql("create table t1(a decimal(38,0), b decimal(2,2)) using parquet")
-            sql(
-              "insert into t1 values(-62672277069777110394022909049981876593,-0.40)," +
-                " (-68299431870253176399167726913574455270,-0.22), (-77532633078952291817347741106477071062,0.36)," +
-                " (-79918484954351746825313746420585672848,0.44), (54400354300704342908577384819323710194,0.18)," +
-                " (78585488402645143056239590008272527352,-0.51)")
+    // All inserted values produce a quotient > Decimal(38,0).max (~1e38), so they overflow
+    // the intermediate decimal result type.  In legacy/try mode both Spark and Comet return
+    // null; in ANSI mode both must throw NUMERIC_VALUE_OUT_OF_RANGE.
+    Seq(true, false).foreach { ansiMode =>
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> ansiMode.toString) {
+        withTable("t1") {
+          sql("create table t1(a decimal(38,0), b decimal(2,2)) using parquet")
+          sql(
+            "insert into t1 values(-62672277069777110394022909049981876593,-0.40)," +
+              " (-68299431870253176399167726913574455270,-0.22), (-77532633078952291817347741106477071062,0.36)," +
+              " (-79918484954351746825313746420585672848,0.44), (54400354300704342908577384819323710194,0.18)," +
+              " (78585488402645143056239590008272527352,-0.51)")
+          if (ansiMode) {
+            // In ANSI mode the overflow must surface as an exception in both Spark and Comet.
+            checkSparkAnswerMaybeThrows(sql("select a div b from t1")) match {
+              case (Some(_), Some(_)) => // expected: both throw
+              case (None, None) =>
+                fail(
+                  "Expected both Spark and Comet to throw for decimal integral divide overflow " +
+                    "in ANSI mode, but neither threw")
+              case (Some(sparkExc), None) =>
+                fail("Spark threw but Comet did not. Spark exception: " + sparkExc.getMessage)
+              case (None, Some(cometExc)) =>
+                fail("Comet threw but Spark did not. Comet exception: " + cometExc.getMessage)
+            }
+          } else {
+            // In legacy mode overflow produces null; results must match Spark exactly.
             checkSparkAnswerAndOperator("select a div b from t1")
           }
         }
       }
+    }
   }
 
   private def testOnShuffledRangeWithRandomParameters(testLogic: DataFrame => Unit): Unit = {

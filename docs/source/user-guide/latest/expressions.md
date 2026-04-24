@@ -195,27 +195,28 @@ Expressions that are not Spark-compatible will fall back to Spark by default and
 
 ## Aggregate Expressions
 
-| Expression    | SQL        | Spark-Compatible?         | Compatibility Notes                                                                                              |
-| ------------- | ---------- | ------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| Average       |            | Yes, except for ANSI mode |                                                                                                                  |
-| BitAndAgg     |            | Yes                       |                                                                                                                  |
-| BitOrAgg      |            | Yes                       |                                                                                                                  |
-| BitXorAgg     |            | Yes                       |                                                                                                                  |
-| BoolAnd       | `bool_and` | Yes                       |                                                                                                                  |
-| BoolOr        | `bool_or`  | Yes                       |                                                                                                                  |
-| Corr          |            | No                        | Returns null instead of NaN in some edge cases ([#2646](https://github.com/apache/datafusion-comet/issues/2646)) |
-| Count         |            | Yes                       |                                                                                                                  |
-| CovPopulation |            | Yes                       |                                                                                                                  |
-| CovSample     |            | Yes                       |                                                                                                                  |
-| First         |            | No                        | This function is not deterministic. Results may not match Spark.                                                 |
-| Last          |            | No                        | This function is not deterministic. Results may not match Spark.                                                 |
-| Max           |            | Yes                       |                                                                                                                  |
-| Min           |            | Yes                       |                                                                                                                  |
-| StddevPop     |            | Yes                       |                                                                                                                  |
-| StddevSamp    |            | Yes                       |                                                                                                                  |
-| Sum           |            | Yes, except for ANSI mode |                                                                                                                  |
-| VariancePop   |            | Yes                       |                                                                                                                  |
-| VarianceSamp  |            | Yes                       |                                                                                                                  |
+| Expression    | SQL        | Spark-Compatible?         | Compatibility Notes                                              |
+| ------------- | ---------- | ------------------------- | ---------------------------------------------------------------- |
+| Average       |            | Yes, except for ANSI mode |                                                                  |
+| BitAndAgg     |            | Yes                       |                                                                  |
+| BitOrAgg      |            | Yes                       |                                                                  |
+| BitXorAgg     |            | Yes                       |                                                                  |
+| BoolAnd       | `bool_and` | Yes                       |                                                                  |
+| BoolOr        | `bool_or`  | Yes                       |                                                                  |
+| CollectSet    |            | No                        | NaN dedup differs from Spark. See compatibility guide.           |
+| Corr          |            | Yes                       |                                                                  |
+| Count         |            | Yes                       |                                                                  |
+| CovPopulation |            | Yes                       |                                                                  |
+| CovSample     |            | Yes                       |                                                                  |
+| First         |            | No                        | This function is not deterministic. Results may not match Spark. |
+| Last          |            | No                        | This function is not deterministic. Results may not match Spark. |
+| Max           |            | Yes                       |                                                                  |
+| Min           |            | Yes                       |                                                                  |
+| StddevPop     |            | Yes                       |                                                                  |
+| StddevSamp    |            | Yes                       |                                                                  |
+| Sum           |            | Yes, except for ANSI mode |                                                                  |
+| VariancePop   |            | Yes                       |                                                                  |
+| VarianceSamp  |            | Yes                       |                                                                  |
 
 ## Window Functions
 
@@ -236,27 +237,27 @@ Comet supports using the following aggregate functions within window contexts wi
 
 ## Array Expressions
 
-| Expression     | Spark-Compatible? | Compatibility Notes                                                                                                                                                                       |
-| -------------- | ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| ArrayAppend    | Yes               |                                                                                                                                                                                           |
-| ArrayCompact   | Yes               |                                                                                                                                                                                           |
-| ArrayContains  | Yes               |                                                                                                                                                                                           |
-| ArrayDistinct  | No                | Behaves differently than spark. Comet first sorts then removes duplicates while Spark preserves the original order.                                                                       |
-| ArrayExcept    | No                |                                                                                                                                                                                           |
-| ArrayFilter    | Yes               | Only supports case where function is `IsNotNull`                                                                                                                                          |
-| ArrayInsert    | No                |                                                                                                                                                                                           |
-| ArrayIntersect | No                |                                                                                                                                                                                           |
-| ArrayJoin      | No                |                                                                                                                                                                                           |
-| ArrayMax       | Yes               |                                                                                                                                                                                           |
-| ArrayMin       | Yes               |                                                                                                                                                                                           |
-| ArrayRemove    | Yes               |                                                                                                                                                                                           |
-| ArrayRepeat    | No                |                                                                                                                                                                                           |
-| ArrayUnion     | No                | Behaves differently than spark. Comet sorts the input arrays before performing the union, while Spark preserves the order of the first array and appends unique elements from the second. |
-| ArraysOverlap  | No                |                                                                                                                                                                                           |
-| CreateArray    | Yes               |                                                                                                                                                                                           |
-| ElementAt      | Yes               | Input must be an array. Map inputs are not supported.                                                                                                                                     |
-| Flatten        | Yes               |                                                                                                                                                                                           |
-| GetArrayItem   | Yes               |                                                                                                                                                                                           |
+| Expression     | Spark-Compatible? | Compatibility Notes                                   |
+| -------------- | ----------------- | ----------------------------------------------------- |
+| ArrayAppend    | Yes               |                                                       |
+| ArrayCompact   | Yes               |                                                       |
+| ArrayContains  | Yes               |                                                       |
+| ArrayDistinct  | Yes               |                                                       |
+| ArrayExcept    | No                |                                                       |
+| ArrayFilter    | Yes               | Only supports case where function is `IsNotNull`      |
+| ArrayInsert    | No                |                                                       |
+| ArrayIntersect | No                |                                                       |
+| ArrayJoin      | No                |                                                       |
+| ArrayMax       | Yes               |                                                       |
+| ArrayMin       | Yes               |                                                       |
+| ArrayRemove    | Yes               |                                                       |
+| ArrayRepeat    | No                |                                                       |
+| ArrayUnion     | Yes               |                                                       |
+| ArraysOverlap  | Yes               |                                                       |
+| CreateArray    | Yes               |                                                       |
+| ElementAt      | Yes               | Input must be an array. Map inputs are not supported. |
+| Flatten        | Yes               |                                                       |
+| GetArrayItem   | Yes               |                                                       |
 
 ## Map Expressions
 
@@ -315,4 +316,4 @@ Comet supports using the following aggregate functions within window contexts wi
 | UnscaledValue                | Yes               |                                                                             |
 
 [Comet Configuration Guide]: configs.md
-[Comet Compatibility Guide]: compatibility.md
+[Comet Compatibility Guide]: compatibility/expressions/index.md

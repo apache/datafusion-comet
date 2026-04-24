@@ -33,7 +33,7 @@
 - [x] bool_and
 - [x] bool_or
 - [ ] collect_list
-- [ ] collect_set
+- [x] collect_set
 - [ ] corr
 - [x] count
 - [x] count_if
@@ -98,14 +98,14 @@
 - [x] array_repeat
 - [x] array_union
 - [x] arrays_overlap
-- [ ] arrays_zip
+- [x] arrays_zip
 - [x] element_at
 - [ ] flatten
 - [x] get
 - [ ] sequence
 - [ ] shuffle
 - [ ] slice
-- [ ] sort_array
+- [x] sort_array
 
 ### bitwise_funcs
 
@@ -171,7 +171,7 @@
 - [ ] date_add
 - [ ] date_diff
 - [ ] date_format
-- [ ] date_from_unix_date
+- [x] date_from_unix_date
 - [x] date_part
 - [ ] date_sub
 - [ ] date_trunc
@@ -296,7 +296,7 @@
 - [x] atan
 - [x] atan2
 - [ ] atanh
-- [ ] bin
+- [x] bin
 - [ ] bround
 - [ ] cbrt
 - [x] ceil
