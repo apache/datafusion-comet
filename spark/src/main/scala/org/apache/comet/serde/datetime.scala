@@ -180,7 +180,7 @@ object CometQuarter extends CometExpressionSerde[Quarter] with CometExprGetDateF
 
 object CometHour extends CometExpressionSerde[Hour] {
 
-  val incompatReason = "Incorrectly applies timezone conversion to TimestampNTZ inputs" +
+  val incompatReason: String = "Incorrectly applies timezone conversion to TimestampNTZ inputs" +
     " (https://github.com/apache/datafusion-comet/issues/3180)"
 
   override def getIncompatibleReasons(): Seq[String] = Seq(incompatReason)

@@ -164,7 +164,7 @@ object CometUnhex extends CometExpressionSerde[Unhex] with MathExprBase {
 
 object CometAbs extends CometExpressionSerde[Abs] with MathExprBase {
 
-  val unsupportedReason = "Only integral, floating-point, and decimal types are supported"
+  val unsupportedReason: String = "Only integral, floating-point, and decimal types are supported"
 
   override def getUnsupportedReasons(): Seq[String] = Seq(unsupportedReason)
 
