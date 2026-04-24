@@ -24,3 +24,6 @@ spark/benchmarks
 comet-event-trace.json
 __pycache__
 output
+docs/comet-*/
+docs/build/
+docs/temp/
