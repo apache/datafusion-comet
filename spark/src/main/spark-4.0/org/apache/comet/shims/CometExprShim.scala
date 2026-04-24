@@ -128,6 +128,11 @@ trait CometExprShim extends CommonStringExprs {
           case _ => None
         }
 
+      case ms: MapSort =>
+        val childExpr = exprToProtoInternal(ms.child, inputs, binding)
+        val mapSortExpr = scalarFunctionExprToProto("map_sort", childExpr)
+        optExprWithInfo(mapSortExpr, ms, ms.child)
+
       case _ => None
     }
   }
