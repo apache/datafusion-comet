@@ -1719,7 +1719,6 @@ trait CometHashJoin {
     }
 
     if (join.buildSide == BuildRight && join.joinType == LeftAnti && !isNullAwareAntiJoin) {
-      // https://github.com/apache/datafusion-comet/issues/457
       withInfo(
         join,
         "BuildRight with LeftAnti is not supported " +
