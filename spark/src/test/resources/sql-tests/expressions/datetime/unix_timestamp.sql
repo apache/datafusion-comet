@@ -25,5 +25,5 @@ query
 SELECT unix_timestamp(ts) FROM test_unix_ts
 
 -- literal arguments
-query ignore(https://github.com/apache/datafusion-comet/issues/3336)
+query
 SELECT unix_timestamp(timestamp('1970-01-01 00:00:00')), unix_timestamp(timestamp('2024-06-15 10:30:45'))
