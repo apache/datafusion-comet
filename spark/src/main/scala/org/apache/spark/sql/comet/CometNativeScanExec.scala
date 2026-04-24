@@ -30,6 +30,7 @@ import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.plans.physical.{Partitioning, UnknownPartitioning}
 import org.apache.spark.sql.comet.shims.ShimStreamSourceAwareSparkPlan
 import org.apache.spark.sql.execution._
+import org.apache.spark.sql.execution.{ScalarSubquery => ExecScalarSubquery}
 import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.types._
@@ -41,6 +42,7 @@ import com.google.common.base.Objects
 
 import org.apache.comet.parquet.{CometParquetFileFormat, CometParquetUtils}
 import org.apache.comet.serde.OperatorOuterClass.Operator
+import org.apache.comet.serde.QueryPlanSerde.exprToProto
 
 /**
  * Native scan operator for DataSource V1 Parquet files using DataFusion's ParquetExec.
@@ -96,7 +98,7 @@ case class CometNativeScanExec(
     }
     dataFilters.foreach { f =>
       f.foreach {
-        case s: org.apache.spark.sql.execution.ScalarSubquery =>
+        case s: ExecScalarSubquery =>
           s.plan.prepare()
         case _ =>
       }
@@ -223,20 +225,19 @@ case class CometNativeScanExec(
     val commonBytes = {
       val base = nativeOp.getNativeScan.getCommon
       val scalarSubqueryFilters = dataFilters
-        .filter(_.exists(_.isInstanceOf[org.apache.spark.sql.execution.ScalarSubquery]))
+        .filter(_.exists(_.isInstanceOf[ExecScalarSubquery]))
       scalarSubqueryFilters.foreach { f =>
         f.foreach {
-          case s: org.apache.spark.sql.execution.ScalarSubquery =>
+          case s: ExecScalarSubquery =>
             s.updateResult()
           case _ =>
         }
       }
       val resolvedFilters = scalarSubqueryFilters
-        .map(_.transform { case s: org.apache.spark.sql.execution.ScalarSubquery =>
+        .map(_.transform { case s: ExecScalarSubquery =>
           Literal.create(s.eval(null), s.dataType)
         })
       if (resolvedFilters.nonEmpty) {
-        import org.apache.comet.serde.QueryPlanSerde.exprToProto
         val commonBuilder = base.toBuilder
         for (filter <- resolvedFilters) {
           exprToProto(filter, output) match {
