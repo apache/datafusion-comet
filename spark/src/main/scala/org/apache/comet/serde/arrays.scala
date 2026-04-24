@@ -30,7 +30,7 @@ import org.apache.spark.sql.types._
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.QueryPlanSerde._
-import org.apache.comet.shims.CometExprShim
+import org.apache.comet.shims.{CometExprShim, CometTypeShim}
 
 object CometArrayRemove
     extends CometExpressionSerde[ArrayRemove]
@@ -189,9 +189,26 @@ object CometSortArray extends CometExpressionSerde[SortArray] {
   }
 }
 
-object CometArrayIntersect extends CometExpressionSerde[ArrayIntersect] {
+object CometArrayIntersect extends CometExpressionSerde[ArrayIntersect] with CometTypeShim {
 
-  override def getSupportLevel(expr: ArrayIntersect): SupportLevel = Incompatible(None)
+  private val incompatReason: String =
+    "Result array element order may differ from Spark when the right array is longer " +
+      "than the left (DataFusion probes the longer side)."
+
+  private val unsupportedCollationReason: String =
+    "array_intersect on collated strings is not supported."
+
+  override def getIncompatibleReasons(): Seq[String] = Seq(incompatReason)
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(unsupportedCollationReason)
+
+  override def getSupportLevel(expr: ArrayIntersect): SupportLevel = {
+    if (hasNonDefaultStringCollation(expr.dataType)) {
+      Unsupported(Some(unsupportedCollationReason))
+    } else {
+      Incompatible(Some(incompatReason))
+    }
+  }
 
   override def convert(
       expr: ArrayIntersect,

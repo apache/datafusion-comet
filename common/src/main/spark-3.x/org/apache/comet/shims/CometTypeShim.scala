@@ -26,4 +26,7 @@ import org.apache.spark.sql.types.DataType
 trait CometTypeShim {
   @nowarn // Spark 4 feature; stubbed to false in Spark 3.x for compatibility.
   def isStringCollationType(dt: DataType): Boolean = false
+
+  @nowarn // Spark 4 feature; stubbed to false in Spark 3.x for compatibility.
+  def hasNonDefaultStringCollation(dt: DataType): Boolean = false
 }
