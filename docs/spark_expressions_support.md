@@ -93,7 +93,7 @@
 - [x] array_join
 - [x] array_max
 - [ ] array_min
-- [ ] array_position
+- [x] array_position
 - [x] array_remove
 - [x] array_repeat
 - [x] array_union
