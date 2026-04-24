@@ -195,24 +195,30 @@ fn spark_substring_negative_start(
             let result = DictionaryArray::try_new(dict.keys().clone(), values)?;
             Ok(Arc::new(result) as ArrayRef)
         }
-        _ => Ok(Arc::clone(array)),
+        dt => Err(datafusion::common::DataFusionError::Internal(format!(
+            "Unsupported input type for substring with negative start: {dt:?}"
+        ))),
     }
 }
 
-fn spark_substr_negative(s: &str, pos: i64, len: u64) -> String {
+fn spark_substr_negative(s: &str, pos: i64, len: u64) -> &str {
     let num_chars = s.chars().count() as i64;
-    let start = num_chars + pos;
-    let end = start.saturating_add(len as i64).min(num_chars);
-    let start = start.max(0);
-
+    let end = (num_chars + pos).saturating_add(len as i64).min(num_chars);
+    let start = (num_chars + pos).max(0);
     if start >= end {
-        return String::new();
+        return "";
     }
 
-    s.chars()
-        .skip(start as usize)
-        .take((end - start) as usize)
-        .collect()
+    let mut it = s.char_indices();
+    let byte_start = it
+        .by_ref()
+        .nth(start as usize)
+        .map(|(b, _)| b)
+        .unwrap_or(s.len());
+    let span = (end - start - 1) as usize;
+    let byte_end = it.nth(span).map(|(b, _)| b).unwrap_or(s.len());
+
+    &s[byte_start..byte_end]
 }
 
 fn spark_binary_substr_negative(bytes: &[u8], pos: i64, len: u64) -> &[u8] {
