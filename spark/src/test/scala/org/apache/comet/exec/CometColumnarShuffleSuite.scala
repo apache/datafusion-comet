@@ -39,6 +39,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 import org.apache.comet.CometConf
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 
 abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   protected val adaptiveExecutionEnabled: Boolean
@@ -213,7 +214,11 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
                 .repartition(numPartitions, $"_1", $"_2")
                 .sortWithinPartitions($"_2")
 
-              checkShuffleAnswer(df, 1)
+              // Spark 4.0 normalizes shuffle keys containing array<map> via
+              // transform(arr, x -> mapsort(x)), which Comet doesn't yet
+              // support, so the shuffle falls back to Spark.
+              val expectedShuffles = if (isSpark40Plus) 0 else 1
+              checkShuffleAnswer(df, expectedShuffles)
             }
           }
         }
