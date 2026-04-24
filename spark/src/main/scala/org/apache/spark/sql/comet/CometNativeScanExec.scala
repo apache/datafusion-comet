@@ -76,6 +76,27 @@ case class CometNativeScanExec(
 
   override lazy val metadata: Map[String, String] = originalPlan.metadata
 
+  /**
+   * Prepare DPP subquery plans before execution.
+   *
+   * For non-AQE DPP, partitionFilters contains DynamicPruningExpression(InSubqueryExec(...))
+   * inserted by PlanDynamicPruningFilters (which runs before Comet rules). We call
+   * e.plan.prepare() here so that the subquery plans are set up before execution begins.
+   *
+   * Note: doPrepare() alone is NOT sufficient for DPP resolution. serializedPartitionData can be
+   * triggered from findAllPlanData (via commonData) on a BroadcastExchangeExec thread, outside
+   * the normal prepare() -> executeSubqueries() flow. The actual DPP resolution (updateResult)
+   * happens in serializedPartitionData below.
+   */
+  override protected def doPrepare(): Unit = {
+    partitionFilters.foreach {
+      case DynamicPruningExpression(e: InSubqueryExec) =>
+        e.plan.prepare()
+      case _ =>
+    }
+    super.doPrepare()
+  }
+
   override val nodeName: String =
     s"CometNativeScan $relation ${tableIdentifier.map(_.unquotedString).getOrElse("")}"
 
@@ -113,7 +134,21 @@ case class CometNativeScanExec(
     if (bucketedScan) {
       originalPlan.outputPartitioning
     } else {
-      UnknownPartitioning(originalPlan.inputRDD.getNumPartitions)
+      // Use perPartitionData.length instead of originalPlan.inputRDD.getNumPartitions.
+      //
+      // originalPlan.inputRDD triggers FileSourceScanExec's full scan pipeline including
+      // codegen on partition filter expressions. With DPP, this calls
+      // InSubqueryExec.doGenCode which requires the subquery to have finished — but
+      // outputPartitioning can be accessed before prepare() runs (e.g., by
+      // ValidateRequirements during plan validation).
+      //
+      // perPartitionData goes through serializedPartitionData, which explicitly resolves
+      // DPP subqueries (via updateResult()) before accessing file partitions. This is the
+      // same pattern CometIcebergNativeScanExec uses.
+      //
+      // This is also more correct: perPartitionData.length reflects the post-DPP partition
+      // count, matching what CometExecRDD actually uses in doExecuteColumnar().
+      UnknownPartitioning(perPartitionData.length)
     }
   }
 
@@ -141,6 +176,38 @@ case class CometNativeScanExec(
    * partition's files (lazily, as tasks are scheduled).
    */
   @transient private lazy val serializedPartitionData: (Array[Byte], Array[Array[Byte]]) = {
+    // Ensure DPP subqueries are resolved before accessing file partitions.
+    // serializedPartitionData can be triggered from findAllPlanData (via commonData) on a
+    // different execution path than the standard prepare() -> executeSubqueries() flow
+    // (e.g., from a BroadcastExchangeExec thread). We must resolve DPP here explicitly.
+    partitionFilters.foreach {
+      case DynamicPruningExpression(e: InSubqueryExec) if e.values().isEmpty =>
+        logDebug(s"Resolving DPP subquery: plan=${e.plan.getClass.getSimpleName}")
+        try {
+          e.updateResult()
+          logDebug("DPP subquery resolved successfully")
+        } catch {
+          case ex: Exception =>
+            logError(s"DPP subquery resolution failed: ${ex.getMessage}")
+            throw ex
+        }
+      case _ =>
+    }
+    // CometNativeScanExec.partitionFilters and CometScanExec.partitionFilters contain
+    // different InSubqueryExec instances. convertSubqueryBroadcasts replaced the former with
+    // CometSubqueryBroadcastExec, but the latter still has the original SubqueryBroadcastExec.
+    // Both need resolution because CometScanExec.dynamicallySelectedPartitions evaluates its
+    // own partitionFilters. updateResult() is a no-op if already resolved.
+    if (scan != null) {
+      scan.partitionFilters.foreach {
+        case DynamicPruningExpression(e: InSubqueryExec) if e.values().isEmpty =>
+          logDebug(
+            "Resolving CometScanExec DPP subquery: " +
+              s"plan=${e.plan.getClass.getSimpleName}")
+          e.updateResult()
+        case _ =>
+      }
+    }
     // Extract common data from nativeOp
     val commonBytes = nativeOp.getNativeScan.getCommon.toByteArray
 
@@ -231,7 +298,8 @@ case class CometNativeScanExec(
     obj match {
       case other: CometNativeScanExec =>
         this.originalPlan == other.originalPlan &&
-        this.serializedPlanOpt == other.serializedPlanOpt
+        this.serializedPlanOpt == other.serializedPlanOpt &&
+        this.partitionFilters == other.partitionFilters
       case _ =>
         false
     }

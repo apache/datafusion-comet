@@ -21,7 +21,7 @@ package org.apache.comet.expressions
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Expression, Literal}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, NullType, StructType, TimestampType}
+import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, NullType, StructType, TimestampNTZType, TimestampType}
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, withInfo}
@@ -45,9 +45,8 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
       DataTypes.StringType,
       DataTypes.BinaryType,
       DataTypes.DateType,
-      DataTypes.TimestampType)
-  // TODO add DataTypes.TimestampNTZType for Spark 3.4 and later
-  // https://github.com/apache/datafusion-comet/issues/378
+      DataTypes.TimestampType,
+      DataTypes.TimestampNTZType)
 
   override def getSupportLevel(cast: Cast): SupportLevel = {
     if (cast.child.isInstanceOf[Literal]) {
@@ -152,13 +151,11 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
       case (dt: ArrayType, dt1: ArrayType) =>
         isSupported(dt.elementType, dt1.elementType, timeZoneId, evalMode)
       case (dt: DataType, _) if dt.typeName == "timestamp_ntz" =>
-        // https://github.com/apache/datafusion-comet/issues/378
-        // https://github.com/apache/datafusion-comet/issues/3179
         toType match {
-          case DataTypes.TimestampType | DataTypes.DateType | DataTypes.StringType =>
-            Incompatible()
-          case _ =>
-            unsupported(fromType, toType)
+          case DataTypes.StringType => Compatible()
+          case DataTypes.DateType => Compatible()
+          case DataTypes.TimestampType => Compatible()
+          case _ => unsupported(fromType, toType)
         }
       case (_: DecimalType, _: DecimalType) =>
         Compatible()
@@ -219,6 +216,8 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
         // https://github.com/apache/datafusion-comet/issues/327
         Compatible(Some("Only supports years between 262143 BC and 262142 AD"))
       case DataTypes.TimestampType =>
+        Compatible()
+      case _: TimestampNTZType =>
         Compatible()
       case _ =>
         unsupported(DataTypes.StringType, toType)
@@ -286,6 +285,7 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
         Compatible()
       case DataTypes.StringType => Compatible()
       case DataTypes.DateType => Compatible()
+      case _: TimestampNTZType => Compatible()
       case _ => unsupported(DataTypes.TimestampType, toType)
     }
   }
@@ -398,6 +398,8 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
   private def canCastFromDate(toType: DataType, evalMode: CometEvalMode.Value): SupportLevel =
     toType match {
       case DataTypes.TimestampType =>
+        Compatible()
+      case _: TimestampNTZType =>
         Compatible()
       case DataTypes.BooleanType | DataTypes.ByteType | DataTypes.ShortType |
           DataTypes.IntegerType | DataTypes.LongType | DataTypes.FloatType |

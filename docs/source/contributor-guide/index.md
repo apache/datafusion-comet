@@ -28,12 +28,12 @@ Comet Plugin Overview <plugin_overview>
 Arrow FFI <ffi>
 JVM Shuffle <jvm_shuffle>
 Native Shuffle <native_shuffle>
-Parquet Scans <parquet_scans>
 Development Guide <development>
 Debugging Guide <debugging>
 Benchmarking Guide <benchmarking>
 Adding a New Operator <adding_a_new_operator>
 Adding a New Expression <adding_a_new_expression>
+Supported Spark Expressions <spark_expressions_support>
 Tracing <tracing>
 Profiling <profiling>
 Spark SQL Tests <spark-sql-tests.md>
