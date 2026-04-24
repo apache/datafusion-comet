@@ -176,19 +176,25 @@ object GenerateDocs {
   }
 
   private def writeExpressionCompatNotes(w: BufferedOutputStream, notes: CategoryNotes): Unit = {
-    val sorted = notes.sortBy(_._1)
-    val incompat = sorted.flatMap { case (name, incompat, _) => incompat.map((name, _)) }
-    val unsupported = sorted.flatMap { case (name, _, unsupported) => unsupported.map((name, _)) }
-    if (incompat.nonEmpty) {
-      w.write("\n### Incompatible With Spark\n\n".getBytes)
-      for ((name, reason) <- incompat) {
-        w.write(s"- **$name**: $reason\n".getBytes)
-      }
+    val sorted = notes.sortBy(_._1).filter { case (_, incompat, unsupported) =>
+      incompat.nonEmpty || unsupported.nonEmpty
     }
-    if (unsupported.nonEmpty) {
-      w.write("\n### Unsupported Cases\n\n".getBytes)
-      for ((name, reason) <- unsupported) {
-        w.write(s"- **$name**: $reason\n".getBytes)
+    for ((name, incompat, unsupported) <- sorted) {
+      w.write(s"\n### $name\n".getBytes)
+      if (incompat.nonEmpty) {
+        w.write(
+          (s"\nThe following incompatibilities cause `$name` to fall back to Spark by default." +
+            s" Set `spark.comet.expression.$name.allowIncompatible=true` to enable Comet" +
+            " acceleration despite these differences.\n\n").getBytes)
+        for (reason <- incompat) {
+          w.write(s"- $reason\n".getBytes)
+        }
+      }
+      if (unsupported.nonEmpty) {
+        w.write("\nThe following cases are not supported by Comet:\n\n".getBytes)
+        for (reason <- unsupported) {
+          w.write(s"- $reason\n".getBytes)
+        }
       }
     }
   }
