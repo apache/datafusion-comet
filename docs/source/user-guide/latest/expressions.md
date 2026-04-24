@@ -245,7 +245,7 @@ Comet supports using the following aggregate functions within window contexts wi
 | ArrayDistinct  | Yes               |                                                       |
 | ArrayExcept    | No                |                                                       |
 | ArrayFilter    | Yes               | Only supports case where function is `IsNotNull`      |
-| ArrayInsert    | No                |                                                       |
+| ArrayInsert    | Yes               |                                                       |
 | ArrayIntersect | No                |                                                       |
 | ArrayJoin      | No                |                                                       |
 | ArrayMax       | Yes               |                                                       |
