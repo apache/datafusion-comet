@@ -151,6 +151,9 @@ object CometCount extends CometAggregateExpressionSerde[Count] {
 
 object CometAverage extends CometAggregateExpressionSerde[Average] {
 
+  override def getIncompatibleReasons(): Seq[String] = Seq(
+    "Falls back to Spark in ANSI mode. Supports all numeric inputs except decimal types.")
+
   override def convert(
       aggExpr: AggregateExpression,
       avg: Average,
@@ -665,6 +668,12 @@ object CometBloomFilterAggregate extends CometAggregateExpressionSerde[BloomFilt
 }
 
 object CometCollectSet extends CometAggregateExpressionSerde[CollectSet] {
+
+  override def getIncompatibleReasons(): Seq[String] = Seq(
+    "Comet deduplicates NaN values (treats `NaN == NaN`) while Spark treats each NaN as a" +
+      s" distinct value. When `${COMET_EXEC_STRICT_FLOATING_POINT.key}=true`, `collect_set`" +
+      " on floating-point types falls back to Spark unless" +
+      " `spark.comet.expression.CollectSet.allowIncompatible=true` is set.")
 
   override def getSupportLevel(expr: CollectSet): SupportLevel = {
     if (COMET_EXEC_STRICT_FLOATING_POINT.get() &&

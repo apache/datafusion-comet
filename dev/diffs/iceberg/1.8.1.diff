@@ -1497,6 +1497,12 @@ index dda49b4946..529992de6b 100644
              .getOrCreate();
  
      catalog =
+@@ -201,3 +221,4 @@ public class TestSparkReaderDeletes extends DeleteReadTests {
+   protected boolean countDeletes() {
+-    return true;
++    // TODO: Enable once iceberg-rust exposes delete count metrics to Comet
++    return false;
+   }
 diff --git a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkReaderWithBloomFilter.java b/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkReaderWithBloomFilter.java
 index e5831b76e4..5c45a111d9 100644
 --- a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkReaderWithBloomFilter.java
