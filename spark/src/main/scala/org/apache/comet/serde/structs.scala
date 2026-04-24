@@ -105,6 +105,16 @@ object CometGetArrayStructFields extends CometExpressionSerde[GetArrayStructFiel
 
 object CometStructsToJson extends CometExpressionSerde[StructsToJson] {
 
+  override def getIncompatibleReasons(): Seq[String] = Seq(
+    "Does not support `+Infinity` and `-Infinity` for numeric types (float, double)." +
+      " (https://github.com/apache/datafusion-comet/issues/3016)")
+
+  override def getSupportLevel(expr: StructsToJson): SupportLevel =
+    Incompatible(
+      Some(
+        "Does not support Infinity/-Infinity for numeric types" +
+          " (https://github.com/apache/datafusion-comet/issues/3016)"))
+
   override def convert(
       expr: StructsToJson,
       inputs: Seq[Attribute],

@@ -21,6 +21,7 @@ package org.apache.spark.sql.comet
 
 import scala.reflect.ClassTag
 
+import org.apache.spark.{Partition, TaskContext}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst._
@@ -75,8 +76,56 @@ case class CometNativeScanExec(
 
   override lazy val metadata: Map[String, String] = originalPlan.metadata
 
+  /**
+   * Prepare DPP subquery plans before execution.
+   *
+   * For non-AQE DPP, partitionFilters contains DynamicPruningExpression(InSubqueryExec(...))
+   * inserted by PlanDynamicPruningFilters (which runs before Comet rules). We call
+   * e.plan.prepare() here so that the subquery plans are set up before execution begins.
+   *
+   * Note: doPrepare() alone is NOT sufficient for DPP resolution. serializedPartitionData can be
+   * triggered from findAllPlanData (via commonData) on a BroadcastExchangeExec thread, outside
+   * the normal prepare() -> executeSubqueries() flow. The actual DPP resolution (updateResult)
+   * happens in serializedPartitionData below.
+   */
+  override protected def doPrepare(): Unit = {
+    partitionFilters.foreach {
+      case DynamicPruningExpression(e: InSubqueryExec) =>
+        e.plan.prepare()
+      case _ =>
+    }
+    super.doPrepare()
+  }
+
   override val nodeName: String =
     s"CometNativeScan $relation ${tableIdentifier.map(_.unquotedString).getOrElse("")}"
+
+  override def verboseStringWithOperatorId(): String = {
+    val metadataStr = metadata.toSeq.sorted
+      .filterNot {
+        case (_, value) if (value.isEmpty || value.equals("[]")) => true
+        case (key, _) if (key.equals("DataFilters") || key.equals("Format")) => true
+        case (_, _) => false
+      }
+      .map {
+        case (key, _) if (key.equals("Location")) =>
+          val location = relation.location
+          val numPaths = location.rootPaths.length
+          val abbreviatedLocation = if (numPaths <= 1) {
+            location.rootPaths.mkString("[", ", ", "]")
+          } else {
+            "[" + location.rootPaths.head + s", ... ${numPaths - 1} entries]"
+          }
+          s"$key: ${location.getClass.getSimpleName} ${redact(abbreviatedLocation)}"
+        case (key, value) => s"$key: ${redact(value)}"
+      }
+
+    s"""
+       |$formattedNodeName
+       |${ExplainUtils.generateFieldString("Output", output)}
+       |${metadataStr.mkString("\n")}
+       |""".stripMargin
+  }
 
   // exposed for testing
   lazy val bucketedScan: Boolean = originalPlan.bucketedScan && !disableBucketedScan
@@ -85,7 +134,21 @@ case class CometNativeScanExec(
     if (bucketedScan) {
       originalPlan.outputPartitioning
     } else {
-      UnknownPartitioning(originalPlan.inputRDD.getNumPartitions)
+      // Use perPartitionData.length instead of originalPlan.inputRDD.getNumPartitions.
+      //
+      // originalPlan.inputRDD triggers FileSourceScanExec's full scan pipeline including
+      // codegen on partition filter expressions. With DPP, this calls
+      // InSubqueryExec.doGenCode which requires the subquery to have finished — but
+      // outputPartitioning can be accessed before prepare() runs (e.g., by
+      // ValidateRequirements during plan validation).
+      //
+      // perPartitionData goes through serializedPartitionData, which explicitly resolves
+      // DPP subqueries (via updateResult()) before accessing file partitions. This is the
+      // same pattern CometIcebergNativeScanExec uses.
+      //
+      // This is also more correct: perPartitionData.length reflects the post-DPP partition
+      // count, matching what CometExecRDD actually uses in doExecuteColumnar().
+      UnknownPartitioning(perPartitionData.length)
     }
   }
 
@@ -113,6 +176,38 @@ case class CometNativeScanExec(
    * partition's files (lazily, as tasks are scheduled).
    */
   @transient private lazy val serializedPartitionData: (Array[Byte], Array[Array[Byte]]) = {
+    // Ensure DPP subqueries are resolved before accessing file partitions.
+    // serializedPartitionData can be triggered from findAllPlanData (via commonData) on a
+    // different execution path than the standard prepare() -> executeSubqueries() flow
+    // (e.g., from a BroadcastExchangeExec thread). We must resolve DPP here explicitly.
+    partitionFilters.foreach {
+      case DynamicPruningExpression(e: InSubqueryExec) if e.values().isEmpty =>
+        logDebug(s"Resolving DPP subquery: plan=${e.plan.getClass.getSimpleName}")
+        try {
+          e.updateResult()
+          logDebug("DPP subquery resolved successfully")
+        } catch {
+          case ex: Exception =>
+            logError(s"DPP subquery resolution failed: ${ex.getMessage}")
+            throw ex
+        }
+      case _ =>
+    }
+    // CometNativeScanExec.partitionFilters and CometScanExec.partitionFilters contain
+    // different InSubqueryExec instances. convertSubqueryBroadcasts replaced the former with
+    // CometSubqueryBroadcastExec, but the latter still has the original SubqueryBroadcastExec.
+    // Both need resolution because CometScanExec.dynamicallySelectedPartitions evaluates its
+    // own partitionFilters. updateResult() is a no-op if already resolved.
+    if (scan != null) {
+      scan.partitionFilters.foreach {
+        case DynamicPruningExpression(e: InSubqueryExec) if e.values().isEmpty =>
+          logDebug(
+            "Resolving CometScanExec DPP subquery: " +
+              s"plan=${e.plan.getClass.getSimpleName}")
+          e.updateResult()
+        case _ =>
+      }
+    }
     // Extract common data from nativeOp
     val commonBytes = nativeOp.getNativeScan.getCommon.toByteArray
 
@@ -153,18 +248,27 @@ case class CometNativeScanExec(
       (None, Seq.empty)
     }
 
-    CometExecRDD(
+    new CometExecRDD(
       sparkContext,
-      inputRDDs = Seq.empty,
-      commonByKey = Map(sourceKey -> commonData),
-      perPartitionByKey = Map(sourceKey -> perPartitionData),
-      serializedPlan = serializedPlan,
-      numPartitions = perPartitionData.length,
-      numOutputCols = output.length,
-      nativeMetrics = nativeMetrics,
-      subqueries = Seq.empty,
-      broadcastedHadoopConfForEncryption = broadcastedHadoopConfForEncryption,
-      encryptedFilePaths = encryptedFilePaths)
+      Seq.empty,
+      Map(sourceKey -> commonData),
+      Map(sourceKey -> perPartitionData),
+      serializedPlan,
+      perPartitionData.length,
+      output.length,
+      nativeMetrics,
+      Seq.empty,
+      broadcastedHadoopConfForEncryption,
+      encryptedFilePaths) {
+      override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
+        val res = super.compute(split, context)
+
+        // Report scan input metrics after the iterator is fully consumed.
+        Option(context).foreach(nativeMetrics.reportScanInputMetrics)
+
+        res
+      }
+    }
   }
 
   override def doCanonicalize(): CometNativeScanExec = {
@@ -194,7 +298,8 @@ case class CometNativeScanExec(
     obj match {
       case other: CometNativeScanExec =>
         this.originalPlan == other.originalPlan &&
-        this.serializedPlanOpt == other.serializedPlanOpt
+        this.serializedPlanOpt == other.serializedPlanOpt &&
+        this.partitionFilters == other.partitionFilters
       case _ =>
         false
     }
@@ -202,8 +307,25 @@ case class CometNativeScanExec(
 
   override def hashCode(): Int = Objects.hashCode(originalPlan, serializedPlanOpt)
 
-  override lazy val metrics: Map[String, SQLMetric] =
-    CometMetricNode.nativeScanMetrics(session.sparkContext)
+  private val driverMetricKeys =
+    Set(
+      "numFiles",
+      "filesSize",
+      "numPartitions",
+      "metadataTime",
+      "staticFilesNum",
+      "staticFilesSize",
+      "pruningTime")
+
+  override lazy val metrics: Map[String, SQLMetric] = {
+    val nativeMetrics = CometMetricNode.nativeScanMetrics(session.sparkContext)
+    // Map native metric names to Spark metric names
+    val withAlias = nativeMetrics.get("output_rows") match {
+      case Some(metric) => nativeMetrics + ("numOutputRows" -> metric)
+      case None => nativeMetrics
+    }
+    withAlias ++ scan.metrics.filterKeys(driverMetricKeys)
+  }
 
   /**
    * See [[org.apache.spark.sql.execution.DataSourceScanExec.inputRDDs]]. Only used for tests.

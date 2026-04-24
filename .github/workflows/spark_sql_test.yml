@@ -30,18 +30,28 @@ on:
       - "doc/**"
       - "docs/**"
       - "**.md"
+      - "dev/changelog/*.md"
       - "native/core/benches/**"
       - "native/spark-expr/benches/**"
-      - "spark/src/test/scala/org/apache/spark/sql/benchmark/**"
+      - "spark/src/test/**"
+      - "common/src/test/**"
+      - "spark/src/main/scala/org/apache/comet/GenerateDocs.scala"
+      - "fuzz-testing/**"
+      - "spark-integration/**"
   pull_request:
     paths-ignore:
       - "benchmarks/**"
       - "doc/**"
       - "docs/**"
       - "**.md"
+      - "dev/changelog/*.md"
       - "native/core/benches/**"
       - "native/spark-expr/benches/**"
-      - "spark/src/test/scala/org/apache/spark/sql/benchmark/**"
+      - "spark/src/test/**"
+      - "common/src/test/**"
+      - "spark/src/main/scala/org/apache/comet/GenerateDocs.scala"
+      - "fuzz-testing/**"
+      - "spark-integration/**"
   # manual trigger
   # https://docs.github.com/en/actions/managing-workflow-runs/manually-running-a-workflow
   workflow_dispatch:
@@ -54,6 +64,11 @@ on:
 
 env:
   RUST_VERSION: stable
+  RUST_BACKTRACE: 1
+  # Force GNU ld on Linux: recent Rust stable defaults to rust-lld on
+  # x86_64-unknown-linux-gnu, and rust-lld cannot resolve -ljvm against the
+  # Zulu JDK layout installed by setup-java. Keep bfd for all cargo invocations.
+  RUSTFLAGS: "-Clink-arg=-fuse-ld=bfd"
 
 jobs:
 
@@ -88,7 +103,7 @@ jobs:
           cd native
           cargo build --profile ci
         env:
-          RUSTFLAGS: "-Ctarget-cpu=x86-64-v3"
+          RUSTFLAGS: "-Ctarget-cpu=x86-64-v3 -Clink-arg=-fuse-ld=bfd"
 
       - name: Upload native library
         uses: actions/upload-artifact@v7
@@ -120,13 +135,11 @@ jobs:
           - {name: "sql_hive-1", args1: "", args2: "hive/testOnly * -- -l org.apache.spark.tags.ExtendedHiveTest -l org.apache.spark.tags.SlowHiveTest"}
           - {name: "sql_hive-2", args1: "", args2: "hive/testOnly * -- -n org.apache.spark.tags.ExtendedHiveTest"}
           - {name: "sql_hive-3", args1: "", args2: "hive/testOnly * -- -n org.apache.spark.tags.SlowHiveTest"}
-        # Test combinations:
-        # - auto scan: all Spark versions (3.4, 3.5, 4.0)
-        # - native_iceberg_compat: Spark 3.5 only
+        # Since 4f5eaf0, auto mode uses native_datafusion for V1 scans,
+        # so we only need to test with auto.
         config:
           - {spark-short: '3.4', spark-full: '3.4.3', java: 11, scan-impl: 'auto'}
           - {spark-short: '3.5', spark-full: '3.5.8', java: 11, scan-impl: 'auto'}
-          - {spark-short: '3.5', spark-full: '3.5.8', java: 11, scan-impl: 'native_datafusion'}
           - {spark-short: '4.0', spark-full: '4.0.1', java: 17, scan-impl: 'auto'}
         # Skip sql_hive-1 for Spark 4.0 due to https://github.com/apache/datafusion-comet/issues/2946
         exclude:

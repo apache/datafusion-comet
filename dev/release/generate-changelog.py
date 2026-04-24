@@ -142,6 +142,18 @@ under the License.
     print("Thank you also to everyone who contributed in other ways such as filing issues, reviewing "
           "PRs, and providing feedback on this release.\n")
 
+def resolve_ref(ref):
+    """Resolve a git ref (e.g. HEAD, branch name) to a full commit SHA."""
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", ref], text=True
+        ).strip()
+    except subprocess.CalledProcessError:
+        # If it can't be resolved locally, return as-is (e.g. a tag name
+        # that the GitHub API can resolve)
+        return ref
+
+
 def cli(args=None):
     """Process command line arguments."""
     if not args:
@@ -153,12 +165,18 @@ def cli(args=None):
     parser.add_argument("version", help="The version number to include in the changelog")
     args = parser.parse_args()
 
+    # Resolve refs to SHAs so the GitHub API compares the same commits
+    # as the local git log. Without this, refs like HEAD get resolved by
+    # the GitHub API to the default branch instead of the current branch.
+    tag1 = resolve_ref(args.tag1)
+    tag2 = resolve_ref(args.tag2)
+
     token = os.getenv("GITHUB_TOKEN")
     project = "apache/datafusion-comet"
 
     g = Github(token)
     repo = g.get_repo(project)
-    generate_changelog(repo, project, args.tag1, args.tag2, args.version)
+    generate_changelog(repo, project, tag1, tag2, args.version)
 
 if __name__ == "__main__":
     cli()

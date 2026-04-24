@@ -19,8 +19,8 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Abs, Atan2, Attribute, Ceil, CheckOverflow, Expression, Floor, Hex, If, LessThanOrEqual, Literal, Log, Log10, Log2, Unhex}
-import org.apache.spark.sql.types.{DecimalType, NumericType}
+import org.apache.spark.sql.catalyst.expressions.{Abs, Add, Atan2, Attribute, Ceil, CheckOverflow, Expression, Floor, Hex, If, LessThanOrEqual, Literal, Log, Log10, Log2, Logarithm, Unhex}
+import org.apache.spark.sql.types.{DecimalType, DoubleType, NumericType}
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType, serializeDataType}
@@ -30,8 +30,11 @@ object CometAtan2 extends CometExpressionSerde[Atan2] {
       expr: Atan2,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val leftExpr = exprToProtoInternal(expr.left, inputs, binding)
-    val rightExpr = exprToProtoInternal(expr.right, inputs, binding)
+    // Spark adds +0.0 to inputs in order to convert -0.0 to +0.0
+    val left = Add(expr.left, Literal.default(expr.left.dataType))
+    val right = Add(expr.right, Literal.default(expr.right.dataType))
+    val leftExpr = exprToProtoInternal(left, inputs, binding)
+    val rightExpr = exprToProtoInternal(right, inputs, binding)
     val optExpr = scalarFunctionExprToProto("atan2", leftExpr, rightExpr)
     optExprWithInfo(optExpr, expr, expr.left, expr.right)
   }
@@ -114,6 +117,21 @@ object CometLog2 extends CometExpressionSerde[Log2] with MathExprBase {
   }
 }
 
+object CometLogarithm extends CometExpressionSerde[Logarithm] {
+  override def convert(
+      expr: Logarithm,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    // Uses custom spark_log UDF that returns null when base <= 0 or value <= 0,
+    // matching Spark's Logarithm.nullSafeEval behavior.
+    val leftExpr = exprToProtoInternal(expr.left, inputs, binding)
+    val rightExpr = exprToProtoInternal(expr.right, inputs, binding)
+    val optExpr =
+      scalarFunctionExprToProtoWithReturnType("spark_log", DoubleType, false, leftExpr, rightExpr)
+    optExprWithInfo(optExpr, expr, expr.left, expr.right)
+  }
+}
+
 object CometHex extends CometExpressionSerde[Hex] with MathExprBase {
   override def convert(
       expr: Hex,
@@ -146,13 +164,17 @@ object CometUnhex extends CometExpressionSerde[Unhex] with MathExprBase {
 
 object CometAbs extends CometExpressionSerde[Abs] with MathExprBase {
 
+  val unsupportedReason: String = "Only integral, floating-point, and decimal types are supported"
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(unsupportedReason)
+
   override def getSupportLevel(expr: Abs): SupportLevel = {
     expr.child.dataType match {
       case _: NumericType =>
         Compatible()
       case _ =>
         // Spark supports NumericType, DayTimeIntervalType, and YearMonthIntervalType
-        Unsupported(Some("Only integral, floating-point, and decimal types are supported"))
+        Unsupported(Some(unsupportedReason))
     }
   }
 

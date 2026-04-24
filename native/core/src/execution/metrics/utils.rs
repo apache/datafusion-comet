@@ -15,11 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::errors::CometError;
 use crate::execution::spark_plan::SparkPlan;
-use crate::{errors::CometError, jvm_bridge::jni_call};
 use datafusion::physical_plan::metrics::MetricValue;
-use jni::objects::{GlobalRef, JIntArray, JLongArray, JObject, JObjectArray};
-use jni::JNIEnv;
+use jni::objects::{Global, JIntArray, JLongArray, JObject, JObjectArray, JString};
+use jni::Env;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -31,40 +31,39 @@ pub(crate) struct MetricLayout {
     /// Flat array of metric values, written by native and bulk-copied to JVM
     values: Vec<i64>,
     /// Global reference to the JVM long[] array (kept alive for the lifetime of the plan)
-    jarray: Arc<GlobalRef>,
+    jarray: Arc<Global<JObject<'static>>>,
 }
 
 /// Builds a MetricLayout by calling JNI methods on the CometMetricNode to retrieve
 /// the flattened metric names, node offsets, and a reference to the pre-allocated long[].
 pub(crate) fn build_metric_layout(
-    env: &mut JNIEnv,
+    env: &mut Env,
     metric_node: &JObject,
 ) -> Result<MetricLayout, CometError> {
     // Get metric names array (String[])
     let names_obj: JObject =
         unsafe { jni_call!(env, comet_metric_node(metric_node).get_metric_names() -> JObject) }?;
-    let names_array = JObjectArray::from(names_obj);
-    let num_metrics = env.get_array_length(&names_array)? as usize;
+    let names_array = env.cast_local::<JObjectArray<JString>>(names_obj)?;
+    let num_metrics = names_array.len(env)?;
 
     let mut metric_names = Vec::with_capacity(num_metrics);
     for i in 0..num_metrics {
-        let jstr = env.get_object_array_element(&names_array, i as i32)?;
-        let name: String = env.get_string((&jstr).into())?.into();
-        metric_names.push(name);
+        let jstr = names_array.get_element(env, i)?;
+        metric_names.push(jstr.try_to_string(env)?);
     }
 
     // Get node offsets array (int[])
     let offsets_obj: JObject =
         unsafe { jni_call!(env, comet_metric_node(metric_node).get_node_offsets() -> JObject) }?;
-    let offsets_array = JIntArray::from(offsets_obj);
-    let num_offsets = env.get_array_length(&offsets_array)? as usize;
+    let offsets_array = env.cast_local::<JIntArray>(offsets_obj)?;
+    let num_offsets = offsets_array.len(env)?;
     let mut offsets = vec![0i32; num_offsets];
-    env.get_int_array_region(&offsets_array, 0, &mut offsets)?;
+    offsets_array.get_region(env, 0, &mut offsets)?;
 
     // Get values array reference (long[])
     let values_obj: JObject =
         unsafe { jni_call!(env, comet_metric_node(metric_node).get_values_array() -> JObject) }?;
-    let jarray = Arc::new(env.new_global_ref(values_obj)?);
+    let jarray = Arc::new(jni_new_global_ref!(env, values_obj)?);
 
     // Build per-node index maps
     let num_nodes = num_offsets - 1;
@@ -143,7 +142,7 @@ fn fill_metric_values(
 
 /// Updates metrics by filling the flat values array and bulk-copying to JVM.
 pub(crate) fn update_comet_metric(
-    env: &mut JNIEnv,
+    env: &mut Env,
     metric_node: &JObject,
     spark_plan: &Arc<SparkPlan>,
     layout: &mut MetricLayout,
@@ -158,8 +157,8 @@ pub(crate) fn update_comet_metric(
 
     // Bulk copy values to JVM long[] via SetLongArrayRegion
     let local_ref = env.new_local_ref(layout.jarray.as_obj())?;
-    let jlong_array = JLongArray::from(local_ref);
-    env.set_long_array_region(&jlong_array, 0, &layout.values)?;
+    let jlong_array = env.cast_local::<JLongArray>(local_ref)?;
+    jlong_array.set_region(env, 0, &layout.values)?;
 
     // Call updateFromValues() on the JVM side
     unsafe { jni_call!(env, comet_metric_node(metric_node).update_from_values() -> ()) }

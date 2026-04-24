@@ -88,7 +88,40 @@ message Expr {
     UnixTimestamp unix_timestamp = 65;
     FromJson from_json = 66;
     ToCsv to_csv = 67;
+    HoursTransform hours_transform = 68;
+    ArraysZip arrays_zip = 69;
   }
+
+  // Optional QueryContext for error reporting (contains SQL text and position)
+  optional QueryContext query_context = 90;
+
+  // Unique expression ID for context lookup during error creation
+  optional uint64 expr_id = 91;
+}
+
+// QueryContext provides SQL query context for error messages.
+// Mirrors Spark's SQLQueryContext for rich error reporting.
+message QueryContext {
+  // Full SQL query text
+  string sql_text = 1;
+
+  // Character offset where expression starts (0-based)
+  int32 start_index = 2;
+
+  // Character offset where expression ends (0-based, inclusive)
+  int32 stop_index = 3;
+
+  // Type of SQL object (e.g., "VIEW", "Project", "Filter")
+  optional string object_type = 4;
+
+  // Name of object (e.g., view name, column name)
+  optional string object_name = 5;
+
+  // Line number in SQL query (1-based)
+  int32 line = 6;
+
+  // Column position within the line (0-based)
+  int32 start_position = 7;
 }
 
 message AggExpr {
@@ -108,7 +141,18 @@ message AggExpr {
     Stddev stddev = 14;
     Correlation correlation = 15;
     BloomFilterAgg bloomFilterAgg = 16;
+    CollectSet collectSet = 17;
   }
+
+  // Optional filter expression for SQL FILTER (WHERE ...) clause.
+  // Only set in Partial aggregation mode; absent in Final/PartialMerge.
+  optional Expr filter = 89;
+
+  // Optional QueryContext for error reporting (contains SQL text and position)
+  optional QueryContext query_context = 90;
+
+  // Unique expression ID for context lookup during error creation
+  optional uint64 expr_id = 91;
 }
 
 enum StatisticsType {
@@ -206,6 +250,11 @@ message BloomFilterAgg {
   DataType datatype = 4;
 }
 
+message CollectSet {
+  Expr child = 1;
+  DataType datatype = 2;
+}
+
 enum EvalMode {
   LEGACY = 0;
   TRY = 1;
@@ -225,6 +274,9 @@ message Cast {
   string timezone = 3;
   EvalMode eval_mode = 4;
   bool allow_incompat = 5;
+  // True when running against Spark 4.0+. Controls version-specific cast behaviour
+  // such as the handling of leading whitespace before T-prefixed time-only strings.
+  bool is_spark4_plus = 6;
 }
 
 message BinaryExpr {
@@ -310,6 +362,10 @@ message ToPrettyString {
 message Hour {
   Expr child = 1;
   string timezone = 2;
+}
+
+message HoursTransform {
+  Expr child = 1;
 }
 
 message Minute {
@@ -439,4 +495,11 @@ message ArrayJoin {
 
 message Rand {
   int64 seed = 1;
+}
+
+// Spark's ArraysZip takes children: Seq[Expression] and names: Seq[Expression]
+// https://github.com/apache/spark/blob/branch-4.1/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/collectionOperations.scala#L296
+message ArraysZip {
+  repeated Expr values = 1;
+  repeated string names = 2;
 }

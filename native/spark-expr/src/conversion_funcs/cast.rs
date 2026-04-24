@@ -19,12 +19,12 @@ use crate::conversion_funcs::boolean::{
     cast_boolean_to_decimal, cast_boolean_to_timestamp, is_df_cast_from_bool_spark_compatible,
 };
 use crate::conversion_funcs::numeric::{
-    cast_decimal_to_timestamp, cast_float32_to_decimal128, cast_float64_to_decimal128,
-    cast_float_to_timestamp, cast_int_to_decimal128, cast_int_to_timestamp,
-    is_df_cast_from_decimal_spark_compatible, is_df_cast_from_float_spark_compatible,
-    is_df_cast_from_int_spark_compatible, spark_cast_decimal_to_boolean,
-    spark_cast_float32_to_utf8, spark_cast_float64_to_utf8, spark_cast_int_to_int,
-    spark_cast_nonintegral_numeric_to_integral,
+    cast_decimal128_to_utf8, cast_decimal_to_timestamp, cast_float32_to_decimal128,
+    cast_float64_to_decimal128, cast_float_to_timestamp, cast_int_to_decimal128,
+    cast_int_to_timestamp, is_df_cast_from_decimal_spark_compatible,
+    is_df_cast_from_float_spark_compatible, is_df_cast_from_int_spark_compatible,
+    spark_cast_decimal_to_boolean, spark_cast_float32_to_utf8, spark_cast_float64_to_utf8,
+    spark_cast_int_to_int, spark_cast_nonintegral_numeric_to_integral,
 };
 use crate::conversion_funcs::string::{
     cast_string_to_date, cast_string_to_decimal, cast_string_to_float, cast_string_to_int,
@@ -35,15 +35,15 @@ use crate::conversion_funcs::temporal::{
     is_df_cast_from_timestamp_spark_compatible,
 };
 use crate::conversion_funcs::utils::spark_cast_postprocess;
-use crate::utils::array_with_timezone;
+use crate::utils::{array_with_timezone, cast_timestamp_to_ntz, timestamp_ntz_to_timestamp};
 use crate::EvalMode::Legacy;
 use crate::{cast_whole_num_to_binary, BinaryOutputStyle};
 use crate::{EvalMode, SparkError};
 use arrow::array::builder::StringBuilder;
 use arrow::array::{
-    BinaryBuilder, DictionaryArray, GenericByteArray, ListArray, MapArray, StringArray, StructArray,
+    new_null_array, BinaryBuilder, DictionaryArray, GenericByteArray, ListArray, MapArray,
+    StringArray, StructArray,
 };
-use arrow::compute::can_cast_types;
 use arrow::datatypes::{ArrowDictionaryKeyType, ArrowNativeType, DataType, Schema};
 use arrow::datatypes::{Field, Fields, GenericBinaryType};
 use arrow::error::ArrowError;
@@ -82,6 +82,8 @@ pub struct Cast {
     pub child: Arc<dyn PhysicalExpr>,
     pub data_type: DataType,
     pub cast_options: SparkCastOptions,
+    pub expr_id: Option<u64>,
+    pub query_context: Option<Arc<crate::QueryContext>>,
 }
 
 impl PartialEq for Cast {
@@ -105,11 +107,15 @@ impl Cast {
         child: Arc<dyn PhysicalExpr>,
         data_type: DataType,
         cast_options: SparkCastOptions,
+        expr_id: Option<u64>,
+        query_context: Option<Arc<crate::QueryContext>>,
     ) -> Self {
         Self {
             child,
             data_type,
             cast_options,
+            expr_id,
+            query_context,
         }
     }
 }
@@ -125,6 +131,9 @@ pub struct SparkCastOptions {
     pub timezone: String,
     /// Allow casts that are supported but not guaranteed to be 100% compatible
     pub allow_incompat: bool,
+    /// True when running against Spark 4.0+. Enables version-specific cast behaviour
+    /// such as the handling of leading whitespace before T-prefixed time-only strings.
+    pub is_spark4_plus: bool,
     /// Support casting unsigned ints to signed ints (used by Parquet SchemaAdapter)
     pub allow_cast_unsigned_ints: bool,
     /// We also use the cast logic for adapting Parquet schemas, so this flag is used
@@ -142,6 +151,7 @@ impl SparkCastOptions {
             eval_mode,
             timezone: timezone.to_string(),
             allow_incompat,
+            is_spark4_plus: false,
             allow_cast_unsigned_ints: false,
             is_adapting_schema: false,
             null_string: "null".to_string(),
@@ -154,10 +164,23 @@ impl SparkCastOptions {
             eval_mode,
             timezone: "".to_string(),
             allow_incompat,
+            is_spark4_plus: false,
             allow_cast_unsigned_ints: false,
             is_adapting_schema: false,
             null_string: "null".to_string(),
             binary_output_style: None,
+        }
+    }
+
+    pub fn new_with_version(
+        eval_mode: EvalMode,
+        timezone: &str,
+        allow_incompat: bool,
+        is_spark4_plus: bool,
+    ) -> Self {
+        Self {
+            is_spark4_plus,
+            ..Self::new(eval_mode, timezone, allow_incompat)
         }
     }
 }
@@ -288,11 +311,18 @@ pub(crate) fn cast_array(
     };
 
     let cast_result = match (&from_type, to_type) {
+        // Null arrays carry no concrete values, so Arrow's native cast can change only the
+        // logical type while preserving length and nullness.
+        (Null, _) => Ok(cast_with_options(&array, to_type, &native_cast_options)?),
         (Utf8, Boolean) => spark_cast_utf8_to_boolean::<i32>(&array, eval_mode),
         (LargeUtf8, Boolean) => spark_cast_utf8_to_boolean::<i64>(&array, eval_mode),
-        (Utf8, Timestamp(_, _)) => {
-            cast_string_to_timestamp(&array, to_type, eval_mode, &cast_options.timezone)
-        }
+        (Utf8, Timestamp(_, _)) => cast_string_to_timestamp(
+            &array,
+            to_type,
+            eval_mode,
+            &cast_options.timezone,
+            cast_options.is_spark4_plus,
+        ),
         (Utf8, Date32) => cast_string_to_date(&array, to_type, eval_mode),
         (Date32, Int32) => {
             // Date32 is stored as days since epoch (i32), so this is a simple reinterpret cast
@@ -351,6 +381,12 @@ pub(crate) fn cast_array(
             spark_cast_nonintegral_numeric_to_integral(&array, eval_mode, &from_type, to_type)
         }
         (Decimal128(_p, _s), Boolean) => spark_cast_decimal_to_boolean(&array),
+        // Spark LEGACY cast uses Java BigDecimal.toString() which produces scientific notation
+        // when adjusted_exponent < -6 (e.g. "0E-18" for zero with scale=18).
+        // TRY and ANSI use plain notation ("0.000000000000000000") so DataFusion handles those.
+        (Decimal128(_, scale), Utf8) if eval_mode == EvalMode::Legacy => {
+            cast_decimal128_to_utf8(&array, *scale)
+        }
         (Utf8View, Utf8) => Ok(cast_with_options(&array, to_type, &CAST_OPTIONS)?),
         (Struct(_), Utf8) => Ok(casts_struct_to_string(array.as_struct(), cast_options)?),
         (Struct(_), Struct(_)) => Ok(cast_struct_to_struct(
@@ -360,8 +396,25 @@ pub(crate) fn cast_array(
             cast_options,
         )?),
         (List(_), Utf8) => Ok(cast_array_to_string(array.as_list(), cast_options)?),
-        (List(_), List(_)) if can_cast_types(&from_type, to_type) => {
-            Ok(cast_with_options(&array, to_type, &CAST_OPTIONS)?)
+        (List(_), List(to)) => {
+            // Cast list elements recursively so nested array casts follow Spark semantics
+            // instead of relying on Arrow's top-level cast support.
+            let list_array = array.as_list::<i32>();
+            let casted_values = match (list_array.values().data_type(), to.data_type()) {
+                // Spark legacy array casts produce null elements for array<Date> -> array<Int>.
+                (Date32, Int32) => new_null_array(to.data_type(), list_array.values().len()),
+                _ => cast_array(
+                    Arc::clone(list_array.values()),
+                    to.data_type(),
+                    cast_options,
+                )?,
+            };
+            Ok(Arc::new(ListArray::new(
+                Arc::clone(to),
+                list_array.offsets().clone(),
+                casted_values,
+                list_array.nulls().cloned(),
+            )) as ArrayRef)
         }
         (Map(_, _), Map(_, _)) => Ok(cast_map_to_map(&array, &from_type, to_type, cast_options)?),
         (UInt8 | UInt16 | UInt32 | UInt64, Int8 | Int16 | Int32 | Int64)
@@ -388,6 +441,21 @@ pub(crate) fn cast_array(
         (Float32 | Float64, Timestamp(_, tz)) => cast_float_to_timestamp(&array, tz, eval_mode),
         (Boolean, Timestamp(_, tz)) => cast_boolean_to_timestamp(&array, tz),
         (Decimal128(_, scale), Timestamp(_, tz)) => cast_decimal_to_timestamp(&array, tz, *scale),
+        // NTZ → TIMESTAMP: interpret NTZ local-epoch value as session-TZ local time, convert to UTC.
+        // Must come before the is_datafusion_spark_compatible fallthrough which would
+        // incorrectly copy raw μs without any timezone conversion.
+        (Timestamp(_, None), Timestamp(_, Some(target_tz))) => Ok(timestamp_ntz_to_timestamp(
+            array,
+            &cast_options.timezone,
+            Some(target_tz.as_ref()),
+        )?),
+        // TIMESTAMP → NTZ: shift UTC epoch to local time in session TZ, store as local epoch.
+        (Timestamp(_, Some(_)), Timestamp(_, None)) => {
+            Ok(cast_timestamp_to_ntz(array, &cast_options.timezone)?)
+        }
+        // NTZ → Date32 and NTZ → Utf8 are handled by the DataFusion fall-through below
+        // (is_df_cast_from_timestamp_spark_compatible returns true for Date32 and Utf8).
+        // These casts are timezone-independent and DataFusion's implementation matches Spark.
         _ if cast_options.is_adapting_schema
             || is_datafusion_spark_compatible(&from_type, to_type) =>
         {
@@ -686,7 +754,23 @@ impl PhysicalExpr for Cast {
 
     fn evaluate(&self, batch: &RecordBatch) -> DataFusionResult<ColumnarValue> {
         let arg = self.child.evaluate(batch)?;
-        spark_cast(arg, &self.data_type, &self.cast_options)
+        let result = spark_cast(arg, &self.data_type, &self.cast_options);
+
+        // If there's an error and we have query_context, wrap it
+        match result {
+            Err(DataFusionError::External(e)) if self.query_context.is_some() => {
+                if let Some(spark_err) = e.downcast_ref::<crate::SparkError>() {
+                    let wrapped = crate::SparkErrorWithContext::with_context(
+                        spark_err.clone(),
+                        Arc::clone(self.query_context.as_ref().unwrap()),
+                    );
+                    Err(DataFusionError::External(Box::new(wrapped)))
+                } else {
+                    Err(DataFusionError::External(e))
+                }
+            }
+            other => other,
+        }
     }
 
     fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
@@ -702,6 +786,8 @@ impl PhysicalExpr for Cast {
                 Arc::clone(&children[0]),
                 self.data_type.clone(),
                 self.cast_options.clone(),
+                self.expr_id,
+                self.query_context.clone(),
             ))),
             _ => internal_err!("Cast should have exactly one child"),
         }
@@ -779,7 +865,8 @@ fn cast_binary_formatter(value: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::StringArray;
+    use arrow::array::{ListArray, NullArray, StringArray};
+    use arrow::buffer::OffsetBuffer;
     use arrow::datatypes::TimestampMicrosecondType;
     use arrow::datatypes::{Field, Fields};
     #[test]
@@ -905,8 +992,6 @@ mod tests {
 
     #[test]
     fn test_cast_string_array_to_string() {
-        use arrow::array::ListArray;
-        use arrow::buffer::OffsetBuffer;
         let values_array =
             StringArray::from(vec![Some("a"), Some("b"), Some("c"), Some("a"), None, None]);
         let offsets_buffer = OffsetBuffer::<i32>::new(vec![0, 3, 5, 6, 6].into());
@@ -931,8 +1016,6 @@ mod tests {
 
     #[test]
     fn test_cast_i32_array_to_string() {
-        use arrow::array::ListArray;
-        use arrow::buffer::OffsetBuffer;
         let values_array = Int32Array::from(vec![Some(1), Some(2), Some(3), Some(1), None, None]);
         let offsets_buffer = OffsetBuffer::<i32>::new(vec![0, 3, 5, 6, 6].into());
         let item_field = Arc::new(Field::new("item", DataType::Int32, true));
@@ -952,5 +1035,34 @@ mod tests {
         assert_eq!(r#"[1, null]"#, string_array.value(1));
         assert_eq!(r#"[null]"#, string_array.value(2));
         assert_eq!(r#"[]"#, string_array.value(3));
+    }
+
+    #[test]
+    fn test_cast_array_of_nulls_to_array() {
+        let offsets_buffer = OffsetBuffer::<i32>::new(vec![0, 2, 3, 3].into());
+        let from_item_field = Arc::new(Field::new("item", DataType::Null, true));
+        let from_array: ArrayRef = Arc::new(ListArray::new(
+            from_item_field,
+            offsets_buffer,
+            Arc::new(NullArray::new(3)),
+            None,
+        ));
+
+        let to_type = DataType::List(Arc::new(Field::new("item", DataType::Int32, true)));
+        let to_array = cast_array(
+            from_array,
+            &to_type,
+            &SparkCastOptions::new(EvalMode::Legacy, "UTC", false),
+        )
+        .unwrap();
+
+        let result = to_array.as_list::<i32>();
+        assert_eq!(3, result.len());
+        assert_eq!(result.value_offsets(), &[0, 2, 3, 3]);
+
+        let values = result.values().as_primitive::<Int32Type>();
+        assert_eq!(3, values.len());
+        assert_eq!(3, values.null_count());
+        assert!(values.iter().all(|value| value.is_none()));
     }
 }

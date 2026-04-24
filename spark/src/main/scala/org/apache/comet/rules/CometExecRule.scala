@@ -53,6 +53,7 @@ import org.apache.comet.CometSparkSessionExtensions._
 import org.apache.comet.rules.CometExecRule.allExecs
 import org.apache.comet.serde._
 import org.apache.comet.serde.operator._
+import org.apache.comet.shims.ShimSubqueryBroadcast
 
 object CometExecRule {
 
@@ -93,22 +94,25 @@ object CometExecRule {
 /**
  * Spark physical optimizer rule for replacing Spark operators with Comet operators.
  */
-case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
+case class CometExecRule(session: SparkSession)
+    extends Rule[SparkPlan]
+    with ShimSubqueryBroadcast {
 
   private lazy val showTransformations = CometConf.COMET_EXPLAIN_TRANSFORMATIONS.get()
 
   private def applyCometShuffle(plan: SparkPlan): SparkPlan = {
-    plan.transformUp {
-      case s: ShuffleExchangeExec if CometShuffleExchangeExec.nativeShuffleSupported(s) =>
-        // Switch to use Decimal128 regardless of precision, since Arrow native execution
-        // doesn't support Decimal32 and Decimal64 yet.
-        conf.setConfString(CometConf.COMET_USE_DECIMAL_128.key, "true")
-        CometShuffleExchangeExec(s, shuffleType = CometNativeShuffle)
-
-      case s: ShuffleExchangeExec if CometShuffleExchangeExec.columnarShuffleSupported(s) =>
-        // Columnar shuffle for regular Spark operators (not Comet) and Comet operators
-        // (if configured)
-        CometShuffleExchangeExec(s, shuffleType = CometColumnarShuffle)
+    plan.transformUp { case s: ShuffleExchangeExec =>
+      CometShuffleExchangeExec.shuffleSupported(s) match {
+        case Some(CometNativeShuffle) =>
+          // Switch to use Decimal128 regardless of precision, since Arrow native execution
+          // doesn't support Decimal32 and Decimal64 yet.
+          conf.setConfString(CometConf.COMET_USE_DECIMAL_128.key, "true")
+          CometShuffleExchangeExec(s, shuffleType = CometNativeShuffle)
+        case Some(CometColumnarShuffle) =>
+          CometShuffleExchangeExec(s, shuffleType = CometColumnarShuffle)
+        case None =>
+          s
+      }
     }
   }
 
@@ -185,7 +189,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         convertToComet(scan, CometNativeScan).getOrElse(scan)
 
       // Fully native Iceberg scan for V2 (iceberg-rust path)
-      // Only handle scans with native metadata; SupportsComet scans fall through to isCometScan
+      // Only handle scans with native metadata; other scans fall through to isCometScan
       // Config checks (COMET_ICEBERG_NATIVE_ENABLED, COMET_EXEC_ENABLED) are done in CometScanRule
       case scan: CometBatchScanExec if scan.nativeIcebergScanMetadata.isDefined =>
         convertToComet(scan, CometIcebergNativeScan).getOrElse(scan)
@@ -298,7 +302,59 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
     }
 
     plan.transformUp { case op =>
-      convertNode(op)
+      val converted = convertNode(op)
+      // Replace SubqueryBroadcastExec with CometSubqueryBroadcastExec in DPP expressions
+      // when the broadcast child has a Comet plan underneath. This enables exchange reuse
+      // between the DPP subquery and the join's CometBroadcastExchangeExec because both
+      // will have the same CometBroadcastExchangeExec type and canonical form.
+      convertSubqueryBroadcasts(converted)
+    }
+  }
+
+  /**
+   * Replace SubqueryBroadcastExec with CometSubqueryBroadcastExec in a node's expressions.
+   *
+   * When CometExecRule converts BroadcastExchangeExec to CometBroadcastExchangeExec on the join
+   * side, the DPP subquery still references the original BroadcastExchangeExec.
+   * ReuseExchangeAndSubquery (which runs after Comet rules) can't match them because they have
+   * different types. By replacing SubqueryBroadcastExec with CometSubqueryBroadcastExec (which
+   * wraps a CometBroadcastExchangeExec), both sides have the same exchange type and reuse works.
+   *
+   * The BroadcastExchangeExec in the subquery has a CometNativeColumnarToRowExec child (inserted
+   * by ApplyColumnarRulesAndInsertTransitions because BroadcastExchangeExec expects row input).
+   * We strip this transition and create CometBroadcastExchangeExec with the underlying Comet plan
+   * directly.
+   */
+  private def convertSubqueryBroadcasts(plan: SparkPlan): SparkPlan = {
+    plan.transformExpressionsUp { case inSub: InSubqueryExec =>
+      inSub.plan match {
+        case sub: SubqueryBroadcastExec =>
+          sub.child match {
+            case b: BroadcastExchangeExec =>
+              // The BroadcastExchangeExec child is CometNativeColumnarToRowExec wrapping
+              // a Comet plan. Strip the row transition to get the columnar Comet plan.
+              val cometChild = b.child match {
+                case c2r: CometNativeColumnarToRowExec => c2r.child
+                case other => other
+              }
+              if (cometChild.isInstanceOf[CometNativeExec]) {
+                logInfo(
+                  "Converting SubqueryBroadcastExec to " +
+                    "CometSubqueryBroadcastExec for DPP exchange reuse")
+                val cometBroadcast = CometBroadcastExchangeExec(b, b.output, b.mode, cometChild)
+                val cometSub = CometSubqueryBroadcastExec(
+                  sub.name,
+                  getSubqueryBroadcastExecIndices(sub),
+                  sub.buildKeys,
+                  cometBroadcast)
+                inSub.withNewPlan(cometSub)
+              } else {
+                inSub
+              }
+            case _ => inSub
+          }
+        case _ => inSub
+      }
     }
   }
 

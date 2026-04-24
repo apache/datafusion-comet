@@ -1,5 +1,5 @@
 diff --git a/pom.xml b/pom.xml
-index edd2ad57880..77a975ea48f 100644
+index edd2ad57880..d5273840330 100644
 --- a/pom.xml
 +++ b/pom.xml
 @@ -152,6 +152,8 @@
@@ -7,7 +7,7 @@ index edd2ad57880..77a975ea48f 100644
      <ivy.version>2.5.1</ivy.version>
      <oro.version>2.0.8</oro.version>
 +    <spark.version.short>3.5</spark.version.short>
-+    <comet.version>0.14.0-SNAPSHOT</comet.version>
++    <comet.version>0.16.0-SNAPSHOT</comet.version>
      <!--
      If you changes codahale.metrics.version, you also need to change
      the link to metrics.dropwizard.io in docs/monitoring.md.
@@ -53,7 +53,7 @@ index bc00c448b80..82068d7a2eb 100644
      <!--
        This spark-tags test-dep is needed even though it isn't used in this module, otherwise testing-cmds that exclude
 diff --git a/sql/core/src/main/scala/org/apache/spark/sql/SparkSession.scala b/sql/core/src/main/scala/org/apache/spark/sql/SparkSession.scala
-index 27ae10b3d59..78e69902dfd 100644
+index 27ae10b3d59..d12fb7c42c2 100644
 --- a/sql/core/src/main/scala/org/apache/spark/sql/SparkSession.scala
 +++ b/sql/core/src/main/scala/org/apache/spark/sql/SparkSession.scala
 @@ -1353,6 +1353,14 @@ object SparkSession extends Logging {
@@ -71,14 +71,16 @@ index 27ae10b3d59..78e69902dfd 100644
    /**
     * Initialize extensions specified in [[StaticSQLConf]]. The classes will be applied to the
     * extensions passed into this function.
-@@ -1362,6 +1370,7 @@ object SparkSession extends Logging {
+@@ -1362,7 +1370,8 @@ object SparkSession extends Logging {
        extensions: SparkSessionExtensions): SparkSessionExtensions = {
      val extensionConfClassNames = sparkContext.getConf.get(StaticSQLConf.SPARK_SESSION_EXTENSIONS)
        .getOrElse(Seq.empty)
+-    extensionConfClassNames.foreach { extensionConfClassName =>
 +    val extensionClassNames = extensionConfClassNames ++ loadCometExtension(sparkContext)
-     extensionConfClassNames.foreach { extensionConfClassName =>
++    extensionClassNames.foreach { extensionConfClassName =>
        try {
          val extensionConfClass = Utils.classForName(extensionConfClassName)
+         val extensionConf = extensionConfClass.getConstructor().newInstance()
 @@ -1396,4 +1405,12 @@ object SparkSession extends Logging {
        }
      }
@@ -396,91 +398,110 @@ index c4fb4fa943c..a04b23870a8 100644
      assert(exchanges.size == 2)
    }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala
-index f33432ddb6f..42eb9fd1cb7 100644
+index f33432ddb6f..914afa6b01d 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala
 @@ -22,6 +22,7 @@ import org.scalatest.GivenWhenThen
  import org.apache.spark.sql.catalyst.expressions.{DynamicPruningExpression, Expression}
  import org.apache.spark.sql.catalyst.expressions.CodegenObjectFactoryMode._
  import org.apache.spark.sql.catalyst.plans.ExistenceJoin
-+import org.apache.spark.sql.comet.CometScanExec
++import org.apache.spark.sql.comet.{CometNativeScanExec, CometScanExec, CometSubqueryBroadcastExec}
  import org.apache.spark.sql.connector.catalog.{InMemoryTableCatalog, InMemoryTableWithV2FilterCatalog}
  import org.apache.spark.sql.execution._
  import org.apache.spark.sql.execution.adaptive._
-@@ -262,6 +263,9 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -193,6 +194,7 @@ abstract class DynamicPartitionPruningSuiteBase
+     }
+     val subqueryBroadcast = dpExprs.collect {
+       case InSubqueryExec(_, b: SubqueryBroadcastExec, _, _, _, _) => b
++      case InSubqueryExec(_, b: CometSubqueryBroadcastExec, _, _, _, _) => b
+     }
+ 
+     val hasFilter = if (withSubquery) "Should" else "Shouldn't"
+@@ -247,6 +249,8 @@ abstract class DynamicPartitionPruningSuiteBase
+     val buf = collectDynamicPruningExpressions(df.queryExecution.executedPlan).collect {
+       case InSubqueryExec(_, b: SubqueryBroadcastExec, _, _, _, _) =>
+         b.index
++      case InSubqueryExec(_, b: CometSubqueryBroadcastExec, _, _, _, _) =>
++        b.indices.head
+     }
+     assert(buf.distinct.size == n)
+   }
+@@ -262,6 +266,12 @@ abstract class DynamicPartitionPruningSuiteBase
        case s: BatchScanExec => s.runtimeFilters.collect {
          case d: DynamicPruningExpression => d.child
        }
 +      case s: CometScanExec => s.partitionFilters.collect {
 +        case d: DynamicPruningExpression => d.child
 +      }
++      case s: CometNativeScanExec => s.partitionFilters.collect {
++        case d: DynamicPruningExpression => d.child
++      }
        case _ => Nil
      }
    }
-@@ -1027,7 +1031,8 @@ abstract class DynamicPartitionPruningSuiteBase
-     }
-   }
+@@ -1204,10 +1214,16 @@ abstract class DynamicPartitionPruningSuiteBase
  
--  test("avoid reordering broadcast join keys to match input hash partitioning") {
-+  test("avoid reordering broadcast join keys to match input hash partitioning",
-+    IgnoreComet("TODO: https://github.com/apache/datafusion-comet/issues/1839")) {
-     withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "false",
-       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
-       withTable("large", "dimTwo", "dimThree") {
-@@ -1215,7 +1220,8 @@ abstract class DynamicPartitionPruningSuiteBase
+       val plan = df.queryExecution.executedPlan
+       val countSubqueryBroadcasts =
+-        collectWithSubqueries(plan)({ case _: SubqueryBroadcastExec => 1 }).sum
++        collectWithSubqueries(plan)({
++          case _: SubqueryBroadcastExec => 1
++          case _: CometSubqueryBroadcastExec => 1
++        }).sum
+ 
+       val countReusedSubqueryBroadcasts =
+-        collectWithSubqueries(plan)({ case ReusedSubqueryExec(_: SubqueryBroadcastExec) => 1}).sum
++        collectWithSubqueries(plan)({
++          case ReusedSubqueryExec(_: SubqueryBroadcastExec) => 1
++          case ReusedSubqueryExec(_: CometSubqueryBroadcastExec) => 1
++        }).sum
+ 
+       assert(countSubqueryBroadcasts == 1)
+       assert(countReusedSubqueryBroadcasts == 1)
+@@ -1215,7 +1231,8 @@ abstract class DynamicPartitionPruningSuiteBase
    }
  
    test("SPARK-32509: Unused Dynamic Pruning filter shouldn't affect " +
 -    "canonicalization and exchange reuse") {
 +    "canonicalization and exchange reuse",
-+    IgnoreComet("TODO: https://github.com/apache/datafusion-comet/issues/1839")) {
++    IgnoreComet("TODO: https://github.com/apache/datafusion-comet/issues/4045")) {
      withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
        withSQLConf(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
          val df = sql(
-@@ -1423,7 +1429,8 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -1423,7 +1440,8 @@ abstract class DynamicPartitionPruningSuiteBase
      }
    }
  
 -  test("SPARK-34637: DPP side broadcast query stage is created firstly") {
 +  test("SPARK-34637: DPP side broadcast query stage is created firstly",
-+    IgnoreComet("TODO: https://github.com/apache/datafusion-comet/issues/1839")) {
++    IgnoreComet("TODO: https://github.com/apache/datafusion-comet/issues/4045")) {
      withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
        val df = sql(
          """ WITH v as (
-@@ -1698,7 +1705,8 @@ abstract class DynamicPartitionPruningV1Suite extends DynamicPartitionPruningDat
-    * Check the static scan metrics with and without DPP
-    */
-   test("static scan metrics",
--    DisableAdaptiveExecution("DPP in AQE must reuse broadcast")) {
-+    DisableAdaptiveExecution("DPP in AQE must reuse broadcast"),
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3313")) {
-     withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true",
-       SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "false",
-       SQLConf.EXCHANGE_REUSE_ENABLED.key -> "false") {
-@@ -1729,6 +1737,8 @@ abstract class DynamicPartitionPruningV1Suite extends DynamicPartitionPruningDat
+@@ -1577,6 +1595,7 @@ abstract class DynamicPartitionPruningSuiteBase
+ 
+         val subqueryBroadcastExecs = collectWithSubqueries(df.queryExecution.executedPlan) {
+           case s: SubqueryBroadcastExec => s
++          case s: CometSubqueryBroadcastExec => s
+         }
+         assert(subqueryBroadcastExecs.size === 1)
+         subqueryBroadcastExecs.foreach { subqueryBroadcastExec =>
+@@ -1729,6 +1748,10 @@ abstract class DynamicPartitionPruningV1Suite extends DynamicPartitionPruningDat
                case s: BatchScanExec =>
                  // we use f1 col for v2 tables due to schema pruning
                  s.output.exists(_.exists(_.argString(maxFields = 100).contains("f1")))
 +              case s: CometScanExec =>
 +                s.output.exists(_.exists(_.argString(maxFields = 100).contains("fid")))
++              case s: CometNativeScanExec =>
++                s.output.exists(_.exists(_.argString(maxFields = 100).contains("fid")))
                case _ => false
              }
            assert(scanOption.isDefined)
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/ExplainSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/ExplainSuite.scala
-index a206e97c353..79813d8e259 100644
+index a206e97c353..fea1149b67d 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/ExplainSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/ExplainSuite.scala
-@@ -280,7 +280,8 @@ class ExplainSuite extends ExplainSuiteHelper with DisableAdaptiveExecutionSuite
-     }
-   }
- 
--  test("explain formatted - check presence of subquery in case of DPP") {
-+  test("explain formatted - check presence of subquery in case of DPP",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3313")) {
-     withTable("df1", "df2") {
-       withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true",
-         SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "false",
-@@ -467,7 +468,8 @@ class ExplainSuite extends ExplainSuiteHelper with DisableAdaptiveExecutionSuite
+@@ -467,7 +467,8 @@ class ExplainSuite extends ExplainSuiteHelper with DisableAdaptiveExecutionSuite
      }
    }
  
@@ -490,7 +511,7 @@ index a206e97c353..79813d8e259 100644
      withTempDir { dir =>
        Seq("parquet", "orc", "csv", "json").foreach { fmt =>
          val basePath = dir.getCanonicalPath + "/" + fmt
-@@ -545,7 +547,9 @@ class ExplainSuite extends ExplainSuiteHelper with DisableAdaptiveExecutionSuite
+@@ -545,7 +546,9 @@ class ExplainSuite extends ExplainSuiteHelper with DisableAdaptiveExecutionSuite
    }
  }
  
@@ -502,7 +523,7 @@ index a206e97c353..79813d8e259 100644
  
    test("SPARK-35884: Explain Formatted") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/FileBasedDataSourceSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/FileBasedDataSourceSuite.scala
-index 93275487f29..510e3087e0f 100644
+index 93275487f29..78150c9163e 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/FileBasedDataSourceSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/FileBasedDataSourceSuite.scala
 @@ -23,6 +23,7 @@ import java.nio.file.{Files, StandardOpenOption}
@@ -521,26 +542,53 @@ index 93275487f29..510e3087e0f 100644
  import org.apache.spark.sql.execution.{FileSourceScanLike, SimpleMode}
  import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
  import org.apache.spark.sql.execution.datasources.FilePartition
-@@ -250,6 +252,8 @@ class FileBasedDataSourceSuite extends QueryTest
+@@ -250,6 +252,12 @@ class FileBasedDataSourceSuite extends QueryTest
                case "" => "_LEGACY_ERROR_TEMP_2062"
                case _ => "_LEGACY_ERROR_TEMP_2055"
              }
-+            // native_datafusion Parquet scan cannot throw a SparkFileNotFoundException
-+            assume(CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_DATAFUSION)
++            // native_datafusion Parquet scan cannot throw
++            // a SparkFileNotFoundException
++            assume(!Seq(
++              CometConf.SCAN_NATIVE_DATAFUSION,
++              CometConf.SCAN_AUTO
++            ).contains(CometConf.COMET_NATIVE_SCAN_IMPL.get()))
              checkErrorMatchPVals(
                exception = intercept[SparkException] {
                  testIgnoreMissingFiles(options)
-@@ -639,7 +643,8 @@ class FileBasedDataSourceSuite extends QueryTest
-   }
+@@ -656,18 +664,25 @@ class FileBasedDataSourceSuite extends QueryTest
+             checkAnswer(sql(s"select A from $tableName"), data.select("A"))
  
-   Seq("parquet", "orc").foreach { format =>
--    test(s"Spark native readers should respect spark.sql.caseSensitive - ${format}") {
-+    test(s"Spark native readers should respect spark.sql.caseSensitive - ${format}",
-+      IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3311")) {
-       withTempDir { dir =>
-         val tableName = s"spark_25132_${format}_native"
-         val tableDir = dir.getCanonicalPath + s"/$tableName"
-@@ -955,6 +960,7 @@ class FileBasedDataSourceSuite extends QueryTest
+             // RuntimeException is triggered at executor side, which is then wrapped as
+-            // SparkException at driver side
++            // SparkException at driver side. Comet native readers throw
++            // SparkRuntimeException directly without the SparkException wrapper.
++            def getDuplicateFieldError(query: String): SparkRuntimeException = {
++              try {
++                sql(query).collect()
++                fail("Expected an exception").asInstanceOf[SparkRuntimeException]
++              } catch {
++                case e: SparkException =>
++                  e.getCause.asInstanceOf[SparkRuntimeException]
++                case e: SparkRuntimeException => e
++              }
++            }
+             checkError(
+-              exception = intercept[SparkException] {
+-                sql(s"select b from $tableName").collect()
+-              }.getCause.asInstanceOf[SparkRuntimeException],
++              exception = getDuplicateFieldError(s"select b from $tableName"),
+               errorClass = "_LEGACY_ERROR_TEMP_2093",
+               parameters = Map("requiredFieldName" -> "b", "matchedOrcFields" -> "[b, B]")
+             )
+             checkError(
+-              exception = intercept[SparkException] {
+-                sql(s"select B from $tableName").collect()
+-              }.getCause.asInstanceOf[SparkRuntimeException],
++              exception = getDuplicateFieldError(s"select B from $tableName"),
+               errorClass = "_LEGACY_ERROR_TEMP_2093",
+               parameters = Map("requiredFieldName" -> "b", "matchedOrcFields" -> "[b, B]")
+             )
+@@ -955,6 +970,7 @@ class FileBasedDataSourceSuite extends QueryTest
              assert(bJoinExec.isEmpty)
              val smJoinExec = collect(joinedDF.queryExecution.executedPlan) {
                case smJoin: SortMergeJoinExec => smJoin
@@ -548,7 +596,7 @@ index 93275487f29..510e3087e0f 100644
              }
              assert(smJoinExec.nonEmpty)
            }
-@@ -1015,6 +1021,7 @@ class FileBasedDataSourceSuite extends QueryTest
+@@ -1015,6 +1031,7 @@ class FileBasedDataSourceSuite extends QueryTest
  
            val fileScan = df.queryExecution.executedPlan collectFirst {
              case BatchScanExec(_, f: FileScan, _, _, _, _) => f
@@ -556,7 +604,7 @@ index 93275487f29..510e3087e0f 100644
            }
            assert(fileScan.nonEmpty)
            assert(fileScan.get.partitionFilters.nonEmpty)
-@@ -1056,6 +1063,7 @@ class FileBasedDataSourceSuite extends QueryTest
+@@ -1056,6 +1073,7 @@ class FileBasedDataSourceSuite extends QueryTest
  
            val fileScan = df.queryExecution.executedPlan collectFirst {
              case BatchScanExec(_, f: FileScan, _, _, _, _) => f
@@ -564,7 +612,7 @@ index 93275487f29..510e3087e0f 100644
            }
            assert(fileScan.nonEmpty)
            assert(fileScan.get.partitionFilters.isEmpty)
-@@ -1240,6 +1248,9 @@ class FileBasedDataSourceSuite extends QueryTest
+@@ -1240,6 +1258,9 @@ class FileBasedDataSourceSuite extends QueryTest
            val filters = df.queryExecution.executedPlan.collect {
              case f: FileSourceScanLike => f.dataFilters
              case b: BatchScanExec => b.scan.asInstanceOf[FileScan].dataFilters
@@ -909,7 +957,7 @@ index c26757c9cff..d55775f09d7 100644
    protected val baseResourcePath = {
      // use the same way as `SQLQueryTestSuite` to get the resource path
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
-index 3cf2bfd17ab..49728c35c42 100644
+index 3cf2bfd17ab..b1c1e41e6a9 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
 @@ -1521,7 +1521,8 @@ class SQLQuerySuite extends QueryTest with SharedSparkSession with AdaptiveSpark
@@ -922,124 +970,46 @@ index 3cf2bfd17ab..49728c35c42 100644
      AccumulatorSuite.verifyPeakExecutionMemorySet(sparkContext, "external sort") {
        sql("SELECT * FROM testData2 ORDER BY a ASC, b ASC").collect()
      }
-@@ -4459,7 +4460,8 @@ class SQLQuerySuite extends QueryTest with SharedSparkSession with AdaptiveSpark
-   }
- 
-   test("SPARK-39166: Query context of binary arithmetic should be serialized to executors" +
--    " when WSCG is off") {
-+    " when WSCG is off",
-+    IgnoreComet("https://github.com/apache/datafusion-comet/issues/2215")) {
-     withSQLConf(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
-       SQLConf.ANSI_ENABLED.key -> "true") {
-       withTable("t") {
-@@ -4480,7 +4482,8 @@ class SQLQuerySuite extends QueryTest with SharedSparkSession with AdaptiveSpark
-   }
- 
-   test("SPARK-39175: Query context of Cast should be serialized to executors" +
--    " when WSCG is off") {
-+    " when WSCG is off",
-+    IgnoreComet("https://github.com/apache/datafusion-comet/issues/2215")) {
-     withSQLConf(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
-       SQLConf.ANSI_ENABLED.key -> "true") {
-       withTable("t") {
-@@ -4497,14 +4500,19 @@ class SQLQuerySuite extends QueryTest with SharedSparkSession with AdaptiveSpark
-           val msg = intercept[SparkException] {
-             sql(query).collect()
-           }.getMessage
--          assert(msg.contains(query))
-+          if (!isCometEnabled) {
-+            // Comet's error message does not include the original SQL query
-+            // https://github.com/apache/datafusion-comet/issues/2215
-+            assert(msg.contains(query))
-+          }
-         }
-       }
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala
+index 8b4ac474f87..3f79f20822f 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala
+@@ -223,6 +223,8 @@ class SparkSessionExtensionSuite extends SparkFunSuite with SQLHelper with Adapt
+     withSession(extensions) { session =>
+       session.conf.set(SQLConf.ADAPTIVE_EXECUTION_ENABLED, true)
+       session.conf.set(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key, "-1")
++      // https://github.com/apache/datafusion-comet/issues/1197
++      session.conf.set("spark.comet.enabled", false)
+       assert(session.sessionState.columnarRules.contains(
+         MyColumnarRule(PreRuleReplaceAddWithBrokenVersion(), MyPostRule())))
+       import session.sqlContext.implicits._
+@@ -281,6 +283,8 @@ class SparkSessionExtensionSuite extends SparkFunSuite with SQLHelper with Adapt
      }
-   }
- 
-   test("SPARK-39190,SPARK-39208,SPARK-39210: Query context of decimal overflow error should " +
--    "be serialized to executors when WSCG is off") {
-+    "be serialized to executors when WSCG is off",
-+    IgnoreComet("https://github.com/apache/datafusion-comet/issues/2215")) {
-     withSQLConf(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
-       SQLConf.ANSI_ENABLED.key -> "true") {
-       withTable("t") {
-diff --git a/sql/core/src/test/scala/org/apache/spark/sql/StringFunctionsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/StringFunctionsSuite.scala
-index fa1a64460fc..1d2e215d6a3 100644
---- a/sql/core/src/test/scala/org/apache/spark/sql/StringFunctionsSuite.scala
-+++ b/sql/core/src/test/scala/org/apache/spark/sql/StringFunctionsSuite.scala
-@@ -17,6 +17,8 @@
- 
- package org.apache.spark.sql
- 
-+import org.apache.comet.CometConf
-+
- import org.apache.spark.{SPARK_DOC_ROOT, SparkIllegalArgumentException, SparkRuntimeException}
- import org.apache.spark.sql.catalyst.expressions.Cast._
- import org.apache.spark.sql.execution.FormattedMode
-@@ -178,29 +180,31 @@ class StringFunctionsSuite extends QueryTest with SharedSparkSession {
-   }
- 
-   test("string regex_replace / regex_extract") {
--    val df = Seq(
--      ("100-200", "(\\d+)-(\\d+)", "300"),
--      ("100-200", "(\\d+)-(\\d+)", "400"),
--      ("100-200", "(\\d+)", "400")).toDF("a", "b", "c")
-+    withSQLConf(CometConf.getExprAllowIncompatConfigKey("regexp") -> "true") {
-+      val df = Seq(
-+        ("100-200", "(\\d+)-(\\d+)", "300"),
-+        ("100-200", "(\\d+)-(\\d+)", "400"),
-+        ("100-200", "(\\d+)", "400")).toDF("a", "b", "c")
- 
--    checkAnswer(
--      df.select(
--        regexp_replace($"a", "(\\d+)", "num"),
--        regexp_replace($"a", $"b", $"c"),
--        regexp_extract($"a", "(\\d+)-(\\d+)", 1)),
--      Row("num-num", "300", "100") :: Row("num-num", "400", "100") ::
--        Row("num-num", "400-400", "100") :: Nil)
--
--    // for testing the mutable state of the expression in code gen.
--    // This is a hack way to enable the codegen, thus the codegen is enable by default,
--    // it will still use the interpretProjection if projection followed by a LocalRelation,
--    // hence we add a filter operator.
--    // See the optimizer rule `ConvertToLocalRelation`
--    checkAnswer(
--      df.filter("isnotnull(a)").selectExpr(
--        "regexp_replace(a, b, c)",
--        "regexp_extract(a, b, 1)"),
--      Row("300", "100") :: Row("400", "100") :: Row("400-400", "100") :: Nil)
-+      checkAnswer(
-+        df.select(
-+          regexp_replace($"a", "(\\d+)", "num"),
-+          regexp_replace($"a", $"b", $"c"),
-+          regexp_extract($"a", "(\\d+)-(\\d+)", 1)),
-+        Row("num-num", "300", "100") :: Row("num-num", "400", "100") ::
-+          Row("num-num", "400-400", "100") :: Nil)
-+
-+      // for testing the mutable state of the expression in code gen.
-+      // This is a hack way to enable the codegen, thus the codegen is enable by default,
-+      // it will still use the interpretProjection if projection followed by a LocalRelation,
-+      // hence we add a filter operator.
-+      // See the optimizer rule `ConvertToLocalRelation`
-+      checkAnswer(
-+        df.filter("isnotnull(a)").selectExpr(
-+          "regexp_replace(a, b, c)",
-+          "regexp_extract(a, b, 1)"),
-+        Row("300", "100") :: Row("400", "100") :: Row("400-400", "100") :: Nil)
-+    }
-   }
- 
-   test("non-matching optional group") {
+     withSession(extensions) { session =>
+       session.conf.set(SQLConf.ADAPTIVE_EXECUTION_ENABLED, enableAQE)
++      // https://github.com/apache/datafusion-comet/issues/1197
++      session.conf.set("spark.comet.enabled", false)
+       assert(session.sessionState.columnarRules.contains(
+         MyColumnarRule(PreRuleReplaceAddWithBrokenVersion(), MyPostRule())))
+       import session.sqlContext.implicits._
+@@ -319,6 +323,8 @@ class SparkSessionExtensionSuite extends SparkFunSuite with SQLHelper with Adapt
+     val session = SparkSession.builder()
+       .master("local[1]")
+       .config(COLUMN_BATCH_SIZE.key, 2)
++      // https://github.com/apache/datafusion-comet/issues/1197
++      .config("spark.comet.enabled", false)
+       .withExtensions { extensions =>
+         extensions.injectColumnar(session =>
+           MyColumnarRule(PreRuleReplaceAddWithBrokenVersion(), MyPostRule())) }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
-index 04702201f82..5ee11f83ecf 100644
+index 04702201f82..a4b5c6c93ce 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
 @@ -22,10 +22,11 @@ import scala.collection.mutable.ArrayBuffer
  import org.apache.spark.sql.catalyst.expressions.SubqueryExpression
  import org.apache.spark.sql.catalyst.plans.{LeftAnti, LeftSemi}
  import org.apache.spark.sql.catalyst.plans.logical.{Aggregate, Join, LogicalPlan, Project, Sort, Union}
-+import org.apache.spark.sql.comet.CometScanExec
++import org.apache.spark.sql.comet.{CometNativeColumnarToRowExec, CometNativeScanExec, CometScanExec}
  import org.apache.spark.sql.execution._
  import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanHelper, DisableAdaptiveExecution}
  import org.apache.spark.sql.execution.datasources.FileScanRDD
@@ -1048,7 +1018,7 @@ index 04702201f82..5ee11f83ecf 100644
  import org.apache.spark.sql.execution.joins.{BaseJoinExec, BroadcastHashJoinExec, BroadcastNestedLoopJoinExec}
  import org.apache.spark.sql.internal.SQLConf
  import org.apache.spark.sql.test.SharedSparkSession
-@@ -1599,6 +1600,12 @@ class SubquerySuite extends QueryTest
+@@ -1599,6 +1600,17 @@ class SubquerySuite extends QueryTest
              fs.inputRDDs().forall(
                _.asInstanceOf[FileScanRDD].filePartitions.forall(
                  _.files.forall(_.urlEncodedPath.contains("p=0"))))
@@ -1058,10 +1028,15 @@ index 04702201f82..5ee11f83ecf 100644
 +            fs.inputRDDs().forall(
 +              _.asInstanceOf[FileScanRDD].filePartitions.forall(
 +                _.files.forall(_.urlEncodedPath.contains("p=0"))))
++        case CometNativeColumnarToRowExec(fs: CometNativeScanExec) =>
++          fs.partitionFilters.exists(ExecSubqueryExpression.hasSubquery) &&
++            fs.inputRDDs().forall(
++              _.asInstanceOf[FileScanRDD].filePartitions.forall(
++                _.files.forall(_.urlEncodedPath.contains("p=0"))))
          case _ => false
        })
      }
-@@ -2164,7 +2171,7 @@ class SubquerySuite extends QueryTest
+@@ -2164,7 +2176,7 @@ class SubquerySuite extends QueryTest
  
        df.collect()
        val exchanges = collect(df.queryExecution.executedPlan) {
@@ -1134,31 +1109,18 @@ index d269290e616..13726a31e07 100644
                }
              }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/connector/FileDataSourceV2FallBackSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/connector/FileDataSourceV2FallBackSuite.scala
-index cfc8b2cc845..b7c234e1437 100644
+index cfc8b2cc845..c4be7eb3731 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/connector/FileDataSourceV2FallBackSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/connector/FileDataSourceV2FallBackSuite.scala
-@@ -19,8 +19,9 @@ package org.apache.spark.sql.connector
- import scala.collection.mutable.ArrayBuffer
- 
+@@ -21,6 +21,7 @@ import scala.collection.mutable.ArrayBuffer
  import org.apache.spark.SparkConf
--import org.apache.spark.sql.{AnalysisException, QueryTest}
-+import org.apache.spark.sql.{AnalysisException, IgnoreCometNativeDataFusion, QueryTest}
+ import org.apache.spark.sql.{AnalysisException, QueryTest}
  import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 +import org.apache.spark.sql.comet.{CometNativeScanExec, CometScanExec}
  import org.apache.spark.sql.connector.catalog.{SupportsRead, SupportsWrite, Table, TableCapability}
  import org.apache.spark.sql.connector.read.ScanBuilder
  import org.apache.spark.sql.connector.write.{LogicalWriteInfo, WriteBuilder}
-@@ -152,7 +153,8 @@ class FileDataSourceV2FallBackSuite extends QueryTest with SharedSparkSession {
-     }
-   }
- 
--  test("Fallback Parquet V2 to V1") {
-+  test("Fallback Parquet V2 to V1",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3315")) {
-     Seq("parquet", classOf[ParquetDataSourceV2].getCanonicalName).foreach { format =>
-       withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> format) {
-         val commands = ArrayBuffer.empty[(String, LogicalPlan)]
-@@ -184,7 +186,11 @@ class FileDataSourceV2FallBackSuite extends QueryTest with SharedSparkSession {
+@@ -184,7 +185,11 @@ class FileDataSourceV2FallBackSuite extends QueryTest with SharedSparkSession {
              val df = spark.read.format(format).load(path.getCanonicalPath)
              checkAnswer(df, inputData.toDF())
              assert(
@@ -1422,28 +1384,6 @@ index 47679ed7865..9ffbaecb98e 100644
      }.length == hashAggCount)
      assert(collectWithSubqueries(plan) { case s: SortAggregateExec => s }.length == sortAggCount)
    }
-diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/SQLViewSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/SQLViewSuite.scala
-index a1147c16cc8..c7a29496328 100644
---- a/sql/core/src/test/scala/org/apache/spark/sql/execution/SQLViewSuite.scala
-+++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/SQLViewSuite.scala
-@@ -19,6 +19,7 @@ package org.apache.spark.sql.execution
- 
- import org.apache.spark.{SparkArithmeticException, SparkException, SparkFileNotFoundException}
- import org.apache.spark.sql._
-+import org.apache.spark.sql.IgnoreCometNativeDataFusion
- import org.apache.spark.sql.catalyst.TableIdentifier
- import org.apache.spark.sql.catalyst.expressions.{Add, Alias, Divide}
- import org.apache.spark.sql.catalyst.parser.ParseException
-@@ -968,7 +969,8 @@ abstract class SQLViewSuite extends QueryTest with SQLTestUtils {
-     }
-   }
- 
--  test("alter temporary view should follow current storeAnalyzedPlanForView config") {
-+  test("alter temporary view should follow current storeAnalyzedPlanForView config",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3314")) {
-     withTable("t") {
-       Seq(2, 3, 1).toDF("c1").write.format("parquet").saveAsTable("t")
-       withView("v1") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/SQLWindowFunctionSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/SQLWindowFunctionSuite.scala
 index eec396b2e39..bf3f1c769d6 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/SQLWindowFunctionSuite.scala
@@ -1514,7 +1454,7 @@ index 5a413c77754..207b66e1d7b 100644
  
    import testImplicits._
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
-index 2f8e401e743..a4f94417dcc 100644
+index 2f8e401e743..dbcf3171946 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
 @@ -27,9 +27,11 @@ import org.scalatest.time.SpanSugar._
@@ -1876,17 +1816,7 @@ index 2f8e401e743..a4f94417dcc 100644
      CostEvaluator.instantiate(
        classOf[SimpleShuffleSortCostEvaluator].getCanonicalName, spark.sparkContext.getConf)
      intercept[IllegalArgumentException] {
-@@ -2417,7 +2457,8 @@ class AdaptiveQueryExecSuite
-   }
- 
-   test("SPARK-48037: Fix SortShuffleWriter lacks shuffle write related metrics " +
--    "resulting in potentially inaccurate data") {
-+    "resulting in potentially inaccurate data",
-+    IgnoreComet("https://github.com/apache/datafusion-comet/issues/1501")) {
-     withTable("t3") {
-       withSQLConf(
-         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
-@@ -2452,6 +2493,7 @@ class AdaptiveQueryExecSuite
+@@ -2452,6 +2492,7 @@ class AdaptiveQueryExecSuite
            val (_, adaptive) = runAdaptiveAndVerifyResult(query)
            assert(adaptive.collect {
              case sort: SortExec => sort
@@ -1894,7 +1824,7 @@ index 2f8e401e743..a4f94417dcc 100644
            }.size == 1)
            val read = collect(adaptive) {
              case read: AQEShuffleReadExec => read
-@@ -2469,7 +2511,8 @@ class AdaptiveQueryExecSuite
+@@ -2469,7 +2510,8 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -1904,7 +1834,7 @@ index 2f8e401e743..a4f94417dcc 100644
      withTempView("v") {
        withSQLConf(
          SQLConf.ADAPTIVE_OPTIMIZE_SKEWS_IN_REBALANCE_PARTITIONS_ENABLED.key -> "true",
-@@ -2581,7 +2624,7 @@ class AdaptiveQueryExecSuite
+@@ -2581,7 +2623,7 @@ class AdaptiveQueryExecSuite
            runAdaptiveAndVerifyResult("SELECT key1 FROM skewData1 JOIN skewData2 ON key1 = key2 " +
              "JOIN skewData3 ON value2 = value3")
          val shuffles1 = collect(adaptive1) {
@@ -1913,7 +1843,7 @@ index 2f8e401e743..a4f94417dcc 100644
          }
          assert(shuffles1.size == 4)
          val smj1 = findTopLevelSortMergeJoin(adaptive1)
-@@ -2592,7 +2635,7 @@ class AdaptiveQueryExecSuite
+@@ -2592,7 +2634,7 @@ class AdaptiveQueryExecSuite
            runAdaptiveAndVerifyResult("SELECT key1 FROM skewData1 JOIN skewData2 ON key1 = key2 " +
              "JOIN skewData3 ON value1 = value3")
          val shuffles2 = collect(adaptive2) {
@@ -1922,7 +1852,7 @@ index 2f8e401e743..a4f94417dcc 100644
          }
          assert(shuffles2.size == 4)
          val smj2 = findTopLevelSortMergeJoin(adaptive2)
-@@ -2850,6 +2893,7 @@ class AdaptiveQueryExecSuite
+@@ -2850,6 +2892,7 @@ class AdaptiveQueryExecSuite
          }.size == (if (firstAccess) 1 else 0))
          assert(collect(initialExecutedPlan) {
            case s: SortExec => s
@@ -1930,7 +1860,7 @@ index 2f8e401e743..a4f94417dcc 100644
          }.size == (if (firstAccess) 2 else 0))
          assert(collect(initialExecutedPlan) {
            case i: InMemoryTableScanLike => i
-@@ -2980,7 +3024,9 @@ class AdaptiveQueryExecSuite
+@@ -2980,7 +3023,9 @@ class AdaptiveQueryExecSuite
  
        val plan = df.queryExecution.executedPlan.asInstanceOf[AdaptiveSparkPlanExec]
        assert(plan.inputPlan.isInstanceOf[TakeOrderedAndProjectExec])
@@ -2038,7 +1968,7 @@ index 07e2849ce6f..3e73645b638 100644
        ParquetOutputFormat.WRITER_VERSION -> ParquetProperties.WriterVersion.PARQUET_2_0.toString
      )
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFilterSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFilterSuite.scala
-index 8e88049f51e..49f2001dc6b 100644
+index 8e88049f51e..20d7ef7b1bc 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFilterSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFilterSuite.scala
 @@ -1095,7 +1095,11 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
@@ -2064,17 +1994,7 @@ index 8e88049f51e..49f2001dc6b 100644
      import testImplicits._
  
      withSQLConf(SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "true",
-@@ -1548,7 +1553,8 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
-     }
-   }
- 
--  test("SPARK-31026: Parquet predicate pushdown for fields having dots in the names") {
-+  test("SPARK-31026: Parquet predicate pushdown for fields having dots in the names",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3320")) {
-     import testImplicits._
- 
-     withAllParquetReaders {
-@@ -1580,13 +1586,18 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
+@@ -1580,7 +1585,11 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
            // than the total length but should not be a single record.
            // Note that, if record level filtering is enabled, it should be a single record.
            // If no filter is pushed down to Parquet, it should be the total length of data.
@@ -2087,15 +2007,7 @@ index 8e88049f51e..49f2001dc6b 100644
          }
        }
      }
-   }
- 
--  test("Filters should be pushed down for Parquet readers at row group level") {
-+  test("Filters should be pushed down for Parquet readers at row group level",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3320")) {
-     import testImplicits._
- 
-     withSQLConf(
-@@ -1607,7 +1618,11 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
+@@ -1607,7 +1616,11 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
          // than the total length but should not be a single record.
          // Note that, if record level filtering is enabled, it should be a single record.
          // If no filter is pushed down to Parquet, it should be the total length of data.
@@ -2108,7 +2020,7 @@ index 8e88049f51e..49f2001dc6b 100644
        }
      }
    }
-@@ -1699,7 +1714,7 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
+@@ -1699,7 +1712,7 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
        (attr, value) => sources.StringContains(attr, value))
    }
  
@@ -2117,7 +2029,7 @@ index 8e88049f51e..49f2001dc6b 100644
      import testImplicits._
      // keep() should take effect on StartsWith/EndsWith/Contains
      Seq(
-@@ -1743,7 +1758,8 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
+@@ -1743,7 +1756,8 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
      }
    }
  
@@ -2127,17 +2039,35 @@ index 8e88049f51e..49f2001dc6b 100644
      val schema = StructType(Seq(
        StructField("a", IntegerType, nullable = false)
      ))
-@@ -1933,7 +1949,8 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
-     }
-   }
+@@ -1949,11 +1963,24 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
+            """.stripMargin)
  
--  test("SPARK-25207: exception when duplicate fields in case-insensitive mode") {
-+  test("SPARK-25207: exception when duplicate fields in case-insensitive mode",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3311")) {
-     withTempPath { dir =>
-       val count = 10
-       val tableName = "spark_25207"
-@@ -1984,7 +2001,8 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
+         withSQLConf(SQLConf.CASE_SENSITIVE.key -> "false") {
+-          val e = intercept[SparkException] {
++          // Spark native readers wrap the error in SparkException(FAILED_READ_FILE).
++          // Comet native readers throw SparkRuntimeException directly.
++          val msg = try {
+             sql(s"select a from $tableName where b > 0").collect()
++            fail("Expected an exception")
++          } catch {
++            case e: SparkException =>
++              assert(e.getCause.isInstanceOf[RuntimeException])
++              e.getCause.getMessage
++            case e: RuntimeException =>
++              e.getMessage
+           }
+-          assert(e.getCause.isInstanceOf[RuntimeException] && e.getCause.getMessage.contains(
+-            """Found duplicate field(s) "B": [B, b] in case-insensitive mode"""))
++          assert(
++            msg.contains(
++              """Found duplicate field(s) "B": [B, b] in case-insensitive mode""") ||
++              msg.contains(
++                """Found duplicate field(s) "b": [B, b] in case-insensitive mode"""),
++            s"Unexpected error message: $msg")
+         }
+ 
+         withSQLConf(SQLConf.CASE_SENSITIVE.key -> "true") {
+@@ -1984,7 +2011,8 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
      }
    }
  
@@ -2147,7 +2077,7 @@ index 8e88049f51e..49f2001dc6b 100644
      // block 1:
      //                      null count  min                                       max
      // page-0                         0  0                                         99
-@@ -2044,7 +2062,8 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
+@@ -2044,7 +2072,8 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
      }
    }
  
@@ -2157,7 +2087,7 @@ index 8e88049f51e..49f2001dc6b 100644
      withTempPath { dir =>
        val path = dir.getCanonicalPath
        spark.range(100).selectExpr("id * 2 AS id")
-@@ -2276,7 +2295,11 @@ class ParquetV1FilterSuite extends ParquetFilterSuite {
+@@ -2276,7 +2305,11 @@ class ParquetV1FilterSuite extends ParquetFilterSuite {
            assert(pushedParquetFilters.exists(_.getClass === filterClass),
              s"${pushedParquetFilters.map(_.getClass).toList} did not contain ${filterClass}.")
  
@@ -2170,7 +2100,7 @@ index 8e88049f51e..49f2001dc6b 100644
          } else {
            assert(selectedFilters.isEmpty, "There is filter pushed down")
          }
-@@ -2336,7 +2359,11 @@ class ParquetV2FilterSuite extends ParquetFilterSuite {
+@@ -2336,7 +2369,11 @@ class ParquetV2FilterSuite extends ParquetFilterSuite {
            assert(pushedParquetFilters.exists(_.getClass === filterClass),
              s"${pushedParquetFilters.map(_.getClass).toList} did not contain ${filterClass}.")
  
@@ -2184,7 +2114,7 @@ index 8e88049f51e..49f2001dc6b 100644
          case _ =>
            throw new AnalysisException("Can not match ParquetTable in the query.")
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
-index 8ed9ef1630e..f312174b182 100644
+index 8ed9ef1630e..a865928c1b2 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
 @@ -1064,7 +1064,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
@@ -2193,7 +2123,7 @@ index 8ed9ef1630e..f312174b182 100644
  
 -  test("SPARK-35640: read binary as timestamp should throw schema incompatible error") {
 +  test("SPARK-35640: read binary as timestamp should throw schema incompatible error",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3311")) {
++    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3720")) {
      val data = (1 to 4).map(i => Tuple1(i.toString))
      val readSchema = StructType(Seq(StructField("_1", DataTypes.TimestampType)))
  
@@ -2203,7 +2133,7 @@ index 8ed9ef1630e..f312174b182 100644
  
 -  test("SPARK-35640: int as long should throw schema incompatible error") {
 +  test("SPARK-35640: int as long should throw schema incompatible error",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3311")) {
++    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3720")) {
      val data = (1 to 4).map(i => Tuple1(i))
      val readSchema = StructType(Seq(StructField("_1", DataTypes.LongType)))
  
@@ -2218,7 +2148,7 @@ index 8ed9ef1630e..f312174b182 100644
        checkAnswer(
          // "fruit" column in this file is encoded using DELTA_LENGTH_BYTE_ARRAY.
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
-index f6472ba3d9d..ce39ebb52e6 100644
+index f6472ba3d9d..5ea2d938664 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
 @@ -185,7 +185,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
@@ -2227,7 +2157,7 @@ index f6472ba3d9d..ce39ebb52e6 100644
  
 -  test("SPARK-36182: can't read TimestampLTZ as TimestampNTZ") {
 +  test("SPARK-36182: can't read TimestampLTZ as TimestampNTZ",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3311")) {
++    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3720")) {
      val data = (1 to 1000).map { i =>
        val ts = new java.sql.Timestamp(i)
        Row(ts)
@@ -2247,7 +2177,7 @@ index f6472ba3d9d..ce39ebb52e6 100644
  
 -  test("SPARK-34212 Parquet should read decimals correctly") {
 +  test("SPARK-34212 Parquet should read decimals correctly",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3311")) {
++    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3720")) {
      def readParquet(schema: String, path: File): DataFrame = {
        spark.read.schema(schema).parquet(path.toString)
      }
@@ -2277,7 +2207,7 @@ index f6472ba3d9d..ce39ebb52e6 100644
  
 -  test("row group skipping doesn't overflow when reading into larger type") {
 +  test("row group skipping doesn't overflow when reading into larger type",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3311")) {
++    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3720")) {
      withTempPath { path =>
        Seq(0).toDF("a").write.parquet(path.toString)
        // The vectorized and non-vectorized readers will produce different exceptions, we don't need
@@ -2316,34 +2246,18 @@ index 4f906411345..6cc69f7e915 100644
  
    import testImplicits._
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRowIndexSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRowIndexSuite.scala
-index 27c2a2148fd..df04a15fb1f 100644
+index 27c2a2148fd..808baf9e778 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRowIndexSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRowIndexSuite.scala
-@@ -20,12 +20,14 @@ import java.io.File
- 
- import scala.collection.JavaConverters._
- 
-+import org.apache.comet.CometConf
- import org.apache.hadoop.fs.Path
- import org.apache.parquet.column.ParquetProperties._
- import org.apache.parquet.hadoop.{ParquetFileReader, ParquetOutputFormat}
+@@ -26,6 +26,7 @@ import org.apache.parquet.hadoop.{ParquetFileReader, ParquetOutputFormat}
  import org.apache.parquet.hadoop.ParquetWriter.DEFAULT_BLOCK_SIZE
  
  import org.apache.spark.sql.QueryTest
-+import org.apache.spark.sql.comet.{CometBatchScanExec, CometScanExec}
++import org.apache.spark.sql.comet.{CometBatchScanExec, CometNativeScanExec, CometScanExec}
  import org.apache.spark.sql.execution.FileSourceScanExec
  import org.apache.spark.sql.execution.datasources.FileFormat
  import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
-@@ -172,6 +174,8 @@ class ParquetRowIndexSuite extends QueryTest with SharedSparkSession {
- 
-   private def testRowIndexGeneration(label: String, conf: RowIndexTestConf): Unit = {
-     test (s"$label - ${conf.desc}") {
-+      // native_datafusion Parquet scan does not support row index generation.
-+      assume(CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_DATAFUSION)
-       withSQLConf(conf.sqlConfs: _*) {
-         withTempPath { path =>
-           // Read row index using _metadata.row_index if that is supported by the file format.
-@@ -243,6 +247,12 @@ class ParquetRowIndexSuite extends QueryTest with SharedSparkSession {
+@@ -243,6 +244,17 @@ class ParquetRowIndexSuite extends QueryTest with SharedSparkSession {
              case f: FileSourceScanExec =>
                numPartitions += f.inputRDD.partitions.length
                numOutputRows += f.metrics("numOutputRows").value
@@ -2353,18 +2267,14 @@ index 27c2a2148fd..df04a15fb1f 100644
 +            case b: CometBatchScanExec =>
 +              numPartitions += b.inputRDD.partitions.length
 +              numOutputRows += b.metrics("numOutputRows").value
++            case b: CometNativeScanExec =>
++              numPartitions +=
++                b.originalPlan.inputRDD.partitions.length
++              numOutputRows +=
++                b.metrics("numOutputRows").value
              case _ =>
            }
            assert(numPartitions > 0)
-@@ -301,6 +311,8 @@ class ParquetRowIndexSuite extends QueryTest with SharedSparkSession {
-     val conf = RowIndexTestConf(useDataSourceV2 = useDataSourceV2)
- 
-     test(s"invalid row index column type - ${conf.desc}") {
-+      // native_datafusion Parquet scan does not support row index generation.
-+      assume(CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_DATAFUSION)
-       withSQLConf(conf.sqlConfs: _*) {
-         withTempPath{ path =>
-           val df = spark.range(0, 10, 1, 1).toDF("id")
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaPruningSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaPruningSuite.scala
 index 5c0b7def039..151184bc98c 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaPruningSuite.scala
@@ -2386,7 +2296,7 @@ index 5c0b7def039..151184bc98c 100644
      assert(fileSourceScanSchemata.size === expectedSchemaCatalogStrings.size,
        s"Found ${fileSourceScanSchemata.size} file sources in dataframe, " +
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaSuite.scala
-index 3f47c5e506f..92a5eafec84 100644
+index 3f47c5e506f..f1ce3194279 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaSuite.scala
 @@ -27,6 +27,7 @@ import org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName
@@ -2413,7 +2323,7 @@ index 3f47c5e506f..92a5eafec84 100644
  
 -  test("schema mismatch failure error message for parquet vectorized reader") {
 +  test("schema mismatch failure error message for parquet vectorized reader",
-+      IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3311")) {
++      IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3720")) {
      withTempPath { dir =>
        val e = testSchemaMismatch(dir.getCanonicalPath, vectorizedReaderEnabled = true)
        assert(e.getCause.isInstanceOf[SparkException])
@@ -2423,7 +2333,7 @@ index 3f47c5e506f..92a5eafec84 100644
  
 -  test("SPARK-45604: schema mismatch failure error on timestamp_ntz to array<timestamp_ntz>") {
 +  test("SPARK-45604: schema mismatch failure error on timestamp_ntz to array<timestamp_ntz>",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3311")) {
++    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3720")) {
      import testImplicits._
  
      withTempPath { dir =>
@@ -2550,7 +2460,7 @@ index d083cac48ff..3c11bcde807 100644
    import testImplicits._
  
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala
-index 746f289c393..7a6a88a9fce 100644
+index 746f289c393..e5dc13b87d5 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala
 @@ -19,16 +19,19 @@ package org.apache.spark.sql.sources
@@ -2731,7 +2641,7 @@ index 746f289c393..7a6a88a9fce 100644
                val scans = collect(plan) {
                  case f: FileSourceScanExec if f.optionalNumCoalescedBuckets.isDefined => f
 +                case b: CometScanExec if b.optionalNumCoalescedBuckets.isDefined => b
-+                case b: CometNativeScanExec if b.optionalNumCoalescedBuckets.isDefined => b
++                case n: CometNativeScanExec if n.optionalNumCoalescedBuckets.isDefined => n
                }
                if (expectedCoalescedNumBuckets.isDefined) {
                  assert(scans.length == 1)
@@ -2741,8 +2651,8 @@ index 746f289c393..7a6a88a9fce 100644
 +                    assert(f.optionalNumCoalescedBuckets == expectedCoalescedNumBuckets)
 +                  case b: CometScanExec =>
 +                    assert(b.optionalNumCoalescedBuckets == expectedCoalescedNumBuckets)
-+                  case b: CometNativeScanExec =>
-+                    assert(b.optionalNumCoalescedBuckets == expectedCoalescedNumBuckets)
++                  case n: CometNativeScanExec =>
++                    assert(n.optionalNumCoalescedBuckets == expectedCoalescedNumBuckets)
 +                }
                } else {
                  assert(scans.isEmpty)
@@ -2930,72 +2840,6 @@ index aad91601758..201083bd621 100644
        })
    }
  
-diff --git a/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamingQuerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamingQuerySuite.scala
-index b5cf13a9c12..ac17603fb7f 100644
---- a/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamingQuerySuite.scala
-+++ b/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamingQuerySuite.scala
-@@ -36,7 +36,7 @@ import org.scalatestplus.mockito.MockitoSugar
- 
- import org.apache.spark.{SparkException, TestUtils}
- import org.apache.spark.internal.Logging
--import org.apache.spark.sql.{AnalysisException, Column, DataFrame, Dataset, Row, SaveMode}
-+import org.apache.spark.sql.{AnalysisException, Column, DataFrame, Dataset, IgnoreCometNativeDataFusion, Row, SaveMode}
- import org.apache.spark.sql.catalyst.InternalRow
- import org.apache.spark.sql.catalyst.expressions.{Literal, Rand, Randn, Shuffle, Uuid}
- import org.apache.spark.sql.catalyst.plans.logical.{CTERelationDef, CTERelationRef, LocalRelation}
-@@ -660,7 +660,8 @@ class StreamingQuerySuite extends StreamTest with BeforeAndAfter with Logging wi
-     )
-   }
- 
--  test("SPARK-41198: input row calculation with CTE") {
-+  test("SPARK-41198: input row calculation with CTE",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3315")) {
-     withTable("parquet_tbl", "parquet_streaming_tbl") {
-       spark.range(0, 10).selectExpr("id AS col1", "id AS col2")
-         .write.format("parquet").saveAsTable("parquet_tbl")
-@@ -712,7 +713,8 @@ class StreamingQuerySuite extends StreamTest with BeforeAndAfter with Logging wi
-     }
-   }
- 
--  test("SPARK-41199: input row calculation with mixed-up of DSv1 and DSv2 streaming sources") {
-+  test("SPARK-41199: input row calculation with mixed-up of DSv1 and DSv2 streaming sources",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3315")) {
-     withTable("parquet_streaming_tbl") {
-       val streamInput = MemoryStream[Int]
-       val streamDf = streamInput.toDF().selectExpr("value AS key", "value AS value_stream")
-diff --git a/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamingSelfUnionSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamingSelfUnionSuite.scala
-index 8f099c31e6b..ce4b7ad25b3 100644
---- a/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamingSelfUnionSuite.scala
-+++ b/sql/core/src/test/scala/org/apache/spark/sql/streaming/StreamingSelfUnionSuite.scala
-@@ -20,7 +20,7 @@ package org.apache.spark.sql.streaming
- import org.scalatest.BeforeAndAfter
- import org.scalatest.concurrent.PatienceConfiguration.Timeout
- 
--import org.apache.spark.sql.SaveMode
-+import org.apache.spark.sql.{IgnoreCometNativeDataFusion, SaveMode}
- import org.apache.spark.sql.connector.catalog.Identifier
- import org.apache.spark.sql.execution.streaming.MemoryStream
- import org.apache.spark.sql.streaming.test.{InMemoryStreamTable, InMemoryStreamTableCatalog}
-@@ -42,7 +42,8 @@ class StreamingSelfUnionSuite extends StreamTest with BeforeAndAfter {
-     sqlContext.streams.active.foreach(_.stop())
-   }
- 
--  test("self-union, DSv1, read via DataStreamReader API") {
-+  test("self-union, DSv1, read via DataStreamReader API",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3401")) {
-     withTempPath { dir =>
-       val dataLocation = dir.getAbsolutePath
-       spark.range(1, 4).write.format("parquet").save(dataLocation)
-@@ -66,7 +67,8 @@ class StreamingSelfUnionSuite extends StreamTest with BeforeAndAfter {
-     }
-   }
- 
--  test("self-union, DSv1, read via table API") {
-+  test("self-union, DSv1, read via table API",
-+    IgnoreCometNativeDataFusion("https://github.com/apache/datafusion-comet/issues/3401")) {
-     withTable("parquet_streaming_tbl") {
-       spark.sql("CREATE TABLE parquet_streaming_tbl (key integer) USING parquet")
- 
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/streaming/test/DataStreamTableAPISuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/streaming/test/DataStreamTableAPISuite.scala
 index abe606ad9c1..2d930b64cca 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/streaming/test/DataStreamTableAPISuite.scala
@@ -3163,7 +3007,7 @@ index c63c748953f..7edca9c93a6 100644
    implicit val formats = new DefaultFormats {
      override def dateFormatter = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss")
 diff --git a/sql/hive/src/test/scala/org/apache/spark/sql/hive/DynamicPartitionPruningHiveScanSuite.scala b/sql/hive/src/test/scala/org/apache/spark/sql/hive/DynamicPartitionPruningHiveScanSuite.scala
-index 52abd248f3a..7a199931a08 100644
+index 52abd248f3a..b4e096cae24 100644
 --- a/sql/hive/src/test/scala/org/apache/spark/sql/hive/DynamicPartitionPruningHiveScanSuite.scala
 +++ b/sql/hive/src/test/scala/org/apache/spark/sql/hive/DynamicPartitionPruningHiveScanSuite.scala
 @@ -19,6 +19,7 @@ package org.apache.spark.sql.hive
@@ -3174,11 +3018,14 @@ index 52abd248f3a..7a199931a08 100644
  import org.apache.spark.sql.execution._
  import org.apache.spark.sql.execution.adaptive.{DisableAdaptiveExecutionSuite, EnableAdaptiveExecutionSuite}
  import org.apache.spark.sql.hive.execution.HiveTableScanExec
-@@ -35,6 +36,9 @@ abstract class DynamicPartitionPruningHiveScanSuiteBase
+@@ -35,6 +36,12 @@ abstract class DynamicPartitionPruningHiveScanSuiteBase
        case s: FileSourceScanExec => s.partitionFilters.collect {
          case d: DynamicPruningExpression => d.child
        }
 +      case s: CometScanExec => s.partitionFilters.collect {
++        case d: DynamicPruningExpression => d.child
++      }
++      case s: CometNativeScanExec => s.partitionFilters.collect {
 +        case d: DynamicPruningExpression => d.child
 +      }
        case h: HiveTableScanExec => h.partitionPruningPred.collect {
