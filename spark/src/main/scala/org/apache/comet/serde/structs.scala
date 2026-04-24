@@ -184,6 +184,8 @@ object CometJsonToStructs extends CometExpressionSerde[JsonToStructs] {
   override def getIncompatibleReasons(): Seq[String] = Seq(
     "Partially implemented and not comprehensively tested")
 
+  override def getUnsupportedReasons(): Seq[String] = Seq("Requires an explicit schema")
+
   override def getSupportLevel(expr: JsonToStructs): SupportLevel = {
     // this feature is partially implemented and not comprehensively tested yet
     Incompatible()

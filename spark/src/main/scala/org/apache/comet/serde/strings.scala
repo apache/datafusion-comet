@@ -33,6 +33,10 @@ import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInter
 
 object CometStringRepeat extends CometExpressionSerde[StringRepeat] {
 
+  override def getCompatibleNotes(): Seq[String] = Seq(
+    "A negative argument for the number of times to repeat throws an exception" +
+      " instead of returning an empty string as Spark does")
+
   override def convert(
       expr: StringRepeat,
       inputs: Seq[Attribute],
@@ -49,6 +53,10 @@ object CometStringRepeat extends CometExpressionSerde[StringRepeat] {
 
 class CometCaseConversionBase[T <: Expression](function: String)
     extends CometScalarFunction[T](function) {
+
+  override def getIncompatibleReasons(): Seq[String] = Seq(
+    "Results can vary depending on locale and character set." +
+      s" Requires `${CometConf.COMET_CASE_CONVERSION_ENABLED.key}=true` to enable.")
 
   override def convert(expr: T, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
     if (!CometConf.COMET_CASE_CONVERSION_ENABLED.get()) {
@@ -123,6 +131,10 @@ object CometSubstring extends CometExpressionSerde[Substring] {
 
 object CometLeft extends CometExpressionSerde[Left] {
 
+  override def getUnsupportedReasons(): Seq[String] = Seq(
+    "Only supports `BinaryType` and `StringType` input",
+    "The length argument must be a literal value")
+
   override def convert(expr: Left, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
     expr.len match {
       case Literal(lenValue, _) =>
@@ -142,9 +154,6 @@ object CometLeft extends CometExpressionSerde[Left] {
         None
     }
   }
-
-  override def getUnsupportedReasons(): Seq[String] = Seq(
-    "Only supports `BinaryType` and `StringType` input")
 
   override def getSupportLevel(expr: Left): SupportLevel = {
     expr.str.dataType match {
@@ -253,6 +262,9 @@ object CometLike extends CometExpressionSerde[Like] {
 }
 
 object CometRLike extends CometExpressionSerde[RLike] {
+
+  override def getIncompatibleReasons(): Seq[String] = Seq(
+    "Uses Rust regexp engine, which has different behavior to Java regexp engine")
 
   override def convert(expr: RLike, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
     expr.right match {

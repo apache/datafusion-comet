@@ -546,6 +546,9 @@ object CometArrayReverse extends CometExpressionSerde[Reverse] with ArraysBase {
 
 object CometElementAt extends CometExpressionSerde[ElementAt] {
 
+  override def getUnsupportedReasons(): Seq[String] = Seq(
+    "Input must be an array. `Map` inputs are not supported.")
+
   override def convert(
       expr: ElementAt,
       inputs: Seq[Attribute],
