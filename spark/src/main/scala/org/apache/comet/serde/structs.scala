@@ -181,6 +181,9 @@ object CometStructsToJson extends CometExpressionSerde[StructsToJson] {
 
 object CometJsonToStructs extends CometExpressionSerde[JsonToStructs] {
 
+  override def getIncompatibleReasons(): Seq[String] = Seq(
+    "Partially implemented and not comprehensively tested")
+
   override def getSupportLevel(expr: JsonToStructs): SupportLevel = {
     // this feature is partially implemented and not comprehensively tested yet
     Incompatible()
@@ -246,6 +249,13 @@ object CometJsonToStructs extends CometExpressionSerde[JsonToStructs] {
 object CometStructsToCsv extends CometExpressionSerde[StructsToCsv] {
 
   private val incompatibleDataTypes = Seq(DateType, TimestampType, TimestampNTZType, BinaryType)
+
+  override def getIncompatibleReasons(): Seq[String] = Seq(
+    "Date, Timestamp, TimestampNTZ, and Binary data types may produce different results" +
+      " (https://github.com/apache/datafusion-comet/issues/3232)")
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(
+    "Complex types (arrays, maps, structs) in the schema are not supported")
 
   override def getSupportLevel(expr: StructsToCsv): SupportLevel = {
     val dataTypes = expr.inputSchema.fields.map(_.dataType)

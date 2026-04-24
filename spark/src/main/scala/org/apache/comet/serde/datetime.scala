@@ -220,6 +220,10 @@ object CometHour extends CometExpressionSerde[Hour] {
 
 object CometMinute extends CometExpressionSerde[Minute] {
 
+  override def getIncompatibleReasons(): Seq[String] = Seq(
+    "Incorrectly applies timezone conversion to TimestampNTZ inputs" +
+      " (https://github.com/apache/datafusion-comet/issues/3180)")
+
   override def getSupportLevel(expr: Minute): SupportLevel = {
     if (expr.child.dataType.typeName == "timestamp_ntz") {
       Incompatible(
@@ -258,6 +262,10 @@ object CometMinute extends CometExpressionSerde[Minute] {
 
 object CometSecond extends CometExpressionSerde[Second] {
 
+  override def getIncompatibleReasons(): Seq[String] = Seq(
+    "Incorrectly applies timezone conversion to TimestampNTZ inputs" +
+      " (https://github.com/apache/datafusion-comet/issues/3180)")
+
   override def getSupportLevel(expr: Second): SupportLevel = {
     if (expr.child.dataType.typeName == "timestamp_ntz") {
       Incompatible(
@@ -295,6 +303,11 @@ object CometSecond extends CometExpressionSerde[Second] {
 }
 
 object CometUnixTimestamp extends CometExpressionSerde[UnixTimestamp] {
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(
+    "Only `TimestampType` and `DateType` inputs are supported." +
+      " `TimestampNTZType` is not supported because Comet incorrectly applies timezone" +
+      " conversion to TimestampNTZ values.")
 
   private def isSupportedInputType(expr: UnixTimestamp): Boolean = {
     // Note: TimestampNTZType is not supported because Comet incorrectly applies
@@ -391,6 +404,12 @@ object CometTruncDate extends CometExpressionSerde[TruncDate] {
 
   val supportedFormats: Seq[String] =
     Seq("year", "yyyy", "yy", "quarter", "mon", "month", "mm", "week")
+
+  override def getIncompatibleReasons(): Seq[String] = Seq(
+    "Non-literal format strings will throw an exception instead of returning NULL")
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(
+    "Only the following formats are supported: " + supportedFormats.mkString(", "))
 
   override def getSupportLevel(expr: TruncDate): SupportLevel = {
     expr.format match {

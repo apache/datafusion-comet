@@ -72,6 +72,21 @@ object GenerateDocs {
     () =>
       QueryPlanSerde.aggrSerdeMap.toSeq.map { case (cls, serde) =>
         (cls.getSimpleName, serde.getIncompatibleReasons(), serde.getUnsupportedReasons())
+      }),
+    "string" -> ("compatibility/expressions/string.md",
+    () =>
+      QueryPlanSerde.stringExpressions.toSeq.map { case (cls, serde) =>
+        (cls.getSimpleName, serde.getIncompatibleReasons(), serde.getUnsupportedReasons())
+      }),
+    "map" -> ("compatibility/expressions/map.md",
+    () =>
+      QueryPlanSerde.mapExpressions.toSeq.map { case (cls, serde) =>
+        (cls.getSimpleName, serde.getIncompatibleReasons(), serde.getUnsupportedReasons())
+      }),
+    "misc" -> ("compatibility/expressions/misc.md",
+    () =>
+      QueryPlanSerde.miscExpressions.toSeq.map { case (cls, serde) =>
+        (cls.getSimpleName, serde.getIncompatibleReasons(), serde.getUnsupportedReasons())
       }))
 
   def main(args: Array[String]): Unit = {

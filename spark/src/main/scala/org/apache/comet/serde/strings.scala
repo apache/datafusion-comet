@@ -68,6 +68,8 @@ object CometUpper extends CometCaseConversionBase[Upper]("upper")
 object CometLower extends CometCaseConversionBase[Lower]("lower")
 
 object CometLength extends CometScalarFunction[Length]("length") {
+  override def getUnsupportedReasons(): Seq[String] = Seq("`BinaryType` input is not supported")
+
   override def getSupportLevel(expr: Length): SupportLevel = expr.child.dataType match {
     case _: BinaryType => Unsupported(Some("Length on BinaryType is not supported"))
     case _ => Compatible()
@@ -75,6 +77,11 @@ object CometLength extends CometScalarFunction[Length]("length") {
 }
 
 object CometInitCap extends CometScalarFunction[InitCap]("initcap") {
+
+  override def getIncompatibleReasons(): Seq[String] = Seq(
+    "Treats hyphen as a word separator (e.g. `robert rose-smith` produces `Robert Rose-Smith`" +
+      " instead of Spark's `Robert Rose-smith`)" +
+      " (https://github.com/apache/datafusion-comet/issues/1052)")
 
   override def getSupportLevel(expr: InitCap): SupportLevel = {
     // Behavior differs from Spark. One example is that for the input "robert rose-smith", Spark
@@ -136,6 +143,9 @@ object CometLeft extends CometExpressionSerde[Left] {
     }
   }
 
+  override def getUnsupportedReasons(): Seq[String] = Seq(
+    "Only supports `BinaryType` and `StringType` input")
+
   override def getSupportLevel(expr: Left): SupportLevel = {
     expr.str.dataType match {
       case _: BinaryType | _: StringType => Compatible()
@@ -179,6 +189,8 @@ object CometRight extends CometExpressionSerde[Right] {
     }
   }
 
+  override def getUnsupportedReasons(): Seq[String] = Seq("Only supports `StringType` input")
+
   override def getSupportLevel(expr: Right): SupportLevel = {
     expr.str.dataType match {
       case _: StringType => Compatible()
@@ -189,6 +201,8 @@ object CometRight extends CometExpressionSerde[Right] {
 
 object CometConcat extends CometScalarFunction[Concat]("concat") {
   val unsupportedReason = "CONCAT supports only string input parameters"
+
+  override def getIncompatibleReasons(): Seq[String] = Seq(unsupportedReason)
 
   override def getSupportLevel(expr: Concat): SupportLevel = {
     if (expr.children.forall(_.dataType == DataTypes.StringType)) {
@@ -269,6 +283,10 @@ object CometRLike extends CometExpressionSerde[RLike] {
 
 object CometStringRPad extends CometExpressionSerde[StringRPad] {
 
+  override def getUnsupportedReasons(): Seq[String] = Seq(
+    "Scalar values are not supported for the `str` argument." +
+      " Only scalar values are supported for the `pad` argument.")
+
   override def getSupportLevel(expr: StringRPad): SupportLevel = {
     if (expr.str.isInstanceOf[Literal]) {
       return Unsupported(Some("Scalar values are not supported for the str argument"))
@@ -294,6 +312,10 @@ object CometStringRPad extends CometExpressionSerde[StringRPad] {
 
 object CometStringLPad extends CometExpressionSerde[StringLPad] {
 
+  override def getUnsupportedReasons(): Seq[String] = Seq(
+    "Scalar values are not supported for the `str` argument." +
+      " Only scalar values are supported for the `pad` argument.")
+
   override def getSupportLevel(expr: StringLPad): SupportLevel = {
     if (expr.str.isInstanceOf[Literal]) {
       return Unsupported(Some("Scalar values are not supported for the str argument"))
@@ -317,6 +339,12 @@ object CometStringLPad extends CometExpressionSerde[StringLPad] {
 }
 
 object CometRegExpReplace extends CometExpressionSerde[RegExpReplace] {
+  override def getIncompatibleReasons(): Seq[String] = Seq(
+    "Regexp pattern may not be compatible with Spark")
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(
+    "Only supports `regexp_replace` with an offset of 1 (no offset)")
+
   override def getSupportLevel(expr: RegExpReplace): SupportLevel = {
     if (!RegExp.isSupportedPattern(expr.regexp.toString) &&
       !CometConf.isExprAllowIncompat("regexp")) {
@@ -361,6 +389,9 @@ object CometRegExpReplace extends CometExpressionSerde[RegExpReplace] {
  */
 object CometStringSplit extends CometExpressionSerde[StringSplit] {
 
+  override def getIncompatibleReasons(): Seq[String] = Seq(
+    "Regex engine differences between Java and Rust")
+
   override def getSupportLevel(expr: StringSplit): SupportLevel =
     Incompatible(Some("Regex engine differences between Java and Rust"))
 
@@ -383,6 +414,10 @@ object CometStringSplit extends CometExpressionSerde[StringSplit] {
 }
 
 object CometGetJsonObject extends CometExpressionSerde[GetJsonObject] {
+
+  override def getIncompatibleReasons(): Seq[String] = Seq(
+    "Spark allows single-quoted JSON and unescaped control characters which Comet does not" +
+      " support")
 
   override def getSupportLevel(expr: GetJsonObject): SupportLevel =
     Incompatible(

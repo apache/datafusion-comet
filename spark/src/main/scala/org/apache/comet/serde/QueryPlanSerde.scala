@@ -127,7 +127,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[Abs] -> CometAbs,
     classOf[Bin] -> CometScalarFunction("bin"))
 
-  private val mapExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
+  private[comet] val mapExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     classOf[GetMapValue] -> CometMapExtract,
     classOf[MapKeys] -> CometMapKeys,
     classOf[MapEntries] -> CometMapEntries,
@@ -231,7 +231,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
   private val conversionExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     classOf[Cast] -> CometCast)
 
-  private val miscExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
+  private[comet] val miscExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     // TODO PromotePrecision
     classOf[Alias] -> CometAlias,
     classOf[AttributeReference] -> CometAttributeReference,
