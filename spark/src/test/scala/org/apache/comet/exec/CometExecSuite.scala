@@ -570,6 +570,50 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  // Reproduces CI failure from DynamicPartitionPruningSuiteV1AEOn SPARK-37995.
+  // DynamicPartitionPruningSuiteBase.checkPartitionPruningPredicate (line 233-240) asserts
+  // that all non-broadcast subquery plans contain AdaptiveSparkPlanExec when AQE is on.
+  test("SPARK-37995: DPP with scalar subquery does not break subquery assertions") {
+    withDppTables {
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true",
+        SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "false",
+        SQLConf.EXCHANGE_REUSE_ENABLED.key -> "false") {
+        val df = sql("""SELECT f.date_id, f.store_id FROM fact_sk f
+            |JOIN dim_store s ON f.store_id = s.store_id AND s.country = 'NL'
+            |WHERE s.state_province != (SELECT max(state_province) FROM dim_stats)
+            |""".stripMargin)
+        val (_, plan) = checkSparkAnswer(df)
+
+        val isMainQueryAdaptive = plan.isInstanceOf[AdaptiveSparkPlanExec]
+        val dpExprs = flatMap(plan) {
+          case s: FileSourceScanExec =>
+            s.partitionFilters.collect { case d: DynamicPruningExpression => d.child }
+          case s: CometScanExec =>
+            s.partitionFilters.collect { case d: DynamicPruningExpression => d.child }
+          case s: CometNativeScanExec =>
+            s.partitionFilters.collect { case d: DynamicPruningExpression => d.child }
+          case _ => Nil
+        }
+        val subqueryBroadcast = dpExprs.collect {
+          case InSubqueryExec(_, b: SubqueryBroadcastExec, _, _, _, _) => b
+          case InSubqueryExec(_, b: CometSubqueryBroadcastExec, _, _, _, _) => b
+        }
+        subqueriesAll(plan).filterNot(subqueryBroadcast.contains).foreach { s =>
+          val subquery = s match {
+            case r: ReusedSubqueryExec => r.child
+            case o => o
+          }
+          assert(
+            subquery.exists(_.isInstanceOf[AdaptiveSparkPlanExec]) == isMainQueryAdaptive,
+            s"Subquery ${subquery.getClass.getSimpleName} adaptive mismatch:\n" +
+              s"${subquery.treeString}")
+        }
+      }
+    }
+  }
+
   test("non-AQE DPP with two separate broadcast joins") {
     withTempDir { dir =>
       val path = s"${dir.getAbsolutePath}/data"
@@ -1156,6 +1200,63 @@ class CometExecSuite extends CometTestBase {
 
           val df4 = sql(s"SELECT (SELECT $column1 FROM tbl LIMIT 1) AS a, _1, _2 FROM tbl")
           checkSparkAnswerAndOperator(df4)
+        }
+      }
+    }
+  }
+
+  // Regression test for https://github.com/apache/datafusion-comet/issues/4042
+  // SPARK-43402 (Spark 4.0+) pushes scalar subqueries into FileSourceScanExec.dataFilters.
+  // CometReuseSubquery re-applies subquery deduplication after Comet node conversions, and
+  // the resolved literal is pushed to the native Parquet reader at execution time (same
+  // approach as FileSourceScanLike.pushedDownFilters in DataSourceScanExec.scala).
+  test("scalar subquery in data filters does not break subquery reuse") {
+    assume(isSpark40Plus, "SPARK-43402 scalar subquery pushdown is Spark 4.0+ only")
+
+    Seq(true, false).foreach { aqeEnabled =>
+      withTable("t1", "t2") {
+        withSQLConf(
+          SQLConf.LEAF_NODE_DEFAULT_PARALLELISM.key -> "1",
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqeEnabled.toString) {
+          Seq(1, 2, 3).toDF("c1").write.format("parquet").saveAsTable("t1")
+          Seq(4, 5, 6).toDF("c2").write.format("parquet").saveAsTable("t2")
+
+          checkSparkAnswer(sql("SELECT * FROM t1 WHERE c1 > (SELECT min(c2) FROM t2)"))
+
+          val df = sql("SELECT * FROM t1 WHERE c1 < (SELECT min(c2) FROM t2)")
+          val (_, cometPlan) = checkSparkAnswer(df)
+
+          val nativeScans = collectWithSubqueries(cometPlan) { case n: CometNativeScanExec =>
+            n
+          }
+          val t1Scan =
+            nativeScans.find(_.dataFilters.exists(_.exists(_.isInstanceOf[ScalarSubquery])))
+          assert(t1Scan.isDefined, "Expected CometNativeScanExec with ScalarSubquery")
+          val scalarSubqueries = t1Scan.get.dataFilters.flatMap(_.collect {
+            case s: ScalarSubquery => s
+          })
+          assert(scalarSubqueries.length === 1)
+          assert(t1Scan.get.metrics("numFiles").value === 1)
+
+          // Exactly one copy should be ReusedSubqueryExec. AQE (top-down traversal via
+          // CometReuseSubquery) puts it on the scan; non-AQE (bottom-up via Spark's
+          // ReuseExchangeAndSubquery) puts it on the filter. Either way the subquery
+          // executes once.
+          val allReused = collectWithSubqueries(cometPlan) { case p: SparkPlan =>
+            p.expressions.flatMap(_.collect {
+              case s: ScalarSubquery if s.plan.isInstanceOf[ReusedSubqueryExec] => s
+            })
+          }.flatten
+          assert(
+            allReused.nonEmpty,
+            s"Expected at least one ReusedSubqueryExec in plan (AQE=$aqeEnabled)")
+
+          if (aqeEnabled) {
+            assert(
+              scalarSubqueries.head.plan.isInstanceOf[ReusedSubqueryExec],
+              "Expected ReusedSubqueryExec on scan's ScalarSubquery (AQE=true) " +
+                s"but got ${scalarSubqueries.head.plan.getClass.getSimpleName}")
+          }
         }
       }
     }
