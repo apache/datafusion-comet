@@ -351,6 +351,7 @@ jobs:
           - name: "sql"
             value: |
               org.apache.spark.sql.CometToPrettyStringSuite
+              org.apache.spark.sql.CometCollationSuite
       fail-fast: false
     name: ${{ matrix.profile.name }}/${{ matrix.profile.scan_impl }} [${{ matrix.suite.name }}]
     runs-on: ${{ github.repository_owner == 'apache' && format('runs-on={0},family=m8a+m7a+c8a,cpu=16,image=ubuntu24-full-x64,extras=s3-cache,disk=large,tag=datafusion-comet', github.run_id) || 'ubuntu-latest' }}
