@@ -547,9 +547,8 @@ object CometDateFormat extends CometExpressionSerde[DateFormatClass] {
 
   override def getUnsupportedReasons(): Seq[String] = Seq(
     "Only the following formats are supported:" +
-      supportedFormats.toSeq
-        .sortBy(_._1)
-        .map { case (k, v) => s"`$k` -> `$v`" }
+      supportedFormats.keys.toSeq.sorted
+        .map(k => s"`$k`")
         .mkString("\n  - ", "\n  - ", ""))
 
   override def getSupportLevel(expr: DateFormatClass): SupportLevel = {
