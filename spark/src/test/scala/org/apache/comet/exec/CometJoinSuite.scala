@@ -190,8 +190,8 @@ class CometJoinSuite extends CometTestBase {
           val df8 = left.join(right, left("_2") === right("_1"), "leftsemi")
           checkSparkAnswerAndOperator(df8)
 
-          // DataFusion HashJoin LeftAnti has bugs in handling nulls and is disabled for now.
-          // left.join(right, left("_2") === right("_1"), "leftanti")
+          val df9 = left.join(right, left("_2") === right("_1"), "leftanti")
+          checkSparkAnswerAndOperator(df9)
         }
       }
     }

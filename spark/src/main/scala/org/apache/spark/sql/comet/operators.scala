@@ -1710,20 +1710,10 @@ trait CometHashJoin {
       return None
     }
 
-    // Null-aware anti-join is only supported for BroadcastHashJoinExec.
-    // For ShuffledHashJoinExec, BuildRight+LeftAnti is a regular anti-join which
-    // does not have the NOT IN null semantics so it remains unsupported.
+    // Only BroadcastHashJoinExec can be null-aware (NOT IN subqueries).
     val isNullAwareAntiJoin = join match {
       case bhj: BroadcastHashJoinExec => bhj.isNullAwareAntiJoin
       case _ => false
-    }
-
-    if (join.buildSide == BuildRight && join.joinType == LeftAnti && !isNullAwareAntiJoin) {
-      withInfo(
-        join,
-        "BuildRight with LeftAnti is not supported " +
-          "(use null-aware anti-join via NOT IN)")
-      return None
     }
 
     val joinKeys = join.leftKeys ++ join.rightKeys
@@ -1731,6 +1721,7 @@ trait CometHashJoin {
       withInfo(join, "unsupported non-default collated string join keys")
       return None
     }
+
 
     val condition = join.condition.map { cond =>
       val condProto = exprToProto(cond, join.left.output ++ join.right.output)
