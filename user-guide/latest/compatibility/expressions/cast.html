@@ -512,6 +512,14 @@ suffixes (e.g. <code class="docutils literal notranslate"><span class="pre">Euro
 (-290308 to 294247). Note that <code class="docutils literal notranslate"><span class="pre">CAST(string</span> <span class="pre">AS</span> <span class="pre">DATE)</span></code> is only compatible for years between
 262143 BC and 262142 AD due to an underlying library limitation.</p>
 </section>
+<section id="string-to-timestampntz">
+<h2>String to TimestampNTZ<a class="headerlink" href="#string-to-timestampntz" title="Link to this heading">#</a></h2>
+<p>Comet’s native <code class="docutils literal notranslate"><span class="pre">CAST(string</span> <span class="pre">AS</span> <span class="pre">TIMESTAMP_NTZ)</span></code> implementation matches Apache Spark’s behavior.
+Unlike <code class="docutils literal notranslate"><span class="pre">CAST(string</span> <span class="pre">AS</span> <span class="pre">TIMESTAMP)</span></code>, this cast is timezone-independent: any timezone offset in
+the input string (e.g. <code class="docutils literal notranslate"><span class="pre">+08:00</span></code>, <code class="docutils literal notranslate"><span class="pre">Z</span></code>, <code class="docutils literal notranslate"><span class="pre">UTC</span></code>) is silently discarded, and the local date-time
+components are preserved as-is. Time-only strings (e.g. <code class="docutils literal notranslate"><span class="pre">T12:34:56</span></code>, <code class="docutils literal notranslate"><span class="pre">12:34</span></code>) produce <code class="docutils literal notranslate"><span class="pre">NULL</span></code>.
+The result is always a wall-clock timestamp with no timezone conversion or DST adjustment.</p>
+</section>
 <section id="decimal-with-negative-scale-to-string">
 <h2>Decimal with Negative Scale to String<a class="headerlink" href="#decimal-with-negative-scale-to-string" title="Link to this heading">#</a></h2>
 <p>Casting a <code class="docutils literal notranslate"><span class="pre">DecimalType</span></code> with a negative scale to <code class="docutils literal notranslate"><span class="pre">StringType</span></code> is marked as incompatible when
@@ -709,7 +717,7 @@ as <code class="docutils literal notranslate"><span class="pre">&quot;1.23E+4&qu
 <td><p>C</p></td>
 <td><p>-</p></td>
 <td><p>C</p></td>
-<td><p>I</p></td>
+<td><p>C</p></td>
 </tr>
 <tr class="row-odd"><td><p>timestamp</p></td>
 <td><p>N/A</p></td>
@@ -751,7 +759,6 @@ as <code class="docutils literal notranslate"><span class="pre">&quot;1.23E+4&qu
 <li><p><strong>float -&gt; decimal</strong>: There can be rounding differences</p></li>
 <li><p><strong>float -&gt; string</strong>: There can be differences in precision. For example, the input “1.4E-45” will produce 1.0E-45 instead of 1.4E-45</p></li>
 <li><p><strong>string -&gt; date</strong>: Only supports years between 262143 BC and 262142 AD</p></li>
-<li><p><strong>string -&gt; timestamp_ntz</strong>: Cast from String to TimestampNTZ is not yet supported</p></li>
 </ul>
 <!-- prettier-ignore-end -->
 <!--END:CAST_LEGACY_TABLE-->
@@ -942,7 +949,7 @@ as <code class="docutils literal notranslate"><span class="pre">&quot;1.23E+4&qu
 <td><p>C</p></td>
 <td><p>-</p></td>
 <td><p>C</p></td>
-<td><p>I</p></td>
+<td><p>C</p></td>
 </tr>
 <tr class="row-odd"><td><p>timestamp</p></td>
 <td><p>N/A</p></td>
@@ -984,7 +991,6 @@ as <code class="docutils literal notranslate"><span class="pre">&quot;1.23E+4&qu
 <li><p><strong>float -&gt; decimal</strong>: There can be rounding differences</p></li>
 <li><p><strong>float -&gt; string</strong>: There can be differences in precision. For example, the input “1.4E-45” will produce 1.0E-45 instead of 1.4E-45</p></li>
 <li><p><strong>string -&gt; date</strong>: Only supports years between 262143 BC and 262142 AD</p></li>
-<li><p><strong>string -&gt; timestamp_ntz</strong>: Cast from String to TimestampNTZ is not yet supported</p></li>
 </ul>
 <!-- prettier-ignore-end -->
 <!--END:CAST_TRY_TABLE-->
@@ -1175,7 +1181,7 @@ as <code class="docutils literal notranslate"><span class="pre">&quot;1.23E+4&qu
 <td><p>C</p></td>
 <td><p>-</p></td>
 <td><p>C</p></td>
-<td><p>I</p></td>
+<td><p>C</p></td>
 </tr>
 <tr class="row-odd"><td><p>timestamp</p></td>
 <td><p>N/A</p></td>
@@ -1217,7 +1223,6 @@ as <code class="docutils literal notranslate"><span class="pre">&quot;1.23E+4&qu
 <li><p><strong>float -&gt; decimal</strong>: There can be rounding differences</p></li>
 <li><p><strong>float -&gt; string</strong>: There can be differences in precision. For example, the input “1.4E-45” will produce 1.0E-45 instead of 1.4E-45</p></li>
 <li><p><strong>string -&gt; date</strong>: Only supports years between 262143 BC and 262142 AD</p></li>
-<li><p><strong>string -&gt; timestamp_ntz</strong>: Cast from String to TimestampNTZ is not yet supported</p></li>
 </ul>
 <!-- prettier-ignore-end -->
 <!--END:CAST_ANSI_TABLE-->
