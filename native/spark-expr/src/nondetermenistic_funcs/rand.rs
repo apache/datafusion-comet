@@ -23,7 +23,6 @@ use arrow::datatypes::{DataType, Schema};
 use datafusion::common::Result;
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::physical_expr::PhysicalExpr;
-use std::any::Any;
 use std::fmt::{Display, Formatter};
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
@@ -120,10 +119,6 @@ impl Hash for RandExpr {
 }
 
 impl PhysicalExpr for RandExpr {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn data_type(&self, _input_schema: &Schema) -> Result<DataType> {
         Ok(DataType::Float64)
     }

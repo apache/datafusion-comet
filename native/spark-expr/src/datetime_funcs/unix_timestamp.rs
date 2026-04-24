@@ -24,7 +24,7 @@ use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };
 use num::integer::div_floor;
-use std::{any::Any, fmt::Debug, sync::Arc};
+use std::{fmt::Debug, sync::Arc};
 
 const MICROS_PER_SECOND: i64 = 1_000_000;
 
@@ -46,10 +46,6 @@ impl SparkUnixTimestamp {
 }
 
 impl ScalarUDFImpl for SparkUnixTimestamp {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn name(&self) -> &str {
         "unix_timestamp"
     }

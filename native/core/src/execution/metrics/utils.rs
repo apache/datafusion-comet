@@ -68,9 +68,13 @@ pub(crate) fn to_native_metric_node(
         Some(metrics.aggregate_by_name())
     };
 
-    // add metrics
+    // Aggregate metrics by name using DataFusion's aggregate_by_name(), which
+    // correctly handles duplicate metric names (e.g. BaselineMetrics registered
+    // by both FileStream and ParquetMorselizer on the same ExecutionPlanMetricsSet).
+    // The additional_native_plans branch below already does this.
     node_metrics
         .unwrap_or_default()
+        .aggregate_by_name()
         .iter()
         .map(|m| m.value())
         .map(|m| (m.name(), m.as_usize() as i64))

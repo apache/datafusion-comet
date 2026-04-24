@@ -77,10 +77,6 @@ impl Hash for CheckedBinaryExpr {
 }
 
 impl PhysicalExpr for CheckedBinaryExpr {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn fmt_sql(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         self.child.fmt_sql(f)
     }

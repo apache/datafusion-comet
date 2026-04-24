@@ -17,7 +17,7 @@
 
 use arrow::compute::{and, filter, is_not_null};
 
-use std::{any::Any, sync::Arc};
+use std::sync::Arc;
 
 use crate::agg_funcs::covariance::CovarianceAccumulator;
 use crate::agg_funcs::stddev::StddevAccumulator;
@@ -28,7 +28,6 @@ use arrow::{
 };
 use datafusion::common::{Result, ScalarValue};
 use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
-use datafusion::logical_expr::type_coercion::aggregates::NUMERICS;
 use datafusion::logical_expr::{Accumulator, AggregateUDFImpl, Signature, Volatility};
 use datafusion::physical_expr::expressions::format_state_name;
 use datafusion::physical_expr::expressions::StatsType;
@@ -51,18 +50,16 @@ impl Correlation {
         assert!(matches!(data_type, DataType::Float64));
         Self {
             name: name.into(),
-            signature: Signature::uniform(2, NUMERICS.to_vec(), Volatility::Immutable),
+            signature: Signature::exact(
+                vec![DataType::Float64, DataType::Float64],
+                Volatility::Immutable,
+            ),
             null_on_divide_by_zero,
         }
     }
 }
 
 impl AggregateUDFImpl for Correlation {
-    /// Return a reference to Any that can be used for downcasting
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn name(&self) -> &str {
         &self.name
     }

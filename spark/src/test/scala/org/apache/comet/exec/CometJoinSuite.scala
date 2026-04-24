@@ -443,4 +443,40 @@ class CometJoinSuite extends CometTestBase {
       }
     }
   }
+
+  // Reproducer for SPARK-43113: full outer SMJ with a join filter that references
+  // a nullable column should not match when the filter evaluates to NULL.
+  test("SPARK-43113: Full outer SMJ with NULL in join filter") {
+    withTempView("l", "r") {
+      // testData2: (a, b) — all non-null
+      Seq((1, 1), (1, 2), (2, 1), (2, 2), (3, 1), (3, 2))
+        .toDF("a", "b")
+        .createOrReplaceTempView("l")
+
+      // testData3: (a, b) — b is nullable
+      Seq((1, None), (2, Some(2)))
+        .toDF("a", "b")
+        .createOrReplaceTempView("r")
+
+      val query =
+        """select /*+ MERGE(r) */ *
+          |from l
+          |full outer join r
+          |on l.a = r.a
+          |and l.b < (r.b + 1)
+          |and l.b < (r.a + 1)""".stripMargin
+
+      val expected = Seq(
+        (Some(1), Some(1), None, None),
+        (Some(1), Some(2), None, None),
+        (None, None, Some(1), None),
+        (Some(2), Some(1), Some(2), Some(2)),
+        (Some(2), Some(2), Some(2), Some(2)),
+        (Some(3), Some(1), None, None),
+        (Some(3), Some(2), None, None)).toDF("a", "b", "a", "b")
+
+      val df = sql(query)
+      checkAnswer(df, expected)
+    }
+  }
 }

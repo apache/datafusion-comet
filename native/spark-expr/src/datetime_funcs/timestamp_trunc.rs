@@ -23,7 +23,6 @@ use datafusion::logical_expr::ColumnarValue;
 use datafusion::physical_expr::PhysicalExpr;
 use std::hash::Hash;
 use std::{
-    any::Any,
     fmt::{Debug, Display, Formatter},
     sync::Arc,
 };
@@ -85,10 +84,6 @@ impl Display for TimestampTruncExpr {
 }
 
 impl PhysicalExpr for TimestampTruncExpr {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn fmt_sql(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         Display::fmt(self, f)
     }
