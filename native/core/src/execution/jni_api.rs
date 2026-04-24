@@ -987,7 +987,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative
                     _ => CompressionCodec::Lz4Frame,
                 };
 
-                let (written_bytes, checksum) = process_sorted_row_partition(
+                let (written_bytes, checksum, encode_nanos) = process_sorted_row_partition(
                     row_num,
                     batch_size as usize,
                     row_addresses_ptr,
@@ -1009,8 +1009,9 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative
                     i64::MIN
                 };
 
-                let long_array = env.new_long_array(2)?;
-                long_array.set_region(env, 0, &[written_bytes, checksum])?;
+                // results[0] = bytes written, results[1] = checksum, results[2] = encode nanos
+                let long_array = env.new_long_array(3)?;
+                long_array.set_region(env, 0, &[written_bytes, checksum, encode_nanos])?;
 
                 Ok(long_array.into_raw())
             },

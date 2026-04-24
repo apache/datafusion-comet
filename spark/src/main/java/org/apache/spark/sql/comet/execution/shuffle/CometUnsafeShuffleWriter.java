@@ -67,6 +67,7 @@ import org.apache.spark.shuffle.sort.CometShuffleExternalSorter;
 import org.apache.spark.shuffle.sort.SortShuffleManager;
 import org.apache.spark.shuffle.sort.UnsafeShuffleWriter;
 import org.apache.spark.sql.catalyst.expressions.UnsafeRow;
+import org.apache.spark.sql.execution.metric.SQLMetric;
 import org.apache.spark.sql.types.StructType;
 import org.apache.spark.storage.BlockManager;
 import org.apache.spark.storage.TimeTrackingOutputStream;
@@ -131,6 +132,9 @@ public class CometUnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
   private CometShuffleMemoryAllocatorTrait allocator;
   private boolean tracingEnabled;
 
+  /** SQLMetric for encode + compression time; null when not available. */
+  @Nullable private final SQLMetric encodeTimeMetric;
+
   /**
    * Are we in the process of stopping? Because map tasks can call stop() with success = true and
    * then call stop() with success = false if they get an exception, we want to make sure we don't
@@ -146,7 +150,8 @@ public class CometUnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
       TaskContext taskContext,
       SparkConf sparkConf,
       ShuffleWriteMetricsReporter writeMetrics,
-      ShuffleExecutorComponents shuffleExecutorComponents) {
+      ShuffleExecutorComponents shuffleExecutorComponents,
+      @Nullable SQLMetric encodeTimeMetric) {
     final int numPartitions = handle.dependency().partitioner().numPartitions();
     if (numPartitions > SortShuffleManager.MAX_SHUFFLE_OUTPUT_PARTITIONS_FOR_SERIALIZED_MODE()) {
       throw new IllegalArgumentException(
@@ -172,6 +177,7 @@ public class CometUnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
     this.inputBufferSizeInBytes =
         (int) (long) sparkConf.get(package$.MODULE$.SHUFFLE_FILE_BUFFER_SIZE()) * 1024;
     this.tracingEnabled = (boolean) CometConf.COMET_TRACING_ENABLED().get();
+    this.encodeTimeMetric = encodeTimeMetric;
     open();
   }
 
@@ -278,6 +284,8 @@ public class CometUnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
     serBuffer = null;
     serOutputStream = null;
     final SpillInfo[] spills = sorter.closeAndGetSpills();
+    // Capture encode nanos before sorter is set to null
+    final long encodeNanos = sorter.getEncodeNanos();
     try {
       partitionLengths = mergeSpills(spills);
     } finally {
@@ -287,6 +295,9 @@ public class CometUnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
           logger.error("Error while deleting spill file {}", spill.file.getPath());
         }
       }
+    }
+    if (encodeTimeMetric != null) {
+      encodeTimeMetric.add(encodeNanos);
     }
     mapStatus = MapStatus$.MODULE$.apply(blockManager.shuffleServerId(), partitionLengths, mapId);
   }
