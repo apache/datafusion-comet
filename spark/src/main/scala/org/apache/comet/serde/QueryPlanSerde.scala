@@ -46,7 +46,7 @@ import org.apache.comet.shims.CometExprShim
  */
 object QueryPlanSerde extends Logging with CometExprShim {
 
-  private val arrayExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
+  private[comet] val arrayExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     classOf[ArrayAppend] -> CometArrayAppend,
     classOf[ArrayCompact] -> CometArrayCompact,
     classOf[ArrayContains] -> CometArrayContains,
@@ -89,7 +89,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[Not] -> CometNot,
     classOf[Or] -> CometOr)
 
-  private val mathExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
+  private[comet] val mathExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     classOf[Acos] -> CometScalarFunction("acos"),
     classOf[Add] -> CometAdd,
     classOf[Asin] -> CometScalarFunction("asin"),
@@ -137,13 +137,14 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[MapContainsKey] -> CometMapContainsKey,
     classOf[MapFromEntries] -> CometMapFromEntries)
 
-  private val structExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
-    classOf[CreateNamedStruct] -> CometCreateNamedStruct,
-    classOf[GetArrayStructFields] -> CometGetArrayStructFields,
-    classOf[GetStructField] -> CometGetStructField,
-    classOf[JsonToStructs] -> CometJsonToStructs,
-    classOf[StructsToJson] -> CometStructsToJson,
-    classOf[StructsToCsv] -> CometStructsToCsv)
+  private[comet] val structExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
+    Map(
+      classOf[CreateNamedStruct] -> CometCreateNamedStruct,
+      classOf[GetArrayStructFields] -> CometGetArrayStructFields,
+      classOf[GetStructField] -> CometGetStructField,
+      classOf[JsonToStructs] -> CometJsonToStructs,
+      classOf[StructsToJson] -> CometStructsToJson,
+      classOf[StructsToCsv] -> CometStructsToCsv)
 
   private val hashExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     classOf[Crc32] -> CometScalarFunction("crc32"),
@@ -153,40 +154,41 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[XxHash64] -> CometXxHash64,
     classOf[Sha1] -> CometSha1)
 
-  private val stringExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
-    classOf[Ascii] -> CometScalarFunction("ascii"),
-    classOf[BitLength] -> CometScalarFunction("bit_length"),
-    classOf[Chr] -> CometScalarFunction("char"),
-    classOf[ConcatWs] -> CometConcatWs,
-    classOf[Concat] -> CometConcat,
-    classOf[Contains] -> CometScalarFunction("contains"),
-    classOf[EndsWith] -> CometScalarFunction("ends_with"),
-    classOf[GetJsonObject] -> CometGetJsonObject,
-    classOf[InitCap] -> CometInitCap,
-    classOf[Length] -> CometLength,
-    classOf[Like] -> CometLike,
-    classOf[Lower] -> CometLower,
-    classOf[OctetLength] -> CometScalarFunction("octet_length"),
-    classOf[RegExpReplace] -> CometRegExpReplace,
-    classOf[Reverse] -> CometReverse,
-    classOf[RLike] -> CometRLike,
-    classOf[StartsWith] -> CometScalarFunction("starts_with"),
-    classOf[StringInstr] -> CometScalarFunction("instr"),
-    classOf[StringRepeat] -> CometStringRepeat,
-    classOf[StringReplace] -> CometScalarFunction("replace"),
-    classOf[StringRPad] -> CometStringRPad,
-    classOf[StringLPad] -> CometStringLPad,
-    classOf[StringSpace] -> CometScalarFunction("space"),
-    classOf[StringSplit] -> CometStringSplit,
-    classOf[StringTranslate] -> CometScalarFunction("translate"),
-    classOf[StringTrim] -> CometScalarFunction("trim"),
-    classOf[StringTrimBoth] -> CometScalarFunction("btrim"),
-    classOf[StringTrimLeft] -> CometScalarFunction("ltrim"),
-    classOf[StringTrimRight] -> CometScalarFunction("rtrim"),
-    classOf[Left] -> CometLeft,
-    classOf[Right] -> CometRight,
-    classOf[Substring] -> CometSubstring,
-    classOf[Upper] -> CometUpper)
+  private[comet] val stringExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
+    Map(
+      classOf[Ascii] -> CometScalarFunction("ascii"),
+      classOf[BitLength] -> CometScalarFunction("bit_length"),
+      classOf[Chr] -> CometScalarFunction("char"),
+      classOf[ConcatWs] -> CometConcatWs,
+      classOf[Concat] -> CometConcat,
+      classOf[Contains] -> CometScalarFunction("contains"),
+      classOf[EndsWith] -> CometScalarFunction("ends_with"),
+      classOf[GetJsonObject] -> CometGetJsonObject,
+      classOf[InitCap] -> CometInitCap,
+      classOf[Length] -> CometLength,
+      classOf[Like] -> CometLike,
+      classOf[Lower] -> CometLower,
+      classOf[OctetLength] -> CometScalarFunction("octet_length"),
+      classOf[RegExpReplace] -> CometRegExpReplace,
+      classOf[Reverse] -> CometReverse,
+      classOf[RLike] -> CometRLike,
+      classOf[StartsWith] -> CometScalarFunction("starts_with"),
+      classOf[StringInstr] -> CometScalarFunction("instr"),
+      classOf[StringRepeat] -> CometStringRepeat,
+      classOf[StringReplace] -> CometScalarFunction("replace"),
+      classOf[StringRPad] -> CometStringRPad,
+      classOf[StringLPad] -> CometStringLPad,
+      classOf[StringSpace] -> CometScalarFunction("space"),
+      classOf[StringSplit] -> CometStringSplit,
+      classOf[StringTranslate] -> CometScalarFunction("translate"),
+      classOf[StringTrim] -> CometScalarFunction("trim"),
+      classOf[StringTrimBoth] -> CometScalarFunction("btrim"),
+      classOf[StringTrimLeft] -> CometScalarFunction("ltrim"),
+      classOf[StringTrimRight] -> CometScalarFunction("rtrim"),
+      classOf[Left] -> CometLeft,
+      classOf[Right] -> CometRight,
+      classOf[Substring] -> CometSubstring,
+      classOf[Upper] -> CometUpper)
 
   private val bitwiseExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     classOf[BitwiseAnd] -> CometBitwiseAnd,
@@ -198,33 +200,34 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[ShiftLeft] -> CometShiftLeft,
     classOf[ShiftRight] -> CometShiftRight)
 
-  private val temporalExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
-    classOf[DateAdd] -> CometDateAdd,
-    classOf[DateDiff] -> CometDateDiff,
-    classOf[DateFormatClass] -> CometDateFormat,
-    classOf[DateFromUnixDate] -> CometDateFromUnixDate,
-    classOf[Days] -> CometDays,
-    classOf[Hours] -> CometHours,
-    classOf[DateSub] -> CometDateSub,
-    classOf[UnixDate] -> CometUnixDate,
-    classOf[FromUnixTime] -> CometFromUnixTime,
-    classOf[LastDay] -> CometLastDay,
-    classOf[Hour] -> CometHour,
-    classOf[MakeDate] -> CometMakeDate,
-    classOf[Minute] -> CometMinute,
-    classOf[NextDay] -> CometNextDay,
-    classOf[Second] -> CometSecond,
-    classOf[TruncDate] -> CometTruncDate,
-    classOf[TruncTimestamp] -> CometTruncTimestamp,
-    classOf[UnixTimestamp] -> CometUnixTimestamp,
-    classOf[Year] -> CometYear,
-    classOf[Month] -> CometMonth,
-    classOf[DayOfMonth] -> CometDayOfMonth,
-    classOf[DayOfWeek] -> CometDayOfWeek,
-    classOf[WeekDay] -> CometWeekDay,
-    classOf[DayOfYear] -> CometDayOfYear,
-    classOf[WeekOfYear] -> CometWeekOfYear,
-    classOf[Quarter] -> CometQuarter)
+  private[comet] val temporalExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
+    Map(
+      classOf[DateAdd] -> CometDateAdd,
+      classOf[DateDiff] -> CometDateDiff,
+      classOf[DateFormatClass] -> CometDateFormat,
+      classOf[DateFromUnixDate] -> CometDateFromUnixDate,
+      classOf[Days] -> CometDays,
+      classOf[Hours] -> CometHours,
+      classOf[DateSub] -> CometDateSub,
+      classOf[UnixDate] -> CometUnixDate,
+      classOf[FromUnixTime] -> CometFromUnixTime,
+      classOf[LastDay] -> CometLastDay,
+      classOf[Hour] -> CometHour,
+      classOf[MakeDate] -> CometMakeDate,
+      classOf[Minute] -> CometMinute,
+      classOf[NextDay] -> CometNextDay,
+      classOf[Second] -> CometSecond,
+      classOf[TruncDate] -> CometTruncDate,
+      classOf[TruncTimestamp] -> CometTruncTimestamp,
+      classOf[UnixTimestamp] -> CometUnixTimestamp,
+      classOf[Year] -> CometYear,
+      classOf[Month] -> CometMonth,
+      classOf[DayOfMonth] -> CometDayOfMonth,
+      classOf[DayOfWeek] -> CometDayOfWeek,
+      classOf[WeekDay] -> CometWeekDay,
+      classOf[DayOfYear] -> CometDayOfYear,
+      classOf[WeekOfYear] -> CometWeekOfYear,
+      classOf[Quarter] -> CometQuarter)
 
   private val conversionExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     classOf[Cast] -> CometCast)

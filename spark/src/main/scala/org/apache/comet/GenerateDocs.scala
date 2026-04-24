@@ -39,10 +39,48 @@ object GenerateDocs {
 
   private val publicConfigs: Set[ConfigEntry[_]] = CometConf.allConfs.filter(_.isPublic).toSet
 
+  /** (expression class simple name, incompatible reasons, unsupported reasons) */
+  private type CategoryNotes = Seq[(String, Seq[String], Seq[String])]
+
+  /**
+   * Mapping from expression category to the compatibility guide page where that category's
+   * auto-generated notes should be written, along with a function that produces the notes for
+   * that category from the serde maps in `QueryPlanSerde`.
+   */
+  private def categoryPages: Map[String, (String, () => CategoryNotes)] = Map(
+    "array" -> ("compatibility/expressions/array.md",
+    () =>
+      QueryPlanSerde.arrayExpressions.toSeq.map { case (cls, serde) =>
+        (cls.getSimpleName, serde.getIncompatibleReasons(), serde.getUnsupportedReasons())
+      }),
+    "datetime" -> ("compatibility/expressions/datetime.md",
+    () =>
+      QueryPlanSerde.temporalExpressions.toSeq.map { case (cls, serde) =>
+        (cls.getSimpleName, serde.getIncompatibleReasons(), serde.getUnsupportedReasons())
+      }),
+    "math" -> ("compatibility/expressions/math.md",
+    () =>
+      QueryPlanSerde.mathExpressions.toSeq.map { case (cls, serde) =>
+        (cls.getSimpleName, serde.getIncompatibleReasons(), serde.getUnsupportedReasons())
+      }),
+    "struct" -> ("compatibility/expressions/struct.md",
+    () =>
+      QueryPlanSerde.structExpressions.toSeq.map { case (cls, serde) =>
+        (cls.getSimpleName, serde.getIncompatibleReasons(), serde.getUnsupportedReasons())
+      }),
+    "aggregate" -> ("compatibility/expressions/aggregate.md",
+    () =>
+      QueryPlanSerde.aggrSerdeMap.toSeq.map { case (cls, serde) =>
+        (cls.getSimpleName, serde.getIncompatibleReasons(), serde.getUnsupportedReasons())
+      }))
+
   def main(args: Array[String]): Unit = {
     val userGuideLocation = args(0)
     generateConfigReference(s"$userGuideLocation/configs.md")
     generateCompatibilityGuide(s"$userGuideLocation/compatibility/expressions/cast.md")
+    for ((category, (page, notesFn)) <- categoryPages) {
+      generateExpressionCompatNotes(s"$userGuideLocation/$page", category, notesFn())
+    }
   }
 
   private def generateConfigReference(filename: String): Unit = {
@@ -119,6 +157,46 @@ object GenerateDocs {
       }
     }
     w.close()
+  }
+
+  private def generateExpressionCompatNotes(
+      filename: String,
+      category: String,
+      notes: CategoryNotes): Unit = {
+    val beginTag = s"<!--BEGIN:EXPR_COMPAT[$category]-->"
+    val lines = readFile(filename)
+    val w = new BufferedOutputStream(new FileOutputStream(filename))
+    for (line <- lines) {
+      w.write(s"${line.stripTrailing()}\n".getBytes)
+      if (line.trim == beginTag) {
+        writeExpressionCompatNotes(w, notes)
+      }
+    }
+    w.close()
+  }
+
+  private def writeExpressionCompatNotes(w: BufferedOutputStream, notes: CategoryNotes): Unit = {
+    val sorted = notes.sortBy(_._1).filter { case (_, incompat, unsupported) =>
+      incompat.nonEmpty || unsupported.nonEmpty
+    }
+    for ((name, incompat, unsupported) <- sorted) {
+      w.write(s"\n### $name\n".getBytes)
+      if (incompat.nonEmpty) {
+        w.write(
+          (s"\nThe following incompatibilities cause `$name` to fall back to Spark by default." +
+            s" Set `spark.comet.expression.$name.allowIncompatible=true` to enable Comet" +
+            " acceleration despite these differences.\n\n").getBytes)
+        for (reason <- incompat) {
+          w.write(s"- $reason\n".getBytes)
+        }
+      }
+      if (unsupported.nonEmpty) {
+        w.write("\nThe following cases are not supported by Comet:\n\n".getBytes)
+        for (reason <- unsupported) {
+          w.write(s"- $reason\n".getBytes)
+        }
+      }
+    }
   }
 
   private def writeCastMatrixForMode(w: BufferedOutputStream, mode: CometEvalMode.Value): Unit = {
