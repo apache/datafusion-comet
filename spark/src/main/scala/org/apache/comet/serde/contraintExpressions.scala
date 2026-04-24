@@ -28,6 +28,9 @@ import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithIn
 object CometKnownFloatingPointNormalized
     extends CometExpressionSerde[KnownFloatingPointNormalized] {
 
+  override def getUnsupportedReasons(): Seq[String] = Seq(
+    "Only supports `NormalizeNaNAndZero` child expressions")
+
   override def getSupportLevel(expr: KnownFloatingPointNormalized): SupportLevel = {
     expr.child match {
       case _: NormalizeNaNAndZero => Compatible()

@@ -57,8 +57,6 @@ object CometArrayRemove
 
 object CometArrayAppend extends CometExpressionSerde[ArrayAppend] {
 
-  override def getSupportLevel(expr: ArrayAppend): SupportLevel = Compatible()
-
   override def convert(
       expr: ArrayAppend,
       inputs: Seq[Attribute],
@@ -122,6 +120,10 @@ object CometArrayContains extends CometExpressionSerde[ArrayContains] {
 }
 
 object CometSortArray extends CometExpressionSerde[SortArray] {
+
+  override def getIncompatibleReasons(): Seq[String] = Seq(
+    "When `" + CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key + "=true`, sorting on" +
+      " floating-point types is not 100% compatible with Spark")
 
   override def getUnsupportedReasons(): Seq[String] = Seq(
     "Nested arrays with `Struct` or `Null` child values are not supported natively and will" +
@@ -190,6 +192,9 @@ object CometSortArray extends CometExpressionSerde[SortArray] {
 }
 
 object CometArrayIntersect extends CometExpressionSerde[ArrayIntersect] {
+
+  override def getIncompatibleReasons(): Seq[String] = Seq(
+    "Null handling and ordering may differ from Spark")
 
   override def getSupportLevel(expr: ArrayIntersect): SupportLevel = Incompatible(None)
 
@@ -314,6 +319,9 @@ object CometArrayCompact extends CometExpressionSerde[Expression] {
 
 object CometArrayExcept extends CometExpressionSerde[ArrayExcept] with CometExprShim {
 
+  override def getIncompatibleReasons(): Seq[String] = Seq(
+    "Null handling and ordering may differ from Spark")
+
   override def getSupportLevel(expr: ArrayExcept): SupportLevel = Incompatible(None)
 
   @tailrec
@@ -352,6 +360,8 @@ object CometArrayExcept extends CometExpressionSerde[ArrayExcept] with CometExpr
 }
 
 object CometArrayJoin extends CometExpressionSerde[ArrayJoin] {
+
+  override def getIncompatibleReasons(): Seq[String] = Seq("Null handling may differ from Spark")
 
   override def getSupportLevel(expr: ArrayJoin): SupportLevel = Incompatible(None)
 
@@ -498,6 +508,8 @@ object CometGetArrayItem extends CometExpressionSerde[GetArrayItem] {
 object CometArrayReverse extends CometExpressionSerde[Reverse] with ArraysBase {
   val unsupportedReason = "reverse on array containing binary is not supported"
 
+  override def getIncompatibleReasons(): Seq[String] = Seq(unsupportedReason)
+
   @tailrec
   private def containsBinary(dt: DataType): Boolean = {
     dt match {
@@ -531,6 +543,9 @@ object CometArrayReverse extends CometExpressionSerde[Reverse] with ArraysBase {
 }
 
 object CometElementAt extends CometExpressionSerde[ElementAt] {
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(
+    "Input must be an array. `Map` inputs are not supported.")
 
   override def convert(
       expr: ElementAt,
@@ -589,6 +604,9 @@ object CometFlatten extends CometExpressionSerde[Flatten] with ArraysBase {
 
 object CometArrayFilter extends CometExpressionSerde[ArrayFilter] {
 
+  override def getUnsupportedReasons(): Seq[String] = Seq(
+    "Only supports `array_filter` when the function is `IsNotNull` (used by `array_compact`)")
+
   override def getSupportLevel(expr: ArrayFilter): SupportLevel = {
     expr.function.children.headOption match {
       case Some(_: IsNotNull) => Compatible()
@@ -605,6 +623,9 @@ object CometArrayFilter extends CometExpressionSerde[ArrayFilter] {
 }
 
 object CometSize extends CometExpressionSerde[Size] {
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(
+    "Only supports `ArrayType` input; `MapType` input is not supported")
 
   override def getSupportLevel(expr: Size): SupportLevel = {
     expr.child.dataType match {
@@ -691,6 +712,9 @@ object CometArrayPosition extends CometExpressionSerde[ArrayPosition] with Array
 }
 
 object CometArraysZip extends CometExpressionSerde[ArraysZip] {
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(
+    "Not all input data types are supported; falls back to Spark for unsupported types")
 
   private def isTypeSupported(dt: DataType): Boolean = {
     import DataTypes._
