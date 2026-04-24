@@ -1688,6 +1688,17 @@ impl PhysicalPlanner {
                 let left = Arc::clone(&join_params.left.native_plan);
                 let right = Arc::clone(&join_params.right.native_plan);
 
+                // Null-aware anti-join must run in CollectLeft mode. In Partitioned mode
+                // each partition only sees per-partition null/emptiness state, which can
+                // produce wrong NOT IN results across partitions. DataFusion's JoinSelection
+                // rewrites null-aware joins to CollectLeft for this reason, but Comet
+                // executes the physical plan directly so we must pick the mode here.
+                let partition_mode = if join.null_aware_anti_join {
+                    PartitionMode::CollectLeft
+                } else {
+                    PartitionMode::Partitioned
+                };
+
                 let hash_join = Arc::new(HashJoinExec::try_new(
                     left,
                     right,
@@ -1695,7 +1706,7 @@ impl PhysicalPlanner {
                     join_params.join_filter,
                     &join_params.join_type,
                     None,
-                    PartitionMode::Partitioned,
+                    partition_mode,
                     // null doesn't equal to null in Spark join key. If the join key is
                     // `EqualNullSafe`, Spark will rewrite it during planning.
                     NullEquality::NullEqualsNothing,
