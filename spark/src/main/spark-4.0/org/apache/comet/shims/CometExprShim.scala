@@ -57,7 +57,7 @@ trait CometExprShim extends CommonStringExprs {
     expr match {
       case knc: KnownNotContainsNull =>
         // On Spark 4.0, array_compact rewrites to KnownNotContainsNull(ArrayFilter(IsNotNull)).
-        // Strip the wrapper and serialize the inner ArrayFilter as array_remove_all.
+        // Strip the wrapper and serialize the inner ArrayFilter as spark_array_compact.
         knc.child match {
           case filter: ArrayFilter =>
             filter.function.children.headOption match {
@@ -65,22 +65,16 @@ trait CometExprShim extends CommonStringExprs {
                 val arrayChild = filter.left
                 val elementType = arrayChild.dataType.asInstanceOf[ArrayType].elementType
                 val arrayExprProto = exprToProtoInternal(arrayChild, inputs, binding)
-                val nullLiteralProto =
-                  exprToProtoInternal(Literal(null, elementType), Seq.empty, false)
-                // Pass containsNull=true because DataFusion's array_remove_all always returns
-                // a list type with nullable elements; knc.dataType has containsNull=false
-                // which would cause a runtime type-mismatch assertion in DataFusion.
-                val returnType = ArrayType(elementType, containsNull = true)
+                val returnType = ArrayType(elementType)
                 val scalarExpr = scalarFunctionExprToProtoWithReturnType(
-                  "array_remove_all",
+                  "spark_array_compact",
                   returnType,
                   false,
-                  arrayExprProto,
-                  nullLiteralProto)
+                  arrayExprProto)
                 optExprWithInfo(scalarExpr, knc, arrayChild)
-              case _ => None
+              case _ => exprToProtoInternal(knc.child, inputs, binding)
             }
-          case _ => None
+          case _ => exprToProtoInternal(knc.child, inputs, binding)
         }
 
       case s: StaticInvoke
@@ -135,12 +129,6 @@ trait CometExprShim extends CommonStringExprs {
         val childExprs = wb.children.map(exprToProtoInternal(_, inputs, binding))
         val optExpr = scalarFunctionExprToProto("width_bucket", childExprs: _*)
         optExprWithInfo(optExpr, wb, wb.children: _*)
-
-      // KnownNotContainsNull is a TaggingExpression added in Spark 4.0 that only
-      // changes schema metadata (containsNull = false). It has no runtime effect,
-      // so we pass through to the child expression.
-      case k: KnownNotContainsNull =>
-        exprToProtoInternal(k.child, inputs, binding)
 
       case _ => None
     }
