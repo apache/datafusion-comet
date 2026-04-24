@@ -556,6 +556,27 @@ fn naive_to_micros(dt: NaiveDateTime) -> i64 {
     dt.and_utc().timestamp_micros()
 }
 
+/// Resolve a truncation format string to the corresponding NaiveDateTime truncation function.
+fn ntz_trunc_fn_for_format(
+    format: &str,
+) -> Result<fn(NaiveDateTime) -> Option<NaiveDateTime>, SparkError> {
+    match format.to_uppercase().as_str() {
+        "YEAR" | "YYYY" | "YY" => Ok(trunc_date_to_year),
+        "QUARTER" => Ok(trunc_date_to_quarter),
+        "MONTH" | "MON" | "MM" => Ok(trunc_date_to_month),
+        "WEEK" => Ok(trunc_date_to_week),
+        "DAY" | "DD" => Ok(trunc_date_to_day),
+        "HOUR" => Ok(trunc_date_to_hour),
+        "MINUTE" => Ok(trunc_date_to_minute),
+        "SECOND" => Ok(trunc_date_to_second),
+        "MILLISECOND" => Ok(trunc_date_to_ms),
+        "MICROSECOND" => Ok(trunc_date_to_microsec),
+        _ => Err(SparkError::Internal(format!(
+            "Unsupported format: {format:?} for function 'timestamp_trunc'"
+        ))),
+    }
+}
+
 /// Truncate a TimestampNTZ array without any timezone conversion.
 /// NTZ values are timezone-independent; we treat the raw microseconds as a naive datetime.
 fn timestamp_trunc_ntz<T>(
@@ -566,24 +587,7 @@ where
     T: ArrowTemporalType + ArrowNumericType,
     i64: From<T::Native>,
 {
-    let trunc_fn: fn(NaiveDateTime) -> Option<NaiveDateTime> = match format.to_uppercase().as_str()
-    {
-        "YEAR" | "YYYY" | "YY" => trunc_date_to_year,
-        "QUARTER" => trunc_date_to_quarter,
-        "MONTH" | "MON" | "MM" => trunc_date_to_month,
-        "WEEK" => trunc_date_to_week,
-        "DAY" | "DD" => trunc_date_to_day,
-        "HOUR" => trunc_date_to_hour,
-        "MINUTE" => trunc_date_to_minute,
-        "SECOND" => trunc_date_to_second,
-        "MILLISECOND" => trunc_date_to_ms,
-        "MICROSECOND" => trunc_date_to_microsec,
-        _ => {
-            return Err(SparkError::Internal(format!(
-                "Unsupported format: {format:?} for function 'timestamp_trunc'"
-            )))
-        }
-    };
+    let trunc_fn = ntz_trunc_fn_for_format(&format)?;
 
     let result: TimestampMicrosecondArray = array
         .iter()
@@ -789,53 +793,8 @@ macro_rules! timestamp_trunc_array_fmt_helper {
                 // TimestampNTZ: operate directly on naive microsecond values
                 for (index, val) in iter.enumerate() {
                     let micros_val = val.map(|v| i64::from(v));
-                    let op_result = match $formats.value(index).to_uppercase().as_str() {
-                        "YEAR" | "YYYY" | "YY" => {
-                            timestamp_trunc_ntz_single(micros_val, &mut builder, trunc_date_to_year)
-                        }
-                        "QUARTER" => timestamp_trunc_ntz_single(
-                            micros_val,
-                            &mut builder,
-                            trunc_date_to_quarter,
-                        ),
-                        "MONTH" | "MON" | "MM" => timestamp_trunc_ntz_single(
-                            micros_val,
-                            &mut builder,
-                            trunc_date_to_month,
-                        ),
-                        "WEEK" => {
-                            timestamp_trunc_ntz_single(micros_val, &mut builder, trunc_date_to_week)
-                        }
-                        "DAY" | "DD" => {
-                            timestamp_trunc_ntz_single(micros_val, &mut builder, trunc_date_to_day)
-                        }
-                        "HOUR" => {
-                            timestamp_trunc_ntz_single(micros_val, &mut builder, trunc_date_to_hour)
-                        }
-                        "MINUTE" => timestamp_trunc_ntz_single(
-                            micros_val,
-                            &mut builder,
-                            trunc_date_to_minute,
-                        ),
-                        "SECOND" => timestamp_trunc_ntz_single(
-                            micros_val,
-                            &mut builder,
-                            trunc_date_to_second,
-                        ),
-                        "MILLISECOND" => {
-                            timestamp_trunc_ntz_single(micros_val, &mut builder, trunc_date_to_ms)
-                        }
-                        "MICROSECOND" => timestamp_trunc_ntz_single(
-                            micros_val,
-                            &mut builder,
-                            trunc_date_to_microsec,
-                        ),
-                        _ => Err(SparkError::Internal(format!(
-                            "Unsupported format: {:?} for function 'timestamp_trunc'",
-                            $formats.value(index)
-                        ))),
-                    };
-                    op_result?
+                    let trunc_fn = ntz_trunc_fn_for_format($formats.value(index))?;
+                    timestamp_trunc_ntz_single(micros_val, &mut builder, trunc_fn)?;
                 }
                 Ok(builder.finish())
             }

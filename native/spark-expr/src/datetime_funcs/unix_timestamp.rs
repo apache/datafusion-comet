@@ -88,7 +88,7 @@ impl ScalarUDFImpl for SparkUnixTimestamp {
                         timestamp_array
                             .values()
                             .iter()
-                            .map(|&micros| micros / MICROS_PER_SECOND)
+                            .map(|&micros| div_floor(micros, MICROS_PER_SECOND))
                             .collect()
                     } else {
                         timestamp_array
@@ -120,7 +120,7 @@ impl ScalarUDFImpl for SparkUnixTimestamp {
                         timestamp_array
                             .values()
                             .iter()
-                            .map(|&micros| micros / MICROS_PER_SECOND)
+                            .map(|&micros| div_floor(micros, MICROS_PER_SECOND))
                             .collect()
                     } else {
                         timestamp_array
