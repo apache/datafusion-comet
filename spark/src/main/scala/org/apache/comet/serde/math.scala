@@ -164,13 +164,17 @@ object CometUnhex extends CometExpressionSerde[Unhex] with MathExprBase {
 
 object CometAbs extends CometExpressionSerde[Abs] with MathExprBase {
 
+  val unsupportedReason: String = "Only integral, floating-point, and decimal types are supported"
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(unsupportedReason)
+
   override def getSupportLevel(expr: Abs): SupportLevel = {
     expr.child.dataType match {
       case _: NumericType =>
         Compatible()
       case _ =>
         // Spark supports NumericType, DayTimeIntervalType, and YearMonthIntervalType
-        Unsupported(Some("Only integral, floating-point, and decimal types are supported"))
+        Unsupported(Some(unsupportedReason))
     }
   }
 
