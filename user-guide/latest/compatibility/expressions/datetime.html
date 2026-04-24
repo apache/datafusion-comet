@@ -65,7 +65,7 @@ under the License.
     <script async="true" defer="true" src="https://buttons.github.io/buttons.js"></script>
     <link rel="index" title="Index" href="../../../../genindex.html" />
     <link rel="search" title="Search" href="../../../../search.html" />
-    <link rel="next" title="Struct Expressions" href="struct.html" />
+    <link rel="next" title="Math Expressions" href="math.html" />
     <link rel="prev" title="Array Expressions" href="array.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
@@ -473,14 +473,59 @@ under the License.
 -->
 <section id="date-time-expressions">
 <h1>Date/Time Expressions<a class="headerlink" href="#date-time-expressions" title="Link to this heading">#</a></h1>
+<!--BEGIN:EXPR_COMPAT[datetime]-->
+<section id="dateformatclass">
+<h2>DateFormatClass<a class="headerlink" href="#dateformatclass" title="Link to this heading">#</a></h2>
+<p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">DateFormatClass</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.DateFormatClass.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
 <ul class="simple">
-<li><p><strong>Hour, Minute, Second</strong>: Incorrectly apply timezone conversion to TimestampNTZ inputs. TimestampNTZ stores local
-time without timezone, so no conversion should be applied. These expressions work correctly with Timestamp inputs.
-<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3180">#3180</a></p></li>
-<li><p><strong>TruncTimestamp (date_trunc)</strong>: Produces incorrect results when used with non-UTC timezones. Compatible when
-timezone is UTC.
-<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2649">#2649</a></p></li>
+<li><p>Non-UTC timezones may produce different results than Spark</p></li>
 </ul>
+<p>The following cases are not supported by Comet:</p>
+<ul class="simple">
+<li><p>Only the following formats are supported:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">EEE</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">EEEE</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">HH</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">HH:mm</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">HH:mm:ss</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">MM</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">MMM</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">MMMM</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">dd</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">h:mm</span> <span class="pre">a</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">hh:mm</span> <span class="pre">a</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">hh:mm:ss</span> <span class="pre">a</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">mm</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">ss</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">yy</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">yyyy</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">yyyy-MM-dd</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">yyyy-MM-dd</span> <span class="pre">HH:mm:ss</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">yyyy-MM-dd'T'HH:mm:ss</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">yyyy/MM/dd</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">yyyy/MM/dd</span> <span class="pre">HH:mm:ss</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">yyyyMM</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">yyyyMMdd</span></code></p></li>
+</ul>
+</li>
+</ul>
+</section>
+<section id="hour">
+<h2>Hour<a class="headerlink" href="#hour" title="Link to this heading">#</a></h2>
+<p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">Hour</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Hour.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
+<ul class="simple">
+<li><p>Incorrectly applies timezone conversion to TimestampNTZ inputs (https://github.com/apache/datafusion-comet/issues/3180)</p></li>
+</ul>
+</section>
+<section id="trunctimestamp">
+<h2>TruncTimestamp<a class="headerlink" href="#trunctimestamp" title="Link to this heading">#</a></h2>
+<p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">TruncTimestamp</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.TruncTimestamp.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
+<ul class="simple">
+<li><p>Produces incorrect results when used with non-UTC timezones. Compatible when timezone is UTC. (https://github.com/apache/datafusion-comet/issues/2649)</p></li>
+</ul>
+<!--END:EXPR_COMPAT-->
+</section>
 </section>
 
 
@@ -503,11 +548,11 @@ timezone is UTC.
       </div>
     </a>
     <a class="right-next"
-       href="struct.html"
+       href="math.html"
        title="next page">
       <div class="prev-next-info">
         <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">Struct Expressions</p>
+        <p class="prev-next-title">Math Expressions</p>
       </div>
       <i class="fa-solid fa-angle-right"></i>
     </a>

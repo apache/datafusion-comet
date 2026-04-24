@@ -27,7 +27,7 @@ under the License.
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Array Expressions &#8212; Apache DataFusion Comet  documentation</title>
+    <title>Math Expressions &#8212; Apache DataFusion Comet  documentation</title>
   
   
   
@@ -61,12 +61,12 @@ under the License.
     <script src="../../../../_static/documentation_options.js?v=5929fcd5"></script>
     <script src="../../../../_static/doctools.js?v=9a2dae69"></script>
     <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script>DOCUMENTATION_OPTIONS.pagename = 'user-guide/latest/compatibility/expressions/array';</script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'user-guide/latest/compatibility/expressions/math';</script>
     <script async="true" defer="true" src="https://buttons.github.io/buttons.js"></script>
     <link rel="index" title="Index" href="../../../../genindex.html" />
     <link rel="search" title="Search" href="../../../../search.html" />
-    <link rel="next" title="Date/Time Expressions" href="datetime.html" />
-    <link rel="prev" title="Aggregate Expressions" href="aggregate.html" />
+    <link rel="next" title="Struct Expressions" href="struct.html" />
+    <link rel="prev" title="Date/Time Expressions" href="datetime.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="" />
@@ -436,7 +436,7 @@ under the License.
     
     <li class="breadcrumb-item"><a href="index.html" class="nav-link">Expression Compatibility</a></li>
     
-    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Array Expressions</span></li>
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Math Expressions</span></li>
   </ul>
 </nav>
 </div>
@@ -471,14 +471,14 @@ KIND, either express or implied.  See the License for the
 specific language governing permissions and limitations
 under the License.
 -->
-<section id="array-expressions">
-<h1>Array Expressions<a class="headerlink" href="#array-expressions" title="Link to this heading">#</a></h1>
-<!--BEGIN:EXPR_COMPAT[array]-->
-<section id="sortarray">
-<h2>SortArray<a class="headerlink" href="#sortarray" title="Link to this heading">#</a></h2>
+<section id="math-expressions">
+<h1>Math Expressions<a class="headerlink" href="#math-expressions" title="Link to this heading">#</a></h1>
+<!--BEGIN:EXPR_COMPAT[math]-->
+<section id="abs">
+<h2>Abs<a class="headerlink" href="#abs" title="Link to this heading">#</a></h2>
 <p>The following cases are not supported by Comet:</p>
 <ul class="simple">
-<li><p>Nested arrays with <code class="docutils literal notranslate"><span class="pre">Struct</span></code> or <code class="docutils literal notranslate"><span class="pre">Null</span></code> child values are not supported natively and will fall back to Spark.</p></li>
+<li><p>Only integral, floating-point, and decimal types are supported</p></li>
 </ul>
 <!--END:EXPR_COMPAT-->
 </section>
@@ -495,20 +495,20 @@ under the License.
                   
 <div class="prev-next-area">
     <a class="left-prev"
-       href="aggregate.html"
+       href="datetime.html"
        title="previous page">
       <i class="fa-solid fa-angle-left"></i>
       <div class="prev-next-info">
         <p class="prev-next-subtitle">previous</p>
-        <p class="prev-next-title">Aggregate Expressions</p>
+        <p class="prev-next-title">Date/Time Expressions</p>
       </div>
     </a>
     <a class="right-next"
-       href="datetime.html"
+       href="struct.html"
        title="next page">
       <div class="prev-next-info">
         <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">Date/Time Expressions</p>
+        <p class="prev-next-title">Struct Expressions</p>
       </div>
       <i class="fa-solid fa-angle-right"></i>
     </a>

@@ -473,21 +473,21 @@ under the License.
 -->
 <section id="aggregate-expressions">
 <h1>Aggregate Expressions<a class="headerlink" href="#aggregate-expressions" title="Link to this heading">#</a></h1>
-<section id="incompatible-aggregates">
-<h2>Incompatible Aggregates<a class="headerlink" href="#incompatible-aggregates" title="Link to this heading">#</a></h2>
+<!--BEGIN:EXPR_COMPAT[aggregate]-->
+<section id="average">
+<h2>Average<a class="headerlink" href="#average" title="Link to this heading">#</a></h2>
+<p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">Average</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Average.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
 <ul class="simple">
-<li><p><strong>CollectSet</strong>: Comet deduplicates NaN values (treats <code class="docutils literal notranslate"><span class="pre">NaN</span> <span class="pre">==</span> <span class="pre">NaN</span></code>) while Spark treats each NaN as a distinct value.
-When <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.strictFloatingPoint=true</span></code>, <code class="docutils literal notranslate"><span class="pre">collect_set</span></code> on floating-point types falls back to Spark unless
-<code class="docutils literal notranslate"><span class="pre">spark.comet.expression.CollectSet.allowIncompatible=true</span></code> is set.</p></li>
+<li><p>Falls back to Spark in ANSI mode. Supports all numeric inputs except decimal types.</p></li>
 </ul>
 </section>
-<section id="ansi-mode">
-<h2>ANSI Mode<a class="headerlink" href="#ansi-mode" title="Link to this heading">#</a></h2>
-<p>Comet will fall back to Spark for the following aggregate expressions when ANSI mode is enabled. These can be enabled by setting <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.EXPRNAME.allowIncompatible=true</span></code>, where <code class="docutils literal notranslate"><span class="pre">EXPRNAME</span></code> is the Spark expression class name. See the <a class="reference internal" href="../../expressions.html"><span class="std std-doc">Comet Supported Expressions Guide</span></a> for more information on this configuration setting.</p>
+<section id="collectset">
+<h2>CollectSet<a class="headerlink" href="#collectset" title="Link to this heading">#</a></h2>
+<p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">CollectSet</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.CollectSet.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
 <ul class="simple">
-<li><p>Average (supports all numeric inputs except decimal types)</p></li>
+<li><p>Comet deduplicates NaN values (treats <code class="docutils literal notranslate"><span class="pre">NaN</span> <span class="pre">==</span> <span class="pre">NaN</span></code>) while Spark treats each NaN as a distinct value. When <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.strictFloatingPoint=true</span></code>, <code class="docutils literal notranslate"><span class="pre">collect_set</span></code> on floating-point types falls back to Spark unless <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.CollectSet.allowIncompatible=true</span></code> is set.</p></li>
 </ul>
-<p>There is an <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/313">epic</a> where we are tracking the work to fully implement ANSI support.</p>
+<!--END:EXPR_COMPAT-->
 </section>
 </section>
 

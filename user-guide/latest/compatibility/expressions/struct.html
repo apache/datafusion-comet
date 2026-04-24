@@ -66,7 +66,7 @@ under the License.
     <link rel="index" title="Index" href="../../../../genindex.html" />
     <link rel="search" title="Search" href="../../../../search.html" />
     <link rel="next" title="Cast" href="cast.html" />
-    <link rel="prev" title="Date/Time Expressions" href="datetime.html" />
+    <link rel="prev" title="Math Expressions" href="math.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="" />
@@ -473,10 +473,15 @@ under the License.
 -->
 <section id="struct-expressions">
 <h1>Struct Expressions<a class="headerlink" href="#struct-expressions" title="Link to this heading">#</a></h1>
+<!--BEGIN:EXPR_COMPAT[struct]-->
+<section id="structstojson">
+<h2>StructsToJson<a class="headerlink" href="#structstojson" title="Link to this heading">#</a></h2>
+<p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">StructsToJson</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StructsToJson.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
 <ul class="simple">
-<li><p><strong>StructsToJson (to_json)</strong>: Does not support <code class="docutils literal notranslate"><span class="pre">+Infinity</span></code> and <code class="docutils literal notranslate"><span class="pre">-Infinity</span></code> for numeric types (float, double).
-<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3016">#3016</a></p></li>
+<li><p>Does not support <code class="docutils literal notranslate"><span class="pre">+Infinity</span></code> and <code class="docutils literal notranslate"><span class="pre">-Infinity</span></code> for numeric types (float, double). (https://github.com/apache/datafusion-comet/issues/3016)</p></li>
 </ul>
+<!--END:EXPR_COMPAT-->
+</section>
 </section>
 
 
@@ -490,12 +495,12 @@ under the License.
                   
 <div class="prev-next-area">
     <a class="left-prev"
-       href="datetime.html"
+       href="math.html"
        title="previous page">
       <i class="fa-solid fa-angle-left"></i>
       <div class="prev-next-info">
         <p class="prev-next-subtitle">previous</p>
-        <p class="prev-next-title">Date/Time Expressions</p>
+        <p class="prev-next-title">Math Expressions</p>
       </div>
     </a>
     <a class="right-next"

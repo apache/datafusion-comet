@@ -505,10 +505,12 @@ under the License.
 <span class="p">}</span>
 </pre></div>
 </div>
-<p>The <code class="docutils literal notranslate"><span class="pre">CometExpressionSerde</span></code> trait provides three methods you can override:</p>
+<p>The <code class="docutils literal notranslate"><span class="pre">CometExpressionSerde</span></code> trait provides several methods you can override:</p>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">convert(expr:</span> <span class="pre">T,</span> <span class="pre">inputs:</span> <span class="pre">Seq[Attribute],</span> <span class="pre">binding:</span> <span class="pre">Boolean):</span> <span class="pre">Option[Expr]</span></code> - <strong>Required</strong>. Converts the Spark expression to protobuf. Return <code class="docutils literal notranslate"><span class="pre">None</span></code> if the expression cannot be converted.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">getSupportLevel(expr:</span> <span class="pre">T):</span> <span class="pre">SupportLevel</span></code> - Optional. Returns the level of support for the expression. See “Using getSupportLevel” section below for details.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">getSupportLevel(expr:</span> <span class="pre">T):</span> <span class="pre">SupportLevel</span></code> - Optional. Returns the level of support for the expression at planning time, based on a specific expression instance. See “Using getSupportLevel” section below for details.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">getIncompatibleReasons():</span> <span class="pre">Seq[String]</span></code> - Optional. Returns reasons why this expression may produce different results than Spark. Used to generate the Compatibility Guide. See “Documenting Incompatible and Unsupported Reasons” below.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">getUnsupportedReasons():</span> <span class="pre">Seq[String]</span></code> - Optional. Returns reasons why this expression may not be supported by Comet (for example, unsupported data types or format strings). Used to generate the Compatibility Guide. See “Documenting Incompatible and Unsupported Reasons” below.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">getExprConfigName(expr:</span> <span class="pre">T):</span> <span class="pre">String</span></code> - Optional. Returns a short name for configuration keys. Defaults to the Spark class name.</p></li>
 </ul>
 <p>For simple scalar functions that map directly to a DataFusion function, you can use the built-in <code class="docutils literal notranslate"><span class="pre">CometScalarFunction</span></code> implementation:</p>
@@ -632,6 +634,64 @@ under the License.
 </li>
 </ol>
 <p>Any notes provided will be logged to help with debugging and understanding why an expression was not used.</p>
+</section>
+</section>
+<section id="documenting-incompatible-and-unsupported-reasons">
+<h4>Documenting Incompatible and Unsupported Reasons<a class="headerlink" href="#documenting-incompatible-and-unsupported-reasons" title="Link to this heading">#</a></h4>
+<p>In addition to <code class="docutils literal notranslate"><span class="pre">getSupportLevel</span></code>, which governs runtime planning decisions, the serde trait exposes two static documentation methods:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">getIncompatibleReasons():</span> <span class="pre">Seq[String]</span></code> - Reasons the expression may produce different results than Spark.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">getUnsupportedReasons():</span> <span class="pre">Seq[String]</span></code> - Reasons the expression, or certain usages of it, may not be supported by Comet.</p></li>
+</ul>
+<p>These methods do not affect runtime behavior. They are called by <code class="docutils literal notranslate"><span class="pre">GenerateDocs</span></code> (<code class="docutils literal notranslate"><span class="pre">spark/src/main/scala/org/apache/comet/GenerateDocs.scala</span></code>) when building the user-facing Compatibility Guide pages under <code class="docutils literal notranslate"><span class="pre">docs/source/user-guide/latest/compatibility/expressions/</span></code> (for example, <code class="docutils literal notranslate"><span class="pre">math.md</span></code>, <code class="docutils literal notranslate"><span class="pre">datetime.md</span></code>, <code class="docutils literal notranslate"><span class="pre">array.md</span></code>, <code class="docutils literal notranslate"><span class="pre">aggregate.md</span></code>, <code class="docutils literal notranslate"><span class="pre">struct.md</span></code>). Each reason is rendered as a bullet in the corresponding page.</p>
+<p>Key differences from <code class="docutils literal notranslate"><span class="pre">getSupportLevel</span></code>:</p>
+<ul class="simple">
+<li><p><strong>No expression instance.</strong> Both methods take no arguments, so they describe the expression in general rather than a specific call site. Use <code class="docutils literal notranslate"><span class="pre">getSupportLevel</span></code> for checks that depend on data types, argument values, or other per-instance details.</p></li>
+<li><p><strong>Markdown-friendly.</strong> Each returned string is written to a Markdown document, so you can embed backticks, links, and line breaks. Keep each reason self-contained, since they are rendered as separate bullets.</p></li>
+<li><p><strong>Regenerated by CI.</strong> The lists are collected by <code class="docutils literal notranslate"><span class="pre">GenerateDocs</span></code> and published by CI on every merge to <code class="docutils literal notranslate"><span class="pre">main</span></code>. The generated Markdown is not committed to the repo, so you do not need to regenerate or commit it yourself. The reasons do not have to match the <code class="docutils literal notranslate"><span class="pre">notes</span></code> passed to <code class="docutils literal notranslate"><span class="pre">Compatible</span></code>, <code class="docutils literal notranslate"><span class="pre">Incompatible</span></code>, or <code class="docutils literal notranslate"><span class="pre">Unsupported</span></code>, but keeping them consistent avoids confusing users.</p></li>
+</ul>
+<section id="example-incompatibility-note">
+<h5>Example: Incompatibility note<a class="headerlink" href="#example-incompatibility-note" title="Link to this heading">#</a></h5>
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="k">object</span><span class="w"> </span><span class="nc">CometStructsToJson</span><span class="w"> </span><span class="k">extends</span><span class="w"> </span><span class="nc">CometExpressionSerde</span><span class="p">[</span><span class="nc">StructsToJson</span><span class="p">]</span><span class="w"> </span><span class="p">{</span>
+
+<span class="w">  </span><span class="k">override</span><span class="w"> </span><span class="k">def</span><span class="w"> </span><span class="nf">getIncompatibleReasons</span><span class="p">():</span><span class="w"> </span><span class="nc">Seq</span><span class="p">[</span><span class="nc">String</span><span class="p">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nc">Seq</span><span class="p">(</span>
+<span class="w">    </span><span class="s">&quot;Does not support `+Infinity` and `-Infinity` for numeric types (float, double).&quot;</span><span class="w"> </span><span class="o">+</span>
+<span class="w">      </span><span class="s">&quot; (https://github.com/apache/datafusion-comet/issues/3016)&quot;</span><span class="p">)</span>
+
+<span class="w">  </span><span class="k">override</span><span class="w"> </span><span class="k">def</span><span class="w"> </span><span class="nf">getSupportLevel</span><span class="p">(</span><span class="n">expr</span><span class="p">:</span><span class="w"> </span><span class="nc">StructsToJson</span><span class="p">):</span><span class="w"> </span><span class="nc">SupportLevel</span><span class="w"> </span><span class="o">=</span>
+<span class="w">    </span><span class="nc">Incompatible</span><span class="p">(</span>
+<span class="w">      </span><span class="nc">Some</span><span class="p">(</span>
+<span class="w">        </span><span class="s">&quot;Does not support Infinity/-Infinity for numeric types&quot;</span><span class="w"> </span><span class="o">+</span>
+<span class="w">          </span><span class="s">&quot; (https://github.com/apache/datafusion-comet/issues/3016)&quot;</span><span class="p">))</span>
+
+<span class="w">  </span><span class="c1">// ... convert ...</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+</section>
+<section id="example-unsupported-note">
+<h5>Example: Unsupported note<a class="headerlink" href="#example-unsupported-note" title="Link to this heading">#</a></h5>
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="k">object</span><span class="w"> </span><span class="nc">CometSortArray</span><span class="w"> </span><span class="k">extends</span><span class="w"> </span><span class="nc">CometExpressionSerde</span><span class="p">[</span><span class="nc">SortArray</span><span class="p">]</span><span class="w"> </span><span class="p">{</span>
+
+<span class="w">  </span><span class="k">override</span><span class="w"> </span><span class="k">def</span><span class="w"> </span><span class="nf">getUnsupportedReasons</span><span class="p">():</span><span class="w"> </span><span class="nc">Seq</span><span class="p">[</span><span class="nc">String</span><span class="p">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nc">Seq</span><span class="p">(</span>
+<span class="w">    </span><span class="s">&quot;Nested arrays with `Struct` or `Null` child values are not supported natively and will&quot;</span><span class="w"> </span><span class="o">+</span>
+<span class="w">      </span><span class="s">&quot; fall back to Spark.&quot;</span><span class="p">)</span>
+
+<span class="w">  </span><span class="c1">// ... convert ...</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+</section>
+<section id="example-enumerating-supported-values">
+<h5>Example: Enumerating supported values<a class="headerlink" href="#example-enumerating-supported-values" title="Link to this heading">#</a></h5>
+<p>When the expression only supports a known set of argument values, build the reason from that set so the documentation stays in sync with the code:</p>
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="k">override</span><span class="w"> </span><span class="k">def</span><span class="w"> </span><span class="nf">getUnsupportedReasons</span><span class="p">():</span><span class="w"> </span><span class="nc">Seq</span><span class="p">[</span><span class="nc">String</span><span class="p">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nc">Seq</span><span class="p">(</span>
+<span class="w">  </span><span class="s">&quot;Only the following formats are supported:&quot;</span><span class="w"> </span><span class="o">+</span>
+<span class="w">    </span><span class="n">supportedFormats</span><span class="p">.</span><span class="n">keys</span><span class="p">.</span><span class="n">toSeq</span><span class="p">.</span><span class="n">sorted</span>
+<span class="w">      </span><span class="p">.</span><span class="n">map</span><span class="p">(</span><span class="n">k</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="s">s&quot;`</span><span class="si">$</span><span class="n">k</span><span class="s">`&quot;</span><span class="p">)</span>
+<span class="w">      </span><span class="p">.</span><span class="n">mkString</span><span class="p">(</span><span class="s">&quot;\n  - &quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;\n  - &quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;&quot;</span><span class="p">))</span>
+</pre></div>
+</div>
 </section>
 </section>
 <section id="adding-spark-side-tests-for-the-new-expression">

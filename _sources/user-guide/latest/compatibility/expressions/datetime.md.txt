@@ -19,9 +19,50 @@ under the License.
 
 # Date/Time Expressions
 
-- **Hour, Minute, Second**: Incorrectly apply timezone conversion to TimestampNTZ inputs. TimestampNTZ stores local
-  time without timezone, so no conversion should be applied. These expressions work correctly with Timestamp inputs.
-  [#3180](https://github.com/apache/datafusion-comet/issues/3180)
-- **TruncTimestamp (date_trunc)**: Produces incorrect results when used with non-UTC timezones. Compatible when
-  timezone is UTC.
-  [#2649](https://github.com/apache/datafusion-comet/issues/2649)
+<!--BEGIN:EXPR_COMPAT[datetime]-->
+
+### DateFormatClass
+
+The following incompatibilities cause `DateFormatClass` to fall back to Spark by default. Set `spark.comet.expression.DateFormatClass.allowIncompatible=true` to enable Comet acceleration despite these differences.
+
+- Non-UTC timezones may produce different results than Spark
+
+The following cases are not supported by Comet:
+
+- Only the following formats are supported:
+  - `EEE`
+  - `EEEE`
+  - `HH`
+  - `HH:mm`
+  - `HH:mm:ss`
+  - `MM`
+  - `MMM`
+  - `MMMM`
+  - `dd`
+  - `h:mm a`
+  - `hh:mm a`
+  - `hh:mm:ss a`
+  - `mm`
+  - `ss`
+  - `yy`
+  - `yyyy`
+  - `yyyy-MM-dd`
+  - `yyyy-MM-dd HH:mm:ss`
+  - `yyyy-MM-dd'T'HH:mm:ss`
+  - `yyyy/MM/dd`
+  - `yyyy/MM/dd HH:mm:ss`
+  - `yyyyMM`
+  - `yyyyMMdd`
+
+### Hour
+
+The following incompatibilities cause `Hour` to fall back to Spark by default. Set `spark.comet.expression.Hour.allowIncompatible=true` to enable Comet acceleration despite these differences.
+
+- Incorrectly applies timezone conversion to TimestampNTZ inputs (https://github.com/apache/datafusion-comet/issues/3180)
+
+### TruncTimestamp
+
+The following incompatibilities cause `TruncTimestamp` to fall back to Spark by default. Set `spark.comet.expression.TruncTimestamp.allowIncompatible=true` to enable Comet acceleration despite these differences.
+
+- Produces incorrect results when used with non-UTC timezones. Compatible when timezone is UTC. (https://github.com/apache/datafusion-comet/issues/2649)
+<!--END:EXPR_COMPAT-->

@@ -19,5 +19,11 @@ under the License.
 
 # Struct Expressions
 
-- **StructsToJson (to_json)**: Does not support `+Infinity` and `-Infinity` for numeric types (float, double).
-  [#3016](https://github.com/apache/datafusion-comet/issues/3016)
+<!--BEGIN:EXPR_COMPAT[struct]-->
+
+### StructsToJson
+
+The following incompatibilities cause `StructsToJson` to fall back to Spark by default. Set `spark.comet.expression.StructsToJson.allowIncompatible=true` to enable Comet acceleration despite these differences.
+
+- Does not support `+Infinity` and `-Infinity` for numeric types (float, double). (https://github.com/apache/datafusion-comet/issues/3016)
+<!--END:EXPR_COMPAT-->
