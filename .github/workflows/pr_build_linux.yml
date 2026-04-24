@@ -81,7 +81,7 @@ jobs:
     container:
       image: amd64/rust
       env:
-        JAVA_TOOL_OPTIONS: ${{ matrix.profile.java_version == '17' && '--add-exports=java.base/sun.nio.ch=ALL-UNNAMED --add-exports=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED' || '' }}
+        JAVA_TOOL_OPTIONS: ${{ (matrix.profile.java_version == '17' || matrix.profile.java_version == '21') && '--add-exports=java.base/sun.nio.ch=ALL-UNNAMED --add-exports=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED' || '' }}
     strategy:
       matrix:
         profile:
@@ -93,6 +93,9 @@ jobs:
             maven_opts: "-Pspark-3.5 -Pscala-2.12"
           - name: "Spark 4.0, JDK 17"
             java_version: "17"
+            maven_opts: "-Pspark-4.0"
+          - name: "Spark 4.0, JDK 21"
+            java_version: "21"
             maven_opts: "-Pspark-4.0"
           # Spark 4.1 is intentionally absent: the lint job invokes -Psemanticdb,
           # but semanticdb-scalac_2.13.17 is not yet published, so we cannot
@@ -293,6 +296,11 @@ jobs:
             maven_opts: "-Pspark-4.0"
             scan_impl: "auto"
 
+          - name: "Spark 4.0, JDK 21"
+            java_version: "21"
+            maven_opts: "-Pspark-4.0"
+            scan_impl: "auto"
+
           - name: "Spark 4.1, JDK 17"
             java_version: "17"
             maven_opts: "-Pspark-4.1"
@@ -388,7 +396,7 @@ jobs:
     container:
       image: amd64/rust
       env:
-        JAVA_TOOL_OPTIONS: ${{ matrix.profile.java_version == '17' && '--add-exports=java.base/sun.nio.ch=ALL-UNNAMED --add-exports=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED' || '' }}
+        JAVA_TOOL_OPTIONS: ${{ (matrix.profile.java_version == '17' || matrix.profile.java_version == '21') && '--add-exports=java.base/sun.nio.ch=ALL-UNNAMED --add-exports=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED' || '' }}
 
     steps:
       - uses: runs-on/action@742bf56072eb4845a0f94b3394673e4903c90ff0  # v2.1.0
