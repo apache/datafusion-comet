@@ -29,6 +29,12 @@ import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 class CometStringExpressionSuite extends CometTestBase {
+  // scalastyle:off
+  private val edgeCases = Seq(
+    "é", // unicode 'e\\u{301}'
+    "é", // unicode '\\u{e9}'
+    "తెలుగు")
+  // scalastyle:on
 
   test("lpad string") {
     testStringPadding("lpad")
@@ -53,12 +59,6 @@ class CometStringExpressionSuite extends CometTestBase {
         StructField("str", DataTypes.StringType, nullable = true),
         StructField("len", DataTypes.IntegerType, nullable = true),
         StructField("pad", DataTypes.StringType, nullable = true)))
-    // scalastyle:off
-    val edgeCases = Seq(
-      "é", // unicode 'e\\u{301}'
-      "é", // unicode '\\u{e9}'
-      "తెలుగు")
-    // scalastyle:on
     val df = FuzzDataGenerator.generateDataFrame(
       r,
       spark,
@@ -578,6 +578,36 @@ class CometStringExpressionSuite extends CometTestBase {
       // extract entire string
       checkSparkAnswerAndOperator("SELECT substring(_1, 1, 100) FROM tbl")
       checkSparkAnswerAndOperator("SELECT substring(_1, 1) FROM tbl")
+    }
+  }
+
+  test("substring - decomposed and combining unicode characters") {
+    val data = edgeCases.map(s => (s, "")) :+ ("", "") :+ (null, "")
+    withParquetTable(data, "tbl") {
+      // first code point only — exposes decomposed vs precomposed difference
+      checkSparkAnswerAndOperator("SELECT substring(_1, 1, 1) FROM tbl")
+      // second code point — combining accent for decomposed, nothing for precomposed
+      checkSparkAnswerAndOperator("SELECT substring(_1, 2, 1) FROM tbl")
+      // full string
+      checkSparkAnswerAndOperator("SELECT substring(_1, 1) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT substring(_1, 1, 100) FROM tbl")
+      // negative start — last code point
+      checkSparkAnswerAndOperator("SELECT substring(_1, -1, 1) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT substring(_1, -1) FROM tbl")
+      // negative start — last 2 code points
+      checkSparkAnswerAndOperator("SELECT substring(_1, -2, 2) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT substring(_1, -2) FROM tbl")
+      // middle of Telugu string
+      checkSparkAnswerAndOperator("SELECT substring(_1, 3, 2) FROM tbl")
+      // start beyond string length
+      checkSparkAnswerAndOperator("SELECT substring(_1, 10) FROM tbl")
+      // negative start beyond string length
+      checkSparkAnswerAndOperator("SELECT substring(_1, -10, 3) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT substring(_1, -10) FROM tbl")
+      // zero length
+      checkSparkAnswerAndOperator("SELECT substring(_1, 1, 0) FROM tbl")
+      // negative length
+      checkSparkAnswerAndOperator("SELECT substring(_1, -2, -1) FROM tbl")
     }
   }
 
