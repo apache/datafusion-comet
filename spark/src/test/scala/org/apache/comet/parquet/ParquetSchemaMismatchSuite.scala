@@ -53,7 +53,7 @@ import org.apache.comet.CometConf
 //   5. INT32 -> INT64 w/ rowgroup filter   throw      throw  OK     OK (1 row, no overflow)  throw
 //   6. STRING -> INT                       throw      throw  throw  OK (garbage values)      throw
 //   7. TIMESTAMP_NTZ -> ARRAY<...>         throw      throw  throw  throw                    throw
-//   C1. INT8 -> INT32                      OK         OK     OK     ?                        ?
+//   C1. INT8 -> INT32                      OK         OK     OK     OK (widened values)      OK (widened values)
 //   C2. FLOAT -> DOUBLE                    OK         OK     OK     ?                        ?
 class ParquetSchemaMismatchSuite extends CometTestBase {
   import testImplicits._
@@ -316,6 +316,19 @@ class ParquetSchemaMismatchSuite extends CometTestBase {
       assert(
         outcome.isFailure && outcome.failed.get.isInstanceOf[SparkException],
         s"expected SparkException, got: $outcome")
+    }
+  }
+
+  // Control C1: INT8 -> INT32 widening. Allowed by Spark on all versions and
+  // expected to succeed in both Comet scan impls.
+  scanImpls.foreach { scanImpl =>
+    test(s"int8 read as int32 (control): $scanImpl") {
+      withMismatchedSchema(scanImpl) { path =>
+        Seq(1.toByte, 2.toByte, 3.toByte).toDF("c").write.parquet(path)
+        spark.read.schema("c int").parquet(path)
+      } { df =>
+        checkAnswer(df, Seq(1, 2, 3).map(org.apache.spark.sql.Row(_)))
+      }
     }
   }
 }
