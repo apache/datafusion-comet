@@ -286,18 +286,6 @@ object CometRemainder extends CometExpressionSerde[Remainder] with MathBase {
 
 object CometRound extends CometExpressionSerde[Round] {
 
-  /*
-  override def getSupportLevel(r: Round): SupportLevel = {
-    r.child.dataType match {
-      case _: FloatType | DoubleType =>
-        Incompatible(Some(
-          "Comet uses ryu for float-to-string conversion which may differ from Java's " +
-            "Double.toString in rare boundary cases, leading to different HALF_UP rounding"))
-      case _ => Compatible()
-    }
-  }
-   */
-
   override def convert(
       r: Round,
       inputs: Seq[Attribute],

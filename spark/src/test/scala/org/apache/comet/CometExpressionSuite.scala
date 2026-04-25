@@ -2931,10 +2931,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("round double from large integer string") {
-    // This value hits a boundary where ryu and Java's Double.toString produce different
-    // shortest representations, leading to different HALF_UP rounding results.
-    // Spark: -8.3163620750064005E18, Comet: -8.3163620750064998E18
-    // This is a known incompatibility documented in CometRound.getSupportLevel.
     withParquetTable(Seq(Tuple1("-8316362075006449156")), "tbl") {
       checkSparkAnswerAndOperator("SELECT round(cast(_1 as double), -5) FROM tbl")
     }

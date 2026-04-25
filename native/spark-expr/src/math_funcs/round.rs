@@ -194,19 +194,24 @@ fn decimal_round_f(scale: &i8, point: &i64) -> Box<dyn Fn(i128) -> i128> {
     }
 }
 
-/// Replicate Java's `Double.toString` for use in Spark-compatible rounding.
+/// Replicate Java's `Double.toString` by finding the shortest decimal representation
+/// that uniquely identifies the double value.
 ///
-/// Java's `Double.toString` (Schubfach algorithm, JDK 17+) produces the shortest decimal
-/// string that uniquely identifies the double. We approximate this using Rust's standard
-/// `format!` which uses a similar shortest-representation algorithm. The two implementations
-/// agree for the vast majority of values but may differ in rare boundary cases where the
-/// Schubfach algorithm's specific tie-breaking logic chooses a different digit count.
+/// Java's `Double.toString` (Schubfach algorithm, JDK 17+) finds the shortest decimal
+/// string such that parsing it back gives the original double. For f64, this requires
+/// between 15 and 17 significant digits. We find the shortest by checking round-trip
+/// correctness at each precision.
 fn double_to_bigdecimal_like_java(v: f64) -> BigDecimal {
-    // format! with default precision uses Rust's shortest-representation algorithm.
-    // Parse the result as BigDecimal to get the same decimal value that Spark's
-    // BigDecimal(Double.toString(v)) would produce.
-    let s = format!("{}", v);
-    s.parse().unwrap()
+    let abs_v = v.abs();
+
+    for prec in 14..=16usize {
+        let s = format!("{:.prec$e}", abs_v);
+        if s.parse::<f64>().unwrap() == abs_v {
+            return format!("{:.prec$e}", v).parse().unwrap();
+        }
+    }
+
+    BigDecimal::try_from(v).unwrap()
 }
 
 /// Spark-compatible round for f64.
@@ -327,7 +332,6 @@ mod test {
         assert_eq!(result, -5.8185562213690E8_f64);
     }
 
-    /*
     #[test]
     #[cfg_attr(miri, ignore)]
     fn test_round_f64_spark_bigdecimal_tostring_roundtrip() {
@@ -340,7 +344,6 @@ mod test {
         let result = spark_round_via_bigdecimal_f64(v, -5);
         assert_eq!(result, 6.1317116247284E18_f64);
     }
-     */
 
     #[test]
     #[cfg_attr(miri, ignore)]
