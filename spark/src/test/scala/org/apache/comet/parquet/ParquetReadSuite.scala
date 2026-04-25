@@ -998,6 +998,29 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
+  test("native_datafusion rejects incompatible decimal precision/scale") {
+    // Regression guard for https://github.com/apache/datafusion-comet/issues/4089.
+    // Reading Decimal(10,2) under a Decimal(5,0) read schema is unconditionally
+    // lossy: target precision is smaller than source precision and scales differ.
+    // Spark's vectorized reader throws SchemaColumnConvertNotSupportedException
+    // here on all versions. The native_datafusion scan must reject this in its
+    // schema adapter rather than letting Spark Cast silently rescale/truncate.
+    withSQLConf(
+      CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
+      SQLConf.USE_V1_SOURCE_LIST.key -> "parquet") {
+      withTempPath { dir =>
+        val path = dir.getCanonicalPath
+        spark
+          .sql("select cast('123.45' as decimal(10,2)) as d " +
+            "union all select cast('67.89' as decimal(10,2))")
+          .write
+          .parquet(path)
+        val df = spark.read.schema("d decimal(5,0)").parquet(path)
+        assertThrows[SparkException](df.collect())
+      }
+    }
+  }
+
   test("type widening: byte → short/int/long, short → int/long, int → long") {
     withSQLConf(CometConf.COMET_SCHEMA_EVOLUTION_ENABLED.key -> "true") {
       withTempPath { dir =>

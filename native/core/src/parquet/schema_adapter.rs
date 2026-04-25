@@ -385,6 +385,33 @@ impl SparkPhysicalExprAdapter {
             let physical_type = cast.input_field().data_type();
             let target_type = cast.target_field().data_type();
 
+            // Decimal-to-decimal scale-narrowing check.
+            // Reject reads where the read schema has a smaller scale than the
+            // file's, because Spark's Cast below would silently truncate
+            // fractional digits, producing wrong values. This matches the
+            // unconditionally-lossy case in issue #4089 (e.g. Decimal(10,2) read
+            // as Decimal(5,0)).
+            //
+            // Precision-only changes with the same scale (e.g. Decimal(5,2) read
+            // as Decimal(3,2)) are NOT rejected here: Spark 3.x's strict rule
+            // would reject them, but Spark 4.0's parquet-mr fallback path
+            // (PARQUET_VECTORIZED_READER_ENABLED=false) and the vectorized
+            // type-widening path produce null on per-value overflow, which
+            // DataFusion's cast already does in the adapting-schema path.
+            if let (DataType::Decimal128(_src_p, src_s), DataType::Decimal128(_dst_p, dst_s)) =
+                (physical_type, target_type)
+            {
+                if dst_s < src_s {
+                    return Err(DataFusionError::Plan(format!(
+                        "Parquet column cannot be converted. Column: [{}], \
+                         Expected: {}, Found: {}",
+                        cast.input_field().name(),
+                        target_type,
+                        physical_type,
+                    )));
+                }
+            }
+
             // For complex nested types (Struct, List, Map), Timestamp timezone
             // mismatches, and Timestamp→Int64 (nanosAsLong), use CometCastColumnExpr
             // with spark_parquet_convert which handles field-name-based selection,
