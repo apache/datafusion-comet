@@ -86,12 +86,12 @@ incompatibility details.
 Comet provides four configs for understanding what is happening in a plan.
 They serve different purposes and produce output in different places.
 
-| Config                                  | Output destination                | What you see                                                                                  |
-| --------------------------------------- | --------------------------------- | --------------------------------------------------------------------------------------------- |
-| `spark.comet.explainFallback.enabled`   | Driver log (only when fallback)   | A WARN with the list of reasons each query stage could not run natively.                      |
-| `spark.comet.logFallbackReasons.enabled`| Driver log                        | One WARN per fallback reason as it is encountered, without surrounding plan context.          |
-| `spark.comet.explain.format`            | Spark SQL UI (Spark 4.0 and newer)| Annotated plan or fallback-reason list, depending on `verbose` (default) or `fallback` value. |
-| `spark.comet.explain.native.enabled`    | Executor logs, per task           | The DataFusion native plan with metrics, useful for inspecting native execution.              |
+| Config                                   | Output destination                 | What you see                                                                                  |
+| ---------------------------------------- | ---------------------------------- | --------------------------------------------------------------------------------------------- |
+| `spark.comet.explainFallback.enabled`    | Driver log (only when fallback)    | A WARN with the list of reasons each query stage could not run natively.                      |
+| `spark.comet.logFallbackReasons.enabled` | Driver log                         | One WARN per fallback reason as it is encountered, without surrounding plan context.          |
+| `spark.comet.explain.format`             | Spark SQL UI (Spark 4.0 and newer) | Annotated plan or fallback-reason list, depending on `verbose` (default) or `fallback` value. |
+| `spark.comet.explain.native.enabled`     | Executor logs, per task            | The DataFusion native plan with metrics, useful for inspecting native execution.              |
 
 ### `spark.comet.explainFallback.enabled`
 
@@ -145,46 +145,46 @@ by role. Names match what is shown in the plan output.
 
 ### Scans
 
-| Node                        | Description                                                                                                |
-| --------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| `CometScan`                 | V1 Parquet file scan with native execution.                                                                |
-| `CometBatchScan`            | DataSource V2 scan, including Iceberg Parquet, that produces Arrow batches consumed by Comet.              |
-| `CometNativeScan`           | Fully native Parquet scan that runs entirely in DataFusion (no JVM Parquet reader involvement).            |
-| `CometIcebergNativeScan`    | Fully native Iceberg Parquet scan.                                                                         |
-| `CometCsvNativeScan`        | Fully native CSV scan (experimental).                                                                      |
+| Node                     | Description                                                                                     |
+| ------------------------ | ----------------------------------------------------------------------------------------------- |
+| `CometScan`              | V1 Parquet file scan with native execution.                                                     |
+| `CometBatchScan`         | DataSource V2 scan, including Iceberg Parquet, that produces Arrow batches consumed by Comet.   |
+| `CometNativeScan`        | Fully native Parquet scan that runs entirely in DataFusion (no JVM Parquet reader involvement). |
+| `CometIcebergNativeScan` | Fully native Iceberg Parquet scan.                                                              |
+| `CometCsvNativeScan`     | Fully native CSV scan (experimental).                                                           |
 
 ### Native Execution Operators
 
 These run natively in DataFusion. When several appear consecutively in a plan,
 they execute as a single fused native block.
 
-| Node                            | Spark equivalent                          |
-| ------------------------------- | ----------------------------------------- |
-| `CometProject`                  | `ProjectExec`                             |
-| `CometFilter`                   | `FilterExec`                              |
-| `CometSort`                     | `SortExec`                                |
-| `CometLocalLimit`               | `LocalLimitExec`                          |
-| `CometGlobalLimit`              | `GlobalLimitExec`                         |
-| `CometExpand`                   | `ExpandExec`                              |
-| `CometExplode`                  | `GenerateExec` (for `explode` only)       |
-| `CometHashAggregate`            | `HashAggregateExec`, `ObjectHashAggregateExec` |
-| `CometHashJoin`                 | `ShuffledHashJoinExec`                    |
-| `CometBroadcastHashJoin`        | `BroadcastHashJoinExec`                   |
-| `CometSortMergeJoin`            | `SortMergeJoinExec`                       |
-| `CometWindow`                   | `WindowExec`                              |
-| `CometTakeOrderedAndProject`    | `TakeOrderedAndProjectExec`               |
+| Node                         | Spark equivalent                               |
+| ---------------------------- | ---------------------------------------------- |
+| `CometProject`               | `ProjectExec`                                  |
+| `CometFilter`                | `FilterExec`                                   |
+| `CometSort`                  | `SortExec`                                     |
+| `CometLocalLimit`            | `LocalLimitExec`                               |
+| `CometGlobalLimit`           | `GlobalLimitExec`                              |
+| `CometExpand`                | `ExpandExec`                                   |
+| `CometExplode`               | `GenerateExec` (for `explode` only)            |
+| `CometHashAggregate`         | `HashAggregateExec`, `ObjectHashAggregateExec` |
+| `CometHashJoin`              | `ShuffledHashJoinExec`                         |
+| `CometBroadcastHashJoin`     | `BroadcastHashJoinExec`                        |
+| `CometSortMergeJoin`         | `SortMergeJoinExec`                            |
+| `CometWindow`                | `WindowExec`                                   |
+| `CometTakeOrderedAndProject` | `TakeOrderedAndProjectExec`                    |
 
 ### JVM-Side Operators
 
 These keep their data on the JVM but participate in the Comet pipeline.
 
-| Node                       | Notes                                                                                                |
-| -------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `CometUnion`               | JVM-side union of Comet inputs. The native side reads each branch as a separate scan.                |
-| `CometCoalesce`            | JVM-side partition coalesce.                                                                         |
-| `CometCollectLimit`        | JVM-side collect limit, equivalent to `CollectLimitExec`.                                            |
-| `CometBroadcastExchange`   | Broadcast exchange producing serialized Arrow batches that the consumer can decode.                  |
-| `CometSubqueryBroadcast`   | Companion to `CometBroadcastExchange` for dynamic partition pruning subqueries.                      |
+| Node                     | Notes                                                                                 |
+| ------------------------ | ------------------------------------------------------------------------------------- |
+| `CometUnion`             | JVM-side union of Comet inputs. The native side reads each branch as a separate scan. |
+| `CometCoalesce`          | JVM-side partition coalesce.                                                          |
+| `CometCollectLimit`      | JVM-side collect limit, equivalent to `CollectLimitExec`.                             |
+| `CometBroadcastExchange` | Broadcast exchange producing serialized Arrow batches that the consumer can decode.   |
+| `CometSubqueryBroadcast` | Companion to `CometBroadcastExchange` for dynamic partition pruning subqueries.       |
 
 ### Shuffle Operators
 
@@ -213,12 +213,12 @@ Comet inserts these nodes wherever data has to cross the columnar/row boundary.
 Multiple implementations exist because the optimal strategy depends on what
 produced the columnar data.
 
-| Node                          | Direction        | Notes                                                                                                                |
-| ----------------------------- | ---------------- | -------------------------------------------------------------------------------------------------------------------- |
-| `CometColumnarToRow`          | columnar → row   | JVM-based row conversion. A fork of Spark's `ColumnarToRowExec` that includes the SPARK-50235 fix.                   |
-| `CometNativeColumnarToRow`    | columnar → row   | Native row conversion that decodes broadcast Arrow batches via `NativeColumnarToRowConverter`. Used downstream of `CometBroadcastExchange`. Zero-copy for variable-length types and avoids an extra JVM materialization step. |
-| `CometSparkColumnarToColumnar`| columnar → columnar | Converts a Spark columnar input (a non-Comet `ColumnarBatch`) into Comet's Arrow batches.                          |
-| `CometSparkRowToColumnar`     | row → columnar   | Converts a Spark row input into Comet's Arrow batches.                                                               |
+| Node                           | Direction           | Notes                                                                                                                                                                                                                         |
+| ------------------------------ | ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CometColumnarToRow`           | columnar → row      | JVM-based row conversion. A fork of Spark's `ColumnarToRowExec` that includes the SPARK-50235 fix.                                                                                                                            |
+| `CometNativeColumnarToRow`     | columnar → row      | Native row conversion that decodes broadcast Arrow batches via `NativeColumnarToRowConverter`. Used downstream of `CometBroadcastExchange`. Zero-copy for variable-length types and avoids an extra JVM materialization step. |
+| `CometSparkColumnarToColumnar` | columnar → columnar | Converts a Spark columnar input (a non-Comet `ColumnarBatch`) into Comet's Arrow batches.                                                                                                                                     |
+| `CometSparkRowToColumnar`      | row → columnar      | Converts a Spark row input into Comet's Arrow batches.                                                                                                                                                                        |
 
 The two `CometSpark*` names come from a single `CometSparkToColumnarExec`
 operator that picks the node name based on whether its child supports
