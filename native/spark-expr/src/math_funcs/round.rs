@@ -194,11 +194,8 @@ fn decimal_round_f(scale: &i8, point: &i64) -> Box<dyn Fn(i128) -> i128> {
     }
 }
 
+
 /// Replicate Java's `Double.toString` via the Schubfach algorithm.
-///
-/// Computes the BigDecimal value that `new BigDecimal(Double.toString(v))` would produce,
-/// matching JDK 17's Schubfach algorithm. The algorithm finds the shortest decimal
-/// significand within the interval [vbl, vbr] that uniquely identifies the double.
 fn double_to_bigdecimal_like_java(v: f64) -> BigDecimal {
     let abs_v = v.abs();
     let bits = abs_v.to_bits();
@@ -212,15 +209,72 @@ fn double_to_bigdecimal_like_java(v: f64) -> BigDecimal {
     if v < 0.0 { -bd } else { bd }
 }
 
-/// Compute floor(q * log10(2))
 fn flog10pow2(q: i32) -> i32 {
-    ((q as i64 * 315653) >> 20) as i32
+    ((q as i64 * 661_971_961_083i64) >> 41) as i32
 }
 
-/// Core Schubfach algorithm using BigInt for overflow-safe arithmetic.
-fn schubfach_to_decimal(bits: u64) -> (u64, i32) {
-    use num::BigInt;
+fn flog10_three_quarters_pow2(q: i32) -> i32 {
+    ((q as i64 * 661_971_961_083i64 + (-274_743_187_321i64)) >> 41) as i32
+}
+
+fn flog2pow10(e: i32) -> i32 {
+    ((e as i64 * 913_124_641_741i64) >> 38) as i32
+}
+
+/// Compute the Schubfach g values for index `e`.
+/// g = floor(10^e * 2^(-r)) + 1 where r = flog2pow10(e) - 125.
+/// g1 = g >> 63, g0 = g & (2^63 - 1).
+fn compute_g(e: i32) -> (u64, u64) {
+    use num::bigint::BigUint;
     use num::ToPrimitive;
+
+    let r = flog2pow10(e) - 125;
+    // beta = 10^e * 2^(-r)
+    // For e >= 0: 10^e = 2^e * 5^e, so beta = 2^e * 5^e / 2^r = 5^e * 2^(e - r)
+    // For e < 0: 10^e = 1/(2^|e| * 5^|e|), so beta = 2^(-r) / (2^|e| * 5^|e|)
+    //            = 2^(-r - |e|) / 5^|e| = 2^(-r + e) / 5^|e|
+    // In both cases: beta = 2^(e - r) * 5^e  (where 5^e for negative e means 1/5^|e|)
+    // g = floor(beta) + 1
+
+    let shift = e - r; // e - r = 125 - flog2pow10(e) + e. This is always ~125.
+    let g: BigUint = if e >= 0 {
+        let pow5 = BigUint::from(5u32).pow(e as u32);
+        if shift >= 0 {
+            (pow5 << (shift as u32)) + BigUint::from(1u32)
+        } else {
+            (pow5 >> ((-shift) as u32)) + BigUint::from(1u32)
+        }
+    } else {
+        let pow5 = BigUint::from(5u32).pow((-e) as u32);
+        // 2^shift / 5^|e| + 1
+        (BigUint::from(1u32) << (shift as u32)) / pow5 + BigUint::from(1u32)
+    };
+
+    let mask63 = (BigUint::from(1u128) << 63u32) - BigUint::from(1u32);
+    let g1 = (&g >> 63u32).to_u64().unwrap();
+    let g0 = (&g & mask63).to_u64().unwrap();
+    (g1, g0)
+}
+
+/// Compute rop(cp * g / 2^127), matching JDK's rop function.
+fn rop(g1: u64, g0: u64, cp: u64) -> u64 {
+    let x1 = ((g0 as u128) * (cp as u128)) >> 64;
+    let y0 = g1.wrapping_mul(cp); // lower 64 bits of g1*cp
+    let y1 = ((g1 as u128) * (cp as u128)) >> 64; // upper 64 bits of g1*cp
+    let z = ((y0 >> 1) as u128) + x1;
+    let vbp = y1 + (z >> 63);
+    let round = ((z & 0x7FFF_FFFF_FFFF_FFFF) + 0x7FFF_FFFF_FFFF_FFFF) >> 63;
+    (vbp | round) as u64
+}
+
+/// Compute floor(a * b / 2^64) for unsigned 64-bit values.
+fn mul_high(a: u64, b: u64) -> u64 {
+    ((a as u128 * b as u128) >> 64) as u64
+}
+
+/// Core Schubfach algorithm using BigUint for exact boundary computation.
+/// Ported from JDK 17's DoubleToDecimal.toDecimal.
+fn schubfach_to_decimal(bits: u64) -> (u64, i32) {
 
     let t = bits & 0x000F_FFFF_FFFF_FFFF;
     let bq = ((bits >> 52) & 0x7FF) as i32;
@@ -231,82 +285,55 @@ fn schubfach_to_decimal(bits: u64) -> (u64, i32) {
         ((1u64 << 52) | t, bq - 1075)
     };
 
-    let out = (c & 1) as i32;
-    let cb: BigInt = BigInt::from(c) * 4;
-    let cbr: BigInt = &cb + 2;
-    let cbl: BigInt = if c == (1u64 << 52) && q > -1074 { &cb - 1 } else { &cb - 2 };
+    let out = (c & 1) as u64;
+    let cb = c << 2;
+    let cbr = cb + 2;
+    let cbl;
+    let k;
 
-    let k = flog10pow2(q);
+    if c != (1u64 << 52) || q == -1074 {
+        cbl = cb - 2;
+        k = flog10pow2(q);
+    } else {
+        cbl = cb - 1;
+        k = flog10_three_quarters_pow2(q);
+    }
+    let h = q + flog2pow10(-k) + 2;
 
-    // Compute vbl, vb, vbr = floor(cbl/cb/cbr * 2^q / 10^k)
-    // = floor(cbl/cb/cbr * 2^(q-k) / 5^k)
-    let compute_v = |cx: &BigInt| -> u64 {
-        let pow5: BigInt;
-        let result: BigInt;
-        if k <= 0 {
-            pow5 = BigInt::from(5).pow((-k) as u32);
-            let shift = q - k; // q + |k|
-            if shift >= 0 {
-                result = (cx * &pow5) << (shift as u32);
-            } else {
-                result = (cx * &pow5) >> ((-shift) as u32);
-            }
-        } else {
-            pow5 = BigInt::from(5).pow(k as u32);
-            let shift = q - k;
-            if shift >= 0 {
-                result = (cx << (shift as u32)) / &pow5;
-            } else {
-                result = cx / (&pow5 << ((-shift) as u32));
-            }
-        }
-        result.to_u64().unwrap_or(0)
-    };
+    // Compute vbl, vb, vbr using the JDK's rop function.
+    let (g1, g0) = compute_g(-k);
+    let vbl = rop(g1, g0, cbl << h);
+    let vb = rop(g1, g0, cb << h);
+    let vbr = rop(g1, g0, cbr << h);
 
-    let vbl = compute_v(&cbl);
-    let vb = compute_v(&cb);
-    let vbr = compute_v(&cbr);
-
-    // Find shortest decimal significand by removing trailing digits
-    let mut s = vb / 4;
-    let mut e = k;
-
-    loop {
-        let sp = s / 10;
-        let tp = vbl / 40;
-        let up = vbr / 40;
-        if tp < sp && sp < up {
-            s = sp;
-            e += 1;
-        } else {
-            break;
+    let s = vb >> 2;
+    if s >= 100 {
+        // Try to remove one digit: sp10 = floor(s/10) * 10
+        let sp10 = s / 10 * 10;
+        let tp10 = sp10 + 10;
+        let upin = vbl + out <= sp10 << 2;
+        let wpin = (tp10 << 2) + out <= vbr;
+        if upin != wpin {
+            let f = if upin { sp10 } else { tp10 };
+            return (f, k);
         }
     }
 
-    // Refine: determine exact significand using midpoint comparison
-    let w = 4 * s;
-    let u_in = vbr.saturating_sub(w);
-    let w_in = w.saturating_sub(vbl);
-
-    if u_in > 0 && w_in > 0 {
-        let mid = (w as i64) - (vb as i64);
-        if mid > 0 {
-            s -= 1;
-        } else if mid == 0 && s & 1 != 0 {
-            s -= 1;
-        }
-    } else if u_in == 0 && w_in > 0 {
-        s -= 1;
-    } else if w_in == 0 && out != 0 {
-        s -= 1;
+    // Cannot remove a digit (or s < 100). Determine s or s+1.
+    let t_val = s + 1;
+    let uin = vbl + out <= s << 2;
+    let win = (t_val << 2) + out <= vbr;
+    if uin != win {
+        let f = if uin { s } else { t_val };
+        return (f, k);
     }
-
-    (s, e)
+    // Both in range: pick closest to v.
+    let cmp = (vb as i64) - ((s + t_val) << 1) as i64;
+    let f = if cmp > 0 || (cmp == 0 && s & 1 != 0) { t_val } else { s };
+    (f, k)
 }
 
 /// Spark-compatible round for f64.
-///
-/// Replicates `BigDecimal(java.lang.Double.toString(v)).setScale(scale, HALF_UP).doubleValue()`.
 fn spark_round_via_bigdecimal_f64(v: f64, scale: i64) -> f64 {
     if !v.is_finite() {
         return v;
@@ -448,6 +475,55 @@ mod test {
         // Rust shortest-repr: digit at 10^5 is '5' -> rounds UP (Spark rounds DOWN)
         let expected: f64 = "-8.3163620750064005E18".parse().unwrap();
         assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_compute_g() {
+        let (g1, g0) = super::compute_g(16);
+        assert_eq!(g1, 0x470D_E4DF_8200_0000u64, "g1 mismatch for e=16");
+        assert_eq!(g0, 1u64, "g0 mismatch for e=16");
+
+        let (g1, g0) = super::compute_g(0);
+        assert_eq!(g1, 0x4000_0000_0000_0000u64, "g1 mismatch for e=0");
+        assert_eq!(g0, 1u64, "g0 mismatch for e=0");
+
+        let (g1, g0) = super::compute_g(3);
+        assert_eq!(g1, 0x7D00_0000_0000_0000u64, "g1 mismatch for e=3");
+        assert_eq!(g0, 1u64, "g0 mismatch for e=3");
+
+        let (g1, g0) = super::compute_g(-7);
+        assert_eq!(g1, 0x6B5F_CA6A_F2BD_215Eu64, "g1 mismatch for e=-7");
+        assert_eq!(g0, 0x0F4C_A41D_811A_46D4u64, "g0 mismatch for e=-7");
+
+        let (g1, g0) = super::compute_g(-16);
+        assert_eq!(g1, 0x734A_CA5F_6226_F0ADu64, "g1 mismatch for e=-16");
+        assert_eq!(g0, 0x530B_AF9A_1E62_6A6Du64, "g0 mismatch for e=-16");
+    }
+
+    #[test]
+    fn test_rop() {
+        let (g1, g0) = super::compute_g(-3);
+
+        let vbl = super::rop(g1, g0, 129943157421975768);
+        let vb = super::rop(g1, g0, 129943157421975776);
+        let vbr = super::rop(g1, g0, 129943157421975784);
+        eprintln!("g(-3): g1=0x{:016X} g0=0x{:016X}", g1, g0);
+        eprintln!("vbl={} vb={} vbr={}", vbl, vb, vbr);
+
+        let s = vb >> 2;
+        eprintln!("s={}", s);
+        let sp10 = s / 10 * 10;
+        let tp10 = sp10 + 10;
+        let out = 0u64;
+        let upin = vbl + out <= sp10 << 2;
+        let wpin = (tp10 << 2) + out <= vbr;
+        eprintln!("sp10={} tp10={} upin={} wpin={}", sp10, tp10, upin, wpin);
+
+        // Check s vs s+1
+        let t_val = s + 1;
+        let uin = vbl + out <= s << 2;
+        let win = (t_val << 2) + out <= vbr;
+        eprintln!("uin={} win={}", uin, win);
     }
 
     #[test]
