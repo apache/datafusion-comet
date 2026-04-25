@@ -30,7 +30,7 @@ import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.serde.{CommonStringExprs, Compatible, ExprOuterClass, Incompatible}
 import org.apache.comet.serde.ExprOuterClass.{BinaryOutputStyle, Expr}
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType}
 
 /**
  * `CometExprShim` acts as a shim for parsing expressions from different Spark versions.
@@ -130,7 +130,11 @@ trait CometExprShim extends CommonStringExprs {
 
       case ms: MapSort =>
         val childExpr = exprToProtoInternal(ms.child, inputs, binding)
-        val mapSortExpr = scalarFunctionExprToProto("map_sort", childExpr)
+        val mapSortExpr = scalarFunctionExprToProtoWithReturnType(
+          "map_sort",
+          ms.dataType,
+          failOnError = false,
+          childExpr)
         optExprWithInfo(mapSortExpr, ms, ms.child)
 
       case _ => None
