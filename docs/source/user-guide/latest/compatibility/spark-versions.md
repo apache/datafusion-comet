@@ -43,6 +43,24 @@ behavior across arithmetic, aggregates, and most cast expressions. A few
 `Cast` source/target combinations still fall back to Spark in ANSI mode;
 see the [Cast compatibility](expressions/cast.md) page for details.
 
+### Non-default collations
+
+Spark 4.0 adds collation support for `StringType` columns. Comet's native
+hashing, equality, and ordering compare raw UTF-8 bytes, which would put
+rows that compare equal under a non-default collation into different
+groups, partitions, or sort positions. Operations on columns with a
+non-default collation (group-by, distinct, sort, join keys, hash and
+range partitioning in shuffle) fall back to Spark. Columns using the
+session-default collation are unaffected.
+
+### V2 bucketing with partial cluster distribution
+
+Spark 4.0's DataSource V2 bucketing supports partially clustered
+distribution for storage-partitioned joins
+(`spark.sql.sources.v2.bucketing.partiallyClusteredDistribution.enabled`).
+Comet does not yet support this distribution and falls back to Spark for
+the affected exchange.
+
 ### Variant type
 
 The `VariantType` introduced in Spark 4.0 is not yet supported. Queries that
