@@ -34,8 +34,6 @@ Cast operations in Comet fall into three levels of support:
 
 Cast will fall back to Spark in some cases when ANSI mode is enabled. This can be enabled by setting `spark.comet.expression.Cast.allowIncompatible=true`. See the [Comet Supported Expressions Guide](../../expressions.md) for more information on this configuration setting.
 
-There is an [epic](https://github.com/apache/datafusion-comet/issues/313) where we are tracking the work to fully implement ANSI support.
-
 ## String to Decimal
 
 Comet's native `CAST(string AS DECIMAL)` implementation matches Apache Spark's behavior,
