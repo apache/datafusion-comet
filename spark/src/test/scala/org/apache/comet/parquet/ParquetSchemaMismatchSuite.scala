@@ -45,16 +45,16 @@ import org.apache.comet.CometConf
 // Behavior matrix (Spark reference behavior; Comet behavior is asserted by each
 // test). "OK" = read succeeds. "throw" = SparkException at runtime.
 //
-//   Case                                   3.4    3.5    4.0
-//   1. BINARY -> TIMESTAMP                 throw  throw  throw
-//   2. INT32 -> INT64                      throw  throw  OK (widening)
-//   3. INT96 LTZ -> TIMESTAMP_NTZ          throw  throw  throw
-//   4. Decimal(10,2) -> Decimal(5,0)       throw  throw  throw
-//   5. INT32 -> INT64 with rowgroup filter throw  throw  OK
-//   6. STRING -> INT                       throw  throw  throw
-//   7. TIMESTAMP_NTZ -> ARRAY<...>         throw  throw  throw
-//   C1. INT8 -> INT32                      OK     OK     OK
-//   C2. FLOAT -> DOUBLE                    OK     OK     OK
+//   Case                                   Spark 3.4  3.5    4.0    Comet native_datafusion  Comet native_iceberg_compat
+//   1. BINARY -> TIMESTAMP                 throw      throw  throw  throw                    throw
+//   2. INT32 -> INT64                      throw      throw  OK     OK (widened values)      throw
+//   3. INT96 LTZ -> TIMESTAMP_NTZ          throw      throw  throw  ?                        ?
+//   4. Decimal(10,2) -> Decimal(5,0)       throw      throw  throw  ?                        ?
+//   5. INT32 -> INT64 w/ rowgroup filter   throw      throw  OK     ?                        ?
+//   6. STRING -> INT                       throw      throw  throw  ?                        ?
+//   7. TIMESTAMP_NTZ -> ARRAY<...>         throw      throw  throw  ?                        ?
+//   C1. INT8 -> INT32                      OK         OK     OK     ?                        ?
+//   C2. FLOAT -> DOUBLE                    OK         OK     OK     ?                        ?
 class ParquetSchemaMismatchSuite extends CometTestBase {
   import testImplicits._
 
@@ -110,6 +110,34 @@ class ParquetSchemaMismatchSuite extends CometTestBase {
         intercept[SparkException] {
           df.collect()
         }
+      }
+    }
+  }
+
+  // Case 2: INT32 read as INT64 (value-preserving widening). Spark 3.4/3.5
+  // throw SparkException; Spark 4.0 allows widening.
+  // native_datafusion: succeeds with widened values (Pattern 1).
+  // native_iceberg_compat: throws SparkException (SchemaColumnConvertNotSupportedException
+  // from TypeUtil.checkParquetType); does not support INT32->INT64 widening.
+  test(s"int32 read as int64: ${CometConf.SCAN_NATIVE_DATAFUSION}") {
+    withMismatchedSchema(CometConf.SCAN_NATIVE_DATAFUSION) { path =>
+      Seq(1, 2, 3).toDF("c").write.parquet(path)
+      spark.read.schema("c bigint").parquet(path)
+    } { df =>
+      // Pattern 1 (value-preserving widening).
+      checkAnswer(df, Seq(1L, 2L, 3L).map(org.apache.spark.sql.Row(_)))
+    }
+  }
+
+  test(s"int32 read as int64: ${CometConf.SCAN_NATIVE_ICEBERG_COMPAT}") {
+    withMismatchedSchema(CometConf.SCAN_NATIVE_ICEBERG_COMPAT) { path =>
+      Seq(1, 2, 3).toDF("c").write.parquet(path)
+      spark.read.schema("c bigint").parquet(path)
+    } { df =>
+      // Pattern 3 (throw): native_iceberg_compat rejects INT32->INT64 widening
+      // via TypeUtil.checkParquetType (SchemaColumnConvertNotSupportedException).
+      intercept[SparkException] {
+        df.collect()
       }
     }
   }
