@@ -28,6 +28,7 @@ import org.apache.spark.TaskContext
 import org.apache.spark.internal.io.FileCommitProtocol
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.catalyst.catalog.CatalogTable
 import org.apache.spark.sql.execution.{SparkPlan, UnaryExecNode}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -64,7 +65,8 @@ case class CometNativeWriteExec(
     child: SparkPlan,
     outputPath: String,
     committer: Option[FileCommitProtocol] = None,
-    jobTrackerID: String = Utils.createTempDir().getName)
+    jobTrackerID: String = Utils.createTempDir().getName,
+    catalogTable: Option[CatalogTable] = None)
     extends CometNativeExec
     with UnaryExecNode {
 
@@ -134,6 +136,11 @@ case class CometNativeWriteExec(
           c.abortJob(jobContext)
           throw e
       }
+    }
+
+    // Refresh the catalog table cache so subsequent reads see the new data
+    catalogTable.foreach { ct =>
+      session.catalog.refreshTable(ct.identifier.quotedString)
     }
 
     // Return empty RDD as write operations don't return data
