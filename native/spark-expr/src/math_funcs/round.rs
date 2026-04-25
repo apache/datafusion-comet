@@ -194,7 +194,6 @@ fn decimal_round_f(scale: &i8, point: &i64) -> Box<dyn Fn(i128) -> i128> {
     }
 }
 
-
 /// Replicate JDK 17's `Double.toString` (Gay/dtoa algorithm) for Spark-compatible rounding.
 ///
 /// The Gay algorithm extracts decimal digits one at a time, stopping when the remainder
@@ -215,14 +214,21 @@ fn double_to_bigdecimal_like_java(v: f64) -> BigDecimal {
     let (fract_bits, bin_exp) = if bq == 0 {
         // Subnormal: normalize
         let lz = t.leading_zeros() as i32 - 11;
-        ((t << lz) & 0x000F_FFFF_FFFF_FFFF | (1u64 << 52), -1023 + 1 - lz)
+        (
+            (t << lz) & 0x000F_FFFF_FFFF_FFFF | (1u64 << 52),
+            -1023 + 1 - lz,
+        )
     } else {
         // Normal
         (t | (1u64 << 52), bq - 1023)
     };
 
     let n_fract_bits = 53 - fract_bits.trailing_zeros() as i32;
-    let n_sig_bits = if bq != 0 { 53 } else { 64 - (t.leading_zeros() as i32) };
+    let n_sig_bits = if bq != 0 {
+        53
+    } else {
+        64 - (t.leading_zeros() as i32)
+    };
     let n_tiny = (n_fract_bits - bin_exp - 1).max(0);
 
     // JDK fast path: for small exponents where the value fits in a long integer
@@ -237,11 +243,17 @@ fn double_to_bigdecimal_like_java(v: f64) -> BigDecimal {
         let insignificant = if bin_exp > n_sig_bits {
             let p2 = (bin_exp - n_sig_bits - 1) as usize;
             if p2 > 1 && p2 < 64 {
-                [0,0,0,0,1,1,1,2,2,2,3,3,3,3,4,4,4,5,5,5,6,6,6,6,7,7,7,
-                 8,8,8,9,9,9,9,10,10,10,11,11,11,12,12,12,12,13,13,13,14,14,14,
-                 15,15,15,15,16,16,16,17,17,17,18,18,18,19][p2]
-            } else { 0 }
-        } else { 0 };
+                [
+                    0, 0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 5, 5, 5, 6, 6, 6, 6, 7, 7,
+                    7, 8, 8, 8, 9, 9, 9, 9, 10, 10, 10, 11, 11, 11, 12, 12, 12, 12, 13, 13, 13, 14,
+                    14, 14, 15, 15, 15, 15, 16, 16, 16, 17, 17, 17, 18, 18, 18, 19,
+                ][p2]
+            } else {
+                0
+            }
+        } else {
+            0
+        };
         // Convert integer to BigDecimal, zeroing out insignificant trailing digits
         let mut long_str = long_val.to_string();
         if insignificant > 0 && insignificant < long_str.len() {
@@ -301,9 +313,23 @@ fn double_to_bigdecimal_like_java(v: f64) -> BigDecimal {
     // for the 'high' check. The JDK uses >= for the FDBigInteger path (large values)
     // and > for the int/long path (small values).
     let n_fract_bits_b2 = n_fract_bits + b2;
-    let n5_b5 = if (b5u as usize) < 25 { [0,3,5,7,10,12,14,17,19,21,24,26,28,31,33,35,38,40,42,45,47,49,52,54,56][b5u as usize] } else { b5 * 3 };
+    let n5_b5 = if (b5u as usize) < 25 {
+        [
+            0, 3, 5, 7, 10, 12, 14, 17, 19, 21, 24, 26, 28, 31, 33, 35, 38, 40, 42, 45, 47, 49, 52,
+            54, 56,
+        ][b5u as usize]
+    } else {
+        b5 * 3
+    };
     let bbits = n_fract_bits_b2 + n5_b5;
-    let n5_s5p1 = if ((s5u+1) as usize) < 25 { [0,3,5,7,10,12,14,17,19,21,24,26,28,31,33,35,38,40,42,45,47,49,52,54,56][(s5u+1) as usize] } else { (s5+1) * 3 };
+    let n5_s5p1 = if ((s5u + 1) as usize) < 25 {
+        [
+            0, 3, 5, 7, 10, 12, 14, 17, 19, 21, 24, 26, 28, 31, 33, 35, 38, 40, 42, 45, 47, 49, 52,
+            54, 56,
+        ][(s5u + 1) as usize]
+    } else {
+        (s5 + 1) * 3
+    };
     let ten_sbits = s2 + 1 + n5_s5p1;
     let use_bigint_path = bbits >= 64 || ten_sbits >= 64;
 
@@ -342,8 +368,16 @@ fn double_to_bigdecimal_like_java(v: f64) -> BigDecimal {
 
     #[cfg(test)]
     if abs_v > 1e18 {
-        eprintln!("DTOA: q={} low={} high={} dec_exp={} s_bits={} tens_bits={} m_bits={}",
-            q, low, high, dec_exp, s_val.bits(), tens.bits(), m_val.bits());
+        eprintln!(
+            "DTOA: q={} low={} high={} dec_exp={} s_bits={} tens_bits={} m_bits={}",
+            q,
+            low,
+            high,
+            dec_exp,
+            s_val.bits(),
+            tens.bits(),
+            m_val.bits()
+        );
     }
 
     if q == 0 && !high {
@@ -380,11 +414,20 @@ fn double_to_bigdecimal_like_java(v: f64) -> BigDecimal {
         iter_count += 1;
         #[cfg(test)]
         if abs_v > 1e18 {
-            eprintln!("  iter {}: q={} ndigits={} low={} high={} b_bits={} m_bits={}",
-                iter_count, q, digits.len(), low, high,
-                b_val.bits(), m_val.bits());
+            eprintln!(
+                "  iter {}: q={} ndigits={} low={} high={} b_bits={} m_bits={}",
+                iter_count,
+                q,
+                digits.len(),
+                low,
+                high,
+                b_val.bits(),
+                m_val.bits()
+            );
         }
-        if iter_count > 20 { break; } // safety
+        if iter_count > 20 {
+            break;
+        } // safety
     }
 
     // Final rounding
@@ -416,7 +459,11 @@ fn double_to_bigdecimal_like_java(v: f64) -> BigDecimal {
     let n_digits = digits.len() as i32;
     let scale = n_digits - (dec_exp + 1);
     let bd = BigDecimal::new(num::BigInt::from(sig), scale as i64);
-    if v < 0.0 { -bd } else { bd }
+    if v < 0.0 {
+        -bd
+    } else {
+        bd
+    }
 }
 
 fn round_up_digits(digits: &mut Vec<u8>, dec_exp: &mut i32) {
