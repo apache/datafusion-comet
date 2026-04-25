@@ -303,23 +303,14 @@ object CometRound extends CometExpressionSerde[Round] {
         exprToProtoInternal(Literal(null), inputs, binding)
       case _: ByteType | ShortType | IntegerType | LongType if _scale >= 0 =>
         childExpr // _scale(I.e. decimal place) >= 0 is a no-op for integer types in Spark
-      case _: FloatType | DoubleType =>
+      case _ =>
+        // `scale` must be Int64 type in DataFusion
+        val scaleExpr = exprToProtoInternal(Literal(_scale.toLong, LongType), inputs, binding)
+        // For FloatType | DoubleType,
         // Comet replicates Spark's BigDecimal(Double.toString(v)).setScale(scale, HALF_UP)
         // using ryu + bigdecimal in Rust. ryu matches JDK 12+ Double.toString (shortest
         // decimal representation). On JDK 8-11, Double.toString can produce more digits in
         // rare edge cases, leading to slightly different rounding at the boundary.
-        val scaleExpr = exprToProtoInternal(Literal(_scale.toLong, LongType), inputs, binding)
-        val optExpr =
-          scalarFunctionExprToProtoWithReturnType(
-            "round",
-            r.dataType,
-            r.ansiEnabled,
-            childExpr,
-            scaleExpr)
-        optExprWithInfo(optExpr, r, r.child)
-      case _ =>
-        // `scale` must be Int64 type in DataFusion
-        val scaleExpr = exprToProtoInternal(Literal(_scale.toLong, LongType), inputs, binding)
         val optExpr =
           scalarFunctionExprToProtoWithReturnType(
             "round",
