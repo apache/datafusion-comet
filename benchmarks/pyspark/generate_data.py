@@ -412,6 +412,53 @@ def generate_data(output_path: str, num_rows: int, num_partitions: int):
     spark.stop()
 
 
+def generate_short_strings_data(output_path: str, num_rows: int,
+                                num_partitions: int):
+    """Generate data matching the schema from issue #3882.
+
+    Reproduces the problematic scenario: 7 short unique string columns + 1
+    timestamp column. The original reporter saw 3x shuffle overhead with
+    204M records of this shape (25.1 B/record in Comet vs 8.3 B/record in
+    Spark).
+    """
+
+    spark = SparkSession.builder \
+        .appName("ShuffleBenchmark-DataGen-ShortStrings") \
+        .getOrCreate()
+
+    print(f"Generating {num_rows:,} rows with {num_partitions} partitions")
+    print(f"Output path: {output_path}")
+    print("Schema: 7 short unique string columns + 1 timestamp (issue #3882)")
+
+    df = spark.range(0, num_rows, numPartitions=num_partitions)
+
+    # 7 short random string columns + 1 timestamp, mimicking the reporter's
+    # schema. Uses uuid() to generate truly random strings that defeat
+    # compression, exposing Arrow IPC per-batch overhead.
+    df = df.selectExpr(
+        "substring(uuid(), 1, 8) as str_col_1",
+        "substring(uuid(), 1, 8) as str_col_2",
+        "substring(uuid(), 1, 8) as str_col_3",
+        "substring(uuid(), 1, 8) as str_col_4",
+        "substring(uuid(), 1, 8) as str_col_5",
+        "substring(uuid(), 1, 8) as str_col_6",
+        "substring(uuid(), 1, 8) as str_col_7",
+        # Timestamp column
+        "timestamp_seconds(1600000000 + id) as ts_col",
+    )
+
+    print(f"Generated schema with {len(df.columns)} columns")
+    df.printSchema()
+
+    df.write.mode("overwrite").parquet(output_path)
+
+    written_df = spark.read.parquet(output_path)
+    actual_count = written_df.count()
+    print(f"Wrote {actual_count:,} rows to {output_path}")
+
+    spark.stop()
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Generate test data for shuffle benchmark"
@@ -433,13 +480,24 @@ def main():
         default=None,
         help="Number of output partitions (default: auto based on cluster)"
     )
+    parser.add_argument(
+        "--schema", "-s",
+        choices=["wide", "short-strings"],
+        default="wide",
+        help="Schema to generate: 'wide' (100 columns with nested types) "
+             "or 'short-strings' (7 short unique strings + 1 timestamp, "
+             "matches issue #3882)"
+    )
 
     args = parser.parse_args()
 
     # Default partitions to a reasonable number if not specified
     num_partitions = args.partitions if args.partitions else 200
 
-    generate_data(args.output, args.rows, num_partitions)
+    if args.schema == "short-strings":
+        generate_short_strings_data(args.output, args.rows, num_partitions)
+    else:
+        generate_data(args.output, args.rows, num_partitions)
 
 
 if __name__ == "__main__":
