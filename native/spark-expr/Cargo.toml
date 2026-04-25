@@ -41,6 +41,8 @@ twox-hash = "2.1.2"
 rand = { workspace = true }
 hex = "0.4.3"
 base64 = "0.22.1"
+ryu = "1"
+bigdecimal = "0.4"
 
 [dev-dependencies]
 arrow = {workspace = true}

@@ -2849,7 +2849,19 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         Byte.MinValue,
         Byte.MaxValue,
         Short.MinValue,
-        Short.MaxValue)).foreach { value =>
+        Short.MaxValue,
+        Float.MinPositiveValue,
+        Float.MaxValue,
+        Float.NaN,
+        Float.MinValue,
+        Float.NegativeInfinity,
+        Float.PositiveInfinity,
+        Double.MinPositiveValue,
+        Double.MaxValue,
+        Double.NaN,
+        Double.MinValue,
+        Double.NegativeInfinity,
+        Double.PositiveInfinity)).foreach { value =>
       val data = Seq(value)
       withParquetTable(data, "tbl") {
         Seq(-1000, -100, -10, -1, 0, 1, 10, 100, 1000).foreach { scale =>

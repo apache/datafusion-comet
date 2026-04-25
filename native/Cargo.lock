@@ -2111,6 +2111,7 @@ version = "0.16.0"
 dependencies = [
  "arrow",
  "base64",
+ "bigdecimal",
  "chrono",
  "chrono-tz",
  "criterion",
@@ -2121,6 +2122,7 @@ dependencies = [
  "num",
  "rand 0.10.1",
  "regex",
+ "ryu",
  "serde_json",
  "tokio",
  "twox-hash",

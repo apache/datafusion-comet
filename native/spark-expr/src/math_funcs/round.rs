@@ -17,15 +17,14 @@
 
 use crate::arithmetic_overflow_error;
 use crate::math_funcs::utils::{get_precision_scale, make_decimal_array, make_decimal_scalar};
-use arrow::array::{Array, ArrowNativeTypeOp};
+use arrow::array::{Array, ArrowNativeTypeOp, Float32Array, Float64Array};
 use arrow::array::{Int16Array, Int32Array, Int64Array, Int8Array};
-use arrow::datatypes::{DataType, Field};
+use arrow::datatypes::DataType;
 use arrow::error::ArrowError;
-use datafusion::common::config::ConfigOptions;
+use bigdecimal::{BigDecimal, RoundingMode};
 use datafusion::common::{exec_err, internal_err, DataFusionError, ScalarValue};
-use datafusion::functions::math::round::RoundFunc;
-use datafusion::logical_expr::{ScalarFunctionArgs, ScalarUDFImpl};
 use datafusion::physical_plan::ColumnarValue;
+use std::str::FromStr;
 use std::{cmp::min, sync::Arc};
 
 macro_rules! integer_round {
@@ -110,8 +109,6 @@ pub fn spark_round(
     let ColumnarValue::Scalar(ScalarValue::Int64(Some(point))) = point else {
         return internal_err!("Invalid point argument for Round(): {:#?}", point);
     };
-    // DataFusion's RoundFunc expects Int32 for decimal_places
-    let point_i32 = ColumnarValue::Scalar(ScalarValue::Int32(Some(*point as i32)));
     match value {
         ColumnarValue::Array(array) => match array.data_type() {
             DataType::Int64 if *point < 0 => {
@@ -131,17 +128,19 @@ pub fn spark_round(
                 let (precision, scale) = get_precision_scale(data_type);
                 make_decimal_array(array, precision, scale, &f)
             }
-            DataType::Float32 | DataType::Float64 => {
-                let round_udf = RoundFunc::new();
-                let return_field = Arc::new(Field::new("round", array.data_type().clone(), true));
-                let args_for_round = ScalarFunctionArgs {
-                    args: vec![ColumnarValue::Array(Arc::clone(array)), point_i32.clone()],
-                    number_rows: array.len(),
-                    return_field,
-                    arg_fields: vec![],
-                    config_options: Arc::new(ConfigOptions::default()),
-                };
-                round_udf.invoke_with_args(args_for_round)
+            DataType::Float64 => {
+                let array = array.as_any().downcast_ref::<Float64Array>().unwrap();
+                let result: Float64Array = arrow::compute::kernels::arity::unary(array, |v| {
+                    spark_round_via_bigdecimal_f64(v, *point)
+                });
+                Ok(ColumnarValue::Array(Arc::new(result)))
+            }
+            DataType::Float32 => {
+                let array = array.as_any().downcast_ref::<Float32Array>().unwrap();
+                let result: Float32Array = arrow::compute::kernels::arity::unary(array, |v| {
+                    spark_round_via_bigdecimal_f32(v, *point)
+                });
+                Ok(ColumnarValue::Array(Arc::new(result)))
             }
             dt => exec_err!("Not supported datatype for ROUND: {dt}"),
         },
@@ -163,19 +162,14 @@ pub fn spark_round(
                 let (precision, scale) = get_precision_scale(data_type);
                 make_decimal_scalar(a, precision, scale, &f)
             }
-            ScalarValue::Float32(_) | ScalarValue::Float64(_) => {
-                let round_udf = RoundFunc::new();
-                let data_type = a.data_type();
-                let return_field = Arc::new(Field::new("round", data_type, true));
-                let args_for_round = ScalarFunctionArgs {
-                    args: vec![ColumnarValue::Scalar(a.clone()), point_i32.clone()],
-                    number_rows: 1,
-                    return_field,
-                    arg_fields: vec![],
-                    config_options: Arc::new(ConfigOptions::default()),
-                };
-                round_udf.invoke_with_args(args_for_round)
-            }
+            ScalarValue::Float64(Some(v)) => Ok(ColumnarValue::Scalar(ScalarValue::Float64(Some(
+                spark_round_via_bigdecimal_f64(*v, *point),
+            )))),
+            ScalarValue::Float64(None) => Ok(ColumnarValue::Scalar(ScalarValue::Float64(None))),
+            ScalarValue::Float32(Some(v)) => Ok(ColumnarValue::Scalar(ScalarValue::Float32(Some(
+                spark_round_via_bigdecimal_f32(*v, *point),
+            )))),
+            ScalarValue::Float32(None) => Ok(ColumnarValue::Scalar(ScalarValue::Float32(None))),
             dt => exec_err!("Not supported datatype for ROUND: {dt}"),
         },
     }
@@ -199,6 +193,37 @@ fn decimal_round_f(scale: &i8, point: &i64) -> Box<dyn Fn(i128) -> i128> {
         let half = div / 2;
         Box::new(move |x: i128| (x + x.signum() * half) / div)
     }
+}
+
+/// Spark-compatible round for f64.
+///
+/// Replicates `BigDecimal(java.lang.Double.toString(v)).setScale(scale, HALF_UP).doubleValue()`.
+/// `ryu` produces the same shortest decimal representation as Java's `Double.toString`.
+fn spark_round_via_bigdecimal_f64(v: f64, scale: i64) -> f64 {
+    if !v.is_finite() {
+        return v;
+    }
+    let mut buf = ryu::Buffer::new();
+    let s = buf.format(v);
+    let bd = BigDecimal::from_str(s).unwrap();
+    bd.with_scale_round(scale, RoundingMode::HalfUp)
+        .to_string()
+        .parse::<f64>()
+        .unwrap()
+}
+
+/// Spark-compatible round for f32.
+fn spark_round_via_bigdecimal_f32(v: f32, scale: i64) -> f32 {
+    if !v.is_finite() {
+        return v;
+    }
+    let mut buf = ryu::Buffer::new();
+    let s = buf.format(v);
+    let bd = BigDecimal::from_str(s).unwrap();
+    bd.with_scale_round(scale, RoundingMode::HalfUp)
+        .to_string()
+        .parse::<f32>()
+        .unwrap()
 }
 
 #[cfg(test)]
@@ -266,7 +291,7 @@ mod test {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)] // rounding does not work when miri enabled
+    #[cfg_attr(miri, ignore)]
     fn test_round_f64_scalar() -> Result<()> {
         let args = vec![
             ColumnarValue::Scalar(ScalarValue::Float64(Some(125.2345))),
@@ -278,6 +303,90 @@ mod test {
             unreachable!()
         };
         assert_eq!(result, 125.23);
+        Ok(())
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_round_f64_spark_bigdecimal_edge_case() {
+        use super::spark_round_via_bigdecimal_f64;
+        // From the Spark comment: -5.81855622136895E8 exact binary is
+        // -581855622.13689494..., but Double.toString produces -581855622.136895.
+        // At scale=5 the 6th fractional digit in the toString form is '5' → rounds up.
+        let v = -5.81855622136895E8_f64;
+        let result = spark_round_via_bigdecimal_f64(v, 5);
+        assert_eq!(result, -5.8185562213690E8_f64);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_round_f64_spark_bigdecimal_tostring_roundtrip() {
+        use super::spark_round_via_bigdecimal_f64;
+        // 6.1317116247283497E18 exact binary is 6131711624728349696.
+        // ryu (matching JDK 12+ Double.toString) produces "6.13171162472835e18"
+        // → BigDecimal = 6131711624728350000 → at scale=-5, the 5th digit
+        //   from right is '5' → HALF_UP rounds up → 6131711624728400000.
+        let v = 6.131_711_624_728_35E18_f64;
+        let result = spark_round_via_bigdecimal_f64(v, -5);
+        assert_eq!(result, 6.1317116247284E18_f64);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_round_f64_half_up() {
+        use super::spark_round_via_bigdecimal_f64;
+        assert_eq!(spark_round_via_bigdecimal_f64(2.5, 0), 3.0);
+        assert_eq!(spark_round_via_bigdecimal_f64(3.5, 0), 4.0);
+        assert_eq!(spark_round_via_bigdecimal_f64(-2.5, 0), -3.0);
+        assert_eq!(spark_round_via_bigdecimal_f64(-3.5, 0), -4.0);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_round_f64_special_values() {
+        use super::spark_round_via_bigdecimal_f64;
+        assert!(spark_round_via_bigdecimal_f64(f64::NAN, 2).is_nan());
+        assert_eq!(
+            spark_round_via_bigdecimal_f64(f64::INFINITY, 2),
+            f64::INFINITY
+        );
+        assert_eq!(
+            spark_round_via_bigdecimal_f64(f64::NEG_INFINITY, 2),
+            f64::NEG_INFINITY
+        );
+        assert_eq!(spark_round_via_bigdecimal_f64(0.0, 2), 0.0);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_round_f64_negative_scale() {
+        use super::spark_round_via_bigdecimal_f64;
+        assert_eq!(spark_round_via_bigdecimal_f64(123.456, -1), 120.0);
+        assert_eq!(spark_round_via_bigdecimal_f64(155.0, -2), 200.0);
+        assert_eq!(spark_round_via_bigdecimal_f64(-155.0, -2), -200.0);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_round_f32_spark_compatible() {
+        use super::spark_round_via_bigdecimal_f32;
+        assert_eq!(spark_round_via_bigdecimal_f32(2.5_f32, 0), 3.0_f32);
+        assert_eq!(spark_round_via_bigdecimal_f32(-2.5_f32, 0), -3.0_f32);
+        assert_eq!(spark_round_via_bigdecimal_f32(0.125_f32, 2), 0.13_f32);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_round_f64_null_scalar() -> Result<()> {
+        let args = vec![
+            ColumnarValue::Scalar(ScalarValue::Float64(None)),
+            ColumnarValue::Scalar(ScalarValue::Int64(Some(2))),
+        ];
+        let ColumnarValue::Scalar(ScalarValue::Float64(None)) =
+            spark_round(&args, &DataType::Float64, false)?
+        else {
+            unreachable!()
+        };
         Ok(())
     }
 }
