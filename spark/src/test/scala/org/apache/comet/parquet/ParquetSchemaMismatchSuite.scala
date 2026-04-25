@@ -49,7 +49,7 @@ import org.apache.comet.CometConf
 //   1. BINARY -> TIMESTAMP                 throw      throw  throw  throw                    throw
 //   2. INT32 -> INT64                      throw      throw  OK     OK (widened values)      throw
 //   3. INT96 LTZ -> TIMESTAMP_NTZ          throw      throw  throw  OK (silent, possible wall-clock diff)  throw
-//   4. Decimal(10,2) -> Decimal(5,0)       throw      throw  throw  ?                        ?
+//   4. Decimal(10,2) -> Decimal(5,0)       throw      throw  throw  OK (reads, values unverified)  throw
 //   5. INT32 -> INT64 w/ rowgroup filter   throw      throw  OK     ?                        ?
 //   6. STRING -> INT                       throw      throw  throw  ?                        ?
 //   7. TIMESTAMP_NTZ -> ARRAY<...>         throw      throw  throw  ?                        ?
@@ -179,6 +179,42 @@ class ParquetSchemaMismatchSuite extends CometTestBase {
     } { df =>
       // native_iceberg_compat throws SparkException via
       // TypeUtil.convertErrorForTimestampNTZ; matches Spark's behavior.
+      intercept[SparkException] {
+        df.collect()
+      }
+    }
+  }
+
+  // Case 4: Decimal(10,2) read as Decimal(5,0). Reading from a higher-precision
+  // decimal as a lower-precision decimal can lose data (123.45 cannot fit in
+  // decimal(5,0)). Spark throws on all versions (SPARK-34212).
+  test(s"decimal(10,2) read as decimal(5,0): ${CometConf.SCAN_NATIVE_DATAFUSION}") {
+    withMismatchedSchema(CometConf.SCAN_NATIVE_DATAFUSION) { path =>
+      Seq(BigDecimal("123.45"), BigDecimal("67.89"))
+        .toDF("d")
+        .selectExpr("cast(d as decimal(10,2)) as d")
+        .write
+        .parquet(path)
+      spark.read.schema("d decimal(5,0)").parquet(path)
+    } { df =>
+      // Pattern 3 (structural mismatch). Capture observed outcome.
+      val outcome = Try(df.collect())
+      assert(outcome.isSuccess, s"unexpected failure: $outcome")
+    }
+  }
+
+  test(s"decimal(10,2) read as decimal(5,0): ${CometConf.SCAN_NATIVE_ICEBERG_COMPAT}") {
+    withMismatchedSchema(CometConf.SCAN_NATIVE_ICEBERG_COMPAT) { path =>
+      Seq(BigDecimal("123.45"), BigDecimal("67.89"))
+        .toDF("d")
+        .selectExpr("cast(d as decimal(10,2)) as d")
+        .write
+        .parquet(path)
+      spark.read.schema("d decimal(5,0)").parquet(path)
+    } { df =>
+      // native_iceberg_compat throws SparkException via
+      // SchemaColumnConvertNotSupportedException (INT64 cannot convert to decimal(5,0));
+      // matches Spark's reference behavior.
       intercept[SparkException] {
         df.collect()
       }
