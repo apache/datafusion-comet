@@ -194,24 +194,49 @@ fn decimal_round_f(scale: &i8, point: &i64) -> Box<dyn Fn(i128) -> i128> {
     }
 }
 
-/// Replicate Java's `Double.toString` by finding the shortest decimal representation
-/// that uniquely identifies the double value.
+/// Replicate Java's `Double.toString` for use in Spark-compatible rounding.
 ///
-/// Java's `Double.toString` (Schubfach algorithm, JDK 17+) finds the shortest decimal
-/// string such that parsing it back gives the original double. For f64, this requires
-/// between 15 and 17 significant digits. We find the shortest by checking round-trip
-/// correctness at each precision.
-fn double_to_bigdecimal_like_java(v: f64) -> BigDecimal {
+/// Spark uses `BigDecimal(Double.toString(v)).setScale(scale, HALF_UP).doubleValue()`.
+/// Java's `Double.toString` produces the shortest decimal that uniquely identifies
+/// the double. We find this by trying precisions 15-17 significant digits.
+///
+/// When the shortest round-tripping representation and the exact binary representation
+/// agree on the final rounding result (which is the common case), the choice doesn't
+/// matter. When they disagree, we return the exact binary BigDecimal and let the caller
+/// round it — the final `.setScale()` result matches Spark because the exact value
+/// has enough precision to resolve the rounding boundary correctly.
+fn double_to_bigdecimal_like_java(v: f64, scale: i64) -> BigDecimal {
     let abs_v = v.abs();
+    let bits = abs_v.to_bits();
 
-    for prec in 14..=16usize {
-        let s = format!("{:.prec$e}", abs_v);
-        if s.parse::<f64>().unwrap() == abs_v {
-            return format!("{:.prec$e}", v).parse().unwrap();
-        }
+    if bits == 0 {
+        return BigDecimal::from(0);
     }
 
-    BigDecimal::try_from(v).unwrap()
+    let exact = BigDecimal::try_from(abs_v).unwrap();
+
+    // Find the shortest round-tripping precision
+    for prec in 14..=16usize {
+        let s = format!("{:.prec$e}", abs_v);
+        if s.parse::<f64>().unwrap() != abs_v {
+            continue;
+        }
+
+        let short_bd: BigDecimal = s.parse().unwrap();
+        let short_rounded = short_bd.with_scale_round(scale, RoundingMode::HalfUp);
+        let exact_rounded = exact.with_scale_round(scale, RoundingMode::HalfUp);
+
+        // If shortest and exact agree on the rounding result, use the shortest
+        // (matches Java's toString for this case). If they disagree, the digit at
+        // the rounding boundary is ambiguous and we fall through to use exact.
+        return if short_rounded == exact_rounded {
+            if v < 0.0 { -short_bd } else { short_bd }
+        } else {
+            if v < 0.0 { -exact } else { exact }
+        };
+    }
+
+    if v < 0.0 { -exact } else { exact }
 }
 
 /// Spark-compatible round for f64.
@@ -221,7 +246,7 @@ fn spark_round_via_bigdecimal_f64(v: f64, scale: i64) -> f64 {
     if !v.is_finite() {
         return v;
     }
-    let bd = double_to_bigdecimal_like_java(v);
+    let bd = double_to_bigdecimal_like_java(v, scale);
     bd.with_scale_round(scale, RoundingMode::HalfUp)
         .to_string()
         .parse::<f64>()
@@ -233,7 +258,7 @@ fn spark_round_via_bigdecimal_f32(v: f32, scale: i64) -> f32 {
     if !v.is_finite() {
         return v;
     }
-    let bd = double_to_bigdecimal_like_java(f64::from(v));
+    let bd = double_to_bigdecimal_like_java(f64::from(v), scale);
     bd.with_scale_round(scale, RoundingMode::HalfUp)
         .to_string()
         .parse::<f32>()
@@ -353,11 +378,10 @@ mod test {
         // Rust's Display (shortest repr) gives "-8316362075006450000" = 15 sig digits.
         // Java 17's Schubfach gives "-8.3163620750064497E18" = 17 sig digits (closer to exact).
         // Both are valid, but the different digit count causes different rounding at scale=-5.
-        // This is a known rare boundary case marked as Incompatible.
         let v: f64 = "-8316362075006449156".parse().unwrap();
         let result = spark_round_via_bigdecimal_f64(v, -5);
         // Rust shortest-repr: digit at 10^5 is '5' -> rounds UP (Spark rounds DOWN)
-        let expected: f64 = "-8.3163620750064998E18".parse().unwrap();
+        let expected: f64 = "-8.3163620750064005E18".parse().unwrap();
         assert_eq!(result, expected);
     }
 
