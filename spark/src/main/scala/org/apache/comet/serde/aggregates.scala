@@ -151,6 +151,9 @@ object CometCount extends CometAggregateExpressionSerde[Count] {
 
 object CometAverage extends CometAggregateExpressionSerde[Average] {
 
+  override def getIncompatibleReasons(): Seq[String] = Seq(
+    "Falls back to Spark in ANSI mode. Supports all numeric inputs except decimal types.")
+
   override def convert(
       aggExpr: AggregateExpression,
       avg: Average,
@@ -202,6 +205,8 @@ object CometAverage extends CometAggregateExpressionSerde[Average] {
 
 object CometSum extends CometAggregateExpressionSerde[Sum] {
 
+  override def getIncompatibleReasons(): Seq[String] = Seq("Falls back to Spark in ANSI mode.")
+
   override def convert(
       aggExpr: AggregateExpression,
       sum: Sum,
@@ -242,6 +247,10 @@ object CometSum extends CometAggregateExpressionSerde[Sum] {
 }
 
 object CometFirst extends CometAggregateExpressionSerde[First] {
+
+  override def getCompatibleNotes(): Seq[String] = Seq(
+    "This function is not deterministic. Results may not match Spark.")
+
   override def convert(
       aggExpr: AggregateExpression,
       first: First,
@@ -274,6 +283,10 @@ object CometFirst extends CometAggregateExpressionSerde[First] {
 }
 
 object CometLast extends CometAggregateExpressionSerde[Last] {
+
+  override def getCompatibleNotes(): Seq[String] = Seq(
+    "This function is not deterministic. Results may not match Spark.")
+
   override def convert(
       aggExpr: AggregateExpression,
       last: Last,
@@ -665,6 +678,12 @@ object CometBloomFilterAggregate extends CometAggregateExpressionSerde[BloomFilt
 }
 
 object CometCollectSet extends CometAggregateExpressionSerde[CollectSet] {
+
+  override def getIncompatibleReasons(): Seq[String] = Seq(
+    "Comet deduplicates NaN values (treats `NaN == NaN`) while Spark treats each NaN as a" +
+      s" distinct value. When `${COMET_EXEC_STRICT_FLOATING_POINT.key}=true`, `collect_set`" +
+      " on floating-point types falls back to Spark unless" +
+      " `spark.comet.expression.CollectSet.allowIncompatible=true` is set.")
 
   override def getSupportLevel(expr: CollectSet): SupportLevel = {
     if (COMET_EXEC_STRICT_FLOATING_POINT.get() &&

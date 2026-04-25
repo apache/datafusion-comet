@@ -17,6 +17,10 @@
 
 name: Run Miri Safety Checks
 
+concurrency:
+  group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
+  cancel-in-progress: true
+
 on:
   push:
     branches:

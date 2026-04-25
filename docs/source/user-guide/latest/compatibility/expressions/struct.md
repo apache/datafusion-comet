@@ -19,5 +19,5 @@ under the License.
 
 # Struct Expressions
 
-- **StructsToJson (to_json)**: Does not support `+Infinity` and `-Infinity` for numeric types (float, double).
-  [#3016](https://github.com/apache/datafusion-comet/issues/3016)
+<!--BEGIN:EXPR_COMPAT[struct]-->
+<!--END:EXPR_COMPAT-->
