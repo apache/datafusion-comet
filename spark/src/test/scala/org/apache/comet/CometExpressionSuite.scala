@@ -2913,8 +2913,10 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               for (n <- Seq("0.0", "-0.0", "0.5", "-0.5", "1.2", "-1.2")) {
                 checkSparkAnswerAndOperator(s"select round(cast(${n} as tinyint), ${s}) FROM tbl")
                 checkSparkAnswerAndOperator(s"select round(cast(${n} as float), ${s}) FROM tbl")
-                checkSparkAnswerAndOperator(s"select round(cast(${n} as decimal(38, 18)), ${s}) FROM tbl")
-                checkSparkAnswerAndOperator(s"select round(cast(${n} as decimal(20, 0)), ${s}) FROM tbl")
+                checkSparkAnswerAndOperator(
+                  s"select round(cast(${n} as decimal(38, 18)), ${s}) FROM tbl")
+                checkSparkAnswerAndOperator(
+                  s"select round(cast(${n} as decimal(20, 0)), ${s}) FROM tbl")
               }
               checkSparkAnswerAndOperator(s"select round(double('infinity'), ${s}) FROM tbl")
               checkSparkAnswerAndOperator(s"select round(double('-infinity'), ${s}) FROM tbl")
