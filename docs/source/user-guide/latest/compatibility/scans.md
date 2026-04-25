@@ -59,7 +59,7 @@ The following shared limitation may produce incorrect results without falling ba
 
 ## `native_datafusion` Limitations
 
-The `native_datafusion` scan has some additional limitations, mostly related to Parquet metadata. All of these
+The `native_datafusion` scan has some additional limitations, mostly related to Parquet metadata. The following
 cause Comet to fall back to Spark (including when using `auto` mode). Note that the `native_datafusion` scan
 requires `spark.comet.exec.enabled=true` because the scan node must be wrapped by `CometExecRule`.
 
@@ -71,6 +71,18 @@ requires `spark.comet.exec.enabled=true` because the scan node must be wrapped b
 - Duplicate field names in case-insensitive mode (e.g., a Parquet file with both `B` and `b` columns)
   are detected at read time and raise a `SparkRuntimeException` with error class `_LEGACY_ERROR_TEMP_2093`,
   matching Spark's behavior.
+
+The following limitation may produce different behavior or incorrect results without falling back to Spark:
+
+- Silent type coercion on Parquet schema mismatch. When the requested read schema does not match the
+  Parquet file's physical schema, Spark's vectorized reader normally throws a `SparkException`. The
+  `native_datafusion` scan inherits DataFusion's more permissive reader, which silently accepts or
+  coerces many of these reads. For value-preserving widenings (such as `INT32` read as `INT64`) the data
+  is read correctly but no exception is raised, which differs from Spark 3.x behavior. For incompatible
+  reads (such as binary read as timestamp, `TimestampLTZ` read as `TimestampNTZ`, or decimals with
+  incompatible precision/scale) the result may be incorrect. See
+  [issue #3720](https://github.com/apache/datafusion-comet/issues/3720) for the affected cases. This
+  applies on all supported Spark versions.
 
 ## `native_iceberg_compat` Limitations
 

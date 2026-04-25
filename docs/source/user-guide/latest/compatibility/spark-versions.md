@@ -69,8 +69,13 @@ read or produce variant columns fall back to Spark.
 ### Parquet type widening
 
 Spark 4.0 added broader support for reading Parquet files with widened types
-(for example, reading an `INT32` column as `BIGINT`). Comet supports the
-common integer widenings but does not yet cover the full set that Spark
-supports. Unsupported widenings are not detected as a fallback condition,
-so queries that rely on them may fail or return incorrect results rather
-than transparently falling back to Spark.
+(for example, reading an `INT32` column as `BIGINT`). Comet covers the common
+integer and floating-point widenings but does not yet implement the full set
+that Spark 4.0 supports, and unsupported widenings are not detected as a
+fallback condition.
+
+The underlying scan behavior, including silent acceptance of schema mismatches
+that Spark would reject, is documented under
+[`native_datafusion` Limitations](scans.md#native_datafusion-limitations) and
+applies on all supported Spark versions. Spark 4.0 exercises more of these
+paths because of its expanded widening rules.
