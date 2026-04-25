@@ -24,13 +24,13 @@ import org.apache.spark.sql.catalyst.expressions.json.StructsToJsonEvaluator
 import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.types.StringTypeWithCollation
-import org.apache.spark.sql.types.{BinaryType, BooleanType, DataTypes, StringType}
+import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, DataTypes, StringType}
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.serde.{CommonStringExprs, Compatible, ExprOuterClass, Incompatible}
 import org.apache.comet.serde.ExprOuterClass.{BinaryOutputStyle, Expr}
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType}
 
 /**
  * `CometExprShim` acts as a shim for parsing expressions from different Spark versions.
@@ -56,6 +56,28 @@ trait CometExprShim extends CommonStringExprs {
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
     expr match {
+      case knc: KnownNotContainsNull =>
+        // On Spark 4.0, array_compact rewrites to KnownNotContainsNull(ArrayFilter(IsNotNull)).
+        // Strip the wrapper and serialize the inner ArrayFilter as spark_array_compact.
+        knc.child match {
+          case filter: ArrayFilter =>
+            filter.function.children.headOption match {
+              case Some(_: IsNotNull) =>
+                val arrayChild = filter.left
+                val elementType = arrayChild.dataType.asInstanceOf[ArrayType].elementType
+                val arrayExprProto = exprToProtoInternal(arrayChild, inputs, binding)
+                val returnType = ArrayType(elementType)
+                val scalarExpr = scalarFunctionExprToProtoWithReturnType(
+                  "spark_array_compact",
+                  returnType,
+                  false,
+                  arrayExprProto)
+                optExprWithInfo(scalarExpr, knc, arrayChild)
+              case _ => exprToProtoInternal(knc.child, inputs, binding)
+            }
+          case _ => exprToProtoInternal(knc.child, inputs, binding)
+        }
+
       case s: StaticInvoke
           if s.staticObject == classOf[StringDecode] &&
             s.dataType.isInstanceOf[StringType] &&
@@ -108,12 +130,6 @@ trait CometExprShim extends CommonStringExprs {
         val childExprs = wb.children.map(exprToProtoInternal(_, inputs, binding))
         val optExpr = scalarFunctionExprToProto("width_bucket", childExprs: _*)
         optExprWithInfo(optExpr, wb, wb.children: _*)
-
-      // KnownNotContainsNull is a TaggingExpression added in Spark 4.0 that only
-      // changes schema metadata (containsNull = false). It has no runtime effect,
-      // so we pass through to the child expression.
-      case k: KnownNotContainsNull =>
-        exprToProtoInternal(k.child, inputs, binding)
 
       // In Spark 4.0, StructsToJson is a RuntimeReplaceable whose replacement is
       // Invoke(Literal(StructsToJsonEvaluator), "evaluate", ...). Reconstruct the
