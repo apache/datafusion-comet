@@ -285,4 +285,37 @@ class ParquetSchemaMismatchSuite extends CometTestBase {
         s"expected SparkException, got: $outcome")
     }
   }
+
+  // Case 7: TIMESTAMP_NTZ column read as ARRAY<TIMESTAMP_NTZ>. Spark throws on all
+  // versions (SPARK-45604) because the requested type is a list/group but the
+  // physical Parquet column is a scalar.
+  test(s"timestamp_ntz read as array<timestamp_ntz>: ${CometConf.SCAN_NATIVE_DATAFUSION}") {
+    withMismatchedSchema(CometConf.SCAN_NATIVE_DATAFUSION) { path =>
+      Seq(java.time.LocalDateTime.parse("2020-01-01T00:00:00"))
+        .toDF("ts")
+        .write
+        .parquet(path)
+      spark.read.schema("ts array<timestamp_ntz>").parquet(path)
+    } { df =>
+      val outcome = Try(df.collect())
+      assert(
+        outcome.isFailure && outcome.failed.get.isInstanceOf[SparkException],
+        s"expected SparkException, got: $outcome")
+    }
+  }
+
+  test(s"timestamp_ntz read as array<timestamp_ntz>: ${CometConf.SCAN_NATIVE_ICEBERG_COMPAT}") {
+    withMismatchedSchema(CometConf.SCAN_NATIVE_ICEBERG_COMPAT) { path =>
+      Seq(java.time.LocalDateTime.parse("2020-01-01T00:00:00"))
+        .toDF("ts")
+        .write
+        .parquet(path)
+      spark.read.schema("ts array<timestamp_ntz>").parquet(path)
+    } { df =>
+      val outcome = Try(df.collect())
+      assert(
+        outcome.isFailure && outcome.failed.get.isInstanceOf[SparkException],
+        s"expected SparkException, got: $outcome")
+    }
+  }
 }
