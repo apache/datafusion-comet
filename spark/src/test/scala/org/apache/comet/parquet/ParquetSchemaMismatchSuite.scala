@@ -54,7 +54,7 @@ import org.apache.comet.CometConf
 //   6. STRING -> INT                       throw      throw  throw  OK (garbage values)      throw
 //   7. TIMESTAMP_NTZ -> ARRAY<...>         throw      throw  throw  throw                    throw
 //   C1. INT8 -> INT32                      OK         OK     OK     OK (widened values)      OK (widened values)
-//   C2. FLOAT -> DOUBLE                    OK         OK     OK     ?                        ?
+//   C2. FLOAT -> DOUBLE                    OK         OK     OK     OK (widened values)      throw (diverges from Spark)
 class ParquetSchemaMismatchSuite extends CometTestBase {
   import testImplicits._
 
@@ -328,6 +328,35 @@ class ParquetSchemaMismatchSuite extends CometTestBase {
         spark.read.schema("c int").parquet(path)
       } { df =>
         checkAnswer(df, Seq(1, 2, 3).map(org.apache.spark.sql.Row(_)))
+      }
+    }
+  }
+
+  // Control C2: FLOAT -> DOUBLE widening. Allowed by Spark on all versions.
+  // native_datafusion: succeeds with widened values (Pattern 1).
+  // native_iceberg_compat: throws SparkException via TypeUtil.checkParquetType
+  // (SchemaColumnConvertNotSupportedException); does not support FLOAT->DOUBLE
+  // widening. This is a divergence from Spark's reference behavior.
+  test(s"float read as double (control): ${CometConf.SCAN_NATIVE_DATAFUSION}") {
+    withMismatchedSchema(CometConf.SCAN_NATIVE_DATAFUSION) { path =>
+      Seq(1.0f, 2.0f, 3.0f).toDF("c").write.parquet(path)
+      spark.read.schema("c double").parquet(path)
+    } { df =>
+      // Float -> Double is exact for these magnitudes.
+      checkAnswer(df, Seq(1.0d, 2.0d, 3.0d).map(org.apache.spark.sql.Row(_)))
+    }
+  }
+
+  test(s"float read as double (control): ${CometConf.SCAN_NATIVE_ICEBERG_COMPAT}") {
+    withMismatchedSchema(CometConf.SCAN_NATIVE_ICEBERG_COMPAT) { path =>
+      Seq(1.0f, 2.0f, 3.0f).toDF("c").write.parquet(path)
+      spark.read.schema("c double").parquet(path)
+    } { df =>
+      // native_iceberg_compat rejects FLOAT->DOUBLE widening via
+      // TypeUtil.checkParquetType (SchemaColumnConvertNotSupportedException).
+      // This diverges from Spark which allows this widening on all versions.
+      intercept[SparkException] {
+        df.collect()
       }
     }
   }
