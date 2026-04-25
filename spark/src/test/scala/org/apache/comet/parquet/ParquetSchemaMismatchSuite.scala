@@ -50,7 +50,7 @@ import org.apache.comet.CometConf
 //   2. INT32 -> INT64                      throw      throw  OK     OK (widened values)      throw
 //   3. INT96 LTZ -> TIMESTAMP_NTZ          throw      throw  throw  OK (silent, possible wall-clock diff)  throw
 //   4. Decimal(10,2) -> Decimal(5,0)       throw      throw  throw  OK (reads, values unverified)  throw
-//   5. INT32 -> INT64 w/ rowgroup filter   throw      throw  OK     ?                        ?
+//   5. INT32 -> INT64 w/ rowgroup filter   throw      throw  OK     OK (1 row, no overflow)  throw
 //   6. STRING -> INT                       throw      throw  throw  ?                        ?
 //   7. TIMESTAMP_NTZ -> ARRAY<...>         throw      throw  throw  ?                        ?
 //   C1. INT8 -> INT32                      OK         OK     OK     ?                        ?
@@ -215,6 +215,39 @@ class ParquetSchemaMismatchSuite extends CometTestBase {
       // native_iceberg_compat throws SparkException via
       // SchemaColumnConvertNotSupportedException (INT64 cannot convert to decimal(5,0));
       // matches Spark's reference behavior.
+      intercept[SparkException] {
+        df.collect()
+      }
+    }
+  }
+
+  // Case 5: regression guard for row group skipping. Write INT32 values near
+  // INT32 max, read as INT64 with a filter whose constant exceeds INT32 max.
+  // If the scan treats the filter as INT32, row-group skipping might overflow
+  // and skip rows that should match.
+  test(s"int32 read as int64 with row group filter: ${CometConf.SCAN_NATIVE_DATAFUSION}") {
+    withMismatchedSchema(CometConf.SCAN_NATIVE_DATAFUSION) { path =>
+      Seq(Int.MaxValue - 2, Int.MaxValue - 1, Int.MaxValue).toDF("c").write.parquet(path)
+      spark.read
+        .schema("c bigint")
+        .parquet(path)
+        .filter(s"c > ${Int.MaxValue.toLong - 1L}")
+    } { df =>
+      // Pattern 1: filter must not overflow when widened.
+      checkAnswer(df, Seq(Int.MaxValue.toLong).map(org.apache.spark.sql.Row(_)))
+    }
+  }
+
+  test(s"int32 read as int64 with row group filter: ${CometConf.SCAN_NATIVE_ICEBERG_COMPAT}") {
+    withMismatchedSchema(CometConf.SCAN_NATIVE_ICEBERG_COMPAT) { path =>
+      Seq(Int.MaxValue - 2, Int.MaxValue - 1, Int.MaxValue).toDF("c").write.parquet(path)
+      spark.read
+        .schema("c bigint")
+        .parquet(path)
+        .filter(s"c > ${Int.MaxValue.toLong - 1L}")
+    } { df =>
+      // native_iceberg_compat rejects INT32->INT64 widening (Case 2). The filter
+      // never runs.
       intercept[SparkException] {
         df.collect()
       }
