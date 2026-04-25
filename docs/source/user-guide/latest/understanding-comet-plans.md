@@ -70,7 +70,10 @@ Common reasons:
 
 - The Spark operator is not supported by Comet.
 - An expression inside an otherwise supported operator is not supported, or
-  is marked incompatible without `spark.comet.expr.allowIncompatible=true`.
+  is marked incompatible and the per-expression opt-in
+  `spark.comet.expression.<ExpressionName>.allowIncompatible=true` is not
+  set. Operators have an equivalent
+  `spark.comet.operator.<OperatorName>.allowIncompatible` opt-in.
 - A data type is not supported by the operator.
 - A configuration setting disables a specific operator or expression.
 
