@@ -291,7 +291,7 @@ mod test {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)]
+    #[cfg_attr(miri, ignore)] // rounding does not work when miri enabled
     fn test_round_f64_scalar() -> Result<()> {
         let args = vec![
             ColumnarValue::Scalar(ScalarValue::Float64(Some(125.2345))),
