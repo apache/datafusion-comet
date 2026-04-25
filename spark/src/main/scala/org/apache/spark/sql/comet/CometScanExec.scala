@@ -232,6 +232,17 @@ case class CometScanExec(
   }
 
   lazy val inputRDD: RDD[InternalRow] = {
+    // Validate per-file schema compatibility before reading any data.
+    // This must run here (not in doExecuteColumnar) because when CometScanExec is
+    // wrapped by a parent native operator (CometScanWrapper), the parent reads from
+    // inputRDD directly via JNI and doExecuteColumnar() is never called.
+    CometScanUtils.validatePerFileSchemaCompatibility(
+      relation.sparkSession.sessionState.newHadoopConfWithOptions(relation.options),
+      requiredSchema,
+      relation.partitionSchema.fieldNames.toSet,
+      relation.sparkSession.sessionState.conf.caseSensitiveAnalysis,
+      getFilePartitions())
+
     val options = relation.options +
       (FileFormat.OPTION_RETURNING_BATCH -> supportsColumnar.toString)
     val readFile: (PartitionedFile) => Iterator[InternalRow] =

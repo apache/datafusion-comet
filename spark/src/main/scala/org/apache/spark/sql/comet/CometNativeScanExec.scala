@@ -255,6 +255,14 @@ case class CometNativeScanExec(
     // Get file partitions from CometScanExec (handles bucketing, etc.)
     val filePartitions = scan.getFilePartitions()
 
+    // Validate per-file schema compatibility before native execution.
+    CometScanUtils.validatePerFileSchemaCompatibility(
+      relation.sparkSession.sessionState.newHadoopConfWithOptions(relation.options),
+      requiredSchema,
+      relation.partitionSchema.fieldNames.toSet,
+      relation.sparkSession.sessionState.conf.caseSensitiveAnalysis,
+      filePartitions)
+
     // Serialize each partition's files
     import org.apache.comet.serde.operator.partition2Proto
     val perPartitionBytes = filePartitions.map { filePartition =>
