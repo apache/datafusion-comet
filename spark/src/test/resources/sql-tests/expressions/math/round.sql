@@ -93,7 +93,7 @@ statement
 CREATE TABLE test_round_edge(d double) USING parquet
 
 statement
-INSERT INTO test_round_edge VALUES (-5.81855622136895E8)
+INSERT INTO test_round_edge VALUES (-5.81855622136895E8, 6.1317116247283497E18, 6.13171162472835E18)
 
 query
 SELECT round(d, 4), round(d, 5), round(d, 6) FROM test_round_edge

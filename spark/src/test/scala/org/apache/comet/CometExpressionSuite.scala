@@ -2861,10 +2861,12 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         Double.NaN,
         Double.MinValue,
         Double.NegativeInfinity,
-        Double.PositiveInfinity)).foreach { value =>
+        Double.PositiveInfinity,
+        -5.81855622136895E8,
+        6.1317116247283497E18)).foreach { value =>
       val data = Seq(value)
       withParquetTable(data, "tbl") {
-        Seq(-1000, -100, -10, -1, 0, 1, 10, 100, 1000).foreach { scale =>
+        Seq(-1000, -100, -10, -5, -1, 0, 1, 5, 10, 100, 1000).foreach { scale =>
           Seq(true, false).foreach { ansi =>
             withSQLConf(SQLConf.ANSI_ENABLED.key -> ansi.toString) {
               val res = spark.sql(s"SELECT round(_1, $scale) from tbl")

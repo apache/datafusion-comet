@@ -326,6 +326,9 @@ mod test {
         // ryu (matching JDK 12+ Double.toString) produces "6.13171162472835e18"
         // → BigDecimal = 6131711624728350000 → at scale=-5, the 5th digit
         //   from right is '5' → HALF_UP rounds up → 6131711624728400000.
+        let v = 6.1317116247283497E18_f64;
+        let result = spark_round_via_bigdecimal_f64(v, -5);
+        assert_eq!(result, 6.1317116247284E18_f64);
         let v = 6.131_711_624_728_35E18_f64;
         let result = spark_round_via_bigdecimal_f64(v, -5);
         assert_eq!(result, 6.1317116247284E18_f64);
