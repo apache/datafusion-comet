@@ -59,7 +59,7 @@ Cloud Service Providers.
 
 <!-- IF_SNAPSHOT -->
 
-This is a snapshot build of Comet. Published jar files are only available for released versions.
+This documentation is for the current development version of Comet. Published jar files are only available for released versions.
 To use this version of Comet, see [Building from source](source.md).
 
 <!-- ENDIF -->
