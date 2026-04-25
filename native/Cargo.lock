@@ -2122,7 +2122,6 @@ dependencies = [
  "num",
  "rand 0.10.1",
  "regex",
- "ryu",
  "serde_json",
  "tokio",
  "twox-hash",
