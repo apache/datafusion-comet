@@ -51,7 +51,7 @@ import org.apache.comet.CometConf
 //   3. INT96 LTZ -> TIMESTAMP_NTZ          throw      throw  throw  OK (silent, possible wall-clock diff)  throw
 //   4. Decimal(10,2) -> Decimal(5,0)       throw      throw  throw  OK (reads, values unverified)  throw
 //   5. INT32 -> INT64 w/ rowgroup filter   throw      throw  OK     OK (1 row, no overflow)  throw
-//   6. STRING -> INT                       throw      throw  throw  ?                        ?
+//   6. STRING -> INT                       throw      throw  throw  OK (garbage values)      throw
 //   7. TIMESTAMP_NTZ -> ARRAY<...>         throw      throw  throw  ?                        ?
 //   C1. INT8 -> INT32                      OK         OK     OK     ?                        ?
 //   C2. FLOAT -> DOUBLE                    OK         OK     OK     ?                        ?
@@ -251,6 +251,38 @@ class ParquetSchemaMismatchSuite extends CometTestBase {
       intercept[SparkException] {
         df.collect()
       }
+    }
+  }
+
+  // Case 6: STRING column read as INT. Spark's vectorized reader throws on all
+  // versions because BINARY (string) cannot be converted to INT32 at the
+  // physical Parquet level.
+  // native_datafusion: silently succeeds; reinterprets the BINARY bytes of each
+  // string as raw INT32 bytes (garbage values). Does NOT throw.
+  // native_iceberg_compat: throws SparkException (aligns with Spark).
+  test(s"string read as int: ${CometConf.SCAN_NATIVE_DATAFUSION}") {
+    withMismatchedSchema(CometConf.SCAN_NATIVE_DATAFUSION) { path =>
+      Seq("a", "b", "c").toDF("c").write.parquet(path)
+      spark.read.schema("c int").parquet(path)
+    } { df =>
+      // Pattern 2 (silent garbage): native_datafusion reinterprets string BINARY
+      // bytes as INT32 without throwing. Values are meaningless but the read
+      // succeeds with the expected row count.
+      val outcome = Try(df.collect())
+      assert(outcome.isSuccess, s"unexpected failure: $outcome")
+      assert(outcome.get.length == 3)
+    }
+  }
+
+  test(s"string read as int: ${CometConf.SCAN_NATIVE_ICEBERG_COMPAT}") {
+    withMismatchedSchema(CometConf.SCAN_NATIVE_ICEBERG_COMPAT) { path =>
+      Seq("a", "b", "c").toDF("c").write.parquet(path)
+      spark.read.schema("c int").parquet(path)
+    } { df =>
+      val outcome = Try(df.collect())
+      assert(
+        outcome.isFailure && outcome.failed.get.isInstanceOf[SparkException],
+        s"expected SparkException, got: $outcome")
     }
   }
 }
