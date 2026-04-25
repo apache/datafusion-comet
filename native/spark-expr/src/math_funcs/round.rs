@@ -358,6 +358,8 @@ mod test {
             f64::NEG_INFINITY
         );
         assert_eq!(spark_round_via_bigdecimal_f64(0.0, 2), 0.0);
+        assert_eq!(spark_round_via_bigdecimal_f64(-0.0, 2), 0.0);
+        assert_eq!(spark_round_via_bigdecimal_f64(f64::MIN_POSITIVE, 2), 0.0);
     }
 
     #[test]

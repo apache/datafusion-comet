@@ -2862,8 +2862,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         Double.MinValue,
         Double.NegativeInfinity,
         Double.PositiveInfinity,
-        -5.81855622136895E8,
-        6.1317116247283497E18)).foreach { value =>
+        -5.81855622136895e8,
+        6.1317116247283497e18)).foreach { value =>
       val data = Seq(value)
       withParquetTable(data, "tbl") {
         Seq(-1000, -100, -10, -5, -1, 0, 1, 5, 10, 100, 1000).foreach { scale =>
