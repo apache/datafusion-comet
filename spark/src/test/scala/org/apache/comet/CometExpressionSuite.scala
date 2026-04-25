@@ -2888,6 +2888,46 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("round") {
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        makeParquetFileAllPrimitiveTypes(
+          path,
+          dictionaryEnabled = dictionaryEnabled,
+          -128,
+          128,
+          randomSize = 100)
+        withParquetTable(path.toString, "tbl") {
+          for (s <- Seq(-5, -1, 0, 1, 5, -1000, 1000, -323, -308, 308, -15, 15, -16, 16, null)) {
+            // array tests
+            // TODO: enable test for unsigned ints (_9, _10, _11, _12)
+            for (c <- Seq(2, 3, 4, 5, 6, 7, 8, 13, 15, 16, 17)) {
+              checkSparkAnswerAndOperator(s"select _${c}, round(_${c}, ${s}) FROM tbl")
+            }
+            // scalar tests
+            // Exclude the constant folding optimizer in order to actually execute the native round
+            // operations for scalar (literal) values.
+            withSQLConf(
+              "spark.sql.optimizer.excludedRules" -> "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+              for (n <- Seq("0.0", "-0.0", "0.5", "-0.5", "1.2", "-1.2")) {
+                checkSparkAnswerAndOperator(s"select round(cast(${n} as tinyint), ${s}) FROM tbl")
+                checkSparkAnswerAndOperator(s"select round(cast(${n} as float), ${s}) FROM tbl")
+                checkSparkAnswerAndOperator(s"select round(cast(${n} as decimal(38, 18)), ${s}) FROM tbl")
+                checkSparkAnswerAndOperator(s"select round(cast(${n} as decimal(20, 0)), ${s}) FROM tbl")
+              }
+              checkSparkAnswerAndOperator(s"select round(double('infinity'), ${s}) FROM tbl")
+              checkSparkAnswerAndOperator(s"select round(double('-infinity'), ${s}) FROM tbl")
+              checkSparkAnswerAndOperator(s"select round(double('NaN'), ${s}) FROM tbl")
+              checkSparkAnswerAndOperator(
+                s"select round(double('0.000000000000000000000000000000000001'), ${s}) FROM tbl")
+            }
+          }
+        }
+      }
+    }
+  }
+
   test("test integral divide overflow for decimal") {
     // All inserted values produce a quotient > Decimal(38,0).max (~1e38), so they overflow
     // the intermediate decimal result type.  In legacy/try mode both Spark and Comet return

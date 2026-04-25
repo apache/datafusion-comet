@@ -98,6 +98,9 @@ INSERT INTO test_round_edge VALUES (-5.81855622136895E8, 6.1317116247283497E18, 
 query
 SELECT round(d, 4), round(d, 5), round(d, 6) FROM test_round_edge
 
+query
+SELECT round(cast('-8316362075006449156' as double), -5)
+
 -- round with column from table (not literals)
 query
 SELECT d, round(d, 0), round(d, 2), round(d, -1) FROM test_round
