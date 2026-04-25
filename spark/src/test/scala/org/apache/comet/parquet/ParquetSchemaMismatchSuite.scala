@@ -29,6 +29,7 @@ import org.apache.spark.sql.{CometTestBase, DataFrame}
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
+import org.apache.comet.CometSparkSessionExtensions
 
 /**
  * Documents Comet's behavior for the Parquet read-schema/file-schema mismatch cases tracked in
@@ -47,14 +48,14 @@ import org.apache.comet.CometConf
 //
 //   Case                                   Spark 3.4  3.5    4.0    Comet native_datafusion  Comet native_iceberg_compat
 //   1. BINARY -> TIMESTAMP                 throw      throw  throw  throw                    throw
-//   2. INT32 -> INT64                      throw      throw  OK     OK (widened values)      throw
-//   3. INT96 LTZ -> TIMESTAMP_NTZ          throw      throw  throw  OK (silent, possible wall-clock diff)  throw
+//   2. INT32 -> INT64                      throw      throw  OK     OK (widened values)      throw on 3.x / OK on 4.0 (COMET_SCHEMA_EVOLUTION_ENABLED defaults true)
+//   3. INT96 LTZ -> TIMESTAMP_NTZ          throw      throw  throw  OK (silent, possible wall-clock diff)  throw on 3.x / OK on 4.0 (isSpark40Plus guard in TypeUtil)
 //   4. Decimal(10,2) -> Decimal(5,0)       throw      throw  throw  OK (reads, values unverified)  throw
-//   5. INT32 -> INT64 w/ rowgroup filter   throw      throw  OK     OK (1 row, no overflow)  throw
+//   5. INT32 -> INT64 w/ rowgroup filter   throw      throw  OK     OK (1 row, no overflow)  throw on 3.x / OK on 4.0 (COMET_SCHEMA_EVOLUTION_ENABLED defaults true)
 //   6. STRING -> INT                       throw      throw  throw  OK (garbage values)      throw
 //   7. TIMESTAMP_NTZ -> ARRAY<...>         throw      throw  throw  throw                    throw
 //   C1. INT8 -> INT32                      OK         OK     OK     OK (widened values)      OK (widened values)
-//   C2. FLOAT -> DOUBLE                    OK         OK     OK     OK (widened values)      throw (diverges from Spark)
+//   C2. FLOAT -> DOUBLE                    OK         OK     OK     OK (widened values)      throw on 3.x / OK on 4.0 (COMET_SCHEMA_EVOLUTION_ENABLED defaults true)
 class ParquetSchemaMismatchSuite extends CometTestBase {
   import testImplicits._
 
@@ -117,8 +118,9 @@ class ParquetSchemaMismatchSuite extends CometTestBase {
   // Case 2: INT32 read as INT64 (value-preserving widening). Spark 3.4/3.5
   // throw SparkException; Spark 4.0 allows widening.
   // native_datafusion: succeeds with widened values (Pattern 1).
-  // native_iceberg_compat: throws SparkException (SchemaColumnConvertNotSupportedException
-  // from TypeUtil.checkParquetType); does not support INT32->INT64 widening.
+  // native_iceberg_compat: throws SparkException on Spark 3.x (SchemaColumnConvertNotSupportedException
+  // from TypeUtil.checkParquetType); on Spark 4.0 COMET_SCHEMA_EVOLUTION_ENABLED defaults to true
+  // so the widening is allowed and succeeds with widened values.
   test(s"int32 read as int64: ${CometConf.SCAN_NATIVE_DATAFUSION}") {
     withMismatchedSchema(CometConf.SCAN_NATIVE_DATAFUSION) { path =>
       Seq(1, 2, 3).toDF("c").write.parquet(path)
@@ -134,10 +136,16 @@ class ParquetSchemaMismatchSuite extends CometTestBase {
       Seq(1, 2, 3).toDF("c").write.parquet(path)
       spark.read.schema("c bigint").parquet(path)
     } { df =>
-      // Pattern 3 (throw): native_iceberg_compat rejects INT32->INT64 widening
-      // via TypeUtil.checkParquetType (SchemaColumnConvertNotSupportedException).
-      intercept[SparkException] {
-        df.collect()
+      // On Spark 3.x: native_iceberg_compat rejects INT32->INT64 widening via
+      // TypeUtil.checkParquetType (SchemaColumnConvertNotSupportedException).
+      // On Spark 4.0: COMET_SCHEMA_EVOLUTION_ENABLED defaults to true so widening
+      // is allowed and succeeds with correctly widened values.
+      if (CometSparkSessionExtensions.isSpark40Plus) {
+        checkAnswer(df, Seq(1L, 2L, 3L).map(org.apache.spark.sql.Row(_)))
+      } else {
+        intercept[SparkException] {
+          df.collect()
+        }
       }
     }
   }
@@ -146,8 +154,9 @@ class ParquetSchemaMismatchSuite extends CometTestBase {
   // versions (SPARK-36182). INT96 carries no timezone info in the Parquet
   // schema, so native_datafusion cannot detect the LTZ -> NTZ mismatch and
   // silently reads (possibly with a wrong wall-clock value).
-  // native_iceberg_compat throws via TypeUtil.convertErrorForTimestampNTZ
-  // (mirrors Spark's behavior).
+  // native_iceberg_compat throws via TypeUtil.convertErrorForTimestampNTZ on
+  // Spark 3.x (mirrors Spark's behavior). On Spark 4.0, TypeUtil.checkParquetType
+  // has an isSpark40Plus guard that bypasses the INT96 check, so the read succeeds.
   test(s"int96 timestamp_ltz read as timestamp_ntz: ${CometConf.SCAN_NATIVE_DATAFUSION}") {
     withMismatchedSchema(CometConf.SCAN_NATIVE_DATAFUSION) { path =>
       withSQLConf(SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> "INT96") {
@@ -177,10 +186,17 @@ class ParquetSchemaMismatchSuite extends CometTestBase {
       }
       spark.read.schema("ts timestamp_ntz").parquet(path)
     } { df =>
-      // native_iceberg_compat throws SparkException via
+      // On Spark 3.x: native_iceberg_compat throws SparkException via
       // TypeUtil.convertErrorForTimestampNTZ; matches Spark's behavior.
-      intercept[SparkException] {
-        df.collect()
+      // On Spark 4.0: isSpark40Plus guard in TypeUtil.checkParquetType bypasses
+      // the INT96 check so the read succeeds silently (row count verified only;
+      // the wall-clock value may differ due to LTZ->NTZ reinterpretation).
+      if (CometSparkSessionExtensions.isSpark40Plus) {
+        assert(df.collect().length == 1)
+      } else {
+        intercept[SparkException] {
+          df.collect()
+        }
       }
     }
   }
@@ -246,10 +262,16 @@ class ParquetSchemaMismatchSuite extends CometTestBase {
         .parquet(path)
         .filter(s"c > ${Int.MaxValue.toLong - 1L}")
     } { df =>
-      // native_iceberg_compat rejects INT32->INT64 widening (Case 2). The filter
-      // never runs.
-      intercept[SparkException] {
-        df.collect()
+      // On Spark 3.x: native_iceberg_compat rejects INT32->INT64 widening (Case 2)
+      // so the filter never runs and a SparkException is thrown.
+      // On Spark 4.0: COMET_SCHEMA_EVOLUTION_ENABLED defaults to true so widening
+      // is allowed; the filter runs correctly without overflow and returns 1 row.
+      if (CometSparkSessionExtensions.isSpark40Plus) {
+        checkAnswer(df, Seq(Int.MaxValue.toLong).map(org.apache.spark.sql.Row(_)))
+      } else {
+        intercept[SparkException] {
+          df.collect()
+        }
       }
     }
   }
@@ -334,9 +356,10 @@ class ParquetSchemaMismatchSuite extends CometTestBase {
 
   // Control C2: FLOAT -> DOUBLE widening. Allowed by Spark on all versions.
   // native_datafusion: succeeds with widened values (Pattern 1).
-  // native_iceberg_compat: throws SparkException via TypeUtil.checkParquetType
-  // (SchemaColumnConvertNotSupportedException); does not support FLOAT->DOUBLE
-  // widening. This is a divergence from Spark's reference behavior.
+  // native_iceberg_compat on Spark 3.x: throws SparkException via TypeUtil.checkParquetType
+  // (SchemaColumnConvertNotSupportedException); diverges from Spark's reference behavior.
+  // native_iceberg_compat on Spark 4.0: COMET_SCHEMA_EVOLUTION_ENABLED defaults to true
+  // so the widening is allowed and succeeds with widened values (matches Spark).
   test(s"float read as double (control): ${CometConf.SCAN_NATIVE_DATAFUSION}") {
     withMismatchedSchema(CometConf.SCAN_NATIVE_DATAFUSION) { path =>
       Seq(1.0f, 2.0f, 3.0f).toDF("c").write.parquet(path)
@@ -352,11 +375,17 @@ class ParquetSchemaMismatchSuite extends CometTestBase {
       Seq(1.0f, 2.0f, 3.0f).toDF("c").write.parquet(path)
       spark.read.schema("c double").parquet(path)
     } { df =>
-      // native_iceberg_compat rejects FLOAT->DOUBLE widening via
-      // TypeUtil.checkParquetType (SchemaColumnConvertNotSupportedException).
-      // This diverges from Spark which allows this widening on all versions.
-      intercept[SparkException] {
-        df.collect()
+      // On Spark 3.x: native_iceberg_compat rejects FLOAT->DOUBLE widening via
+      // TypeUtil.checkParquetType (SchemaColumnConvertNotSupportedException);
+      // diverges from Spark which allows this widening on all versions.
+      // On Spark 4.0: COMET_SCHEMA_EVOLUTION_ENABLED defaults to true so widening
+      // is allowed and succeeds with correctly widened values (matches Spark).
+      if (CometSparkSessionExtensions.isSpark40Plus) {
+        checkAnswer(df, Seq(1.0d, 2.0d, 3.0d).map(org.apache.spark.sql.Row(_)))
+      } else {
+        intercept[SparkException] {
+          df.collect()
+        }
       }
     }
   }
