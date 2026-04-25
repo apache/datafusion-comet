@@ -194,18 +194,12 @@ fn decimal_round_f(scale: &i8, point: &i64) -> Box<dyn Fn(i128) -> i128> {
     }
 }
 
-/// Replicate Java's `Double.toString` for use in Spark-compatible rounding.
+/// Replicate Java's `Double.toString` via the Schubfach algorithm.
 ///
-/// Spark uses `BigDecimal(Double.toString(v)).setScale(scale, HALF_UP).doubleValue()`.
-/// Java's `Double.toString` produces the shortest decimal that uniquely identifies
-/// the double. We find this by trying precisions 15-17 significant digits.
-///
-/// When the shortest round-tripping representation and the exact binary representation
-/// agree on the final rounding result (which is the common case), the choice doesn't
-/// matter. When they disagree, we return the exact binary BigDecimal and let the caller
-/// round it — the final `.setScale()` result matches Spark because the exact value
-/// has enough precision to resolve the rounding boundary correctly.
-fn double_to_bigdecimal_like_java(v: f64, scale: i64) -> BigDecimal {
+/// Computes the BigDecimal value that `new BigDecimal(Double.toString(v))` would produce,
+/// matching JDK 17's Schubfach algorithm. The algorithm finds the shortest decimal
+/// significand within the interval [vbl, vbr] that uniquely identifies the double.
+fn double_to_bigdecimal_like_java(v: f64) -> BigDecimal {
     let abs_v = v.abs();
     let bits = abs_v.to_bits();
 
@@ -213,30 +207,101 @@ fn double_to_bigdecimal_like_java(v: f64, scale: i64) -> BigDecimal {
         return BigDecimal::from(0);
     }
 
-    let exact = BigDecimal::try_from(abs_v).unwrap();
+    let (f, e) = schubfach_to_decimal(bits);
+    let bd = BigDecimal::new(num::BigInt::from(f as i64), -(e as i64));
+    if v < 0.0 { -bd } else { bd }
+}
 
-    // Find the shortest round-tripping precision
-    for prec in 14..=16usize {
-        let s = format!("{:.prec$e}", abs_v);
-        if s.parse::<f64>().unwrap() != abs_v {
-            continue;
-        }
+/// Compute floor(q * log10(2))
+fn flog10pow2(q: i32) -> i32 {
+    ((q as i64 * 315653) >> 20) as i32
+}
 
-        let short_bd: BigDecimal = s.parse().unwrap();
-        let short_rounded = short_bd.with_scale_round(scale, RoundingMode::HalfUp);
-        let exact_rounded = exact.with_scale_round(scale, RoundingMode::HalfUp);
+/// Core Schubfach algorithm using BigInt for overflow-safe arithmetic.
+fn schubfach_to_decimal(bits: u64) -> (u64, i32) {
+    use num::BigInt;
+    use num::ToPrimitive;
 
-        // If shortest and exact agree on the rounding result, use the shortest
-        // (matches Java's toString for this case). If they disagree, the digit at
-        // the rounding boundary is ambiguous and we fall through to use exact.
-        return if short_rounded == exact_rounded {
-            if v < 0.0 { -short_bd } else { short_bd }
+    let t = bits & 0x000F_FFFF_FFFF_FFFF;
+    let bq = ((bits >> 52) & 0x7FF) as i32;
+
+    let (c, q) = if bq == 0 {
+        (t, -1074i32)
+    } else {
+        ((1u64 << 52) | t, bq - 1075)
+    };
+
+    let out = (c & 1) as i32;
+    let cb: BigInt = BigInt::from(c) * 4;
+    let cbr: BigInt = &cb + 2;
+    let cbl: BigInt = if c == (1u64 << 52) && q > -1074 { &cb - 1 } else { &cb - 2 };
+
+    let k = flog10pow2(q);
+
+    // Compute vbl, vb, vbr = floor(cbl/cb/cbr * 2^q / 10^k)
+    // = floor(cbl/cb/cbr * 2^(q-k) / 5^k)
+    let compute_v = |cx: &BigInt| -> u64 {
+        let pow5: BigInt;
+        let result: BigInt;
+        if k <= 0 {
+            pow5 = BigInt::from(5).pow((-k) as u32);
+            let shift = q - k; // q + |k|
+            if shift >= 0 {
+                result = (cx * &pow5) << (shift as u32);
+            } else {
+                result = (cx * &pow5) >> ((-shift) as u32);
+            }
         } else {
-            if v < 0.0 { -exact } else { exact }
-        };
+            pow5 = BigInt::from(5).pow(k as u32);
+            let shift = q - k;
+            if shift >= 0 {
+                result = (cx << (shift as u32)) / &pow5;
+            } else {
+                result = cx / (&pow5 << ((-shift) as u32));
+            }
+        }
+        result.to_u64().unwrap_or(0)
+    };
+
+    let vbl = compute_v(&cbl);
+    let vb = compute_v(&cb);
+    let vbr = compute_v(&cbr);
+
+    // Find shortest decimal significand by removing trailing digits
+    let mut s = vb / 4;
+    let mut e = k;
+
+    loop {
+        let sp = s / 10;
+        let tp = vbl / 40;
+        let up = vbr / 40;
+        if tp < sp && sp < up {
+            s = sp;
+            e += 1;
+        } else {
+            break;
+        }
     }
 
-    if v < 0.0 { -exact } else { exact }
+    // Refine: determine exact significand using midpoint comparison
+    let w = 4 * s;
+    let u_in = vbr.saturating_sub(w);
+    let w_in = w.saturating_sub(vbl);
+
+    if u_in > 0 && w_in > 0 {
+        let mid = (w as i64) - (vb as i64);
+        if mid > 0 {
+            s -= 1;
+        } else if mid == 0 && s & 1 != 0 {
+            s -= 1;
+        }
+    } else if u_in == 0 && w_in > 0 {
+        s -= 1;
+    } else if w_in == 0 && out != 0 {
+        s -= 1;
+    }
+
+    (s, e)
 }
 
 /// Spark-compatible round for f64.
@@ -246,7 +311,7 @@ fn spark_round_via_bigdecimal_f64(v: f64, scale: i64) -> f64 {
     if !v.is_finite() {
         return v;
     }
-    let bd = double_to_bigdecimal_like_java(v, scale);
+    let bd = double_to_bigdecimal_like_java(v);
     bd.with_scale_round(scale, RoundingMode::HalfUp)
         .to_string()
         .parse::<f64>()
@@ -258,7 +323,7 @@ fn spark_round_via_bigdecimal_f32(v: f32, scale: i64) -> f32 {
     if !v.is_finite() {
         return v;
     }
-    let bd = double_to_bigdecimal_like_java(f64::from(v), scale);
+    let bd = double_to_bigdecimal_like_java(f64::from(v));
     bd.with_scale_round(scale, RoundingMode::HalfUp)
         .to_string()
         .parse::<f32>()
