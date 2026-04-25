@@ -47,7 +47,7 @@ import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
-import org.apache.comet.{CometConf, CometExplainInfo, ExtendedExplainInfo}
+import org.apache.comet.{CometConf, CometCoverageStats, CometExplainInfo, ExtendedExplainInfo}
 import org.apache.comet.CometConf.{COMET_SPARK_TO_ARROW_ENABLED, COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST}
 import org.apache.comet.CometSparkSessionExtensions._
 import org.apache.comet.rules.CometExecRule.allExecs
@@ -576,7 +576,7 @@ case class CometExecRule(session: SparkSession)
 
       // Convert native execution block by linking consecutive native operators.
       var firstNativeOp = true
-      newPlan.transformDown {
+      val finalPlan = newPlan.transformDown {
         case op: CometNativeExec =>
           val newPlan = if (firstNativeOp) {
             firstNativeOp = false
@@ -607,6 +607,22 @@ case class CometExecRule(session: SparkSession)
           firstNativeOp = true
           op
       }
+
+      // Check coverage threshold - if the fraction of converted operators is too low,
+      // fall back to the original Spark plan.
+      val threshold = CometConf.COMET_EXEC_COVERAGE_THRESHOLD.get(conf)
+      if (threshold > 0.0) {
+        val stats = CometCoverageStats.fromPlan(finalPlan)
+        if (stats.eligible > 0 && stats.coverageFraction < threshold) {
+          logWarning(
+            s"Comet native coverage ${(stats.coverageFraction * 100).toInt}% " +
+              s"is below threshold ${(threshold * 100).toInt}% " +
+              s"($stats). Falling back to Spark plan.")
+          return plan
+        }
+      }
+
+      finalPlan
     }
   }
 

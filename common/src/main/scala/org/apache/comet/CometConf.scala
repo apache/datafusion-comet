@@ -259,6 +259,18 @@ object CometConf extends ShimCometConf {
     .booleanConf
     .createWithDefault(true)
 
+  val COMET_EXEC_COVERAGE_THRESHOLD: ConfigEntry[Double] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.coverageThreshold")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Minimum fraction of eligible operators that must be converted to Comet native " +
+          "operators for the native plan to be used. If the coverage is below this threshold, " +
+          "Comet falls back to the original Spark plan. A value of 0.0 disables this check. " +
+          "For example, 0.5 means at least 50% of eligible operators must be Comet-accelerated.")
+      .doubleConf
+      .checkValue(v => v >= 0.0 && v <= 1.0, "Coverage threshold must be between 0.0 and 1.0")
+      .createWithDefault(0.0)
+
   val COMET_EXEC_PROJECT_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("project", defaultValue = true)
   val COMET_EXEC_FILTER_ENABLED: ConfigEntry[Boolean] =
