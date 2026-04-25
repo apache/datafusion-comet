@@ -58,11 +58,14 @@ Cloud Service Providers.
 ## Using a Published JAR File
 
 <!-- IF_SNAPSHOT -->
+
 This is a snapshot build of Comet. Published jar files are only available for released versions.
 To use this version of Comet, see [Building from source](source.md).
+
 <!-- ENDIF -->
 
 <!-- IF_RELEASE -->
+
 Comet jar files are available in [Maven Central](https://central.sonatype.com/namespace/org.apache.datafusion) for amd64 and arm64 architectures for Linux. For Apple macOS, it
 is currently necessary to build from source.
 
