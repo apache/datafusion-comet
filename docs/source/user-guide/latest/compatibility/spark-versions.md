@@ -39,10 +39,9 @@ specific to Spark 4.0 features that Comet has not yet implemented.
 ### ANSI mode
 
 Spark 4.0 enables ANSI mode by default. Comet has good coverage for ANSI
-behavior across arithmetic, aggregates (including `Sum` and `Average`),
-and most cast expressions. A few `Cast` source/target combinations still
-fall back to Spark in ANSI mode; see the
-[Cast compatibility](expressions/cast.md) page for details.
+behavior across arithmetic, aggregates, and most cast expressions. A few
+`Cast` source/target combinations still fall back to Spark in ANSI mode;
+see the [Cast compatibility](expressions/cast.md) page for details.
 
 ### Variant type
 
