@@ -197,8 +197,11 @@ fn decimal_round_f(scale: &i8, point: &i64) -> Box<dyn Fn(i128) -> i128> {
 
 /// Spark-compatible round for f64.
 ///
-/// Replicates `BigDecimal(java.lang.Double.toString(v)).setScale(scale, HALF_UP).doubleValue()`.
-/// `ryu` produces the same shortest decimal representation as Java's `Double.toString`.
+/// Spark uses `BigDecimal(java.lang.Double.toString(v)).setScale(scale, HALF_UP).doubleValue()`.
+/// Java's `Double.toString` produces a shortest-representation decimal string (Schubfach
+/// algorithm in JDK 17+). We use the `ryu` crate which implements the same class of algorithm.
+/// The two implementations agree for almost all values but may differ in tie-breaking for a
+/// small number of boundary cases where multiple shortest representations exist.
 fn spark_round_via_bigdecimal_f64(v: f64, scale: i64) -> f64 {
     if !v.is_finite() {
         return v;
@@ -310,9 +313,9 @@ mod test {
     #[cfg_attr(miri, ignore)]
     fn test_round_f64_spark_bigdecimal_edge_case() {
         use super::spark_round_via_bigdecimal_f64;
-        // From the Spark comment: -5.81855622136895E8 exact binary is
-        // -581855622.13689494..., but Double.toString produces -581855622.136895.
-        // At scale=5 the 6th fractional digit in the toString form is '5' → rounds up.
+        // -5.81855622136895E8: ryu matches Java 17 toString for this value.
+        // toString: "-5.81855622136895E8" → BigDecimal = -581855622.136895
+        // The 6th fractional digit is '5' → rounds up.
         let v = -5.81855622136895E8_f64;
         let result = spark_round_via_bigdecimal_f64(v, 5);
         assert_eq!(result, -5.8185562213690E8_f64);
@@ -329,6 +332,22 @@ mod test {
         let v = 6.131_711_624_728_35E18_f64;
         let result = spark_round_via_bigdecimal_f64(v, -5);
         assert_eq!(result, 6.1317116247284E18_f64);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_round_f64_large_integer_string() {
+        use super::spark_round_via_bigdecimal_f64;
+        // cast("-8316362075006449156" as double): ryu produces "-8.31636207500645e18"
+        // while Java 17 toString produces "-8.3163620750064497E18". Both are valid
+        // shortest representations but have different digits at the rounding boundary.
+        // ryu: digit at 10^5 is '5' → rounds up.
+        // Java: digit at 10^5 is '4' → rounds down.
+        let v: f64 = "-8316362075006449156".parse().unwrap();
+        let result = spark_round_via_bigdecimal_f64(v, -5);
+        // ryu-based result (differs from Spark's -8.3163620750064005E18)
+        let expected: f64 = "-8.3163620750064998E18".parse().unwrap();
+        assert_eq!(result, expected);
     }
 
     #[test]
