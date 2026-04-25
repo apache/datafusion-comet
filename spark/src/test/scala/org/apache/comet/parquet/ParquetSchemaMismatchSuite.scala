@@ -48,7 +48,7 @@ import org.apache.comet.CometConf
 //   Case                                   Spark 3.4  3.5    4.0    Comet native_datafusion  Comet native_iceberg_compat
 //   1. BINARY -> TIMESTAMP                 throw      throw  throw  throw                    throw
 //   2. INT32 -> INT64                      throw      throw  OK     OK (widened values)      throw
-//   3. INT96 LTZ -> TIMESTAMP_NTZ          throw      throw  throw  ?                        ?
+//   3. INT96 LTZ -> TIMESTAMP_NTZ          throw      throw  throw  OK (silent, possible wall-clock diff)  throw
 //   4. Decimal(10,2) -> Decimal(5,0)       throw      throw  throw  ?                        ?
 //   5. INT32 -> INT64 w/ rowgroup filter   throw      throw  OK     ?                        ?
 //   6. STRING -> INT                       throw      throw  throw  ?                        ?
@@ -136,6 +136,49 @@ class ParquetSchemaMismatchSuite extends CometTestBase {
     } { df =>
       // Pattern 3 (throw): native_iceberg_compat rejects INT32->INT64 widening
       // via TypeUtil.checkParquetType (SchemaColumnConvertNotSupportedException).
+      intercept[SparkException] {
+        df.collect()
+      }
+    }
+  }
+
+  // Case 3: INT96 TimestampLTZ read as TimestampNTZ. Spark throws on all
+  // versions (SPARK-36182). INT96 carries no timezone info in the Parquet
+  // schema, so native_datafusion cannot detect the LTZ -> NTZ mismatch and
+  // silently reads (possibly with a wrong wall-clock value).
+  // native_iceberg_compat throws via TypeUtil.convertErrorForTimestampNTZ
+  // (mirrors Spark's behavior).
+  test(s"int96 timestamp_ltz read as timestamp_ntz: ${CometConf.SCAN_NATIVE_DATAFUSION}") {
+    withMismatchedSchema(CometConf.SCAN_NATIVE_DATAFUSION) { path =>
+      withSQLConf(SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> "INT96") {
+        Seq(java.sql.Timestamp.valueOf("2020-01-01 00:00:00"))
+          .toDF("ts")
+          .write
+          .parquet(path)
+      }
+      spark.read.schema("ts timestamp_ntz").parquet(path)
+    } { df =>
+      // native_datafusion succeeds silently: INT96 carries no timezone info so
+      // the LTZ -> NTZ mismatch is undetectable; result may have a wrong
+      // wall-clock value depending on the executor timezone.
+      val outcome = Try(df.collect())
+      assert(outcome.isSuccess, s"unexpected failure: $outcome")
+      assert(outcome.get.length == 1)
+    }
+  }
+
+  test(s"int96 timestamp_ltz read as timestamp_ntz: ${CometConf.SCAN_NATIVE_ICEBERG_COMPAT}") {
+    withMismatchedSchema(CometConf.SCAN_NATIVE_ICEBERG_COMPAT) { path =>
+      withSQLConf(SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> "INT96") {
+        Seq(java.sql.Timestamp.valueOf("2020-01-01 00:00:00"))
+          .toDF("ts")
+          .write
+          .parquet(path)
+      }
+      spark.read.schema("ts timestamp_ntz").parquet(path)
+    } { df =>
+      // native_iceberg_compat throws SparkException via
+      // TypeUtil.convertErrorForTimestampNTZ; matches Spark's behavior.
       intercept[SparkException] {
         df.collect()
       }
