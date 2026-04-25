@@ -99,7 +99,7 @@ query
 SELECT round(d, 4), round(d, 5), round(d, 6) FROM test_round_edge
 
 query
-SELECT round(cast('-8316362075006449156' as double), -5)
+SELECT round('-8316362075006449156', -5)
 
 -- round with column from table (not literals)
 query

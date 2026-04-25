@@ -2930,6 +2930,13 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("round double from large integer string") {
+    withParquetTable(Seq(Tuple1("-8316362075006449156")), "tbl") {
+      checkSparkAnswerAndOperator(
+        "SELECT round(cast(_1 as double), -5) FROM tbl")
+    }
+  }
+
   test("test integral divide overflow for decimal") {
     // All inserted values produce a quotient > Decimal(38,0).max (~1e38), so they overflow
     // the intermediate decimal result type.  In legacy/try mode both Spark and Comet return
