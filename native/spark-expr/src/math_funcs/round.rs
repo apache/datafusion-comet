@@ -195,7 +195,11 @@ fn decimal_round_f(scale: &i8, point: &i64) -> Box<dyn Fn(i128) -> i128> {
 }
 
 
-/// Replicate Java's `Double.toString` via the Schubfach algorithm.
+/// Replicate JDK 17's `Double.toString` (Gay/dtoa algorithm) for Spark-compatible rounding.
+///
+/// The Gay algorithm extracts decimal digits one at a time, stopping when the remainder
+/// is small enough that the output uniquely identifies the double. We implement the core
+/// stopping criterion using BigDecimal arithmetic.
 fn double_to_bigdecimal_like_java(v: f64) -> BigDecimal {
     let abs_v = v.abs();
     let bits = abs_v.to_bits();
@@ -204,133 +208,248 @@ fn double_to_bigdecimal_like_java(v: f64) -> BigDecimal {
         return BigDecimal::from(0);
     }
 
-    let (f, e) = schubfach_to_decimal(bits);
-    let bd = BigDecimal::new(num::BigInt::from(f as i64), -(e as i64));
-    if v < 0.0 { -bd } else { bd }
-}
+    // Extract significand and exponent (matching JDK's convention)
+    // JDK: binExp = unbiased exponent, fractBits has hidden bit at position 52
+    let t = bits & 0x000F_FFFF_FFFF_FFFF;
+    let bq = ((bits >> 52) & 0x7FF) as i32;
+    let (fract_bits, bin_exp) = if bq == 0 {
+        // Subnormal: normalize
+        let lz = t.leading_zeros() as i32 - 11;
+        ((t << lz) & 0x000F_FFFF_FFFF_FFFF | (1u64 << 52), -1023 + 1 - lz)
+    } else {
+        // Normal
+        (t | (1u64 << 52), bq - 1023)
+    };
 
-fn flog10pow2(q: i32) -> i32 {
-    ((q as i64 * 661_971_961_083i64) >> 41) as i32
-}
+    let n_fract_bits = 53 - fract_bits.trailing_zeros() as i32;
+    let n_sig_bits = if bq != 0 { 53 } else { 64 - (t.leading_zeros() as i32) };
+    let n_tiny = (n_fract_bits - bin_exp - 1).max(0);
 
-fn flog10_three_quarters_pow2(q: i32) -> i32 {
-    ((q as i64 * 661_971_961_083i64 + (-274_743_187_321i64)) >> 41) as i32
-}
+    // JDK fast path: for small exponents where the value fits in a long integer
+    if (-52..=62).contains(&bin_exp) && n_tiny == 0 {
+        // Value is an exact integer (no fractional bits)
+        let long_val = if bin_exp >= 52 {
+            fract_bits << (bin_exp - 52)
+        } else {
+            fract_bits >> (52 - bin_exp)
+        };
+        // Determine insignificant trailing digits
+        let insignificant = if bin_exp > n_sig_bits {
+            let p2 = (bin_exp - n_sig_bits - 1) as usize;
+            if p2 > 1 && p2 < 64 {
+                [0,0,0,0,1,1,1,2,2,2,3,3,3,3,4,4,4,5,5,5,6,6,6,6,7,7,7,
+                 8,8,8,9,9,9,9,10,10,10,11,11,11,12,12,12,12,13,13,13,14,14,14,
+                 15,15,15,15,16,16,16,17,17,17,18,18,18,19][p2]
+            } else { 0 }
+        } else { 0 };
+        // Convert integer to BigDecimal, zeroing out insignificant trailing digits
+        let mut long_str = long_val.to_string();
+        if insignificant > 0 && insignificant < long_str.len() {
+            let sig_len = long_str.len() - insignificant;
+            let bytes = unsafe { long_str.as_bytes_mut() };
+            for b in &mut bytes[sig_len..] {
+                *b = b'0';
+            }
+        }
+        let bd: BigDecimal = long_str.parse().unwrap();
+        return if v < 0.0 { -bd } else { bd };
+    }
 
-fn flog2pow10(e: i32) -> i32 {
-    ((e as i64 * 913_124_641_741i64) >> 38) as i32
-}
+    let dec_exp_est = estimate_dec_exp(fract_bits, bin_exp);
 
-/// Compute the Schubfach g values for index `e`.
-/// g = floor(10^e * 2^(-r)) + 1 where r = flog2pow10(e) - 125.
-/// g1 = g >> 63, g0 = g & (2^63 - 1).
-fn compute_g(e: i32) -> (u64, u64) {
+    let b5 = (-dec_exp_est).max(0);
+    let mut b2 = b5 + n_tiny + bin_exp;
+    let s5 = dec_exp_est.max(0);
+    let mut s2 = s5 + n_tiny;
+    let m5 = b5;
+    let mut m2 = b2 - n_sig_bits;
+
+    // Remove trailing zeros from fract_bits and adjust B2
+    let tail_zeros = fract_bits.trailing_zeros() as i32;
+    let fract_reduced = fract_bits >> tail_zeros;
+    b2 -= n_fract_bits - 1;
+
+    // Remove common factor of 2
+    let common2 = b2.min(s2).min(m2);
+    b2 -= common2;
+    s2 -= common2;
+    m2 -= common2;
+
+    // For exact powers of 2, halve M
+    if n_fract_bits == 1 {
+        m2 -= 1;
+    }
+
+    // If M2 < 0, scale everything up
+    if m2 < 0 {
+        b2 -= m2;
+        s2 -= m2;
+        m2 = 0;
+    }
+
     use num::bigint::BigUint;
     use num::ToPrimitive;
 
-    let r = flog2pow10(e) - 125;
-    // beta = 10^e * 2^(-r)
-    // For e >= 0: 10^e = 2^e * 5^e, so beta = 2^e * 5^e / 2^r = 5^e * 2^(e - r)
-    // For e < 0: 10^e = 1/(2^|e| * 5^|e|), so beta = 2^(-r) / (2^|e| * 5^|e|)
-    //            = 2^(-r - |e|) / 5^|e| = 2^(-r + e) / 5^|e|
-    // In both cases: beta = 2^(e - r) * 5^e  (where 5^e for negative e means 1/5^|e|)
-    // g = floor(beta) + 1
+    let b5u = b5.max(0) as u32;
+    let s5u = s5.max(0) as u32;
+    let m5u = m5.max(0) as u32;
+    let b2u = b2.max(0) as u32;
+    let s2u = s2.max(0) as u32;
+    let m2u = m2.max(0) as u32;
 
-    let shift = e - r; // e - r = 125 - flog2pow10(e) + e. This is always ~125.
-    let g: BigUint = if e >= 0 {
-        let pow5 = BigUint::from(5u32).pow(e as u32);
-        if shift >= 0 {
-            (pow5 << (shift as u32)) + BigUint::from(1u32)
+    // Determine whether to use FDBigInteger-style comparison (>=) or int/long-style (>)
+    // for the 'high' check. The JDK uses >= for the FDBigInteger path (large values)
+    // and > for the int/long path (small values).
+    let n_fract_bits_b2 = n_fract_bits + b2;
+    let n5_b5 = if (b5u as usize) < 25 { [0,3,5,7,10,12,14,17,19,21,24,26,28,31,33,35,38,40,42,45,47,49,52,54,56][b5u as usize] } else { b5 * 3 };
+    let bbits = n_fract_bits_b2 + n5_b5;
+    let n5_s5p1 = if ((s5u+1) as usize) < 25 { [0,3,5,7,10,12,14,17,19,21,24,26,28,31,33,35,38,40,42,45,47,49,52,54,56][(s5u+1) as usize] } else { (s5+1) * 3 };
+    let ten_sbits = s2 + 1 + n5_s5p1;
+    let use_bigint_path = bbits >= 64 || ten_sbits >= 64;
+
+    let pow5 = |n: u32| -> BigUint { BigUint::from(5u32).pow(n) };
+
+    // Normalize S to improve division accuracy (matching JDK's shiftBias)
+    let s_base = pow5(s5u) << s2u;
+    let shift_bias = if use_bigint_path {
+        // getNormalizationBias: shift S so its highest bit fills the MSB of a u32 word
+        let s_bits = s_base.bits() as u32;
+        let word_bits = s_bits.div_ceil(32) * 32;
+        (word_bits - s_bits) as u32
+    } else {
+        0u32
+    };
+
+    let mut b_val = (BigUint::from(fract_reduced) * pow5(b5u)) << (b2u + shift_bias);
+    let s_val = &s_base << shift_bias;
+    let mut m_val = pow5(m5u) << (m2u + shift_bias);
+    let tens = &s_val * BigUint::from(10u32);
+
+    let mut digits = Vec::with_capacity(20);
+    let mut dec_exp = dec_exp_est;
+
+    // First digit
+    let q = (&b_val / &s_val).to_u32().unwrap_or(0);
+    b_val = (&b_val % &s_val) * BigUint::from(10u32);
+    m_val = &m_val * BigUint::from(10u32);
+
+    let mut low = b_val < m_val;
+    let mut high = if use_bigint_path {
+        &b_val + &m_val >= tens
+    } else {
+        &b_val + &m_val > tens
+    };
+
+    #[cfg(test)]
+    if abs_v > 1e18 {
+        eprintln!("DTOA: q={} low={} high={} dec_exp={} s_bits={} tens_bits={} m_bits={}",
+            q, low, high, dec_exp, s_val.bits(), tens.bits(), m_val.bits());
+    }
+
+    if q == 0 && !high {
+        dec_exp -= 1;
+    } else {
+        digits.push(q as u8);
+    }
+
+    // HACK: for E-form, require more digits
+    if !(-3..8).contains(&dec_exp) {
+        low = false;
+        high = false;
+    }
+
+    // Extract remaining digits
+    let mut iter_count = 0;
+    while !low && !high {
+        let q = (&b_val / &s_val).to_u32().unwrap_or(0);
+        b_val = (&b_val % &s_val) * BigUint::from(10u32);
+        m_val = &m_val * BigUint::from(10u32);
+
+        if m_val > BigUint::from(0u32) {
+            low = b_val < m_val;
+            high = if use_bigint_path {
+                &b_val + &m_val >= tens
+            } else {
+                &b_val + &m_val > tens
+            };
         } else {
-            (pow5 >> ((-shift) as u32)) + BigUint::from(1u32)
+            low = true;
+            high = true;
         }
-    } else {
-        let pow5 = BigUint::from(5u32).pow((-e) as u32);
-        // 2^shift / 5^|e| + 1
-        (BigUint::from(1u32) << (shift as u32)) / pow5 + BigUint::from(1u32)
-    };
-
-    let mask63 = (BigUint::from(1u128) << 63u32) - BigUint::from(1u32);
-    let g1 = (&g >> 63u32).to_u64().unwrap();
-    let g0 = (&g & mask63).to_u64().unwrap();
-    (g1, g0)
-}
-
-/// Compute rop(cp * g / 2^127), matching JDK's rop function.
-fn rop(g1: u64, g0: u64, cp: u64) -> u64 {
-    let x1 = ((g0 as u128) * (cp as u128)) >> 64;
-    let y0 = g1.wrapping_mul(cp); // lower 64 bits of g1*cp
-    let y1 = ((g1 as u128) * (cp as u128)) >> 64; // upper 64 bits of g1*cp
-    let z = ((y0 >> 1) as u128) + x1;
-    let vbp = y1 + (z >> 63);
-    let round = ((z & 0x7FFF_FFFF_FFFF_FFFF) + 0x7FFF_FFFF_FFFF_FFFF) >> 63;
-    (vbp | round) as u64
-}
-
-/// Compute floor(a * b / 2^64) for unsigned 64-bit values.
-fn mul_high(a: u64, b: u64) -> u64 {
-    ((a as u128 * b as u128) >> 64) as u64
-}
-
-/// Core Schubfach algorithm using BigUint for exact boundary computation.
-/// Ported from JDK 17's DoubleToDecimal.toDecimal.
-fn schubfach_to_decimal(bits: u64) -> (u64, i32) {
-
-    let t = bits & 0x000F_FFFF_FFFF_FFFF;
-    let bq = ((bits >> 52) & 0x7FF) as i32;
-
-    let (c, q) = if bq == 0 {
-        (t, -1074i32)
-    } else {
-        ((1u64 << 52) | t, bq - 1075)
-    };
-
-    let out = (c & 1) as u64;
-    let cb = c << 2;
-    let cbr = cb + 2;
-    let cbl;
-    let k;
-
-    if c != (1u64 << 52) || q == -1074 {
-        cbl = cb - 2;
-        k = flog10pow2(q);
-    } else {
-        cbl = cb - 1;
-        k = flog10_three_quarters_pow2(q);
+        digits.push(q as u8);
+        iter_count += 1;
+        #[cfg(test)]
+        if abs_v > 1e18 {
+            eprintln!("  iter {}: q={} ndigits={} low={} high={} b_bits={} m_bits={}",
+                iter_count, q, digits.len(), low, high,
+                b_val.bits(), m_val.bits());
+        }
+        if iter_count > 20 { break; } // safety
     }
-    let h = q + flog2pow10(-k) + 2;
 
-    // Compute vbl, vb, vbr using the JDK's rop function.
-    let (g1, g0) = compute_g(-k);
-    let vbl = rop(g1, g0, cbl << h);
-    let vb = rop(g1, g0, cb << h);
-    let vbr = rop(g1, g0, cbr << h);
-
-    let s = vb >> 2;
-    if s >= 100 {
-        // Try to remove one digit: sp10 = floor(s/10) * 10
-        let sp10 = s / 10 * 10;
-        let tp10 = sp10 + 10;
-        let upin = vbl + out <= sp10 << 2;
-        let wpin = (tp10 << 2) + out <= vbr;
-        if upin != wpin {
-            let f = if upin { sp10 } else { tp10 };
-            return (f, k);
+    // Final rounding
+    if high {
+        if low {
+            let b2 = &b_val << 1u32;
+            let cmp = b2.cmp(&tens);
+            if cmp == std::cmp::Ordering::Equal {
+                // Tie: round to even
+                if let Some(&last) = digits.last() {
+                    if last & 1 != 0 {
+                        round_up_digits(&mut digits, &mut dec_exp);
+                    }
+                }
+            } else if cmp == std::cmp::Ordering::Greater {
+                round_up_digits(&mut digits, &mut dec_exp);
+            }
+        } else {
+            round_up_digits(&mut digits, &mut dec_exp);
         }
     }
 
-    // Cannot remove a digit (or s < 100). Determine s or s+1.
-    let t_val = s + 1;
-    let uin = vbl + out <= s << 2;
-    let win = (t_val << 2) + out <= vbr;
-    if uin != win {
-        let f = if uin { s } else { t_val };
-        return (f, k);
+    // Convert digits + decExp to BigDecimal
+    // The value is 0.d1d2d3...dn * 10^(dec_exp+1)
+    let mut sig = 0i64;
+    for &d in &digits {
+        sig = sig * 10 + d as i64;
     }
-    // Both in range: pick closest to v.
-    let cmp = (vb as i64) - ((s + t_val) << 1) as i64;
-    let f = if cmp > 0 || (cmp == 0 && s & 1 != 0) { t_val } else { s };
-    (f, k)
+    let n_digits = digits.len() as i32;
+    let scale = n_digits - (dec_exp + 1);
+    let bd = BigDecimal::new(num::BigInt::from(sig), scale as i64);
+    if v < 0.0 { -bd } else { bd }
+}
+
+fn round_up_digits(digits: &mut Vec<u8>, dec_exp: &mut i32) {
+    if let Some(last) = digits.last_mut() {
+        if *last < 9 {
+            *last += 1;
+            return;
+        }
+    }
+    // Carry propagation
+    let mut i = digits.len();
+    while i > 0 {
+        i -= 1;
+        if digits[i] < 9 {
+            digits[i] += 1;
+            digits.truncate(i + 1);
+            return;
+        }
+        digits[i] = 0;
+    }
+    // All 9s: e.g., 999 -> 1000
+    digits.clear();
+    digits.push(1);
+    *dec_exp += 1;
+}
+
+fn estimate_dec_exp(fract_bits: u64, bin_exp: i32) -> i32 {
+    let d2_bits = 0x3FF0_0000_0000_0000u64 | (fract_bits & 0x000F_FFFF_FFFF_FFFF);
+    let d2 = f64::from_bits(d2_bits);
+    // These constants are from JDK's estimateDecExp and must match exactly
+    #[allow(clippy::approx_constant)]
+    let d = (d2 - 1.5) * 0.289529654 + 0.176091259 + (bin_exp as f64) * 0.301029995663981;
+    d.floor() as i32
 }
 
 /// Spark-compatible round for f64.
@@ -453,13 +572,12 @@ mod test {
     #[cfg_attr(miri, ignore)]
     fn test_round_f64_spark_bigdecimal_tostring_roundtrip() {
         use super::spark_round_via_bigdecimal_f64;
-        // 6.1317116247283497E18 exact binary is 6131711624728349696.
-        // JDK 12+ Double.toString produces "6.13171162472835e18"
-        // → BigDecimal = 6131711624728350000 → at scale=-5, the 5th digit
-        //   from right is '5' → HALF_UP rounds up → 6131711624728400000.
+        // 6.1317116247283497E18: JDK 17 fast path gives integer 6131711624728349600
+        // (last 2 digits insignificant, zeroed). Digit at 10^5 is '4' -> rounds DOWN.
         let v = 6.131_711_624_728_35E18_f64;
         let result = spark_round_via_bigdecimal_f64(v, -5);
-        assert_eq!(result, 6.1317116247284E18_f64);
+        let expected: f64 = "6.1317116247282995E18".parse().unwrap();
+        assert_eq!(result, expected);
     }
 
     #[test]
@@ -475,55 +593,6 @@ mod test {
         // Rust shortest-repr: digit at 10^5 is '5' -> rounds UP (Spark rounds DOWN)
         let expected: f64 = "-8.3163620750064005E18".parse().unwrap();
         assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_compute_g() {
-        let (g1, g0) = super::compute_g(16);
-        assert_eq!(g1, 0x470D_E4DF_8200_0000u64, "g1 mismatch for e=16");
-        assert_eq!(g0, 1u64, "g0 mismatch for e=16");
-
-        let (g1, g0) = super::compute_g(0);
-        assert_eq!(g1, 0x4000_0000_0000_0000u64, "g1 mismatch for e=0");
-        assert_eq!(g0, 1u64, "g0 mismatch for e=0");
-
-        let (g1, g0) = super::compute_g(3);
-        assert_eq!(g1, 0x7D00_0000_0000_0000u64, "g1 mismatch for e=3");
-        assert_eq!(g0, 1u64, "g0 mismatch for e=3");
-
-        let (g1, g0) = super::compute_g(-7);
-        assert_eq!(g1, 0x6B5F_CA6A_F2BD_215Eu64, "g1 mismatch for e=-7");
-        assert_eq!(g0, 0x0F4C_A41D_811A_46D4u64, "g0 mismatch for e=-7");
-
-        let (g1, g0) = super::compute_g(-16);
-        assert_eq!(g1, 0x734A_CA5F_6226_F0ADu64, "g1 mismatch for e=-16");
-        assert_eq!(g0, 0x530B_AF9A_1E62_6A6Du64, "g0 mismatch for e=-16");
-    }
-
-    #[test]
-    fn test_rop() {
-        let (g1, g0) = super::compute_g(-3);
-
-        let vbl = super::rop(g1, g0, 129943157421975768);
-        let vb = super::rop(g1, g0, 129943157421975776);
-        let vbr = super::rop(g1, g0, 129943157421975784);
-        eprintln!("g(-3): g1=0x{:016X} g0=0x{:016X}", g1, g0);
-        eprintln!("vbl={} vb={} vbr={}", vbl, vb, vbr);
-
-        let s = vb >> 2;
-        eprintln!("s={}", s);
-        let sp10 = s / 10 * 10;
-        let tp10 = sp10 + 10;
-        let out = 0u64;
-        let upin = vbl + out <= sp10 << 2;
-        let wpin = (tp10 << 2) + out <= vbr;
-        eprintln!("sp10={} tp10={} upin={} wpin={}", sp10, tp10, upin, wpin);
-
-        // Check s vs s+1
-        let t_val = s + 1;
-        let uin = vbl + out <= s << 2;
-        let win = (t_val << 2) + out <= vbr;
-        eprintln!("uin={} win={}", uin, win);
     }
 
     #[test]
