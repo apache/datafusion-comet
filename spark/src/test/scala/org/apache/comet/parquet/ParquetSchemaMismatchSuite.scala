@@ -52,7 +52,7 @@ import org.apache.comet.CometConf
 //   4. Decimal(10,2) -> Decimal(5,0)       throw      throw  throw  OK (reads, values unverified)  throw
 //   5. INT32 -> INT64 w/ rowgroup filter   throw      throw  OK     OK (1 row, no overflow)  throw
 //   6. STRING -> INT                       throw      throw  throw  OK (garbage values)      throw
-//   7. TIMESTAMP_NTZ -> ARRAY<...>         throw      throw  throw  ?                        ?
+//   7. TIMESTAMP_NTZ -> ARRAY<...>         throw      throw  throw  throw                    throw
 //   C1. INT8 -> INT32                      OK         OK     OK     ?                        ?
 //   C2. FLOAT -> DOUBLE                    OK         OK     OK     ?                        ?
 class ParquetSchemaMismatchSuite extends CometTestBase {
