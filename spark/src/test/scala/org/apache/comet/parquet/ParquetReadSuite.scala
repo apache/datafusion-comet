@@ -998,6 +998,25 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
+  test("native_datafusion rejects string read as numeric") {
+    // Regression guard for https://github.com/apache/datafusion-comet/issues/4088.
+    // Spark's vectorized reader rejects reading a Parquet BINARY column as any
+    // numeric type on all versions (see TypeUtil.checkParquetType, BINARY case).
+    // The native_datafusion scan must do the same in its schema adapter rather
+    // than letting DataFusion's cast silently parse the bytes (returning nulls
+    // for non-numeric strings, or raw byte reinterpretation in some paths).
+    withSQLConf(
+      CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
+      SQLConf.USE_V1_SOURCE_LIST.key -> "parquet") {
+      withTempPath { dir =>
+        val path = dir.getCanonicalPath
+        Seq("a", "b", "c").toDF("c").write.parquet(path)
+        val df = spark.read.schema("c int").parquet(path)
+        assertThrows[SparkException](df.collect())
+      }
+    }
+  }
+
   test("type widening: byte → short/int/long, short → int/long, int → long") {
     withSQLConf(CometConf.COMET_SCHEMA_EVOLUTION_ENABLED.key -> "true") {
       withTempPath { dir =>

@@ -385,6 +385,39 @@ impl SparkPhysicalExprAdapter {
             let physical_type = cast.input_field().data_type();
             let target_type = cast.target_field().data_type();
 
+            // Reject reading a string/binary Parquet column as a numeric type.
+            // Mirrors Spark's TypeUtil.checkParquetType for the BINARY case: a
+            // BINARY (or UTF8-annotated BINARY) physical column is only readable
+            // as StringType, BinaryType, or a binary-encoded decimal. Without
+            // this guard, Spark's Cast below (in is_adapting_schema mode) would
+            // delegate to DataFusion's cast, which silently parses the bytes
+            // (returning nulls for non-numeric strings or, depending on the
+            // path, raw byte reinterpretation). See issue #4088.
+            if matches!(
+                physical_type,
+                DataType::Utf8 | DataType::LargeUtf8 | DataType::Binary | DataType::LargeBinary
+            ) && matches!(
+                target_type,
+                DataType::Int8
+                    | DataType::Int16
+                    | DataType::Int32
+                    | DataType::Int64
+                    | DataType::UInt8
+                    | DataType::UInt16
+                    | DataType::UInt32
+                    | DataType::UInt64
+                    | DataType::Float32
+                    | DataType::Float64
+            ) {
+                return Err(DataFusionError::Plan(format!(
+                    "Parquet column cannot be converted. Column: [{}], \
+                     Expected: {}, Found: {}",
+                    cast.input_field().name(),
+                    target_type,
+                    physical_type,
+                )));
+            }
+
             // For complex nested types (Struct, List, Map), Timestamp timezone
             // mismatches, and Timestamp→Int64 (nanosAsLong), use CometCastColumnExpr
             // with spark_parquet_convert which handles field-name-based selection,
