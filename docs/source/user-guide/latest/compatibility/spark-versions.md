@@ -23,13 +23,18 @@ Comet supports Apache Spark 3.4, 3.5, and 4.0. This page documents differences
 between supported Spark versions. For per-feature compatibility notes that
 apply across versions, see the other pages in this guide.
 
+## Spark 3.4 and 3.5
+
+Spark 3.4 and 3.5 are the most thoroughly exercised versions in CI and are
+suitable for production use. There are no version-specific gaps to call out
+beyond the per-feature compatibility notes in the rest of this guide.
+
 ## Spark 4.0
 
 Comet works with Spark 4.0 and runs the full Comet test suite plus a subset of
 the Spark SQL test suite in CI. Most workloads that run on Spark 3.5 will run
 on Spark 4.0 with the same level of acceleration. The known gaps below are
-specific to Spark 4.0 features that Comet has not yet implemented; in each case
-Comet falls back to Spark rather than producing incorrect results.
+specific to Spark 4.0 features that Comet has not yet implemented.
 
 ### ANSI mode
 
@@ -43,17 +48,13 @@ for ongoing ANSI work.
 ### Variant type
 
 The `VariantType` introduced in Spark 4.0 is not yet supported. Queries that
-read or produce variant columns will fall back to Spark.
+read or produce variant columns fall back to Spark.
 
 ### Parquet type widening
 
 Spark 4.0 added broader support for reading Parquet files with widened types
 (for example, reading an `INT32` column as `BIGINT`). Comet supports the
 common integer widenings but does not yet cover the full set that Spark
-supports. Unsupported widenings cause a fallback to Spark.
-
-## Spark 3.4 and 3.5
-
-Spark 3.4 and 3.5 are the most thoroughly exercised versions in CI and are
-suitable for production use. There are no version-specific gaps to call out
-beyond the per-feature compatibility notes in the rest of this guide.
+supports. Unsupported widenings are not detected as a fallback condition,
+so queries that rely on them may fail or return incorrect results rather
+than transparently falling back to Spark.

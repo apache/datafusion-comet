@@ -47,8 +47,7 @@ Other versions may work well enough for development and evaluation purposes.
 Note that we do not test the full matrix of supported Java and Scala versions in CI for every Spark version.
 
 Spark 4.0 support has good coverage and is exercised in CI, but a few Spark 4.0 features are not yet implemented.
-Comet falls back to Spark in those cases. See the [Spark Version Compatibility](compatibility/spark-versions.md)
-guide for details.
+See the [Spark Version Compatibility](compatibility/spark-versions.md) guide for details.
 
 Note that Comet may not fully work with proprietary forks of Apache Spark such as the Spark versions offered by
 Cloud Service Providers.
