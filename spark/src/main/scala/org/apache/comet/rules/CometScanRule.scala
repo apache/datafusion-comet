@@ -139,9 +139,8 @@ case class CometScanRule(session: SparkSession)
 
   private def transformV1Scan(plan: SparkPlan, scanExec: FileSourceScanExec): SparkPlan = {
 
-    if (COMET_DPP_FALLBACK_ENABLED.get() &&
-      scanExec.partitionFilters.exists(isDynamicPruningFilter)) {
-      return withInfo(scanExec, "Dynamic Partition Pruning is not supported")
+    if (scanExec.partitionFilters.exists(isAqeDynamicPruningFilter)) {
+      return withInfo(scanExec, "AQE Dynamic Partition Pruning is not supported")
     }
 
     scanExec.relation match {
@@ -400,8 +399,11 @@ case class CometScanRule(session: SparkSession)
         // Check if table uses a FileIO implementation compatible with iceberg-rust
 
         val fileIOCompatible = IcebergReflection.getFileIO(metadata.table) match {
+          case Some(fileIO)
+              if fileIO.getClass.getName == "org.apache.iceberg.inmemory.InMemoryFileIO" =>
+            fallbackReasons += "InMemoryFileIO is not supported by Comet's native reader"
+            false
           case Some(_) =>
-            // InMemoryFileIO is now supported with table location fallback for REST catalogs
             true
           case None =>
             fallbackReasons += "Could not check FileIO compatibility"
@@ -646,6 +648,21 @@ case class CometScanRule(session: SparkSession)
 
   private def isDynamicPruningFilter(e: Expression): Boolean =
     e.exists(_.isInstanceOf[PlanExpression[_]])
+
+  /**
+   * Detects AQE DPP (SubqueryAdaptiveBroadcastExec), as opposed to non-AQE DPP.
+   *
+   * Non-AQE DPP (PlanDynamicPruningFilters) runs before Comet rules and produces
+   * SubqueryBroadcastExec/SubqueryExec which Spark's execution framework resolves. AQE DPP
+   * (PlanAdaptiveDynamicPruningFilters) runs after Comet rules and searches for
+   * BroadcastHashJoinExec. It doesn't recognize Comet operators, so it can't create DPP filters
+   * correctly.
+   */
+  private def isAqeDynamicPruningFilter(e: Expression): Boolean =
+    e.exists {
+      case sub: InSubqueryExec => sub.plan.isInstanceOf[SubqueryAdaptiveBroadcastExec]
+      case _ => false
+    }
 
   private def isSchemaSupported(
       scanExec: FileSourceScanExec,

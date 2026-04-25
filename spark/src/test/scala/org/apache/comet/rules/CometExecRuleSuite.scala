@@ -302,4 +302,89 @@ class CometExecRuleSuite extends CometTestBase {
     }
   }
 
+  test("CometExecRule should not wrap shuffle in CometColumnarShuffle when both sides are JVM") {
+    withTempView("test_data") {
+      createTestDataFrame.createOrReplaceTempView("test_data")
+
+      val sparkPlan =
+        createSparkPlan(spark, "SELECT COUNT(*), SUM(id) FROM test_data GROUP BY (id % 3)")
+
+      val originalShuffleExchangeCount = countOperators(sparkPlan, classOf[ShuffleExchangeExec])
+      assert(originalShuffleExchangeCount == 1)
+      assert(countOperators(sparkPlan, classOf[HashAggregateExec]) == 2)
+
+      // Disable partial aggregate so both aggregates fall back to Spark JVM. The shuffle between
+      // them would otherwise be wrapped with CometColumnarShuffle, which adds unnecessary
+      // row<->arrow conversion overhead when neither side can consume columnar output.
+      // See https://github.com/apache/datafusion-comet/issues/4004.
+      withSQLConf(
+        CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE.key -> "false",
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        val transformedPlan = applyCometExecRule(sparkPlan)
+
+        // Both aggregates should remain JVM
+        assert(countOperators(transformedPlan, classOf[HashAggregateExec]) == 2)
+        assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 0)
+
+        // The shuffle should remain a Spark ShuffleExchangeExec (not wrapped in Comet)
+        assert(countOperators(transformedPlan, classOf[CometShuffleExchangeExec]) == 0)
+        assert(
+          countOperators(transformedPlan, classOf[ShuffleExchangeExec]) ==
+            originalShuffleExchangeCount)
+      }
+    }
+  }
+
+  test("CometExecRule should not revert columnar shuffle when the revert config is disabled") {
+    withTempView("test_data") {
+      createTestDataFrame.createOrReplaceTempView("test_data")
+
+      val sparkPlan =
+        createSparkPlan(spark, "SELECT COUNT(*), SUM(id) FROM test_data GROUP BY (id % 3)")
+
+      assert(countOperators(sparkPlan, classOf[ShuffleExchangeExec]) == 1)
+      assert(countOperators(sparkPlan, classOf[HashAggregateExec]) == 2)
+
+      // Both aggregates fall back to JVM as in the prior test, but the revert optimization is
+      // disabled, so the shuffle should still be wrapped in CometColumnarShuffle.
+      withSQLConf(
+        CometConf.COMET_EXEC_SHUFFLE_REVERT_REDUNDANT_COLUMNAR_ENABLED.key -> "false",
+        CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE.key -> "false",
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        val transformedPlan = applyCometExecRule(sparkPlan)
+
+        assert(countOperators(transformedPlan, classOf[HashAggregateExec]) == 2)
+        assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 0)
+
+        assert(countOperators(transformedPlan, classOf[ShuffleExchangeExec]) == 0)
+        assert(countOperators(transformedPlan, classOf[CometShuffleExchangeExec]) == 1)
+      }
+    }
+  }
+
+  test("CometExecRule should not revert columnar shuffle when both aggregates go native") {
+    withTempView("test_data") {
+      createTestDataFrame.createOrReplaceTempView("test_data")
+
+      val sparkPlan =
+        createSparkPlan(spark, "SELECT COUNT(*), SUM(id) FROM test_data GROUP BY (id % 3)")
+
+      assert(countOperators(sparkPlan, classOf[ShuffleExchangeExec]) == 1)
+      assert(countOperators(sparkPlan, classOf[HashAggregateExec]) == 2)
+
+      // With default settings both aggregates convert to Comet native, so the shuffle between
+      // them has a Comet consumer on both sides and must remain columnar - the revert must not
+      // fire here.
+      withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        val transformedPlan = applyCometExecRule(sparkPlan)
+
+        assert(countOperators(transformedPlan, classOf[HashAggregateExec]) == 0)
+        assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 2)
+
+        assert(countOperators(transformedPlan, classOf[ShuffleExchangeExec]) == 0)
+        assert(countOperators(transformedPlan, classOf[CometShuffleExchangeExec]) == 1)
+      }
+    }
+  }
+
 }

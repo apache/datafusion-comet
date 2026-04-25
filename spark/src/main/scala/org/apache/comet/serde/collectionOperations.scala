@@ -26,6 +26,9 @@ import org.apache.comet.serde.ExprOuterClass.Expr
 
 object CometReverse extends CometScalarFunction[Reverse]("reverse") {
 
+  override def getIncompatibleReasons(): Seq[String] =
+    CometArrayReverse.getIncompatibleReasons()
+
   override def getSupportLevel(expr: Reverse): SupportLevel = {
     if (expr.child.dataType.isInstanceOf[ArrayType]) {
       CometArrayReverse.getSupportLevel(expr)

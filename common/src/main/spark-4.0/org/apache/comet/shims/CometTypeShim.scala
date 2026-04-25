@@ -19,9 +19,16 @@
 
 package org.apache.comet.shims
 
-import org.apache.spark.sql.internal.types.StringTypeWithCollation
-import org.apache.spark.sql.types.DataType
+import org.apache.spark.sql.types.{DataType, StringType}
 
 trait CometTypeShim {
-  def isStringCollationType(dt: DataType): Boolean = dt.isInstanceOf[StringTypeWithCollation]
+  // A `StringType` carries collation metadata in Spark 4.0. Only non-default (non-UTF8_BINARY)
+  // collations have semantics Comet's byte-level hashing/sorting/equality cannot honor. The
+  // default `StringType` object is `StringType(UTF8_BINARY_COLLATION_ID)`, so comparing
+  // `collationId` against that instance's id picks out non-default collations without needing
+  // `private[sql]` helpers on `StringType`.
+  def isStringCollationType(dt: DataType): Boolean = dt match {
+    case st: StringType => st.collationId != StringType.collationId
+    case _ => false
+  }
 }

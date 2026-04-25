@@ -53,7 +53,7 @@ import org.apache.comet.CometConf.{COMET_EXEC_SHUFFLE_ENABLED, COMET_SHUFFLE_MOD
 import org.apache.comet.CometSparkSessionExtensions.{hasExplainInfo, isCometShuffleManagerEnabled, withInfos}
 import org.apache.comet.serde.{Compatible, OperatorOuterClass, QueryPlanSerde, SupportLevel, Unsupported}
 import org.apache.comet.serde.operator.CometSink
-import org.apache.comet.shims.ShimCometShuffleExchangeExec
+import org.apache.comet.shims.{CometTypeShim, ShimCometShuffleExchangeExec}
 
 /**
  * Performs a shuffle that will result in the desired partitioning.
@@ -219,6 +219,7 @@ case class CometShuffleExchangeExec(
 object CometShuffleExchangeExec
     extends CometSink[ShuffleExchangeExec]
     with ShimCometShuffleExchangeExec
+    with CometTypeShim
     with SQLConfHelper {
 
   override def getSupportLevel(op: ShuffleExchangeExec): SupportLevel = {
@@ -275,10 +276,11 @@ object CometShuffleExchangeExec
       case None =>
     }
 
-    // DPP fallback is a combined-path decision: a Comet shuffle wrapped around a stage that
-    // still contains a DPP scan produces inefficient row<->columnar transitions. Disqualifies
-    // both paths.
-    if (CometConf.COMET_DPP_FALLBACK_ENABLED.get() && stageContainsDPPScan(s)) {
+    // A Comet shuffle wrapped around a stage that still contains a Spark FileSourceScanExec
+    // with DPP produces inefficient row<->columnar transitions. This only happens when the
+    // scan fell back (e.g., AQE DPP not supported). If the scan converted to
+    // CometNativeScanExec, stageContainsDPPScan won't match (it checks FileSourceScanExec).
+    if (stageContainsDPPScan(s)) {
       withInfos(s, Set("Stage contains a scan with Dynamic Partition Pruning"))
       return None
     }
@@ -315,6 +317,9 @@ object CometShuffleExchangeExec
      * hashing complex types, see hash_funcs/utils.rs
      */
     def supportedHashPartitioningDataType(dt: DataType): Boolean = dt match {
+      // Collated strings require collation-aware hashing; Comet only hashes raw bytes,
+      // which would misroute rows that compare equal under the collation.
+      case st: StringType if isStringCollationType(st) => false
       case _: BooleanType | _: ByteType | _: ShortType | _: IntegerType | _: LongType |
           _: FloatType | _: DoubleType | _: StringType | _: BinaryType | _: TimestampType |
           _: TimestampNTZType | _: DateType =>
@@ -337,6 +342,8 @@ object CometShuffleExchangeExec
      * complex types.
      */
     def supportedRangePartitioningDataType(dt: DataType): Boolean = dt match {
+      // Collated strings require collation-aware ordering; Comet only compares raw bytes.
+      case st: StringType if isStringCollationType(st) => false
       case _: BooleanType | _: ByteType | _: ShortType | _: IntegerType | _: LongType |
           _: FloatType | _: DoubleType | _: StringType | _: BinaryType | _: TimestampType |
           _: TimestampNTZType | _: DecimalType | _: DateType =>
@@ -497,6 +504,11 @@ object CometShuffleExchangeExec
             reasons += s"unsupported hash partitioning expression: $expr"
           }
         }
+        for (dt <- expressions.map(_.dataType).distinct) {
+          if (isStringCollationType(dt)) {
+            reasons += s"unsupported hash partitioning data type for columnar shuffle: $dt"
+          }
+        }
       case SinglePartition =>
       // we already checked that the input types are supported
       case RoundRobinPartitioning(_) =>
@@ -505,6 +517,11 @@ object CometShuffleExchangeExec
         for (o <- orderings) {
           if (QueryPlanSerde.exprToProto(o, inputs).isEmpty) {
             reasons += s"unsupported range partitioning sort order: $o"
+          }
+        }
+        for (dt <- orderings.map(_.dataType).distinct) {
+          if (isStringCollationType(dt)) {
+            reasons += s"unsupported range partitioning data type for columnar shuffle: $dt"
           }
         }
       case _ =>

@@ -311,17 +311,16 @@ After implementing tests, tell the user how to run them:
 
 ---
 
-## Step 8: Update the Expression Audit Log
+## Step 8: Update the Expression Support Doc
 
-After completing the audit (whether or not tests were added), append a row to the audit log at
-`docs/source/contributor-guide/expression-audit-log.md`.
+After completing the audit (whether or not tests were added), add sub-bullets under the expression's
+entry in `docs/source/contributor-guide/spark_expressions_support.md`.
 
-The row should include:
+Add one sub-bullet per Spark version checked, each including:
 
-- Expression name
-- Spark versions checked (e.g. 3.4.3, 3.5.8, 4.0.1)
+- Spark version (e.g. 3.4.3, 3.5.8, 4.0.1)
 - Today's date
-- A brief summary of findings (behavioral differences, bugs found/fixed, tests added, known incompatibilities)
+- A brief note for any version-specific finding (behavioral difference, known incompatibility); omit if nothing notable
 
 ---
 

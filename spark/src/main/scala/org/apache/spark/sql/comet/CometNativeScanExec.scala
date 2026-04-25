@@ -30,6 +30,7 @@ import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.plans.physical.{Partitioning, UnknownPartitioning}
 import org.apache.spark.sql.comet.shims.ShimStreamSourceAwareSparkPlan
 import org.apache.spark.sql.execution._
+import org.apache.spark.sql.execution.{ScalarSubquery => ExecScalarSubquery}
 import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.types._
@@ -41,6 +42,7 @@ import com.google.common.base.Objects
 
 import org.apache.comet.parquet.{CometParquetFileFormat, CometParquetUtils}
 import org.apache.comet.serde.OperatorOuterClass.Operator
+import org.apache.comet.serde.QueryPlanSerde.exprToProto
 
 /**
  * Native scan operator for DataSource V1 Parquet files using DataFusion's ParquetExec.
@@ -75,6 +77,34 @@ case class CometNativeScanExec(
     with ShimStreamSourceAwareSparkPlan {
 
   override lazy val metadata: Map[String, String] = originalPlan.metadata
+
+  /**
+   * Prepare subquery plans before execution.
+   *
+   * DPP: partitionFilters may contain DynamicPruningExpression(InSubqueryExec(...)) from
+   * PlanDynamicPruningFilters.
+   *
+   * Scalar subquery pushdown (SPARK-43402, Spark 4.0+): dataFilters may contain ScalarSubquery.
+   *
+   * serializedPartitionData can be triggered outside the normal prepare() -> executeSubqueries()
+   * flow (e.g., from a BroadcastExchangeExec thread), so we prepare subquery plans here and
+   * resolve them explicitly in serializedPartitionData via updateResult().
+   */
+  override protected def doPrepare(): Unit = {
+    partitionFilters.foreach {
+      case DynamicPruningExpression(e: InSubqueryExec) =>
+        e.plan.prepare()
+      case _ =>
+    }
+    dataFilters.foreach { f =>
+      f.foreach {
+        case s: ExecScalarSubquery =>
+          s.plan.prepare()
+        case _ =>
+      }
+    }
+    super.doPrepare()
+  }
 
   override val nodeName: String =
     s"CometNativeScan $relation ${tableIdentifier.map(_.unquotedString).getOrElse("")}"
@@ -113,7 +143,21 @@ case class CometNativeScanExec(
     if (bucketedScan) {
       originalPlan.outputPartitioning
     } else {
-      UnknownPartitioning(originalPlan.inputRDD.getNumPartitions)
+      // Use perPartitionData.length instead of originalPlan.inputRDD.getNumPartitions.
+      //
+      // originalPlan.inputRDD triggers FileSourceScanExec's full scan pipeline including
+      // codegen on partition filter expressions. With DPP, this calls
+      // InSubqueryExec.doGenCode which requires the subquery to have finished - but
+      // outputPartitioning can be accessed before prepare() runs (e.g., by
+      // ValidateRequirements during plan validation).
+      //
+      // perPartitionData goes through serializedPartitionData, which explicitly resolves
+      // DPP subqueries (via updateResult()) before accessing file partitions. This is the
+      // same pattern CometIcebergNativeScanExec uses.
+      //
+      // This is also more correct: perPartitionData.length reflects the post-DPP partition
+      // count, matching what CometExecRDD actually uses in doExecuteColumnar().
+      UnknownPartitioning(perPartitionData.length)
     }
   }
 
@@ -141,8 +185,72 @@ case class CometNativeScanExec(
    * partition's files (lazily, as tasks are scheduled).
    */
   @transient private lazy val serializedPartitionData: (Array[Byte], Array[Array[Byte]]) = {
-    // Extract common data from nativeOp
-    val commonBytes = nativeOp.getNativeScan.getCommon.toByteArray
+    // Ensure DPP subqueries are resolved before accessing file partitions.
+    // serializedPartitionData can be triggered from findAllPlanData (via commonData) on a
+    // different execution path than the standard prepare() -> executeSubqueries() flow
+    // (e.g., from a BroadcastExchangeExec thread). We must resolve DPP here explicitly.
+    partitionFilters.foreach {
+      case DynamicPruningExpression(e: InSubqueryExec) if e.values().isEmpty =>
+        logDebug(s"Resolving DPP subquery: plan=${e.plan.getClass.getSimpleName}")
+        try {
+          e.updateResult()
+          logDebug("DPP subquery resolved successfully")
+        } catch {
+          case ex: Exception =>
+            logError(s"DPP subquery resolution failed: ${ex.getMessage}")
+            throw ex
+        }
+      case _ =>
+    }
+    // CometNativeScanExec.partitionFilters and CometScanExec.partitionFilters contain
+    // different InSubqueryExec instances. convertSubqueryBroadcasts replaced the former with
+    // CometSubqueryBroadcastExec, but the latter still has the original SubqueryBroadcastExec.
+    // Both need resolution because CometScanExec.dynamicallySelectedPartitions evaluates its
+    // own partitionFilters. updateResult() is a no-op if already resolved.
+    if (scan != null) {
+      scan.partitionFilters.foreach {
+        case DynamicPruningExpression(e: InSubqueryExec) if e.values().isEmpty =>
+          logDebug(
+            "Resolving CometScanExec DPP subquery: " +
+              s"plan=${e.plan.getClass.getSimpleName}")
+          e.updateResult()
+        case _ =>
+      }
+    }
+    // Resolve scalar subqueries in dataFilters and push to the native Parquet reader.
+    // supportedDataFilters excludes PlanExpression at planning time (unresolved), so these
+    // aren't in the serialized native plan yet. We resolve them here and append to the
+    // NativeScanCommon protobuf. Same approach as FileSourceScanLike.pushedDownFilters
+    // (DataSourceScanExec.scala), which resolves ScalarSubquery -> Literal at execution time.
+    val commonBytes = {
+      val base = nativeOp.getNativeScan.getCommon
+      val scalarSubqueryFilters = dataFilters
+        .filter(_.exists(_.isInstanceOf[ExecScalarSubquery]))
+      scalarSubqueryFilters.foreach { f =>
+        f.foreach {
+          case s: ExecScalarSubquery =>
+            s.updateResult()
+          case _ =>
+        }
+      }
+      val resolvedFilters = scalarSubqueryFilters
+        .map(_.transform { case s: ExecScalarSubquery =>
+          Literal.create(s.eval(null), s.dataType)
+        })
+      if (resolvedFilters.nonEmpty) {
+        val commonBuilder = base.toBuilder
+        for (filter <- resolvedFilters) {
+          exprToProto(filter, output) match {
+            case Some(proto) => commonBuilder.addDataFilters(proto)
+            case _ =>
+              logWarning(s"Could not serialize resolved scalar subquery filter: $filter")
+          }
+        }
+        commonBuilder.build().toByteArray
+      } else {
+        base.toByteArray
+      }
+    }
 
     // Get file partitions from CometScanExec (handles bucketing, etc.)
     val filePartitions = scan.getFilePartitions()
@@ -231,13 +339,16 @@ case class CometNativeScanExec(
     obj match {
       case other: CometNativeScanExec =>
         this.originalPlan == other.originalPlan &&
-        this.serializedPlanOpt == other.serializedPlanOpt
+        this.serializedPlanOpt == other.serializedPlanOpt &&
+        this.partitionFilters == other.partitionFilters &&
+        this.dataFilters == other.dataFilters
       case _ =>
         false
     }
   }
 
-  override def hashCode(): Int = Objects.hashCode(originalPlan, serializedPlanOpt)
+  override def hashCode(): Int =
+    Objects.hashCode(originalPlan, serializedPlanOpt, partitionFilters, dataFilters)
 
   private val driverMetricKeys =
     Set(

@@ -21,7 +21,7 @@ members = ["core", "spark-expr", "common", "proto", "jni-bridge", "shuffle", "hd
 resolver = "2"
 
 [workspace.package]
-version = "0.15.0"
+version = "0.16.0"
 homepage = "https://datafusion.apache.org/comet"
 repository = "https://github.com/apache/datafusion-comet"
 authors = ["Apache DataFusion <dev@datafusion.apache.org>"]
@@ -56,7 +56,7 @@ regex = "1.12.3"
 thiserror = "2"
 object_store = { version = "0.13.1", features = ["gcp", "azure", "aws", "http"] }
 url = "2.2"
-aws-config = "1.8.14"
+aws-config = "1.8.16"
 aws-credential-types = "1.2.13"
 iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "a2f067d" }
 iceberg-storage-opendal = { git = "https://github.com/apache/iceberg-rust", rev = "a2f067d", features = ["opendal-all"] }

@@ -89,6 +89,7 @@ message Expr {
     FromJson from_json = 66;
     ToCsv to_csv = 67;
     HoursTransform hours_transform = 68;
+    ArraysZip arrays_zip = 69;
   }
 
   // Optional QueryContext for error reporting (contains SQL text and position)
@@ -494,4 +495,11 @@ message ArrayJoin {
 
 message Rand {
   int64 seed = 1;
+}
+
+// Spark's ArraysZip takes children: Seq[Expression] and names: Seq[Expression]
+// https://github.com/apache/spark/blob/branch-4.1/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/collectionOperations.scala#L296
+message ArraysZip {
+  repeated Expr values = 1;
+  repeated string names = 2;
 }
