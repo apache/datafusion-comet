@@ -341,7 +341,7 @@ fn double_to_bigdecimal_like_java(v: f64) -> BigDecimal {
         // getNormalizationBias: shift S so its highest bit fills the MSB of a u32 word
         let s_bits = s_base.bits() as u32;
         let word_bits = s_bits.div_ceil(32) * 32;
-        (word_bits - s_bits) as u32
+        (word_bits - s_bits)
     } else {
         0u32
     };
