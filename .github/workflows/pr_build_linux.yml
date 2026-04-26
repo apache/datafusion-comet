@@ -144,7 +144,7 @@ jobs:
   # profile is currently a build target only, and several runtime/test failures are tracked
   # in follow-up PRs. Excluded from lint-java because semanticdb-scalac_2.13.17 is not yet
   # published and the lint job activates -Psemanticdb.
-  build-spark-4.1:
+  build-spark-4-1:
     needs: lint
     name: Build Spark 4.1, JDK 17
     runs-on: ubuntu-latest
