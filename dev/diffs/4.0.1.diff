@@ -1333,21 +1333,6 @@ index 2e33f6505ab..54f5081e10a 100644
      }
  
      withTable("t1", "t2") {
-diff --git a/sql/core/src/test/scala/org/apache/spark/sql/VariantShreddingSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/VariantShreddingSuite.scala
-index fee375db10a..8c2c24e2c5f 100644
---- a/sql/core/src/test/scala/org/apache/spark/sql/VariantShreddingSuite.scala
-+++ b/sql/core/src/test/scala/org/apache/spark/sql/VariantShreddingSuite.scala
-@@ -33,7 +33,9 @@ import org.apache.spark.sql.types._
- import org.apache.spark.types.variant._
- import org.apache.spark.unsafe.types.{UTF8String, VariantVal}
- 
--class VariantShreddingSuite extends QueryTest with SharedSparkSession with ParquetTest {
-+class VariantShreddingSuite extends QueryTest with SharedSparkSession with ParquetTest
-+    // TODO enable tests once https://github.com/apache/datafusion-comet/issues/2209 is fixed
-+    with IgnoreCometSuite {
-   def parseJson(s: String): VariantVal = {
-     val v = VariantBuilder.parseJson(s, false)
-     new VariantVal(v.getValue, v.getMetadata)
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/collation/CollationSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/collation/CollationSuite.scala
 index 11e9547dfc5..637411056ae 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/collation/CollationSuite.scala
@@ -3130,30 +3115,6 @@ index 09ed6955a51..5cd856ff7b6 100644
    ) {
      checkAllParquetReaders(
        values = Seq("1.23", "10.34"),
-diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetVariantShreddingSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetVariantShreddingSuite.scala
-index 458b5dfc0f4..d209f3c85bc 100644
---- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetVariantShreddingSuite.scala
-+++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetVariantShreddingSuite.scala
-@@ -26,7 +26,7 @@ import org.apache.parquet.hadoop.util.HadoopInputFile
- import org.apache.parquet.schema.{LogicalTypeAnnotation, PrimitiveType}
- import org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName
- 
--import org.apache.spark.sql.{QueryTest, Row}
-+import org.apache.spark.sql.{IgnoreCometSuite, QueryTest, Row}
- import org.apache.spark.sql.internal.SQLConf
- import org.apache.spark.sql.internal.SQLConf.ParquetOutputTimestampType
- import org.apache.spark.sql.test.SharedSparkSession
-@@ -35,7 +35,9 @@ import org.apache.spark.unsafe.types.VariantVal
- /**
-  * Test shredding Variant values in the Parquet reader/writer.
-  */
--class ParquetVariantShreddingSuite extends QueryTest with ParquetTest with SharedSparkSession {
-+class ParquetVariantShreddingSuite extends QueryTest with ParquetTest with SharedSparkSession
-+    // TODO enable tests once https://github.com/apache/datafusion-comet/issues/2209 is fixed
-+    with IgnoreCometSuite {
- 
-   private def testWithTempDir(name: String)(block: File => Unit): Unit = test(name) {
-     withTempDir { dir =>
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/debug/DebuggingSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/debug/DebuggingSuite.scala
 index b8f3ea3c6f3..bbd44221288 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/debug/DebuggingSuite.scala

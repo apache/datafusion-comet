@@ -19,7 +19,8 @@
 
 package org.apache.comet.shims
 
-import org.apache.spark.sql.types.{DataType, StringType}
+import org.apache.spark.sql.execution.datasources.VariantMetadata
+import org.apache.spark.sql.types.{DataType, StringType, StructType}
 
 trait CometTypeShim {
   // A `StringType` carries collation metadata in Spark 4.0. Only non-default (non-UTF8_BINARY)
@@ -31,4 +32,11 @@ trait CometTypeShim {
     case st: StringType => st.collationId != StringType.collationId
     case _ => false
   }
+
+  // Spark 4.0's `PushVariantIntoScan` rewrites `VariantType` columns into a `StructType` whose
+  // fields each carry `__VARIANT_METADATA_KEY` metadata, then pushes `variant_get` paths down as
+  // ordinary struct field accesses. Comet's native scans don't understand the on-disk Parquet
+  // variant shredding layout, so reading such a struct natively returns nulls. Detect the marker
+  // and force scan fallback.
+  def isVariantStruct(s: StructType): Boolean = VariantMetadata.isVariantStruct(s)
 }
