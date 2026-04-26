@@ -230,6 +230,7 @@ After applying the diff, run sbt from the patched Spark working tree. A few thin
   ```
 
   Make sure to install Comet into the same alternate repo so sbt can resolve it.
+
 - **Avoid `-DskipTests` alone for the install step** if you want to skip Comet's own test compile: it still
   compiles tests and only skips execution. Pair it with `-Dmaven.test.skip=true`.
 - **Targeted suites first**: `MathFunctionsSuite` (~60 tests) is a quick smoke check that exercises Comet's
