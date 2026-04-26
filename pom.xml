@@ -686,8 +686,10 @@ under the License.
       <!-- WIP: Spark 4.1 support, with its own shim sources for 4.1-specific APIs -->
       <id>spark-4.1</id>
       <properties>
-        <!-- Use Scala 2.13 by default -->
-        <scala.version>2.13.17</scala.version>
+        <!-- Use Scala 2.13 by default. Pinned to 2.13.16 because semanticdb-scalac_2.13.17
+             is not yet published; 2.13 is binary-compatible across patch versions so Comet
+             built against 2.13.16 still links against Spark 4.1.1's 2.13.17 binaries. -->
+        <scala.version>2.13.16</scala.version>
         <scala.binary.version>2.13</scala.binary.version>
         <spark.version>4.1.1</spark.version>
         <spark.version.short>4.1</spark.version.short>
