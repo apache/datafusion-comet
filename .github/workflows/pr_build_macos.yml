@@ -144,6 +144,10 @@ jobs:
             java_version: "17"
             maven_opts: "-Pspark-4.0 -Pscala-2.13"
 
+          - name: "Spark 4.1, JDK 17, Scala 2.13"
+            java_version: "17"
+            maven_opts: "-Pspark-4.1 -Pscala-2.13"
+
         suite:
           - name: "fuzz"
             value: |
