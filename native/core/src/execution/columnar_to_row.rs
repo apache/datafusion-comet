@@ -797,6 +797,36 @@ impl<'a> TypedElements<'a> {
                     }
                 }
             }
+            TypedElements::StringView(arr) => {
+                for i in 0..num_elements {
+                    let src_idx = start_idx + i;
+                    if arr.is_null(src_idx) {
+                        set_null_bit(buffer, null_bitset_start, i);
+                    } else {
+                        let len = write_bytes_padded(buffer, arr.value(src_idx).as_bytes());
+                        let data_offset = buffer.len() - round_up_to_8(len) - array_start;
+                        let offset_and_len = ((data_offset as i64) << 32) | (len as i64);
+                        let slot_offset = elements_start + i * 8;
+                        buffer[slot_offset..slot_offset + 8]
+                            .copy_from_slice(&offset_and_len.to_le_bytes());
+                    }
+                }
+            }
+            TypedElements::BinaryView(arr) => {
+                for i in 0..num_elements {
+                    let src_idx = start_idx + i;
+                    if arr.is_null(src_idx) {
+                        set_null_bit(buffer, null_bitset_start, i);
+                    } else {
+                        let len = write_bytes_padded(buffer, arr.value(src_idx));
+                        let data_offset = buffer.len() - round_up_to_8(len) - array_start;
+                        let offset_and_len = ((data_offset as i64) << 32) | (len as i64);
+                        let slot_offset = elements_start + i * 8;
+                        buffer[slot_offset..slot_offset + 8]
+                            .copy_from_slice(&offset_and_len.to_le_bytes());
+                    }
+                }
+            }
             TypedElements::Other(arr, element_type) => {
                 // Fall back to old method for nested types
                 for i in 0..num_elements {
@@ -1010,7 +1040,8 @@ impl ColumnarToRowContext {
             self.write_row_typed(&typed_arrays, &var_len_indices, row_idx)?;
 
             let row_end = self.buffer.len();
-            self.lengths.push((row_end - row_start) as i32);
+            let row_len = row_end - row_start;
+            self.lengths.push(row_len as i32);
         }
 
         Ok((self.buffer.as_ptr(), &self.offsets, &self.lengths))

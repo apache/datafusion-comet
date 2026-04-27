@@ -320,7 +320,8 @@ impl PhysicalPlanner {
                         DataType::Timestamp(TimeUnit::Microsecond, timezone) => {
                             ScalarValue::TimestampMicrosecond(None, timezone)
                         }
-                        DataType::Binary => ScalarValue::BinaryView(None),
+                        DataType::Binary => ScalarValue::Binary(None),
+                        DataType::BinaryView => ScalarValue::BinaryView(None),
                         DataType::Decimal128(p, s) => ScalarValue::Decimal128(None, p, s),
                         DataType::Struct(fields) => ScalarStructBuilder::new_null(fields),
                         DataType::Map(f, s) => DataType::Map(f, s).try_into()?,
